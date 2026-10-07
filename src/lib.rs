@@ -9,6 +9,7 @@ pub mod model;
 pub mod smtp;
 pub mod stdio;
 pub mod store;
+pub mod ui;
 pub mod webhook;
 
 use std::sync::Arc;

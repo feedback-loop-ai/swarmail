@@ -5,6 +5,7 @@ use crate::mcp::{self, McpContext};
 use crate::model::Email;
 use crate::smtp;
 use crate::store::{Filter, Store};
+use crate::ui;
 use crate::webhook::{WebhookTarget, Webhooks};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -75,6 +76,7 @@ pub fn router(state: AppState) -> Router {
         .route("/mcp", post(mcp_endpoint))
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
+        .merge(ui::router())
         .with_state(state)
 }
 
