@@ -30,11 +30,19 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - run: cargo llvm-cov --workspace --summary-only --output-path coverage.txt
+      - run: bash scripts/coverage-gate.sh
+      - run: cargo llvm-cov --summary-only --output-path coverage.txt
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-summary
           path: coverage.txt
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check licenses
 
   docker:
     runs-on: ubuntu-latest
