@@ -1,0 +1,6 @@
+/target
+/dist
+*.db
+*.sqlite
+.DS_Store
+.cargo-home/
