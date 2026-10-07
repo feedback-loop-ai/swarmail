@@ -1,0 +1,11 @@
+{
+  "journal": ".forge/forge.db",
+  "realms": [
+    {
+      "default_branch": "main",
+      "name": "swarmail",
+      "path": "."
+    }
+  ],
+  "schema": "forge.realms/v3"
+}

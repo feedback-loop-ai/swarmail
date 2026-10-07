@@ -1,0 +1,36 @@
+{
+  "provider": "dsh",
+  "trust_tier": "trusted",
+  "routes": {
+    "spark-glm": "local"
+  },
+  "credentials": {
+    "spark-glm": "SPARK_API_KEY"
+  },
+  "binary": "dsh",
+  "driver": [
+    "{brokkr}",
+    "driver",
+    "dsh",
+    "--"
+  ],
+  "models": {
+    "glm-flash": "spark-glm/GLM-5.3-Flash-EXL3"
+  },
+  "judges": [
+    "glm-flash"
+  ],
+  "model_flag": "--model",
+  "effort_flag": "--effort",
+  "efforts": [
+    "low",
+    "medium",
+    "high",
+    "xhigh"
+  ],
+  "effortless_routes": {
+    "spark-glm": "dsh 0.1.5-rc.1 refuses reasoningEffort at every level tried on this route; seats on spark-glm pin no effort and record not applicable (mirrors xbox-inference decision 0035 addendum, 2026-09-11)"
+  },
+  "tool_permissions": "unsupported",
+  "mcp": "unsupported"
+}

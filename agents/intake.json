@@ -1,0 +1,11 @@
+{
+  "charter": "charters/intake.md",
+  "description": "Frames a raw request into a recorded, actionable task before any code is written.",
+  "limits": {
+    "max_attempts": 2,
+    "timeout_seconds": 1800
+  },
+  "models": [
+    "glm-flash"
+  ]
+}

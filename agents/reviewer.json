@@ -1,0 +1,11 @@
+{
+  "charter": "charters/reviewer.md",
+  "description": "The single-seat reviewer: correctness and security in one pass, for recipes without a review panel.",
+  "limits": {
+    "max_attempts": 2,
+    "timeout_seconds": 3600
+  },
+  "models": [
+    "glm-flash"
+  ]
+}
