@@ -1,12 +1,15 @@
-//! HTTP API: REST for tests, plus health/metrics. (MCP, UI, OpenAPI land in P2/P3.)
+//! HTTP API: REST for tests, MCP endpoint, OpenAPI, health/metrics.
 
 use crate::chaos::{Chaos, ChaosConfig};
+use crate::mcp::{self, McpContext};
 use crate::model::Email;
+use crate::smtp;
 use crate::store::{Filter, Store};
+use crate::webhook::{WebhookTarget, Webhooks};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -18,6 +21,7 @@ use tokio::net::TcpListener;
 pub struct AppState {
     pub store: Arc<Store>,
     pub chaos: Arc<Chaos>,
+    pub webhooks: Arc<Webhooks>,
     pub started: Instant,
 }
 
@@ -63,6 +67,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/chaos",
             get(get_chaos).put(set_chaos).delete(clear_chaos),
         )
+        .route("/api/v1/inboxes/{inbox}/seed", post(seed_inbox))
+        .route(
+            "/api/v1/webhooks",
+            get(get_webhooks).put(set_webhooks).delete(clear_webhooks),
+        )
+        .route("/mcp", post(mcp_endpoint))
+        .route("/openapi.json", get(openapi_json))
+        .route("/llms.txt", get(llms_txt))
         .with_state(state)
 }
 
@@ -388,4 +400,88 @@ async fn set_chaos(
 async fn clear_chaos(State(state): State<AppState>) -> Json<ChaosConfig> {
     state.chaos.clear();
     Json(state.chaos.current())
+}
+
+// ---------- seed ----------
+
+#[derive(Debug, Deserialize)]
+pub struct SeedRequest {
+    pub from: Option<String>,
+    pub to: String,
+    pub subject: Option<String>,
+    pub text: Option<String>,
+    pub html: Option<String>,
+}
+
+/// Inject a synthetic email without SMTP — full pipeline (parse, extract) runs.
+async fn seed_inbox(
+    State(state): State<AppState>,
+    Path(inbox): Path<String>,
+    Json(seed): Json<SeedRequest>,
+) -> Json<Email> {
+    let from = seed.from.unwrap_or_else(|| "fixture@swarmail.dev".into());
+    let subject = seed.subject.unwrap_or_else(|| "(no subject)".into());
+    let mut raw = format!("From: {from}\r\nTo: {}\r\nSubject: {subject}\r\n", seed.to);
+    if let Some(html) = &seed.html {
+        raw.push_str(&format!(
+            "MIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n{html}\r\n"
+        ));
+    } else {
+        raw.push_str(&format!("\r\n{}\r\n", seed.text.unwrap_or_default()));
+    }
+    let email = smtp::build_email(
+        raw.as_bytes(),
+        &inbox,
+        std::slice::from_ref(&seed.to),
+        from,
+        0,
+    );
+    let stored = state.store.insert(email);
+    Json((*stored).clone())
+}
+
+// ---------- webhooks ----------
+
+async fn get_webhooks(State(state): State<AppState>) -> Json<Vec<WebhookTarget>> {
+    Json(state.webhooks.current())
+}
+
+async fn set_webhooks(
+    State(state): State<AppState>,
+    Json(targets): Json<Vec<WebhookTarget>>,
+) -> Json<Vec<WebhookTarget>> {
+    state.webhooks.set(targets);
+    Json(state.webhooks.current())
+}
+
+async fn clear_webhooks(State(state): State<AppState>) -> Json<serde_json::Value> {
+    state.webhooks.set(vec![]);
+    Json(serde_json::json!({ "cleared": true }))
+}
+
+// ---------- MCP ----------
+
+async fn mcp_endpoint(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Response {
+    let ctx = McpContext {
+        store: state.store.clone(),
+        chaos: state.chaos.clone(),
+    };
+    match mcp::handle(&ctx, &req).await {
+        Some(response) => Json(response).into_response(),
+        // Notifications get no reply.
+        None => StatusCode::ACCEPTED.into_response(),
+    }
+}
+
+// ---------- machine-readable docs ----------
+
+async fn openapi_json() -> Json<serde_json::Value> {
+    Json(serde_json::from_str(include_str!("static/openapi.json")).expect("embedded openapi.json"))
+}
+
+async fn llms_txt() -> &'static str {
+    include_str!("static/llms.txt")
 }

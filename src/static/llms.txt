@@ -1,0 +1,57 @@
+# Swarmail
+
+> The fastest AI-native SMTP mail mock: a single Rust binary that accepts any SMTP
+> traffic on :1025 and exposes captured email through REST, MCP and a web UI on
+> :8025. Every accepted message is queryable immediately — there is no async gap
+> where mail can be lost.
+
+## Getting started
+
+- SMTP: point any client (Ory Kratos, Nodemailer, curl) at `localhost:1025`. No
+  auth required; if the client authenticates, the **username names the inbox**
+  (per-test isolation).
+- HTTP: API at `http://localhost:8025`, this file at `/llms.txt`, OpenAPI at
+  `/openapi.json`, MCP at `POST /mcp`, health at `/healthz`, Prometheus at `/metrics`.
+
+## The agent loop (clear → act → assert)
+
+1. `DELETE /api/v1/inboxes/{inbox}/messages` — start clean.
+2. Trigger the flow (signup, reset, invite...).
+3. `GET /api/v1/inboxes/{inbox}/await?to=user@x.io&count=1&timeout_ms=5000` —
+   blocks until the mail arrives (push-based; no sleep-polling). Returns the email.
+4. Assert subject/body: fields `subject`, `text`, `html` are on every email; the
+   `links` array holds every URL and `codes` holds likely OTP/verification codes —
+   no regexing HTML required.
+5. `POST /api/v1/inboxes/{inbox}/seed` injects a synthetic email (full parse +
+   extraction pipeline) — fixtures without SMTP.
+
+## MCP
+
+`POST /mcp` with JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`). Tools:
+`swarmail_search_emails`, `swarmail_get_email`, `swarmail_get_latest_email`,
+`swarmail_delete_email`, `swarmail_clear_inbox`, `swarmail_clear_all`,
+`swarmail_wait_for_email`, `swarmail_extract_links`, `swarmail_extract_codes`,
+`swarmail_seed_email`, `swarmail_set_chaos`, `swarmail_clear_chaos`.
+stdio transport: `swarmail mcp --url http://127.0.0.1:8025` (launch as an MCP
+subprocess; talks to the same server).
+
+## Chaos
+
+`PUT /api/v1/chaos` with e.g. `{"data": {"probability": 30, "error": "451 4.3.0
+tempfail", "delay_ms": 250}}` — inject SMTP failures to test your retry logic.
+`DELETE /api/v1/chaos` disables it.
+
+## Webhooks
+
+`PUT /api/v1/webhooks` with `[{"url": "http://127.0.0.1:9999/hooks", "inbox":
+null, "secret": "s3cret"}]` — every accepted email is POSTed as
+`{"event":"received","email":{...}}` with the secret in `X-Swarmail-Secret`;
+queued, retried 4x (100ms → 1.6s), never blocking SMTP. (v0.1: http:// targets.)
+
+## Guarantees
+
+- **Lossless bursts**: SMTP acceptance is synchronous — `DATA` ending with a 250
+  means the message is stored and queryable. Verified in CI by
+  `the_burst_guarantee` (1000 mails / 50 concurrent sessions, exact count).
+- **No sleep-polling**: `await` is long-poll backed by per-inbox broadcast
+  watchers; agents block until arrival instead of guessing delays.

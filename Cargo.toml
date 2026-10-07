@@ -10,7 +10,7 @@ keywords = ["smtp", "email", "testing", "mock", "mcp"]
 categories = ["email", "development-tools::testing"]
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "signal", "io-std"] }
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

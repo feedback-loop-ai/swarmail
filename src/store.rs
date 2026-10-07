@@ -77,6 +77,8 @@ pub struct Store {
     /// id -> email, a global index for O(1) lookup.
     index: DashMap<String, Arc<Email>>,
     watchers: DashMap<String, broadcast::Sender<Arc<Email>>>,
+    /// Process-wide channel: every accepted email, for webhooks.
+    global_tx: broadcast::Sender<Arc<Email>>,
     /// Maximum emails retained per inbox (oldest pruned). 0 = unlimited.
     max_per_inbox: usize,
     pub totals: Totals,
@@ -84,13 +86,20 @@ pub struct Store {
 
 impl Store {
     pub fn new(max_per_inbox: usize) -> Self {
+        let (global_tx, _) = broadcast::channel(8192);
         Self {
             inboxes: DashMap::new(),
             index: DashMap::new(),
             watchers: DashMap::new(),
+            global_tx,
             max_per_inbox,
             totals: Totals::default(),
         }
+    }
+
+    /// Subscribe to every accepted email (webhook dispatcher).
+    pub fn subscribe_all(&self) -> broadcast::Receiver<Arc<Email>> {
+        self.global_tx.subscribe()
     }
 
     /// Insert an email. Lossless: this is synchronous — once SMTP accepted the
@@ -119,6 +128,7 @@ impl Store {
         if let Some(sender) = self.watchers.get(&inbox) {
             let _ = sender.send(email.clone());
         }
+        let _ = self.global_tx.send(email.clone());
         email
     }
 

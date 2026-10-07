@@ -1,0 +1,222 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Swarmail",
+    "version": "0.1.0",
+    "description": "The fastest AI-native SMTP mail mock. Accepts any SMTP traffic on :1025 and exposes captured email through this API on :8025. Every accepted message is queryable immediately — there is no async gap where mail can be lost."
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Liveness/uptime",
+        "responses": { "200": { "description": "Server status" } }
+      }
+    },
+    "/metrics": {
+      "get": { "summary": "Prometheus metrics", "responses": { "200": { "description": "text/plain metrics" } } }
+    },
+    "/openapi.json": { "get": { "summary": "This document", "responses": { "200": { "description": "OK" } } } },
+    "/llms.txt": { "get": { "summary": "LLM-oriented quick reference", "responses": { "200": { "description": "text/plain" } } } },
+    "/mcp": {
+      "post": {
+        "summary": "Model Context Protocol endpoint (JSON-RPC 2.0)",
+        "description": "initialize, tools/list, tools/call. The stdio transport is available via `swarmail mcp`.",
+        "responses": { "200": { "description": "JSON-RPC response" }, "202": { "description": "Notification accepted" } }
+      }
+    },
+    "/api/v1/inboxes": {
+      "get": {
+        "summary": "List inboxes with message counts",
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/InboxSummary" } } } } } }
+      }
+    },
+    "/api/v1/inboxes/{inbox}/messages": {
+      "get": {
+        "summary": "List messages in an inbox (newest first)",
+        "parameters": [
+          { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "to", "in": "query", "schema": { "type": "string" }, "description": "Substring match on any recipient (to/cc)" },
+          { "name": "from", "in": "query", "schema": { "type": "string" } },
+          { "name": "subject", "in": "query", "schema": { "type": "string" } },
+          { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 100 } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } }
+        ],
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmailList" } } } } }
+      },
+      "delete": {
+        "summary": "Clear an inbox",
+        "parameters": [{ "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Removed count" } }
+      }
+    },
+    "/api/v1/inboxes/{inbox}/count": {
+      "get": {
+        "summary": "Count messages matching a filter",
+        "parameters": [
+          { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "to", "in": "query", "schema": { "type": "string" } },
+          { "name": "from", "in": "query", "schema": { "type": "string" } },
+          { "name": "subject", "in": "query", "schema": { "type": "string" } },
+          { "name": "since_ms", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "{ inbox, count }" } }
+      }
+    },
+    "/api/v1/inboxes/{inbox}/await": {
+      "get": {
+        "summary": "Long-poll until `count` messages match the filter (push-based wait, no sleep-polling)",
+        "parameters": [
+          { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "to", "in": "query", "schema": { "type": "string" } },
+          { "name": "subject", "in": "query", "schema": { "type": "string" } },
+          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "timeout_ms", "in": "query", "schema": { "type": "integer", "default": 5000 } }
+        ],
+        "responses": {
+          "200": { "description": "Matched", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AwaitResponse" } } } },
+          "408": { "description": "Timed out" }
+        }
+      }
+    },
+    "/api/v1/inboxes/{inbox}/assert": {
+      "get": {
+        "summary": "Assert an exact match count (200 when equal, 409 with expected/matched otherwise)",
+        "parameters": [
+          { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "to", "in": "query", "schema": { "type": "string" } },
+          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 } }
+        ],
+        "responses": { "200": { "description": "Assertion held" }, "409": { "description": "Assertion failed" } }
+      }
+    },
+    "/api/v1/inboxes/{inbox}/seed": {
+      "post": {
+        "summary": "Inject a synthetic email (full parse/extract pipeline runs)",
+        "parameters": [{ "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SeedRequest" } } } },
+        "responses": { "200": { "description": "The stored email" } }
+      }
+    },
+    "/api/v1/messages": {
+      "delete": { "summary": "Clear every inbox", "responses": { "200": { "description": "Removed count" } } }
+    },
+    "/api/v1/messages/{id}": {
+      "get": {
+        "summary": "Get one email in full (bodies, links, codes)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Email" } } } }, "404": { "description": "Not found" } }
+      },
+      "delete": {
+        "summary": "Delete one email",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Deleted" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/v1/messages/{id}/raw": {
+      "get": {
+        "summary": "Raw RFC 5322 source",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "text/plain" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/v1/chaos": {
+      "get": { "summary": "Current chaos rules", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChaosConfig" } } } } } },
+      "put": {
+        "summary": "Replace chaos rules (event: connect|mail_from|rcpt|data; probability 0-100; optional error line and delay_ms)",
+        "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChaosConfig" } } } },
+        "responses": { "200": { "description": "OK" } }
+      },
+      "delete": { "summary": "Disable all chaos", "responses": { "200": { "description": "OK" } } }
+    },
+    "/api/v1/webhooks": {
+      "get": { "summary": "Current webhook targets", "responses": { "200": { "description": "OK" } } },
+      "put": {
+        "summary": "Replace webhook targets. Each delivery POSTs {event:\"received\", email:{...}} with X-Swarmail-Secret; retried 4x (100ms..1.6s). v0.1 supports http:// targets.",
+        "requestBody": { "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookTarget" } } } } },
+        "responses": { "200": { "description": "OK" } }
+      },
+      "delete": { "summary": "Remove all webhook targets", "responses": { "200": { "description": "OK" } } }
+    }
+  },
+  "components": {
+    "schemas": {
+      "EmailAddress": {
+        "type": "object",
+        "properties": { "name": { "type": ["string", "null"] }, "address": { "type": "string" } }
+      },
+      "Email": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "inbox": { "type": "string" },
+          "from": { "$ref": "#/components/schemas/EmailAddress" },
+          "to": { "type": "array", "items": { "$ref": "#/components/schemas/EmailAddress" } },
+          "cc": { "type": "array", "items": { "$ref": "#/components/schemas/EmailAddress" } },
+          "recipients": { "type": "array", "items": { "type": "string" } },
+          "subject": { "type": ["string", "null"] },
+          "received_at": { "type": "string" },
+          "received_ms": { "type": "integer" },
+          "size": { "type": "integer" },
+          "text": { "type": ["string", "null"] },
+          "html": { "type": ["string", "null"] },
+          "links": { "type": "array", "items": { "type": "string" } },
+          "codes": { "type": "array", "items": { "type": "string" } },
+          "session": { "type": "integer" }
+        }
+      },
+      "EmailList": {
+        "type": "object",
+        "properties": { "total": { "type": "integer" }, "emails": { "type": "array", "items": { "$ref": "#/components/schemas/Email" } } }
+      },
+      "AwaitResponse": {
+        "type": "object",
+        "properties": {
+          "matched": { "type": "integer" },
+          "total": { "type": "integer" },
+          "emails": { "type": "array", "items": { "$ref": "#/components/schemas/Email" } }
+        }
+      },
+      "InboxSummary": {
+        "type": "object",
+        "properties": { "name": { "type": "string" }, "count": { "type": "integer" } }
+      },
+      "SeedRequest": {
+        "type": "object",
+        "properties": {
+          "from": { "type": "string" },
+          "to": { "type": "string" },
+          "subject": { "type": "string" },
+          "text": { "type": "string" },
+          "html": { "type": "string" }
+        },
+        "required": ["to"]
+      },
+      "ChaosRule": {
+        "type": "object",
+        "properties": {
+          "probability": { "type": "integer" },
+          "error": { "type": ["string", "null"] },
+          "delay_ms": { "type": "integer" }
+        }
+      },
+      "ChaosConfig": {
+        "type": "object",
+        "properties": {
+          "connect": { "$ref": "#/components/schemas/ChaosRule" },
+          "mail_from": { "$ref": "#/components/schemas/ChaosRule" },
+          "rcpt": { "$ref": "#/components/schemas/ChaosRule" },
+          "data": { "$ref": "#/components/schemas/ChaosRule" }
+        }
+      },
+      "WebhookTarget": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string" },
+          "inbox": { "type": ["string", "null"] },
+          "secret": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

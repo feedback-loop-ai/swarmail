@@ -334,7 +334,7 @@ fn collect_addresses(address: Option<&Address>) -> Vec<EmailAddress> {
     out
 }
 
-fn build_email(
+pub fn build_email(
     raw: &[u8],
     inbox: &str,
     recipients: &[String],

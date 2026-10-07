@@ -29,10 +29,10 @@ async fn main() {
             tokio::signal::ctrl_c().await.expect("ctrl_c handler");
             tracing::info!("shutting down");
         }
-        Command::Mcp(_args) => {
-            // Implemented in P2; keep the subcommand discoverable.
-            eprintln!("swarmail mcp: not yet implemented (P2)");
-            std::process::exit(2);
+        Command::Mcp(args) => {
+            // stdio MCP bridge: JSON-RPC over stdin/stdout → POST {url}/mcp.
+            let code = swarmail::stdio::run_stdio_bridge(&args.url).await;
+            std::process::exit(code);
         }
     }
 }

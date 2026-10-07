@@ -4,9 +4,12 @@ pub mod api;
 pub mod chaos;
 pub mod config;
 pub mod extract;
+pub mod mcp;
 pub mod model;
 pub mod smtp;
+pub mod stdio;
 pub mod store;
+pub mod webhook;
 
 use std::sync::Arc;
 
@@ -16,12 +19,15 @@ pub struct RunningServer {
     pub http_addr: std::net::SocketAddr,
     pub store: Arc<store::Store>,
     pub chaos: Arc<chaos::Chaos>,
+    pub webhooks: Arc<webhook::Webhooks>,
 }
 
-/// Bind SMTP + HTTP and spawn both servers.
+/// Bind SMTP + HTTP and spawn both servers (plus the webhook dispatcher).
 pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     let store = Arc::new(store::Store::new(cfg.max_per_inbox));
     let chaos = Arc::new(chaos::Chaos::default());
+    let webhooks = Arc::new(webhook::Webhooks::default());
+    webhook::spawn_dispatcher(store.clone(), webhooks.clone());
 
     let smtp_listener = tokio::net::TcpListener::bind(&cfg.smtp_listen).await?;
     let http_listener = tokio::net::TcpListener::bind(&cfg.http_listen).await?;
@@ -42,9 +48,11 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     {
         let store = store.clone();
         let chaos = chaos.clone();
+        let webhooks = webhooks.clone();
         let state = api::AppState {
             store,
             chaos,
+            webhooks,
             started: std::time::Instant::now(),
         };
         tokio::spawn(async move {
@@ -59,5 +67,6 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         http_addr,
         store,
         chaos,
+        webhooks,
     })
 }
