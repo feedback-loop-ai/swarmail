@@ -4,7 +4,7 @@ use crate::chaos::{Chaos, ChaosConfig};
 use crate::mcp::{self, McpContext};
 use crate::model::Email;
 use crate::smtp;
-use crate::store::{Filter, Store};
+use crate::store::{Filter, Store, WaitOutcome};
 use crate::ui;
 use crate::webhook::{WebhookTarget, Webhooks};
 use axum::extract::{Path, State};
@@ -105,10 +105,8 @@ impl ListQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct AwaitQuery {
-    pub to: Option<String>,
-    pub from: Option<String>,
-    pub subject: Option<String>,
-    pub since_ms: Option<i64>,
+    #[serde(flatten)]
+    pub common: ListQuery,
     /// Number of matching emails to wait for (default 1).
     pub count: Option<usize>,
     /// Give up after this long; default 5000ms.
@@ -117,12 +115,7 @@ pub struct AwaitQuery {
 
 impl AwaitQuery {
     fn filter(&self) -> Filter {
-        Filter {
-            to: self.to.clone(),
-            from: self.from.clone(),
-            subject: self.subject.clone(),
-            since_ms: self.since_ms,
-        }
+        self.common.filter()
     }
 
     fn count(&self) -> usize {
@@ -163,26 +156,25 @@ async fn healthz(State(state): State<AppState>) -> Json<serde_json::Value> {
 }
 
 async fn metrics(State(state): State<AppState>) -> String {
-    let t = &state.store.totals;
     let inboxes = state.store.inboxes();
     let stored: usize = inboxes.iter().map(|(_, c)| c).sum();
-    let mut out = String::new();
-    out.push_str(&format!(
-        "# TYPE swarmail_emails_inserted_total counter\nswarmail_emails_inserted_total {}\n",
-        t.emails_inserted.load(std::sync::atomic::Ordering::Relaxed)
-    ));
-    out.push_str(&format!(
-        "# TYPE swarmail_emails_dropped_total counter\nswarmail_emails_dropped_total {}\n",
-        t.emails_dropped.load(std::sync::atomic::Ordering::Relaxed)
-    ));
-    out.push_str(&format!(
-        "# TYPE swarmail_emails_stored gauge\nswarmail_emails_stored {stored}\n"
-    ));
-    out.push_str(&format!(
-        "# TYPE swarmail_inboxes gauge\nswarmail_inboxes {}\n",
-        inboxes.len()
-    ));
-    out
+    let rows = [
+        (
+            "counter",
+            "swarmail_emails_inserted_total",
+            state.store.emails_inserted().to_string(),
+        ),
+        (
+            "counter",
+            "swarmail_emails_dropped_total",
+            state.store.emails_dropped().to_string(),
+        ),
+        ("gauge", "swarmail_emails_stored", stored.to_string()),
+        ("gauge", "swarmail_inboxes", inboxes.len().to_string()),
+    ];
+    rows.iter()
+        .map(|(kind, name, value)| format!("# TYPE {name} {kind}\n{name} {value}\n"))
+        .collect()
 }
 
 async fn list_inboxes(State(state): State<AppState>) -> Json<Vec<InboxSummary>> {
@@ -237,21 +229,15 @@ async fn await_messages(
 ) -> ApiResult<Response> {
     let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "await")?;
     let want = q.count();
-    let filter = q.filter();
-    let deadline = Instant::now() + q.timeout();
-
-    // Subscribe first so a mail arriving during the check cannot be missed.
-    let mut rx = state.store.subscribe(&inbox);
-    loop {
-        let matches = state.store.list(&inbox, &filter);
-        if matches.len() >= want {
-            let total = state.store.count(&inbox, &Filter::default());
-            let emails: Vec<Email> = matches
-                .into_iter()
-                .take(want)
-                .map(|e| (*e).clone())
-                .collect();
-            return Ok((
+    let total = state.store.count(&inbox, &Filter::default());
+    match state
+        .store
+        .wait_for(&inbox, &q.filter(), want, q.timeout())
+        .await
+    {
+        WaitOutcome::Found(matches) => {
+            let emails = matches.iter().map(|e| (**e).clone()).collect();
+            Ok((
                 StatusCode::OK,
                 Json(AwaitResponse {
                     matched: want,
@@ -259,65 +245,17 @@ async fn await_messages(
                     emails,
                 }),
             )
-                .into_response());
+                .into_response())
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            let total = state.store.count(&inbox, &Filter::default());
-            return Ok((
-                StatusCode::REQUEST_TIMEOUT,
-                Json(AwaitResponse {
-                    matched: matches.len(),
-                    total,
-                    emails: vec![],
-                }),
-            )
-                .into_response());
-        }
-        match tokio::time::timeout(remaining, rx.recv()).await {
-            Ok(Ok(email)) => {
-                if filter.matches(&email) {
-                    // Re-check the store: a burst may have delivered several at once.
-                    continue;
-                }
-            }
-            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {
-                // Slow watcher; the store remains the source of truth.
-                continue;
-            }
-            Ok(Err(_)) | Err(_) => {
-                let matches = state.store.list(&inbox, &filter);
-                if matches.len() >= want {
-                    let total = state.store.count(&inbox, &Filter::default());
-                    let emails: Vec<Email> = matches
-                        .into_iter()
-                        .take(want)
-                        .map(|e| (*e).clone())
-                        .collect();
-                    return Ok((
-                        StatusCode::OK,
-                        Json(AwaitResponse {
-                            matched: want,
-                            total,
-                            emails,
-                        }),
-                    )
-                        .into_response());
-                }
-                if Instant::now() >= deadline {
-                    let total = state.store.count(&inbox, &Filter::default());
-                    return Ok((
-                        StatusCode::REQUEST_TIMEOUT,
-                        Json(AwaitResponse {
-                            matched: matches.len(),
-                            total,
-                            emails: vec![],
-                        }),
-                    )
-                        .into_response());
-                }
-            }
-        }
+        WaitOutcome::Timeout { matched } => Ok((
+            StatusCode::REQUEST_TIMEOUT,
+            Json(AwaitResponse {
+                matched,
+                total,
+                emails: vec![],
+            }),
+        )
+            .into_response()),
     }
 }
 
@@ -431,13 +369,7 @@ async fn seed_inbox(
     } else {
         raw.push_str(&format!("\r\n{}\r\n", seed.text.unwrap_or_default()));
     }
-    let email = smtp::build_email(
-        raw.as_bytes(),
-        &inbox,
-        std::slice::from_ref(&seed.to),
-        from,
-        0,
-    );
+    let email = smtp::build_email(raw.as_bytes(), &inbox, std::slice::from_ref(&seed.to), from);
     let stored = state.store.insert(email);
     Json((*stored).clone())
 }

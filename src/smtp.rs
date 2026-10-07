@@ -53,7 +53,7 @@ pub async fn serve(
         let chaos = chaos.clone();
         let cfg = cfg.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, session, store, chaos, cfg).await {
+            if let Err(e) = handle_conn(stream, store, chaos, cfg).await {
                 debug!(session, error = %e, "connection ended");
             }
         });
@@ -79,7 +79,6 @@ fn arg_address(arg: &str) -> String {
 
 async fn handle_conn(
     mut stream: TcpStream,
-    session: u64,
     store: Arc<Store>,
     chaos: Arc<Chaos>,
     cfg: SmtpConfig,
@@ -258,13 +257,8 @@ async fn handle_conn(
                     }
                 }
 
-                let email = build_email(
-                    &raw,
-                    &inbox,
-                    &rcpts,
-                    mail_from.clone().unwrap_or_default(),
-                    session,
-                );
+                let email =
+                    build_email(&raw, &inbox, &rcpts, mail_from.clone().unwrap_or_default());
                 let id = email.id.clone();
                 store.insert(email);
                 write_line(reader.get_mut(), &format!("250 2.0.0 OK: stored as {id}")).await?;
@@ -334,13 +328,7 @@ fn collect_addresses(address: Option<&Address>) -> Vec<EmailAddress> {
     out
 }
 
-pub fn build_email(
-    raw: &[u8],
-    inbox: &str,
-    recipients: &[String],
-    from_envelope: String,
-    session: u64,
-) -> Email {
+pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope: String) -> Email {
     let now = Utc::now();
     let parsed = MessageParser::default().parse(raw);
 
@@ -404,7 +392,6 @@ pub fn build_email(
         html,
         links,
         codes,
-        session,
         raw: raw.to_vec(),
     }
 }

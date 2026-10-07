@@ -25,7 +25,6 @@ fn bench_parse_extract(c: &mut Criterion) {
                 "bench",
                 &["user@example.com".to_string()],
                 "noreply@x.io".into(),
-                0,
             ));
             i += 1;
         });
@@ -46,7 +45,6 @@ fn bench_full_insert(c: &mut Criterion) {
                 "bench",
                 &["user@example.com".to_string()],
                 "noreply@x.io".into(),
-                0,
             );
             store.insert(email);
             i += 1;

@@ -8,6 +8,7 @@ use crate::model::Email;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 /// Query filter for list/count/await endpoints.
@@ -81,10 +82,30 @@ pub struct Store {
     global_tx: broadcast::Sender<Arc<Email>>,
     /// Maximum emails retained per inbox (oldest pruned). 0 = unlimited.
     max_per_inbox: usize,
-    pub totals: Totals,
+    totals: Totals,
+}
+
+impl Totals {
+    pub fn emails_inserted(&self) -> u64 {
+        self.emails_inserted.load(Ordering::Relaxed)
+    }
+
+    pub fn emails_dropped(&self) -> u64 {
+        self.emails_dropped.load(Ordering::Relaxed)
+    }
 }
 
 impl Store {
+    /// Lifetime count of accepted emails (the Prometheus counter).
+    pub fn emails_inserted(&self) -> u64 {
+        self.totals.emails_inserted()
+    }
+
+    /// Lifetime count of cap-pruned emails (the Prometheus counter).
+    pub fn emails_dropped(&self) -> u64 {
+        self.totals.emails_dropped()
+    }
+
     pub fn new(max_per_inbox: usize) -> Self {
         let (global_tx, _) = broadcast::channel(8192);
         Self {
@@ -209,6 +230,51 @@ impl Store {
     }
 }
 
+/// The result of a bounded wait for matching mail.
+pub enum WaitOutcome {
+    /// At least `want` matches exist; holds up to `want`, newest first.
+    Found(Vec<Arc<Email>>),
+    /// The deadline elapsed; `matched` is the current match count.
+    Timeout { matched: usize },
+}
+
+impl Store {
+    /// Wait until `want` emails matching `filter` exist in `inbox`, or the
+    /// timeout elapses.
+    ///
+    /// Subscribes **before** scanning so a mail delivered during the check
+    /// cannot be missed (decision 0002). The store remains the source of
+    /// truth: every wakeup re-scans, so slow or lagging watchers are safe —
+    /// a full channel or a closed one both fall through to the deadline
+    /// re-check.
+    pub async fn wait_for(
+        &self,
+        inbox: &str,
+        filter: &Filter,
+        want: usize,
+        timeout: Duration,
+    ) -> WaitOutcome {
+        let mut rx = self.subscribe(inbox);
+        let deadline = Instant::now() + timeout;
+        loop {
+            let mut matches = self.list(inbox, filter);
+            if matches.len() >= want {
+                matches.truncate(want);
+                return WaitOutcome::Found(matches);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return WaitOutcome::Timeout {
+                    matched: matches.len(),
+                };
+            }
+            // Block until any event (new mail, lag, channel close) or the
+            // deadline; the loop re-scans either way.
+            let _ = tokio::time::timeout(remaining, rx.recv()).await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,7 +298,6 @@ mod tests {
             html: None,
             links: vec![],
             codes: vec![],
-            session: 0,
             raw: vec![],
         }
     }

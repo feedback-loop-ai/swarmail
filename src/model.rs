@@ -39,8 +39,6 @@ pub struct Email {
     pub links: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub codes: Vec<String>,
-    /// SMTP session id (per-connection sequence), useful for tracing.
-    pub session: u64,
     #[serde(skip)]
     pub raw: Vec<u8>,
 }

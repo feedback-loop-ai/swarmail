@@ -10,7 +10,7 @@
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](https://www.rust-lang.org)
 [![clippy · -D warnings](https://img.shields.io/badge/clippy%20%C2%B7%20--D%20warnings-orange)](.github/workflows/ci.yml)
 [![deps · permissive-only](https://img.shields.io/badge/deps%20%C2%B7%20permissive--only-brightgreen)](deny.toml)
-[![coverage gate](https://img.shields.io/badge/coverage%20%C2%B7%2059.9%25%20floor-green)](scripts/coverage-gate.sh)
+[![coverage gate](https://img.shields.io/badge/coverage%20%C2%B7%2060.6%25%20floor-green)](scripts/coverage-gate.sh)
 
 **v0.1.0** · [Releases](https://github.com/feedback-loop-ai/swarmail/releases) ·
 machine-readable surfaces: [`/openapi.json`](http://localhost:8025/openapi.json) ·
@@ -168,7 +168,7 @@ cargo bench                                                   # ingest path → 
 bash scripts/coverage-gate.sh                                 # the floor gate
 ```
 
-**Line coverage: 59.9%** — enforced by `scripts/coverage-gate.sh` and the CI
+**Line coverage: 60.6%** — enforced by `scripts/coverage-gate.sh` and the CI
 `coverage` job: **the floor may rise, never fall** (the brokkr rule). Where
 coverage goes:
 

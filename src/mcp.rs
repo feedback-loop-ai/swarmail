@@ -11,11 +11,10 @@
 
 use crate::chaos::{Chaos, ChaosEvent, ChaosRule};
 use crate::smtp::build_email;
-use crate::store::{Filter, Store};
+use crate::store::{Filter, Store, WaitOutcome};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::broadcast;
+use std::time::Duration;
 
 pub const PROTOCOL_VERSION: &str = "2025-03-26";
 
@@ -143,31 +142,17 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
             let want = arg_usize(a, "count").unwrap_or(1).max(1);
             let timeout =
                 Duration::from_millis(a.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(5000));
-            let deadline = Instant::now() + timeout;
-            let mut rx: broadcast::Receiver<Arc<crate::model::Email>> = store.subscribe_all();
-            loop {
-                let matches = store.list(&inbox, &filter);
-                if matches.len() >= want {
+            match store.wait_for(&inbox, &filter, want, timeout).await {
+                WaitOutcome::Found(matches) => {
                     let emails: Vec<Value> = matches
-                        .into_iter()
-                        .take(want)
-                        .map(|e| serde_json::to_value(&*e).unwrap())
+                        .iter()
+                        .map(|e| serde_json::to_value(&**e).unwrap())
                         .collect();
-                    return Ok(text_result(json!({ "matched": want, "emails": emails })));
+                    Ok(text_result(json!({ "matched": want, "emails": emails })))
                 }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Ok(text_result(json!({
-                        "matched": store.count(&inbox, &filter),
-                        "timed_out": true,
-                    })));
-                }
-                match tokio::time::timeout(remaining, rx.recv()).await {
-                    Ok(Ok(email)) if email.inbox == inbox && filter.matches(&email) => continue,
-                    Ok(Ok(_)) => continue,
-                    Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
-                    Ok(Err(_)) | Err(_) => continue, // re-poll the store
-                }
+                WaitOutcome::Timeout { matched } => Ok(text_result(
+                    json!({ "matched": matched, "timed_out": true }),
+                )),
             }
         }
         "swarmail_extract_links" | "swarmail_extract_codes" => {
@@ -188,7 +173,7 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
             let subject = arg_str(a, "subject").unwrap_or_else(|| "(no subject)".into());
             let body = arg_str(a, "text").unwrap_or_default();
             let raw = format!("From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{body}\r\n");
-            let email = build_email(raw.as_bytes(), &inbox, &[to], from, 0);
+            let email = build_email(raw.as_bytes(), &inbox, &[to], from);
             let id = email.id.clone();
             let links = email.links.clone();
             let codes = email.codes.clone();
