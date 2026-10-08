@@ -38,6 +38,8 @@ mod common {
             http_listen: "127.0.0.1:0".into(),
             max_per_inbox: 0,
             data_file: None,
+            tls_cert: None,
+            tls_key: None,
             smtp: Default::default(),
         };
         swarmail::run_on(&cfg).await.unwrap()

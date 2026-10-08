@@ -3,6 +3,12 @@
 //! One tokio task per connection; the protocol state machine is intentionally
 //! simple and the store insert is synchronous — accepting a message means it is
 //! stored. There is no async gap where mail can be lost.
+//!
+//! STARTTLS upgrades the session transport in place: the plaintext listener
+//! stays byte-identical when TLS is not configured, and with a certificate
+//! configured every command after the handshake is TLS-only — the session
+//! restarts per RFC 3207 §4.2, with everything the client said before the
+//! handshake discarded.
 
 use crate::chaos::{Chaos, ChaosEvent};
 use crate::extract::{extract_codes, extract_links};
@@ -11,10 +17,14 @@ use crate::store::Store;
 use chrono::Utc;
 use mail_parser::{Addr, Address, MessageParser};
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use std::task::{Context, Poll};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::TlsAcceptor;
+use tokio_rustls::server::TlsStream;
 use tracing::debug;
 
 /// Hard cap on a single message (50 MiB).
@@ -47,6 +57,7 @@ pub async fn serve(
     store: Arc<Store>,
     chaos: Arc<Chaos>,
     cfg: SmtpConfig,
+    tls: Option<Arc<rustls::ServerConfig>>,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> io::Result<()> {
     let mut shutdown = std::pin::pin!(shutdown);
@@ -60,8 +71,9 @@ pub async fn serve(
         let store = store.clone();
         let chaos = chaos.clone();
         let cfg = cfg.clone();
+        let tls = tls.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, store, chaos, cfg).await {
+            if let Err(e) = handle_conn(stream, store, chaos, cfg, tls).await {
                 debug!(session, error = %e, "connection ended");
             }
         });
@@ -74,7 +86,75 @@ async fn write_line<W: tokio::io::AsyncWrite + Unpin>(
 ) -> io::Result<()> {
     stream.write_all(line.as_bytes()).await?;
     stream.write_all(b"\r\n").await?;
-    Ok(())
+    // Pushed through the transport now: it puts the STARTTLS 220 on the wire
+    // before the handshake begins, and is a no-op for plain TCP.
+    stream.flush().await
+}
+
+/// The session transport: plaintext TCP, or TLS once `STARTTLS` has been
+/// negotiated. `Plain(None)` is a socket already taken for a handshake —
+/// reads on it are EOF and the session is over.
+enum Conn {
+    Plain(Option<TcpStream>),
+    Tls(Box<TlsStream<TcpStream>>),
+}
+
+impl AsyncRead for Conn {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Conn::Plain(Some(s)) => Pin::new(s).poll_read(cx, buf),
+            Conn::Plain(None) => Poll::Ready(Ok(())),
+            Conn::Tls(t) => Pin::new(&mut **t).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for Conn {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            Conn::Plain(Some(s)) => Pin::new(s).poll_write(cx, buf),
+            Conn::Plain(None) => Poll::Ready(Err(io::Error::other("socket taken for TLS"))),
+            Conn::Tls(t) => Pin::new(&mut **t).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Conn::Plain(Some(s)) => Pin::new(s).poll_flush(cx),
+            Conn::Plain(None) => Poll::Ready(Ok(())),
+            Conn::Tls(t) => Pin::new(&mut **t).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            Conn::Plain(Some(s)) => Pin::new(s).poll_shutdown(cx),
+            Conn::Plain(None) => Poll::Ready(Ok(())),
+            Conn::Tls(t) => Pin::new(&mut **t).poll_shutdown(cx),
+        }
+    }
+}
+
+impl Conn {
+    /// The plaintext socket, taken out for a STARTTLS handshake. The session
+    /// asks exactly once, while the offer is still open; anything else is a
+    /// state bug and refuses.
+    fn take_plain(&mut self) -> io::Result<TcpStream> {
+        match self {
+            Conn::Plain(slot) => slot
+                .take()
+                .ok_or_else(|| io::Error::other("plaintext socket already taken")),
+            Conn::Tls(_) => Err(io::Error::other("session is already TLS")),
+        }
+    }
 }
 
 /// Extract the bare address from "MAIL FROM:<a@b> SIZE=1" style arguments.
@@ -85,22 +165,55 @@ fn arg_address(arg: &str) -> String {
     }
 }
 
+/// What the session does when the client says `STARTTLS`.
+enum TlsOffer {
+    /// No TLS configured: the plaintext listener of old, byte for byte.
+    None,
+    /// Plaintext session with TLS configured: the next `STARTTLS` upgrades
+    /// it, carrying the acceptor that performs the handshake.
+    Offered(TlsAcceptor),
+    /// The session is already TLS: a further `STARTTLS` is refused.
+    Active,
+}
+
 async fn handle_conn(
-    mut stream: TcpStream,
+    stream: TcpStream,
     store: Arc<Store>,
     chaos: Arc<Chaos>,
     cfg: SmtpConfig,
+    tls: Option<Arc<rustls::ServerConfig>>,
 ) -> io::Result<()> {
     // Chaos: connect event can drop the session before the banner.
+    let mut conn = Conn::Plain(Some(stream));
     if let Some(rule) = chaos.check(ChaosEvent::Connect) {
         tokio::time::sleep(std::time::Duration::from_millis(rule.delay_ms)).await;
         if let Some(err) = &rule.error {
-            write_line(&mut stream, err).await.ok();
+            write_line(&mut conn, err).await.ok();
         }
         return Ok(());
     }
 
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new(conn);
+    let offer = match tls {
+        None => TlsOffer::None,
+        Some(cfg) => TlsOffer::Offered(TlsAcceptor::from(cfg)),
+    };
+    let result = session(&mut reader, &store, &chaos, &cfg, offer).await;
+    // Graceful close whatever happened: TLS sends close_notify, plain sends
+    // FIN, and a socket already taken for a failed handshake is done.
+    let _ = reader.into_inner().shutdown().await;
+    result
+}
+
+/// One command loop over the session transport. `STARTTLS` swaps the reader
+/// for a TLS one in place — the state below restarts there per RFC 3207.
+async fn session(
+    reader: &mut BufReader<Conn>,
+    store: &Arc<Store>,
+    chaos: &Arc<Chaos>,
+    cfg: &SmtpConfig,
+    mut offer: TlsOffer,
+) -> io::Result<()> {
     write_line(
         reader.get_mut(),
         &format!("220 {} Swarmail ready", cfg.hostname),
@@ -132,6 +245,12 @@ async fn handle_conn(
                 let mut resp = format!("250-{}\r\n", cfg.hostname);
                 resp.push_str("250-PIPELINING\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250-SIZE ");
                 resp.push_str(&cfg.max_message_size.to_string());
+                // Advertised only while a plaintext session can still
+                // upgrade; on an established TLS session the extension is
+                // forbidden (RFC 3207 §4.2).
+                if matches!(&offer, TlsOffer::Offered(_)) {
+                    resp.push_str("\r\n250-STARTTLS");
+                }
                 if cfg.accept_any_auth {
                     resp.push_str("\r\n250-AUTH PLAIN LOGIN");
                 }
@@ -139,8 +258,40 @@ async fn handle_conn(
                 write_line(reader.get_mut(), &resp).await?;
             }
             "STARTTLS" => {
-                // Phase B: self-signed TLS. Kratos dev flows use disable_starttls anyway.
-                write_line(reader.get_mut(), "454 4.7.0 TLS not available").await?;
+                offer = match offer {
+                    TlsOffer::None => {
+                        write_line(reader.get_mut(), "454 4.7.0 TLS not available").await?;
+                        TlsOffer::None
+                    }
+                    TlsOffer::Active => {
+                        write_line(reader.get_mut(), "554 5.5.1 TLS already active").await?;
+                        TlsOffer::Active
+                    }
+                    TlsOffer::Offered(acc) if !arg.is_empty() => {
+                        write_line(
+                            reader.get_mut(),
+                            "501 5.5.4 Syntax error (no parameters allowed)",
+                        )
+                        .await?;
+                        TlsOffer::Offered(acc)
+                    }
+                    TlsOffer::Offered(acc) => {
+                        write_line(reader.get_mut(), "220 2.0.0 Ready to start TLS").await?;
+                        // The socket goes out for the handshake; anything
+                        // pipelined behind STARTTLS sits in the plaintext
+                        // buffer and is dropped with the old transport.
+                        let raw = reader.get_mut().take_plain()?;
+                        let upgraded = acc.accept(raw).await?;
+                        *reader = BufReader::new(Conn::Tls(Box::new(upgraded)));
+                        // RFC 3207 §4.2: everything the client said before
+                        // the handshake is forgotten — fresh envelope, fresh
+                        // auth, and the buffer went with it.
+                        mail_from = None;
+                        rcpts.clear();
+                        inbox = "default".to_string();
+                        TlsOffer::Active
+                    }
+                };
             }
             "AUTH" => {
                 if !cfg.accept_any_auth {
@@ -401,5 +552,93 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
         links,
         codes,
         raw: raw.to_vec(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A transport that has already handed out its socket reads as EOF and
+    /// refuses writes: there is nothing left to talk to once the handshake
+    /// owns the connection.
+    #[tokio::test]
+    async fn a_taken_socket_reads_eof_and_refuses_writes() {
+        let mut conn = Conn::Plain(None);
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let mut out = [0u8; 8];
+        let mut buf = ReadBuf::new(&mut out);
+        let eof = Pin::new(&mut conn).poll_read(&mut cx, &mut buf);
+        assert!(
+            matches!(&eof, Poll::Ready(Ok(()))),
+            "expected EOF, got {eof:?}"
+        );
+        let refused = Pin::new(&mut conn).poll_write(&mut cx, b"NOOP");
+        assert!(
+            matches!(&refused, Poll::Ready(Err(e)) if e.to_string().contains("taken")),
+            "expected a write refusal, got {refused:?}"
+        );
+
+        conn.flush().await.unwrap();
+        conn.shutdown().await.unwrap();
+    }
+
+    /// The plaintext socket is handed out exactly once, and a TLS transport
+    /// has nothing plaintext to hand out at all.
+    #[tokio::test]
+    async fn take_plain_is_refused_once_taken_or_over_tls() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut conn = Conn::Plain(Some(TcpStream::connect(addr).await.unwrap()));
+        assert!(conn.take_plain().is_ok());
+        assert!(conn.take_plain().is_err());
+
+        let mut tls = Conn::Tls(Box::new(negotiated_tls_stream().await));
+        assert!(tls.take_plain().is_err());
+    }
+
+    /// A real negotiated TLS transport over loopback — the server side of
+    /// the pair, exactly what `Conn` wraps after a STARTTLS upgrade.
+    async fn negotiated_tls_stream() -> TlsStream<TcpStream> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let pair = crate::tls::TlsConfig::generate_self_signed("localhost").unwrap();
+        let cfg = Arc::new(pair.server_config().unwrap());
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            TlsAcceptor::from(cfg).accept(tcp).await.unwrap()
+        });
+
+        // The client trusts only the minted cert — a real verification.
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for cert in rustls_pemfile::certs(&mut pair.cert_pem.as_bytes()) {
+            roots.add(cert.unwrap()).unwrap();
+        }
+        let client_cfg = Arc::new(
+            tokio_rustls::rustls::ClientConfig::builder_with_provider(Arc::new(
+                tokio_rustls::rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+        );
+        let connector = tokio_rustls::TlsConnector::from(client_cfg);
+        tokio::spawn(async move {
+            connector
+                .connect(
+                    tokio_rustls::rustls::pki_types::ServerName::try_from("localhost".to_string())
+                        .unwrap(),
+                    TcpStream::connect(addr).await.unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+
+        server.await.unwrap()
     }
 }

@@ -19,6 +19,9 @@ pub struct Cli {
 pub enum Command {
     /// Run the Swarmail server (SMTP + HTTP: API, MCP, UI).
     Serve(ServeArgs),
+    /// Mint a self-signed certificate + key (PEM) for a domain — the
+    /// bootstrap for STARTTLS in dev and test.
+    GenCert(GenCertArgs),
     /// Run the MCP stdio bridge against a running Swarmail.
     Mcp(McpArgs),
 }
@@ -42,6 +45,36 @@ pub struct ServeArgs {
     /// in-memory store.
     #[arg(long, value_name = "PATH", env = "SWARMAIL_DATA_FILE")]
     pub data_file: Option<PathBuf>,
+
+    /// PEM certificate for STARTTLS on the SMTP port. The listener stays
+    /// byte-identical plaintext without it. Requires --tls-key.
+    #[arg(
+        long,
+        value_name = "FILE",
+        env = "SWARMAIL_TLS_CERT",
+        requires = "tls_key"
+    )]
+    pub tls_cert: Option<PathBuf>,
+
+    /// PEM private key matching --tls-cert.
+    #[arg(
+        long,
+        value_name = "FILE",
+        env = "SWARMAIL_TLS_KEY",
+        requires = "tls_cert"
+    )]
+    pub tls_key: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GenCertArgs {
+    /// DNS name (or literal IP) the certificate is issued for.
+    #[arg(long)]
+    pub domain: String,
+
+    /// Directory the PEM files are written to: cert.pem + key.pem.
+    #[arg(long, value_name = "DIR")]
+    pub out: PathBuf,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -59,6 +92,10 @@ pub struct Config {
     /// Optional SQLite data file: every mutation is written through and the
     /// full state is restored on startup.
     pub data_file: Option<PathBuf>,
+    /// PEM pair for STARTTLS on the SMTP listener, as file paths. Both must
+    /// be set together; the listener is plain otherwise.
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
     pub smtp: SmtpConfig,
 }
 
@@ -69,6 +106,8 @@ impl From<&ServeArgs> for Config {
             http_listen: args.http_listen.clone(),
             max_per_inbox: args.max_per_inbox,
             data_file: args.data_file.clone(),
+            tls_cert: args.tls_cert.clone(),
+            tls_key: args.tls_key.clone(),
             smtp: SmtpConfig::default(),
         }
     }
@@ -85,6 +124,8 @@ mod tests {
             http_listen: "127.0.0.1:8080".into(),
             max_per_inbox: 42,
             data_file: Some("/tmp/mail.db".into()),
+            tls_cert: None,
+            tls_key: None,
         };
         let cfg = Config::from(&args);
         assert_eq!(cfg.smtp_listen, "127.0.0.1:2525");
@@ -94,6 +135,8 @@ mod tests {
             cfg.data_file.as_deref(),
             Some(std::path::Path::new("/tmp/mail.db"))
         );
+        assert_eq!(cfg.tls_cert, None);
+        assert_eq!(cfg.tls_key, None);
         assert_eq!(
             cfg.smtp.accept_any_auth,
             SmtpConfig::default().accept_any_auth
@@ -108,6 +151,7 @@ mod tests {
             Command::Serve(args) if args.smtp_listen == "0.0.0.0:1025"
                 && args.max_per_inbox == 100_000
                 && args.data_file.is_none()
+                && args.tls_cert.is_none()
         ));
 
         let cli =
@@ -119,5 +163,74 @@ mod tests {
 
         let cli = Cli::try_parse_from(["swarmail", "mcp", "--url", "http://x:1"]).unwrap();
         assert!(matches!(cli.command, Command::Mcp(args) if args.url == "http://x:1"));
+
+        let cli = Cli::try_parse_from([
+            "swarmail",
+            "gen-cert",
+            "--domain",
+            "localhost",
+            "--out",
+            "/tmp/certs",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::GenCert(args)
+                if args.domain == "localhost" && args.out == std::path::Path::new("/tmp/certs")
+        ));
+    }
+
+    #[test]
+    fn tls_flags_map_into_the_config() {
+        let cli = Cli::try_parse_from([
+            "swarmail",
+            "serve",
+            "--tls-cert",
+            "/tmp/cert.pem",
+            "--tls-key",
+            "/tmp/key.pem",
+        ])
+        .unwrap();
+        let args = serve_args_or_panic(cli);
+        let cfg = Config::from(&args);
+        assert_eq!(
+            cfg.tls_cert.as_deref(),
+            Some(std::path::Path::new("/tmp/cert.pem"))
+        );
+        assert_eq!(
+            cfg.tls_key.as_deref(),
+            Some(std::path::Path::new("/tmp/key.pem"))
+        );
+    }
+
+    #[test]
+    fn a_tls_cert_without_a_key_is_rejected() {
+        let err =
+            Cli::try_parse_from(["swarmail", "serve", "--tls-cert", "/tmp/cert.pem"]).unwrap_err();
+        assert!(err.use_stderr(), "the pairing rule is a hard error");
+    }
+
+    /// The serve subcommand's args, or a hard stop — gen-cert and mcp are
+    /// not server configurations. Extracted so both arms are testable.
+    fn serve_args_or_panic(cli: Cli) -> ServeArgs {
+        let Command::Serve(args) = cli.command else {
+            panic!("expected serve");
+        };
+        args
+    }
+
+    #[test]
+    #[should_panic(expected = "expected serve")]
+    fn non_serve_subcommands_are_not_server_configs() {
+        let cli = Cli::try_parse_from([
+            "swarmail",
+            "gen-cert",
+            "--domain",
+            "localhost",
+            "--out",
+            "/tmp/certs",
+        ])
+        .unwrap();
+        serve_args_or_panic(cli);
     }
 }

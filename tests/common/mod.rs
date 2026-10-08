@@ -1,9 +1,12 @@
 //! Shared end-to-end helpers: real servers, real protocol, no mocks.
 #![allow(dead_code)] // compiled per test binary; not every binary uses every helper
 
-use swarmail::{RunningServer, config::Config};
+use swarmail::RunningServer;
+use swarmail::config::Config;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
+use tokio_rustls::{TlsConnector, rustls};
 
 #[allow(dead_code)]
 pub async fn start() -> RunningServer {
@@ -15,6 +18,8 @@ pub async fn start_with(override_cfg: impl FnOnce(Config) -> Config) -> RunningS
         http_listen: "127.0.0.1:0".into(),
         max_per_inbox: 0,
         data_file: None,
+        tls_cert: None,
+        tls_key: None,
         smtp: Default::default(),
     });
     swarmail::run_on(&cfg).await.unwrap()
@@ -245,4 +250,153 @@ pub async fn http_json(
         status,
         serde_json::from_str(body).unwrap_or(serde_json::json!({})),
     )
+}
+
+/// A rustls client that trusts exactly one root — the cert the server is
+/// expected to present. Real verification; no `danger` shortcuts anywhere.
+fn tls_connector(root: CertificateDer<'static>) -> TlsConnector {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(root).unwrap();
+    TlsConnector::from(std::sync::Arc::new(
+        rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth(),
+    ))
+}
+
+/// An SMTP session speaking over a negotiated TLS transport.
+pub struct TlsSmtp {
+    reader: BufReader<tokio_rustls::client::TlsStream<TcpStream>>,
+}
+
+impl TlsSmtp {
+    pub async fn send(&mut self, line: &str) {
+        self.reader
+            .get_mut()
+            .write_all(format!("{line}\r\n").as_bytes())
+            .await
+            .unwrap();
+    }
+
+    /// Read a single reply line.
+    pub async fn reply_raw(&mut self) -> String {
+        let mut line = String::new();
+        self.reader.read_line(&mut line).await.unwrap();
+        line.trim_end().to_string()
+    }
+
+    /// Read a full multi-line reply (EHLO etc.), lines joined with \n.
+    pub async fn reply_multi(&mut self) -> String {
+        let mut all = Vec::new();
+        loop {
+            let mut line = String::new();
+            self.reader.read_line(&mut line).await.unwrap();
+            let cont = line.starts_with("250-");
+            all.push(line.trim_end().to_string());
+            if !cont {
+                return all.join("\n");
+            }
+        }
+    }
+
+    /// Send a DATA payload and return the final reply.
+    pub async fn data(&mut self, body: &str) -> String {
+        self.send("DATA").await;
+        let resp = self.reply_raw().await;
+        assert!(resp.starts_with("354"), "DATA refused: {resp}");
+        self.send(body).await;
+        self.send(".").await;
+        self.reply_raw().await
+    }
+}
+
+/// The plaintext half of a STARTTLS session: greeting read, EHLO sent (with
+/// the STARTTLS extension advertised), STARTTLS written in the same segment
+/// as `pipelined` (which the server must then discard, RFC 3207 §4.2), the
+/// "220 Ready" reply read — and the raw socket returned for the handshake.
+async fn plaintext_starttls_phase(
+    addr: std::net::SocketAddr,
+    pipelined: &[&str],
+) -> (TcpStream, String, String) {
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let (r, mut w) = stream.into_split();
+    let mut reader = BufReader::new(r);
+    let mut line = String::new();
+    reader.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("220"), "bad greeting: {line}");
+
+    w.write_all(b"EHLO swarmail-tls-test\r\n").await.unwrap();
+    let mut ehlo = Vec::new();
+    loop {
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        let cont = line.starts_with("250-");
+        ehlo.push(line.trim_end().to_string());
+        if !cont {
+            break;
+        }
+    }
+    let ehlo = ehlo.join("\n");
+    assert!(ehlo.contains("250-STARTTLS"), "no STARTTLS offer: {ehlo}");
+
+    let mut burst = String::from("STARTTLS\r\n");
+    for extra in pipelined {
+        burst.push_str(extra);
+        burst.push_str("\r\n");
+    }
+    w.write_all(burst.as_bytes()).await.unwrap();
+
+    line.clear();
+    reader.read_line(&mut line).await.unwrap();
+    let ready = line.trim_end().to_string();
+    assert!(ready.starts_with("220"), "STARTTLS refused: {ready}");
+
+    (reader.into_inner().reunite(w).unwrap(), ehlo, ready)
+}
+
+/// Complete a STARTTLS upgrade with a real rustls client: the handshake runs
+/// against `root` as the only trusted cert, under `server_name`.
+pub async fn starttls(
+    addr: std::net::SocketAddr,
+    server_name: &str,
+    root: CertificateDer<'static>,
+) -> TlsSmtp {
+    starttls_discarding_pipelined(addr, server_name, root, &[]).await
+}
+
+/// [`starttls`], but with extra commands riding in the same TCP segment as
+/// the STARTTLS command — a client that pipelines plaintext behind it. The
+/// server must throw those away, not act on them after the upgrade.
+pub async fn starttls_discarding_pipelined(
+    addr: std::net::SocketAddr,
+    server_name: &str,
+    root: CertificateDer<'static>,
+    pipelined: &[&str],
+) -> TlsSmtp {
+    let (tcp, _, _) = plaintext_starttls_phase(addr, pipelined).await;
+    let tls = tls_connector(root)
+        .connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp)
+        .await
+        .expect("STARTTLS handshake");
+    TlsSmtp {
+        reader: BufReader::new(tls),
+    }
+}
+
+/// The client must refuse the handshake — wrong name or untrusted root —
+/// and the server then has no choice but to drop the session.
+pub async fn assert_starttls_handshake_fails(
+    addr: std::net::SocketAddr,
+    server_name: &str,
+    root: CertificateDer<'static>,
+) {
+    let (tcp, _, _) = plaintext_starttls_phase(addr, &[]).await;
+    let res = tls_connector(root)
+        .connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp)
+        .await;
+    assert!(res.is_err(), "handshake unexpectedly succeeded");
 }

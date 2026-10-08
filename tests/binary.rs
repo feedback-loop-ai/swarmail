@@ -155,3 +155,174 @@ async fn mcp_bridge_exits_zero_at_eof_without_touching_the_network() {
     let status = child.wait().unwrap();
     assert!(status.success(), "mcp EOF exit: {status:?}");
 }
+
+/// A unique scratch dir for cert pairs.
+fn cert_dir(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "swarmail-bincert-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
+
+/// The operator loop, end to end: `gen-cert` mints the pair, `serve`
+/// upgrades real clients with it, and the mail is queryable.
+#[tokio::test]
+async fn gen_cert_writes_a_pair_the_server_serves() {
+    let dir = cert_dir("e2e");
+    let out = Command::new(binary())
+        .args(["gen-cert", "--domain", "localhost", "--out"])
+        .arg(&dir)
+        .output()
+        .expect("spawn swarmail gen-cert");
+    assert!(out.status.success(), "gen-cert failed: {out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("cert.pem"));
+
+    let cert = dir.join("cert.pem");
+    let key = dir.join("key.pem");
+    assert!(cert.is_file() && key.is_file(), "gen-cert wrote no pair");
+
+    let mut child = Command::new(binary())
+        .args([
+            "serve",
+            "--smtp-listen",
+            "127.0.0.1:23460",
+            "--http-listen",
+            "127.0.0.1:23461",
+            "--tls-cert",
+        ])
+        .arg(&cert)
+        .args(["--tls-key"])
+        .arg(&key)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn swarmail serve");
+    let smtp_addr: std::net::SocketAddr = "127.0.0.1:23460".parse().unwrap();
+    wait_http_up("127.0.0.1:23461".parse().unwrap()).await;
+
+    let pair_pem = std::fs::read_to_string(&cert).unwrap();
+    let root = rustls_pemfile::certs(&mut pair_pem.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap();
+    let mut tls = common::starttls(smtp_addr, "localhost", root).await;
+    tls.send("MAIL FROM:<cli@x.io>").await;
+    assert!(tls.reply_raw().await.starts_with("250"));
+    tls.send("RCPT TO:<cli@y.io>").await;
+    assert!(tls.reply_raw().await.starts_with("250"));
+    let stored = tls.data("Subject: from the cli\r\n\r\nbody").await;
+    assert!(stored.starts_with("250"), "{stored}");
+    let status = sigint_and_wait(&mut child).await;
+    assert!(status.success(), "SIGINT exit: {status:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same TLS config through SWARMAIL_TLS_CERT / SWARMAIL_TLS_KEY.
+#[tokio::test]
+async fn serve_takes_tls_from_the_environment() {
+    let dir = cert_dir("env");
+    let out = Command::new(binary())
+        .args(["gen-cert", "--domain", "localhost", "--out"])
+        .arg(&dir)
+        .output()
+        .expect("spawn swarmail gen-cert");
+    assert!(out.status.success());
+
+    let mut child = Command::new(binary())
+        .args([
+            "serve",
+            "--smtp-listen",
+            "127.0.0.1:23462",
+            "--http-listen",
+            "127.0.0.1:23463",
+        ])
+        .env("SWARMAIL_TLS_CERT", dir.join("cert.pem"))
+        .env("SWARMAIL_TLS_KEY", dir.join("key.pem"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn swarmail serve");
+    let smtp_addr: std::net::SocketAddr = "127.0.0.1:23462".parse().unwrap();
+    wait_http_up("127.0.0.1:23463".parse().unwrap()).await;
+
+    let pair_pem = std::fs::read_to_string(dir.join("cert.pem")).unwrap();
+    let root = rustls_pemfile::certs(&mut pair_pem.as_bytes())
+        .next()
+        .unwrap()
+        .unwrap();
+    let mut tls = common::starttls(smtp_addr, "localhost", root).await;
+    tls.send("NOOP").await;
+    assert!(tls.reply_raw().await.starts_with("250"));
+    let status = sigint_and_wait(&mut child).await;
+    assert!(status.success(), "SIGINT exit: {status:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A malformed cert pair must not sit half-alive: the server exits non-zero
+/// and says which side of the pair was wrong.
+#[tokio::test]
+async fn serve_with_a_malformed_cert_exits_non_zero_and_says_why() {
+    let dir = cert_dir("bad");
+    std::fs::create_dir_all(&dir).unwrap();
+    let cert = dir.join("cert.pem");
+    let key = dir.join("key.pem");
+    std::fs::write(&cert, "not a certificate").unwrap();
+    std::fs::write(&key, "not a key").unwrap();
+
+    let mut child = Command::new(binary())
+        .args([
+            "serve",
+            "--smtp-listen",
+            "127.0.0.1:23464",
+            "--http-listen",
+            "127.0.0.1:23465",
+            "--tls-cert",
+        ])
+        .arg(&cert)
+        .args(["--tls-key"])
+        .arg(&key)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn swarmail serve");
+    let status = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match child.try_wait().unwrap() {
+                Some(status) => return status,
+                None => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    })
+    .await
+    .expect("server with a broken cert must exit, not hang");
+    assert!(!status.success(), "broken TLS must be a non-zero exit");
+    let mut stderr = String::new();
+    use std::io::Read;
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(stderr.contains("tls-cert"), "{stderr}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// gen-cert failing (the --out path is occupied by a file) exits non-zero.
+#[tokio::test]
+async fn gen_cert_to_an_occupied_target_exits_non_zero() {
+    let occupied = cert_dir("occupied");
+    std::fs::write(&occupied, "a file, not a dir").unwrap();
+    let out = Command::new(binary())
+        .args(["gen-cert", "--domain", "localhost", "--out"])
+        .arg(&occupied)
+        .output()
+        .expect("spawn swarmail gen-cert");
+    assert!(!out.status.success(), "occupied --out must fail");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("swarmail"));
+    let _ = std::fs::remove_file(&occupied);
+}

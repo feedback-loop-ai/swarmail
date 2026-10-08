@@ -10,6 +10,7 @@ pub mod persist;
 pub mod smtp;
 pub mod stdio;
 pub mod store;
+pub mod tls;
 pub mod ui;
 pub mod webhook;
 
@@ -58,6 +59,24 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     let webhooks = Arc::new(webhook::Webhooks::default());
     webhook::spawn_dispatcher(store.clone(), webhooks.clone());
 
+    // TLS is parsed before anything binds: a server that answers must not
+    // answer with a broken TLS config. Both halves of the pair are required.
+    let tls = match (&cfg.tls_cert, &cfg.tls_key) {
+        (None, None) => None,
+        (Some(cert), Some(key)) => {
+            let pair = tls::TlsConfig::from_files(cert, key)?;
+            let server_cfg = pair
+                .server_config()
+                .map_err(|e| std::io::Error::other(format!("tls-cert {}: {e}", cert.display())))?;
+            Some(Arc::new(server_cfg))
+        }
+        _ => {
+            return Err(std::io::Error::other(
+                "tls-cert and tls-key must be configured together",
+            ));
+        }
+    };
+
     let smtp_listener = tokio::net::TcpListener::bind(&cfg.smtp_listen).await?;
     let http_listener = tokio::net::TcpListener::bind(&cfg.http_listen).await?;
     let smtp_addr = smtp_listener.local_addr()?;
@@ -70,11 +89,12 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         let store = store.clone();
         let chaos = chaos.clone();
         let smtp_cfg = cfg.smtp.clone();
+        let tls = tls;
         let mut shutdown_rx = shutdown_rx.clone();
         tasks.push(tokio::spawn(async move {
             log_stopped(
                 "smtp",
-                smtp::serve(smtp_listener, store, chaos, smtp_cfg, async move {
+                smtp::serve(smtp_listener, store, chaos, smtp_cfg, tls, async move {
                     let _ = shutdown_rx.changed().await;
                 })
                 .await,

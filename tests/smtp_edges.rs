@@ -16,7 +16,7 @@ async fn ehlo_advertises_the_size_limit() {
 }
 
 #[tokio::test]
-async fn starttls_is_refused_until_phase_b() {
+async fn starttls_is_refused_while_nothing_tls_is_configured() {
     let srv = start().await;
     let mut c = SmtpConn::connect(srv.smtp_addr).await;
     c.send("STARTTLS").await;

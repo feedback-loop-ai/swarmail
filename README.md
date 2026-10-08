@@ -61,7 +61,24 @@ parallel test or agent its own inbox for free.
 
 Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `1025`),
 `SWARMAIL_HTTP_LISTEN` (default `8025`), `SWARMAIL_MAX_PER_INBOX`
-(default `100000`, `0` = unlimited), `SWARMAIL_URL` (for the MCP stdio bridge).
+(default `100000`, `0` = unlimited), `SWARMAIL_URL` (for the MCP stdio bridge),
+`SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY` (STARTTLS on the SMTP port).
+
+### STARTTLS
+
+```bash
+swarmail gen-cert --domain localhost --out ./certs   # cert.pem + key.pem
+swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
+```
+
+The plaintext listener stays byte-identical without a cert; with one, EHLO
+advertises `STARTTLS` and the session upgrades to real TLS (rustls/ring — the
+same provider story as the webhooks). After the handshake the session
+restarts per RFC 3207 §4.2: everything the client sent before it is
+discarded, and every further command is TLS-only. A self-signed pair is the
+intended dev/test bootstrap; operators can hand it a real cert — the PEM pair
+is parsed before anything binds, so a malformed one refuses to serve rather
+than sitting half-alive.
 
 ### Persistence across restarts
 
@@ -123,7 +140,7 @@ reset and magic-link flows without a human touching a browser tab.
 | MCP | `POST /mcp` (Streamable HTTP JSON-RPC) · `swarmail mcp` (stdio bridge) |
 | Machine docs | `/openapi.json` (3.1) · `/llms.txt` · `/metrics` (Prometheus) · `/healthz` |
 | Human UI | `/`, `/ui/inbox/{name}`, `/ui/message/{id}` — zero frontend deps, server-rendered |
-| SMTP | `:1025` — EHLO, AUTH PLAIN/LOGIN (accept-any; username = inbox), PIPELINING, 8BITMIME, SMTPUTF8, SIZE, 50 MiB cap |
+| SMTP | `:1025` — EHLO, AUTH PLAIN/LOGIN (accept-any; username = inbox), PIPELINING, 8BITMIME, SMTPUTF8, SIZE, 50 MiB cap; optional STARTTLS (rustls/ring) |
 
 ## Chaos — test your failure paths
 
@@ -203,6 +220,7 @@ production code cannot shrink the denominator. The suite that carries it:
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
 | `tests/webhook.rs` | delivery with secret, pathless target, the 4-attempt retry budget, https over a real TLS server (handshake-failure + refused-connection paths) |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
+| `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart (pipelined plaintext discarded), refused certs, malformed PEM refusal |
 | `tests/lifecycle.rs` | graceful stop: serve futures return, ports release |
 | `tests/binary.rs` | the shipped binary: SIGINT → clean exit, mcp EOF → 0 |
 
@@ -247,7 +265,7 @@ docker build -t swarmail .    # scratch image ≈ binary size
 
 ## Roadmap
 
-- [ ] STARTTLS + self-signed cert generation
+- [x] STARTTLS + self-signed cert generation
 - [x] HTTPS webhook targets (reqwest + rustls)
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [ ] POP3 server; MailHog/Mailpit API compat shims

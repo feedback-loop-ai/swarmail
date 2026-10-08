@@ -28,6 +28,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# STARTTLS on the SMTP listener — the same provider story as the webhooks:
+# rustls/ring everywhere, no native-tls/openssl in the tree. rcgen mints the
+# self-signed dev certs; rustls-pemfile parses the operator's PEM pair.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = "0.13"
 
 [[bench]]
 name = "ingest"
@@ -37,11 +44,6 @@ harness = false
 criterion = "0.7"
 base64 = "0.22"
 libc = "0.2"
-# The TLS webhook e2e: rcgen mints the test CA + server cert, tokio-rustls
-# runs the sink. Same rustls/ring stack reqwest delivers with — one provider
-# in the tree.
-rcgen = "0.13"
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 [profile.release]
 opt-level = 3

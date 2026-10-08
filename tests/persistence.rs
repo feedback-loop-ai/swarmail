@@ -237,6 +237,8 @@ async fn a_broken_data_file_refuses_to_serve() {
         max_per_inbox: 0,
         // A directory that does not exist: no half-open server may answer.
         data_file: Some(std::env::temp_dir().join("swarmail-no-such-dir/x.db")),
+        tls_cert: None,
+        tls_key: None,
         smtp: Default::default(),
     };
     let err = match swarmail::run_on(&cfg).await {
