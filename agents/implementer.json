@@ -2,8 +2,8 @@
   "charter": "charters/implementer.md",
   "description": "Builds the framed task to the repository's conventions and commits the work with its tests.",
   "limits": {
-    "max_attempts": 2,
-    "timeout_seconds": 5400
+    "max_attempts": 3,
+    "timeout_seconds": 14400
   },
   "models": [
     "glm-flash"

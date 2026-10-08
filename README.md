@@ -63,6 +63,22 @@ Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `1025`),
 `SWARMAIL_HTTP_LISTEN` (default `8025`), `SWARMAIL_MAX_PER_INBOX`
 (default `100000`, `0` = unlimited), `SWARMAIL_URL` (for the MCP stdio bridge).
 
+### Persistence across restarts
+
+By default the store is in memory — fast, and gone when the process exits.
+Start with a data file and every insert, delete and clear is committed to
+SQLite (bundled, WAL, fsync-per-accept) and the full state — inboxes,
+messages with raw bytes, the `emails_inserted`/`emails_dropped` counters —
+is restored before the server answers anything:
+
+```bash
+swarmail serve --data-file /var/lib/swarmail/mail.db   # or SWARMAIL_DATA_FILE=…
+```
+
+The ingest path stays synchronous: an SMTP `250` means the mail is queryable
+**and** on disk (decision 0001). Restored mail does not re-fire webhooks or
+waiters on restart — it is already-delivered state, not a new delivery.
+
 ## The agent loop: clear → act → assert
 
 ```bash
@@ -230,7 +246,7 @@ docker build -t swarmail .    # scratch image ≈ binary size
 
 - [ ] STARTTLS + self-signed cert generation
 - [ ] HTTPS webhook targets (reqwest + rustls)
-- [ ] SQLite persistence (`--data-file`)
+- [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [ ] POP3 server; MailHog/Mailpit API compat shims
 - [ ] crates.io publish
 - [ ] UI: live-updating inbox view, message threads

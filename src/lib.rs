@@ -6,6 +6,7 @@ pub mod config;
 pub mod extract;
 pub mod mcp;
 pub mod model;
+pub mod persist;
 pub mod smtp;
 pub mod stdio;
 pub mod store;
@@ -44,7 +45,15 @@ impl RunningServer {
 
 /// Bind SMTP + HTTP and spawn both servers (plus the webhook dispatcher).
 pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
-    let store = Arc::new(store::Store::new(cfg.max_per_inbox));
+    // The data file is opened and restored BEFORE any listener binds: a
+    // server that answers must answer with its full state.
+    let store = match &cfg.data_file {
+        Some(path) => Arc::new(
+            store::Store::open(cfg.max_per_inbox, path)
+                .map_err(|e| std::io::Error::other(format!("data file {}: {e}", path.display())))?,
+        ),
+        None => Arc::new(store::Store::new(cfg.max_per_inbox)),
+    };
     let chaos = Arc::new(chaos::Chaos::default());
     let webhooks = Arc::new(webhook::Webhooks::default());
     webhook::spawn_dispatcher(store.clone(), webhooks.clone());

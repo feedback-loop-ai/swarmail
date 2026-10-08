@@ -10,7 +10,7 @@ pub struct EmailAddress {
 }
 
 /// A captured email.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Email {
     /// UUIDv7 — sortable, unique.
     pub id: String,

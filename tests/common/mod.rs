@@ -14,6 +14,7 @@ pub async fn start_with(override_cfg: impl FnOnce(Config) -> Config) -> RunningS
         smtp_listen: "127.0.0.1:0".into(),
         http_listen: "127.0.0.1:0".into(),
         max_per_inbox: 0,
+        data_file: None,
         smtp: Default::default(),
     });
     swarmail::run_on(&cfg).await.unwrap()

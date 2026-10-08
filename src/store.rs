@@ -5,6 +5,7 @@
 //! (broadcast watchers for `await` endpoints).
 
 use crate::model::Email;
+use crate::persist;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -73,6 +74,23 @@ pub struct Totals {
     pub emails_dropped: AtomicU64,
 }
 
+/// Drop one inbox out of the maps; shared by `clear` and `clear_all` so both
+/// persist exactly one mirrored delete.
+fn drain_inbox(
+    inboxes: &DashMap<String, Vec<Arc<Email>>>,
+    index: &DashMap<String, Arc<Email>>,
+    inbox: &str,
+) -> usize {
+    let mut removed = 0;
+    if let Some((_, mut list)) = inboxes.remove(inbox) {
+        removed = list.len();
+        for e in list.drain(..) {
+            index.remove(&e.id);
+        }
+    }
+    removed
+}
+
 pub struct Store {
     inboxes: DashMap<String, Vec<Arc<Email>>>,
     /// id -> email, a global index for O(1) lookup.
@@ -83,6 +101,8 @@ pub struct Store {
     /// Maximum emails retained per inbox (oldest pruned). 0 = unlimited.
     max_per_inbox: usize,
     totals: Totals,
+    /// Write-through SQLite mirror when running with a data file.
+    persist: Option<persist::Persist>,
 }
 
 impl Totals {
@@ -115,6 +135,52 @@ impl Store {
             global_tx,
             max_per_inbox,
             totals: Totals::default(),
+            persist: None,
+        }
+    }
+
+    /// Open (or create) a persistent store backed by `data_file`: the full
+    /// state is restored before the server accepts a single connection.
+    pub fn open(max_per_inbox: usize, data_file: &std::path::Path) -> rusqlite::Result<Self> {
+        let persist = persist::Persist::open(data_file)?;
+        let (emails, inserted, dropped) = persist.load()?;
+        let mut store = Self::new(max_per_inbox);
+        // Restore in insertion order without going through `insert`: the rows
+        // are already committed, and restored mail must not re-fire watchers
+        // or webhooks on every restart.
+        for email in emails {
+            let email = Arc::new(email);
+            store
+                .inboxes
+                .entry(email.inbox.clone())
+                .or_default()
+                .push(email.clone());
+            store.index.insert(email.id.clone(), email);
+        }
+        store
+            .totals
+            .emails_inserted
+            .store(inserted, Ordering::Relaxed);
+        store
+            .totals
+            .emails_dropped
+            .store(dropped, Ordering::Relaxed);
+        store.persist = Some(persist);
+        Ok(store)
+    }
+
+    /// Mirror a mutation to the data file, if any. Persistence failures are
+    /// logged and swallowed: the memory store stays authoritative (the mail
+    /// is queryable — decision 0001 still holds), the restart copy degrades.
+    fn record(
+        &self,
+        what: &'static str,
+        write: impl FnOnce(&persist::Persist) -> rusqlite::Result<()>,
+    ) {
+        if let Some(persist) = &self.persist
+            && let Err(e) = write(persist)
+        {
+            tracing::error!(error = %e, what, "persistence write failed; memory store remains authoritative");
         }
     }
 
@@ -124,16 +190,18 @@ impl Store {
     }
 
     /// Insert an email. Lossless: this is synchronous — once SMTP accepted the
-    /// message, it is queryable. Prunes oldest beyond the per-inbox cap.
+    /// message, it is queryable (and on disk, when persisting). Prunes oldest
+    /// beyond the per-inbox cap.
     pub fn insert(&self, email: Email) -> Arc<Email> {
         let email = Arc::new(email);
         let inbox = email.inbox.clone();
+        let mut pruned: Vec<Arc<Email>> = Vec::new();
         {
             let mut list = self.inboxes.entry(inbox.clone()).or_default();
             list.push(email.clone());
             if self.max_per_inbox > 0 && list.len() > self.max_per_inbox {
                 let overflow = list.len() - self.max_per_inbox;
-                let pruned: Vec<Arc<Email>> = list.drain(..overflow).collect();
+                pruned = list.drain(..overflow).collect();
                 for p in &pruned {
                     self.index.remove(&p.id);
                 }
@@ -144,6 +212,17 @@ impl Store {
         }
         self.index.insert(email.id.clone(), email.clone());
         self.totals.emails_inserted.fetch_add(1, Ordering::Relaxed);
+        // Persist before any fan-out and before the caller's 250: when SMTP
+        // accepts, the mail is queryable AND committed (decision 0001).
+        self.record("insert", |persist| {
+            let pruned_ids: Vec<&str> = pruned.iter().map(|e| e.id.as_str()).collect();
+            persist.record_insert(
+                &email,
+                &pruned_ids,
+                self.totals.emails_inserted(),
+                self.totals.emails_dropped(),
+            )
+        });
         // Notify watchers; a full channel means a slow await reader — the email
         // is still safely stored, the watcher re-polls the store.
         if let Some(sender) = self.watchers.get(&inbox) {
@@ -181,18 +260,14 @@ impl Store {
         {
             list.retain(|e| e.id != id);
         }
+        self.record("delete", |persist| persist.record_delete(id));
         removed.is_some()
     }
 
     /// Remove all emails from one inbox; returns how many were removed.
     pub fn clear(&self, inbox: &str) -> usize {
-        let mut removed = 0;
-        if let Some((_, mut list)) = self.inboxes.remove(inbox) {
-            removed = list.len();
-            for e in list.drain(..) {
-                self.index.remove(&e.id);
-            }
-        }
+        let removed = drain_inbox(&self.inboxes, &self.index, inbox);
+        self.record("clear_inbox", |persist| persist.record_clear_inbox(inbox));
         removed
     }
 
@@ -201,8 +276,9 @@ impl Store {
         let mut removed = 0;
         let inboxes: Vec<String> = self.inboxes.iter().map(|e| e.key().clone()).collect();
         for inbox in inboxes {
-            removed += self.clear(&inbox);
+            removed += drain_inbox(&self.inboxes, &self.index, &inbox);
         }
+        self.record("clear_all", |persist| persist.record_clear_all());
         removed
     }
 
@@ -551,5 +627,111 @@ mod filter_tests {
         store.insert(email("s1", "hot", "a@x.io"));
         assert_eq!(rx1.try_recv().unwrap().id, "s1");
         assert_eq!(rx2.try_recv().unwrap().id, "s1");
+    }
+}
+
+#[cfg(test)]
+mod persist_tests {
+    use super::*;
+
+    fn db_path(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "swarmail-store-{tag}-{}-{nanos}.db",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn a_reopened_store_restores_mail_order_and_counters() {
+        let path = db_path("restore");
+        {
+            let store = Store::open(3, &path).unwrap();
+            for id in ["1", "2", "3"] {
+                let mut e = email(id, "box", "a@x.io");
+                e.raw = vec![b'r', id.as_bytes()[0]];
+                store.insert(e);
+            }
+            assert!(store.delete("2")); // a delete must be mirrored too
+        }
+        let store = Store::open(3, &path).unwrap();
+        // Newest-first list of what is left, in restored insertion order.
+        let listed = store.list("box", &Filter::default());
+        assert_eq!(
+            listed.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["3", "1"]
+        );
+        // Raw bytes survive the round trip.
+        assert_eq!(store.get("1").unwrap().raw, b"r1".to_vec());
+        // Lifetime counters are restored, not reset.
+        assert_eq!(store.emails_inserted(), 3);
+        assert_eq!(store.emails_dropped(), 0);
+        assert_eq!(store.inboxes(), vec![("box".to_string(), 2)]);
+    }
+
+    #[test]
+    fn cap_pruning_is_mirrored_to_the_data_file() {
+        let path = db_path("cap");
+        {
+            let store = Store::open(2, &path).unwrap();
+            for id in ["1", "2", "3"] {
+                store.insert(email(id, "box", "a@x.io"));
+            }
+        }
+        let store = Store::open(2, &path).unwrap();
+        // The pruned-oldest row is gone from the restart copy as well.
+        assert_eq!(
+            store
+                .list("box", &Filter::default())
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            ["3", "2"]
+        );
+        assert!(store.get("1").is_none());
+        assert_eq!(store.emails_inserted(), 3);
+        assert_eq!(store.emails_dropped(), 1);
+    }
+
+    #[test]
+    fn clear_and_clear_all_are_mirrored_to_the_data_file() {
+        let path = db_path("clear");
+        {
+            let store = Store::open(0, &path).unwrap();
+            store.insert(email("c1", "box-a", "a@x.io"));
+            store.insert(email("c2", "box-b", "a@x.io"));
+            assert_eq!(store.clear("box-a"), 1);
+        }
+        {
+            let store = Store::open(0, &path).unwrap();
+            assert_eq!(store.count("box-a", &Filter::default()), 0);
+            assert_eq!(store.count("box-b", &Filter::default()), 1);
+            assert_eq!(store.clear_all(), 1);
+        }
+        let store = Store::open(0, &path).unwrap();
+        assert_eq!(store.count("box-b", &Filter::default()), 0);
+        assert_eq!(store.emails_inserted(), 2); // counters outlive clears
+    }
+
+    #[test]
+    fn a_failing_data_file_never_blocks_the_store() {
+        let store = Store::open(0, &db_path("failing")).unwrap();
+        store.persist.as_ref().unwrap().fail_writes();
+        // Insert still returns the mail and the memory store stays truthful.
+        let stored = store.insert(email("f1", "box", "a@x.io"));
+        assert_eq!(stored.id, "f1");
+        assert_eq!(store.count("box", &Filter::default()), 1);
+        assert!(store.delete("f1"));
+        assert_eq!(store.clear("box"), 0);
+        store.insert(email("f2", "box", "a@x.io"));
+        assert_eq!(store.clear_all(), 1);
+    }
+
+    #[test]
+    fn open_refuses_an_unusable_data_file() {
+        assert!(Store::open(0, &db_path("nope").join("missing-dir").join("x.db")).is_err());
     }
 }
