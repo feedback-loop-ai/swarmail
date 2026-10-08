@@ -24,13 +24,13 @@ run() {
     write_result fail; exit 0
   fi
 }
-test_command='cargo test --workspace'
-lint_command='cargo clippy --workspace --all-targets -- -D warnings'
-if [ -z "$test_command" ] || [ -z "$lint_command" ]; then
-  printf 'no stack was recognized; fill in scripts/verify-seat.sh before running this gate' > "$notes"
-  write_result fail; exit 0
-fi
-run "$test_command" "$test_command"
-run "$lint_command" "$lint_command"
-printf '%s and %s passed with network denied' "$test_command" "$lint_command" > "$notes"
+# The realm charter's six gates, in house-rules order. Every one must pass;
+# the coverage gate is EXACT — 100% of lines, never a rounded percentage.
+run "cargo fmt --all -- --check"  'cargo fmt --all -- --check'
+run "cargo clippy -D warnings"    'cargo clippy --workspace --all-targets -- -D warnings'
+run "cargo test"                  'cargo test --workspace'
+run "brokkr compile --bundle ."   'brokkr compile --bundle .'
+run "coverage gate (100% exact)"  'bash scripts/coverage-gate.sh'
+run "cargo deny licenses"         'cargo deny check licenses'
+printf 'all six gates passed (fmt, clippy, test, bundle, exact-100%% coverage, deny) with network denied' > "$notes"
 write_result pass
