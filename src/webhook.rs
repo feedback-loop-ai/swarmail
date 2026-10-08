@@ -1,19 +1,38 @@
 //! Outbound webhooks: queued, retried, never blocking the SMTP path.
 //!
-//! v0.1 speaks plain HTTP (the dominant dev-loop case — your test harness is
-//! already listening on localhost). HTTPS targets land with the reqwest/rustls
-//! switch in P3.
+//! Delivery speaks real HTTP through reqwest with rustls: `http://` targets
+//! stay plain TCP, `https://` targets are TLS with certificate verification
+//! on — the rustls webpki root store, plus any extra root a target brings in
+//! `ca_pem` (the self-signed test-server case). No native-tls anywhere in
+//! the tree. The wire header names are lowercased by hyper; HTTP/1.1 names
+//! are case-insensitive, so the secret arrives under `X-Swarmail-Secret`
+//! regardless of case.
 
 use crate::store::Store;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+
+/// One delivery attempt must not hang: the whole round trip — connect
+/// (TLS handshake included), send and status — is bounded by this.
+const POST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The client for targets that trust the built-in root store, built once.
+static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+/// Clients pinned to an extra root CA, keyed by that root's PEM. A `ca_pem`
+/// target gets its own client so its root never leaks into other targets.
+static CA_CLIENTS: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+
+fn ca_clients() -> &'static Mutex<HashMap<String, reqwest::Client>> {
+    CA_CLIENTS.get_or_init(Mutex::default)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookTarget {
-    /// Full URL, e.g. "http://127.0.0.1:9999/hooks/mail".
+    /// Full URL, e.g. "http://127.0.0.1:9999/hooks/mail" or
+    /// "https://hooks.internal/mail" (delivered over TLS via reqwest/rustls).
     pub url: String,
     /// Only fire for this inbox; None = every inbox.
     #[serde(default)]
@@ -21,6 +40,11 @@ pub struct WebhookTarget {
     /// Sent verbatim as the X-Swarmail-Secret header.
     #[serde(default)]
     pub secret: Option<String>,
+    /// Optional PEM of an extra root CA to trust for this target, on top of
+    /// the built-in root store — how a self-signed test server is trusted
+    /// while certificate verification stays on.
+    #[serde(default)]
+    pub ca_pem: Option<String>,
 }
 
 #[derive(Default)]
@@ -83,7 +107,7 @@ pub(crate) async fn dispatch_loop(
                         "email": &*email,
                     });
                     let body = payload.to_string();
-                    tokio::spawn(deliver(t.url, t.secret, body));
+                    tokio::spawn(deliver(t.url, t.secret, t.ca_pem, body));
                 }
             }
             Wake::Again => {}
@@ -98,12 +122,12 @@ pub fn spawn_dispatcher(store: Arc<Store>, webhooks: Arc<Webhooks>) {
     tokio::spawn(dispatch_loop(rx, webhooks));
 }
 
-async fn deliver(url: String, secret: Option<String>, body: String) {
+async fn deliver(url: String, secret: Option<String>, ca_pem: Option<String>, body: String) {
     for attempt in 0..4u32 {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(100 * 4u64.pow(attempt - 1))).await;
         }
-        match post_json(&url, &body, secret.as_deref()).await {
+        match post_json(&url, &body, secret.as_deref(), ca_pem.as_deref()).await {
             Ok(status) if (200..300).contains(&status) => return,
             Ok(status) => tracing::debug!(%url, status, "webhook non-2xx"),
             Err(e) => tracing::debug!(%url, error = %e, "webhook delivery failed"),
@@ -112,50 +136,61 @@ async fn deliver(url: String, secret: Option<String>, body: String) {
     tracing::warn!(%url, "webhook dropped after retries");
 }
 
-async fn post_json(url: &str, body: &str, secret: Option<&str>) -> Result<u16, String> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| "only http:// webhook targets are supported in v0.1".to_string())?;
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
+/// The client for targets that trust the built-in root store: rustls with
+/// the webpki roots, certificate verification on, built once per process.
+fn shared_client() -> reqwest::Client {
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .use_rustls_tls() // rustls only — no native-tls in the tree
+                .build()
+                .expect("the rustls webhook client must build")
+        })
+        .clone()
+}
+
+/// Pick the client for a target: the shared rustls client, or one pinned to
+/// the target's own root CA, cached by PEM so retries reuse it.
+fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
+    let Some(pem) = ca_pem else {
+        return Ok(shared_client());
     };
-    let mut stream = tokio::time::timeout(
-        Duration::from_secs(5),
-        TcpStream::connect(authority.to_string()),
-    )
-    .await
-    .map_err(|_| "connect timeout".to_string())?
-    .map_err(|e| e.to_string())?;
-
-    let mut req = format!(
-        "POST {path} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-        body.len()
-    );
-    if let Some(s) = secret {
-        req.push_str(&format!("X-Swarmail-Secret: {s}\r\n"));
+    let mut cache = ca_clients().lock().unwrap();
+    if let Some(client) = cache.get(pem) {
+        return Ok(client.clone());
     }
-    req.push_str("\r\n");
-    req.push_str(body);
+    let root = reqwest::Certificate::from_pem(pem.as_bytes())
+        .map_err(|e| format!("webhook ca_pem is not a valid PEM certificate: {e}"))?;
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .add_root_certificate(root)
+        .build()
+        .map_err(|e| format!("webhook ca_pem could not be loaded into the rustls client: {e}"))?;
+    cache.insert(pem.to_string(), client.clone());
+    Ok(client)
+}
 
-    tokio::time::timeout(Duration::from_secs(5), stream.write_all(req.as_bytes()))
-        .await
-        .map_err(|_| "write timeout".to_string())?
-        .map_err(|e| e.to_string())?;
-
-    let mut buf = [0u8; 1024];
-    let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
-        .await
-        .map_err(|_| "read timeout".to_string())?
-        .map_err(|e| e.to_string())?;
-    let head = String::from_utf8_lossy(&buf[..n]);
-    let status: u16 = head
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|s| s.parse().ok())
-        .ok_or_else(|| "malformed response".to_string())?;
-    Ok(status)
+async fn post_json(
+    url: &str,
+    body: &str,
+    secret: Option<&str>,
+    ca_pem: Option<&str>,
+) -> Result<u16, String> {
+    let url = reqwest::Url::parse(url).map_err(|e| format!("invalid webhook URL: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!("unsupported webhook URL scheme: {}", url.scheme()));
+    }
+    let client = client_for(ca_pem)?;
+    let mut request = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .timeout(POST_TIMEOUT)
+        .body(body.to_string());
+    if let Some(secret) = secret {
+        request = request.header("X-Swarmail-Secret", secret);
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    Ok(response.status().as_u16())
 }
 
 #[cfg(test)]
@@ -242,5 +277,54 @@ mod loop_tests {
             .await
             .expect("the loop must end when the firehose closes")
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    /// A minimal but real self-signed CA, PEM-encoded, for client tests.
+    fn ca_pem() -> String {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+        params.self_signed(&key).unwrap().pem()
+    }
+
+    /// A URL that does not parse at all is a delivery error, not a panic.
+    #[tokio::test]
+    async fn unparseable_url_is_an_error() {
+        let err = post_json("not a url", "{}", None, None).await.unwrap_err();
+        assert!(err.contains("invalid webhook URL"), "{err}");
+    }
+
+    /// Schemes other than http/https are rejected before any connection.
+    #[tokio::test]
+    async fn unsupported_scheme_is_an_error() {
+        let err = post_json("ftp://hooks.example/x", "{}", None, None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("unsupported webhook URL scheme: ftp"), "{err}");
+    }
+
+    /// A ca_pem that is not a PEM certificate fails before connecting.
+    #[tokio::test]
+    async fn bad_ca_pem_is_an_error() {
+        let err = client_for(Some("-----BEGIN CERTIFICATE-----\nnope")).unwrap_err();
+        assert!(err.contains("ca_pem"), "{err}");
+    }
+
+    /// The client cache: one client per distinct CA PEM, the shared client
+    /// for targets without one.
+    #[tokio::test]
+    async fn clients_are_cached_per_ca() {
+        let pem = ca_pem();
+        client_for(None).unwrap();
+        client_for(Some(&pem)).unwrap();
+        client_for(Some(&pem)).unwrap(); // same PEM → cache hit, not a rebuild
+        assert_eq!(ca_clients().lock().unwrap().len(), 1);
+        client_for(None).unwrap();
     }
 }

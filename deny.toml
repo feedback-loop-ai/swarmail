@@ -13,6 +13,11 @@ allow = [
   "Zlib",
   "Unicode-3.0",
   "CC0-1.0",
+  # webpki-roots — Mozilla's root CA bundle shipped as data; CDLA-Permissive-2.0
+  # is the permissive flavor of the data license family (no copyleft, no
+  # field-of-use restriction) and the only license under which rustls
+  # distributes the offline trust store.
+  "CDLA-Permissive-2.0",
 ]
 
 # A new dependency needs a permissive license and a reason a human can

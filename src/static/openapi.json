@@ -132,7 +132,7 @@
     "/api/v1/webhooks": {
       "get": { "summary": "Current webhook targets", "responses": { "200": { "description": "OK" } } },
       "put": {
-        "summary": "Replace webhook targets. Each delivery POSTs {event:\"received\", email:{...}} with X-Swarmail-Secret; retried 4x (100ms..1.6s). v0.1 supports http:// targets.",
+        "summary": "Replace webhook targets. Each delivery POSTs {event:\"received\", email:{...}} with X-Swarmail-Secret; retried 4x (100ms..1.6s). http:// and https:// targets (https over TLS via reqwest + rustls, verification on; optional per-target ca_pem).",
         "requestBody": { "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookTarget" } } } } },
         "responses": { "200": { "description": "OK" } }
       },
@@ -212,9 +212,10 @@
       "WebhookTarget": {
         "type": "object",
         "properties": {
-          "url": { "type": "string" },
+          "url": { "type": "string", "description": "http:// or https://; https is delivered over TLS (reqwest + rustls, verification on)" },
           "inbox": { "type": ["string", "null"] },
-          "secret": { "type": ["string", "null"] }
+          "secret": { "type": ["string", "null"] },
+          "ca_pem": { "type": ["string", "null"], "description": "Optional PEM of an extra root CA to trust for this target, on top of the built-in root store" }
         }
       }
     }

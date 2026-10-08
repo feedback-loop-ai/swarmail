@@ -37,7 +37,7 @@ another. The field's actual record:
 | MCP server | ❌ | ❌ | ❌ | ✅ (Node) | ✅ HTTP + stdio, native, 12 tools |
 | Link/code extraction | ❌ | ❌ | ❌ | ❌ | ✅ first-class (`links`, `codes` on every email) |
 | Chaos on SMTP | ❌ | ❌ | error codes only | ❌ | ✅ connect/mail_from/rcpt/data — probability, error line, delay |
-| Webhooks | ❌ | ❌ | 1/s, no retry | ❌ | ✅ queued, retried (100ms→1.6s), inbox-filtered |
+| Webhooks | ❌ | ❌ | 1/s, no retry | ❌ | ✅ queued, retried (100ms→1.6s), inbox-filtered, http + https (TLS, reqwest/rustls) |
 | Footprint | Go+DB | 7.8 MB | ~10 MB | Node | **static binary, scratch container ≈ binary size** |
 
 *Methodology: the 5000-mail figure is `tests/rate.rs` (release, fresh SMTP
@@ -142,7 +142,10 @@ curl -X PUT localhost:8025/api/v1/webhooks -H 'content-type: application/json' -
 ```
 Every accepted email is POSTed as `{"event":"received","email":{…}}` with the
 secret in `X-Swarmail-Secret` — queued, retried (100 ms → 1.6 s), and never
-blocking the SMTP path. (v0.1: `http://` targets.)
+blocking the SMTP path. Delivered via reqwest + rustls: `http://` targets
+stay plain, `https://` targets are TLS with certificate verification on —
+hand a self-signed test server its own CA through the target's optional
+`ca_pem` (PEM of a root to trust on top of the built-in root store).
 
 ## Guarantees
 
@@ -198,7 +201,7 @@ production code cannot shrink the denominator. The suite that carries it:
 | `tests/api.rs` | every REST route, happy + error branches |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
-| `tests/webhook.rs` | delivery with secret, pathless target, the 4-attempt retry budget |
+| `tests/webhook.rs` | delivery with secret, pathless target, the 4-attempt retry budget, https over a real TLS server (handshake-failure + refused-connection paths) |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
 | `tests/lifecycle.rs` | graceful stop: serve futures return, ports release |
 | `tests/binary.rs` | the shipped binary: SIGINT → clean exit, mcp EOF → 0 |
@@ -245,7 +248,7 @@ docker build -t swarmail .    # scratch image ≈ binary size
 ## Roadmap
 
 - [ ] STARTTLS + self-signed cert generation
-- [ ] HTTPS webhook targets (reqwest + rustls)
+- [x] HTTPS webhook targets (reqwest + rustls)
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [ ] POP3 server; MailHog/Mailpit API compat shims
 - [ ] crates.io publish

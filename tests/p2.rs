@@ -130,7 +130,12 @@ async fn webhooks_fire_with_secret_and_retry_targets() {
         .expect("webhook never fired")
         .unwrap();
     assert!(request.starts_with("POST /hooks"));
-    assert!(request.contains("X-Swarmail-Secret: topsecret"));
+    // hyper lowercases wire header names; HTTP/1.1 names are case-insensitive.
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("x-swarmail-secret: topsecret")
+    );
     assert!(request.contains(r#""event":"received""#));
     assert!(request.contains("hooked"));
     assert!(!request.contains("ignored"), "inbox filter must hold");

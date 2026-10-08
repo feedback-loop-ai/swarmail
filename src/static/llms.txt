@@ -46,7 +46,11 @@ tempfail", "delay_ms": 250}}` — inject SMTP failures to test your retry logic.
 `PUT /api/v1/webhooks` with `[{"url": "http://127.0.0.1:9999/hooks", "inbox":
 null, "secret": "s3cret"}]` — every accepted email is POSTed as
 `{"event":"received","email":{...}}` with the secret in `X-Swarmail-Secret`;
-queued, retried 4x (100ms → 1.6s), never blocking SMTP. (v0.1: http:// targets.)
+queued, retried 4x (100ms → 1.6s), never blocking SMTP. Delivered via
+reqwest + rustls: `http://` targets stay plain, `https://` targets are TLS
+with certificate verification on — for a self-signed test server, pass its
+CA in the target's optional `ca_pem` (PEM of a root to trust on top of the
+built-in root store).
 
 ## Guarantees
 

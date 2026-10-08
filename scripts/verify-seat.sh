@@ -32,5 +32,8 @@ run "cargo test"                  'cargo test --workspace'
 run "brokkr compile --bundle ."   'brokkr compile --bundle .'
 run "coverage gate (100% exact)"  'bash scripts/coverage-gate.sh'
 run "cargo deny licenses"         'cargo deny check licenses'
-printf 'all six gates passed (fmt, clippy, test, bundle, exact-100%% coverage, deny) with network denied' > "$notes"
+# Webhook TLS (reqwest + rustls) must be the only HTTP/TLS story: native-tls
+# may never re-enter the tree (e.g. via a reqwest default-feature regression).
+run "no native-tls in the tree"   '! cargo tree -i native-tls >/dev/null 2>&1'
+printf 'all gates passed (fmt, clippy, test, bundle, exact-100%% coverage, deny licenses, no native-tls) with network denied' > "$notes"
 write_result pass
