@@ -53,10 +53,12 @@ struct Captured {
 }
 
 /// A TLS sink: mints nothing, just serves the given certificate. Accepts
-/// `expect` connections; a failed handshake (an untrusted client rejecting
-/// our cert) still counts as an attempt. Reports the first request head with
-/// its negotiated TLS version, and the total hit count.
+/// `expect` connections, replying `reply` to each; a failed handshake (an
+/// untrusted client rejecting our cert) still counts as an attempt. Reports
+/// the first request head with its negotiated TLS version, and the total hit
+/// count.
 async fn tls_sink(
+    reply: &'static [u8],
     cert_der: Vec<u8>,
     key_der: Vec<u8>,
     expect: usize,
@@ -109,8 +111,6 @@ async fn tls_sink(
                 }
                 captured.head = String::from_utf8_lossy(&buf).to_string();
             }
-            let reply =
-                b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
             let _ = tls.write_all(reply).await;
         }
         let _ = tx_req.send(captured);
@@ -221,7 +221,13 @@ async fn failing_target_is_retried_four_times_not_more() {
 async fn https_target_is_delivered_over_tls() {
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
-    let (addr, rx, _) = tls_sink(leaf, leaf_key, 1).await;
+    let (addr, rx, _) = tls_sink(
+        b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        leaf,
+        leaf_key,
+        1,
+    )
+    .await;
 
     // The target trusts the test CA through its own ca_pem; verification
     // stays on — an https URL without a trusted root must fail (see the
@@ -269,6 +275,7 @@ async fn untrusted_certificate_fails_the_handshake_and_is_retried() {
     // the four-attempt budget of connections.
     let untrusted = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
     let (addr, _, rx_count) = tls_sink(
+        b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         untrusted.cert.der().to_vec(),
         untrusted.key_pair.serialize_der(),
         4,
@@ -286,6 +293,39 @@ async fn untrusted_certificate_fails_the_handshake_and_is_retried() {
     tokio::time::sleep(Duration::from_millis(2800)).await;
     let seen = rx_count.await.unwrap();
     assert_eq!(seen, 4, "expected 4 handshake attempts, no more");
+}
+
+#[tokio::test]
+async fn non_2xx_over_tls_is_retried_four_times_not_more() {
+    let srv = start().await;
+    let (ca_pem, leaf, leaf_key) = mint_cert();
+    // Every handshake succeeds and the sink answers 500 to each request: a
+    // non-2xx received over an established TLS session must cost exactly the
+    // same four-attempt budget as a non-2xx over plain http — TLS may not
+    // change the failure semantics, only the transport.
+    let (addr, _, rx_count) = tls_sink(
+        b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        leaf,
+        leaf_key,
+        4,
+    )
+    .await;
+    let targets = serde_json::json!([{
+        "url": format!("https://127.0.0.1:{}/hook", addr.port()),
+        "ca_pem": ca_pem,
+    }])
+    .to_string();
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200);
+
+    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "servererror", "x")
+        .await
+        .unwrap();
+
+    // Backoff is 100/400/1600 ms after the first attempt: 2.1 s of retries.
+    tokio::time::sleep(Duration::from_millis(2800)).await;
+    let seen = rx_count.await.unwrap();
+    assert_eq!(seen, 4, "expected 4 attempts over TLS, no more");
 }
 
 #[tokio::test]
