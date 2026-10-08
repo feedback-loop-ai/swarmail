@@ -18,8 +18,8 @@ cargo deny check licenses
 
 - Tests speak the real protocol against real servers — `tests/common.rs`
   boots them; no mocks in the loop. Extend the suite that proves the code.
-- The coverage floor (`scripts/coverage-gate.sh`) may rise, never fall;
-  `coverage(off)` attributes are forbidden.
+- The coverage floor (`scripts/coverage-gate.sh`) is 100% of lines, exact,
+  and may rise, never fall; `coverage(off)` attributes are forbidden.
 - New dependencies need a permissive license (`deny.toml`) and a reason a
   human can defend in one sentence.
 

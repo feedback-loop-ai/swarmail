@@ -62,3 +62,38 @@ impl From<&ServeArgs> for Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_maps_the_cli_args() {
+        let args = ServeArgs {
+            smtp_listen: "127.0.0.1:2525".into(),
+            http_listen: "127.0.0.1:8080".into(),
+            max_per_inbox: 42,
+        };
+        let cfg = Config::from(&args);
+        assert_eq!(cfg.smtp_listen, "127.0.0.1:2525");
+        assert_eq!(cfg.http_listen, "127.0.0.1:8080");
+        assert_eq!(cfg.max_per_inbox, 42);
+        assert_eq!(
+            cfg.smtp.accept_any_auth,
+            SmtpConfig::default().accept_any_auth
+        );
+    }
+
+    #[test]
+    fn cli_parses_env_defaults_and_subcommands() {
+        let cli = Cli::try_parse_from(["swarmail", "serve"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Serve(args) if args.smtp_listen == "0.0.0.0:1025"
+                && args.max_per_inbox == 100_000
+        ));
+
+        let cli = Cli::try_parse_from(["swarmail", "mcp", "--url", "http://x:1"]).unwrap();
+        assert!(matches!(cli.command, Command::Mcp(args) if args.url == "http://x:1"));
+    }
+}

@@ -38,36 +38,64 @@ impl Webhooks {
     }
 }
 
+/// What a firehose wakeup means; a pure function so every arm is provable.
+enum Wake {
+    /// A new email to deliver.
+    Mail(Arc<crate::model::Email>),
+    /// A transient condition (lag) — keep looping, the store is the truth.
+    Again,
+    /// The channel closed — the store is gone; stop.
+    Stop,
+}
+
+fn classify(
+    res: Result<Arc<crate::model::Email>, tokio::sync::broadcast::error::RecvError>,
+) -> Wake {
+    match res {
+        Ok(email) => Wake::Mail(email),
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+            tracing::warn!(
+                skipped = n,
+                "webhook dispatcher lagged; store remains source of truth"
+            );
+            Wake::Again
+        }
+        Err(_) => Wake::Stop, // closed
+    }
+}
+
+/// The dispatcher core: consume the firehose until it closes. Owned fn so
+/// the wake arms are provable without a live server.
+pub(crate) async fn dispatch_loop(
+    mut rx: tokio::sync::broadcast::Receiver<Arc<crate::model::Email>>,
+    webhooks: Arc<Webhooks>,
+) {
+    loop {
+        match classify(rx.recv().await) {
+            Wake::Mail(email) => {
+                let targets = webhooks.current();
+                for t in targets {
+                    if t.inbox.as_deref().is_some_and(|i| i != email.inbox) {
+                        continue;
+                    }
+                    let payload = serde_json::json!({
+                        "event": "received",
+                        "email": &*email,
+                    });
+                    let body = payload.to_string();
+                    tokio::spawn(deliver(t.url, t.secret, body));
+                }
+            }
+            Wake::Again => {}
+            Wake::Stop => return,
+        }
+    }
+}
+
 /// Spawn the dispatcher: consume the global firehose, deliver with retry.
 pub fn spawn_dispatcher(store: Arc<Store>, webhooks: Arc<Webhooks>) {
-    tokio::spawn(async move {
-        let mut rx = store.subscribe_all();
-        loop {
-            match rx.recv().await {
-                Ok(email) => {
-                    let targets = webhooks.current();
-                    for t in targets {
-                        if t.inbox.as_deref().is_some_and(|i| i != email.inbox) {
-                            continue;
-                        }
-                        let payload = serde_json::json!({
-                            "event": "received",
-                            "email": &*email,
-                        });
-                        let body = payload.to_string();
-                        tokio::spawn(deliver(t.url, t.secret, body));
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(
-                        skipped = n,
-                        "webhook dispatcher lagged; store remains source of truth"
-                    );
-                }
-                Err(_) => return, // closed
-            }
-        }
-    });
+    let rx = store.subscribe_all();
+    tokio::spawn(dispatch_loop(rx, webhooks));
 }
 
 async fn deliver(url: String, secret: Option<String>, body: String) {
@@ -128,4 +156,91 @@ async fn post_json(url: &str, body: &str, secret: Option<&str>) -> Result<u16, S
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| "malformed response".to_string())?;
     Ok(status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Email;
+    use tokio::sync::broadcast;
+
+    fn email() -> Email {
+        Email {
+            id: "1".into(),
+            inbox: "default".into(),
+            from: None,
+            to: vec![],
+            cc: vec![],
+            recipients: vec![],
+            subject: None,
+            received_at: String::new(),
+            received_ms: 0,
+            size: 0,
+            text: None,
+            html: None,
+            links: vec![],
+            codes: vec![],
+            raw: vec![],
+        }
+    }
+
+    /// Every arm of the firehose classifier, provable without a live server.
+    #[test]
+    fn classify_mail_again_stop() {
+        assert!(matches!(classify(Ok(Arc::new(email()))), Wake::Mail(_)));
+        assert!(matches!(
+            classify(Err(broadcast::error::RecvError::Lagged(3))),
+            Wake::Again
+        ));
+        assert!(matches!(
+            classify(Err(broadcast::error::RecvError::Closed)),
+            Wake::Stop
+        ));
+    }
+}
+
+#[cfg(test)]
+mod loop_tests {
+    use super::*;
+    use crate::model::Email;
+    use tokio::sync::broadcast;
+
+    fn email() -> Email {
+        Email {
+            id: "1".into(),
+            inbox: "default".into(),
+            from: None,
+            to: vec![],
+            cc: vec![],
+            recipients: vec![],
+            subject: None,
+            received_at: String::new(),
+            received_ms: 0,
+            size: 0,
+            text: None,
+            html: None,
+            links: vec![],
+            codes: vec![],
+            raw: vec![],
+        }
+    }
+
+    /// Mail is delivered, a lagging watcher retries, a closed firehose ends
+    /// the loop — all three wake arms against a real broadcast channel.
+    #[tokio::test]
+    async fn dispatch_loop_handles_mail_lag_and_close() {
+        let webhooks = Arc::new(Webhooks::default()); // no targets: delivery is a no-op
+        let (tx, rx) = broadcast::channel(1);
+        let loop_task = tokio::spawn(dispatch_loop(rx, webhooks));
+
+        tx.send(Arc::new(email())).unwrap(); // Mail arm
+        tx.send(Arc::new(email())).unwrap(); // capacity 1 → the next recv lags
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        drop(tx); // close the firehose → Stop → the loop returns
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), loop_task)
+            .await
+            .expect("the loop must end when the firehose closes")
+            .unwrap();
+    }
 }

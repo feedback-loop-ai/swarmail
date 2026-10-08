@@ -26,6 +26,8 @@ pub struct SmtpConfig {
     pub hostname: String,
     /// Accept any AUTH credentials; the username names the target inbox.
     pub accept_any_auth: bool,
+    /// Largest accepted DATA payload in bytes; larger gets 552.
+    pub max_message_size: usize,
 }
 
 impl Default for SmtpConfig {
@@ -33,6 +35,7 @@ impl Default for SmtpConfig {
         Self {
             hostname: "swarmail.local".to_string(),
             accept_any_auth: true,
+            max_message_size: MAX_MESSAGE_SIZE,
         }
     }
 }
@@ -44,9 +47,14 @@ pub async fn serve(
     store: Arc<Store>,
     chaos: Arc<Chaos>,
     cfg: SmtpConfig,
+    shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> io::Result<()> {
+    let mut shutdown = std::pin::pin!(shutdown);
     loop {
-        let (stream, peer) = listener.accept().await?;
+        let (stream, peer) = tokio::select! {
+            res = listener.accept() => res?,
+            _ = &mut shutdown => return Ok(()),
+        };
         let session = SESSIONS.fetch_add(1, Ordering::Relaxed);
         debug!(%peer, session, "smtp connection accepted");
         let store = store.clone();
@@ -123,7 +131,7 @@ async fn handle_conn(
             "HELO" | "EHLO" => {
                 let mut resp = format!("250-{}\r\n", cfg.hostname);
                 resp.push_str("250-PIPELINING\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250-SIZE ");
-                resp.push_str(&MAX_MESSAGE_SIZE.to_string());
+                resp.push_str(&cfg.max_message_size.to_string());
                 if cfg.accept_any_auth {
                     resp.push_str("\r\n250-AUTH PLAIN LOGIN");
                 }
@@ -234,7 +242,7 @@ async fn handle_conn(
                     } else {
                         line.as_bytes()
                     };
-                    if raw.len() + payload.len() > MAX_MESSAGE_SIZE {
+                    if raw.len() + payload.len() > cfg.max_message_size {
                         over_limit = true;
                     } else {
                         raw.extend_from_slice(payload);

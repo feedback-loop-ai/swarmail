@@ -20,7 +20,18 @@ h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;color:#8b949e;margin:24px 0 8
 iframe{width:100%;min-height:320px;border:1px solid #30363d;border-radius:8px;background:#fff}
 </style>"#;
 
+/// HTML-escape untrusted text for element content and attribute values.
+/// Every interpolation of mail-controlled data goes through this.
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
 fn page(title: &str, body: String) -> Html<String> {
+    let title = esc(title);
     Html(format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>{title} · Swarmail</title>{STYLE}</head>
 <body><div class="wrap"><h1>📮 Swarmail</h1><div class="muted">the fastest AI-native mail mock · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div>{body}</div></body></html>"#
@@ -37,6 +48,7 @@ pub fn router() -> Router<AppState> {
 async fn index(State(state): State<AppState>) -> Html<String> {
     let mut rows = String::new();
     for (name, count) in state.store.inboxes() {
+        let name = esc(&name);
         rows.push_str(&format!(
             r#"<div class="card"><a href="/ui/inbox/{name}"><b>{name}</b></a> <span class="pill">{count} emails</span></div>"#
         ));
@@ -50,24 +62,25 @@ async fn index(State(state): State<AppState>) -> Html<String> {
 async fn inbox_view(State(state): State<AppState>, Path(inbox): Path<String>) -> Html<String> {
     let emails = state.store.list(&inbox, &Default::default());
     let mut rows = String::new();
+    let inbox_esc = esc(&inbox);
     for e in emails.iter().take(200) {
-        let to: Vec<String> = e.to.iter().map(|a| a.address.clone()).collect();
+        let to: Vec<String> = e.to.iter().map(|a| esc(&a.address)).collect();
         rows.push_str(&format!(
             r#"<div class="card"><a href="/ui/message/{}"><b>{}</b></a> <span class="muted">→ {} · {} · {} B</span></div>"#,
-            e.id,
-            e.subject.as_deref().unwrap_or("(no subject)"),
+            esc(&e.id),
+            esc(e.subject.as_deref().unwrap_or("(no subject)")),
             to.join(", "),
-            e.received_at,
+            esc(&e.received_at),
             e.size
         ));
     }
     if rows.is_empty() {
-        rows = format!(r#"<div class="card muted">Inbox "{inbox}" is empty.</div>"#);
+        rows = format!(r#"<div class="card muted">Inbox "{inbox_esc}" is empty.</div>"#);
     }
     page(
-        &inbox,
+        &inbox_esc,
         format!(
-            r#"<h2>inbox: {inbox} <span class="pill">{}</span></h2>{rows}"#,
+            r#"<h2>inbox: {inbox_esc} <span class="pill">{}</span></h2>{rows}"#,
             emails.len()
         ),
     )
@@ -80,43 +93,47 @@ async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> 
             r#"<div class="card">Message not found (pruned or cleared).</div>"#.into(),
         );
     };
+    // The html preview renders in a sandboxed iframe (no scripts), its
+    // markup escaped into the srcdoc attribute.
     let html_body = email
         .html
         .as_deref()
-        .map(|h| format!(r#"<iframe srcdoc="{}"></iframe>"#, h.replace('"', "&quot;")))
+        .map(|h| format!(r#"<iframe sandbox srcdoc="{}"></iframe>"#, esc(h)))
         .unwrap_or_default();
     let text_block = email
         .text
         .as_deref()
-        .map(|t| format!(r#"<div class="card mono">{}</div>"#, t.replace('<', "&lt;")))
+        .map(|t| format!(r#"<div class="card mono">{}</div>"#, esc(t)))
         .unwrap_or_default();
     let links = email
         .links
         .iter()
-        .map(|l| format!(r#"<div class="card mono"><a href="{l}">{l}</a></div>"#))
+        .map(|l| {
+            let l = esc(l);
+            format!(r#"<div class="card mono"><a href="{l}" rel="noreferrer">{l}</a></div>"#)
+        })
         .collect::<String>();
     let codes = email
         .codes
         .iter()
-        .map(|c| format!(r#"<span class="pill mono">{c}</span>"#))
+        .map(|c| format!(r#"<span class="pill mono">{}</span>"#, esc(c)))
         .collect::<String>();
 
     let from = email
         .from
         .as_ref()
-        .map(|a| a.address.clone())
+        .map(|a| esc(&a.address))
         .unwrap_or_default();
-    let to: Vec<String> = email.to.iter().map(|a| a.address.clone()).collect();
+    let to: Vec<String> = email.to.iter().map(|a| esc(&a.address)).collect();
+    let subject = esc(email.subject.as_deref().unwrap_or("(no subject)"));
     page(
-        email.subject.as_deref().unwrap_or("(no subject)"),
+        &subject,
         format!(
-            r#"<h2>{}</h2>
-<div class="card"><b>From:</b> {} &nbsp; <b>To:</b> {} &nbsp; <b>At:</b> {}</div>
+            r#"<h2>{subject}</h2>
+<div class="card"><b>From:</b> {from} &nbsp; <b>To:</b> {} &nbsp; <b>At:</b> {}</div>
 <h2>codes</h2><div>{codes}</div><h2>links</h2>{links}<h2>html</h2>{html_body}<h2>text</h2>{text_block}"#,
-            email.subject.as_deref().unwrap_or("(no subject)"),
-            from,
             to.join(", "),
-            email.received_at,
+            esc(&email.received_at),
         ),
     )
 }

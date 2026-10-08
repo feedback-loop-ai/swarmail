@@ -5,9 +5,17 @@
 # Lowering it is refused here, in CI, and by review. Attribute-based
 # exclusions (#[coverage(off)]) are forbidden so production code cannot
 # shrink the denominator.
+#
+# The measurement is exact: line-by-line counts from the lcov report
+# (DA: records), never a display column or a rounded percentage. At a 100
+# floor this is airtight by arithmetic — (lines-missed)/lines >= 1.0 over
+# integers holds only when missed == 0.
+#
+# If a stale local run reports phantom misses, clear the merge pool first:
+#   cargo llvm-cov clean --workspace
 set -euo pipefail
 
-FLOOR="${COVERAGE_FLOOR:-59.9}"
+FLOOR="${COVERAGE_FLOOR:-100}"
 
 command -v cargo-llvm-cov >/dev/null 2>&1 || {
   printf '%s\n' 'coverage gate: cargo-llvm-cov not on PATH (cargo install cargo-llvm-cov)' >&2
@@ -17,22 +25,21 @@ command -v cargo-llvm-cov >/dev/null 2>&1 || {
 out="$(mktemp "${TMPDIR:-/tmp}/swarmail-cov.XXXXXX")"
 trap 'rm -f "$out"' EXIT
 
-cargo llvm-cov --summary-only --output-path "$out" >/dev/null 2>&1
+cargo llvm-cov --lcov --output-path "$out" >/dev/null 2>&1
 
-# The TOTAL row's Lines / Missed Lines columns (8th and 9th fields in
-# llvm-cov's fixed summary layout) — compute the percentage from them
-# rather than trusting a display column.
-total="$(awk '/^TOTAL/ {printf "%.1f", ($8-$9)/$8*100; exit}' "$out")"
+lines="$(grep -c '^DA:' "$out" || true)"
+missed="$(awk -F, '/^DA:/ { if ($2 + 0 == 0) n++ } END { print n + 0 }' "$out")"
 
-if [ -z "$total" ]; then
-  printf '%s\n' 'coverage gate: could not parse the TOTAL line — refusing to guess' >&2
+if [ -z "$lines" ] || [ "$lines" -eq 0 ]; then
+  printf '%s\n' 'coverage gate: lcov report has no line records — refusing to guess' >&2
   exit 1
 fi
 
-printf 'coverage: %s%% lines (floor %s%%)\n' "$total" "$FLOOR"
+total="$(awk -v l="$lines" -v m="$missed" 'BEGIN { printf "%.1f", (l-m)/l*100 }')"
+printf 'coverage: %s lines, %s missed (%s%%) — floor %s%%\n' "$lines" "$missed" "$total" "$FLOOR"
 
-awk -v t="$total" -v f="$FLOOR" 'BEGIN { exit !(t+0 >= f+0) }' || {
-  printf '%s\n' "coverage gate REFUSED: ${total}% is below the ${FLOOR}% floor." >&2
+awk -v l="$lines" -v m="$missed" -v f="$FLOOR" 'BEGIN { exit !((l-m)/l*100 >= f+0) }' || {
+  printf '%s\n' "coverage gate REFUSED: $missed missed lines — ${total}% is below the ${FLOOR}% floor." >&2
   printf '%s\n' 'The floor may rise, never fall. Add tests or fix the regression.' >&2
   exit 1
 }

@@ -41,10 +41,12 @@ Tests are part of every change. Extend the suite that proves the code —
 `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` or the unit tests — and run
 the suite against real servers; no mocks in the loop.
 
-The coverage floor lives in `scripts/coverage-gate.sh`. Raising it is an
-ordinary change; lowering it is refused. Attribute-based coverage exclusions
+The coverage floor lives in `scripts/coverage-gate.sh` — currently **100% of
+lines, exact** (missed == 0, not a rounded 99.95). Raising it is an ordinary
+change; lowering it is refused. Attribute-based coverage exclusions
 (`coverage(off)`) are forbidden — production code cannot shrink the
-denominator.
+denominator. Every new line of production code ships with a test that
+executes it; a feature without its tests is an incomplete feature.
 
 ## Dependencies
 

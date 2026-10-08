@@ -10,7 +10,7 @@
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](https://www.rust-lang.org)
 [![clippy · -D warnings](https://img.shields.io/badge/clippy%20%C2%B7%20--D%20warnings-orange)](.github/workflows/ci.yml)
 [![deps · permissive-only](https://img.shields.io/badge/deps%20%C2%B7%20permissive--only-brightgreen)](deny.toml)
-[![coverage gate](https://img.shields.io/badge/coverage%20%C2%B7%2060.6%25%20floor-green)](scripts/coverage-gate.sh)
+[![coverage · 100% lines](https://img.shields.io/badge/coverage%20%C2%B7%20100%25%20lines-green)](scripts/coverage-gate.sh)
 
 **v0.1.0** · [Releases](https://github.com/feedback-loop-ai/swarmail/releases) ·
 machine-readable surfaces: [`/openapi.json`](http://localhost:8025/openapi.json) ·
@@ -168,23 +168,24 @@ cargo bench                                                   # ingest path → 
 bash scripts/coverage-gate.sh                                 # the floor gate
 ```
 
-**Line coverage: 60.6%** — enforced by `scripts/coverage-gate.sh` and the CI
-`coverage` job: **the floor may rise, never fall** (the brokkr rule). Where
-coverage goes:
+**Line coverage: 100%** — every line of production code, verified by
+`cargo llvm-cov` (1712/1712) and enforced by `scripts/coverage-gate.sh`: the
+gate is **exact** (missed lines == 0, not a rounded 99.95→100) and **the floor
+may rise, never fall** (the brokkr rule). `#[coverage(off)]` is forbidden, so
+production code cannot shrink the denominator. The suite that carries it:
 
-| Module | Lines | Note |
-|---|---|---|
-| `chaos.rs` | 97.8% | rule gating fully exercised |
-| `extract.rs` | 98.2% | link + OTP extraction |
-| `webhook.rs` | 80.0% | queue, retry, secret, inbox filter |
-| `smtp.rs` | 78.0% | full session state machine, e2e |
-| `store.rs` | 76.5% | insert, filters, prune, watchers |
-| `api.rs` | 53.2% | happy paths e2e; error branches thin |
-| `mcp.rs` | 53.7% | tool loop e2e; per-tool edges thin |
-| `ui.rs` / `stdio.rs` / `main.rs` / `config.rs` | low–0% | server-rendered markup, stdio JSON-RPC loop, argv plumbing — untested by design in v0.1 |
-
-The hot paths that carry the losslessness guarantee (SMTP → store → query) are
-the well-covered ones; the uncovered remainder is presentation and plumbing.
+| Suite | What it proves |
+|---|---|
+| `tests/smoke.rs` | startup, round trip, per-test inboxes |
+| `tests/smtp_edges.rs` | every protocol verb, refusal, AUTH form, DATA limit, dot-unstuffing, group addresses, chaos on connect/MAIL FROM/DATA |
+| `tests/rate.rs` | the 5k losslessness guarantee + burst |
+| `tests/api.rs` | every REST route, happy + error branches |
+| `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
+| `tests/ui.rs` | every page, escaped (injection-proof) rendering |
+| `tests/webhook.rs` | delivery with secret, pathless target, the 4-attempt retry budget |
+| `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
+| `tests/lifecycle.rs` | graceful stop: serve futures return, ports release |
+| `tests/binary.rs` | the shipped binary: SIGINT → clean exit, mcp EOF → 0 |
 
 ## AI-native delivery (brokkr)
 

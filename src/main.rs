@@ -25,9 +25,10 @@ async fn main() {
                 server.smtp_addr.port(),
                 server.http_addr
             );
-            // Serve until interrupted.
+            // Serve until interrupted, then stop both servers gracefully.
             tokio::signal::ctrl_c().await.expect("ctrl_c handler");
             tracing::info!("shutting down");
+            server.stop().await;
         }
         Command::Mcp(args) => {
             // stdio MCP bridge: JSON-RPC over stdin/stdout → POST {url}/mcp.

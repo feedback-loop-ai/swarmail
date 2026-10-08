@@ -46,10 +46,20 @@ async fn rpc_post(base: &str, body: &str) -> Result<String, String> {
 }
 
 pub async fn run_stdio_bridge(base_url: &str) -> i32 {
-    let stdin = tokio::io::stdin();
-    let mut lines = BufReader::new(stdin).lines();
-    let mut stdout = tokio::io::stdout();
+    bridge(
+        base_url,
+        &mut BufReader::new(tokio::io::stdin()).lines(),
+        &mut tokio::io::stdout(),
+    )
+    .await
+}
 
+/// The bridge core, generic over reader/writer so tests drive it in-process.
+pub async fn bridge<R, W>(base_url: &str, lines: &mut tokio::io::Lines<R>, stdout: &mut W) -> i32
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
     loop {
         match lines.next_line().await {
             Ok(None) => return 0, // EOF

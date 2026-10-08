@@ -276,31 +276,32 @@ impl Store {
 }
 
 #[cfg(test)]
+pub(crate) fn email(id: &str, inbox: &str, to: &str) -> Email {
+    Email {
+        id: id.to_string(),
+        inbox: inbox.to_string(),
+        from: None,
+        to: vec![crate::model::EmailAddress {
+            name: None,
+            address: to.to_string(),
+        }],
+        cc: vec![],
+        recipients: vec![to.to_string()],
+        subject: Some("hi".into()),
+        received_at: "2026-01-01T00:00:00Z".into(),
+        received_ms: 0,
+        size: 1,
+        text: None,
+        html: None,
+        links: vec![],
+        codes: vec![],
+        raw: vec![],
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    fn email(id: &str, inbox: &str, to: &str) -> Email {
-        Email {
-            id: id.to_string(),
-            inbox: inbox.to_string(),
-            from: None,
-            to: vec![crate::model::EmailAddress {
-                name: None,
-                address: to.to_string(),
-            }],
-            cc: vec![],
-            recipients: vec![to.to_string()],
-            subject: Some("hi".into()),
-            received_at: "2026-01-01T00:00:00Z".into(),
-            received_ms: 0,
-            size: 1,
-            text: None,
-            html: None,
-            links: vec![],
-            codes: vec![],
-            raw: vec![],
-        }
-    }
 
     #[test]
     fn insert_prunes_oldest_beyond_cap() {
@@ -337,5 +338,218 @@ mod tests {
         store.clear("test-a");
         assert_eq!(store.count("test-a", &Filter::default()), 0);
         assert_eq!(store.count("test-b", &Filter::default()), 1);
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wait_for_finds_what_is_already_there() {
+        let store = Store::new(0);
+        store.insert(email("w1", "box", "a@x.io"));
+        let out = store
+            .wait_for("box", &Filter::default(), 1, Duration::from_millis(100))
+            .await;
+        match out {
+            WaitOutcome::Found(matches) => assert_eq!(matches.len(), 1),
+            WaitOutcome::Timeout { .. } => panic!("should have found"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_wakes_on_arrival() {
+        let store = Arc::new(Store::new(0));
+        let s = store.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            s.insert(email("w2", "box", "a@x.io"));
+        });
+        let out = store
+            .wait_for("box", &Filter::default(), 1, Duration::from_secs(2))
+            .await;
+        match out {
+            WaitOutcome::Found(matches) => assert_eq!(matches[0].id, "w2"),
+            WaitOutcome::Timeout { .. } => panic!("the watcher should have woken"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_times_out_with_the_match_count() {
+        let store = Store::new(0);
+        store.insert(email("w3", "box", "a@x.io"));
+        let out = store
+            .wait_for("box", &Filter::default(), 5, Duration::from_millis(80))
+            .await;
+        match out {
+            WaitOutcome::Timeout { matched } => assert_eq!(matched, 1),
+            WaitOutcome::Found(_) => panic!("5 cannot be reached"),
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_covers_the_lagging_watcher() {
+        // A watcher whose channel fills must not hang the wait: the store
+        // re-scan is the source of truth (the loop falls through on Lagged).
+        let store = Arc::new(Store::new(0));
+        let s = store.clone();
+        let handle = {
+            let store = store.clone();
+            tokio::spawn(async move {
+                store
+                    .wait_for("box", &Filter::default(), 3, Duration::from_secs(5))
+                    .await
+            })
+        };
+        // The subscribe happens inside wait_for; give it a beat, then
+        // overflow the 4096-slot channel.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for i in 0..4200u32 {
+            let mut e = email(&format!("lag{i}"), "box", "a@x.io");
+            e.id = format!("lag{i}");
+            s.insert(e);
+        }
+        match handle.await.unwrap() {
+            WaitOutcome::Found(matches) => assert_eq!(matches.len(), 3),
+            WaitOutcome::Timeout { .. } => panic!("the store had the mails"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+
+    fn with_subject(id: &str, subject: Option<&str>) -> Email {
+        let mut e = email(id, "box", "a@x.io");
+        e.subject = subject.map(|s| s.to_string());
+        e
+    }
+
+    fn with_received(id: &str, ms: i64) -> Email {
+        let mut e = email(id, "box", "a@x.io");
+        e.received_ms = ms;
+        e
+    }
+
+    #[test]
+    fn filter_from_requires_a_present_matching_from() {
+        let store = Store::new(0);
+        let mut e = email("f1", "box", "a@x.io");
+        e.from = None;
+        store.insert(e);
+        // A from-filter can never match a mail with no from at all.
+        let f = Filter {
+            from: Some("a@x.io".into()),
+            ..Default::default()
+        };
+        assert_eq!(store.count("box", &f), 0);
+
+        let mut e = email("f2", "box", "a@x.io");
+        e.from = Some(crate::model::EmailAddress {
+            name: None,
+            address: "sender@x.io".into(),
+        });
+        store.insert(e);
+        let f = Filter {
+            from: Some("sender@x.io".into()),
+            ..Default::default()
+        };
+        assert_eq!(store.count("box", &f), 1);
+        let f = Filter {
+            from: Some("other@x.io".into()),
+            ..Default::default()
+        };
+        assert_eq!(store.count("box", &f), 0);
+    }
+
+    #[test]
+    fn filter_subject_is_case_insensitive_and_null_safe() {
+        let store = Store::new(0);
+        store.insert(with_subject("s1", Some("Quarterly REPORT")));
+        store.insert(with_subject("s2", None));
+
+        let f = Filter {
+            subject: Some("quarterly".into()),
+            ..Default::default()
+        };
+        assert_eq!(store.count("box", &f), 1);
+        let f = Filter {
+            subject: Some("nope".into()),
+            ..Default::default()
+        };
+        assert_eq!(store.count("box", &f), 0);
+    }
+
+    #[test]
+    fn filter_since_ms_is_inclusive() {
+        let store = Store::new(0);
+        store.insert(with_received("t1", 100));
+        store.insert(with_received("t2", 200));
+
+        let f = Filter {
+            since_ms: Some(150),
+            ..Default::default()
+        };
+        assert_eq!(store.count("box", &f), 1);
+        let f = Filter {
+            since_ms: Some(100),
+            ..Default::default()
+        };
+        assert_eq!(store.count("box", &f), 2);
+        let f = Filter {
+            since_ms: Some(201),
+            ..Default::default()
+        };
+        assert_eq!(store.count("box", &f), 0);
+    }
+
+    #[test]
+    fn get_delete_and_clear_edge_cases() {
+        let store = Store::new(0);
+        assert!(store.get("missing").is_none());
+        assert!(!store.delete("missing"));
+        assert_eq!(store.clear("no-such-inbox"), 0);
+
+        store.insert(email("d1", "box", "a@x.io"));
+        assert!(store.delete("d1"));
+        assert!(store.get("d1").is_none());
+        assert_eq!(store.count("box", &Filter::default()), 0);
+    }
+
+    #[test]
+    fn inboxes_are_sorted_with_counts() {
+        let store = Store::new(0);
+        assert!(store.inboxes().is_empty());
+        store.insert(email("1", "zeta", "a@x.io"));
+        store.insert(email("2", "alpha", "a@x.io"));
+        store.insert(email("3", "alpha", "a@x.io"));
+        assert_eq!(
+            store.inboxes(),
+            vec![("alpha".to_string(), 2), ("zeta".to_string(), 1)]
+        );
+    }
+
+    #[test]
+    fn totals_counters_are_readable() {
+        let store = Store::new(2);
+        assert_eq!(store.emails_inserted(), 0);
+        assert_eq!(store.emails_dropped(), 0);
+        store.insert(email("1", "box", "a@x.io"));
+        store.insert(email("2", "box", "a@x.io"));
+        store.insert(email("3", "box", "a@x.io"));
+        assert_eq!(store.emails_inserted(), 3);
+        assert_eq!(store.emails_dropped(), 1);
+    }
+
+    #[tokio::test]
+    async fn second_subscriber_on_the_same_inbox_gets_the_live_channel() {
+        let store = Store::new(0);
+        let mut rx1 = store.subscribe("hot");
+        let mut rx2 = store.subscribe("hot"); // the Some(sender) branch
+        store.insert(email("s1", "hot", "a@x.io"));
+        assert_eq!(rx1.try_recv().unwrap().id, "s1");
+        assert_eq!(rx2.try_recv().unwrap().id, "s1");
     }
 }

@@ -102,10 +102,10 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
         }
         "swarmail_get_email" => {
             let id = arg_str(a, "id").ok_or("missing id")?;
-            store
-                .get(&id)
-                .map(|e| text_result(serde_json::to_value(&*e).unwrap()))
-                .ok_or_else(|| format!("message {id} not found"))
+            match store.get(&id) {
+                Some(e) => Ok(text_result(serde_json::to_value(&*e).unwrap())),
+                None => Ok(error_result(format!("message {id} not found"))),
+            }
         }
         "swarmail_get_latest_email" => {
             let inbox = arg_str(a, "inbox").unwrap_or_else(|| "default".into());
@@ -116,6 +116,9 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
                 .take(count)
                 .map(|e| serde_json::to_value(&*e).unwrap())
                 .collect();
+            if emails.is_empty() {
+                return Ok(error_result(format!("inbox {inbox} is empty")));
+            }
             Ok(text_result(json!({ "emails": emails })))
         }
         "swarmail_delete_email" => {
@@ -157,13 +160,15 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
         }
         "swarmail_extract_links" | "swarmail_extract_codes" => {
             let id = arg_str(a, "id").ok_or("missing id")?;
-            let email = store
-                .get(&id)
-                .ok_or_else(|| format!("message {id} not found"))?;
-            if name.ends_with("links") {
-                Ok(text_result(json!({ "links": email.links })))
-            } else {
-                Ok(text_result(json!({ "codes": email.codes })))
+            match store.get(&id) {
+                None => Ok(error_result(format!("message {id} not found"))),
+                Some(email) => {
+                    if name.ends_with("links") {
+                        Ok(text_result(json!({ "links": email.links })))
+                    } else {
+                        Ok(text_result(json!({ "codes": email.codes })))
+                    }
+                }
             }
         }
         "swarmail_seed_email" => {
