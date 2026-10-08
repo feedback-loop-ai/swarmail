@@ -136,6 +136,17 @@ async fn deliver(url: String, secret: Option<String>, ca_pem: Option<String>, bo
     tracing::warn!(%url, "webhook dropped after retries");
 }
 
+/// Redirects are not part of the delivery contract. A webhook target is an
+/// explicit endpoint chosen by configuration; if it answers 3xx, the
+/// delivery is over — a non-2xx under the ordinary retry budget, not a new
+/// destination. reqwest's default policy would forward the whole request to
+/// wherever the target points, handing the `X-Swarmail-Secret` header (and
+/// the body on 307/308) to that destination; so redirects are never
+/// followed, and a redirecting target simply costs its retry attempts.
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::none()
+}
+
 /// The client for targets that trust the built-in root store: rustls with
 /// the webpki roots, certificate verification on, built once per process.
 fn shared_client() -> reqwest::Client {
@@ -143,6 +154,7 @@ fn shared_client() -> reqwest::Client {
         .get_or_init(|| {
             reqwest::Client::builder()
                 .use_rustls_tls() // rustls only — no native-tls in the tree
+                .redirect(redirect_policy())
                 .build()
                 .expect("the rustls webhook client must build")
         })
@@ -163,6 +175,7 @@ fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
         .map_err(|e| format!("webhook ca_pem is not a valid PEM certificate: {e}"))?;
     let client = reqwest::Client::builder()
         .use_rustls_tls()
+        .redirect(redirect_policy()) // same no-redirect contract as the shared client
         .add_root_certificate(root)
         .build()
         .map_err(|e| format!("webhook ca_pem could not be loaded into the rustls client: {e}"))?;

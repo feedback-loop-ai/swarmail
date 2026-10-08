@@ -1,6 +1,7 @@
-//! Webhook delivery: the happy path (including a pathless target URL) and
-//! the retry budget against a target that always refuses — over plain HTTP
-//! and over TLS (reqwest + rustls, verification on).
+//! Webhook delivery: the happy path (including a pathless target URL), the
+//! retry budget against a target that always refuses — over plain HTTP and
+//! over TLS (reqwest + rustls, verification on) — and the redirect contract:
+//! a 3xx target takes the secret nowhere.
 
 mod common;
 
@@ -9,6 +10,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot::Receiver;
+use tokio::sync::watch;
 
 /// An HTTP sink that accepts `expect` connections, replying `status` to each,
 /// and reports the first request head plus the total hit count.
@@ -132,6 +134,93 @@ fn content_length(buf: &[u8]) -> Option<usize> {
         })
         .unwrap_or(0);
     Some(head_end + len)
+}
+
+/// A redirecting "target": the attacker's endpoint. Answers every
+/// connection with `status` and an absolute `Location` header pointing
+/// wherever it likes, and reports the first request (head and body) the
+/// moment it arrives, plus the actual number of requests it served once
+/// its `expect`-connection loop has run out.
+async fn redirect_sink(
+    status: u16,
+    location: String,
+    expect: usize,
+) -> (SocketAddr, Receiver<String>, Receiver<usize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx_first, rx_first) = tokio::sync::oneshot::channel();
+    let (tx_count, rx_count) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let reason = match status {
+            301 => "Moved Permanently",
+            302 => "Found",
+            307 => "Temporary Redirect",
+            308 => "Permanent Redirect",
+            _ => "Redirect",
+        };
+        let mut first: Option<String> = None;
+        let mut tx_first = Some(tx_first);
+        let mut hits = 0usize;
+        for _ in 0..expect {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            hits += 1;
+            // Read the whole request (head + Content-Length body).
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if content_length(&buf).is_some_and(|len| buf.len() >= len) {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&buf).to_string();
+            if first.is_none() {
+                first = Some(head.clone());
+                if let Some(tx) = tx_first.take() {
+                    let _ = tx.send(head);
+                }
+            }
+            let reply = format!(
+                "HTTP/1.1 {status} {reason}\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(reply.as_bytes()).await;
+        }
+        let _ = tx_count.send(hits);
+    });
+    (addr, rx_first, rx_count)
+}
+
+/// The redirect destination: records the head of every request that arrives
+/// until `stop` flips, then reports them. An empty report is the no-leak
+/// proof; the listener is bound before the target is registered so a leak
+/// can never race past it.
+async fn destination_sink(stop: watch::Receiver<bool>) -> (SocketAddr, Receiver<Vec<String>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let mut stop = stop;
+        let mut captured = Vec::new();
+        loop {
+            tokio::select! {
+                _ = stop.changed() => break,
+                accepted = listener.accept() => {
+                    let Ok((mut stream, _)) = accepted else { break };
+                    let mut buf = vec![0u8; 8192];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    captured.push(String::from_utf8_lossy(&buf[..n]).to_string());
+                }
+            }
+        }
+        let _ = tx.send(captured);
+    });
+    (addr, rx)
 }
 
 /// A CA and a leaf cert for 127.0.0.1, minted per test: (ca_pem, leaf_der,
@@ -355,6 +444,142 @@ async fn refused_connection_never_blocks_the_smtp_path() {
     // The dispatcher keeps retrying in the background without disturbing
     // the store: the retry budget elapses, the mail is still queryable.
     tokio::time::sleep(Duration::from_millis(2800)).await;
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1, "retries must not touch the store");
+}
+
+/// The redirect e2e: a target that answers 302 Found with an absolute
+/// Location at a second real local sink. The delivery client follows no
+/// redirect (Policy::none()), so the destination records nothing at all,
+/// while the explicit target records the full-fidelity POST — secret and
+/// body included — and the 302 costs exactly the ordinary retry budget.
+#[tokio::test]
+async fn redirect_302_never_leaks_the_secret_to_the_destination() {
+    let srv = start().await;
+    // The destination is bound FIRST so its port is known and no leak can
+    // ever race past the listener that would catch it.
+    let (tx_stop, rx_stop) = watch::channel(false);
+    let (dest, rx_leaked) = destination_sink(rx_stop).await;
+    let (addr, rx_first, rx_count) = redirect_sink(302, format!("http://{dest}/stolen"), 4).await;
+    let targets = format!(r#"[{{"url": "http://{addr}/hook", "secret": "topsecret"}}]"#);
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200);
+
+    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "redirected", "x")
+        .await
+        .unwrap();
+
+    // Acceptance is never delayed by the redirecting target: the 250 has
+    // returned and the mail is queryable while the retries still run.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1, "the mail must be stored despite the 302");
+
+    // Non-vacuousness: the explicit target itself got the real delivery —
+    // the secret rides along exactly as on a non-redirecting target.
+    let head = tokio::time::timeout(Duration::from_secs(5), rx_first)
+        .await
+        .expect("the redirect target never saw the delivery")
+        .unwrap();
+    assert!(head.starts_with("POST /hook HTTP/1.1"), "{head}");
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("x-swarmail-secret: topsecret"),
+        "{head}"
+    );
+    assert!(head.contains("\"event\":\"received\""), "{head}");
+
+    // A redirect-following client would land on the destination within
+    // microseconds of the 302, and again on every retry: let the whole
+    // retry budget elapse with the destination listening, then read its
+    // capture — it must be empty.
+    tokio::time::sleep(Duration::from_millis(2800)).await;
+    // Every attempt has been served by now; give a would-be forwarded
+    // request a final beat to arrive before the listener closes.
+    let seen = tokio::time::timeout(Duration::from_secs(10), rx_count)
+        .await
+        .expect("the redirect sink never finished serving the budget")
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    tx_stop.send(true).unwrap();
+    let leaked = tokio::time::timeout(Duration::from_secs(5), rx_leaked)
+        .await
+        .expect("the destination sink never stopped")
+        .unwrap();
+    assert!(
+        leaked.is_empty(),
+        "the redirect destination received: {leaked:?}"
+    );
+
+    // The redirect itself is an ordinary non-2xx: exactly the budget.
+    assert_eq!(seen, 4, "a 302 must cost exactly the retry budget, no more");
+
+    // And the store was untouched by all of it.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1, "retries must not touch the store");
+}
+
+/// The 307 shape: 307 and 308 share reqwest's body-preserving semantics, so
+/// a body-forwarding redirect would hand the destination the whole POST —
+/// secret header and `{"event":"received"}` body. The client follows
+/// nothing: the destination records nothing, the explicit target records
+/// the full POST, the budget is unchanged.
+#[tokio::test]
+async fn redirect_307_never_leaks_the_secret_or_body_to_the_destination() {
+    let srv = start().await;
+    let (tx_stop, rx_stop) = watch::channel(false);
+    let (dest, rx_leaked) = destination_sink(rx_stop).await;
+    let (addr, rx_first, rx_count) = redirect_sink(307, format!("http://{dest}/stolen"), 4).await;
+    let targets = format!(r#"[{{"url": "http://{addr}/hook", "secret": "topsecret"}}]"#);
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200);
+
+    smtp_send(
+        srv.smtp_addr,
+        None,
+        "f@x.io",
+        "r@x.io",
+        "redirected307",
+        "x",
+    )
+    .await
+    .unwrap();
+
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1, "the mail must be stored despite the 307");
+
+    let head = tokio::time::timeout(Duration::from_secs(5), rx_first)
+        .await
+        .expect("the redirect target never saw the delivery")
+        .unwrap();
+    assert!(head.starts_with("POST /hook HTTP/1.1"), "{head}");
+    assert!(
+        head.to_ascii_lowercase()
+            .contains("x-swarmail-secret: topsecret"),
+        "{head}"
+    );
+    assert!(head.contains("\"event\":\"received\""), "{head}");
+
+    tokio::time::sleep(Duration::from_millis(2800)).await;
+    let seen = tokio::time::timeout(Duration::from_secs(10), rx_count)
+        .await
+        .expect("the redirect sink never finished serving the budget")
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    tx_stop.send(true).unwrap();
+    let leaked = tokio::time::timeout(Duration::from_secs(5), rx_leaked)
+        .await
+        .expect("the destination sink never stopped")
+        .unwrap();
+    assert!(
+        leaked.is_empty(),
+        "the redirect destination received: {leaked:?}"
+    );
+    assert_eq!(seen, 4, "a 307 must cost exactly the retry budget, no more");
+
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1, "retries must not touch the store");
