@@ -3,6 +3,7 @@
 use crate::smtp::SmtpConfig;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -69,6 +70,18 @@ pub struct ServeArgs {
         requires = "tls_cert"
     )]
     pub tls_key: Option<PathBuf>,
+
+    /// Maximum time in milliseconds a STARTTLS handshake may take before
+    /// the session is dropped: a client that stalls mid-upgrade must not
+    /// tie a session task up forever. The pre-TLS plaintext idle posture
+    /// has no timeout and stays that way.
+    #[arg(
+        long,
+        value_name = "MS",
+        default_value_t = 10_000,
+        env = "SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS"
+    )]
+    pub tls_handshake_timeout_ms: u64,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -116,7 +129,10 @@ impl From<&ServeArgs> for Config {
             data_file: args.data_file.clone(),
             tls_cert: args.tls_cert.clone(),
             tls_key: args.tls_key.clone(),
-            smtp: SmtpConfig::default(),
+            smtp: SmtpConfig {
+                tls_handshake_timeout: Duration::from_millis(args.tls_handshake_timeout_ms),
+                ..SmtpConfig::default()
+            },
         }
     }
 }
@@ -135,6 +151,7 @@ mod tests {
             data_file: Some("/tmp/mail.db".into()),
             tls_cert: None,
             tls_key: None,
+            tls_handshake_timeout_ms: 2500,
         };
         let cfg = Config::from(&args);
         assert_eq!(cfg.smtp_listen, "127.0.0.1:2525");
@@ -151,6 +168,9 @@ mod tests {
             cfg.smtp.accept_any_auth,
             SmtpConfig::default().accept_any_auth
         );
+        // The handshake deadline rides the same posture config as the rest
+        // of the SMTP knobs, in its CLI unit (milliseconds).
+        assert_eq!(cfg.smtp.tls_handshake_timeout, Duration::from_millis(2500));
     }
 
     #[test]
@@ -164,6 +184,15 @@ mod tests {
                 && args.max_per_inbox == 100_000
                 && args.data_file.is_none()
                 && args.tls_cert.is_none()
+                && args.tls_handshake_timeout_ms == 10_000
+        ));
+
+        // The handshake deadline is operator-tunable, in milliseconds.
+        let cli = Cli::try_parse_from(["swarmail", "serve", "--tls-handshake-timeout-ms", "1234"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Serve(args) if args.tls_handshake_timeout_ms == 1234
         ));
 
         let cli =

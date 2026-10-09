@@ -535,6 +535,15 @@ pub async fn starttls_discarding_pipelined(
     }
 }
 
+/// The raw socket of a session that has been offered TLS and never takes
+/// it: greeting read, EHLO answered, `STARTTLS` sent, `220 Ready` read —
+/// and then nothing. The handshake is stalled by hand; the caller holds
+/// the socket open to wait out the server's handshake deadline.
+pub async fn stalled_starttls(addr: std::net::SocketAddr) -> TcpStream {
+    let (tcp, _, _) = plaintext_starttls_phase(addr, &[]).await;
+    tcp
+}
+
 /// The client must refuse the handshake — wrong name or untrusted root —
 /// and the server then has no choice but to drop the session.
 pub async fn assert_starttls_handshake_fails(

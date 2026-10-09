@@ -8,7 +8,10 @@
 //! stays byte-identical when TLS is not configured, and with a certificate
 //! configured every command after the handshake is TLS-only — the session
 //! restarts per RFC 3207 §4.2, with everything the client said before the
-//! handshake discarded.
+//! handshake discarded. The handshake itself is bounded: a client that
+//! stalls mid-upgrade is dropped after `SmtpConfig::tls_handshake_timeout`
+//! instead of pinning its session task, while the plaintext idle posture
+//! (no read timeout at all) is untouched.
 
 use crate::chaos::{Chaos, ChaosEvent};
 use crate::extract::{extract_codes, extract_links};
@@ -21,6 +24,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -30,6 +34,11 @@ use tracing::debug;
 /// Hard cap on a single message (50 MiB).
 const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
 
+/// How long a STARTTLS handshake may take by default. A real rustls
+/// handshake over loopback is milliseconds; ten seconds already forgives a
+/// very slow peer while a stalled one cannot hold a session task forever.
+const DEFAULT_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Debug, Clone)]
 pub struct SmtpConfig {
     /// Hostname announced in the banner.
@@ -38,6 +47,12 @@ pub struct SmtpConfig {
     pub accept_any_auth: bool,
     /// Largest accepted DATA payload in bytes; larger gets 552.
     pub max_message_size: usize,
+    /// How long a STARTTLS handshake may take before the session is
+    /// dropped. A client that connects, greets and then goes silent
+    /// mid-upgrade must not be able to tie the session task up forever;
+    /// the deadline bounds exactly that wait and nothing else — the
+    /// pre-TLS plaintext idle posture stays unbounded, as ever.
+    pub tls_handshake_timeout: Duration,
 }
 
 impl Default for SmtpConfig {
@@ -46,6 +61,7 @@ impl Default for SmtpConfig {
             hostname: "swarmail.local".to_string(),
             accept_any_auth: true,
             max_message_size: MAX_MESSAGE_SIZE,
+            tls_handshake_timeout: DEFAULT_TLS_HANDSHAKE_TIMEOUT,
         }
     }
 }
@@ -281,7 +297,24 @@ async fn session(
                         // pipelined behind STARTTLS sits in the plaintext
                         // buffer and is dropped with the old transport.
                         let raw = reader.get_mut().take_plain()?;
-                        let upgraded = acc.accept(raw).await?;
+                        // The upgrade is bounded: a client that stalls
+                        // after the 220 — greeted, then silent — must not
+                        // tie this session task up forever. On elapse the
+                        // `Accept` future is dropped, taking the socket
+                        // with it: the peer sees the connection close and
+                        // the listener keeps serving.
+                        let upgraded =
+                            match tokio::time::timeout(cfg.tls_handshake_timeout, acc.accept(raw))
+                                .await
+                            {
+                                Ok(upgraded) => upgraded?,
+                                Err(_) => {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::TimedOut,
+                                        "STARTTLS handshake deadline elapsed",
+                                    ));
+                                }
+                            };
                         *reader = BufReader::new(Conn::Tls(Box::new(upgraded)));
                         // RFC 3207 §4.2: everything the client said before
                         // the handshake is forgotten — fresh envelope, fresh

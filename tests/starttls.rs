@@ -8,22 +8,36 @@
 //!   a TLS session still means the mail is queryable (decision 0001).
 //! - Every TLS error path ends cleanly: a cert the client refuses, a
 //!   malformed PEM file, half a pair.
+//! - A stalled handshake is closed by the deadline — a silent client
+//!   cannot tie a session task up forever — and the server serves on.
 
 mod common;
 
 use common::{
-    SmtpConn, assert_starttls_handshake_fails, http_json, start, start_with, starttls,
-    starttls_discarding_pipelined,
+    SmtpConn, assert_starttls_handshake_fails, http_json, stalled_starttls, start, start_with,
+    starttls, starttls_discarding_pipelined,
 };
 use std::path::PathBuf;
+use std::time::Duration;
 use swarmail::RunningServer;
 use swarmail::config::Config;
+use swarmail::smtp::SmtpConfig;
 use swarmail::tls::TlsConfig;
+use tokio::io::AsyncReadExt;
 use tokio_rustls::rustls::pki_types::CertificateDer;
 
 /// A server serving STARTTLS from a real PEM pair on disk, plus the cert
 /// the client must trust (the served one) and the scratch dir.
 async fn start_tls(name: &str) -> (RunningServer, CertificateDer<'static>, PathBuf) {
+    start_tls_cfg(name, SmtpConfig::default()).await
+}
+
+/// [`start_tls`] with an explicit SMTP posture — the handshake deadline
+/// knob among the rest of the `SmtpConfig` fields.
+async fn start_tls_cfg(
+    name: &str,
+    smtp: SmtpConfig,
+) -> (RunningServer, CertificateDer<'static>, PathBuf) {
     let pair = TlsConfig::generate_self_signed("localhost").unwrap();
     let dir = std::env::temp_dir().join(format!(
         "swarmail-starttls-{name}-{}-{}",
@@ -37,6 +51,7 @@ async fn start_tls(name: &str) -> (RunningServer, CertificateDer<'static>, PathB
     let server = start_with(|mut c| {
         c.tls_cert = Some(cert.clone());
         c.tls_key = Some(key.clone());
+        c.smtp = smtp;
         c
     })
     .await;
@@ -223,6 +238,69 @@ async fn a_client_that_refuses_the_cert_ends_the_session_and_the_server_serves_o
     let mut c = SmtpConn::connect(server.smtp_addr).await;
     c.send("NOOP").await;
     assert!(c.reply().await.starts_with("250"));
+}
+
+/// A client that stalls the handshake — greeted, `220 Ready` read, then
+/// silent, never a ClientHello — used to tie its session task up
+/// indefinitely (review finding from run
+/// starttls-self-signed-cert-genera-ef7796f0, src/smtp.rs:284). The
+/// deadline must close the stalled upgrade while the server keeps serving:
+/// a fresh plaintext session answers, and the acceptor still completes a
+/// real upgrade for a well-behaved client.
+#[tokio::test]
+async fn a_stalled_starttls_handshake_is_dropped_within_the_deadline() {
+    let deadline = Duration::from_millis(750);
+    let (server, root, _dir) = start_tls_cfg(
+        "stall",
+        SmtpConfig {
+            tls_handshake_timeout: deadline,
+            ..Default::default()
+        },
+    )
+    .await;
+
+    // Connect, EHLO, STARTTLS, 220 — then stall. No ClientHello ever.
+    let mut stalled = stalled_starttls(server.smtp_addr).await;
+
+    // The deadline is a grace period, not an instant close: a probe well
+    // inside it still finds the handshake in flight.
+    let mut probe = [0u8; 8];
+    let early = tokio::time::timeout(deadline / 5, stalled.read(&mut probe)).await;
+    assert!(
+        early.is_err(),
+        "the stalled handshake was dropped before the deadline: {early:?}"
+    );
+
+    // Then it must close, in bounded time — against the unbounded
+    // handshake this test was written for, this read hangs forever.
+    let mut buf = [0u8; 8];
+    let started = std::time::Instant::now();
+    let n = tokio::time::timeout(deadline * 5, stalled.read(&mut buf))
+        .await
+        .expect("the stalled handshake was never closed — the session task is still tied up")
+        .expect("the stalled handshake closed with an error, not cleanly");
+    assert_eq!(n, 0, "expected a clean EOF, got {n} bytes");
+    assert!(
+        started.elapsed() < deadline * 2,
+        "the close took {:?}, nowhere near the {deadline:?} deadline",
+        started.elapsed()
+    );
+
+    // The listener is unharmed: plaintext keeps serving, and a later
+    // upgrade still completes end to end.
+    let mut c = SmtpConn::connect(server.smtp_addr).await;
+    c.send("NOOP").await;
+    assert!(
+        c.reply().await.starts_with("250"),
+        "the listener must keep serving after a reaped handshake"
+    );
+
+    let mut tls = starttls(server.smtp_addr, "localhost", root).await;
+    tls.send("NOOP").await;
+    assert!(
+        tls.reply_raw().await.starts_with("250"),
+        "a later STARTTLS upgrade must still complete"
+    );
 }
 
 /// A malformed PEM, a missing file, or half a pair must refuse to serve at

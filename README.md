@@ -63,7 +63,10 @@ Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `1025`),
 `SWARMAIL_POP3_LISTEN` (default `1110`), `SWARMAIL_HTTP_LISTEN` (default `8025`),
 `SWARMAIL_MAX_PER_INBOX`
 (default `100000`, `0` = unlimited), `SWARMAIL_URL` (for the MCP stdio bridge),
-`SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY` (STARTTLS on the SMTP port).
+`SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY` (STARTTLS on the SMTP port),
+`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (default `10000` — a STARTTLS handshake
+that stalls past it is dropped; the plaintext session has no idle timeout
+and keeps none).
 
 ### STARTTLS
 
@@ -80,6 +83,14 @@ discarded, and every further command is TLS-only. A self-signed pair is the
 intended dev/test bootstrap; operators can hand it a real cert — the PEM pair
 is parsed before anything binds, so a malformed one refuses to serve rather
 than sitting half-alive.
+
+The upgrade itself is bounded: a client that connects, greets and then goes
+silent mid-handshake — no ClientHello, ever — is dropped after
+`--tls-handshake-timeout-ms` (default `10000`, i.e. 10 s) instead of pinning
+its session task, and the listener keeps serving. A real handshake is
+milliseconds; the deadline only exists so a stalled one cannot be held open
+forever. The pre-TLS plaintext session has no idle timeout and gains none —
+only the upgrade wait is bounded.
 
 ### Persistence across restarts
 
@@ -205,7 +216,7 @@ reset and magic-link flows without a human touching a browser tab.
 | MCP | `POST /mcp` (Streamable HTTP JSON-RPC) · `swarmail mcp` (stdio bridge) |
 | Machine docs | `/openapi.json` (3.1) · `/llms.txt` · `/metrics` (Prometheus) · `/healthz` |
 | Human UI | `/`, `/ui/inbox/{name}`, `/ui/inbox/{name}/thread/{key}`, `/ui/message/{id}` — zero frontend deps; the inbox and thread views update live from the SSE feed |
-| SMTP | `:1025` — EHLO, AUTH PLAIN/LOGIN (accept-any; username = inbox), PIPELINING, 8BITMIME, SMTPUTF8, SIZE, 50 MiB cap; optional STARTTLS (rustls/ring) |
+| SMTP | `:1025` — EHLO, AUTH PLAIN/LOGIN (accept-any; username = inbox), PIPELINING, 8BITMIME, SMTPUTF8, SIZE, 50 MiB cap; optional STARTTLS (rustls/ring) with a 10 s handshake deadline (`--tls-handshake-timeout-ms`) |
 | POP3 | `:1110` — RFC 1939 core + TOP/CAPA; the maildrop is an inbox (see *POP3*) |
 | MailHog / Mailpit shims | `/api/v1/messages` (GET/DELETE), `/api/v1/message/{id}[/plain\|/raw\|/headers]`, `/api/v1/messages/{id}[/plain\|/download]`, `/api/v1/search` · `/api/v2/search`, `/api/v1/delete-all` — see *MailHog / Mailpit API shims* |
 
@@ -289,7 +300,7 @@ production code cannot shrink the denominator. The suite that carries it:
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
 | `tests/webhook.rs` | delivery with secret, pathless target, the 4-attempt retry budget, https over a real TLS server (handshake-failure + refused-connection paths) |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
-| `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart (pipelined plaintext discarded), refused certs, malformed PEM refusal |
+| `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart (pipelined plaintext discarded), refused certs, stalled handshake closed by the deadline, malformed PEM refusal |
 | `tests/lifecycle.rs` | graceful stop: serve futures return, ports release |
 | `tests/binary.rs` | the shipped binary: SIGINT → clean exit, mcp EOF → 0 |
 | `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT |
