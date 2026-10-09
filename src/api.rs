@@ -9,7 +9,7 @@ use crate::smtp;
 use crate::store::{Filter, Store, WaitOutcome};
 use crate::threads;
 use crate::ui;
-use crate::webhook::{WebhookTarget, Webhooks};
+use crate::webhook::{WebhookTarget, Webhooks, ca_cache_stats};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -179,6 +179,7 @@ async fn healthz(State(state): State<AppState>) -> Json<serde_json::Value> {
 async fn metrics(State(state): State<AppState>) -> String {
     let inboxes = state.store.inboxes();
     let stored: usize = inboxes.iter().map(|(_, c)| c).sum();
+    let ca_cache = ca_cache_stats();
     let rows = [
         (
             "counter",
@@ -192,6 +193,23 @@ async fn metrics(State(state): State<AppState>) -> String {
         ),
         ("gauge", "swarmail_emails_stored", stored.to_string()),
         ("gauge", "swarmail_inboxes", inboxes.len().to_string()),
+        // The per-PEM webhook client cache is bounded; these let an operator
+        // watch the bound hold and see evictions happen (never above 32).
+        (
+            "gauge",
+            "swarmail_webhook_ca_cache_entries",
+            ca_cache.entries.to_string(),
+        ),
+        (
+            "counter",
+            "swarmail_webhook_ca_cache_builds_total",
+            ca_cache.builds.to_string(),
+        ),
+        (
+            "counter",
+            "swarmail_webhook_ca_cache_evictions_total",
+            ca_cache.evictions.to_string(),
+        ),
     ];
     rows.iter()
         .map(|(kind, name, value)| format!("# TYPE {name} {kind}\n{name} {value}\n"))

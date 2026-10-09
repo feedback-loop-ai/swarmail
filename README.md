@@ -240,7 +240,13 @@ secret in `X-Swarmail-Secret` — queued, retried (100 ms → 1.6 s), and never
 blocking the SMTP path. Delivered via reqwest + rustls: `http://` targets
 stay plain, `https://` targets are TLS with certificate verification on —
 hand a self-signed test server its own CA through the target's optional
-`ca_pem` (PEM of a root to trust on top of the built-in root store).
+`ca_pem` (PEM of a root to trust on top of the built-in root store). Clients
+pinned to a `ca_pem` are cached per PEM under a fixed bound of 32
+(`swarmail::webhook::CA_CLIENT_CAP`): the least-recently-used build is
+evicted and that root's next delivery simply rebuilds its client — the
+built-in root store's client sits outside the cache and is built once.
+`swarmail_webhook_ca_cache_{entries,builds_total,evictions_total}` on
+`/metrics` lets you watch the bound hold.
 
 ## Guarantees
 

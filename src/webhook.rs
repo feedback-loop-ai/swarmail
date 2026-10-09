@@ -6,11 +6,14 @@
 //! `ca_pem` (the self-signed test-server case). No native-tls anywhere in
 //! the tree. The wire header names are lowercased by hyper; HTTP/1.1 names
 //! are case-insensitive, so the secret arrives under `X-Swarmail-Secret`
-//! regardless of case.
+//! regardless of case. The per-root clients are cached, but under a fixed
+//! bound with least-recently-used eviction — a long-lived server pointed at
+//! many distinct roots must not grow the cache without limit.
 
 use crate::store::Store;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
@@ -21,12 +24,82 @@ const POST_TIMEOUT: Duration = Duration::from_secs(5);
 /// The client for targets that trust the built-in root store, built once.
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+/// How many distinct root PEMs the per-PEM client cache may hold. A fixed
+/// small bound: a long-lived server pointed at many distinct CAs (or, if a
+/// config surface lets a caller choose PEMs, at attacker-chosen ones) must
+/// not grow the cache without limit. 32 is far above any real deployment's
+/// root count and small enough that the linear recency scan below is free.
+/// Eviction is least-recently-used; the evicted root's next delivery simply
+/// rebuilds its client. Surfaced on `/metrics` as
+/// `swarmail_webhook_ca_cache_*`.
+pub const CA_CLIENT_CAP: usize = 32;
+
+/// The bounded per-PEM client cache: clients keyed by their root PEM, plus
+/// those keys in recency order (front = least recently used) so eviction is
+/// deterministic. One mutex guards both, so the map and the order can never
+/// drift apart.
+#[derive(Default)]
+struct CaCache {
+    clients: HashMap<String, reqwest::Client>,
+    lru: VecDeque<String>,
+}
+
 /// Clients pinned to an extra root CA, keyed by that root's PEM. A `ca_pem`
 /// target gets its own client so its root never leaks into other targets.
-static CA_CLIENTS: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+static CA_CLIENTS: OnceLock<Mutex<CaCache>> = OnceLock::new();
 
-fn ca_clients() -> &'static Mutex<HashMap<String, reqwest::Client>> {
+fn ca_clients() -> &'static Mutex<CaCache> {
     CA_CLIENTS.get_or_init(Mutex::default)
+}
+
+/// Cache observability, production-honest: cumulative build and eviction
+/// counters since process start, exposed through [`ca_cache_stats`] and
+/// `/metrics`, so the bound is checkable from outside the process rather
+/// than only from tests. Relaxed ordering suffices: the counters are
+/// independent observations, nothing is ordered behind them.
+static CA_CACHE_BUILDS: AtomicU64 = AtomicU64::new(0);
+static CA_CACHE_EVICTIONS: AtomicU64 = AtomicU64::new(0);
+
+/// A snapshot of the per-PEM client cache: its current size and the
+/// cumulative counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaCacheStats {
+    /// Distinct root PEMs currently cached — never above `CA_CLIENT_CAP`.
+    pub entries: usize,
+    /// Client builds since process start: cold roots and rebuilds after an
+    /// eviction. A cache hit never increments this.
+    pub builds: u64,
+    /// Least-recently-used evictions since process start.
+    pub evictions: u64,
+}
+
+/// Introspection for the bounded per-PEM client cache. `/metrics` surfaces
+/// the same numbers as `swarmail_webhook_ca_cache_*`.
+pub fn ca_cache_stats() -> CaCacheStats {
+    let cache = ca_clients().lock().unwrap();
+    CaCacheStats {
+        entries: cache.clients.len(),
+        builds: CA_CACHE_BUILDS.load(Ordering::Relaxed),
+        evictions: CA_CACHE_EVICTIONS.load(Ordering::Relaxed),
+    }
+}
+
+/// Move `pem` to the most-recently-used end. A linear scan over at most
+/// `CA_CLIENT_CAP` keys beats a linked list at this size.
+fn touch_lru(lru: &mut VecDeque<String>, pem: &str) {
+    if let Some(pos) = lru.iter().position(|k| k == pem) {
+        let key = lru.remove(pos).expect("the position came from this deque");
+        lru.push_back(key);
+    }
+}
+
+/// Evict the least-recently-used build. The deque holds exactly the cached
+/// keys, so its front always resolves to a live entry.
+fn evict_lru(cache: &mut CaCache) {
+    if let Some(oldest) = cache.lru.pop_front() {
+        cache.clients.remove(&oldest);
+        CA_CACHE_EVICTIONS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,14 +235,19 @@ fn shared_client() -> reqwest::Client {
 }
 
 /// Pick the client for a target: the shared rustls client, or one pinned to
-/// the target's own root CA, cached by PEM so retries reuse it.
+/// the target's own root CA, cached by PEM so retries reuse it. The cache is
+/// bounded at [`CA_CLIENT_CAP`] with least-recently-used eviction: a cold
+/// PEM beyond the cap retires the oldest build, and an evicted PEM's next
+/// delivery simply rebuilds its client — never a failed delivery. The
+/// built-in-roots client stays outside the cache and is built once.
 fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
     let Some(pem) = ca_pem else {
         return Ok(shared_client());
     };
     let mut cache = ca_clients().lock().unwrap();
-    if let Some(client) = cache.get(pem) {
-        return Ok(client.clone());
+    if let Some(client) = cache.clients.get(pem).cloned() {
+        touch_lru(&mut cache.lru, pem);
+        return Ok(client);
     }
     let root = reqwest::Certificate::from_pem(pem.as_bytes())
         .map_err(|e| format!("webhook ca_pem is not a valid PEM certificate: {e}"))?;
@@ -179,7 +257,12 @@ fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
         .add_root_certificate(root)
         .build()
         .map_err(|e| format!("webhook ca_pem could not be loaded into the rustls client: {e}"))?;
-    cache.insert(pem.to_string(), client.clone());
+    if cache.clients.len() >= CA_CLIENT_CAP {
+        evict_lru(&mut cache); // make room: the least-recently-used build goes
+    }
+    cache.clients.insert(pem.to_string(), client.clone());
+    cache.lru.push_back(pem.to_string());
+    CA_CACHE_BUILDS.fetch_add(1, Ordering::Relaxed);
     Ok(client)
 }
 
@@ -304,12 +387,138 @@ mod delivery_tests {
     use super::*;
 
     /// A minimal but real self-signed CA, PEM-encoded, for client tests.
+    /// Every call mints a fresh key, so every call yields a PEM that is
+    /// globally distinct — a brand-new cache key each time.
     fn ca_pem() -> String {
         let key = rcgen::KeyPair::generate().unwrap();
         let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
         params.self_signed(&key).unwrap().pem()
+    }
+
+    /// The per-PEM cache is process-global, so cache-touching tests
+    /// serialize on this: one test's eviction flood must not pull another
+    /// test's PEM out from under a precise counter assertion.
+    static CACHE_TESTS: Mutex<()> = Mutex::new(());
+
+    /// The shared client for `ca_pem: None` stays outside the cache; a cold
+    /// PEM builds once; the same PEM again is a hit that rebuilds nothing.
+    #[test]
+    fn clients_are_cached_per_ca() {
+        let _g = CACHE_TESTS.lock().unwrap();
+        let pem = ca_pem();
+        let before = ca_cache_stats();
+
+        client_for(Some(&pem)).unwrap();
+        let built = ca_cache_stats();
+        assert_eq!(built.builds, before.builds + 1, "a cold PEM builds once");
+        assert_eq!(
+            built.entries,
+            (before.entries + 1).min(CA_CLIENT_CAP),
+            "the PEM is cached, within the bound (an insert at the cap evicts, not grows)"
+        );
+
+        client_for(Some(&pem)).unwrap();
+        let hit = ca_cache_stats();
+        assert_eq!(
+            hit.builds, built.builds,
+            "the same PEM must reuse the client, not rebuild"
+        );
+        assert_eq!(
+            hit.entries, built.entries,
+            "a hit does not change the cache size"
+        );
+
+        client_for(None).unwrap();
+        let shared = ca_cache_stats();
+        assert_eq!(
+            shared.builds, hit.builds,
+            "the built-in-roots client is outside the cache: no build"
+        );
+        assert_eq!(
+            shared.entries, hit.entries,
+            "the built-in-roots client is not cached"
+        );
+    }
+
+    /// The cache never exceeds its cap, however many distinct PEMs arrive:
+    /// each cold root beyond the cap evicts the least-recently-used build.
+    /// Observable through the production stats hook (`/metrics` surfaces
+    /// the same counters) — no test-only introspection.
+    #[test]
+    fn cache_stays_within_the_cap_and_counts_evictions() {
+        let _g = CACHE_TESTS.lock().unwrap();
+        let before = ca_cache_stats();
+
+        // More distinct cold roots than the cache can hold, all built once.
+        for _ in 0..CA_CLIENT_CAP + 8 {
+            client_for(Some(&ca_pem())).unwrap();
+        }
+
+        let after = ca_cache_stats();
+        assert!(
+            after.entries <= CA_CLIENT_CAP,
+            "the cache must never exceed its cap, saw {}",
+            after.entries
+        );
+        assert_eq!(
+            after.entries, CA_CLIENT_CAP,
+            "a flood of distinct roots fills the cache exactly to the cap"
+        );
+        // At least 8 of the cap+8 cold roots had to retire something: the
+        // cache held `before.entries <= cap` keys and ends at the cap.
+        let evicted = after.evictions - before.evictions;
+        assert!(
+            evicted >= 8,
+            "distinct roots beyond the cap must have evicted, saw only {evicted}"
+        );
+        assert_eq!(
+            after.builds,
+            before.builds + CA_CLIENT_CAP as u64 + 8,
+            "each distinct cold PEM built exactly once"
+        );
+    }
+
+    /// Eviction is least-recently-used, deterministically: a root that keeps
+    /// being used survives a wave of cold roots that retires its untouched
+    /// older neighbor — and the retired neighbor's next delivery still
+    /// works, by rebuilding.
+    #[test]
+    fn eviction_is_least_recently_used_and_the_evicted_pem_rebuilds() {
+        let _g = CACHE_TESTS.lock().unwrap();
+
+        // Fill the cache exactly, on top of whatever earlier tests left:
+        // cap fresh roots always end at the cap, whoever came before.
+        for _ in 0..CA_CLIENT_CAP {
+            client_for(Some(&ca_pem())).unwrap();
+        }
+
+        let touched = ca_pem();
+        let older = ca_pem();
+        client_for(Some(&touched)).unwrap();
+        client_for(Some(&older)).unwrap();
+        client_for(Some(&touched)).unwrap(); // touched is now MRU; older is not
+
+        // cap-1 further cold builds: each retires the current LRU, working
+        // forward to `older`. `touched`, being more recent, is still cached.
+        for _ in 0..CA_CLIENT_CAP - 1 {
+            client_for(Some(&ca_pem())).unwrap();
+        }
+
+        let builds = ca_cache_stats().builds;
+        client_for(Some(&touched)).unwrap();
+        assert_eq!(
+            ca_cache_stats().builds,
+            builds,
+            "the recently-used root must survive the wave: a hit, no rebuild"
+        );
+        client_for(Some(&older)).unwrap();
+        assert_eq!(
+            ca_cache_stats().builds,
+            builds + 1,
+            "the untouched older root must have been evicted, and its next use rebuilds"
+        );
     }
 
     /// A URL that does not parse at all is a delivery error, not a panic.
@@ -333,17 +542,5 @@ mod delivery_tests {
     async fn bad_ca_pem_is_an_error() {
         let err = client_for(Some("-----BEGIN CERTIFICATE-----\nnope")).unwrap_err();
         assert!(err.contains("ca_pem"), "{err}");
-    }
-
-    /// The client cache: one client per distinct CA PEM, the shared client
-    /// for targets without one.
-    #[tokio::test]
-    async fn clients_are_cached_per_ca() {
-        let pem = ca_pem();
-        client_for(None).unwrap();
-        client_for(Some(&pem)).unwrap();
-        client_for(Some(&pem)).unwrap(); // same PEM → cache hit, not a rebuild
-        assert_eq!(ca_clients().lock().unwrap().len(), 1);
-        client_for(None).unwrap();
     }
 }

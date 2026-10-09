@@ -51,6 +51,11 @@ async fn metrics_exposes_counters_and_gauges() {
         "# TYPE swarmail_emails_dropped_total counter",
         "# TYPE swarmail_emails_stored gauge",
         "swarmail_inboxes 1",
+        // The bounded per-PEM webhook client cache: an operator can watch
+        // the cap hold and evictions happen.
+        "# TYPE swarmail_webhook_ca_cache_entries gauge",
+        "# TYPE swarmail_webhook_ca_cache_builds_total counter",
+        "# TYPE swarmail_webhook_ca_cache_evictions_total counter",
     ] {
         assert!(text.contains(needle), "metrics missing {needle}:\n{text}");
     }

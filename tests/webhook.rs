@@ -1,11 +1,12 @@
 //! Webhook delivery: the happy path (including a pathless target URL), the
 //! retry budget against a target that always refuses — over plain HTTP and
 //! over TLS (reqwest + rustls, verification on) — and the redirect contract:
-//! a 3xx target takes the secret nowhere.
+//! a 3xx target takes the secret nowhere. Plus the bounded per-PEM client
+//! cache: more distinct roots than the cap still deliver, every one of them.
 
 mod common;
 
-use common::{http_json, smtp_send, start};
+use common::{http_get_text, http_json, smtp_send, start};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -583,4 +584,103 @@ async fn redirect_307_never_leaks_the_secret_or_body_to_the_destination() {
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1, "retries must not touch the store");
+}
+
+/// The value of a Prometheus metric line from a `/metrics` body.
+fn metric(text: &str, name: &str) -> u64 {
+    for line in text.lines().filter(|l| !l.starts_with('#')) {
+        let mut parts = line.split_whitespace();
+        if parts.next() == Some(name) {
+            return parts
+                .next()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("metric {name} carries no value:\n{text}"));
+        }
+    }
+    panic!("metrics missing {name}:\n{text}");
+}
+
+/// The per-PEM client cache is bounded: one more distinct root than the cap
+/// forces evictions, and every delivery still succeeds — an evicted root's
+/// client is rebuilt on its next delivery, never a failed delivery. One mail
+/// fans out to 33 real TLS servers, each with its own freshly minted CA, so
+/// the dispatcher must cycle the whole cache and rebuild on the way. On the
+/// old unbounded cache this is red: `/metrics` carried no ca_cache counters,
+/// and nothing kept `entries` at the cap.
+#[tokio::test]
+async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
+    let srv = start().await;
+    // Cap + 1 distinct roots: eviction is unavoidable, correctness is not
+    // optional.
+    let count = swarmail::webhook::CA_CLIENT_CAP + 1;
+
+    // A real TLS server per root: its own CA, a leaf for 127.0.0.1, one
+    // 204 per connection. Bound them all before registering any target.
+    let mut sinks = Vec::new();
+    for _ in 0..count {
+        let (ca_pem, leaf, leaf_key) = mint_cert();
+        let (addr, rx, _) = tls_sink(
+            b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+            leaf,
+            leaf_key,
+            1,
+        )
+        .await;
+        sinks.push((ca_pem, addr, rx));
+    }
+
+    let targets: Vec<serde_json::Value> = sinks
+        .iter()
+        .map(|(ca_pem, addr, _)| {
+            serde_json::json!({
+                "url": format!("https://127.0.0.1:{}/hook", addr.port()),
+                "ca_pem": ca_pem,
+            })
+        })
+        .collect();
+    let body = serde_json::to_string(&targets).unwrap();
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+    assert_eq!(st, 200);
+
+    // One accepted mail fans out to every target: 33 distinct ca_pems go
+    // through the cache in one dispatcher pass.
+    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "cachebound", "x")
+        .await
+        .unwrap();
+
+    // Every one of the `count` deliveries must have happened over real TLS:
+    // an empty `tls` capture would mean its handshake was rejected.
+    for (i, (_, _, rx)) in sinks.into_iter().enumerate() {
+        let captured = tokio::time::timeout(Duration::from_secs(15), rx)
+            .await
+            .unwrap_or_else(|_| panic!("delivery {i} timed out"))
+            .unwrap();
+        assert!(
+            captured.tls.contains("TLSv1"),
+            "delivery {i} was not over TLS: {captured:?}"
+        );
+        assert!(
+            captured.head.contains("\"event\":\"received\""),
+            "delivery {i} carried no payload: {captured:?}"
+        );
+    }
+
+    // The production-honest introspection: the bound held and eviction
+    // happened, observable from outside the process like any operator would.
+    let (st, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    assert_eq!(st, 200);
+    let entries = metric(&metrics, "swarmail_webhook_ca_cache_entries");
+    assert_eq!(
+        entries,
+        swarmail::webhook::CA_CLIENT_CAP as u64,
+        "the cache must sit exactly at its cap after {count} distinct roots"
+    );
+    assert!(
+        metric(&metrics, "swarmail_webhook_ca_cache_evictions_total") >= 1,
+        "distinct roots beyond the cap must have evicted:\n{metrics}"
+    );
+    assert!(
+        metric(&metrics, "swarmail_webhook_ca_cache_builds_total") >= count as u64,
+        "every distinct root must have built its client:\n{metrics}"
+    );
 }
