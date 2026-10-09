@@ -334,13 +334,40 @@ docker build -t swarmail .    # scratch image ≈ binary size
 - The store is synchronous by design: `Store::insert` returning == the mail is queryable
 - CI: fmt + clippy `-D warnings` + test on every push; coverage summary + ghcr image on `main`
 
+## Publishing
+
+The crate ships to [crates.io](https://crates.io/crates/swarmail) from the
+repo root. The packaged file set is curated in `Cargo.toml`
+([`include`](https://doc.rust-lang.org/cargo/reference/manifest.html#the-exclude-and-include-fields)):
+the registry gets the sources, the embedded static assets, the real-protocol
+test suites, the criterion bench, both license texts (`LICENSE-MIT`,
+`LICENSE-APACHE`) and the README — not the delivery constitution, the brokkr
+seats or the CI workflow.
+
+```bash
+cargo login <token>          # an operator's crates.io token — never committed
+cargo publish --dry-run --locked   # optional: prove it before the act
+cargo publish --locked       # the act itself
+```
+
+`--locked` publishes exactly the dependency graph `Cargo.lock` pins — the same
+one every gate in this repo runs against — and the dry run builds the
+packaged sources standalone before anything is uploaded.
+
+**Version policy:** version bumps go through the release workflow — never
+hand-edit `version` in `Cargo.toml`, and never hand-craft a package (the
+lockfile and the release notes in `docs/releases/` must move together).
+Historical release notes are frozen: append a new `docs/releases/vX.Y.Z.md`,
+never edit a shipped one.
+
 ## Roadmap
 
 - [x] STARTTLS + self-signed cert generation
 - [x] HTTPS webhook targets (reqwest + rustls)
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [x] POP3 server; MailHog/Mailpit API compat shims
-- [ ] crates.io publish
+- [ ] crates.io publish — the package is publish-ready (see *Publishing*);
+  the operator runs `cargo publish --locked` with their token
 - [x] UI: live-updating inbox view, message threads — grouped by
   References/In-Reply-To chains with normalized-subject fallback
   (`…/{inbox}/threads`), pushed live over SSE (`…/{inbox}/feed`)

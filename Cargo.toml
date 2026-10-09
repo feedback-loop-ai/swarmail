@@ -8,6 +8,27 @@ repository = "https://github.com/feedback-loop-ai/swarmail"
 readme = "README.md"
 keywords = ["smtp", "email", "testing", "mock", "mcp"]
 categories = ["email", "development-tools::testing"]
+# The published .crate is the crate, not the repo: without an explicit
+# include, packaging pulls in the delivery constitution (bundle.json,
+# policy.json, realms.json), the brokkr seats and decisions, the CI
+# workflow and the Dockerfile — repo furniture a crates.io consumer never
+# needs. Everything the crate is (sources, embedded static assets, the
+# real-protocol test suites, the criterion bench, the license texts and the
+# readme) is listed; everything else stays out. Root-level entries are
+# anchored (`./name`) because an unanchored pattern matches its basename at
+# any depth (agents/README.md would ride along with "README.md").
+# Cargo.lock ships so `--locked` publishes the exact dependency graph CI
+# gates against.
+include = [
+    "src/**",
+    "tests/**",
+    "benches/**",
+    "./Cargo.toml",
+    "./Cargo.lock",
+    "./README.md",
+    "./LICENSE-MIT",
+    "./LICENSE-APACHE",
+]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "signal", "io-std"] }
