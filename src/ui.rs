@@ -53,7 +53,7 @@ fn shell(title: &str, view: String) -> Html<String> {
     page(
         title,
         format!(
-            r#"{view}<noscript><div class="card muted">This view is live and needs JavaScript; the JSON API works without it.</div></noscript>{SCRIPT}"#
+            r#"{view}<noscript><div class="card muted">This view is live and needs JavaScript; the JSON API works without it.</div></noscript><script>{SCRIPT}</script>"#
         ),
     )
 }

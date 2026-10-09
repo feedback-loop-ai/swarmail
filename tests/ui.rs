@@ -47,6 +47,80 @@ async fn send_headers(
     assert!(reply.starts_with("250"), "DATA refused: {reply}");
 }
 
+/// The inner source of every `<script>…</script>` element in a served page,
+/// in document order. The markup is machine-generated and every piece of
+/// mail-controlled text is escaped before it is interpolated, so the scan can
+/// be strict: an open tag ends at its `>`, the element at the first
+/// `</script>` — a sequence the shipped script cannot contain, which is what
+/// makes inlining it safe at all.
+fn script_elements(page: &str) -> Vec<&str> {
+    let mut scripts = Vec::new();
+    let mut rest = page;
+    while let Some(open) = rest.find("<script") {
+        let tail = &rest[open..];
+        let Some(gt) = tail.find('>') else { break };
+        let body = &tail[gt + 1..];
+        let Some(end) = body.find("</script>") else {
+            break;
+        };
+        scripts.push(&body[..end]);
+        rest = &body[end + "</script>".len()..];
+    }
+    scripts
+}
+
+/// The one `<script>` element of a live view, asserted to be executable
+/// wiring and not inert text: it binds the view element, reads the
+/// server-rendered state out of it, builds real API paths, goes live through
+/// an `EventSource`, and paints mail through `textContent` only. This is the
+/// assertion the reviewed defect defeats: JS that is merely *contained* in
+/// the page never executes, so the script must be a parsed element.
+fn the_executable_script(page: &str) -> &str {
+    let scripts = script_elements(page);
+    assert_eq!(scripts.len(), 1, "exactly one script element: {page}");
+    let script = scripts[0];
+    assert!(
+        script.contains("document.getElementById('view')"),
+        "the script binds the view element: {script}"
+    );
+    assert!(
+        script.contains("dataset.inbox"),
+        "the script reads the server-rendered state: {script}"
+    );
+    assert!(
+        script.contains("'/api/v1/inboxes/'"),
+        "the script builds API paths: {script}"
+    );
+    assert!(
+        script.contains("new EventSource("),
+        "the page goes live through an EventSource: {script}"
+    );
+    assert!(
+        script.contains("textContent"),
+        "mail text is painted textContent-only: {script}"
+    );
+    assert!(
+        !script.contains(".innerHTML"),
+        "no markup from mail: {script}"
+    );
+    script
+}
+
+/// The value of `name="…"` in the served markup — the state the script
+/// receives besides the API paths it builds. Attribute values are escaped,
+/// so the first `"` after the needle always closes it.
+fn attr(page: &str, name: &str) -> String {
+    let needle = format!(r#"{name}=""#);
+    let at = page
+        .find(&needle)
+        .unwrap_or_else(|| panic!("{name} missing from: {page}"));
+    let rest = &page[at + needle.len()..];
+    let end = rest
+        .find('"')
+        .unwrap_or_else(|| panic!("{name} unterminated in: {page}"));
+    rest[..end].to_string()
+}
+
 #[tokio::test]
 async fn index_lists_inboxes() {
     let srv = start().await;
@@ -74,40 +148,86 @@ async fn index_shows_the_empty_state_before_any_mail() {
 #[tokio::test]
 async fn inbox_view_is_a_live_shell_wired_to_the_api_and_feed() {
     let srv = start().await;
-    seed(
-        srv.http_addr,
-        "iv",
-        r#"{"to": "u@x.io", "subject": "inbox view", "text": "plain body"}"#,
+    // The first mail lands over real SMTP before the page is even fetched:
+    // both the script's initial fetch and the feed snapshot must carry it.
+    smtp_send(
+        srv.smtp_addr,
+        Some("iv"),
+        "s@x.io",
+        "r@x.io",
+        "inbox view",
+        "body",
     )
-    .await;
+    .await
+    .unwrap();
 
-    // The shell ships wiring, not mail: the subject is the API's job now.
     let (st, page) = http_get_text(srv.http_addr, "/ui/inbox/iv").await;
     assert_eq!(st, 200);
+    // The shell ships wiring, not mail: the subject is the API's job now.
     assert!(page.contains(r#"data-inbox="iv""#), "{page}");
-    assert!(
-        page.contains("EventSource"),
-        "the page must go live: {page}"
-    );
-    assert!(
-        page.contains("/api/v1/inboxes/"),
-        "the page fetches the API: {page}"
-    );
     assert!(
         !page.contains("inbox view"),
         "no server-rendered mail: {page}"
     );
+    let script = the_executable_script(&page);
 
-    // The data the shell paints is one GET away — the exact endpoint above.
+    // The feed the script opens — `api('feed')` resolved against the view's
+    // data-inbox — exists and streams: the snapshot carries the mail
+    // accepted above, and a further insert is pushed without any poll.
+    assert!(
+        script.contains("api('feed')"),
+        "the script opens the feed: {script}"
+    );
+    let feed_path = format!("/api/v1/inboxes/{}/feed", attr(&page, "data-inbox"));
+    let mut feed = SseReader::open(srv.http_addr, &feed_path).await;
+    let (event, data) = feed.next_frame().await;
+    assert_eq!(
+        event, "threads",
+        "the wire event the script listens for: {data}"
+    );
+    let snapshot: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!(
+        snapshot[0]["subject"], "inbox view",
+        "the snapshot is the thread view the page paints: {data}"
+    );
+
+    smtp_send(
+        srv.smtp_addr,
+        Some("iv"),
+        "s@x.io",
+        "r@x.io",
+        "pushed live",
+        "body",
+    )
+    .await
+    .unwrap();
+    let (event, data) = feed.next_frame().await;
+    assert_eq!(event, "threads");
+    let pushed: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!(
+        pushed[0]["subject"], "pushed live",
+        "the push carries the mail accepted over SMTP: {data}"
+    );
+
+    // The grouping the page renders is exactly the threads API's answer:
+    // one conversation per subject, newest thread first.
     let (st, threads) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/iv/threads", None).await;
     assert_eq!(st, 200);
-    assert_eq!(threads[0]["subject"], "inbox view");
+    let threads = threads.as_array().unwrap();
+    assert_eq!(
+        threads.len(),
+        2,
+        "two mails, two conversations: {threads:?}"
+    );
+    assert_eq!(threads[0]["subject"], "pushed live");
     assert_eq!(threads[0]["count"], 1);
+    assert_eq!(threads[1]["subject"], "inbox view");
 
     // The empty inbox ships the same wiring; its empty state is painted live.
     let (st, page) = http_get_text(srv.http_addr, "/ui/inbox/empty-inbox").await;
     assert_eq!(st, 200);
     assert!(page.contains(r#"data-inbox="empty-inbox""#), "{page}");
+    the_executable_script(&page);
     assert!(
         !page.contains("is empty"),
         "the empty state is a live paint: {page}"
@@ -117,14 +237,76 @@ async fn inbox_view_is_a_live_shell_wired_to_the_api_and_feed() {
 #[tokio::test]
 async fn thread_view_is_a_live_shell_for_one_conversation() {
     let srv = start().await;
-    let (st, page) = http_get_text(srv.http_addr, "/ui/inbox/iv/thread/somekey").await;
+    // A real conversation over SMTP, so the page has a thread to render.
+    send_headers(
+        srv.smtp_addr,
+        "tv",
+        &[("Message-ID", "<root@x.io>")],
+        "Kickoff",
+    )
+    .await;
+    send_headers(
+        srv.smtp_addr,
+        "tv",
+        &[("Message-ID", "<re@x.io>"), ("In-Reply-To", "<root@x.io>")],
+        "Re: Kickoff",
+    )
+    .await;
+    let (_, threads) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/tv/threads", None).await;
+    let key = threads[0]["key"].as_str().unwrap().to_string();
+
+    let (st, page) = http_get_text(srv.http_addr, &format!("/ui/inbox/tv/thread/{key}")).await;
     assert_eq!(st, 200);
-    assert!(page.contains(r#"data-inbox="iv""#), "{page}");
-    assert!(page.contains(r#"data-thread="somekey""#), "{page}");
+    assert!(page.contains(r#"data-inbox="tv""#), "{page}");
+    assert!(page.contains(&format!(r#"data-thread="{key}""#)), "{page}");
+    // The same executable-wiring contract as the inbox view — and the fetch
+    // it issues resolves from the data-thread attribute above.
+    let script = the_executable_script(&page);
     assert!(
-        page.contains("EventSource"),
-        "the thread stays live too: {page}"
+        script.contains("'threads/' + encodeURIComponent(threadKey)"),
+        "the script fetches the conversation endpoint: {script}"
     );
+
+    // The conversation the page paints is exactly what that endpoint
+    // returns: one thread, oldest first.
+    let thread_path = format!(
+        "/api/v1/inboxes/{}/threads/{}",
+        attr(&page, "data-inbox"),
+        attr(&page, "data-thread")
+    );
+    let (st, thread) = http_json(srv.http_addr, "GET", &thread_path, None).await;
+    assert_eq!(st, 200);
+    let emails = thread["emails"].as_array().unwrap();
+    assert_eq!(emails.len(), 2, "the page renders the API's grouping");
+    assert_eq!(emails[0]["subject"], "Kickoff");
+    assert_eq!(emails[1]["subject"], "Re: Kickoff");
+
+    // And the conversation stays live: the feed pushes the wire event the
+    // script listens for, carrying the thread the page filters for — its own
+    // data-thread key.
+    let feed_path = format!("/api/v1/inboxes/{}/feed", attr(&page, "data-inbox"));
+    let mut feed = SseReader::open(srv.http_addr, &feed_path).await;
+    assert_eq!(feed.next_frame().await.0, "threads", "snapshot first");
+    send_headers(
+        srv.smtp_addr,
+        "tv",
+        &[
+            ("Message-ID", "<third@x.io>"),
+            ("In-Reply-To", "<root@x.io>"),
+        ],
+        "Re: Kickoff again",
+    )
+    .await;
+    let (event, data) = feed.next_frame().await;
+    assert_eq!(event, "threads");
+    let pushed: serde_json::Value = serde_json::from_str(&data).unwrap();
+    let live = pushed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["key"] == key.as_str())
+        .unwrap_or_else(|| panic!("the pushed view lost the page's thread: {data}"));
+    assert_eq!(live["count"], 3, "the page's thread grew: {data}");
 }
 
 #[tokio::test]
@@ -371,5 +553,11 @@ async fn ui_is_escaped_not_injected() {
     assert!(
         !page.contains("<script>alert"),
         "subject was injected: {page}"
+    );
+    // Stronger than the string check: the message view ships no script
+    // element at all, so nothing on it is executable even in principle.
+    assert!(
+        script_elements(&page).is_empty(),
+        "the message view must not ship a script: {page}"
     );
 }
