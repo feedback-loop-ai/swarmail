@@ -13,21 +13,23 @@ categories = ["email", "development-tools::testing"]
 # policy.json, realms.json), the brokkr seats and decisions, the CI
 # workflow and the Dockerfile — repo furniture a crates.io consumer never
 # needs. Everything the crate is (sources, embedded static assets, the
-# real-protocol test suites, the criterion bench, the license texts and the
-# readme) is listed; everything else stays out. Root-level entries are
-# anchored (`./name`) because an unanchored pattern matches its basename at
-# any depth (agents/README.md would ride along with "README.md").
+# real-protocol test suites, the criterion bench, the license texts) is
+# listed; everything else stays out. Cargo.toml, Cargo.lock and README.md
+# ride along automatically (the manifest, the lockfile and the file the
+# `readme` field points at) and must NOT be listed: a `./name` pattern
+# matches nothing — cargo matches patterns against paths without the `./`
+# prefix, so `./LICENSE-MIT` silently packaged no license text at all —
+# while a bare `README.md` would also sweep in agents/README.md.
+# `LICENSE-MIT` / `LICENSE-APACHE` are basename-unique (decision 0006
+# keeps these names), so the bare file names match exactly.
 # Cargo.lock ships so `--locked` publishes the exact dependency graph CI
 # gates against.
 include = [
     "src/**",
     "tests/**",
     "benches/**",
-    "./Cargo.toml",
-    "./Cargo.lock",
-    "./README.md",
-    "./LICENSE-MIT",
-    "./LICENSE-APACHE",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
 ]
 
 [dependencies]

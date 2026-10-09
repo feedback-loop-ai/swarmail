@@ -354,11 +354,14 @@ cargo publish --locked       # the act itself
 one every gate in this repo runs against — and the dry run builds the
 packaged sources standalone before anything is uploaded.
 
-**Version policy:** version bumps go through the release workflow — never
-hand-edit `version` in `Cargo.toml`, and never hand-craft a package (the
-lockfile and the release notes in `docs/releases/` must move together).
-Historical release notes are frozen: append a new `docs/releases/vX.Y.Z.md`,
-never edit a shipped one.
+**Version policy:** a version bump is the operator's release act — bump
+`version` in `Cargo.toml`, refresh `Cargo.lock` (`cargo check` keeps it in
+lockstep, so `--locked` stays publishable), append
+`docs/releases/vX.Y.Z.md`, and sign the tag (see *Releases* in
+[CONTRIBUTING](CONTRIBUTING.md)); the lockfile and the release notes move
+together, and no package is ever hand-crafted. Historical release notes
+are frozen: append a new `docs/releases/vX.Y.Z.md`, never edit a shipped
+one.
 
 ## Roadmap
 
