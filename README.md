@@ -115,6 +115,19 @@ curl "localhost:8025/api/v1/inboxes/test-run/await?to=user@x.io&count=1&timeout_
 Fixtures without SMTP: `POST /api/v1/inboxes/test-run/seed` (runs the full
 parse + extraction pipeline).
 
+## Threads and the live inbox view
+
+`GET /api/v1/inboxes/{inbox}/threads` groups the inbox into conversations —
+References/In-Reply-To/Message-ID chains when they resolve, the normalized
+subject (Re:/Fwd: markers stripped, case-folded) as the fallback — each with a
+stable `key` served at `…/{inbox}/threads/{key}`, conversation oldest first.
+`GET /api/v1/inboxes/{inbox}/feed` is a server-sent-events stream of the full
+thread view: one snapshot, then one event per accepted mail, driven by the same
+per-inbox watcher that powers `await` (subscribe-before-scan, so nothing is
+missed while connecting). The human UI at `/ui/inbox/{inbox}` and
+`/ui/inbox/{inbox}/thread/{key}` is a thin shell over these endpoints and
+updates live — no manual refresh.
+
 ## MCP (Claude Code, Codex, Cursor, …)
 
 ```jsonc
@@ -135,11 +148,11 @@ reset and magic-link flows without a human touching a browser tab.
 
 | Surface | Where |
 |---|---|
-| REST API v1 | `/api/v1/inboxes`, `…/{inbox}/messages` (GET/DELETE), `…/count`, `…/await`, `…/assert`, `…/seed`, `/api/v1/messages/{id}[/raw]` |
+| REST API v1 | `/api/v1/inboxes`, `…/{inbox}/messages` (GET/DELETE), `…/count`, `…/await`, `…/assert`, `…/threads[/{key}]`, `…/feed`, `…/seed`, `/api/v1/messages/{id}[/raw]` |
 | Admin | `PUT/DELETE /api/v1/chaos`, `PUT/GET/DELETE /api/v1/webhooks` |
 | MCP | `POST /mcp` (Streamable HTTP JSON-RPC) · `swarmail mcp` (stdio bridge) |
 | Machine docs | `/openapi.json` (3.1) · `/llms.txt` · `/metrics` (Prometheus) · `/healthz` |
-| Human UI | `/`, `/ui/inbox/{name}`, `/ui/message/{id}` — zero frontend deps, server-rendered |
+| Human UI | `/`, `/ui/inbox/{name}`, `/ui/inbox/{name}/thread/{key}`, `/ui/message/{id}` — zero frontend deps; the inbox and thread views update live from the SSE feed |
 | SMTP | `:1025` — EHLO, AUTH PLAIN/LOGIN (accept-any; username = inbox), PIPELINING, 8BITMIME, SMTPUTF8, SIZE, 50 MiB cap; optional STARTTLS (rustls/ring) |
 
 ## Chaos — test your failure paths
@@ -270,7 +283,9 @@ docker build -t swarmail .    # scratch image ≈ binary size
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [ ] POP3 server; MailHog/Mailpit API compat shims
 - [ ] crates.io publish
-- [ ] UI: live-updating inbox view, message threads
+- [x] UI: live-updating inbox view, message threads — grouped by
+  References/In-Reply-To chains with normalized-subject fallback
+  (`…/{inbox}/threads`), pushed live over SSE (`…/{inbox}/feed`)
 
 ## License
 

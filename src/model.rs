@@ -39,6 +39,16 @@ pub struct Email {
     pub links: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub codes: Vec<String>,
+    /// RFC 5322 Message-ID, normalized (angle brackets stripped) — the
+    /// anchor a thread is built from. Extracted at ingest (decision 0005).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// RFC 5322 In-Reply-To: the first id the header parses to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    /// RFC 5322 References, in header order (root → parent).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
     #[serde(skip)]
     pub raw: Vec<u8>,
 }

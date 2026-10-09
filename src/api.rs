@@ -1,19 +1,24 @@
 //! HTTP API: REST for tests, MCP endpoint, OpenAPI, health/metrics.
 
 use crate::chaos::{Chaos, ChaosConfig};
+use crate::feed;
 use crate::mcp::{self, McpContext};
 use crate::model::Email;
 use crate::smtp;
 use crate::store::{Filter, Store, WaitOutcome};
+use crate::threads;
 use crate::ui;
 use crate::webhook::{WebhookTarget, Webhooks};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use futures_util::Stream;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
@@ -64,6 +69,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/inboxes/{inbox}/count", get(count_messages))
         .route("/api/v1/inboxes/{inbox}/await", get(await_messages))
         .route("/api/v1/inboxes/{inbox}/assert", get(assert_messages))
+        .route("/api/v1/inboxes/{inbox}/threads", get(list_threads))
+        .route("/api/v1/inboxes/{inbox}/threads/{key}", get(get_thread))
+        .route("/api/v1/inboxes/{inbox}/feed", get(inbox_feed))
         .route("/api/v1/messages", delete(clear_all))
         .route(
             "/api/v1/messages/{id}",
@@ -346,6 +354,38 @@ async fn set_chaos(
 async fn clear_chaos(State(state): State<AppState>) -> Json<ChaosConfig> {
     state.chaos.clear();
     Json(state.chaos.current())
+}
+
+// ---------- threads & feed ----------
+
+/// The thread view of an inbox: id chains first, normalized subject as the
+/// fallback, newest thread first.
+async fn list_threads(
+    State(state): State<AppState>,
+    Path(inbox): Path<String>,
+) -> Json<Vec<threads::Thread>> {
+    Json(threads::view(&state.store, &inbox))
+}
+
+/// One thread by its stable key: the conversation, oldest first.
+async fn get_thread(
+    State(state): State<AppState>,
+    Path((inbox, key)): Path<(String, String)>,
+) -> ApiResult<Json<threads::Thread>> {
+    threads::view(&state.store, &inbox)
+        .into_iter()
+        .find(|thread| thread.key == key)
+        .map(Json)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "thread not found".into()))
+}
+
+/// The live inbox feed: server-sent events, one full thread view per frame.
+/// Subscribes before the first scan (decision 0002) — see `feed::feed_stream`.
+async fn inbox_feed(
+    State(state): State<AppState>,
+    Path(inbox): Path<String>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    Sse::new(feed::feed_stream(state.store.clone(), inbox)).keep_alive(KeepAlive::default())
 }
 
 // ---------- seed ----------

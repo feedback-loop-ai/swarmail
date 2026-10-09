@@ -52,6 +52,20 @@ with certificate verification on — for a self-signed test server, pass its
 CA in the target's optional `ca_pem` (PEM of a root to trust on top of the
 built-in root store).
 
+## Threads and the live feed
+
+- `GET /api/v1/inboxes/{inbox}/threads` — the inbox grouped into conversations:
+  References/In-Reply-To/Message-ID chains first, the normalized subject
+  (Re:/Fwd: stripped, case-folded) as the fallback; each thread lists its mails
+  oldest first and has a stable `key` for `/api/v1/inboxes/{inbox}/threads/{key}`.
+- `GET /api/v1/inboxes/{inbox}/feed` — server-sent events, one `threads` event
+  per change carrying the full thread view as JSON (the first event is the
+  snapshot; a lagging watcher is repaired with a recomputed view). The web UI
+  is built on these: `/ui/inbox/{inbox}` and `/ui/inbox/{inbox}/thread/{key}`
+  update live, no manual refresh.
+- Thread fields (`message_id`, `in_reply_to`, `references`) are extracted at
+  ingest and stored on every email, so views never re-parse raw headers.
+
 ## Guarantees
 
 - **Lossless bursts**: SMTP acceptance is synchronous — `DATA` ending with a 250

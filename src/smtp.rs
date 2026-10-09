@@ -15,7 +15,7 @@ use crate::extract::{extract_codes, extract_links};
 use crate::model::{Email, EmailAddress};
 use crate::store::Store;
 use chrono::Utc;
-use mail_parser::{Addr, Address, MessageParser};
+use mail_parser::{Addr, Address, HeaderValue, MessageParser};
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -536,6 +536,24 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
     let links = extract_links(text.as_deref(), html.as_deref());
     let codes = extract_codes(text.as_deref(), html.as_deref());
 
+    // Thread headers are extracted once, here at ingest (decision 0005), and
+    // stored as first-class fields: the thread view must not re-parse the raw
+    // RFC 5322 headers on every render or push.
+    let references = parsed
+        .as_ref()
+        .map(|m| header_ids(m.references()))
+        .unwrap_or_default();
+    let in_reply_to = parsed
+        .as_ref()
+        .map(|m| header_ids(m.in_reply_to()))
+        .unwrap_or_default()
+        .into_iter()
+        .next();
+    let message_id = parsed
+        .as_ref()
+        .and_then(|m| m.message_id())
+        .and_then(|raw| crate::threads::parse_ids(raw).into_iter().next());
+
     Email {
         id: uuid::Uuid::now_v7().to_string(),
         inbox: inbox.to_string(),
@@ -551,8 +569,25 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
         html,
         links,
         codes,
+        message_id,
+        in_reply_to,
+        references,
         raw: raw.to_vec(),
     }
+}
+
+/// The ids a `References`/`In-Reply-To` header carries, in header order (the
+/// parser may hand back a text list for folded headers). An absent header is
+/// an empty list, never an error.
+fn header_ids(value: &HeaderValue<'_>) -> Vec<String> {
+    value
+        .as_text_list()
+        .map(|list| {
+            list.iter()
+                .flat_map(|text| crate::threads::parse_ids(text))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

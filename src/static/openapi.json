@@ -90,6 +90,32 @@
         "responses": { "200": { "description": "Assertion held" }, "409": { "description": "Assertion failed" } }
       }
     },
+    "/api/v1/inboxes/{inbox}/threads": {
+      "get": {
+        "summary": "Thread view of an inbox (newest thread first)",
+        "description": "Mails are grouped into conversations by their References/In-Reply-To/Message-ID chains, falling back to the normalized subject (Re:/Fwd: markers stripped, case-folded) when a chain cannot resolve. Each thread lists its mails oldest first. Capped at 200 mails.",
+        "parameters": [{ "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Thread" } } } } } }
+      }
+    },
+    "/api/v1/inboxes/{inbox}/threads/{key}": {
+      "get": {
+        "summary": "One thread by its key (the conversation, oldest first)",
+        "parameters": [
+          { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "key", "in": "path", "required": true, "schema": { "type": "string" }, "description": "The thread's stable key, as returned by the threads list" }
+        ],
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Thread" } } } }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/v1/inboxes/{inbox}/feed": {
+      "get": {
+        "summary": "Live inbox feed (server-sent events)",
+        "description": "One `threads` event per change, carrying the full thread view (the GET /threads shape) as JSON. The first event is the snapshot; a watcher that falls behind is repaired with a recomputed view, never an error. Subscribes before the first scan, so mail landing while the client connects is pushed, not missed.",
+        "parameters": [{ "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "text/event-stream" } }
+      }
+    },
     "/api/v1/inboxes/{inbox}/seed": {
       "post": {
         "summary": "Inject a synthetic email (full parse/extract pipeline runs)",
@@ -162,7 +188,20 @@
           "html": { "type": ["string", "null"] },
           "links": { "type": "array", "items": { "type": "string" } },
           "codes": { "type": "array", "items": { "type": "string" } },
+          "message_id": { "type": "string", "description": "The Message-ID header value, angle brackets stripped; absent when the mail has none" },
+          "in_reply_to": { "type": "string", "description": "The first In-Reply-To id; absent when the mail has none" },
+          "references": { "type": "array", "items": { "type": "string" }, "description": "The References ids in header order; absent when the mail has none" },
           "session": { "type": "integer" }
+        }
+      },
+      "Thread": {
+        "type": "object",
+        "properties": {
+          "key": { "type": "string", "description": "Stable short key (16 hex chars) usable in URLs and the thread endpoint" },
+          "subject": { "type": "string", "description": "The newest mail's display subject; absent when no mail in the thread has one" },
+          "count": { "type": "integer" },
+          "last_received_ms": { "type": "integer" },
+          "emails": { "type": "array", "items": { "$ref": "#/components/schemas/Email" }, "description": "The conversation, oldest first" }
         }
       },
       "EmailList": {

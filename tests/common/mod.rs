@@ -314,6 +314,71 @@ impl TlsSmtp {
     }
 }
 
+/// A raw server-sent-events reader over a persistent connection: the feed's
+/// frames as `(event, data)` pairs, read line by line off real HTTP —
+/// tolerant of the keep-alive comment lines axum interleaves.
+pub struct SseReader {
+    reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
+    // Held for the reader's lifetime: dropping the write half would
+    // half-close the connection and cancel the streaming response.
+    _write: tokio::net::tcp::OwnedWriteHalf,
+}
+
+impl SseReader {
+    /// GET the path and skip the response head, leaving the event stream.
+    pub async fn open(addr: std::net::SocketAddr, path: &str) -> SseReader {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (r, mut w) = stream.into_split();
+        w.write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: t\r\nAccept: text/event-stream\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+        let mut reader = BufReader::new(r);
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            if line == "\r\n" || line == "\n" || line.is_empty() {
+                break;
+            }
+        }
+        SseReader { reader, _write: w }
+    }
+
+    /// The next event frame: (event name, data). Wrapped in a timeout so a
+    /// missing push fails the test with a message instead of hanging it.
+    pub async fn next_frame(&mut self) -> (String, String) {
+        let deadline = std::time::Duration::from_secs(5);
+        let mut event = "message".to_string();
+        let mut data = String::new();
+        loop {
+            let mut line = String::new();
+            let read = tokio::time::timeout(deadline, self.reader.read_line(&mut line))
+                .await
+                .expect("timed out waiting for a feed frame")
+                .expect("feed connection closed unexpectedly");
+            assert!(read > 0, "feed connection closed before a frame arrived");
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.is_empty() {
+                if data.is_empty() {
+                    continue; // a keep-alive comment frame: keep reading
+                }
+                return (event, data);
+            }
+            if let Some(rest) = line.strip_prefix("event:") {
+                event = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(rest.trim_start());
+            }
+            // anything else (comments, field names we do not use) is ignored
+        }
+    }
+}
+
 /// The plaintext half of a STARTTLS session: greeting read, EHLO sent (with
 /// the STARTTLS extension advertised), STARTTLS written in the same segment
 /// as `pipelined` (which the server must then discard, RFC 3207 §4.2), the

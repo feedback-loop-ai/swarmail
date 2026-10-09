@@ -1,12 +1,21 @@
-//! Minimal embedded web UI — server-rendered, zero frontend dependencies.
-//! The agent-native surfaces (REST/MCP) stay the primary interface; this is
-//! for humans watching a run.
+//! Minimal embedded web UI. The agent-native surfaces (REST/MCP) stay the
+//! primary interface; this is for humans watching a run. The inbox and thread
+//! views are live: the server ships a thin shell and the browser paints it
+//! from the JSON API (`/api/v1/inboxes/{inbox}/threads[...]`), refreshed by
+//! the SSE feed on every accepted mail. All mail-controlled text is rendered
+//! with `textContent` in `static/ui.js` — never `innerHTML` — so nothing the
+//! SMTP peer sent can become markup here.
 
 use crate::api::AppState;
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::response::Html;
 use axum::routing::get;
+
+/// The browser half of the live views, embedded at compile time. It contains
+/// no mail data — only wiring — and no `</script>` sequence, so it can be
+/// inlined into the shell.
+const SCRIPT: &str = include_str!("static/ui.js");
 
 const STYLE: &str = r#"<style>
 body{font-family:ui-sans-serif,system-ui,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
@@ -38,10 +47,22 @@ fn page(title: &str, body: String) -> Html<String> {
     ))
 }
 
+/// A live shell: no mail is rendered server-side. The `data-*` attributes are
+/// the only state the script needs; everything else comes from the JSON API.
+fn shell(title: &str, view: String) -> Html<String> {
+    page(
+        title,
+        format!(
+            r#"{view}<noscript><div class="card muted">This view is live and needs JavaScript; the JSON API works without it.</div></noscript>{SCRIPT}"#
+        ),
+    )
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(index))
         .route("/ui/inbox/{inbox}", get(inbox_view))
+        .route("/ui/inbox/{inbox}/thread/{key}", get(thread_view))
         .route("/ui/message/{id}", get(message_view))
 }
 
@@ -59,29 +80,23 @@ async fn index(State(state): State<AppState>) -> Html<String> {
     page("inboxes", format!(r#"<h2>inboxes</h2>{rows}"#))
 }
 
-async fn inbox_view(State(state): State<AppState>, Path(inbox): Path<String>) -> Html<String> {
-    let emails = state.store.list(&inbox, &Default::default());
-    let mut rows = String::new();
-    let inbox_esc = esc(&inbox);
-    for e in emails.iter().take(200) {
-        let to: Vec<String> = e.to.iter().map(|a| esc(&a.address)).collect();
-        rows.push_str(&format!(
-            r#"<div class="card"><a href="/ui/message/{}"><b>{}</b></a> <span class="muted">→ {} · {} · {} B</span></div>"#,
-            esc(&e.id),
-            esc(e.subject.as_deref().unwrap_or("(no subject)")),
-            to.join(", "),
-            esc(&e.received_at),
-            e.size
-        ));
-    }
-    if rows.is_empty() {
-        rows = format!(r#"<div class="card muted">Inbox "{inbox_esc}" is empty.</div>"#);
-    }
-    page(
-        &inbox_esc,
+/// The live inbox view: the thread list, repainted from the feed as mail
+/// arrives (no manual refresh).
+async fn inbox_view(Path(inbox): Path<String>) -> Html<String> {
+    shell(
+        &inbox,
+        format!(r#"<div id="view" data-inbox="{}"></div>"#, esc(&inbox)),
+    )
+}
+
+/// The live thread view: one conversation, oldest first, kept fresh too.
+async fn thread_view(Path((inbox, key)): Path<(String, String)>) -> Html<String> {
+    shell(
+        "thread",
         format!(
-            r#"<h2>inbox: {inbox_esc} <span class="pill">{}</span></h2>{rows}"#,
-            emails.len()
+            r#"<div id="view" data-inbox="{}" data-thread="{}"></div>"#,
+            esc(&inbox),
+            esc(&key)
         ),
     )
 }

@@ -20,7 +20,8 @@ use std::sync::Mutex;
 
 /// Every column of a mail row, in the order both statements use it.
 const COLUMNS: &str = "id, inbox, from_json, to_json, cc_json, recipients_json, subject, \
-                       received_at, received_ms, size, text, html, links_json, codes_json, raw";
+                       received_at, received_ms, size, text, html, links_json, codes_json, \
+                       message_id, in_reply_to, references_json, raw";
 
 /// The whole schema, created idempotently on every open.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
@@ -39,6 +40,9 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
     html TEXT,
     links_json TEXT NOT NULL,
     codes_json TEXT NOT NULL,
+    message_id TEXT,
+    in_reply_to TEXT,
+    references_json TEXT NOT NULL DEFAULT '[]',
     raw BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS emails_inbox ON emails(inbox);
@@ -46,6 +50,14 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );";
+
+/// Columns the first release lacked, with their types: a data file written
+/// before threading is migrated on open instead of abandoned.
+const ADDED_COLUMNS: &[(&str, &str)] = &[
+    ("message_id", "TEXT"),
+    ("in_reply_to", "TEXT"),
+    ("references_json", "TEXT NOT NULL DEFAULT '[]'"),
+];
 
 /// Counters live in `meta` as decimal strings.
 const UPSERT_COUNTER: &str = "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)";
@@ -71,6 +83,7 @@ impl Persist {
         let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         conn.execute_batch("PRAGMA synchronous = FULL;")?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         let next_seq = conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM emails", [], |row| {
             row.get(0)
         })?;
@@ -108,10 +121,11 @@ impl Persist {
         state.next_seq += 1;
         let tx = state.conn.transaction()?;
         tx.execute(
-            // 16 columns: COLUMNS + the ordering seq.
+            // 19 columns: COLUMNS + the ordering seq.
             &format!(
                 "INSERT INTO emails ({COLUMNS}, seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
+                         ?17, ?18, ?19)"
             ),
             params![
                 email.id,
@@ -128,6 +142,10 @@ impl Persist {
                 email.html,
                 json(&email.links),
                 json(&email.codes),
+                // Optional ids are bound as SQL NULL, not the JSON "null".
+                email.message_id,
+                email.in_reply_to,
+                json(&email.references),
                 email.raw,
                 seq,
             ],
@@ -187,8 +205,30 @@ fn row_to_email(row: &rusqlite::Row<'_>) -> rusqlite::Result<Email> {
         html: row.get(11)?,
         links: from_json(row.get(12)?),
         codes: from_json(row.get(13)?),
-        raw: row.get(14)?,
+        message_id: row.get(14)?,
+        in_reply_to: row.get(15)?,
+        references: from_json(row.get(16)?),
+        raw: row.get(17)?,
     })
+}
+
+/// Add any `ADDED_COLUMNS` the data file lacks. A fresh file already has them
+/// (from `SCHEMA`), so this is a no-op there; an older file keeps every
+/// stored mail and gains the columns with their defaults.
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let mut present: Vec<String> = Vec::new();
+    let mut stmt = conn.prepare("PRAGMA table_info(emails)")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        present.push(name);
+    }
+    for (name, kind) in ADDED_COLUMNS {
+        if !present.iter().any(|column| column == name) {
+            conn.execute_batch(&format!("ALTER TABLE emails ADD COLUMN {name} {kind}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Column ⇄ JSON. These fields are strings and vecs of strings —
@@ -254,6 +294,9 @@ mod tests {
         e.html = Some("<b>body</b>".into());
         e.links = vec!["https://x.io/a".into()];
         e.codes = vec!["424242".into()];
+        e.message_id = Some("m@x.io".into());
+        e.in_reply_to = Some("parent@x.io".into());
+        e.references = vec!["root@x.io".into(), "parent@x.io".into()];
         // Deliberately not valid UTF-8: raw bytes must round-trip untouched.
         e.raw = vec![0xFF, 0xFE, b'a', b'\r', b'\n'];
         e
@@ -274,6 +317,64 @@ mod tests {
         assert_eq!(emails.len(), 1);
         assert_eq!(emails.pop().unwrap(), sent);
         assert_eq!((inserted, dropped), (1, 0));
+    }
+
+    #[test]
+    fn thread_headers_round_trip_in_both_directions() {
+        let persist = Persist::open(&db_path("thread-headers")).unwrap();
+        persist
+            .record_insert(&full_email("with-ids", "box"), &[], 1, 0)
+            .unwrap();
+        persist
+            .record_insert(&email("without-ids", "box", "a@x.io"), &[], 2, 0)
+            .unwrap();
+        let (emails, _, _) = persist.load().unwrap();
+        let with = emails.iter().find(|e| e.id == "with-ids").unwrap();
+        assert_eq!(with.message_id.as_deref(), Some("m@x.io"));
+        assert_eq!(with.in_reply_to.as_deref(), Some("parent@x.io"));
+        assert_eq!(with.references, vec!["root@x.io", "parent@x.io"]);
+        let without = emails.iter().find(|e| e.id == "without-ids").unwrap();
+        assert_eq!(without.message_id, None, "absent stays absent");
+        assert_eq!(without.in_reply_to, None);
+        assert!(without.references.is_empty());
+    }
+
+    #[test]
+    fn a_pre_thread_data_file_migrates_and_keeps_its_mail() {
+        let path = db_path("legacy");
+        {
+            // The first release's shape: no thread columns at all, one mail
+            // already committed.
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE emails (id TEXT PRIMARY KEY, inbox TEXT NOT NULL, \
+                 seq INTEGER NOT NULL, from_json TEXT NOT NULL, to_json TEXT NOT NULL, \
+                 cc_json TEXT NOT NULL, recipients_json TEXT NOT NULL, subject TEXT, \
+                 received_at TEXT NOT NULL, received_ms INTEGER NOT NULL, size INTEGER NOT NULL, \
+                 text TEXT, html TEXT, links_json TEXT NOT NULL, codes_json TEXT NOT NULL, \
+                 raw BLOB NOT NULL);
+                 INSERT INTO emails VALUES ('old-1', 'box', 1, 'null', '[]', '[]', '[]', 'Hi', \
+                 't', 1, 1, NULL, NULL, '[]', '[]', x'00');",
+            )
+            .unwrap();
+        }
+        let persist = Persist::open(&path).unwrap();
+        let (emails, _, _) = persist.load().unwrap();
+        assert_eq!(
+            emails.len(),
+            1,
+            "the pre-thread mail survives the migration"
+        );
+        assert_eq!(emails[0].message_id, None);
+        assert!(emails[0].references.is_empty());
+        // The migrated file keeps working as a write-through mirror.
+        persist
+            .record_insert(&email("new-1", "box", "a@x.io"), &[], 2, 0)
+            .unwrap();
+        let (emails, _, _) = persist.load().unwrap();
+        assert_eq!(emails.len(), 2);
+        // Reopening the already-migrated file is a no-op.
+        assert!(Persist::open(&path).unwrap().load().is_ok());
     }
 
     #[test]

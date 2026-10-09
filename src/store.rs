@@ -371,6 +371,9 @@ pub(crate) fn email(id: &str, inbox: &str, to: &str) -> Email {
         html: None,
         links: vec![],
         codes: vec![],
+        message_id: None,
+        in_reply_to: None,
+        references: vec![],
         raw: vec![],
     }
 }

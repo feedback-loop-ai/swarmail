@@ -228,6 +228,9 @@ mod tests {
             html: None,
             links: vec![],
             codes: vec![],
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
             raw: vec![],
         }
     }
@@ -269,6 +272,9 @@ mod loop_tests {
             html: None,
             links: vec![],
             codes: vec![],
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
             raw: vec![],
         }
     }
