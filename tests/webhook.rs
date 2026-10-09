@@ -3,6 +3,16 @@
 //! over TLS (reqwest + rustls, verification on) — and the redirect contract:
 //! a 3xx target takes the secret nowhere. Plus the bounded per-PEM client
 //! cache: more distinct roots than the cap still deliver, every one of them.
+//!
+//! The sinks here are real servers, and they are built to outlive the
+//! dispatcher's whole retry budget: one transient attempt failure must never
+//! cost a delivery. (The 2026-10-09 hermetic red of the cap test was exactly
+//! that — a sink whose `accept()` hit EMFILE under the sandbox's fd pressure
+//! ended after one connection and silently unbound, so the retried delivery
+//! was refused for good and the test asserted on an empty capture.) A sink
+//! serves every connection in its own task, re-arms a failed accept, keeps
+//! its listener bound for [`SINK_LIFETIME`], and claims its capture channel
+//! only for an exchange that actually completed.
 
 mod common;
 
@@ -13,8 +23,33 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot::Receiver;
 use tokio::sync::watch;
 
-/// An HTTP sink that accepts `expect` connections, replying `status` to each,
-/// and reports the first request head plus the total hit count.
+/// How long a test sink keeps its listener bound and serving: the whole
+/// dispatcher retry budget (`deliver`'s four attempts under the 5s
+/// POST_TIMEOUT plus the 100/400/1600ms backoff is ~22.1s) plus slack. A
+/// sink that unbinds earlier converts one transient attempt failure into a
+/// permanently lost delivery — the exact mechanism of the 2026-10-09
+/// hermetic red of the cap test, where an EMFILE accept under the sandbox's
+/// fd pressure ended a sink after a single connection and every retry was
+/// refused.
+const SINK_LIFETIME: Duration = Duration::from_secs(25);
+
+/// Pause before re-arming a failed accept. EMFILE is transient — on Linux
+/// the connection is still sitting in the accept queue — so a short retry
+/// serves it instead of losing it.
+const ACCEPT_RETRY: Duration = Duration::from_millis(10);
+
+/// The first *completed* exchange claims the capture channel; every later
+/// exchange only gets a reply. A connection that dies mid-request captures
+/// nothing, so the capture a test asserts on is always a real one. A plain
+/// mutex, never an async one: the critical section does no awaiting.
+type Capture<T> = std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<T>>>>;
+
+/// An HTTP sink that replies `status` to every connection for its whole
+/// [`SINK_LIFETIME`], and reports the first completed request head plus the
+/// hit count (resolved at the `expect`-th connection, or at the window's end
+/// with whatever the sink actually saw). Each connection is served in its own
+/// task — one stalled exchange can never block the next accept — and an
+/// accept error is retried, never silently fatal.
 async fn http_sink(
     status: u16,
     expect: usize,
@@ -27,23 +62,65 @@ async fn http_sink(
     let addr = listener.local_addr().unwrap();
     let (tx_head, rx_head) = tokio::sync::oneshot::channel();
     let (tx_count, rx_count) = tokio::sync::oneshot::channel();
+    let reply = format!("HTTP/1.1 {status} TEST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let capture: Capture<String> = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_head)));
     tokio::spawn(async move {
-        let mut head = None;
-        for _ in 0..expect {
-            let Ok((mut stream, _)) = listener.accept().await else {
+        let mut tx_count = Some(tx_count);
+        let mut hits = 0usize;
+        let deadline = std::time::Instant::now() + SINK_LIFETIME;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
                 break;
-            };
-            let mut buf = vec![0u8; 8192];
-            let n = stream.read(&mut buf).await.unwrap_or(0);
-            if head.is_none() {
-                head = Some(String::from_utf8_lossy(&buf[..n]).to_string());
             }
-            let reply =
-                format!("HTTP/1.1 {status} TEST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            let _ = stream.write_all(reply.as_bytes()).await;
+            match tokio::time::timeout(left, listener.accept()).await {
+                Ok(Ok((stream, _))) => {
+                    hits += 1;
+                    let capture = capture.clone();
+                    let reply = reply.clone();
+                    tokio::spawn(async move {
+                        let mut stream = stream;
+                        // The whole request (head + Content-Length body), so a
+                        // request split across TCP segments is still one
+                        // exchange.
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        loop {
+                            let n = stream.read(&mut chunk).await.unwrap_or(0);
+                            if n == 0 {
+                                break;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            if content_length(&buf).is_some_and(|len| buf.len() >= len) {
+                                break;
+                            }
+                        }
+                        if content_length(&buf).is_some() {
+                            let mut slot = capture.lock().unwrap();
+                            if let Some(tx) = slot.take() {
+                                let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
+                            }
+                        }
+                        let _ = stream.write_all(reply.as_bytes()).await;
+                    });
+                    if hits == expect
+                        && let Some(tx) = tx_count.take()
+                    {
+                        let _ = tx.send(hits);
+                    }
+                }
+                Ok(Err(e)) => {
+                    eprintln!("http sink accept error, retrying: {e}");
+                    tokio::time::sleep(ACCEPT_RETRY).await;
+                }
+                Err(_) => break, // the budget window is over
+            }
         }
-        let _ = tx_head.send(head.unwrap_or_default());
-        let _ = tx_count.send(expect);
+        // The window closed short of `expect` connections: report what the
+        // sink actually saw, not the count the test hoped for.
+        if let Some(tx) = tx_count {
+            let _ = tx.send(hits);
+        }
     });
     (addr, rx_head, rx_count)
 }
@@ -55,16 +132,34 @@ struct Captured {
     tls: String,
 }
 
-/// A TLS sink: mints nothing, just serves the given certificate. Accepts
-/// `expect` connections, replying `reply` to each; a failed handshake (an
-/// untrusted client rejecting our cert) still counts as an attempt. Reports
-/// the first request head with its negotiated TLS version, and the total hit
-/// count.
+/// A TLS sink: mints nothing, just serves the given certificate. It replies
+/// `reply` to every connection for its whole [`SINK_LIFETIME`] — through the
+/// dispatcher's entire retry budget, so a failed attempt's retry is still
+/// served — and reports the first completed exchange's request head with its
+/// negotiated TLS version. A failed handshake (an untrusted client rejecting
+/// our cert) still counts as an attempt. The count resolves at the
+/// `expect`-th connection, or at the window's end with what the sink actually
+/// saw. Each connection is served in its own task — one stalled or partial
+/// exchange can never block the next accept — and an accept error is retried,
+/// never silently fatal.
 async fn tls_sink(
     reply: &'static [u8],
     cert_der: Vec<u8>,
     key_der: Vec<u8>,
     expect: usize,
+) -> (SocketAddr, Receiver<Captured>, Receiver<usize>) {
+    tls_sink_cfg(reply, cert_der, key_der, expect, 0).await
+}
+
+/// [`tls_sink`] with the first `drop_first` accepted connections dropped
+/// unanswered — a deterministic attempt failure below the HTTP layer, for the
+/// retry proof.
+async fn tls_sink_cfg(
+    reply: &'static [u8],
+    cert_der: Vec<u8>,
+    key_der: Vec<u8>,
+    expect: usize,
+    drop_first: usize,
 ) -> (SocketAddr, Receiver<Captured>, Receiver<usize>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -83,41 +178,71 @@ async fn tls_sink(
     let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
     let (tx_req, rx_req) = tokio::sync::oneshot::channel();
     let (tx_count, rx_count) = tokio::sync::oneshot::channel();
+    let capture: Capture<Captured> = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_req)));
     tokio::spawn(async move {
-        let mut captured = Captured {
-            head: String::new(),
-            tls: String::new(),
-        };
-        let mut hits = 0;
-        for _ in 0..expect {
-            let Ok((stream, _)) = listener.accept().await else {
+        let mut tx_count = Some(tx_count);
+        let mut hits = 0usize;
+        let deadline = std::time::Instant::now() + SINK_LIFETIME;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
                 break;
-            };
-            hits += 1;
-            let Ok(mut tls) = acceptor.accept(stream).await else {
-                continue; // the client rejected our certificate: attempt counted
-            };
-            if captured.head.is_empty() {
-                captured.tls = format!("{:?}", tls.get_ref().1.protocol_version());
-                // Read until the whole request (head + Content-Length body) is in.
-                let mut buf = Vec::new();
-                let mut chunk = [0u8; 4096];
-                loop {
-                    let n = tls.read(&mut chunk).await.unwrap_or(0);
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&chunk[..n]);
-                    if content_length(&buf).is_some_and(|len| buf.len() >= len) {
-                        break;
+            }
+            match tokio::time::timeout(left, listener.accept()).await {
+                Ok(Ok((stream, _))) => {
+                    hits += 1;
+                    let ordinal = hits;
+                    let acceptor = acceptor.clone();
+                    let capture = capture.clone();
+                    tokio::spawn(async move {
+                        if ordinal <= drop_first {
+                            return; // dropped unanswered: attempt counted, nothing captured
+                        }
+                        let Ok(mut tls) = acceptor.accept(stream).await else {
+                            return; // the client rejected our certificate: attempt counted
+                        };
+                        // Read until the whole request (head + Content-Length
+                        // body) is in — the capture stays with the first
+                        // exchange that actually completed.
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        loop {
+                            let n = tls.read(&mut chunk).await.unwrap_or(0);
+                            if n == 0 {
+                                break;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            if content_length(&buf).is_some_and(|len| buf.len() >= len) {
+                                break;
+                            }
+                        }
+                        if content_length(&buf).is_some() {
+                            let mut slot = capture.lock().unwrap();
+                            if let Some(tx) = slot.take() {
+                                let _ = tx.send(Captured {
+                                    head: String::from_utf8_lossy(&buf).to_string(),
+                                    tls: format!("{:?}", tls.get_ref().1.protocol_version()),
+                                });
+                            }
+                        }
+                        let _ = tls.write_all(reply).await;
+                    });
+                    if hits == expect
+                        && let Some(tx) = tx_count.take()
+                    {
+                        let _ = tx.send(hits);
                     }
                 }
-                captured.head = String::from_utf8_lossy(&buf).to_string();
+                Ok(Err(e)) => {
+                    eprintln!("tls sink accept error, retrying: {e}");
+                    tokio::time::sleep(ACCEPT_RETRY).await;
+                }
+                Err(_) => break, // the budget window is over
             }
-            let _ = tls.write_all(reply).await;
         }
-        let _ = tx_req.send(captured);
-        let _ = tx_count.send(hits);
+        if let Some(tx) = tx_count {
+            let _ = tx.send(hits);
+        }
     });
     (addr, rx_req, rx_count)
 }
@@ -137,11 +262,12 @@ fn content_length(buf: &[u8]) -> Option<usize> {
     Some(head_end + len)
 }
 
-/// A redirecting "target": the attacker's endpoint. Answers every
-/// connection with `status` and an absolute `Location` header pointing
-/// wherever it likes, and reports the first request (head and body) the
-/// moment it arrives, plus the actual number of requests it served once
-/// its `expect`-connection loop has run out.
+/// A redirecting "target": the attacker's endpoint. Answers every connection
+/// with `status` and an absolute `Location` header pointing wherever it
+/// likes, for the sink's whole [`SINK_LIFETIME`], and reports the first
+/// completed request (head and body) the moment it arrives plus the hit count
+/// (resolved at the `expect`-th connection). Each connection is served in its
+/// own task; an accept error is retried, never silently fatal.
 async fn redirect_sink(
     status: u16,
     location: String,
@@ -151,48 +277,70 @@ async fn redirect_sink(
     let addr = listener.local_addr().unwrap();
     let (tx_first, rx_first) = tokio::sync::oneshot::channel();
     let (tx_count, rx_count) = tokio::sync::oneshot::channel();
+    let reason = match status {
+        301 => "Moved Permanently",
+        302 => "Found",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        _ => "Redirect",
+    };
+    let reply = format!(
+        "HTTP/1.1 {status} {reason}\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    let capture: Capture<String> = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_first)));
     tokio::spawn(async move {
-        let reason = match status {
-            301 => "Moved Permanently",
-            302 => "Found",
-            307 => "Temporary Redirect",
-            308 => "Permanent Redirect",
-            _ => "Redirect",
-        };
-        let mut first: Option<String> = None;
-        let mut tx_first = Some(tx_first);
+        let mut tx_count = Some(tx_count);
         let mut hits = 0usize;
-        for _ in 0..expect {
-            let Ok((mut stream, _)) = listener.accept().await else {
+        let deadline = std::time::Instant::now() + SINK_LIFETIME;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
                 break;
-            };
-            hits += 1;
-            // Read the whole request (head + Content-Length body).
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                let n = stream.read(&mut chunk).await.unwrap_or(0);
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-                if content_length(&buf).is_some_and(|len| buf.len() >= len) {
-                    break;
-                }
             }
-            let head = String::from_utf8_lossy(&buf).to_string();
-            if first.is_none() {
-                first = Some(head.clone());
-                if let Some(tx) = tx_first.take() {
-                    let _ = tx.send(head);
+            match tokio::time::timeout(left, listener.accept()).await {
+                Ok(Ok((stream, _))) => {
+                    hits += 1;
+                    let capture = capture.clone();
+                    let reply = reply.clone();
+                    tokio::spawn(async move {
+                        let mut stream = stream;
+                        // Read the whole request (head + Content-Length body).
+                        let mut buf = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        loop {
+                            let n = stream.read(&mut chunk).await.unwrap_or(0);
+                            if n == 0 {
+                                break;
+                            }
+                            buf.extend_from_slice(&chunk[..n]);
+                            if content_length(&buf).is_some_and(|len| buf.len() >= len) {
+                                break;
+                            }
+                        }
+                        if content_length(&buf).is_some() {
+                            let mut slot = capture.lock().unwrap();
+                            if let Some(tx) = slot.take() {
+                                let _ = tx.send(String::from_utf8_lossy(&buf).to_string());
+                            }
+                        }
+                        let _ = stream.write_all(reply.as_bytes()).await;
+                    });
+                    if hits == expect
+                        && let Some(tx) = tx_count.take()
+                    {
+                        let _ = tx.send(hits);
+                    }
                 }
+                Ok(Err(e)) => {
+                    eprintln!("redirect sink accept error, retrying: {e}");
+                    tokio::time::sleep(ACCEPT_RETRY).await;
+                }
+                Err(_) => break, // the budget window is over
             }
-            let reply = format!(
-                "HTTP/1.1 {status} {reason}\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-            );
-            let _ = stream.write_all(reply.as_bytes()).await;
         }
-        let _ = tx_count.send(hits);
+        if let Some(tx) = tx_count {
+            let _ = tx.send(hits);
+        }
     });
     (addr, rx_first, rx_count)
 }
@@ -649,9 +797,14 @@ async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
         .unwrap();
 
     // Every one of the `count` deliveries must have happened over real TLS:
-    // an empty `tls` capture would mean its handshake was rejected.
+    // an empty `tls` capture would mean its handshake was rejected. The bound
+    // is generous — the dispatcher's whole 4-attempt budget plus slack — but
+    // a generous bound alone is not the fix: the sinks above now stay bound
+    // through that same budget, so a transient attempt failure (an EMFILE
+    // accept under a starved sandbox, a handshake that dies mid-flight) is
+    // retried against a live listener instead of being lost with its sink.
     for (i, (_, _, rx)) in sinks.into_iter().enumerate() {
-        let captured = tokio::time::timeout(Duration::from_secs(15), rx)
+        let captured = tokio::time::timeout(Duration::from_secs(30), rx)
             .await
             .unwrap_or_else(|_| panic!("delivery {i} timed out"))
             .unwrap();
@@ -682,5 +835,55 @@ async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
     assert!(
         metric(&metrics, "swarmail_webhook_ca_cache_builds_total") >= count as u64,
         "every distinct root must have built its client:\n{metrics}"
+    );
+}
+
+/// The sink must survive a failed first attempt. The 2026-10-09 hermetic red
+/// of the cap test was exactly this shape: the sink's `accept()` failed once
+/// (EMFILE under the sandbox's fd pressure), the helper swallowed the error
+/// and unbound, and the delivery was lost for good. Here the first attempt
+/// dies deterministically below the HTTP layer — the connection is dropped
+/// unanswered before any TLS — and the delivery must still land over real
+/// TLS on a later attempt, which is the dispatcher's contract (attempt 0
+/// fails, the 100ms-backoff retry succeeds).
+#[tokio::test]
+async fn a_dropped_first_attempt_is_retried_and_still_delivered_over_tls() {
+    let srv = start().await;
+    let (ca_pem, leaf, leaf_key) = mint_cert();
+    let (addr, rx, _) = tls_sink_cfg(
+        b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        leaf,
+        leaf_key,
+        1,
+        1, // the first connection is dropped unanswered: attempt 0 never handshakes
+    )
+    .await;
+    let targets = serde_json::json!([{
+        "url": format!("https://127.0.0.1:{}/hook", addr.port()),
+        "secret": "topsecret",
+        "ca_pem": ca_pem,
+    }])
+    .to_string();
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200);
+
+    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "droppedfirst", "x")
+        .await
+        .unwrap();
+
+    // The retry budget is 4 attempts x 5s plus backoff; a successful retry
+    // lands well inside that. The capture must be the real exchange: the
+    // dropped attempt resolved nothing.
+    let captured = tokio::time::timeout(Duration::from_secs(30), rx)
+        .await
+        .expect("the retried delivery never landed")
+        .unwrap();
+    assert!(
+        captured.tls.contains("TLSv1"),
+        "the retried delivery was not over TLS: {captured:?}"
+    );
+    assert!(
+        captured.head.contains("\"event\":\"received\""),
+        "the retried delivery carried no payload: {captured:?}"
     );
 }
