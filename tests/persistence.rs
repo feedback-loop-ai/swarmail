@@ -6,6 +6,8 @@ mod common;
 
 use std::path::PathBuf;
 use swarmail::RunningServer;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 
 /// A unique data-file path; parallel tests must never share one.
 fn data_file(tag: &str) -> PathBuf {
@@ -200,6 +202,190 @@ async fn deletes_and_clears_survive_a_restart() {
         metrics.contains("swarmail_emails_inserted_total 3"),
         "{metrics}"
     );
+    srv.stop().await;
+    clean_up(&db);
+}
+
+/// A long-lived pipelined SMTP sender: one TCP connection (nodelay), each
+/// mail is a single batched write — the server advertises PIPELINING — and
+/// the four replies read back. This keeps ingest in the thousands of mails
+/// per second, dense enough that inserts land inside the clear's drain
+/// window instead of trickling past it (a fresh connection per mail with
+/// un-pipelined round-trips trickles at ~25/s and the inbox is empty at
+/// every clear, so no race is ever sampled).
+struct BurstSender {
+    reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
+    writer: tokio::net::tcp::OwnedWriteHalf,
+}
+
+impl BurstSender {
+    async fn connect(addr: std::net::SocketAddr, inbox: &str) -> Self {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        stream.set_nodelay(true).unwrap();
+        let (r, w) = stream.into_split();
+        let mut reader = BufReader::new(r);
+        let mut writer = w;
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with("220"), "{line}");
+        writer.write_all(b"EHLO swarmail-race\r\n").await.unwrap();
+        loop {
+            line.clear();
+            reader.read_line(&mut line).await.unwrap();
+            if !line.starts_with("250-") {
+                break;
+            }
+        }
+        let plain = format!("\u{0}{inbox}\u{0}whatever");
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, plain);
+        writer
+            .write_all(format!("AUTH PLAIN {b64}\r\n").as_bytes())
+            .await
+            .unwrap();
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with("235"), "{line}");
+        Self { reader, writer }
+    }
+
+    /// One batch: K mails' command blocks in a single write (the replies
+    /// coalesce the same way), then the 4K reply lines read back — every
+    /// fourth is the mail's acceptance.
+    async fn send_batch(&mut self, subjects: &[String]) {
+        let mut mail = String::new();
+        for subject in subjects {
+            mail.push_str(&format!(
+                "MAIL FROM:<sender@x.io>\r\nRCPT TO:<rcpt@x.io>\r\nDATA\r\n\
+                 From: sender@x.io\r\nSubject: {subject}\r\n\r\nbody\r\n.\r\n"
+            ));
+        }
+        self.writer.write_all(mail.as_bytes()).await.unwrap();
+        let mut line = String::new();
+        for i in 0..subjects.len() * 4 {
+            line.clear();
+            self.reader.read_line(&mut line).await.unwrap();
+            if i % 4 == 3 {
+                assert!(line.starts_with("250"), "mail rejected: {line}");
+            }
+        }
+    }
+}
+
+// Multi-threaded on purpose: `run_on` spawns the servers onto the caller's
+// runtime, and a current-thread runtime would serialize the clear's
+// synchronous drain+mirror against every insert — the race would be
+// structurally unsampleable and the test vacuously green.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_clear_racing_inserts_never_loses_a_250_answered_mail_on_restart() {
+    let db = data_file("clear-race");
+    clean_up(&db);
+
+    let srv = serve_data_file(&db).await;
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // Six burst senders of real SMTP mail, racing the clear below: an insert
+    // that lands after the clear's in-memory drain but before its mirrored
+    // delete is answered 250 and stays queryable — its row must survive.
+    // Batched PIPELINING keeps ingest in the thousands of mails per second;
+    // a fresh connection per mail trickles at ~25/s (Nagle/delayed-ACK per
+    // round-trip) and the inbox is empty at every clear, so no race is ever
+    // sampled.
+    let mut inserters = Vec::new();
+    for worker in 0..6u32 {
+        let addr = srv.smtp_addr;
+        let stop = stop.clone();
+        inserters.push(tokio::spawn(async move {
+            let mut sender = BurstSender::connect(addr, "race").await;
+            let mut sent = 0u32;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let subjects: Vec<String> = (0..100)
+                    .map(|n| format!("race-{worker}-{}-{n}", sent + n))
+                    .collect();
+                sender.send_batch(&subjects).await;
+                sent += 100;
+            }
+            sent
+        }));
+    }
+
+    // The racing party: real HTTP wipes of the same inbox, throttled so the
+    // inbox is fat at every drain — a fat drain is a wide window (it walks
+    // every mail's id out of the index), and a wide window is one a dense
+    // ingest reliably races into. A back-to-back clear loop on an empty
+    // inbox samples nothing.
+    let clearer = {
+        let http = srv.http_addr;
+        tokio::spawn(async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+            let mut rounds = 0u32;
+            while std::time::Instant::now() < deadline {
+                let _ =
+                    common::http_json(http, "DELETE", "/api/v1/inboxes/race/messages", None).await;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                rounds += 1;
+            }
+            rounds
+        })
+    };
+
+    let rounds = clearer.await.unwrap();
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    // Quiesce every sender before snapshotting: a 250 implies the row is
+    // already committed (the mirror rides the accept path), so anything
+    // queryable below is on disk unless a clear erased it.
+    let mut sent_total = 0u32;
+    for inserter in inserters {
+        sent_total += inserter.await.unwrap();
+    }
+    assert!(sent_total > 0, "the inserters never got a mail accepted");
+    assert!(rounds > 50, "the clear loop only ran {rounds} rounds");
+
+    // What the store still holds is exactly what the restart must give back.
+    let (st, pre) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/race/messages?limit=1000000",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let pre_ids: std::collections::HashSet<String> = pre["emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(!pre_ids.is_empty(), "the race produced no mail to check");
+
+    srv.stop().await;
+    let srv = serve_data_file(&db).await;
+    let (st, post) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/race/messages?limit=1000000",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let post_ids: std::collections::HashSet<String> = post["emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap().to_string())
+        .collect();
+    let lost: Vec<&String> = pre_ids.difference(&post_ids).collect();
+    assert!(
+        lost.is_empty(),
+        "restart lost {} mail(s) the pre-restart store still held: {lost:?} — the racing clear erased rows memory kept",
+        lost.len()
+    );
+    // Note on the mirror-image hazard, deliberately not asserted here: a mail
+    // pushed just before the drain whose INSERT commit lands *after* the
+    // clear's DELETE commit resurfaces on restart (the row is written after
+    // the erase). That ordering race exists identically with the old
+    // inbox-wide DELETE and with the per-id mirror — it is a separate,
+    // pre-existing hazard (an epoch/generation scheme would be needed to
+    // close it), tracked as new debt rather than smuggled into this fix.
     srv.stop().await;
     clean_up(&db);
 }

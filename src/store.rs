@@ -74,21 +74,22 @@ pub struct Totals {
     pub emails_dropped: AtomicU64,
 }
 
-/// Drop one inbox out of the maps; shared by `clear` and `clear_all` so both
-/// persist exactly one mirrored delete.
+/// Drop one inbox out of the maps and return the dropped mail; shared by
+/// `clear` and `clear_all` so both mirror exactly the ids they removed.
 fn drain_inbox(
     inboxes: &DashMap<String, Vec<Arc<Email>>>,
     index: &DashMap<String, Arc<Email>>,
     inbox: &str,
-) -> usize {
-    let mut removed = 0;
-    if let Some((_, mut list)) = inboxes.remove(inbox) {
-        removed = list.len();
-        for e in list.drain(..) {
-            index.remove(&e.id);
+) -> Vec<Arc<Email>> {
+    match inboxes.remove(inbox) {
+        Some((_, list)) => {
+            for e in &list {
+                index.remove(&e.id);
+            }
+            list
         }
+        None => Vec::new(),
     }
-    removed
 }
 
 pub struct Store {
@@ -103,6 +104,14 @@ pub struct Store {
     totals: Totals,
     /// Write-through SQLite mirror when running with a data file.
     persist: Option<persist::Persist>,
+    /// Test-only seam for the clear/insert persistence race (review finding
+    /// in run sqlite-persistence-data-file-swa-dc3a9a2a): when set, the
+    /// closure runs *inside* the drain→mirror window of `clear`/`clear_all`,
+    /// so a test can interleave a live insert into that exact window
+    /// deterministically instead of winning a thread-timing lottery.
+    /// Compiled only under test; never set in production.
+    #[cfg(test)]
+    pre_mirror_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Totals {
@@ -136,6 +145,8 @@ impl Store {
             max_per_inbox,
             totals: Totals::default(),
             persist: None,
+            #[cfg(test)]
+            pre_mirror_gate: std::sync::Mutex::new(None),
         }
     }
 
@@ -181,6 +192,29 @@ impl Store {
             && let Err(e) = write(persist)
         {
             tracing::error!(error = %e, what, "persistence write failed; memory store remains authoritative");
+        }
+    }
+
+    /// Test-only: install (or remove) the pre-mirror gate. See the field doc.
+    #[cfg(test)]
+    pub(crate) fn set_pre_mirror_gate(&self, gate: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+        *self
+            .pre_mirror_gate
+            .lock()
+            .expect("pre-mirror gate poisoned") = gate;
+    }
+
+    /// Test-only: fire the pre-mirror gate, if one is installed. The Arc is
+    /// cloned out before the call so the closure may re-enter the store.
+    #[cfg(test)]
+    fn run_pre_mirror_gate(&self) {
+        let gate = self
+            .pre_mirror_gate
+            .lock()
+            .expect("pre-mirror gate poisoned")
+            .clone();
+        if let Some(gate) = gate {
+            gate();
         }
     }
 
@@ -286,20 +320,39 @@ impl Store {
 
     /// Remove all emails from one inbox; returns how many were removed.
     pub fn clear(&self, inbox: &str) -> usize {
-        let removed = drain_inbox(&self.inboxes, &self.index, inbox);
-        self.record("clear_inbox", |persist| persist.record_clear_inbox(inbox));
-        removed
+        let drained = drain_inbox(&self.inboxes, &self.index, inbox);
+        #[cfg(test)]
+        self.run_pre_mirror_gate();
+        // The mirror deletes exactly the drained ids, never `WHERE inbox =
+        // ?`. An insert landing between the drain and this mirror is answered
+        // 250 and queryable in memory (decision 0001); an inbox-wide DELETE
+        // would erase its row and the mail would vanish on restart — the
+        // clear/insert persistence race (review finding in run
+        // sqlite-persistence-data-file-swa-dc3a9a2a). A post-drain insert's
+        // id is by construction not among the drained ids, so mirroring
+        // per-id deletes can never erase it, whichever way the two
+        // operations interleave; the disk outcome for everything the clear
+        // actually drained is unchanged.
+        let ids: Vec<&str> = drained.iter().map(|e| e.id.as_str()).collect();
+        self.record("clear_inbox", |persist| persist.record_deletes(&ids));
+        drained.len()
     }
 
     /// Remove every email from every inbox.
     pub fn clear_all(&self) -> usize {
-        let mut removed = 0;
+        let mut drained: Vec<Arc<Email>> = Vec::new();
         let inboxes: Vec<String> = self.inboxes.iter().map(|e| e.key().clone()).collect();
         for inbox in inboxes {
-            removed += drain_inbox(&self.inboxes, &self.index, &inbox);
+            drained.extend(drain_inbox(&self.inboxes, &self.index, &inbox));
         }
-        self.record("clear_all", |persist| persist.record_clear_all());
-        removed
+        #[cfg(test)]
+        self.run_pre_mirror_gate();
+        // Per-id mirror for the same reason as `clear` (the race finding):
+        // the racing insert is not among the drained ids, so it keeps its
+        // row; the one-transaction wipe would erase it.
+        let ids: Vec<&str> = drained.iter().map(|e| e.id.as_str()).collect();
+        self.record("clear_all", |persist| persist.record_deletes(&ids));
+        drained.len()
     }
 
     /// (inbox, count) pairs, sorted by name.
@@ -781,5 +834,61 @@ mod persist_tests {
     #[test]
     fn open_refuses_an_unusable_data_file() {
         assert!(Store::open(0, &db_path("nope").join("missing-dir").join("x.db")).is_err());
+    }
+
+    /// The clear/insert persistence race (review finding in run
+    /// sqlite-persistence-data-file-swa-dc3a9a2a), forced deterministically:
+    /// the gate runs a live insert inside the drain→mirror window of
+    /// `clear`. That insert is answered (synchronous — decision 0001) and
+    /// stays queryable in memory, so it must survive the restart. The
+    /// inbox-wide mirrored `DELETE` erased exactly that row.
+    #[test]
+    fn a_clear_racing_an_insert_cannot_erase_the_inserts_row() {
+        let path = db_path("clear-race");
+        let store = Arc::new(Store::open(0, &path).unwrap());
+        store.insert(email("r1", "box", "a@x.io"));
+        let s = store.clone();
+        store.set_pre_mirror_gate(Some(Arc::new(move || {
+            // The racing insert: lands after the drain, before the mirror.
+            s.insert(email("r2", "box", "a@x.io"));
+        })));
+        assert_eq!(store.clear("box"), 1);
+        // Queryable in memory: the clear drained r1, not the later r2.
+        assert_eq!(store.count("box", &Filter::default()), 1);
+        drop(store);
+        let reopened = Store::open(0, &path).unwrap();
+        assert!(
+            reopened.get("r2").is_some(),
+            "a mail answered 250 and still held in memory was erased from the data file by the racing clear"
+        );
+        assert!(
+            reopened.get("r1").is_none(),
+            "the drained mail stays drained"
+        );
+    }
+
+    /// Same race against `clear_all`: the insert lands after every drain,
+    /// before the one mirrored wipe.
+    #[test]
+    fn a_clear_all_racing_an_insert_cannot_erase_the_inserts_row() {
+        let path = db_path("clear-all-race");
+        let store = Arc::new(Store::open(0, &path).unwrap());
+        store.insert(email("r1", "box", "a@x.io"));
+        let s = store.clone();
+        store.set_pre_mirror_gate(Some(Arc::new(move || {
+            s.insert(email("r2", "other", "a@x.io"));
+        })));
+        assert_eq!(store.clear_all(), 1);
+        assert_eq!(store.count("other", &Filter::default()), 1);
+        drop(store);
+        let reopened = Store::open(0, &path).unwrap();
+        assert!(
+            reopened.get("r2").is_some(),
+            "a mail answered 250 and still held in memory was erased from the data file by the racing clear_all"
+        );
+        assert!(
+            reopened.get("r1").is_none(),
+            "the drained mail stays drained"
+        );
     }
 }

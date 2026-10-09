@@ -166,18 +166,22 @@ impl Persist {
         Ok(())
     }
 
-    pub fn record_clear_inbox(&self, inbox: &str) -> rusqlite::Result<()> {
-        let state = self.state.lock().expect("persist state poisoned");
-        state
-            .conn
-            .execute("DELETE FROM emails WHERE inbox = ?1", params![inbox])?;
-        Ok(())
-    }
-
-    pub fn record_clear_all(&self) -> rusqlite::Result<()> {
-        let state = self.state.lock().expect("persist state poisoned");
-        state.conn.execute("DELETE FROM emails", [])?;
-        Ok(())
+    /// Delete exactly these rows, in one transaction — the mirror of a
+    /// clear. `clear`/`clear_all` call this with the ids they drained from
+    /// memory. Mirroring an inbox-wide `DELETE` instead would erase the row
+    /// of any mail inserted between the drain and this delete: that mail was
+    /// answered 250 and is queryable in memory, and would vanish on restart
+    /// (the clear/insert persistence race, review finding in run
+    /// sqlite-persistence-data-file-swa-dc3a9a2a). Deleting exactly the
+    /// drained ids cannot touch a post-drain insert, whatever the
+    /// interleaving.
+    pub fn record_deletes(&self, ids: &[&str]) -> rusqlite::Result<()> {
+        let mut state = self.state.lock().expect("persist state poisoned");
+        let tx = state.conn.transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM emails WHERE id = ?1", params![id])?;
+        }
+        tx.commit()
     }
 
     /// Test-only: make every subsequent write fail (read-only connection) so
@@ -437,35 +441,36 @@ mod tests {
     }
 
     #[test]
-    fn record_clear_inbox_only_clears_that_inbox() {
-        let persist = Persist::open(&db_path("clear-inbox")).unwrap();
+    fn record_deletes_clears_exactly_the_named_ids() {
+        let persist = Persist::open(&db_path("clear-ids")).unwrap();
         persist
             .record_insert(&email("c1", "box", "a@x.io"), &[], 1, 0)
             .unwrap();
         persist
             .record_insert(&email("c2", "other", "a@x.io"), &[], 2, 0)
             .unwrap();
-        persist.record_clear_inbox("box").unwrap();
+        persist
+            .record_insert(&email("c3", "box", "a@x.io"), &[], 3, 0)
+            .unwrap();
+        persist.record_deletes(&["c1", "c3"]).unwrap();
         let (emails, inserted, _) = persist.load().unwrap();
         assert_eq!(
-            emails.iter().map(|e| e.inbox.as_str()).collect::<Vec<_>>(),
-            vec!["other"]
+            emails.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            vec!["c2"],
+            "only the named ids are gone; a row in another inbox or one not named survives"
         );
-        assert_eq!(inserted, 2);
+        assert_eq!(inserted, 3);
     }
 
     #[test]
-    fn record_clear_all_empties_the_table_but_not_the_counters() {
-        let persist = Persist::open(&db_path("clear-all")).unwrap();
-        for id in ["x", "y", "z"] {
-            persist
-                .record_insert(&email(id, "box", "a@x.io"), &[], 3, 0)
-                .unwrap();
-        }
-        persist.record_clear_all().unwrap();
-        let (emails, inserted, _) = persist.load().unwrap();
-        assert!(emails.is_empty());
-        assert_eq!(inserted, 3);
+    fn record_deletes_on_an_empty_slice_commits_a_noop() {
+        let persist = Persist::open(&db_path("clear-empty")).unwrap();
+        persist
+            .record_insert(&email("kept", "box", "a@x.io"), &[], 1, 0)
+            .unwrap();
+        persist.record_deletes(&[]).unwrap();
+        let (emails, _, _) = persist.load().unwrap();
+        assert_eq!(emails.len(), 1);
     }
 
     #[test]
@@ -478,8 +483,7 @@ mod tests {
                 .is_err()
         );
         assert!(persist.record_delete("x").is_err());
-        assert!(persist.record_clear_inbox("box").is_err());
-        assert!(persist.record_clear_all().is_err());
+        assert!(persist.record_deletes(&["x", "y"]).is_err());
     }
 
     #[test]
