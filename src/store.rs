@@ -249,6 +249,26 @@ impl Store {
         }
     }
 
+    /// Newest-first listing across ALL inboxes matching `filter`.
+    ///
+    /// The MailHog/Mailpit compat shims expose a single global mailbox, so
+    /// they read the whole store through this (and scope to one inbox by
+    /// calling `list` when the request names one). Insertion order is only
+    /// per-inbox, so the merged view is ordered by receive time, with the
+    /// UUIDv7 id as the tiebreak (it sorts chronologically).
+    pub fn list_all(&self, filter: &Filter) -> Vec<Arc<Email>> {
+        let mut all: Vec<Arc<Email>> = Vec::new();
+        for entry in self.inboxes.iter() {
+            all.extend(entry.value().iter().filter(|e| filter.matches(e)).cloned());
+        }
+        all.sort_by(|a, b| {
+            b.received_ms
+                .cmp(&a.received_ms)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        all
+    }
+
     pub fn count(&self, inbox: &str, filter: &Filter) -> usize {
         self.list(inbox, filter).len()
     }
@@ -405,6 +425,31 @@ mod tests {
         };
         assert_eq!(store.count("default", &f), 1);
         assert_eq!(store.list("default", &f)[0].id, "2");
+    }
+
+    #[test]
+    fn list_all_merges_inboxes_newest_first() {
+        let store = Store::new(0);
+        assert!(store.list_all(&Filter::default()).is_empty());
+
+        let mut old = email("old", "one", "a@x.io");
+        old.received_ms = 100;
+        let mut new = email("new", "two", "a@x.io");
+        new.received_ms = 200;
+        store.insert(old);
+        store.insert(new);
+
+        let all = store.list_all(&Filter::default());
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].id, "new");
+        assert_eq!(all[1].id, "old");
+
+        // A filter that matches nothing, the way the compat shims scope.
+        let none = Filter {
+            from: Some("nobody@nowhere".into()),
+            ..Default::default()
+        };
+        assert!(store.list_all(&none).is_empty());
     }
 
     #[test]

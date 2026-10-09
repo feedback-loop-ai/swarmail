@@ -1,6 +1,7 @@
 //! HTTP API: REST for tests, MCP endpoint, OpenAPI, health/metrics.
 
 use crate::chaos::{Chaos, ChaosConfig};
+use crate::compat;
 use crate::feed;
 use crate::mcp::{self, McpContext};
 use crate::model::Email;
@@ -13,7 +14,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::Stream;
 use serde::de::DeserializeOwned;
@@ -72,7 +73,12 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/inboxes/{inbox}/threads", get(list_threads))
         .route("/api/v1/inboxes/{inbox}/threads/{key}", get(get_thread))
         .route("/api/v1/inboxes/{inbox}/feed", get(inbox_feed))
-        .route("/api/v1/messages", delete(clear_all))
+        // GET on /api/v1/messages is the Mailpit/MailHog list shape; DELETE
+        // stays swarmail-native with Mailpit's selective `{"ids":[..]}` body.
+        .route(
+            "/api/v1/messages",
+            get(compat::list_messages_mailpit).delete(compat::delete_messages),
+        )
         .route(
             "/api/v1/messages/{id}",
             get(get_message).delete(delete_message),
@@ -91,6 +97,7 @@ pub fn router(state: AppState) -> Router {
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
         .merge(ui::router())
+        .merge(compat::router())
         .with_state(state)
 }
 
@@ -303,10 +310,6 @@ async fn clear_inbox(
     Path(inbox): Path<String>,
 ) -> Json<serde_json::Value> {
     Json(serde_json::json!({ "removed": state.store.clear(&inbox) }))
-}
-
-async fn clear_all(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "removed": state.store.clear_all() }))
 }
 
 async fn get_message(

@@ -10,6 +10,13 @@
 - SMTP: point any client (Ory Kratos, Nodemailer, curl) at `localhost:1025`. No
   auth required; if the client authenticates, the **username names the inbox**
   (per-test isolation).
+- POP3: plain RFC 1939 on `localhost:1110`. `USER <inbox>` names an existing
+  swarmail inbox — the maildrop is the inbox, so mail delivered over SMTP is
+  readable over POP3. STAT/LIST/UIDL/RETR/DELE/RSET/TOP/CAPA/QUIT; DELE takes
+  effect on QUIT. Plaintext only.
+- MailHog / Mailpit clients: point them at `http://localhost:8025` — the
+  well-known read endpoints are answered from the same store (see the shims
+  section below).
 - HTTP: API at `http://localhost:8025`, this file at `/llms.txt`, OpenAPI at
   `/openapi.json`, MCP at `POST /mcp`, health at `/healthz`, Prometheus at `/metrics`.
 
@@ -65,6 +72,33 @@ built-in root store).
   update live, no manual refresh.
 - Thread fields (`message_id`, `in_reply_to`, `references`) are extracted at
   ingest and stored on every email, so views never re-parse raw headers.
+
+## MailHog / Mailpit API shims
+
+Same store, the two shapes existing suites already speak:
+
+- `GET /api/v1/messages` — Mailpit's summary envelope (`total`, `unread`,
+  `count`, `messages_count`, `messages_unread_count`, `start`, `tags`,
+  `messages`), newest first. `?inbox=` scopes to one swarmail inbox;
+  `?limit=`/`?start=` page.
+- `GET /api/v1/message/{id}` — Mailpit's full message; `/plain` serves the
+  extracted text part. `DELETE /api/v1/messages` deletes the `{"ids": [...]}`
+  named mails (or everything when the body is absent/empty/unparseable) and
+  replies `{"removed": n}`; `DELETE /api/v1/delete-all` is the wipe alias.
+- `GET /api/v2/messages` — MailHog's `{total, count, start, items}` with
+  `data.Message` shapes (`Content.{Headers,Body,Size,MIME}`,
+  `Raw.{From,To,Data,Helo}`). `GET /api/v2/search` takes
+  `kind=from|to|containing` and answers a bare 400 on an unknown kind or an
+  empty query. `GET /api/v1/search` is the Mailpit flavor
+  (`kind=from|to|subject|containing`, JSON `400`).
+- `GET /api/v1/messages/{id}/download` and `GET /api/v1/message/{id}/raw`
+  serve the full RFC 5322 source as `message/rfc822`
+  (`attachment; filename="<id>.eml"`).
+- Mapping: Mailpit `Username` = the swarmail inbox; `Return-Path`/`Raw.From` =
+  the header From; `Read` is always `false` and unread counts mirror `total`
+  (no read state); tags are `[]`; attachments/inline are empty arrays. The
+  swarmail-native `/api/v1/messages/{id}` is unchanged — the Mailpit-style
+  single message is the singular `/api/v1/message/{id}`.
 
 ## Guarantees
 

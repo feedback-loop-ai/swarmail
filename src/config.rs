@@ -17,7 +17,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Run the Swarmail server (SMTP + HTTP: API, MCP, UI).
+    /// Run the Swarmail server (SMTP + POP3 + HTTP: API, MCP, UI).
     Serve(ServeArgs),
     /// Mint a self-signed certificate + key (PEM) for a domain — the
     /// bootstrap for STARTTLS in dev and test.
@@ -32,9 +32,14 @@ pub struct ServeArgs {
     #[arg(long, default_value = "0.0.0.0:1025", env = "SWARMAIL_SMTP_LISTEN")]
     pub smtp_listen: String,
 
-    /// HTTP listen address (API, MCP, UI).
+    /// HTTP listen address (API, MCP, UI, MailHog/Mailpit compat shims).
     #[arg(long, default_value = "0.0.0.0:8025", env = "SWARMAIL_HTTP_LISTEN")]
     pub http_listen: String,
+
+    /// POP3 listen address (RFC 1939) serving the same store. A USER names
+    /// an existing swarmail inbox; the maildrop is that inbox.
+    #[arg(long, default_value = "0.0.0.0:1110", env = "SWARMAIL_POP3_LISTEN")]
+    pub pop3_listen: String,
 
     /// Maximum emails kept per inbox; oldest are pruned. 0 = unlimited.
     #[arg(long, default_value_t = 100_000, env = "SWARMAIL_MAX_PER_INBOX")]
@@ -88,6 +93,8 @@ pub struct McpArgs {
 pub struct Config {
     pub smtp_listen: String,
     pub http_listen: String,
+    /// POP3 listener serving the same store; a USER names an existing inbox.
+    pub pop3_listen: String,
     pub max_per_inbox: usize,
     /// Optional SQLite data file: every mutation is written through and the
     /// full state is restored on startup.
@@ -104,6 +111,7 @@ impl From<&ServeArgs> for Config {
         Self {
             smtp_listen: args.smtp_listen.clone(),
             http_listen: args.http_listen.clone(),
+            pop3_listen: args.pop3_listen.clone(),
             max_per_inbox: args.max_per_inbox,
             data_file: args.data_file.clone(),
             tls_cert: args.tls_cert.clone(),
@@ -122,6 +130,7 @@ mod tests {
         let args = ServeArgs {
             smtp_listen: "127.0.0.1:2525".into(),
             http_listen: "127.0.0.1:8080".into(),
+            pop3_listen: "127.0.0.1:1110".into(),
             max_per_inbox: 42,
             data_file: Some("/tmp/mail.db".into()),
             tls_cert: None,
@@ -130,6 +139,7 @@ mod tests {
         let cfg = Config::from(&args);
         assert_eq!(cfg.smtp_listen, "127.0.0.1:2525");
         assert_eq!(cfg.http_listen, "127.0.0.1:8080");
+        assert_eq!(cfg.pop3_listen, "127.0.0.1:1110");
         assert_eq!(cfg.max_per_inbox, 42);
         assert_eq!(
             cfg.data_file.as_deref(),
@@ -149,6 +159,8 @@ mod tests {
         assert!(matches!(
             cli.command,
             Command::Serve(args) if args.smtp_listen == "0.0.0.0:1025"
+                && args.http_listen == "0.0.0.0:8025"
+                && args.pop3_listen == "0.0.0.0:1110"
                 && args.max_per_inbox == 100_000
                 && args.data_file.is_none()
                 && args.tls_cert.is_none()

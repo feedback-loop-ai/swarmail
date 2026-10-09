@@ -51,6 +51,7 @@ fn base_cfg() -> Config {
     Config {
         smtp_listen: "127.0.0.1:0".into(),
         http_listen: "127.0.0.1:0".into(),
+        pop3_listen: "127.0.0.1:0".into(),
         max_per_inbox: 0,
         data_file: None,
         tls_cert: None,

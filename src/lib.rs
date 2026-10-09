@@ -2,12 +2,14 @@
 
 pub mod api;
 pub mod chaos;
+pub mod compat;
 pub mod config;
 pub mod extract;
 pub mod feed;
 pub mod mcp;
 pub mod model;
 pub mod persist;
+pub mod pop3;
 pub mod smtp;
 pub mod stdio;
 pub mod store;
@@ -25,10 +27,12 @@ fn log_stopped(what: &str, res: std::io::Result<()>) {
     }
 }
 
-/// A running server: both listeners bound, tasks spawned.
+/// A running server: every listener bound, tasks spawned.
 pub struct RunningServer {
     pub smtp_addr: std::net::SocketAddr,
     pub http_addr: std::net::SocketAddr,
+    /// The POP3 listener; a USER names an existing inbox as the maildrop.
+    pub pop3_addr: std::net::SocketAddr,
     pub store: Arc<store::Store>,
     pub chaos: Arc<chaos::Chaos>,
     pub webhooks: Arc<webhook::Webhooks>,
@@ -37,7 +41,7 @@ pub struct RunningServer {
 }
 
 impl RunningServer {
-    /// Ask both servers to stop and wait until they have logged their exit.
+    /// Ask the servers to stop and wait until they have logged their exit.
     pub async fn stop(self) {
         let _ = self.shutdown.send(true);
         for task in self.tasks {
@@ -46,7 +50,8 @@ impl RunningServer {
     }
 }
 
-/// Bind SMTP + HTTP and spawn both servers (plus the webhook dispatcher).
+/// Bind SMTP + POP3 + HTTP and spawn all three servers (plus the webhook
+/// dispatcher).
 pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     // The data file is opened and restored BEFORE any listener binds: a
     // server that answers must answer with its full state.
@@ -83,6 +88,9 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     let http_listener = tokio::net::TcpListener::bind(&cfg.http_listen).await?;
     let smtp_addr = smtp_listener.local_addr()?;
     let http_addr = http_listener.local_addr()?;
+    // Bound before any spawn: a bind failure fails the whole startup.
+    let pop3_listener = tokio::net::TcpListener::bind(&cfg.pop3_listen).await?;
+    let pop3_addr = pop3_listener.local_addr()?;
 
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     let mut tasks = Vec::new();
@@ -126,9 +134,24 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         }));
     }
 
+    {
+        let store = store.clone();
+        let mut shutdown_rx = shutdown_rx.clone();
+        tasks.push(tokio::spawn(async move {
+            log_stopped(
+                "pop3",
+                pop3::serve(pop3_listener, store, async move {
+                    let _ = shutdown_rx.changed().await;
+                })
+                .await,
+            );
+        }));
+    }
+
     Ok(RunningServer {
         smtp_addr,
         http_addr,
+        pop3_addr,
         store,
         chaos,
         webhooks,

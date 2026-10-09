@@ -3,7 +3,7 @@
   "info": {
     "title": "Swarmail",
     "version": "0.1.0",
-    "description": "The fastest AI-native SMTP mail mock. Accepts any SMTP traffic on :1025 and exposes captured email through this API on :8025. Every accepted message is queryable immediately — there is no async gap where mail can be lost."
+    "description": "The fastest AI-native SMTP mail mock. Accepts any SMTP traffic on :1025, answers POP3 (RFC 1939 core + TOP/CAPA) on :1110 with the inbox as the maildrop, and exposes captured email through this API on :8025 — including MailHog/Mailpit-compatible read endpoints. Every accepted message is queryable immediately — there is no async gap where mail can be lost."
   },
   "paths": {
     "/healthz": {
@@ -125,7 +125,102 @@
       }
     },
     "/api/v1/messages": {
-      "delete": { "summary": "Clear every inbox", "responses": { "200": { "description": "Removed count" } } }
+      "get": {
+        "summary": "MailHog/Mailpit list shape over the whole store (Mailpit's summary envelope, newest first)",
+        "description": "The Mailpit `/api/v1/messages` shape: {total, unread, count, messages_count, messages_unread_count, start, tags, messages}. No query names a mailbox: the whole store is one global mailbox, as both tools expose it. `?inbox=` scopes to a single swarmail inbox; `?limit=`/`?start=` page.",
+        "parameters": [
+          { "name": "inbox", "in": "query", "schema": { "type": "string" }, "description": "Scope to one swarmail inbox" },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+          { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } }
+        ],
+        "responses": { "200": { "description": "Mailpit MessageSummary envelope" } }
+      },
+      "delete": {
+        "summary": "Delete the named ids (Mailpit) or wipe every inbox (MailHog)",
+        "description": "Body `{\"ids\":[...]}` deletes exactly those messages; an absent, empty or unparseable body wipes everything, like upstream's decoders. Replies `{\"removed\": n}`.",
+        "responses": { "200": { "description": "{\"removed\": n}" } }
+      }
+    },
+    "/api/v1/message/{id}": {
+      "get": {
+        "summary": "Mailpit's full message shape",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Mailpit Message" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/v1/message/{id}/plain": {
+      "get": {
+        "summary": "The extracted text part as text/plain (Mailpit + MailHog)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "text/plain; charset=utf-8" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/v1/message/{id}/raw": {
+      "get": {
+        "summary": "The full RFC 5322 source (MailHog's raw shape)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "message/rfc822" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/v1/message/{id}/headers": {
+      "get": {
+        "summary": "The synthesized header map (MailHog's Content.Headers)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Header name to array of values, including Received and Return-Path stamps" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/v1/messages/{id}/plain": {
+      "get": {
+        "summary": "The extracted text part as text/plain (the plural path MailHog clients use)",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "text/plain; charset=utf-8" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/v1/messages/{id}/download": {
+      "get": {
+        "summary": "The message as an .eml attachment download",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "message/rfc822, Content-Disposition: attachment; filename=\"<id>.eml\"" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/v1/search": {
+      "get": {
+        "summary": "Mailpit search envelope over the store",
+        "parameters": [
+          { "name": "query", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "kind", "in": "query", "schema": { "type": "string", "enum": ["from", "to", "subject", "containing"], "default": "containing" } },
+          { "name": "inbox", "in": "query", "schema": { "type": "string" }, "description": "Scope to one swarmail inbox" },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+          { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } }
+        ],
+        "responses": { "200": { "description": "Mailpit MessageSummary envelope" }, "400": { "description": "Missing query or unknown kind" } }
+      }
+    },
+    "/api/v2/messages": {
+      "get": {
+        "summary": "MailHog v2 list shape over the whole store",
+        "description": "{total, count, start, items} where items are MailHog data.Message objects (Content.{Headers,Body,Size,MIME}, Raw.{From,To,Data,Helo}). `?inbox=` scopes; `?limit=`/`?start=` page.",
+        "parameters": [
+          { "name": "inbox", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+          { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } }
+        ],
+        "responses": { "200": { "description": "MailHog v2 envelope" } }
+      }
+    },
+    "/api/v2/search": {
+      "get": {
+        "summary": "MailHog v2 search",
+        "parameters": [
+          { "name": "query", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "kind", "in": "query", "schema": { "type": "string", "enum": ["from", "to", "containing"], "default": "containing" } },
+          { "name": "inbox", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "MailHog v2 envelope" }, "400": { "description": "Bare 400 (no body) for an unknown kind or empty query, as upstream answers" } }
+      }
+    },
+    "/api/v1/delete-all": {
+      "delete": { "summary": "MailHog's wipe alias", "responses": { "200": { "description": "{\"removed\": n}" } } }
     },
     "/api/v1/messages/{id}": {
       "get": {

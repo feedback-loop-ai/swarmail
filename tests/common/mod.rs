@@ -16,6 +16,7 @@ pub async fn start_with(override_cfg: impl FnOnce(Config) -> Config) -> RunningS
     let cfg = override_cfg(Config {
         smtp_listen: "127.0.0.1:0".into(),
         http_listen: "127.0.0.1:0".into(),
+        pop3_listen: "127.0.0.1:0".into(),
         max_per_inbox: 0,
         data_file: None,
         tls_cert: None,
@@ -97,6 +98,88 @@ pub async fn smtp_send(
 
     w.write_all(b"QUIT\r\n").await.unwrap();
     Ok(line.trim_end().to_string())
+}
+
+/// A raw POP3 client — enough of RFC 1939 to exercise the server over the
+/// wire, like the SMTP client above. No client crate: plain TCP.
+pub struct Pop3 {
+    reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
+    writer: tokio::net::tcp::OwnedWriteHalf,
+}
+
+#[allow(dead_code)]
+impl Pop3 {
+    /// Connect and check the greeting.
+    pub async fn connect(addr: std::net::SocketAddr) -> Pop3 {
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (r, w) = stream.into_split();
+        let mut c = Pop3 {
+            reader: BufReader::new(r),
+            writer: w,
+        };
+        let greeting = c.reply().await;
+        assert!(
+            greeting.starts_with("+OK"),
+            "unexpected greeting: {greeting}"
+        );
+        c
+    }
+
+    pub async fn send(&mut self, line: &str) {
+        self.writer
+            .write_all(format!("{line}\r\n").as_bytes())
+            .await
+            .unwrap();
+    }
+
+    /// Read one reply line, trimmed of its CRLF.
+    pub async fn reply(&mut self) -> String {
+        let mut line = String::new();
+        self.reader.read_line(&mut line).await.unwrap();
+        line.trim_end().to_string()
+    }
+
+    /// Send a command and read its single-line reply.
+    pub async fn cmd(&mut self, line: &str) -> String {
+        self.send(line).await;
+        self.reply().await
+    }
+
+    /// Read a multi-line reply body up to the terminating "." line, with
+    /// dot-stuffing undone and CRLF line endings restored.
+    pub async fn data_bytes(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            self.reader.read_until(b'\n', &mut line).await.unwrap();
+            assert!(!line.is_empty(), "connection closed mid-data");
+            let terminated = line.ends_with(b"\n");
+            while line.last() == Some(&b'\n') || line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            if line == b"." {
+                return out;
+            }
+            if line.first() == Some(&b'.') {
+                line.remove(0);
+            }
+            out.extend_from_slice(&line);
+            if terminated {
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+    }
+
+    /// The multi-line body as text (LIST/UIDL/CAPA/TOP assertions).
+    pub async fn data(&mut self) -> String {
+        String::from_utf8(self.data_bytes().await).unwrap()
+    }
+
+    /// USER + PASS round-trip; any password is accepted (decision 0004).
+    pub async fn login(&mut self, user: &str) {
+        assert!(self.cmd(&format!("USER {user}")).await.starts_with("+OK"));
+        assert!(self.cmd("PASS whatever").await.starts_with("+OK"));
+    }
 }
 
 /// Start with a custom SMTP config (auth flags, message-size limit).

@@ -10,6 +10,6 @@ RUN strip target/release/swarmail
 
 FROM scratch
 COPY --from=build /app/target/release/swarmail /swarmail
-EXPOSE 1025 8025
+EXPOSE 1025 1110 8025
 USER 65532:65532
 ENTRYPOINT ["/swarmail", "serve"]

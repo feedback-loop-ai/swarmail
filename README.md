@@ -47,7 +47,7 @@ session per mail — the Ory Kratos courier pattern); the µs/mail figure is
 ## Quickstart
 
 ```bash
-docker run -p 1025:1025 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:v0.1.0
+docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:v0.1.0
 # or
 cargo install swarmail && swarmail serve
 # or from source
@@ -60,7 +60,8 @@ Point any SMTP client (Ory Kratos, Nodemailer, curl) at `localhost:1025` and ope
 parallel test or agent its own inbox for free.
 
 Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `1025`),
-`SWARMAIL_HTTP_LISTEN` (default `8025`), `SWARMAIL_MAX_PER_INBOX`
+`SWARMAIL_POP3_LISTEN` (default `1110`), `SWARMAIL_HTTP_LISTEN` (default `8025`),
+`SWARMAIL_MAX_PER_INBOX`
 (default `100000`, `0` = unlimited), `SWARMAIL_URL` (for the MCP stdio bridge),
 `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY` (STARTTLS on the SMTP port).
 
@@ -115,6 +116,57 @@ curl "localhost:8025/api/v1/inboxes/test-run/await?to=user@x.io&count=1&timeout_
 Fixtures without SMTP: `POST /api/v1/inboxes/test-run/seed` (runs the full
 parse + extraction pipeline).
 
+## POP3 — RFC 1939 on the same store
+
+Swarmail also answers plain POP3 (default `0.0.0.0:1110`, `SWARMAIL_POP3_LISTEN`).
+The maildrop **is** a swarmail inbox: `USER proj-42` names an existing inbox
+exactly like SMTP AUTH does, so a test that delivers over SMTP reads the same
+mail back over POP3 — including mail that arrived before the POP3 session
+opened.
+
+Supported commands: USER, PASS, STAT, LIST [n], UIDL [n], RETR n, DELE n,
+NOOP, RSET, TOP n k, CAPA, QUIT. UIDLs are the swarmail message ids; octet
+counts are the stored raw sizes (RETR normalizes bare-LF lines to CRLF in
+transit, as RFC 1939 requires). DELE marks a message during the session and
+the deletion is applied on QUIT — the RFC's update stage; RSET unmarks, and a
+connection that drops without QUIT leaves the maildrop untouched. Plaintext
+only: no APOP, no STLS, no TLS wrapper — swarmail's POP3 is a test-harness
+surface behind the same trust boundary as the SMTP listener.
+
+## MailHog / Mailpit API shims
+
+The two shapes test suites actually hit, answered from the same store — point
+an existing MailHog/Mailpit client at swarmail's HTTP port and it works:
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/v1/messages` | Mailpit's summary envelope (`total`/`unread`/`count`/`messages_count`/… /`messages`), newest first; `?inbox=` scopes to one swarmail inbox, `?limit=`/`?start=` page |
+| `GET /api/v1/message/{id}` | Mailpit's full message shape (`Text`, `HTML`, `ReturnPath`, …) |
+| `GET /api/v1/message/{id}/plain`, `GET /api/v1/messages/{id}/plain` | the extracted text part as `text/plain; charset=utf-8` |
+| `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete — or a wipe when the body is absent/empty/unparseable, like upstream's decoders; replies `{"removed": n}` |
+| `DELETE /api/v1/delete-all` | MailHog's wipe alias |
+| `GET /api/v1/search` | Mailpit search: `kind=from\|to\|subject\|containing`, `?query=` required, `400 {"error": …}` otherwise |
+| `GET /api/v2/messages` | MailHog v2 `{total, count, start, items}` with `data.Message` shapes — `Content.{Headers,Body,Size,MIME}`, `Raw.{From,To,Data,Helo}` |
+| `GET /api/v2/search` | MailHog search: `kind=from\|to\|containing`; a bare `400` (no body, as upstream answers) on an unknown kind or empty query |
+| `GET /api/v1/messages/{id}/download`, `GET /api/v1/message/{id}/raw` | the full RFC 5322 source as `message/rfc822`, `attachment; filename="<id>.eml"` |
+
+Mapping notes: Mailpit's `Username` is the swarmail inbox (swarmail routes by
+inbox and has no read state — `Read` is always `false` and the unread counts
+mirror `total`); Mailpit's `Return-Path` and MailHog's `Raw.From` carry the
+header From, the closest recorded reverse path; header maps are synthesized
+from fields extracted at ingest (decision 0005), never re-parsed at query
+time. Mailpit's `mail.Address` renders with lowercase keys and drops empty
+names; MailHog's `Path` splits at the domain (both sides empty when a mail
+has no From at all); `MIME` is `null` when the mail has no body.
+
+**Deliberate omissions** — swarmail has no counterpart and a shim would lie:
+attachments and inline images (the fields exist, the arrays are empty), read/
+unread state, tags (always `[]`), the send API (mail arrives by SMTP),
+`/api/v1/messages/{id}/mime/part/...` and attachment downloads, Mailpit's
+`to:`-style query prefixes (swarmail takes `kind=` instead), and the two web
+UIs. swarmail's own `/api/v1/messages/{id}` stays native — the Mailpit-style
+single-message route is the singular `/api/v1/message/{id}`.
+
 ## Threads and the live inbox view
 
 `GET /api/v1/inboxes/{inbox}/threads` groups the inbox into conversations —
@@ -154,6 +206,8 @@ reset and magic-link flows without a human touching a browser tab.
 | Machine docs | `/openapi.json` (3.1) · `/llms.txt` · `/metrics` (Prometheus) · `/healthz` |
 | Human UI | `/`, `/ui/inbox/{name}`, `/ui/inbox/{name}/thread/{key}`, `/ui/message/{id}` — zero frontend deps; the inbox and thread views update live from the SSE feed |
 | SMTP | `:1025` — EHLO, AUTH PLAIN/LOGIN (accept-any; username = inbox), PIPELINING, 8BITMIME, SMTPUTF8, SIZE, 50 MiB cap; optional STARTTLS (rustls/ring) |
+| POP3 | `:1110` — RFC 1939 core + TOP/CAPA; the maildrop is an inbox (see *POP3*) |
+| MailHog / Mailpit shims | `/api/v1/messages` (GET/DELETE), `/api/v1/message/{id}[/plain\|/raw\|/headers]`, `/api/v1/messages/{id}[/plain\|/download]`, `/api/v1/search` · `/api/v2/search`, `/api/v1/delete-all` — see *MailHog / Mailpit API shims* |
 
 ## Chaos — test your failure paths
 
@@ -200,15 +254,17 @@ Reproduce with `cargo bench` (results land in `target/criterion`).
 
 ## Testing & coverage
 
-**17 integration + unit tests**, every one against real servers speaking the
-real protocol — no mocks in the loop:
+**Every integration test runs against real servers speaking the real
+protocol** — no mocks in the loop:
 
 | Suite | What it proves |
 |---|---|
 | `tests/burst.rs` (6) | 1000 mails / 50 conns exact-count, per-inbox isolation, cap eviction, chaos rejection + recovery |
 | `tests/p2.rs` (4) | MCP end-to-end (initialize → seed → search → clear), seed extraction, webhooks with secret + inbox filter |
 | `tests/rate.rs` (1) | **the 5k guarantee** — 5000/5000 exact over 100 fresh sessions + throughput report |
-| unit (7) | extraction, filters, chaos gating, model plumbing |
+| `tests/pop3.rs` (17) | real POP3 over TCP: auth (incl. unknown maildrop), stat/list/uidl/retr round-trips, DELE→QUIT deletes, RSET, TOP, dot-stuffing, oversized lines, persistence restart |
+| `tests/compat.rs` (10) | MailHog/Mailpit shapes over real HTTP: envelopes, scoping, every search kind, plain/raw/download, selective + wipe deletes, bodyless and From-less mail |
+| unit (90) | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |
 
 ```bash
 cargo test                                                    # the suite (seconds)
@@ -218,7 +274,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 ```
 
 **Line coverage: 100%** — every line of production code, verified by
-`cargo llvm-cov` (1712/1712) and enforced by `scripts/coverage-gate.sh`: the
+`cargo llvm-cov` (4064/4064) and enforced by `scripts/coverage-gate.sh`: the
 gate is **exact** (missed lines == 0, not a rounded 99.95→100) and **the floor
 may rise, never fall** (the brokkr rule). `#[coverage(off)]` is forbidden, so
 production code cannot shrink the denominator. The suite that carries it:
@@ -236,6 +292,8 @@ production code cannot shrink the denominator. The suite that carries it:
 | `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart (pipelined plaintext discarded), refused certs, malformed PEM refusal |
 | `tests/lifecycle.rs` | graceful stop: serve futures return, ports release |
 | `tests/binary.rs` | the shipped binary: SIGINT → clean exit, mcp EOF → 0 |
+| `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT |
+| `tests/compat.rs` | the shims: Mailpit + MailHog envelopes, searches, deletes, 404/400 branches |
 
 ## AI-native delivery (brokkr)
 
@@ -281,7 +339,7 @@ docker build -t swarmail .    # scratch image ≈ binary size
 - [x] STARTTLS + self-signed cert generation
 - [x] HTTPS webhook targets (reqwest + rustls)
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
-- [ ] POP3 server; MailHog/Mailpit API compat shims
+- [x] POP3 server; MailHog/Mailpit API compat shims
 - [ ] crates.io publish
 - [x] UI: live-updating inbox view, message threads — grouped by
   References/In-Reply-To chains with normalized-subject fallback
