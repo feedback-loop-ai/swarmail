@@ -60,12 +60,17 @@ impl TlsConfig {
 
     /// Write the pair out as `cert.pem` + `key.pem` under `dir`, creating
     /// the directory if missing. Returns the two paths.
+    ///
+    /// The private key lands owner-only (mode 0600 on unix): a generated
+    /// key must never be group/other-readable — review finding from run
+    /// starttls-self-signed-cert-genera-ef7796f0. The certificate is
+    /// public and keeps the process default mode.
     pub fn write_to_dir(&self, dir: &Path) -> io::Result<(PathBuf, PathBuf)> {
         std::fs::create_dir_all(dir)?;
         let cert = dir.join("cert.pem");
         let key = dir.join("key.pem");
         std::fs::write(&cert, &self.cert_pem)?;
-        std::fs::write(&key, &self.key_pem)?;
+        write_private_key(&key, &self.key_pem)?;
         Ok((cert, key))
     }
 
@@ -87,6 +92,44 @@ impl TlsConfig {
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(io::Error::other)
+    }
+}
+
+/// Write the private key PEM so only the file's owner can read it (mode
+/// 0600 on unix). The key is created with that mode itself, so it is never
+/// briefly wider; a pre-existing wider key — an older run's `key.pem` — is
+/// tightened *before* the new bytes land, because `open(2)` with `O_CREAT`
+/// does not re-mode an existing file; the pin afterwards makes the mode
+/// exact regardless of umask. The certificate, by contrast, is public and
+/// written with the plain default mode.
+///
+/// (Review finding from run starttls-self-signed-cert-genera-ef7796f0:
+/// `write_to_dir` used `std::fs::write`, leaving the key 0664.)
+fn write_private_key(path: &Path, pem: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        if let Ok(meta) = std::fs::metadata(path)
+            && meta.is_file()
+        {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?
+            .write_all(pem.as_bytes())?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        // No POSIX mode bits on this platform; the umask/ACL default is the
+        // tightest portable equivalent.
+        std::fs::write(path, pem)
     }
 }
 
@@ -180,5 +223,47 @@ mod tests {
         let file = scratch("not-a-dir");
         std::fs::write(&file, "occupied").unwrap();
         assert!(tls.write_to_dir(&file).is_err());
+    }
+
+    /// Unix-only per the test-portability decision: file modes do not exist
+    /// on every host this crate builds for.
+    #[cfg(unix)]
+    #[test]
+    fn the_generated_key_is_owner_only_and_the_cert_stays_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let tls = TlsConfig::generate_self_signed("localhost").unwrap();
+        let (cert, key) = tls.write_to_dir(&scratch("key-mode")).unwrap();
+
+        let mode = std::fs::metadata(&key).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "the private key must never be group/other-readable, got {mode:o}"
+        );
+        // The certificate is public: it still reads back, byte for byte.
+        assert_eq!(std::fs::read_to_string(&cert).unwrap(), tls.cert_pem);
+    }
+
+    /// A key left wide by an older run must be tightened on rewrite:
+    /// `open(2)` with `O_CREAT` does not re-mode an existing file.
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_wider_key_file_is_tightened_on_rewrite() {
+        use std::os::unix::fs::PermissionsExt;
+        let tls = TlsConfig::generate_self_signed("localhost").unwrap();
+        let dir = scratch("tighten");
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join("key.pem");
+        std::fs::write(&stale, "an older run's key, written wide").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o664)).unwrap();
+
+        let (_, key) = tls.write_to_dir(&dir).unwrap();
+        let mode = std::fs::metadata(&key).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "a re-run must tighten the key: {mode:o}"
+        );
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), tls.key_pem);
     }
 }
