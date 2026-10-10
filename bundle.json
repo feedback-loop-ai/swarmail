@@ -112,10 +112,10 @@
         "fail"
       ]
     },
-    "architecture": {
+    "design": {
       "results": [
         "designed",
-        "failed"
+        "fail"
       ],
       "limits": {
         "max_attempts": 2,

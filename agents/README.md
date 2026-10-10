@@ -15,15 +15,15 @@ the operator's alone.
 | Agent | Seat | Charter |
 |---|---|---|
 | `intake` | intake | [charters/intake.md](charters/intake.md) |
-| `position-simplicity` | architecture:positions | [charters/position-simplicity.md](charters/position-simplicity.md) |
-| `position-robustness` | architecture:positions | [charters/position-robustness.md](charters/position-robustness.md) |
-| `chief-architect` | architecture:chief | [charters/chief-architect.md](charters/chief-architect.md) |
+| `position-simplicity` | design:positions | [charters/position-simplicity.md](charters/position-simplicity.md) |
+| `position-robustness` | design:positions | [charters/position-robustness.md](charters/position-robustness.md) |
+| `chief-architect` | design:chief | [charters/chief-architect.md](charters/chief-architect.md) |
 | `implementer` | implement | [charters/implementer.md](charters/implementer.md) |
 | `review-correctness` | review:correctness | [charters/review-correctness.md](charters/review-correctness.md) |
 | `review-security` | review:security | [charters/review-security.md](charters/review-security.md) |
 | `muninn` | standing overseer (no phase) | [charters/muninn.md](charters/muninn.md) |
 
-The phase machine is [`policy.json`](../policy.json); the `architecture`
+The phase machine is [`policy.json`](../policy.json); the `design`
 sequence's deterministic check is [`scripts/design-check.sh`](../scripts/design-check.sh);
 the seat wiring is [`bundle.json`](../bundle.json). Panel members and
 sequence steps carry no `limits` of their own — the seat above them owns

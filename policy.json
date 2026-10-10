@@ -3,7 +3,7 @@
   "description": "The realm's phase machine: intake frames, a contrarian design panel argues before any code, implement builds, hermetic gates verify, a split review panel judges (the protected phase), ship signs. Design and review are model seats; verify, ship and the design check are deterministic exec drivers \u2014 the hybrid. security-hold is a hard stop, security residuals never take the tracked-debt path.",
   "phases": [
     "intake",
-    "architecture",
+    "design",
     "implement",
     "verify",
     "review",
@@ -24,20 +24,20 @@
       "id": "INTAKE-OK",
       "from": "intake",
       "result": "resolved",
-      "next": "architecture",
+      "next": "design",
       "reason": "Task framed and recorded; the panel argues before any code is written."
     },
     {
-      "id": "ARCH-OK",
-      "from": "architecture",
+      "id": "DESIGN-OK",
+      "from": "design",
       "result": "designed",
       "next": "implement",
-      "reason": "Spec committed and structurally validated by the deterministic check."
+      "reason": "Spec committed and structurally validated by the deterministic check; the speckit dialect's design instructions reached the council."
     },
     {
-      "id": "ARCH-FAIL-TWICE",
-      "from": "architecture",
-      "result": "failed",
+      "id": "DESIGN-FAIL-TWICE",
+      "from": "design",
+      "result": "fail",
       "when": {
         "consecutive_failures_gte": 2
       },
@@ -46,10 +46,10 @@
       "reason": "Two consecutive failed design validations; stop rather than thrash."
     },
     {
-      "id": "ARCH-RETRY",
-      "from": "architecture",
-      "result": "failed",
-      "next": "architecture",
+      "id": "DESIGN-RETRY",
+      "from": "design",
+      "result": "fail",
+      "next": "design",
       "reason": "First failed design validation; one re-run permitted."
     },
     {
