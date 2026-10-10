@@ -1,129 +1,228 @@
+<p align="center"><img src="assets/logo.svg" width="132" alt="Swarmail — an open envelope carried by a swarm of three dots"></p>
+
 # Swarmail
 
-> **Email infrastructure for tests and agents.** One Rust binary: a lossless SMTP
-> mock with per-test inboxes, chaos engineering, push-based waiting, MCP for AI
-> agents, and a web UI — swallowing mail faster than your tests can produce it.
-
 [![CI](https://github.com/feedback-loop-ai/swarmail/actions/workflows/ci.yml/badge.svg)](https://github.com/feedback-loop-ai/swarmail/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/feedback-loop-ai/swarmail)](https://github.com/feedback-loop-ai/swarmail/releases)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
-[![Rust](https://img.shields.io/badge/rust-stable-orange)](https://www.rust-lang.org)
-[![coverage](https://img.shields.io/badge/coverage-100%25%20lines%20%C2%B7%20branches%20%C2%B7%20functions-brightgreen)](scripts/coverage-gate.sh)
+[![release](https://img.shields.io/github/v/release/feedback-loop-ai/swarmail?label=release&color=blue)](https://github.com/feedback-loop-ai/swarmail/releases/latest)
+[![license: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+[![coverage · literal 100%](https://img.shields.io/badge/coverage%20%C2%B7%20literal%20100%25-brightgreen)](scripts/coverage-gate.sh)
 [![deps · permissive-only](https://img.shields.io/badge/deps%20%C2%B7%20permissive--only-brightgreen)](deny.toml)
+[![platforms](https://img.shields.io/badge/linux%20%C2%B7%20macos-blue)](.github/workflows/ci.yml)
+[![rust](https://img.shields.io/badge/rust-stable-orange)](Cargo.toml)
 
-**v0.1.0** · [Releases](https://github.com/feedback-loop-ai/swarmail/releases) ·
-[Landing page](docs/index.html) · machine-readable surfaces:
+**Email infrastructure for tests and agents.** One Rust binary: a lossless
+SMTP mock with per-test inboxes, chaos engineering, push-based waiting,
+native MCP for AI agents, and a live web UI — swallowing mail faster than
+your tests can produce it.
+
+*The swarm never drops a letter.*
+
+> **Accept is the truth.** An SMTP `250` means the mail is queryable — and,
+> with a data file, already on disk. There is no async gap where mail can
+> vanish, because there is no async gap.
+
+[The landing page](docs/index.html) · machine-readable surfaces:
 [`/openapi.json`](http://localhost:8025/openapi.json) ·
 [`/llms.txt`](http://localhost:8025/llms.txt) · `/metrics` · `/healthz`
 
-```bash
+## Contents
+
+- [The name](#the-name)
+- [What it does](#what-it-does)
+- [The guarantees](#the-guarantees)
+- [60-second quickstart](#60-second-quickstart)
+- [The surfaces](#the-surfaces)
+  - [SMTP — accept is the truth](#smtp--accept-is-the-truth)
+  - [The REST API — await, don't poll](#the-rest-api--await-dont-poll)
+  - [MCP — agents drive the mail](#mcp--agents-drive-the-mail)
+  - [POP3 — the same store, RFC 1939](#pop3--the-same-store-rfc-1939)
+  - [MailHog / Mailpit shims](#mailhog--mailpit-shims)
+  - [Threads and the live UI](#threads-and-the-live-ui)
+  - [Webhooks](#webhooks)
+  - [Chaos — break SMTP on purpose](#chaos--break-smtp-on-purpose)
+  - [Persistence — the restart copy](#persistence--the-restart-copy)
+- [Benchmarks](#benchmarks)
+- [Repo layout](#repo-layout)
+- [The decision culture](#the-decision-culture)
+- [Testing & coverage](#testing--coverage)
+- [Roadmap](#roadmap)
+- [License](#license)
+
+## The name
+
+A **swarm** is a thousand independent agents with no coordinator and no
+single point of loss. That is exactly what a test fleet looks like: fifty
+parallel CI jobs, three AI agents, one flaky retry loop — every one of them
+convinced it is the only mail user in the world. Swarmail's whole contract
+is that each of them gets its own inbox (the AUTH username *is* the inbox)
+and that the swarm, as a whole, never drops a letter.
+
+The name is also the promise: mail *in* swarm quantities — 5000 mails over
+100 concurrent fresh sessions, exact — and mail *out* to whoever waits for
+it: a test's `await`, an agent's `swarmail_wait_for_email`, a webhook sink,
+or a human watching the inbox update live.
+
+**The binary is `swarmail`.** No services, no database to babysit, no Node
+runtime — a static binary and a scratch container about its size.
+
+## What it does
+
+You point any SMTP client at it — Ory Kratos's courier, Nodemailer, a bare
+`smtplib` — and mail lands in a queryable store with everything the
+assertion will need already extracted: the links, the OTP-like codes, the
+thread headers. Tests wait with `await` (push-based, subscribes before it
+checks); agents drive the same store over MCP; existing MailHog/Mailpit
+clients work through the shims; a human watches the inbox update itself.
+
+```
+docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:v0.1.0
+swarmail serve                 # or: cargo run -- serve — same ports on localhost
+swarmail mcp                   # the stdio MCP bridge
+swarmail gen-cert --domain localhost --out ./certs
+```
+
+Twelve MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
+compatibility layer (MailHog/Mailpit), one observability story
+(`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
+zero frontend dependencies.
+
+## The guarantees
+
+These are the frozen guarantees ([decision records](docs/decisions/README.md)
+bind them; review refuses a change that weakens one, no matter how green
+the tests are):
+
+1. **Accept == stored** ([0001](docs/decisions/0001-synchronous-insert-lossless.md)).
+   `Store::insert` is synchronous; an SMTP `250` means the mail is queryable,
+   and with `--data-file` it is committed with fsync-per-accept before the
+   reply leaves.
+2. **`await` subscribes before it checks** ([0002](docs/decisions/0002-awaits-subscribe-before-checking.md)).
+   Nothing is missed while connecting; no sleep-polling exists anywhere in
+   the product.
+3. **Pruning is oldest-only, never mid-delivery**
+   ([0003](docs/decisions/0003-oldest-only-pruning.md)). The per-inbox cap
+   (default 100k, `0` = unlimited) evicts the oldest mail only.
+4. **The AUTH username is the inbox**
+   ([0004](docs/decisions/0004-per-test-inboxes-via-smtp-auth.md)). Free
+   parallel isolation for every test and agent; no config to route it.
+5. **Extraction happens at ingest, not query time**
+   ([0005](docs/decisions/0005-extraction-at-ingest.md)). Links, codes and
+   thread headers are parsed once, when the mail is accepted; queries
+   re-parse nothing.
+
+## 60-second quickstart
+
+One binary, three ports, no config. **Docker:**
+
+```
 docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:v0.1.0
 ```
 
-```text
-        your app / agent / test suite
-                 │ SMTP :1025          POP3 :1110
-                 ▼                        ▼
-   ┌──────────────────────────────────────────────┐
-   │  swarmail  ──  lossless ingest (1.58 µs/mail)│
-   │  inboxes · threads · links/codes · chaos     │
-   └───────────────┬──────────────┬───────────────┘
-        REST :8025 │   MCP /mcp   │  webhooks → your sink
-        (await, seed, shims, UI)    (queued, retried, TLS)
+**From source:** `cargo run -- serve` (Rust stable; everything else is vendored).
+
+**Then loop.** This transcript is real — a stock `smtplib` delivering, the
+REST surface answering:
+
+```
+$ curl -X POST localhost:8025/api/v1/inboxes/quickstart/seed \
+    -H 'content-type: application/json' \
+    -d '{"from":"noreply@x.io","to":"ada@x.io","subject":"Verify your account",
+         "text":"Welcome! Verify at https://x.io/verify?token=abc123 — code 424242 is your fallback."}'
+{"id":"01a1261e-…","inbox":"quickstart", …,
+ "links":["https://x.io/verify?token=abc123"], "codes":["424242"]}      # extraction ran
+
+$ python3 - <<'EOF'                                    # a real client, really delivered
+import smtplib
+s = smtplib.SMTP('localhost', 1025, timeout=10)
+s.sendmail('kratos@x.io', ['ada@x.io'],
+           "From: kratos@x.io\r\nTo: ada@x.io\r\nSubject: Reset your password\r\n\r\n"
+           "Reset: https://x.io/reset?token=xyz789 or use 998877.")
+s.quit()
+EOF
+
+$ curl "localhost:8025/api/v1/inboxes/quickstart/await?to=ada@x.io&count=1&timeout_ms=5000"
+{
+  "matched": 1,
+  "total": 1,
+  "emails": [ { "subject": "Reset your password",
+                "links": ["https://x.io/reset?token=xyz789"],
+                "codes": ["998877"] } ]                 # no regex over HTML — fields
+}
 ```
 
-## Why
-
-Every existing dev mail server fails agentic and bursty test runs one way or
-another. The field's actual record:
-
-| | MailSlurper | MailCrab | Mailpit | MailDev | **Swarmail** |
-|---|---|---|---|---|---|
-| Burst handling | SMTP session leaks | **documented message loss** >100/s | 200–300/s | Node, untested | **lossless — 5000/5000 exact over 100 concurrent fresh sessions, asserted in CI** |
-| Ingest path | — | — | — | — | **~630k mails/s/core** (criterion median: 1.58 µs/mail parse+extract+insert) |
-| Wait-until-arrival | ❌ poll | ❌ poll | ❌ poll | ❌ poll | ✅ `await` long-poll + MCP `wait_for_email` |
-| Per-test inboxes | ❌ | ❌ | ❌ | ❌ | ✅ AUTH username = inbox (free parallel isolation) |
-| MCP server | ❌ | ❌ | ❌ | ✅ (Node) | ✅ HTTP + stdio, native, 12 tools |
-| Link/code extraction | ❌ | ❌ | ❌ | ❌ | ✅ first-class (`links`, `codes` on every email) |
-| Chaos on SMTP | ❌ | ❌ | error codes only | ❌ | ✅ connect/mail_from/rcpt/data — probability, error line, delay |
-| Webhooks | ❌ | ❌ | 1/s, no retry | ❌ | ✅ queued, retried (100ms→1.6s), inbox-filtered, http + https (TLS, reqwest/rustls) |
-| Footprint | Go+DB | 7.8 MB | ~10 MB | Node | **static binary, scratch container ≈ binary size** |
-
-*Methodology: the 5000-mail figure is `tests/rate.rs` (release, fresh SMTP
-session per mail — the Ory Kratos courier pattern); the µs/mail figure is
-`cargo bench` on the pure ingest path. Both run in CI.*
-
-## The 30-second agent loop: clear → act → assert
-
-```bash
-# 1. start clean
-curl -X DELETE localhost:8025/api/v1/inboxes/test-run/messages
-
-# 2. trigger the flow (signup, reset, invite, …)
-
-# 3. block until the mail arrives — push-based, no sleep-polling
-curl "localhost:8025/api/v1/inboxes/test-run/await?to=user@x.io&count=1&timeout_ms=5000"
-
-# 4. the response already carries subject/text/html, plus every URL and
-#    likely OTP code — no regexing HTML:
-#    { "matched": 1, "emails": [ { "subject": …, "links": […], "codes": ["424242"] } ] }
-```
-
-Fixtures without SMTP: `POST /api/v1/inboxes/test-run/seed` (runs the full
-parse + extraction pipeline).
-
-Point any SMTP client (Ory Kratos, Nodemailer, curl) at `localhost:1025` and open
-`http://localhost:8025`. No config, no auth required — if a client authenticates,
-**the username names the inbox** (`proj-42`, `test-run-7`, …), giving every
-parallel test or agent its own inbox for free.
-
-## Install
-
-```bash
-docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:v0.1.0
-# or from source
-cargo run -- serve
-# crates.io publish is prepared (see *Publishing*); once published:
-cargo install swarmail && swarmail serve
-```
+`await` blocks until the mail arrives (or the timeout answers `matched: 0`)
+— push-based, no polling. Fixtures without SMTP: `…/seed` runs the full
+parse + extraction pipeline. Per-test isolation needs no config: the AUTH
+username names the inbox.
 
 Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `1025`),
-`SWARMAIL_POP3_LISTEN` (default `1110`), `SWARMAIL_HTTP_LISTEN` (default `8025`),
-`SWARMAIL_MAX_PER_INBOX` (default `100000`, `0` = unlimited), `SWARMAIL_URL`
-(for the MCP stdio bridge), `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY` (STARTTLS on
-the SMTP port), `SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (default `10000` — a
-STARTTLS handshake that stalls past it is dropped; the plaintext session has no
-idle timeout and keeps none), `SWARMAIL_DATA_FILE` (SQLite persistence).
+`SWARMAIL_POP3_LISTEN` (`1110`), `SWARMAIL_HTTP_LISTEN` (`8025`),
+`SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited), `SWARMAIL_URL` (the
+MCP stdio bridge's upstream), `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
+`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
 
-## What's inside
+## The surfaces
 
-- **Lossless ingest** — SMTP `DATA` is inserted synchronously; a `250` means
-  the mail is queryable *and* (with `--data-file`) on disk. There is no async
-  gap where mail can vanish — the failure mode of MailCrab under load and
-  MailSlurper's session leaks (decision [0001](docs/decisions/0001-synchronous-insert-lossless.md)).
-- **Push-based waiting** — `await` subscribes before it checks ([0002](docs/decisions/0002-awaits-subscribe-before-checking.md));
-  nothing is missed while connecting. No sleep-polling anywhere.
-- **Per-test inboxes** — SMTP AUTH / POP3 USER username = inbox. Every parallel
-  test or agent gets free isolation ([0004](docs/decisions/0004-per-test-inboxes-via-smtp-auth.md)).
-- **Extraction at ingest** — links, OTP-like codes and thread headers are
-  parsed once, when the mail is accepted ([0005](docs/decisions/0005-extraction-at-ingest.md));
-  queries never re-parse.
-- **Chaos on SMTP** — inject probability, error lines and delays at
-  connect / mail from / rcpt / data to test your retry paths.
-- **MCP, native** — HTTP (Streamable JSON-RPC) and stdio transports; agents
-  close the loop on signup/reset/magic-link flows without a browser.
-- **MailHog / Mailpit shims** — point an existing client at the HTTP port.
-- **Threads + live UI** — conversation grouping (References/In-Reply-To chains,
-  normalized-subject fallback) and an SSE-driven inbox view; zero frontend deps.
-- **Webhooks** — queued, retried (100 ms → 1.6 s), inbox-filtered, `http://` and
-  `https://` (rustls) with a per-CA client cache; never blocking the SMTP path.
-- **POP3** — RFC 1939 core + TOP/CAPA on the same store; the maildrop *is* an
-  inbox, so mail delivered over SMTP reads back over POP3.
-- **STARTTLS** — real rustls upgrade with an RFC 3207 session restart and a
-  bounded handshake deadline; the plaintext listener stays byte-identical
-  without a cert.
+### SMTP — accept is the truth
 
-### MCP (Claude Code, Codex, Cursor, …)
+`:1025` — EHLO, AUTH PLAIN/LOGIN (accept-any; **username = inbox**),
+PIPELINING, 8BITMIME, SMTPUTF8, SIZE, a 50 MiB cap. Every mail is inserted
+synchronously on `DATA` completion — the `250` *is* the durability
+contract, not an eventual promise.
+
+**STARTTLS** is real: with `--tls-cert`/`--tls-key` (or the env pairs), EHLO
+advertises `STARTTLS`, the session upgrades with rustls/ring, and the
+session restarts per RFC 3207 §4.2 — plaintext pipelining before the
+handshake is discarded, every further command is TLS-only. A stalled
+handshake is dropped after `--tls-handshake-timeout-ms` (default 10 s); the
+plaintext session has no idle timeout and gains none. Without a cert the
+plaintext listener is byte-identical to the one without the flag.
+
+```
+$ swarmail gen-cert --domain localhost --out ./certs    # cert.pem + key.pem, 0600
+$ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
+```
+
+### The REST API — await, don't poll
+
+`:8025` — the native API. The verbs a test actually needs:
+
+| Verb | What it does |
+|---|---|
+| `GET /api/v1/inboxes` | the live inbox list |
+| `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first; wipe the inbox |
+| `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`, `count`, `timeout_ms`, filtered by from/subject/contains |
+| `GET /api/v1/inboxes/{inbox}/assert` | exact-count assertion — 200 or a named failure |
+| `GET /api/v1/inboxes/{inbox}/threads[/{key}]` | conversations, oldest first, stable keys |
+| `GET /api/v1/inboxes/{inbox}/feed` | SSE: one snapshot, then one event per accepted mail |
+| `POST /api/v1/inboxes/{inbox}/seed` | a fixture without SMTP — full parse + extraction |
+| `GET /api/v1/messages/{id}[/raw]` | one mail; the RFC 5322 source as `message/rfc822` |
+
+Every mail carries `text`, `html`, `links`, `codes` — extracted at ingest.
+`GET /api/v1/inboxes/{inbox}/count` is the exact-count read;
+`/openapi.json` serves the whole contract (3.1).
+
+### MCP — agents drive the mail
+
+```
+$ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{…}}'
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26",
+  "serverInfo":{"name":"swarmail","version":"0.1.0"}, …}}
+
+$ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
+         "params":{"name":"swarmail_wait_for_email",
+                   "arguments":{"inbox":"quickstart","to":"ada@x.io","count":1,"timeout_ms":2000}}}'
+{"jsonrpc":"2.0","id":2,"result":{"isError":false,
+  "content":[{"type":"text","text":"{\"emails\":[{…\"codes\":[\"424242\"]…}]}"}]}}
+```
+
+Twelve tools: `swarmail_search_emails`, `swarmail_get_email`,
+`swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
+`swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
+`swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
+`swarmail_set_chaos`, `swarmail_clear_chaos`. Wire it up:
 
 ```jsonc
 // .mcp.json — HTTP transport
@@ -132,144 +231,111 @@ idle timeout and keeps none), `SWARMAIL_DATA_FILE` (SQLite persistence).
 { "mcpServers": { "swarmail": { "command": "swarmail", "args": ["mcp"] } } }
 ```
 
-12 tools: `swarmail_search_emails`, `swarmail_get_email`,
-`swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
-`swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
-`swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`.
+`swarmail mcp` speaks JSON-RPC over stdin/stdout and bridges to
+`SWARMAIL_URL` (default `http://127.0.0.1:8025`). The HTTP surface is
+Streamable JSON-RPC at `POST /mcp`.
 
-### STARTTLS
+### POP3 — the same store, RFC 1939
 
-```bash
-swarmail gen-cert --domain localhost --out ./certs   # cert.pem + key.pem
-swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
-```
+`:1110` — USER, PASS, STAT, LIST, UIDL, RETR, DELE, NOOP, RSET, TOP, CAPA,
+QUIT. The maildrop **is** a swarmail inbox: `USER proj-42` names the inbox
+exactly like SMTP AUTH does, so mail delivered over SMTP reads back over
+POP3 — including mail that arrived before the session opened. UIDLs are the
+swarmail ids; octet counts are the stored raw sizes (RETR normalizes
+bare-LF to CRLF in transit, per the RFC). DELE marks in-session and applies
+on QUIT — the update stage; RSET unmarks; a dropped connection leaves the
+maildrop untouched. Plaintext only: no APOP, no STLS — a test-harness
+surface behind the same trust boundary as the SMTP listener.
 
-With a cert, EHLO advertises `STARTTLS` and the session upgrades to real TLS
-(rustls/ring). After the handshake the session restarts per RFC 3207 §4.2:
-everything the client sent before it is discarded, and every further command is
-TLS-only. A self-signed pair is the intended dev/test bootstrap; operators can
-hand it a real cert — the PEM pair is parsed before anything binds, so a
-malformed one refuses to serve rather than sitting half-alive.
+### MailHog / Mailpit shims
 
-The upgrade itself is bounded: a client that connects, greets and then goes
-silent mid-handshake is dropped after `--tls-handshake-timeout-ms` (default
-`10000`) instead of pinning its session task, and the listener keeps serving.
-A real handshake is milliseconds; the deadline only exists so a stalled one
-cannot be held open forever.
-
-### Persistence across restarts
-
-By default the store is in memory — fast, and gone when the process exits.
-Start with a data file and every insert, delete and clear is committed to
-SQLite (bundled, WAL, fsync-per-accept) and the full state — inboxes, messages
-with raw bytes, the `emails_inserted`/`emails_dropped` counters — is restored
-before the server answers anything:
-
-```bash
-swarmail serve --data-file /var/lib/swarmail/mail.db   # or SWARMAIL_DATA_FILE=…
-```
-
-Restored mail does not re-fire webhooks or waiters on restart — it is
-already-delivered state, not a new delivery.
-
-## Surfaces
-
-| Surface | Where |
-|---|---|
-| REST API v1 | `/api/v1/inboxes`, `…/{inbox}/messages` (GET/DELETE), `…/count`, `…/await`, `…/assert`, `…/threads[/{key}]`, `…/feed`, `…/seed`, `/api/v1/messages/{id}[/raw]` |
-| Admin | `PUT/DELETE /api/v1/chaos`, `PUT/GET/DELETE /api/v1/webhooks` |
-| MCP | `POST /mcp` (Streamable HTTP JSON-RPC) · `swarmail mcp` (stdio bridge) |
-| Machine docs | `/openapi.json` (3.1) · `/llms.txt` · `/metrics` (Prometheus) · `/healthz` |
-| Human UI | `/`, `/ui/inbox/{name}`, `/ui/inbox/{name}/thread/{key}`, `/ui/message/{id}` — zero frontend deps; the inbox and thread views update live from the SSE feed |
-| SMTP | `:1025` — EHLO, AUTH PLAIN/LOGIN (accept-any; username = inbox), PIPELINING, 8BITMIME, SMTPUTF8, SIZE, 50 MiB cap; optional STARTTLS (rustls/ring) with a 10 s handshake deadline (`--tls-handshake-timeout-ms`) |
-| POP3 | `:1110` — RFC 1939 core + TOP/CAPA; the maildrop is an inbox (see *What's inside*) |
-| MailHog / Mailpit shims | `/api/v1/messages` (GET/DELETE), `/api/v1/message/{id}[/plain\|/raw\|/headers]`, `/api/v1/messages/{id}[/plain\|/download]`, `/api/v1/search` · `/api/v2/search`, `/api/v1/delete-all` — see the shim reference below |
-
-### MailHog / Mailpit API shims
-
-The two shapes test suites actually hit, answered from the same store — point
-an existing MailHog/Mailpit client at swarmail's HTTP port and it works:
+Point an existing client at the HTTP port and it works — the two shapes
+test suites actually hit, answered from one store:
 
 | Endpoint | Behavior |
 |---|---|
-| `GET /api/v1/messages` | Mailpit's summary envelope (`total`/`unread`/`count`/`messages_count`/… /`messages`), newest first; `?inbox=` scopes to one swarmail inbox, `?limit=`/`?start=` page |
+| `GET /api/v1/messages` | Mailpit's summary envelope, newest first; `?inbox=` scopes, `?limit=`/`?start=` page |
 | `GET /api/v1/message/{id}` | Mailpit's full message shape (`Text`, `HTML`, `ReturnPath`, …) |
 | `GET /api/v1/message/{id}/plain`, `GET /api/v1/messages/{id}/plain` | the extracted text part as `text/plain; charset=utf-8` |
-| `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete — or a wipe when the body is absent/empty/unparseable, like upstream's decoders; replies `{"removed": n}` |
+| `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete — or a wipe when the body is absent/empty/unparseable; replies `{"removed": n}` |
 | `DELETE /api/v1/delete-all` | MailHog's wipe alias |
-| `GET /api/v1/search` | Mailpit search: `kind=from\|to\|subject\|containing`, `?query=` required, `400 {"error": …}` otherwise |
-| `GET /api/v2/messages` | MailHog v2 `{total, count, start, items}` with `data.Message` shapes — `Content.{Headers,Body,Size,MIME}`, `Raw.{From,To,Data,Helo}` |
-| `GET /api/v2/search` | MailHog search: `kind=from\|to\|containing`; a bare `400` (no body, as upstream answers) on an unknown kind or empty query |
-| `GET /api/v1/messages/{id}/download`, `GET /api/v1/message/{id}/raw` | the full RFC 5322 source as `message/rfc822`, `attachment; filename="<id>.eml"` |
+| `GET /api/v1/search` | Mailpit search: `kind=from\|to\|subject\|containing`, `?query=` required |
+| `GET /api/v2/messages` | MailHog v2 `{total, count, start, items}` with `data.Message` shapes |
+| `GET /api/v2/search` | MailHog search: `kind=from\|to\|containing`; a bare `400` on an unknown kind |
+| `GET /api/v1/messages/{id}/download`, `GET /api/v1/message/{id}/raw` | the RFC 5322 source as `message/rfc822` |
 
-Mapping notes: Mailpit's `Username` is the swarmail inbox (swarmail routes by
-inbox and has no read state — `Read` is always `false` and the unread counts
-mirror `total`); Mailpit's `Return-Path` and MailHog's `Raw.From` carry the
-header From, the closest recorded reverse path; header maps are synthesized
-from fields extracted at ingest (decision 0005), never re-parsed at query
-time. Mailpit's `mail.Address` renders with lowercase keys and drops empty
-names; MailHog's `Path` splits at the domain (both sides empty when a mail
-has no From at all); `MIME` is `null` when the mail has no body.
+**Deliberate omissions** — swarmail has no counterpart and a shim would
+lie: attachments and inline images (the fields exist, the arrays are
+empty), read/unread state, tags (always `[]`), the send API (mail arrives
+by SMTP), Mailpit's `mime/part` routes, and the `to:`-style query prefixes
+(swarmail takes `kind=`). swarmail's own single-message route is
+`/api/v1/messages/{id}`; the Mailpit-style singular `/api/v1/message/{id}`
+is the shim.
 
-**Deliberate omissions** — swarmail has no counterpart and a shim would lie:
-attachments and inline images (the fields exist, the arrays are empty), read/
-unread state, tags (always `[]`), the send API (mail arrives by SMTP),
-`/api/v1/messages/{id}/mime/part/...` and attachment downloads, Mailpit's
-`to:`-style query prefixes (swarmail takes `kind=` instead), and the two web
-UIs. swarmail's own `/api/v1/messages/{id}` stays native — the Mailpit-style
-single-message route is the singular `/api/v1/message/{id}`.
-
-### Threads and the live inbox view
+### Threads and the live UI
 
 `GET /api/v1/inboxes/{inbox}/threads` groups the inbox into conversations —
 References/In-Reply-To/Message-ID chains when they resolve, the normalized
-subject (Re:/Fwd: markers stripped, case-folded) as the fallback — each with a
-stable `key` served at `…/{inbox}/threads/{key}`, conversation oldest first.
-`GET /api/v1/inboxes/{inbox}/feed` is a server-sent-events stream of the full
-thread view: one snapshot, then one event per accepted mail, driven by the same
-per-inbox watcher that powers `await` (subscribe-before-scan, so nothing is
-missed while connecting). The human UI at `/ui/inbox/{inbox}` and
+subject (Re:/Fwd: stripped, case-folded) as the fallback — each with a
+stable `key`. `…/feed` is the SSE stream of the full thread view: one
+snapshot, then one event per accepted mail, driven by the same per-inbox
+watcher that powers `await`. The human UI at `/ui/inbox/{inbox}` and
 `/ui/inbox/{inbox}/thread/{key}` is a thin shell over these endpoints and
-updates live — no manual refresh.
-
-### Chaos — test your failure paths
-
-```bash
-curl -X PUT localhost:8025/api/v1/chaos -H 'content-type: application/json' -d \
-  '{"data": {"probability": 30, "error": "451 4.3.0 tempfail", "delay_ms": 250}}'
-# ... run your retry-logic tests ... then:
-curl -X DELETE localhost:8025/api/v1/chaos
-```
+updates live — no manual refresh, zero frontend dependencies.
 
 ### Webhooks
 
-```bash
-curl -X PUT localhost:8025/api/v1/webhooks -H 'content-type: application/json' -d \
-  '[{"url": "http://127.0.0.1:9999/hooks", "inbox": null, "secret": "s3cret"}]'
+```
+$ curl -X PUT localhost:8025/api/v1/webhooks -H 'content-type: application/json' -d \
+    '[{"url": "http://127.0.0.1:9999/hooks", "inbox": null, "secret": "s3cret"}]'
 ```
 
-Every accepted email is POSTed as `{"event":"received","email":{…}}` with the
-secret in `X-Swarmail-Secret` — queued, retried (100 ms → 1.6 s), and never
-blocking the SMTP path. Delivered via reqwest + rustls: `http://` targets
-stay plain, `https://` targets are TLS with certificate verification on —
-hand a self-signed test server its own CA through the target's optional
-`ca_pem` (PEM of a root to trust on top of the built-in root store). Clients
-pinned to a `ca_pem` are cached per PEM under a fixed bound of 32
-(`swarmail::webhook::CA_CLIENT_CAP`): the least-recently-used build is
-evicted and that root's next delivery simply rebuilds its client — the
-built-in root store's client sits outside the cache and is built once.
-`swarmail_webhook_ca_cache_{entries,builds_total,evictions_total}` on
-`/metrics` lets you watch the bound hold.
+Every accepted email is POSTed as `{"event":"received","email":{…}}` with
+the secret in `X-Swarmail-Secret` — queued, retried (100 ms → 1.6 s, four
+attempts), inbox-filtered, and never blocking the SMTP path. `http://`
+targets stay plain; `https://` targets are TLS with verification on — hand
+a self-signed sink its own CA through the target's optional `ca_pem`.
+Clients pinned to a `ca_pem` are cached per PEM under a fixed bound of 32
+(`swarmail::webhook::CA_CLIENT_CAP`); the LRU build is evicted and the next
+delivery rebuilds it. `swarmail_webhook_ca_cache_{entries,builds_total,
+evictions_total}` on `/metrics` lets you watch the bound hold.
 
-## Guarantees
+### Chaos — break SMTP on purpose
 
-- **Accept == stored.** SMTP `DATA` is inserted synchronously; a `250` reply
-  means the message is queryable. There is no async gap where mail can vanish.
-- **Exact-count assertions are real.** CI asserts `5000/5000` across 100
-  concurrent fresh sessions (see *Benchmarks*).
-- **Pruning is by age/volume, never mid-delivery.** Per-inbox cap (default
-  100k) evicts the *oldest* mail only ([0003](docs/decisions/0003-oldest-only-pruning.md)).
+```
+$ curl -X PUT localhost:8025/api/v1/chaos -H 'content-type: application/json' -d \
+    '{"data": {"probability": 100, "error": "451 4.3.0 tempfail", "delay_ms": 250}}'
+
+$ python3 -c "
+import smtplib
+s = smtplib.SMTP('localhost', 1025, timeout=10)
+s.sendmail('a@x.io', ['b@x.io'], 'Subject: t\r\n\r\nbody')"
+…
+smtplib.SMTPDataError: (451, b'4.3.0 tempfail')              # the injected line, verbatim
+
+$ curl -X DELETE localhost:8025/api/v1/chaos                  # recovery is a test too
+```
+
+Chaos is per-stage — `connect`, `mail_from`, `rcpt`, `data` — each with its
+own probability, error line and delay. Set it, run the retry suite, clear
+it. MCP: `swarmail_set_chaos` / `swarmail_clear_chaos`.
+
+### Persistence — the restart copy
+
+By default the store is memory — fast, and gone when the process exits.
+With a data file, every insert, delete and clear is committed to bundled
+SQLite (WAL, fsync-per-accept) and the full state — inboxes, messages with
+raw bytes, the `emails_inserted`/`emails_dropped` counters — is restored
+before the server answers anything:
+
+```
+swarmail serve --data-file /var/lib/swarmail/mail.db   # or SWARMAIL_DATA_FILE=…
+```
+
+Restored mail does not re-fire webhooks or waiters — it is
+already-delivered state, not a new delivery. Restart is exercised by
+`tests/persistence.rs`: the exact state comes back, and a clear racing a
+250-answered insert never loses the answered mail.
 
 ## Benchmarks
 
@@ -277,27 +343,67 @@ built-in root store's client sits outside the cache and is built once.
 |---|---|---|
 | Parse + extract | **1.28 µs/mail** (~780k/s/core) | `cargo bench` · criterion median |
 | + store insert | **1.58 µs/mail** (~630k/s/core) | `cargo bench` · criterion median |
-| End-to-end SMTP ingest | **5000/5000 exact**, zero loss | `cargo test --release --test rate -- --ignored --nocapture` (100 concurrent fresh sessions; sandboxed runner, session-latency-bound — scales with cores) |
+| End-to-end SMTP ingest | **5000/5000 exact**, zero loss | `cargo test --release --test rate -- --ignored --nocapture` (100 concurrent fresh sessions; session-latency-bound — scales with cores) |
 
 Reproduce with `cargo bench` (results land in `target/criterion`).
+
+## Repo layout
+
+| Path | What it is |
+|---|---|
+| `src/smtp.rs`, `src/pop3.rs` | the two wire protocols, hand-rolled on tokio |
+| `src/store.rs`, `src/persist.rs` | the synchronous store and the SQLite restart copy |
+| `src/extract.rs`, `src/threads.rs` | ingest-time extraction and conversation grouping |
+| `src/api.rs`, `src/compat.rs` | the native REST API and the MailHog/Mailpit shims |
+| `src/mcp.rs`, `src/stdio.rs` | the MCP HTTP surface and the stdio bridge |
+| `src/chaos.rs`, `src/webhook.rs`, `src/tls.rs` | the failure injector, the dispatcher, STARTTLS |
+| `src/static/` | the embedded UI, `/openapi.json`, `/llms.txt` |
+| [`docs/decisions/`](docs/decisions/) | the constitution: numbered rulings, indexed |
+| [`docs/house-rules.md`](docs/house-rules.md) | the realm charter — frozen guarantees, gates, dependency policy |
+| [`assets/logo.svg`](assets/logo.svg) | the brand mark, and `social-preview.png`, the repository's link card |
+| [`scripts/coverage-gate.sh`](scripts/coverage-gate.sh) | the exact-coverage gate: literal 100% line/branch/function, or refusal |
+
+## The decision culture
+
+Every semantic change is a numbered ruling in
+[`docs/decisions/`](docs/decisions/), kept in full and cited by number in
+the code that enforces it — the guarantees above are exactly those
+citations. An implementer may write a decision, but only with status
+`proposed`; acceptance is the operator's, recorded in the file. A ruling is
+never edited into a different meaning — a new number supersedes it and says
+so. That is why the README, the error messages and the tests can all cite
+"decision 0001" and mean the same paragraph.
+
+The realm charter is [`docs/house-rules.md`](docs/house-rules.md); agents
+start at [`AGENTS.md`](AGENTS.md).
 
 ## Testing & coverage
 
 **Every integration test runs against real servers speaking the real
-protocol** — no mocks in the loop. CI runs fmt, clippy (`-D warnings`, locked),
-the full test matrix (ubuntu + macOS), the exact coverage gate, `cargo deny`
-licenses, a RustSec dependency audit and the image build on every push.
+protocol** — no mocks in the loop. The bar for a human contribution is the
+bar the machine is already held to; these are required jobs in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml):
 
-The coverage contract is **exact over lines, branches *and* functions** —
-literal `covered == count` equality (today 4162/4162 lines, 252/252 branches,
-558/558 functions), enforced by [`scripts/coverage-gate.sh`](scripts/coverage-gate.sh):
-the floor may rise, never fall, and `#[coverage(off)]` is forbidden so
-production code cannot shrink the denominator. A red gate preserves the full
-report under `target/coverage/` for burn-down.
+| Gate | Command |
+|---|---|
+| Canonical formatting | `cargo fmt --all -- --check` |
+| Clippy, warnings as errors | `cargo clippy --workspace --all-targets --locked -- -D warnings` |
+| Full suite, ubuntu + macOS | `cargo test --workspace --locked` |
+| **Exact coverage** | `bash scripts/coverage-gate.sh` |
+| Licenses | `cargo deny check licenses` |
+| RustSec advisory audit | `rustsec/audit-check` (CI-only; the hermetic verify has no network) |
+
+The coverage gate is not a percentage to trend upwards. It demands literal
+integer equality — `covered == count` — over **lines, branches and
+functions** (today 4162/4162, 252/252, 558/558), refuses
+`#[coverage(off)]` outright so production code cannot shrink its own
+denominator, and preserves the full report under `target/coverage/` when
+red so the burn-down starts from evidence, not from a number. There is no
+threshold to lower.
 
 ```bash
 cargo test                                                    # the suite (seconds)
-cargo test --release --test rate -- --ignored --nocapture    # 5k guarantee + rate
+cargo test --release --test rate -- --ignored --nocapture    # the 5k guarantee
 cargo bench                                                   # ingest path → target/criterion
 bash scripts/coverage-gate.sh                                 # the floor gate
 ```
@@ -312,9 +418,9 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/config_cli.rs` | the CLI/env config surface |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
-| `tests/webhook.rs` | delivery with secret, pathless target, the 4-attempt retry budget, https over a real TLS server (handshake-failure + refused-connection paths), the CA client cache bound |
+| `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
-| `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart (pipelined plaintext discarded), refused certs, stalled handshake closed by the deadline, malformed PEM refusal, gen-cert file handling |
+| `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart, refused certs, stalled handshakes, malformed PEM refusal, gen-cert file handling |
 | `tests/lifecycle.rs` | graceful stop: serve futures return, ports release |
 | `tests/binary.rs` | the shipped binary: SIGINT → clean exit, mcp EOF → 0 |
 | `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT |
@@ -322,54 +428,24 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/persistence.rs` | restart restores exact state; a racing clear never loses 250-answered mail |
 | unit | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |
 
-## AI-native delivery (brokkr)
+## Roadmap
 
-This repo develops itself under [brokkr](https://github.com/feedback-loop-ai/brokkr),
-the deterministic delivery engine — same constitution pattern as
-[`xbox-inference`](https://github.com/feedback-loop-ai/xbox-inference):
-
-- **Model seats:** `glm-flash` → **`spark-glm/GLM-5.3-Flash-EXL3`** via the `dsh`
-  driver, local route, `SPARK_API_KEY` — spark only, no other provider route.
-  The reviewer/judge is `glm-flash` too.
-- **Hermetic gates:** `verify` and `ship` are exec seats (`scripts/verify-seat.sh`,
-  `scripts/ship-seat.sh`) — no model in the loop where a shell suffices.
-- **Phase machine:** `intake → implement → verify → review → ship`; the review
-  gate is constitutionally protected (`protected_phase: review`), security-hold
-  is a hard stop.
-- **Journal:** `.forge/forge.db` (append-only, WAL, gitignored).
-
-```bash
-brokkr doctor                          # verify tools + workspace
-brokkr compile --bundle .              # verify the pinned bundle digest
-brokkr run                             # start a run (needs SPARK_API_KEY)
-```
-
-The realm charter is [`docs/house-rules.md`](docs/house-rules.md): the frozen
-guarantees, the gates, the dependency policy. Seat charters live in
-`agents/charters/`; the decisions the seats read are under
-[`docs/decisions/`](docs/decisions/).
-
-## Development
-
-```bash
-cargo run -- serve            # dev loop (SMTP :1025, HTTP :8025)
-cargo test && cargo clippy --all-targets -- -D warnings
-docker build -t swarmail .    # scratch image ≈ binary size
-```
-
-- Rust stable · Tokio · Axum 0.8 · mail-parser · DashMap · zero frontend deps
-- The store is synchronous by design: `Store::insert` returning == the mail is queryable
-- CI: fmt + clippy `-D warnings` + test matrix + exact coverage + licenses + RustSec on every push; the ghcr image on `main`
+- [x] STARTTLS + self-signed cert generation
+- [x] HTTPS webhook targets (reqwest + rustls)
+- [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
+- [x] POP3 server; MailHog/Mailpit API compat shims
+- [x] Exact 100/100/100 coverage contract (lines, branches, functions) in the gate and CI
+- [x] MCP: HTTP + stdio, 12 tools
+- [ ] crates.io publish — the package is publish-ready (see *Publishing*);
+  the operator runs `cargo publish --locked` with their token
 
 ## Publishing
 
 The crate ships to [crates.io](https://crates.io/crates/swarmail) from the
-repo root. The packaged file set is curated in `Cargo.toml`
-([`include`](https://doc.rust-lang.org/cargo/reference/manifest.html#the-exclude-and-include-fields)):
-the registry gets the sources, the embedded static assets, the real-protocol
-test suites, the criterion bench, both license texts (`LICENSE-MIT`,
-`LICENSE-APACHE`) and the README — not the delivery constitution, the brokkr
-seats or the CI workflow.
+repo root. The packaged file set is curated in `Cargo.toml` (`include`): the
+registry gets the sources, the embedded static assets, the real-protocol
+test suites, the criterion bench, both license texts and the README — not
+the delivery constitution, the brokkr seats or the CI workflow.
 
 ```bash
 cargo login <token>          # an operator's crates.io token — never committed
@@ -377,32 +453,15 @@ cargo publish --dry-run --locked   # optional: prove it before the act
 cargo publish --locked       # the act itself
 ```
 
-`--locked` publishes exactly the dependency graph `Cargo.lock` pins — the same
-one every gate in this repo runs against — and the dry run builds the
-packaged sources standalone before anything is uploaded.
+`--locked` publishes exactly the dependency graph `Cargo.lock` pins — the
+same one every gate in this repo runs against.
 
 **Version policy:** a version bump is the operator's release act — bump
 `version` in `Cargo.toml`, refresh `Cargo.lock` (`cargo check` keeps it in
 lockstep, so `--locked` stays publishable), append
 `docs/releases/vX.Y.Z.md`, and sign the tag (see *Releases* in
-[CONTRIBUTING](CONTRIBUTING.md)); the lockfile and the release notes move
-together, and no package is ever hand-crafted. Historical release notes
-are frozen: append a new `docs/releases/vX.Y.Z.md`, never edit a shipped
-one.
-
-## Roadmap
-
-- [x] STARTTLS + self-signed cert generation
-- [x] HTTPS webhook targets (reqwest + rustls)
-- [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
-- [x] POP3 server; MailHog/Mailpit API compat shims
-- [ ] crates.io publish — the package is publish-ready (see *Publishing*);
-  the operator runs `cargo publish --locked` with their token
-- [x] UI: live-updating inbox view, message threads — grouped by
-  References/In-Reply-To chains with normalized-subject fallback
-  (`…/{inbox}/threads`), pushed live over SSE (`…/{inbox}/feed`)
-- [x] Exact 100/100/100 coverage contract (lines, branches, functions) in the
-  gate and CI
+[CONTRIBUTING](CONTRIBUTING.md)). Historical release notes are frozen:
+append a new one, never edit a shipped one.
 
 ## License
 
@@ -412,4 +471,7 @@ Dual licensed under either of:
 - **MIT license** — [LICENSE-MIT](./LICENSE-MIT)
 
 at your option (SPDX: `MIT OR Apache-2.0`) — the same convention as the Rust
-ecosystem itself.
+ecosystem itself. Unless you explicitly state otherwise, any contribution
+intentionally submitted for inclusion in the work by you, as defined in the
+Apache-2.0 license, shall be dual licensed as above, without any additional
+terms or conditions.

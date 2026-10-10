@@ -28,6 +28,7 @@ include = [
     "src/**",
     "tests/**",
     "benches/**",
+    "assets/**", # the README references assets/logo.svg; crates.io renders the README from the package
     "LICENSE-MIT",
     "LICENSE-APACHE",
 ]

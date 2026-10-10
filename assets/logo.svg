@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150" fill="none" role="img" aria-label="Swarmail — an envelope carried by a swarm of three dots">
+  <rect x="7" y="7" width="136" height="136" rx="16" stroke="#f0a232" stroke-width="5"/>
+  <rect x="7" y="7" width="136" height="136" rx="16" stroke="#f0a232" stroke-opacity="0.22" stroke-width="11"/>
+  <!-- the envelope: flap + body, drawn open like a maildrop -->
+  <path d="M35 63l40 26 40-26" stroke="#f0a232" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <rect x="35" y="47" width="80" height="56" rx="8" stroke="#f0a232" stroke-width="6.5" fill="none"/>
+  <!-- the swarm: two muted dots and one hot — mail arriving, nothing lost -->
+  <circle cx="59" cy="118" r="6" fill="#f0a232" fill-opacity="0.45"/>
+  <circle cx="75" cy="120" r="6" fill="#f0a232" fill-opacity="0.7"/>
+  <circle cx="91" cy="118" r="7" fill="#ff8a3d"/>
+</svg>
