@@ -85,21 +85,27 @@ pub fn ca_cache_stats() -> CaCacheStats {
 }
 
 /// Move `pem` to the most-recently-used end. A linear scan over at most
-/// `CA_CLIENT_CAP` keys beats a linked list at this size.
+/// `CA_CLIENT_CAP` keys beats a linked list at this size. Only ever called
+/// for a key that is in the cache, so the position lookup is an invariant,
+/// not a search: a miss would mean the deque and the cache disagree.
 fn touch_lru(lru: &mut VecDeque<String>, pem: &str) {
-    if let Some(pos) = lru.iter().position(|k| k == pem) {
-        let key = lru.remove(pos).expect("the position came from this deque");
-        lru.push_back(key);
-    }
+    let pos = lru
+        .iter()
+        .position(|k| k == pem)
+        .expect("touch targets a cached key: the deque and the cache agree");
+    let key = lru.remove(pos).expect("the position came from this deque");
+    lru.push_back(key);
 }
 
-/// Evict the least-recently-used build. The deque holds exactly the cached
-/// keys, so its front always resolves to a live entry.
+/// Evict the least-recently-used build. Called only to make room past
+/// [`CA_CLIENT_CAP`], so the deque holds at least one cached key.
 fn evict_lru(cache: &mut CaCache) {
-    if let Some(oldest) = cache.lru.pop_front() {
-        cache.clients.remove(&oldest);
-        CA_CACHE_EVICTIONS.fetch_add(1, Ordering::Relaxed);
-    }
+    let oldest = cache
+        .lru
+        .pop_front()
+        .expect("evict runs over the cap, so a cached key exists");
+    cache.clients.remove(&oldest);
+    CA_CACHE_EVICTIONS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +246,10 @@ fn shared_client() -> reqwest::Client {
 /// PEM beyond the cap retires the oldest build, and an evicted PEM's next
 /// delivery simply rebuilds its client — never a failed delivery. The
 /// built-in-roots client stays outside the cache and is built once.
+fn ca_pem_error(e: impl std::fmt::Display) -> String {
+    format!("webhook ca_pem could not be loaded into the rustls client: {e}")
+}
+
 fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
     let Some(pem) = ca_pem else {
         return Ok(shared_client());
@@ -249,14 +259,15 @@ fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
         touch_lru(&mut cache.lru, pem);
         return Ok(client);
     }
-    let root = reqwest::Certificate::from_pem(pem.as_bytes())
-        .map_err(|e| format!("webhook ca_pem is not a valid PEM certificate: {e}"))?;
+    // One owner for the ca_pem failure: parse and build surface the same
+    // text, so whichever stage refuses the PEM, the delivery error is alike.
+    let root = reqwest::Certificate::from_pem(pem.as_bytes()).map_err(ca_pem_error)?;
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .redirect(redirect_policy()) // same no-redirect contract as the shared client
         .add_root_certificate(root)
         .build()
-        .map_err(|e| format!("webhook ca_pem could not be loaded into the rustls client: {e}"))?;
+        .map_err(ca_pem_error)?;
     if cache.clients.len() >= CA_CLIENT_CAP {
         evict_lru(&mut cache); // make room: the least-recently-used build goes
     }

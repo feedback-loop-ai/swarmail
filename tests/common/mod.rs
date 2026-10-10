@@ -259,6 +259,26 @@ impl SmtpConn {
         self.send(".").await;
         self.reply().await
     }
+
+    /// Close the write half: the server sees a clean EOF (the peer vanished
+    /// mid-conversation, e.g. mid-DATA) while this side can still read.
+    pub async fn shutdown_write(&mut self) {
+        self.write.shutdown().await.unwrap();
+    }
+
+    /// Write raw bytes with no line-ending massage — for payloads whose
+    /// terminator deliberately differs from CRLF (RFC 5321 §4.5.2 edges).
+    pub async fn send_bytes(&mut self, bytes: &[u8]) {
+        self.write.write_all(bytes).await.unwrap();
+    }
+
+    /// Read the server's side to EOF (after `shutdown_write`), if it closes.
+    pub async fn read_to_end(&mut self) -> Vec<u8> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let _ = self.reader.read_to_end(&mut buf).await;
+        buf
+    }
 }
 
 /// GET a path and return (status, body-as-text) — for metrics, docs and UI.

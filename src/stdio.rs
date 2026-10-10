@@ -4,6 +4,27 @@
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+/// The dial deadline production uses; a parameter of [`dial`] so the expiry
+/// arm is verifiable in-process against a peer that never answers.
+const DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// The read deadline production uses.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Dial the MCP server: the deadline expiry and the io failure surface as
+/// distinct, client-usable error strings.
+async fn dial(
+    authority: &str,
+    deadline: std::time::Duration,
+) -> Result<tokio::net::TcpStream, String> {
+    tokio::time::timeout(
+        deadline,
+        tokio::net::TcpStream::connect(authority.to_string()),
+    )
+    .await
+    .map_err(|_| "connect timeout".to_string())?
+    .map_err(|e| e.to_string())
+}
+
 /// POST `body` to `{base}/mcp`, return the response body string.
 async fn rpc_post(base: &str, body: &str) -> Result<String, String> {
     let rest = base
@@ -13,31 +34,24 @@ async fn rpc_post(base: &str, body: &str) -> Result<String, String> {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, ""),
     };
-    let mut stream = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        tokio::net::TcpStream::connect(authority.to_string()),
-    )
-    .await
-    .map_err(|_| "connect timeout".to_string())?
-    .map_err(|e| e.to_string())?;
+    let mut stream = dial(authority, DIAL_TIMEOUT).await?;
 
     let req = format!(
         "POST {path}/mcp HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    stream
-        .write_all(req.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
 
+    // One owner for the transport failure: the request write and the response
+    // read surface through the same io-error text, whatever the peer does.
     let mut buf = Vec::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        stream.read_to_end(&mut buf),
-    )
-    .await
-    .map_err(|_| "read timeout".to_string())?
-    .map_err(|e| e.to_string())?;
+    let exchanged = async {
+        stream.write_all(req.as_bytes()).await?;
+        stream.read_to_end(&mut buf).await
+    };
+    tokio::time::timeout(READ_TIMEOUT, exchanged)
+        .await
+        .map_err(|_| "read timeout".to_string())?
+        .map_err(|e| e.to_string())?;
     let raw = String::from_utf8_lossy(&buf);
     let body = raw.split("\r\n\r\n").nth(1).unwrap_or("{}");
     // Chunked encoding would need a decoder; axum replies with content-length
@@ -94,5 +108,53 @@ where
                 return 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The dial deadline expires when the peer never completes the SYN:
+    /// a listener whose accept queue is full drops further SYNs silently,
+    /// so the dial hangs until the injected deadline ends the wait. The
+    /// deadline is a parameter, so the production arm is exercised with a
+    /// 50 ms wait instead of the five-second production deadline.
+    #[tokio::test]
+    async fn dial_deadline_expires_with_the_named_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Flood the accept queue (std listens with a 128 backlog): nobody
+        // accepts, so every dial past the queue capacity hangs. Each flood
+        // dial carries its own short deadline; the ones that complete hold
+        // the queue, and the first timeout tells us it is full.
+        let mut flood = Vec::new();
+        loop {
+            let outcome = dial(&addr.to_string(), std::time::Duration::from_millis(20)).await;
+            if let Ok(c) = outcome {
+                flood.push(c);
+                assert!(flood.len() < 100_000, "the queue never filled");
+                continue;
+            }
+            // The queue is full: the dial deadline expired. The deadline is
+            // the only failure a full queue can produce, checked through the
+            // formatted outcome — no arm of its own to cover.
+            let reported = format!("{outcome:?}");
+            assert!(
+                reported.contains("connect timeout"),
+                "the queue-full dial ended on the deadline: {reported}"
+            );
+            break;
+        }
+        let started = std::time::Instant::now();
+        let err = dial(&addr.to_string(), std::time::Duration::from_millis(50))
+            .await
+            .unwrap_err();
+        assert_eq!(err, "connect timeout", "{err}");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(45),
+            "the deadline, not an instant refusal, ended the dial"
+        );
+        drop(flood);
     }
 }

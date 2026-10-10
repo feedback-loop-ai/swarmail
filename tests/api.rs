@@ -346,3 +346,47 @@ async fn machine_docs_are_served_from_the_binary() {
     assert_eq!(st, 200);
     assert!(text.contains("Swarmail"));
 }
+
+/// Deleting an unknown id walks `Store::delete`'s no-hit arm and answers 404.
+#[tokio::test]
+async fn deleting_an_unknown_id_is_a_404() {
+    let srv = start().await;
+    let (st, body) = http_json(srv.http_addr, "DELETE", "/api/v1/messages/no-such-id", None).await;
+    assert_eq!(st, 404);
+    assert_eq!(body["error"], "message not found");
+}
+
+/// `Store::list_all` orders by received_ms DESC with the id as the tie-break
+/// (`then_with`); two hundred rapid seeds guarantee same-millisecond pairs,
+/// so the tie-break arm runs and the ordering property must hold throughout.
+#[tokio::test]
+async fn list_all_orders_desc_with_a_deterministic_tie_break() {
+    let srv = start().await;
+    for i in 0..200 {
+        let (st, _) = http_json(
+            srv.http_addr,
+            "POST",
+            &format!("/api/v1/inboxes/tie{i}/seed"),
+            Some(r#"{"to": "t@x.io", "subject": "tie", "text": "x"}"#),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    // The all-inbox merged view rides the compat shim (no inbox scoping).
+    let (st, list) = http_json(srv.http_addr, "GET", "/api/v1/messages?limit=500", None).await;
+    assert_eq!(st, 200);
+    let emails = list["messages"].as_array().expect("the all-inbox list");
+    assert!(emails.len() >= 200, "every seed landed: {}", emails.len());
+    // Merged view: received_ms DESC with the UUIDv7 id as tie-break. v7 ids
+    // sort chronologically, so the whole list must be id-descending — and
+    // same-millisecond pairs (guaranteed by 200 rapid seeds) are ordered by
+    // the tie-break arm alone.
+    let mut prev_id: Option<String> = None;
+    for e in emails {
+        let id = e["ID"].as_str().unwrap().to_string();
+        if let Some(prev) = &prev_id {
+            assert!(id < *prev, "ids descend: {id} after {prev}");
+        }
+        prev_id = Some(id);
+    }
+}

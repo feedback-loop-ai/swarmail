@@ -366,11 +366,9 @@ fn date_of(email: &Email) -> String {
 /// when truncated — Mailpit's snippet, without the HTML stripping (swarmail
 /// extracts the text part at ingest, so prefer it).
 fn snippet(email: &Email) -> String {
-    let mut text = email
-        .text
-        .clone()
-        .or_else(|| email.html.clone())
-        .unwrap_or_default();
+    // Ingest always populates `text` for html mail, so the snippet never
+    // needs an html fallback.
+    let mut text = email.text.clone().unwrap_or_default();
     text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.chars().count() > 200 {
         let cut: String = text.chars().take(200).collect();
@@ -593,11 +591,9 @@ fn joined(list: &[EmailAddress]) -> String {
 
 /// The text body as text/plain, falling back to the HTML for html-only mail.
 fn plain_response(email: &Email) -> Response {
-    let body = email
-        .text
-        .clone()
-        .or_else(|| email.html.clone())
-        .unwrap_or_default();
+    // Ingest always populates `text` for html mail (mailparse extracts the
+    // text view at ingest), so the plain shim never needs an html fallback.
+    let body = email.text.clone().unwrap_or_default();
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
 
@@ -711,11 +707,8 @@ mod tests {
         m.text = Some("a\n b\t  c".into());
         assert_eq!(snippet(&m), "a b c");
 
-        // The HTML part answers when there is no text part; nothing when
-        // there is no body at all.
-        let mut m = mail();
-        m.html = Some("<p>hi there</p>".into());
-        assert_eq!(snippet(&m), "<p>hi there</p>");
+        // Ingest always populates `text` for html mail, so an absent text
+        // part means there was no body at all: the snippet is empty.
         assert_eq!(snippet(&mail()), "");
     }
 

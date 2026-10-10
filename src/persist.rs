@@ -266,7 +266,22 @@ fn read_counter(conn: &Connection, key: &str) -> rusqlite::Result<u64> {
 mod tests {
     use super::*;
     use crate::store::email;
+    use serde::ser::Error as _;
     use std::path::PathBuf;
+
+    /// The soft-fail contract: a Serialize that refuses degrades to "null"
+    /// instead of failing startup (the only way serde_json::to_string fails
+    /// here, since every persisted shape is strings and vecs of strings).
+    #[test]
+    fn json_degrades_to_null_when_serialization_refuses() {
+        struct Refuses;
+        impl serde::Serialize for Refuses {
+            fn serialize<S: serde::Serializer>(&self, _s: S) -> Result<S::Ok, S::Error> {
+                Err(S::Error::custom("refused"))
+            }
+        }
+        assert_eq!(json(&Refuses), "null");
+    }
 
     /// A unique data-file path per test; parallel tests must not collide.
     fn db_path(tag: &str) -> PathBuf {

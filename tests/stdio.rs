@@ -107,3 +107,96 @@ async fn bridge_reports_read_errors_with_exit_one() {
     let code = swarmail::stdio::bridge("http://127.0.0.1:1", &mut lines, &mut sink).await;
     assert_eq!(code, 1);
 }
+
+/// A base URL that is not http:// refuses every request before dialing:
+/// the strip-prefix arm answers as a JSON-RPC error so the client survives.
+#[tokio::test]
+async fn non_http_base_answers_as_a_jsonrpc_error() {
+    let (code, out) = bridge_over(
+        "https://x.io",
+        br#"{"jsonrpc":"2.0","id":7,"method":"initialize","params":{}}"#,
+    )
+    .await;
+    assert_eq!(code, 0, "EOF is a clean exit");
+    let reply: serde_json::Value = serde_json::from_str(out.trim()).expect("one reply line");
+    assert_eq!(reply["id"], 7);
+    assert_eq!(reply["error"]["code"], -32000);
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("SWARMAIL_URL must be http://"),
+        "{reply}"
+    );
+}
+
+/// A base whose TCP connect is refused: the error text is the io error, and
+/// the bridge keeps serving the next line (one line in, two lines out is not
+/// the contract — here a single request yields a single error reply).
+#[tokio::test]
+async fn refused_connect_answers_as_a_jsonrpc_error() {
+    // Port 1 on localhost: nothing listens there in any test environment.
+    let (code, out) = bridge_over(
+        "http://127.0.0.1:1",
+        br#"{"jsonrpc":"2.0","id":9,"method":"initialize","params":{}}"#,
+    )
+    .await;
+    assert_eq!(code, 0);
+    let reply: serde_json::Value = serde_json::from_str(out.trim()).expect("one reply line");
+    assert_eq!(reply["error"]["code"], -32000);
+    assert!(
+        !reply["error"]["message"].as_str().unwrap().is_empty(),
+        "{reply}"
+    );
+}
+
+/// A base that accepts the TCP connect but never answers: the read deadline
+/// fires and the bridge answers with the read-timeout error.
+#[tokio::test]
+async fn silent_server_answers_as_a_read_timeout() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        // Accept and HOLD the stream, never reading or writing: the request
+        // starves until the bridge's read deadline fires.
+        let (_held, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+
+    let (code, out) = bridge_over(
+        &format!("http://{addr}"),
+        br#"{"jsonrpc":"2.0","id":11,"method":"initialize","params":{}}"#,
+    )
+    .await;
+    assert_eq!(code, 0);
+    let reply: serde_json::Value = serde_json::from_str(out.trim()).expect("one reply line");
+    assert_eq!(reply["error"]["code"], -32000);
+    assert_eq!(reply["error"]["message"], "read timeout", "{reply}");
+}
+
+/// A peer that resets the connection: the request write may land, but the
+/// read dies with ECONNRESET and the bridge answers the JSON-RPC error.
+#[tokio::test]
+async fn reset_peer_answers_as_a_jsonrpc_error() {
+    // Accept, then drop the stream with SO_LINGER 0 so the kernel sends a
+    // hard RST instead of a graceful FIN.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let stream = listener.accept().await.unwrap().0;
+        // The RST is the point: linger-zero makes the drop abort, not FIN.
+        #[allow(deprecated)]
+        stream.set_linger(Some(Duration::ZERO)).unwrap();
+        drop(stream); // RST, not a graceful FIN
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    });
+
+    let (code, out) = bridge_over(
+        &format!("http://{addr}"),
+        br#"{"jsonrpc":"2.0","id":13,"method":"initialize","params":{}}"#,
+    )
+    .await;
+    assert_eq!(code, 0);
+    let reply: serde_json::Value = serde_json::from_str(out.trim()).expect("one reply line");
+    assert_eq!(reply["error"]["code"], -32000, "{reply}");
+}

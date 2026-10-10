@@ -561,3 +561,138 @@ async fn ui_is_escaped_not_injected() {
         "the message view must not ship a script: {page}"
     );
 }
+
+/// A message with no normalizable subject joins its References chain without
+/// a subject node: the subject-union arm is skipped, the grouping stands.
+#[tokio::test]
+async fn thread_grouping_survives_a_missing_subject() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<chain@x.io>").await;
+    c.reply().await;
+    c.send("RCPT TO:<nosubject@x.io>").await;
+    c.reply().await;
+    assert!(
+        c.data("References: <anchor@x.io>\r\nMessage-ID: <kid@x.io>\r\n\r\nno subject here")
+            .await
+            .starts_with("250")
+    );
+
+    let (st, threads) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/threads",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let threads = threads.as_array().unwrap();
+    assert_eq!(threads.len(), 1, "the chain groups alone: {threads:?}");
+    assert_eq!(threads[0]["count"], 1);
+    assert!(
+        threads[0]["subject"].is_null(),
+        "no subject means no subject label: {threads:?}"
+    );
+}
+
+/// The message view renders extracted verification codes as pills, and the
+/// mailpit shim's plain fallback serves html-only mail as text/plain.
+#[tokio::test]
+async fn message_view_renders_code_pills_and_compat_plain_falls_back() {
+    let srv = start().await;
+    seed(
+        srv.http_addr,
+        "pills",
+        r#"{"to": "u@x.io", "subject": "coded", "text": "Your code is 555666 thanks"}"#,
+    )
+    .await;
+    // HTML-only mail: no text part at all.
+    seed(
+        srv.http_addr,
+        "pills",
+        r#"{"to": "u@x.io", "subject": "rich only", "html": "<b>rich body</b>"}"#,
+    )
+    .await;
+
+    let (_, list) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/pills/messages", None).await;
+    let id_of = |subject: &str| {
+        list["emails"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["subject"] == subject)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let (st, page) = http_get_text(srv.http_addr, &format!("/ui/message/{}", id_of("coded"))).await;
+    assert_eq!(st, 200);
+    assert!(
+        page.contains(r#"<span class="pill mono">555666</span>"#),
+        "the extracted code renders as a pill: {page}"
+    );
+
+    // The mailpit plain shim: html-only mail falls back to the html body.
+    let (st, plain) = http_get_text(
+        srv.http_addr,
+        &format!("/api/v1/messages/{}/plain", id_of("rich only")),
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        plain.trim(),
+        "rich body",
+        "the plain shim serves the ingested text: {plain}"
+    );
+}
+
+/// References/In-Reply-To headers ride the SMTP ingest path: the thread ids
+/// are extracted at ingest (`header_ids`) and the thread view groups by them.
+#[tokio::test]
+async fn smtp_thread_headers_extract_ids_at_ingest() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<thread@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<threads@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(
+        c.data(
+            "Subject: the reply\r\n\
+             Message-ID: <reply@x.io>\r\n\
+             In-Reply-To: <root@x.io>\r\n\
+             References: <ancestor@x.io> <root@x.io>\r\n\
+             \r\n\
+             x"
+        )
+        .await
+        .starts_with("250")
+    );
+
+    let (_, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/messages",
+        None,
+    )
+    .await;
+    let mail = &list["emails"].as_array().unwrap()[0];
+    // The parser normalizes the angle brackets away.
+    assert_eq!(
+        mail["in_reply_to"], "root@x.io",
+        "In-Reply-To extracted at ingest: {mail}"
+    );
+    let refs: Vec<String> = mail["references"]
+        .as_array()
+        .expect("the references list")
+        .iter()
+        .map(|r| r.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(refs, vec!["ancestor@x.io", "root@x.io"], "{mail}");
+}

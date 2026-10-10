@@ -309,9 +309,14 @@ impl Store {
 
     pub fn delete(&self, id: &str) -> bool {
         let removed = self.index.remove(id);
-        if let Some((_, email)) = &removed
-            && let Some(mut list) = self.inboxes.get_mut(&email.inbox)
-        {
+        if let Some((_, email)) = &removed {
+            // Every indexed mail was inserted with its inbox list present
+            // (insert creates both together), so this is an invariant, not
+            // a search: a missing list would mean the two maps disagree.
+            let mut list = self
+                .inboxes
+                .get_mut(&email.inbox)
+                .expect("indexed mail always has its inbox list");
             list.retain(|e| e.id != id);
         }
         self.record("delete", |persist| persist.record_delete(id));

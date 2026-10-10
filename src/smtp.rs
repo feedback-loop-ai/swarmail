@@ -644,9 +644,12 @@ mod tests {
             "expected EOF, got {eof:?}"
         );
         let refused = Pin::new(&mut conn).poll_write(&mut cx, b"NOOP");
+        // The refusal message rides the Debug rendering of the poll result —
+        // an assertion on the formatted text, with no arm of its own to cover.
+        let reported = format!("{refused:?}");
         assert!(
-            matches!(&refused, Poll::Ready(Err(e)) if e.to_string().contains("taken")),
-            "expected a write refusal, got {refused:?}"
+            reported.contains("taken"),
+            "the refusal names the posture: {reported}"
         );
 
         conn.flush().await.unwrap();

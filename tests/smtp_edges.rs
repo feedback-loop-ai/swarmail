@@ -416,3 +416,165 @@ fn base64_of(s: &str) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(s)
 }
+
+/// The angle-bracket-less MAIL FROM falls back to the `key: value` split
+/// (`arg_address`'s `_` arm), and a `<` that appears after `>` does too.
+#[tokio::test]
+async fn mail_from_without_brackets_uses_the_key_value_fallback() {
+    let srv = start().await;
+
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:bob@x.io").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<r@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(
+        c.data("Subject: no brackets\r\n\r\nx")
+            .await
+            .starts_with("250")
+    );
+
+    // A `<` after the `>` also misses the bracket arm (b > a is false).
+    let mut c2 = SmtpConn::connect(srv.smtp_addr).await;
+    c2.send("EHLO t").await;
+    c2.reply().await;
+    c2.send("MAIL FROM:>weird<").await;
+    assert!(c2.reply().await.starts_with("250"));
+    c2.send("RCPT TO:<r@x.io>").await;
+    assert!(c2.reply().await.starts_with("250"));
+    assert!(
+        c2.data("Subject: inverted brackets\r\n\r\nx")
+            .await
+            .starts_with("250")
+    );
+
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let froms: Vec<String> = body["emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["from"]["address"].as_str().unwrap().to_string())
+        .collect();
+    assert!(froms.contains(&"bob@x.io".to_string()), "got {froms:?}");
+    assert!(froms.contains(&">weird<".to_string()), "got {froms:?}");
+}
+
+/// AUTH LOGIN with an undecodable username: the inbox stays whatever it was
+/// (the `if let Some(user)` arm is skipped) and the handshake still succeeds.
+#[tokio::test]
+async fn auth_login_with_undecodable_username_stays_default() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("AUTH LOGIN").await;
+    assert!(c.reply().await.starts_with("334 VXNlcm5hbWU6"));
+    c.send("!!!not-b64!!!").await;
+    assert!(c.reply().await.starts_with("334 UGFzc3dvcmQ6"));
+    c.send(&base64_of("pw")).await;
+    assert!(c.reply().await.starts_with("235"));
+
+    c.send("MAIL FROM:<f@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<defaultlogin@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(
+        c.data("Subject: login b64 fail\r\n\r\nx")
+            .await
+            .starts_with("250")
+    );
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1);
+}
+
+/// AUTH PLAIN whose authcid is empty: `auth_plain_inbox` returns None and the
+/// mail flows to the default inbox (the `user.is_empty()` arm).
+#[tokio::test]
+async fn auth_plain_with_empty_authcid_stays_default() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("AUTH PLAIN").await;
+    assert!(c.reply().await.starts_with("334"));
+    c.send(&base64_of("\u{0}\u{0}pw")).await;
+    assert!(c.reply().await.starts_with("235"));
+
+    c.send("MAIL FROM:<f@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<emptyauth@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(
+        c.data("Subject: empty authcid\r\n\r\nx")
+            .await
+            .starts_with("250")
+    );
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1);
+}
+
+/// A peer that sends DATA and then vanishes (clean EOF, zero body bytes) is
+/// dropped gracefully: nothing is stored, and the server keeps serving.
+#[tokio::test]
+async fn data_with_immediate_eof_stores_nothing() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<ghost@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<vanished@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    c.shutdown_write().await;
+
+    // The server closes its side; the read half sees the EOF.
+    let _eof = c.read_to_end().await;
+
+    // Nothing was stored for the vanished session's inbox.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/vanished/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 0);
+
+    // The server kept serving: a fresh session works end to end.
+    let mut fresh = SmtpConn::connect(srv.smtp_addr).await;
+    fresh.send("EHLO t").await;
+    fresh.reply().await;
+    fresh.send("MAIL FROM:<after@x.io>").await;
+    assert!(fresh.reply().await.starts_with("250"));
+}
+
+/// A DATA body terminated by `.` + bare LF (no CR) is a legal terminator:
+/// RFC 5321 §2.3.8 tolerance — the `line == ".\n"` arm of the check.
+#[tokio::test]
+async fn data_terminated_by_bare_lf_dot_is_accepted() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<lf@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<barelf@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    c.send_bytes(b"Subject: bare lf terminator\r\n\r\nbody\r\n.\n")
+        .await;
+    assert!(c.reply().await.starts_with("250"));
+
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1, "the bare-LF-terminated mail was stored");
+}

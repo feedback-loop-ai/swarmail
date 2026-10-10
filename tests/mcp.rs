@@ -2,7 +2,12 @@
 
 mod common;
 
-use common::{http_json, smtp_send, start};
+use common::{SmtpConn, http_json, smtp_send, start};
+
+fn base64_of(s: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(s)
+}
 
 type Http = std::net::SocketAddr;
 
@@ -266,4 +271,213 @@ async fn unknown_tool_and_missing_args_are_errors() {
             .unwrap()
             .contains("missing id")
     );
+}
+
+/// Every tool's fallback closures (`unwrap_or_else` defaults) only run when
+/// the optional argument is ABSENT — drive each tool bare, plus the one arm
+/// no other test reaches (`swarmail_clear_all`).
+#[tokio::test]
+async fn bare_tool_calls_hit_every_default_and_clear_all() {
+    let srv = start().await;
+
+    // Seed two mails into the default inbox so the readers have something
+    // to find, then one into a scratch inbox that clear_all retires.
+    smtp_send(
+        srv.smtp_addr,
+        None,
+        "bare@x.io",
+        "to@x.io",
+        "bare subject one",
+        "https://one.io 111222",
+    )
+    .await
+    .unwrap();
+    smtp_send(
+        srv.smtp_addr,
+        None,
+        "bare@x.io",
+        "to@x.io",
+        "bare subject two",
+        "https://two.io 333444",
+    )
+    .await
+    .unwrap();
+
+    // search_emails with NO arguments: default inbox, default limit.
+    let result = text(&tool(srv.http_addr, "swarmail_search_emails", "{}").await);
+    assert_eq!(result["total"], 2, "{result}");
+    assert_eq!(result["emails"].as_array().unwrap().len(), 2, "{result}");
+    // …and with an explicit since_ms: the since filter closure runs.
+    let since = text(
+        &tool(
+            srv.http_addr,
+            "swarmail_search_emails",
+            r#"{"since_ms": 0}"#,
+        )
+        .await,
+    );
+    assert_eq!(since["total"], 2, "{since}");
+
+    // get_latest_email with NO arguments: default inbox, count 1.
+    let result = text(&tool(srv.http_addr, "swarmail_get_latest_email", "{}").await);
+    assert_eq!(
+        result["emails"][0]["subject"], "bare subject two",
+        "{result}"
+    );
+
+    // seed_email with only the required `to`: the from/subject/text defaults.
+    let result = text(
+        &tool(
+            srv.http_addr,
+            "swarmail_seed_email",
+            r#"{"to": "bare@x.io"}"#,
+        )
+        .await,
+    );
+    assert!(result.is_object(), "{result}");
+
+    // set_chaos with no delay_ms: the zero-delay default.
+    let result = text(
+        &tool(
+            srv.http_addr,
+            "swarmail_set_chaos",
+            r#"{"event": "data", "probability": 0.0, "error": "nope"}"#,
+        )
+        .await,
+    );
+    assert!(result.is_object(), "{result}");
+    // …and with an explicit delay_ms: the delay closure runs.
+    let delayed = text(
+        &tool(
+            srv.http_addr,
+            "swarmail_set_chaos",
+            r#"{"event": "data", "probability": 0.0, "error": "nope", "delay_ms": 5}"#,
+        )
+        .await,
+    );
+    assert!(delayed.is_object(), "{delayed}");
+
+    // wait_for_email with NO arguments: default inbox, count 1, default
+    // timeout — the second bare mail is already there.
+    let result = text(&tool(srv.http_addr, "swarmail_wait_for_email", "{}").await);
+    assert!(result.is_array() || result.is_object(), "{result}");
+    // …and with an explicit since_ms: the await filter closure runs.
+    let result = text(
+        &tool(
+            srv.http_addr,
+            "swarmail_wait_for_email",
+            r#"{"since_ms": 0}"#,
+        )
+        .await,
+    );
+    assert!(result.is_array() || result.is_object(), "{result}");
+
+    // clear_inbox with NO argument retires the default inbox.
+    let result = text(&tool(srv.http_addr, "swarmail_clear_inbox", "{}").await);
+    assert!(result["removed"].as_u64().unwrap() >= 1, "{result}");
+
+    // clear_all: the whole-store arm.
+    smtp_send(
+        srv.smtp_addr,
+        Some("scratchbox"),
+        "s@x.io",
+        "t@x.io",
+        "scratch",
+        "x",
+    )
+    .await
+    .unwrap();
+    let result = text(&tool(srv.http_addr, "swarmail_clear_all", "{}").await);
+    assert!(result["removed"].as_u64().unwrap() >= 1, "{result}");
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/scratchbox/count",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 0, "clear_all retires every inbox");
+}
+
+/// Rich header shapes: display names ride both To and From, a From header
+/// with a display name but no address falls back to the envelope sender,
+/// and a single-token AUTH PLAIN names the inbox with no NULs at all.
+#[tokio::test]
+async fn header_names_and_single_token_plain_auth() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<env@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<named@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(
+        c.data(
+            "From: \"Fiona F\" <fiona@x.io>\r\nTo: \"Bob B\" <bob@x.io>\r\nSubject: named\r\n\r\nx"
+        )
+        .await
+        .starts_with("250")
+    );
+
+    // A From header whose display name carries no address: the envelope
+    // sender is the fallback (`unwrap_or_else(|| from_envelope.clone())`).
+    let mut c2 = SmtpConn::connect(srv.smtp_addr).await;
+    c2.send("EHLO t").await;
+    c2.reply().await;
+    c2.send("MAIL FROM:<env2@x.io>").await;
+    assert!(c2.reply().await.starts_with("250"));
+    c2.send("RCPT TO:<named@x.io>").await;
+    assert!(c2.reply().await.starts_with("250"));
+    assert!(
+        c2.data("From: Fiona\r\nTo: bob@x.io\r\nSubject: noaddr\r\n\r\nx")
+            .await
+            .starts_with("250")
+    );
+
+    let (_, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/messages",
+        None,
+    )
+    .await;
+    let emails = list["emails"].as_array().unwrap();
+    let named = emails
+        .iter()
+        .find(|e| e["subject"] == "named")
+        .expect("the named mail landed");
+    assert_eq!(named["from"]["name"], "Fiona F", "{named}");
+    assert_eq!(named["from"]["address"], "fiona@x.io", "{named}");
+    assert_eq!(named["to"][0]["name"], "Bob B", "{named}");
+
+    let noaddr = emails
+        .iter()
+        .find(|e| e["subject"] == "noaddr")
+        .expect("the noaddr mail landed");
+    assert_eq!(noaddr["from"]["name"], "Fiona", "{noaddr}");
+    assert_eq!(noaddr["from"]["address"], "env2@x.io", "{noaddr}");
+
+    // A single-token AUTH PLAIN (no NUL separators): the token itself names
+    // the inbox (`parts.get(1).or_else(|| parts.first())`).
+    let mut c3 = SmtpConn::connect(srv.smtp_addr).await;
+    c3.send("EHLO t").await;
+    c3.reply().await;
+    c3.send("AUTH PLAIN").await;
+    assert!(c3.reply().await.starts_with("334"));
+    c3.send(&base64_of("solobox")).await;
+    assert!(c3.reply().await.starts_with("235"));
+    c3.send("MAIL FROM:<f@x.io>").await;
+    assert!(c3.reply().await.starts_with("250"));
+    c3.send("RCPT TO:<solo@x.io>").await;
+    assert!(c3.reply().await.starts_with("250"));
+    assert!(
+        c3.data("Subject: solo auth\r\n\r\nx")
+            .await
+            .starts_with("250")
+    );
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/solobox/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1);
 }

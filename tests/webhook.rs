@@ -887,3 +887,98 @@ async fn a_dropped_first_attempt_is_retried_and_still_delivered_over_tls() {
         "the retried delivery carried no payload: {captured:?}"
     );
 }
+
+/// Delivering twice through the same ca_pem exercises the LRU's
+/// already-present arm (`touch_lru` moving an existing key to the back) —
+/// the second build must reuse the cached client and still land.
+#[tokio::test]
+async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
+    let srv = start().await;
+    let (ca_pem, leaf, leaf_key) = mint_cert();
+    let (addr, rx, count) = tls_sink(
+        b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        leaf,
+        leaf_key,
+        2,
+    )
+    .await;
+
+    let targets = serde_json::json!([{
+        "url": format!("https://127.0.0.1:{}/hook", addr.port()),
+        "ca_pem": ca_pem,
+    }])
+    .to_string();
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200);
+
+    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "first pass", "x")
+        .await
+        .unwrap();
+    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "second pass", "x")
+        .await
+        .unwrap();
+
+    // The first delivery is captured over TLS; the sink's connection count
+    // proves the second one arrived the same way (through the cached client).
+    let captured = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .expect("the first delivery timed out")
+        .unwrap();
+    assert!(
+        captured.tls.contains("TLSv1"),
+        "not negotiated over TLS: {:?}",
+        captured
+    );
+    let hits = tokio::time::timeout(Duration::from_secs(5), count)
+        .await
+        .expect("the second delivery timed out")
+        .unwrap();
+    assert_eq!(hits, 2, "both passes must reach the sink over TLS");
+}
+
+/// A `ca_pem` whose base64 does not decode: `from_pem` refuses, the client
+/// build fails before any dial, and the target sees no connection at all.
+#[tokio::test]
+async fn garbage_ca_pem_builds_no_client_and_dials_nothing() {
+    let srv = start().await;
+    let pair = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let (addr, rx_req, rx_count) = tls_sink(
+        b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        pair.cert.der().to_vec(),
+        pair.key_pair.serialize_der(),
+        1,
+    )
+    .await;
+    // A ca_pem whose base64 does not decode: the rustls client refuses it,
+    // so no client is ever built and the target is never dialed.
+    let broken = "-----BEGIN CERTIFICATE-----\n!!!not base64!!!\n-----END CERTIFICATE-----";
+    let targets = serde_json::json!([{
+        "url": format!("https://127.0.0.1:{}/hook", addr.port()),
+        "ca_pem": broken,
+    }]);
+    let (st, put) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/webhooks",
+        Some(&targets.to_string()),
+    )
+    .await;
+    assert_eq!(st, 200, "{put}");
+
+    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "garbage ca", "x")
+        .await
+        .unwrap();
+
+    // The backoff window passes with the sink silent: no dial was attempted.
+    let budget = tokio::time::timeout(Duration::from_millis(2800), rx_count).await;
+    assert!(
+        budget.is_err(),
+        "the sink never saw a connection: {budget:?}"
+    );
+
+    // The server still serves (the failure was contained to the delivery).
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1);
+    drop(rx_req);
+}

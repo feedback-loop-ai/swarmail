@@ -687,3 +687,44 @@ async fn the_shims_coexist_with_the_native_routes() {
     // The documented shapes keep their native envelope (`emails`, not `items`).
     assert!(body["emails"].is_array());
 }
+
+/// A mail with a Cc header lands its display-name addresses in the mailpit
+/// shim's Cc array (the `mailpit_address(Some(a))` map over `email.cc`).
+#[tokio::test]
+async fn cc_addresses_render_in_the_mailpit_list() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<sender@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<cclist@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(
+        c.data("From: sender@x.io\r\nTo: cclist@x.io\r\nCc: \"Cara C\" <cara@x.io>, dot@x.io\r\nSubject: cc'd\r\n\r\nx")
+            .await
+            .starts_with("250")
+    );
+
+    let (st, list) = http_json(srv.http_addr, "GET", "/api/v1/messages", None).await;
+    assert_eq!(st, 200);
+    let mail = list["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["Subject"] == "cc'd")
+        .expect("the cc'd mail is listed");
+    let cc = mail["Cc"].as_array().expect("a Cc array");
+    assert_eq!(cc.len(), 2, "{mail}");
+    assert_eq!(cc[0]["name"], "Cara C");
+    assert_eq!(cc[0]["address"], "cara@x.io");
+    assert_eq!(cc[1]["address"], "dot@x.io");
+
+    // The full single-message shape carries the same Cc array.
+    let id = mail["ID"].as_str().unwrap().to_string();
+    let (st, one) = http_json(srv.http_addr, "GET", &format!("/api/v1/message/{id}"), None).await;
+    assert_eq!(st, 200);
+    let cc = one["Cc"].as_array().expect("the single-message Cc array");
+    assert_eq!(cc.len(), 2, "{one}");
+    assert_eq!(cc[0]["name"], "Cara C");
+}
