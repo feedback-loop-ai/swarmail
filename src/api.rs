@@ -128,7 +128,8 @@ impl ListQuery {
 pub struct AwaitQuery {
     #[serde(flatten)]
     pub common: ListQuery,
-    /// Number of matching emails to wait for (default 1).
+    /// Number of matching emails to wait for (default 1). A wait needs at
+    /// least one arrival to mean anything, so 0 is raised to 1.
     pub count: Option<usize>,
     /// Give up after this long; default 5000ms.
     pub timeout_ms: Option<u64>,
@@ -145,6 +146,24 @@ impl AwaitQuery {
 
     fn timeout(&self) -> Duration {
         Duration::from_millis(self.timeout_ms.unwrap_or(5000))
+    }
+}
+
+/// The `/assert` query: the shared filters and the exact count expected.
+/// Kept apart from [`AwaitQuery`] because the two disagree about zero: a
+/// wait for nothing is meaningless, while "exactly 0 matched" is the
+/// assertion that no mail was sent, so it is never raised to 1 (issue #6).
+#[derive(Debug, Deserialize)]
+pub struct AssertQuery {
+    #[serde(flatten)]
+    pub common: ListQuery,
+    /// Exact number of matching emails expected (default 1; 0 is valid).
+    pub count: Option<usize>,
+}
+
+impl AssertQuery {
+    fn expected(&self) -> usize {
+        self.count.unwrap_or(1)
     }
 }
 
@@ -303,9 +322,9 @@ async fn assert_messages(
     Path(inbox): Path<String>,
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Response> {
-    let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "assert")?;
-    let want = q.count();
-    let matched = state.store.count(&inbox, &q.filter());
+    let q: AssertQuery = parse_query(raw.0.as_deref().unwrap_or(""), "assert")?;
+    let want = q.expected();
+    let matched = state.store.count(&inbox, &q.common.filter());
     if matched == want {
         Ok((
             StatusCode::OK,
