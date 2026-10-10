@@ -259,7 +259,10 @@ fn read_counter(conn: &Connection, key: &str) -> rusqlite::Result<u64> {
             |row| row.get(0),
         )
         .optional()?;
-    Ok(raw.and_then(|v| v.parse().ok()).unwrap_or(0))
+    Ok(match raw {
+        Some(text) => text.parse().unwrap_or(0),
+        None => 0,
+    })
 }
 
 #[cfg(test)]
@@ -299,6 +302,15 @@ mod tests {
     /// A row whose column type no longer matches the schema (an integer in
     /// a text column — an old writer's damage) surfaces as a load error
     /// instead of a silently wrong email.
+    /// A missing meta table refuses with the query error rather than
+    /// reading as zero — a zero would silently misreport the counters.
+    #[test]
+    fn read_counter_refuses_a_missing_meta_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        let err = read_counter(&conn, "k").unwrap_err();
+        assert!(err.to_string().contains("no such table"), "{err}");
+    }
+
     #[test]
     fn load_surfaces_a_corrupt_row_type() {
         let path = db_path("corrupt-row");

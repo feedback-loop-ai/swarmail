@@ -157,10 +157,10 @@ fn classify(
     match res {
         Ok(email) => Wake::Mail(email),
         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-            tracing::warn!(
-                skipped = n,
-                "webhook dispatcher lagged; store remains source of truth"
+            let note = format!(
+                "webhook dispatcher lagged, skipped {n}; the store remains the source of truth"
             );
+            tracing::warn!("{note}");
             Wake::Again
         }
         Err(_) => Wake::Stop, // closed
@@ -374,9 +374,11 @@ mod loop_tests {
     }
 
     /// Mail is delivered, a lagging watcher retries, a closed firehose ends
-    /// the loop — all three wake arms against a real broadcast channel.
+    /// the loop — all three wake arms against a real broadcast channel, and
+    /// the lag actually lands in the log, as promised.
     #[tokio::test]
     async fn dispatch_loop_handles_mail_lag_and_close() {
+        let log = captured_log();
         let webhooks = Arc::new(Webhooks::default()); // no targets: delivery is a no-op
         let (tx, rx) = broadcast::channel(1);
         // Both sends happen BEFORE the loop exists: the first recv is then
@@ -392,6 +394,50 @@ mod loop_tests {
             .await
             .expect("the loop must end when the firehose closes")
             .unwrap();
+        std::io::Write::flush(&mut log.clone()).unwrap();
+        assert!(
+            String::from_utf8_lossy(&log.0.lock().unwrap()).contains("lagged"),
+            "the lag warning must be logged: {:?}",
+            String::from_utf8_lossy(&log.0.lock().unwrap())
+        );
+    }
+
+    /// The process-wide capturing log: the dispatcher's warnings must be
+    /// evaluatable (a subscriber makes the warn! arguments real code), and
+    /// tests can then assert on them.
+    static CAPTURED_LOG: std::sync::OnceLock<Capture> = std::sync::OnceLock::new();
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn captured_log() -> &'static Capture {
+        CAPTURED_LOG.get_or_init(|| {
+            let capture = Capture::default();
+            let _ = tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt::Subscriber::builder()
+                    .with_max_level(tracing::Level::WARN)
+                    .with_writer(capture.clone())
+                    .finish(),
+            );
+            capture
+        })
     }
 }
 
