@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarmail — email infrastructure for tests and agents</title>
+<meta name="description" content="One Rust binary: a lossless SMTP mock with per-test inboxes, chaos engineering, push-based waiting, MCP for AI agents, and a web UI. 5000/5000 exact, 1.58 µs/mail.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d0f14'/%3E%3Cpath d='M6 11l10 7 10-7' stroke='%23f0a232' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Crect x='6' y='9' width='20' height='14' rx='2.5' stroke='%23f0a232' stroke-width='2.4' fill='none'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0b0d12;
+    --bg-raise: #11141b;
+    --bg-card: #141822;
+    --line: #232a38;
+    --text: #e8e6e1;
+    --muted: #9aa3b2;
+    --faint: #6b7484;
+    --amber: #f0a232;
+    --amber-hot: #ff8a3d;
+    --green: #4ade80;
+    --red: #f87171;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* ---------- background field ---------- */
+  .field {
+    position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(240,162,50,.13), transparent 60%),
+      radial-gradient(ellipse 50% 35% at 85% 110%, rgba(255,138,61,.07), transparent 60%),
+      var(--bg);
+  }
+  .field::after {
+    content: ""; position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(154,163,178,.13) 1px, transparent 1px);
+    background-size: 26px 26px;
+    mask-image: radial-gradient(ellipse 70% 55% at 50% 0%, #000 30%, transparent 75%);
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  /* ---------- nav ---------- */
+  nav {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    background: rgba(11,13,18,.82);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav-inner {
+    display: flex; align-items: center; gap: 22px;
+    max-width: 1080px; margin: 0 auto; padding: 14px 24px;
+  }
+  .brand {
+    display: flex; align-items: center; gap: 9px;
+    font-family: var(--mono); font-weight: 700; font-size: 15px;
+    color: var(--text); text-decoration: none; letter-spacing: .2px;
+  }
+  .brand svg { flex: none; }
+  nav .links { margin-left: auto; display: flex; gap: 20px; flex-wrap: wrap; }
+  nav .links a {
+    color: var(--muted); text-decoration: none; font-size: 13.5px;
+    transition: color .15s;
+  }
+  nav .links a:hover { color: var(--amber); }
+  /* ---------- hero ---------- */
+  header { padding: 84px 0 56px; text-align: center; }
+  .kicker {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 12px; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--amber);
+    border: 1px solid rgba(240,162,50,.35); border-radius: 999px;
+    padding: 5px 14px; margin-bottom: 26px;
+    background: rgba(240,162,50,.06);
+  }
+  .kicker .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--green);
+    animation: pulse 2.2s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  h1 {
+    font-size: clamp(40px, 7vw, 74px);
+    line-height: 1.04; letter-spacing: -2.2px; font-weight: 800;
+    margin-bottom: 22px;
+  }
+  h1 .grad {
+    background: linear-gradient(92deg, var(--amber) 20%, var(--amber-hot) 80%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .tagline {
+    font-size: clamp(17px, 2.4vw, 21px); color: var(--muted);
+    max-width: 760px; margin: 0 auto 38px;
+  }
+  .tagline strong { color: var(--text); font-weight: 600; }
+  .install {
+    display: inline-flex; align-items: stretch; gap: 0;
+    font-family: var(--mono); font-size: 14.5px;
+    background: var(--bg-raise); border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden; max-width: 100%;
+  }
+  .install code { padding: 14px 18px; color: var(--text); white-space: nowrap; overflow-x: auto; }
+  .install code .p { color: var(--faint); user-select: none; }
+  .copy-btn {
+    border: none; border-left: 1px solid var(--line);
+    background: var(--bg-raise); color: var(--muted); cursor: pointer;
+    font-family: var(--mono); font-size: 12.5px; padding: 0 18px;
+    transition: color .15s, background .15s;
+  }
+  .copy-btn:hover { color: var(--amber); background: var(--bg-card); }
+  .copy-btn.done { color: var(--green); }
+  .ports {
+    display: flex; justify-content: center; gap: 14px; flex-wrap: wrap;
+    margin-top: 30px; font-family: var(--mono); font-size: 13px;
+  }
+  .ports span {
+    color: var(--muted); border: 1px solid var(--line);
+    background: rgba(17,20,27,.7); border-radius: 8px; padding: 6px 13px;
+  }
+  .ports b { color: var(--amber); font-weight: 600; }
+  /* ---------- numbers ---------- */
+  .numbers {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1px; background: var(--line); border: 1px solid var(--line);
+    border-radius: 14px; overflow: hidden; margin: 26px 0 0;
+  }
+  .numbers div {
+    background: var(--bg-raise); padding: 22px 14px; text-align: center;
+  }
+  .numbers b {
+    display: block; font-family: var(--mono); font-size: 24px;
+    color: var(--amber); letter-spacing: -.5px;
+  }
+  .numbers span { font-size: 12.5px; color: var(--faint); }
+  /* ---------- sections ---------- */
+  section { padding: 72px 0; }
+  .sec-label {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 1.8px;
+    text-transform: uppercase; color: var(--amber); margin-bottom: 12px;
+  }
+  h2 { font-size: clamp(24px, 3.4vw, 34px); letter-spacing: -1px; line-height: 1.15; margin-bottom: 14px; }
+  .sub { color: var(--muted); max-width: 680px; margin-bottom: 36px; font-size: 16px; }
+  /* ---------- terminal ---------- */
+  .term {
+    background: #0a0c10; border: 1px solid var(--line); border-radius: 14px;
+    overflow: hidden; box-shadow: 0 18px 50px rgba(0,0,0,.45);
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.75;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 7px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bg-raise);
+  }
+  .term-bar i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+  .term-bar i:nth-child(1) { background: #ff5f57; }
+  .term-bar i:nth-child(2) { background: #febc2e; }
+  .term-bar i:nth-child(3) { background: #28c840; }
+  .term-bar span { margin-left: 10px; color: var(--faint); font-size: 12px; }
+  .term-body { padding: 20px 22px; overflow-x: auto; }
+  .term-body .c { color: var(--faint); }
+  .term-body .p1 { color: var(--amber); }
+  .term-body .p2 { color: var(--green); }
+  .term-body .k { color: #7dd3fc; }
+  .term-body .s { color: #fbbf24; }
+  /* ---------- features ---------- */
+  .grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 24px 24px 20px;
+    transition: border-color .18s, transform .18s;
+  }
+  .card:hover { border-color: rgba(240,162,50,.45); transform: translateY(-2px); }
+  .card h3 { font-size: 16.5px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+  .card h3 .ico { font-size: 18px; }
+  .card p { font-size: 14px; color: var(--muted); }
+  .card code { font-family: var(--mono); font-size: 12.5px; color: var(--amber); }
+  /* ---------- code blocks ---------- */
+  .codeblock {
+    position: relative; background: #0a0c10; border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden;
+    font-family: var(--mono); font-size: 13px; line-height: 1.7;
+  }
+  .codeblock .cb-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 14px; border-bottom: 1px solid var(--line); background: var(--bg-raise);
+  }
+  .codeblock .cb-bar span { color: var(--faint); font-size: 11.5px; letter-spacing: .8px; text-transform: uppercase; }
+  .codeblock pre { padding: 16px 18px; overflow-x: auto; color: #c9d1d9; }
+  .codeblock .c { color: var(--faint); }
+  .codeblock .k { color: #7dd3fc; }
+  .codeblock .s { color: #fbbf24; }
+  .codeblock .n { color: var(--amber); }
+  .duo { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 860px) { .duo { grid-template-columns: 1fr; } }
+  /* ---------- table ---------- */
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 760px; }
+  th, td { padding: 13px 16px; text-align: left; border-bottom: 1px solid var(--line); }
+  th {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--faint);
+    background: var(--bg-raise); font-weight: 600;
+  }
+  td { color: var(--muted); background: var(--bg-card); }
+  tr:last-child td { border-bottom: none; }
+  td.us {
+    color: var(--text); background: rgba(240,162,50,.07);
+    font-weight: 500;
+  }
+  th.us { color: var(--amber); }
+  td .yes { color: var(--green); }
+  td .no { color: var(--red); }
+  /* ---------- loop steps ---------- */
+  .steps { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .step {
+    background: var(--bg-card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 20px; position: relative;
+  }
+  .step b {
+    font-family: var(--mono); color: var(--amber); font-size: 12px;
+    letter-spacing: 1.5px; text-transform: uppercase; display: block; margin-bottom: 8px;
+  }
+  .step p { font-size: 13.5px; color: var(--muted); }
+  .step code { font-family: var(--mono); font-size: 12px; color: var(--amber); }
+  /* ---------- footer ---------- */
+  footer {
+    border-top: 1px solid var(--line); padding: 44px 0 60px;
+    color: var(--faint); font-size: 13.5px;
+  }
+  .foot-grid { display: flex; gap: 40px; flex-wrap: wrap; justify-content: space-between; }
+  .foot-grid a { color: var(--muted); text-decoration: none; }
+  .foot-grid a:hover { color: var(--amber); }
+  .foot-grid .col { min-width: 140px; }
+  .foot-grid .col b {
+    display: block; color: var(--text); font-size: 13px; margin-bottom: 10px;
+    font-weight: 600;
+  }
+  .legal { margin-top: 34px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .legal svg { opacity: .8; }
+</style>
+</head>
+<body>
+<div class="field" aria-hidden="true"></div>
+
+<nav aria-label="Main">
+  <div class="nav-inner">
+    <a class="brand" href="#top">
+      <svg width="20" height="20" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="none" stroke="#f0a232" stroke-width="2.2"/><path d="M6 11l10 7 10-7" stroke="#f0a232" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      swarmail
+    </a>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#loop">Agent loop</a>
+      <a href="#chaos">Chaos</a>
+      <a href="#mcp">MCP</a>
+      <a href="#compare">Compare</a>
+      <a href="https://github.com/feedback-loop-ai/swarmail">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header id="top">
+  <div class="wrap">
+    <div class="kicker"><span class="dot"></span> v0.1.0 · lossless by construction</div>
+    <h1>Email that<br><span class="grad">never loses a letter</span></h1>
+    <p class="tagline">
+      One Rust binary: a <strong>lossless SMTP mock</strong> with per-test inboxes,
+      chaos engineering, push-based waiting, <strong>MCP for AI agents</strong> and a
+      live web UI. It swallows mail faster than your tests can produce it —
+      and hands it back with every link and OTP code already extracted.
+    </p>
+    <div class="install">
+      <code><span class="p">$</span> docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:v0.1.0</code>
+      <button class="copy-btn" data-copy="docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:v0.1.0">copy</button>
+    </div>
+    <div class="ports">
+      <span><b>:1025</b> SMTP + STARTTLS</span>
+      <span><b>:1110</b> POP3</span>
+      <span><b>:8025</b> REST · MCP · UI</span>
+    </div>
+    <div class="numbers" role="list">
+      <div role="listitem"><b>5000/5000</b><span>exact over 100 concurrent fresh sessions, asserted in CI</span></div>
+      <div role="listitem"><b>1.58 µs</b><span>per mail — parse + extract + insert (criterion median)</span></div>
+      <div role="listitem"><b>100/100/100</b><span>exact line · branch · function coverage, gated</span></div>
+      <div role="listitem"><b>12 tools</b><span>native MCP — HTTP and stdio transports</span></div>
+    </div>
+  </div>
+</header>
+
+<section id="loop">
+  <div class="wrap">
+    <div class="sec-label">The agent loop</div>
+    <h2>Clear, act, assert — no sleep-polling</h2>
+    <p class="sub">Mail arrives, <code style="font-family:var(--mono);color:var(--amber)">await</code> returns. Links and OTP-like codes are extracted
+    at ingest, so the assertion is a field read — not a regex over HTML.</p>
+    <div class="term" role="img" aria-label="Terminal showing the clear, act, assert agent loop">
+      <div class="term-bar"><i></i><i></i><i></i><span>agent-loop — swarmail</span></div>
+      <div class="term-body">
+<span class="c"># 1 — start clean (per-test inbox: the AUTH username is the inbox)</span><br>
+<span class="p1">$</span> curl -X DELETE localhost:8025/api/v1/inboxes/<span class="k">test-run</span>/messages<br>
+<span class="c"># 2 — trigger the flow (signup, reset, invite, …)</span><br>
+<span class="c"># 3 — block until the mail arrives — push-based, subscribes before it checks</span><br>
+<span class="p1">$</span> curl "localhost:8025/api/v1/inboxes/<span class="k">test-run</span>/await?to=<span class="s">user@x.io</span>&amp;count=1&amp;timeout_ms=5000"<br>
+{<br>
+&nbsp;&nbsp;<span class="k">"matched"</span>: <span class="n">1</span>,<br>
+&nbsp;&nbsp;<span class="k">"emails"</span>: [{ <span class="k">"subject"</span>: <span class="s">"Verify your account"</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="k">"links"</span>: [<span class="s">"https://x.io/verify?token=…"</span>],<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="k">"codes"</span>: [<span class="s">"424242"</span>] }]<br>
+}<br>
+<span class="c"># 4 — no regex over HTML. The fields are already there.</span>
+      </div>
+    </div>
+    <div class="steps" style="margin-top:16px">
+      <div class="step"><b>01 · isolate</b><p>Every parallel test or agent gets its own inbox for free — <code>proj-42</code>, <code>test-run-7</code>. The AUTH username <em>is</em> the inbox.</p></div>
+      <div class="step"><b>02 · wait</b><p><code>…/await</code> long-poll and MCP <code>swarmail_wait_for_email</code> block until arrival. Subscribe-before-scan: nothing is missed while connecting.</p></div>
+      <div class="step"><b>03 · assert</b><p><code>links</code>, <code>codes</code>, thread headers — extracted once at ingest (decision 0005), served as plain fields.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="features" style="padding-top: 8px;">
+  <div class="wrap">
+    <div class="sec-label">What's inside</div>
+    <h2>Everything a test run needs, one static binary</h2>
+    <p class="sub">The scratch container is about the size of the binary. No database to babysit, no Node runtime, no config file.</p>
+    <div class="grid">
+      <div class="card"><h3><span class="ico">📮</span>Lossless ingest</h3><p>SMTP <code>DATA</code> inserts synchronously — a <code>250</code> means the mail is queryable <em>and</em> (with <code>--data-file</code>) on disk. No async gap where mail can vanish.</p></div>
+      <div class="card"><h3><span class="ico">🧪</span>Chaos on SMTP</h3><p>Probability, error lines and delays injected at <code>connect</code>, <code>mail from</code>, <code>rcpt</code> and <code>data</code> — set it, run your retry tests, clear it.</p></div>
+      <div class="card"><h3><span class="ico">🤖</span>MCP, native</h3><p>HTTP (Streamable JSON-RPC) and stdio transports. Agents close the loop on signup, reset and magic-link flows — no browser tab.</p></div>
+      <div class="card"><h3><span class="ico">🪤</span>MailHog / Mailpit shims</h3><p>Point an existing MailHog or Mailpit client at the HTTP port and it works — the two shapes test suites actually hit, from one store.</p></div>
+      <div class="card"><h3><span class="ico">🧵</span>Threads + live UI</h3><p>Conversations grouped by References/In-Reply-To chains with normalized-subject fallback; the SSE-driven inbox view updates itself.</p></div>
+      <div class="card"><h3><span class="ico">🪝</span>Webhooks</h3><p>Queued, retried (100 ms → 1.6 s), inbox-filtered, <code>http://</code> and <code>https://</code> with a per-CA client cache — never blocking the SMTP path.</p></div>
+      <div class="card"><h3><span class="ico">📥</span>POP3</h3><p>RFC 1939 core + TOP/CAPA on the same store. The maildrop <em>is</em> an inbox — mail delivered over SMTP reads back over POP3.</p></div>
+      <div class="card"><h3><span class="ico">🔐</span>STARTTLS</h3><p>Real rustls upgrade, RFC 3207 session restart, bounded handshake deadline. Without a cert the plaintext listener stays byte-identical.</p></div>
+      <div class="card"><h3><span class="ico">💾</span>Persistence</h3><p><code>--data-file</code> commits every change to bundled SQLite (WAL, fsync-per-accept) and restores the full state before the server answers anything.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="chaos">
+  <div class="wrap">
+    <div class="sec-label">Failure paths</div>
+    <h2>Break SMTP on purpose</h2>
+    <p class="sub">Retry logic is code too — and it deserves a test. Inject failures at the protocol stage you care about, then clear chaos and prove recovery.</p>
+    <div class="duo">
+      <div class="codeblock">
+        <div class="cb-bar"><span>chaos — inject</span><button class="copy-btn" data-copy="curl -X PUT localhost:8025/api/v1/chaos -H 'content-type: application/json' -d '{&quot;data&quot;: {&quot;probability&quot;: 30, &quot;error&quot;: &quot;451 4.3.0 tempfail&quot;, &quot;delay_ms&quot;: 250}}'">copy</button></div>
+        <pre><span class="p1">$</span> curl -X PUT localhost:8025/api/v1/chaos \
+    -H <span class="s">'content-type: application/json'</span> -d <span class="s">'{
+      "data": { "probability": 30,
+                "error": "451 4.3.0 tempfail",
+                "delay_ms": 250 }
+    }'</span></pre>
+      </div>
+      <div class="codeblock">
+        <div class="cb-bar"><span>webhooks — subscribe</span><button class="copy-btn" data-copy="curl -X PUT localhost:8025/api/v1/webhooks -H 'content-type: application/json' -d '[{&quot;url&quot;: &quot;http://127.0.0.1:9999/hooks&quot;, &quot;inbox&quot;: null, &quot;secret&quot;: &quot;s3cret&quot;}]'">copy</button></div>
+        <pre><span class="p1">$</span> curl -X PUT localhost:8025/api/v1/webhooks \
+    -H <span class="s">'content-type: application/json'</span> -d <span class="s">'[
+      { "url": "http://127.0.0.1:9999/hooks",
+        "inbox": null,
+        "secret": "s3cret" }
+    ]'</span>
+
+<span class="c"># every accept POSTs {"event":"received",…}
+# with X-Swarmail-Secret — retried 100ms→1.6s</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="mcp">
+  <div class="wrap">
+    <div class="sec-label">AI-native</div>
+    <h2>Agents drive the mail, end to end</h2>
+    <p class="sub">Twelve tools over MCP — search, get, seed, chaos, and <code style="font-family:var(--mono);color:var(--amber)">swarmail_wait_for_email</code>, which blocks
+    until the mail actually arrives. Point Claude Code, Codex or Cursor at it and the agent closes its own loop.</p>
+    <div class="codeblock" style="max-width:720px">
+      <div class="cb-bar"><span>.mcp.json</span><button class="copy-btn" data-copy='{ &quot;mcpServers&quot;: { &quot;swarmail&quot;: { &quot;type&quot;: &quot;http&quot;, &quot;url&quot;: &quot;http://localhost:8025/mcp&quot; } } }'>copy</button></div>
+      <pre>{
+  <span class="k">"mcpServers"</span>: {
+    <span class="k">"swarmail"</span>: { <span class="k">"type"</span>: <span class="s">"http"</span>, <span class="k">"url"</span>: <span class="s">"http://localhost:8025/mcp"</span> }
+  }
+}</pre>
+    </div>
+    <p class="sub" style="margin-top:18px; margin-bottom:0; font-size:14px">stdio too: <code style="font-family:var(--mono);color:var(--amber)">{"command": "swarmail", "args": ["mcp"]}</code> — the bridge speaks JSON-RPC over stdin/stdout.</p>
+  </div>
+</section>
+
+<section id="compare">
+  <div class="wrap">
+    <div class="sec-label">The field</div>
+    <h2>Why not the usual suspects</h2>
+    <p class="sub">Every existing dev mail server fails agentic and bursty test runs one way or another. This is the record.</p>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th></th><th>MailSlurper</th><th>MailCrab</th><th>Mailpit</th><th>MailDev</th><th class="us">Swarmail</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Burst handling</td><td>SMTP session leaks</td><td>documented message loss &gt;100/s</td><td>200–300/s</td><td>Node, untested</td><td class="us">lossless — 5000/5000 exact over 100 concurrent fresh sessions, asserted in CI</td></tr>
+          <tr><td>Wait-until-arrival</td><td><span class="no">❌ poll</span></td><td><span class="no">❌ poll</span></td><td><span class="no">❌ poll</span></td><td><span class="no">❌ poll</span></td><td class="us"><span class="yes">✅</span> await long-poll + MCP wait_for_email</td></tr>
+          <tr><td>Per-test inboxes</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td class="us"><span class="yes">✅</span> AUTH username = inbox</td></tr>
+          <tr><td>MCP server</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="yes">✅</span> (Node)</td><td class="us"><span class="yes">✅</span> HTTP + stdio, native, 12 tools</td></tr>
+          <tr><td>Link/code extraction</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td class="us"><span class="yes">✅</span> first-class, at ingest</td></tr>
+          <tr><td>Chaos on SMTP</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td>error codes only</td><td><span class="no">❌</span></td><td class="us"><span class="yes">✅</span> probability, error line, delay — per stage</td></tr>
+          <tr><td>Webhooks</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td>1/s, no retry</td><td><span class="no">❌</span></td><td class="us"><span class="yes">✅</span> queued, retried 100ms→1.6s, inbox-filtered, TLS</td></tr>
+          <tr><td>Footprint</td><td>Go+DB</td><td>7.8 MB</td><td>~10 MB</td><td>Node</td><td class="us">static binary, scratch container ≈ binary size</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="sub" style="margin-top:16px; margin-bottom:0; font-size:13px">
+      Methodology: the 5000-mail figure is <code style="font-family:var(--mono)">tests/rate.rs</code> (release, fresh SMTP session per mail —
+      the Ory Kratos courier pattern); the µs/mail figure is <code style="font-family:var(--mono)">cargo bench</code> on the pure ingest path. Both run in CI.
+    </p>
+  </div>
+</section>
+
+<section style="padding-top: 8px;">
+  <div class="wrap">
+    <div class="sec-label">Engineering discipline</div>
+    <h2>Built like infrastructure, not like a demo</h2>
+    <p class="sub">Frozen guarantees with decision records, a realm charter, contribution gates, a never-falling coverage floor and a permissive-only dependency tree. This repo develops itself under <a href="https://github.com/feedback-loop-ai/brokkr" style="color:var(--amber)">brokkr</a>, the deterministic delivery engine.</p>
+    <div class="numbers" role="list">
+      <div role="listitem"><b>exact</b><span>covered == count over lines, branches and functions — no rounding</span></div>
+      <div role="listitem"><b>never falls</b><span>the coverage floor may rise, never fall — enforced in CI</span></div>
+      <div role="listitem"><b>0</b><span>coverage attribute exclusions — production code cannot shrink the denominator</span></div>
+      <div role="listitem"><b>MIT·Apache-2.0</b><span>dual licensed, permissive-only dependency tree (cargo deny)</span></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="col">
+        <b>Swarmail</b>
+        <a href="https://github.com/feedback-loop-ai/swarmail">GitHub</a><br>
+        <a href="https://github.com/feedback-loop-ai/swarmail/releases">Releases</a><br>
+        <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/README.md">README</a>
+      </div>
+      <div class="col">
+        <b>Reference</b>
+        <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/src/static/openapi.json">OpenAPI 3.1</a><br>
+        <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/src/static/llms.txt">llms.txt</a><br>
+        <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/CONTRIBUTING.md">Contributing</a>
+      </div>
+      <div class="col">
+        <b>Discipline</b>
+        <a href="https://github.com/feedback-loop-ai/swarmail/tree/main/docs/decisions">Decision records</a><br>
+        <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/docs/house-rules.md">House rules</a><br>
+        <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/scripts/coverage-gate.sh">Coverage gate</a>
+      </div>
+    </div>
+    <div class="legal">
+      <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="none" stroke="#6b7484" stroke-width="2"/><path d="M6 11l10 7 10-7" stroke="#6b7484" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>© 2026 feedback-loop-ai · Swarmail v0.1.0 · dual licensed <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/LICENSE-MIT">MIT</a> or <a href="https://github.com/feedback-loop-ai/swarmail/blob/main/LICENSE-APACHE">Apache-2.0</a>, at your option (SPDX: MIT OR Apache-2.0)</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Copy buttons: flash, then restore. No framework, no dependencies.
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.getAttribute('data-copy') || '';
+      function done() {
+        btn.textContent = 'copied ✓';
+        btn.classList.add('done');
+        setTimeout(function () {
+          btn.textContent = 'copy';
+          btn.classList.remove('done');
+        }, 1600);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, done);
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch (e) { /* best effort */ }
+        document.body.removeChild(ta);
+        done();
+      }
+    });
+  });
+</script>
+</body>
+</html>
