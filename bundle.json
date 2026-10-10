@@ -20,13 +20,29 @@
       ]
     },
     "review": {
-      "agent": "reviewer",
-      "class": "gate",
       "results": [
         "clean",
         "residual",
         "security-hold"
-      ]
+      ],
+      "inputs": [
+        "fixes_applied",
+        "has_security_residual",
+        "max_residual_severity"
+      ],
+      "limits": {
+        "max_attempts": 2,
+        "timeout_seconds": 3600
+      },
+      "aggregate": "review-panel",
+      "panel": {
+        "correctness": {
+          "agent": "review-correctness"
+        },
+        "security": {
+          "agent": "review-security"
+        }
+      }
     },
     "ship": {
       "class": "gate",
@@ -95,7 +111,35 @@
         "pass",
         "fail"
       ]
+    },
+    "architecture": {
+      "results": [
+        "designed",
+        "failed"
+      ],
+      "limits": {
+        "max_attempts": 2,
+        "timeout_seconds": 3600
+      },
+      "sequence": [
+        {
+          "name": "positions",
+          "aggregate": "unanimous-pass",
+          "panel": {
+            "simplicity": {
+              "agent": "position-simplicity"
+            },
+            "robustness": {
+              "agent": "position-robustness"
+            }
+          }
+        },
+        {
+          "name": "chief",
+          "agent": "chief-architect"
+        }
+      ]
     }
   },
-  "description": "Swarmail's own delivery constitution: the fast recipe's phase machine and seats as the compiled, digest-pinned bundle of the repo it governs. All model seats run glm-flash (spark-glm/GLM-5.3-Flash-EXL3) via the dsh driver; verify and ship are hermetic exec gates."
+  "description": "Swarmail's own delivery constitution: the hybrid machine \u2014 a contrarian design panel argues before any code (positions \u2192 chief \u2192 deterministic design-check), implement builds, hermetic gates verify, a split review panel judges (correctness + security, the protected phase), and ship signs. Model seats run glm-flash (spark-glm/GLM-5.3-Flash-EXL3) via the dsh driver; verify, ship and the design check are hermetic exec gates."
 }

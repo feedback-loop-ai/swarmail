@@ -15,6 +15,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0006](0006-dual-license.md) | Dual license: MIT OR Apache-2.0 | accepted (operator, 2026-10-07) |
 | [0007](0007-hermetic-gates-single-model.md) | Hermetic gates + single-model delivery bundle | accepted (operator, 2026-10-07) |
 | [0008](0008-kubernetes-deployment-contract.md) | The Kubernetes deployment contract (Helm) | **proposed** (awaiting operator) |
+| [0009](0009-agent-council-hybrid.md) | The agent council: a hybrid delivery machine | **proposed** (awaiting operator) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

@@ -1,0 +1,7 @@
+{
+  "charter": "charters/review-security.md",
+  "description": "Owns the threat model of a dev-tool mail server. Read-only; holds are its verdict alone.",
+  "models": [
+    "glm-flash"
+  ]
+}

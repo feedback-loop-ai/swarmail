@@ -66,8 +66,11 @@ re-sign.
 ## Delivery through brokkr
 
 Every feature lands through a brokkr run: `brokkr run` drives
-intake → implement → verify → review → ship; the review gate is
-constitutionally protected and security-hold is a hard stop. `verify` and
-`ship` are hermetic exec seats — a shell proves what a model claims. The
-model adapter is pinned to `spark-glm/GLM-5.3-Flash-EXL3` (`glm-flash`)
+intake → architecture → implement → verify → review → ship (decision
+0009, *proposed*: a contrarian design panel argues before any code, a
+chief commits the spec, a deterministic check rules the artifacts, and
+review splits into correctness + security members); the review gate is
+constitutionally protected and security-hold is a hard stop. `verify`
+and `ship` are hermetic exec seats — a shell proves what a model claims.
+The model adapter is pinned to `spark-glm/GLM-5.3-Flash-EXL3` (`glm-flash`)
 only; adding a route is a decision document, not an edit.

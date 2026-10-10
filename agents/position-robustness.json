@@ -1,0 +1,7 @@
+{
+  "charter": "charters/position-robustness.md",
+  "description": "Argues the design that survives hostile bytes, restarts and bursts; names what the small design breaks.",
+  "models": [
+    "glm-flash"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "charter": "charters/chief-architect.md",
+  "description": "Synthesizes the design panel into one committed spec: adopts, rejects and rules on the contrarian positions.",
+  "models": [
+    "glm-flash"
+  ]
+}

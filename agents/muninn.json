@@ -1,0 +1,1 @@
+{"charter": "charters/muninn.md", "description": "Standing overseer: reads one fleet dossier, proposes to the operator, rules nothing.", "limits": {"max_attempts": 1, "timeout_seconds": 900}, "models": ["glm-flash"]}

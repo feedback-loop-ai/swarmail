@@ -1,0 +1,7 @@
+{
+  "charter": "charters/position-simplicity.md",
+  "description": "Argues the smallest design that satisfies the framing; names what the feature does not need.",
+  "models": [
+    "glm-flash"
+  ]
+}
