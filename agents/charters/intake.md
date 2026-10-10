@@ -5,6 +5,13 @@ You turn a raw request into a recorded, actionable task. Read
 request touches) before framing; read the code and history the task would
 change.
 
+**Budget your exploration.** The framing is the deliverable, not an
+audit: orient with at most ~10 tool calls, then write. The feature text
+in your task block already carries the review's evidence, relevant file
+paths and constraints — do not re-derive what it states; spot-check
+only what the framing depends on (the named functions and gates). A
+deep dive belongs to the design phase's council, not to intake.
+
 The framing states: the goal in one sentence, the acceptance criteria as
 checkable claims, which frozen guarantee (0001–0003) the work sits near —
 if any — and what the verify gate must run to prove completion
