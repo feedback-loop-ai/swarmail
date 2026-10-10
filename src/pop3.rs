@@ -507,11 +507,16 @@ mod tests {
         let mut line = Vec::new();
         client.read_until(b'\n', &mut line).await.unwrap();
         assert_eq!(line, b"+OK Capability list follows\r\n");
-        // One more command, never read: closing with the reply still in
-        // flight makes the kernel answer the server with a RST, so its next
-        // read fails instead of seeing a tidy EOF.
+        // One more command, then an abortive close: linger-zero makes the
+        // drop send a RST on every platform (an unread-reply close alone is
+        // a Linux refinement — macOS answers a tidy FIN), so the server's
+        // next read fails instead of seeing a tidy EOF everywhere.
         client.write_all(b"NOOP\r\n").await.unwrap();
-        drop(client);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await; // the reply lands, stays unread
+        let stream = client.into_inner();
+        #[allow(deprecated)] // the RST is the point of the test
+        stream.set_linger(Some(std::time::Duration::ZERO)).unwrap();
+        drop(stream);
 
         let outcome = task.await.unwrap();
         assert!(outcome.is_err(), "expected an io error, got {outcome:?}");

@@ -379,10 +379,12 @@ mod loop_tests {
     async fn dispatch_loop_handles_mail_lag_and_close() {
         let webhooks = Arc::new(Webhooks::default()); // no targets: delivery is a no-op
         let (tx, rx) = broadcast::channel(1);
+        // Both sends happen BEFORE the loop exists: the first recv is then
+        // guaranteed to lag (capacity 1 holds one mail, one was lost), so
+        // the Lagged arm is deterministic — no race with the loop's speed.
+        tx.send(Arc::new(email())).unwrap(); // lost: overwritten in the ring
+        tx.send(Arc::new(email())).unwrap(); // buffered: the next recv after the lag
         let loop_task = tokio::spawn(dispatch_loop(rx, webhooks));
-
-        tx.send(Arc::new(email())).unwrap(); // Mail arm
-        tx.send(Arc::new(email())).unwrap(); // capacity 1 → the next recv lags
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         drop(tx); // close the firehose → Stop → the loop returns
 

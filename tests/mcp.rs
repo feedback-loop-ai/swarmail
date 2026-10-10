@@ -37,6 +37,10 @@ async fn initialize_and_tools_list() {
     assert_eq!(body["result"]["protocolVersion"], "2025-03-26");
     assert_eq!(body["result"]["serverInfo"]["name"], "swarmail");
 
+    // The JSON-RPC ping answers with an empty result object.
+    let (_, body) = rpc(srv.http_addr, "ping", "{}").await;
+    assert_eq!(body["result"], serde_json::json!({}), "{body}");
+
     let (_, body) = rpc(srv.http_addr, "tools/list", "{}").await;
     let tools = body["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 12);

@@ -283,6 +283,47 @@ mod tests {
         assert_eq!(json(&Refuses), "null");
     }
 
+    /// A missing counter row reads as zero, and a present one parses —
+    /// the fresh-database path (no counters yet) and the populated one.
+    #[test]
+    fn read_counter_defaults_to_zero_on_a_missing_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)", [])
+            .unwrap();
+        assert_eq!(read_counter(&conn, "absent").unwrap(), 0);
+        conn.execute("INSERT INTO meta VALUES ('k', '7')", [])
+            .unwrap();
+        assert_eq!(read_counter(&conn, "k").unwrap(), 7);
+    }
+
+    /// A row whose column type no longer matches the schema (an integer in
+    /// a text column — an old writer's damage) surfaces as a load error
+    /// instead of a silently wrong email.
+    #[test]
+    fn load_surfaces_a_corrupt_row_type() {
+        let path = db_path("corrupt-row");
+        let persist = Persist::open(&path).unwrap();
+        persist
+            .record_insert(&email("c1", "corrupt", "r@x.io"), &[], 1, 0)
+            .unwrap();
+
+        // A second connection damages the row the way an old buggy writer
+        // would: received_ms stops being an integer.
+        let vandal = Connection::open(&path).unwrap();
+        vandal
+            .execute("UPDATE emails SET received_ms = 'not-a-number'", [])
+            .unwrap();
+
+        let err = persist.load().unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid column type"),
+            "the type mismatch is the failure: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
     /// A unique data-file path per test; parallel tests must not collide.
     fn db_path(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
