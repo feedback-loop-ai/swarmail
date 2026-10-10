@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/logo.svg" width="132" alt="Swarmail — an open envelope carried by a swarm of three dots"></p>
+<p align="center"><img src="assets/logo.svg" width="132" alt="Swarmail — an open envelope under the feedback-loop pulse: two resting dots and one live one"></p>
 
 # Swarmail
 

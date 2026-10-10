@@ -1,11 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150" fill="none" role="img" aria-label="Swarmail — an envelope carried by a swarm of three dots">
-  <rect x="7" y="7" width="136" height="136" rx="16" stroke="#f0a232" stroke-width="5"/>
-  <rect x="7" y="7" width="136" height="136" rx="16" stroke="#f0a232" stroke-opacity="0.22" stroke-width="11"/>
-  <!-- the envelope: flap + body, drawn open like a maildrop -->
-  <path d="M35 63l40 26 40-26" stroke="#f0a232" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <rect x="35" y="47" width="80" height="56" rx="8" stroke="#f0a232" stroke-width="6.5" fill="none"/>
-  <!-- the swarm: two muted dots and one hot — mail arriving, nothing lost -->
-  <circle cx="59" cy="118" r="6" fill="#f0a232" fill-opacity="0.45"/>
-  <circle cx="75" cy="120" r="6" fill="#f0a232" fill-opacity="0.7"/>
-  <circle cx="91" cy="118" r="7" fill="#ff8a3d"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150" fill="none" role="img" aria-label="Swarmail — an open envelope under the feedback-loop pulse: two resting dots and one live one">
+  <!-- the family frame: double stroke, repo accent (amber) -->
+  <rect x="6" y="6" width="138" height="138" rx="14" stroke="#f0a232" stroke-width="5"/>
+  <rect x="6" y="6" width="138" height="138" rx="14" stroke="#f0a232" stroke-opacity="0.25" stroke-width="11"/>
+  <!-- the mark: the open envelope, stroke-drawn in the accent -->
+  <path d="M35 63l40 26 40-26" stroke="#f0a232" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <rect x="35" y="47" width="80" height="56" rx="8" stroke="#f0a232" stroke-width="7" fill="none"/>
+  <!-- the pulse: the family cue — two resting dots, one live, dark rail segments -->
+  <circle cx="47" cy="38" r="6" fill="#7c5cff"/>
+  <circle cx="75" cy="38" r="6" fill="#7c5cff"/>
+  <circle cx="103" cy="38" r="7" fill="#f0a232"/>
+  <path d="M53 38h16M81 38h16" stroke="#3a3654" stroke-width="3"/>
+  <circle cx="103" cy="38" r="7" fill="none" stroke="#f0a232" stroke-width="3">
+    <animate attributeName="r" values="7;17" dur="1.8s" repeatCount="indefinite"/>
+    <animate attributeName="stroke-opacity" values="0.6;0" dur="1.8s" repeatCount="indefinite"/>
+  </circle>
 </svg>
