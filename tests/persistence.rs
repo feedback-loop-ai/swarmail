@@ -342,7 +342,10 @@ async fn a_clear_racing_inserts_never_loses_a_250_answered_mail_on_restart() {
     // count above zero means the wipes overlapped the dense ingest. A round
     // floor higher than that would measure the machine's speed, not the
     // race — an instrumented build fits fewer fat wipes into the window.
-    assert!(rounds > 0, "the clear loop never ran a wipe: {rounds} rounds");
+    assert!(
+        rounds > 0,
+        "the clear loop never ran a wipe: {rounds} rounds"
+    );
 
     // What the store still holds is exactly what the restart must give back.
     let (st, pre) = common::http_json(
