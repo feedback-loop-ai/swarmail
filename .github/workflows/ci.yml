@@ -92,6 +92,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v5
+      - name: Read the crate version (the chart's appVersion must resolve)
+        id: ver
+        run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -102,6 +105,36 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/feedback-loop-ai/swarmail:main
+          tags: |
+            ghcr.io/feedback-loop-ai/swarmail:main
+            ghcr.io/feedback-loop-ai/swarmail:${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # The Helm chart: lint + render both profiles + assert the deployment
+  # contract (scripts/chart-verify.sh, helm-only, no cluster), then publish
+  # the packaged chart to the same OCI registry as the image. A pull_request
+  # cannot push, so the publish step is main-only.
+  chart:
+    name: helm chart
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - run: bash scripts/chart-verify.sh
+      - uses: docker/login-action@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the chart (OCI, ghcr.io)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          helm package charts/swarmail
+          helm push swarmail-*.tgz oci://ghcr.io/feedback-loop-ai/charts

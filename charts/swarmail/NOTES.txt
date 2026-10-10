@@ -1,0 +1,38 @@
+{{ .Release.Name }} has Swarmail ready.
+
+Mail arrives over SMTP and reads back over every surface:
+
+  {{- if .Values.ingress.enabled }}
+  HTTP (UI/API/MCP): http://{{ .Values.ingress.host }}   {{/* via your ingress */}}
+  {{- else }}
+  HTTP (UI/API/MCP): http://{{ include "swarmail.fullname" . }}:{{ .Values.service.ports.http }}
+  {{- end }}
+  SMTP: {{ include "swarmail.fullname" . }}:{{ .Values.service.ports.smtp }}
+  POP3: {{ include "swarmail.fullname" . }}:{{ .Values.service.ports.pop3 }}
+
+The AUTH username names the inbox — give every test or agent its own mailbox
+for free (no AUTH mail lands in `default`).
+
+Inside the cluster, point clients at the service directly. From a laptop:
+
+  kubectl port-forward svc/{{ include "swarmail.fullname" . }} 1025:{{ .Values.service.ports.smtp }} 8025:{{ .Values.service.ports.http }}
+  # then: SMTP → localhost:1025, UI → http://localhost:8025, MCP → http://localhost:8025/mcp
+
+The agent loop, from any pod that can reach the service:
+
+  # block until the mail arrives — push-based, no polling
+  curl "http://{{ include "swarmail.fullname" . }}:{{ .Values.service.ports.http }}/api/v1/inboxes/$INBOX/await?to=ada@x.io&count=1&timeout_ms=5000"
+  # every link and OTP code is already extracted: links[], codes[]
+
+{{- if .Values.persistence.enabled }}
+
+Data file: /data/swarmail.db on the "{{ printf "%s-data" (include "swarmail.fullname" .) }}" claim —
+the restart copy. The strategy is Recreate; the store is single-replica.
+{{- else }}
+
+No data file: the store is memory — fast, and gone when the pod restarts.
+Set persistence.enabled=true for the SQLite restart copy.
+{{- end }}
+
+Chaos, webhooks and every other knob are runtime API calls — see the README:
+  https://github.com/feedback-loop-ai/swarmail#readme

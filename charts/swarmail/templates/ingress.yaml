@@ -1,0 +1,32 @@
+{{- if .Values.ingress.enabled }}
+{{- /* Only the HTTP surface: SMTP and POP3 are plain TCP and never ingressed. */ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "swarmail.fullname" . }}
+  labels:
+    {{- include "swarmail.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "swarmail.fullname" . }}
+                port:
+                  name: http
+{{- end }}

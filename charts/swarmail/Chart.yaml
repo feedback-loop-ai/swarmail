@@ -1,0 +1,28 @@
+apiVersion: v2
+name: swarmail
+description: >-
+  Lossless SMTP mail mock for tests and agents — per-test inboxes, chaos
+  engineering, push-based awaits, native MCP, webhooks and a live UI.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/feedback-loop-ai/swarmail
+sources:
+  - https://github.com/feedback-loop-ai/swarmail
+keywords:
+  - smtp
+  - email
+  - testing
+  - mock
+  - mcp
+maintainers:
+  - name: feedback-loop-ai
+    url: https://github.com/feedback-loop-ai
+annotations:
+  artifacthub.io/license: MIT
+  artifacthub.io/links: |
+    - name: source
+      url: https://github.com/feedback-loop-ai/swarmail
+  artifacthub.io/images: |
+    - name: swarmail
+      image: ghcr.io/feedback-loop-ai/swarmail:0.1.0

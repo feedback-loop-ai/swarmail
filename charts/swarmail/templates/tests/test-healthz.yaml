@@ -1,0 +1,30 @@
+{{- if and .Values.tests.enabled (.Capabilities.APIVersions.Has "batch/v1") }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ printf "%s-healthz" (include "swarmail.fullname" .) }}
+  labels:
+    {{- include "swarmail.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: healthz
+      image: curlimages/curl:8.10.1
+      command:
+        - sh
+        - -ec
+        - |
+          curl -fsS "http://{{ include "swarmail.fullname" . }}:{{ .Values.service.ports.http }}/healthz"
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        runAsNonRoot: true
+        runAsUser: 100 # curlimages/curl ships a named (curl_user), non-numeric USER
+        seccompProfile:
+          type: RuntimeDefault
+{{- end }}

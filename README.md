@@ -31,6 +31,7 @@ your tests can produce it.
 - [What it does](#what-it-does)
 - [The guarantees](#the-guarantees)
 - [60-second quickstart](#60-second-quickstart)
+- [Kubernetes (Helm)](#kubernetes-helm)
 - [The surfaces](#the-surfaces)
   - [SMTP — accept is the truth](#smtp--accept-is-the-truth)
   - [The REST API — await, don't poll](#the-rest-api--await-dont-poll)
@@ -160,6 +161,38 @@ Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `1025`),
 `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited), `SWARMAIL_URL` (the
 MCP stdio bridge's upstream), `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
 `SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
+
+## Kubernetes (Helm)
+
+A shared namespace mailbox, an ephemeral per-run instance, an agent-sidecar —
+the chart packages the same binary with no configuration language of its own
+([decision 0008](docs/decisions/0008-kubernetes-deployment-contract.md),
+*proposed*):
+
+```
+helm install swarmail oci://ghcr.io/feedback-loop-ai/charts/swarmail \
+  --version 0.1.0 --namespace swarmail --create-namespace
+helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
+```
+
+The chart adds nothing the binary does not read — configuration is exactly
+the env contract, passed through `config: {SWARMAIL_MAX_PER_INBOX: "0"}`
+or `envExtra`. One Service carries all three ports, so one DNS name serves
+every client; the optional Ingress exposes only the HTTP surface (SMTP and
+POP3 are plain TCP). The contract worth knowing before you scale it:
+
+| Turn on | What it changes |
+|---|---|
+| `persistence.enabled` | SQLite on an RWO PVC (`/data/swarmail.db`), **strategy → Recreate** — the store is single-replica by design ([0001](docs/decisions/0001-synchronous-insert-lossless.md)); scaling would silently fork the mailboxes |
+| `ingress.enabled` | the UI/API/MCP surface on your ingress class; SMTP/POP3 stay cluster-internal |
+| `serviceMonitor.enabled` | a prometheus-operator ServiceMonitor on `/metrics` — **fails closed with a named refusal** if the CRDs are absent |
+| `networkPolicy.enabled` | same-namespace ingress on the three ports only |
+| `image.tag` / `image.pullPolicy` | defaults to the chart's `appVersion` and `IfNotPresent` |
+
+`helm template` output is valid plain manifests — Kustomize and raw-YAML
+teams are first-class, not gated behind the chart. The chart is verified
+offline by `scripts/chart-verify.sh` (lint + both profiles + contract
+assertions), which is also the CI `chart` job.
 
 ## The surfaces
 
@@ -362,6 +395,7 @@ Reproduce with `cargo bench` (results land in `target/criterion`).
 | [`docs/house-rules.md`](docs/house-rules.md) | the realm charter — frozen guarantees, gates, dependency policy |
 | [`assets/logo.svg`](assets/logo.svg) | the brand mark, and `social-preview.png`, the repository's link card |
 | [`scripts/coverage-gate.sh`](scripts/coverage-gate.sh) | the exact-coverage gate: literal 100% line/branch/function, or refusal |
+| [`charts/swarmail/`](charts/swarmail/) | the Helm chart — verified offline by [`scripts/chart-verify.sh`](scripts/chart-verify.sh), published as OCI |
 
 ## The decision culture
 
@@ -436,6 +470,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 - [x] POP3 server; MailHog/Mailpit API compat shims
 - [x] Exact 100/100/100 coverage contract (lines, branches, functions) in the gate and CI
 - [x] MCP: HTTP + stdio, 12 tools
+- [x] Kubernetes: the Helm chart (OCI-published, decision 0008 *proposed*)
 - [ ] crates.io publish — the package is publish-ready (see *Publishing*);
   the operator runs `cargo publish --locked` with their token
 

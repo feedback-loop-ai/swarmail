@@ -1,0 +1,80 @@
+# Default values for swarmail.
+# Every knob the binary itself has is an env var (see the README); `config`
+# maps SWARMAIL_* names to values and `envExtra` passes raw env entries —
+# the chart adds no configuration surface of its own beyond deployment shape.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/feedback-loop-ai/swarmail
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+podLabels: {}
+imagePullSecrets: []
+
+service:
+  type: ClusterIP
+  annotations: {}
+  # The SERVICE-side ports; the container always listens on 1025/1110/8025.
+  ports:
+    smtp: 1025
+    pop3: 1110
+    http: 8025
+
+# SQLite persistence. With a data file every insert is fsynced before the
+# SMTP 250 leaves, and the full state is restored before the server answers
+# anything. The deployment strategy becomes Recreate while this is on: the
+# store is single-replica by design (HA would need a shared database).
+persistence:
+  enabled: false
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Only the HTTP surface is ingressed; SMTP and POP3 are plain TCP.
+  host: swarmail.local
+  tls: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    memory: 256Mi
+
+# Every SWARMAIL_* env knob: { "SWARMAIL_MAX_PER_INBOX": "0", ... }
+config: {}
+# Raw env entries passthrough (valueFrom and friends).
+envExtra: []
+
+probes:
+  initialDelaySeconds: 2
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+networkPolicy:
+  enabled: false
+
+tests:
+  enabled: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

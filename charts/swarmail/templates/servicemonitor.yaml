@@ -1,0 +1,24 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- /* Prometheus-operator's CRD, guarded: renders only where the API exists. */ -}}
+{{- if .Capabilities.APIVersions.Has "monitoring.coreos.com/v1" }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "swarmail.fullname" . }}
+  labels:
+    {{- include "swarmail.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "swarmail.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- else }}
+{{- fail (printf "serviceMonitor.enabled needs the prometheus-operator CRDs (monitoring.coreos.com/v1); install them or disable the ServiceMonitor (release %s)" .Release.Name) }}
+{{- end }}
+{{- end }}
