@@ -5,7 +5,7 @@ Ordered; each task names the test that proves it. All gates
 `cargo test`, `brokkr compile --bundle .`, `bash scripts/coverage-gate.sh`,
 `cargo deny check licenses`) run after task 10 and before reporting.
 
-- [ ] 1. Add `const WATCHER_CAP: usize = 16;` (documented as a wake ring:
+- [x] 1. Add `const WATCHER_CAP: usize = 16;` (documented as a wake ring:
        both consumers discard the payload; lag is repaired by the rescan)
        and replace `Store::subscribe`'s get-then-insert match
        (`src/store.rs:374-384`) with the single atomic
@@ -21,7 +21,7 @@ Ordered; each task names the test that proves it. All gates
        schedule post-fix, red on the pre-fix code whenever two threads
        overlap.*
 
-- [ ] 2. Release on drain: give `drain_inbox` a `watchers` parameter and one
+- [x] 2. Release on drain: give `drain_inbox` a `watchers` parameter and one
        unconditional `watchers.remove(inbox)`; pass `&self.watchers` from
        `clear` and `clear_all`. Comment (per the panel ratification): the
        drain is where an inbox dies, so it is where its channel dies — an
@@ -36,14 +36,14 @@ Ordered; each task names the test that proves it. All gates
        the nonexistent-inbox no-op path stays covered by
        `get_delete_and_clear_edge_cases` (AC2-iv).*
 
-- [ ] 3. Release on delete-empties: in `delete`, when the `retain` leaves
+- [x] 3. Release on delete-empties: in `delete`, when the `retain` leaves
        the inbox list empty, remove that inbox's watcher channel.
        — *Proved by: `a_delete_that_empties_an_inbox_releases_its_watcher_channel`
        (AC2-ii): two mails; delete one → a held receiver still receives a
        pushed insert (channel alive); delete the last → `try_recv()` is
        `Closed`.*
 
-- [ ] 4. Add the `clear_all` sweep: after the per-inbox drain loop,
+- [x] 4. Add the `clear_all` sweep: after the per-inbox drain loop,
        `self.watchers.clear()` — releasing channels of
        awaited-but-never-mailed inboxes (issue #14's 5,000-fresh-inbox
        probe population, which leaves no entries to iterate).
@@ -53,7 +53,7 @@ Ordered; each task names the test that proves it. All gates
        `#[cfg(test)] pub(crate) fn watcher_count(&self) -> usize`
        accessor (`set_pre_mirror_gate` precedent).*
 
-- [ ] 5. Add the `post_subscribe_gate` seam (`pre_mirror_gate` shape, ~19
+- [x] 5. Add the `post_subscribe_gate` seam (`pre_mirror_gate` shape, ~19
        `#[cfg(test)]` lines): field + `set_post_subscribe_gate` setter +
        `run_post_subscribe_gate` runner, fired after **every** `subscribe`
        inside `wait_for` (initial and each re-subscribe — two call sites).
@@ -62,7 +62,7 @@ Ordered; each task names the test that proves it. All gates
        `bash scripts/coverage-gate.sh` stays at exact 100/100/100
        (missed == 0).*
 
-- [ ] 6. Make the wait loop closure-aware: match on
+- [x] 6. Make the wait loop closure-aware: match on
        `tokio::time::timeout(remaining, rx.recv())` — `Ok(Ok(_))` and
        `Ok(Err(Lagged(_)))` fall through as today; `Ok(Err(Closed))`
        re-subscribes (then fires the gate) and falls to the next scan
@@ -82,7 +82,7 @@ Ordered; each task names the test that proves it. All gates
        `wait_for_covers_the_lagging_watcher`; the elapsed arm by
        `wait_for_times_out_with_the_match_count`.*
 
-- [ ] 7. Prove the no-spin property: add
+- [x] 7. Prove the no-spin property: add
        `a_waiter_on_a_released_channel_sleeps_until_its_deadline` —
        `#[tokio::test(flavor = "current_thread")]`, a 5 ms co-scheduled
        ticker (`AtomicU64`), gate fire 1 → clear, fire 2 → no-op, 200 ms
@@ -93,7 +93,7 @@ Ordered; each task names the test that proves it. All gates
        in CI the recorded fallback is a larger margin or the outcome-level
        task-6 test (plan.md, Risks).*
 
-- [ ] 8. Correct `src/feed.rs`'s now-false `Closed`-arm comment (the sender
+- [x] 8. Correct `src/feed.rs`'s now-false `Closed`-arm comment (the sender
        is released when the inbox's mail is removed — decision 0010; the
        stream ends and the browser's `EventSource` reconnect re-establishes
        0002 with the post-drain snapshot). No code change to the arm.
@@ -102,7 +102,7 @@ Ordered; each task names the test that proves it. All gates
        snapshot frame → `store.clear("box")` → next poll is `None`;
        deterministic by injection (`feed_events` takes `rx`).*
 
-- [ ] 9. Add the real-protocol guard in `tests/burst.rs`:
+- [x] 9. Add the real-protocol guard in `tests/burst.rs`:
        `await_survives_a_release_and_finds_later_mail` — `await` on a fresh
        inbox (short timeout, honest `matched: 0`), `clear` the inbox via
        the API, insert via the real SMTP helper, `await` again → finds the
@@ -110,7 +110,7 @@ Ordered; each task names the test that proves it. All gates
        — *Proved by: the test itself (AC6); run with
        `cargo test --test burst await_survives_a_release -- --nocapture`.*
 
-- [ ] 10. Verify the ruling is recorded (verify-only — it was committed with
+- [x] 10. Verify the ruling is recorded (verify-only — it was committed with
         the spec at `126632a`):
         `docs/decisions/0010-watcher-channel-lifetime.md` (status
         `proposed`) exists and is referenced from `spec.md`. Do not

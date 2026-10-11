@@ -21,13 +21,11 @@ use tokio::sync::broadcast::error::RecvError;
 /// the wait loop already performs (decision 0010).
 const WATCHER_CAP: usize = 16;
 
+/// Test-only count of `Closed`-arm hits in `wait_for` — the deterministic
+/// no-spin instrument: one hit per release, hundreds of thousands under a
+/// reintroduced spin. Compiled out of the shipping binary like the seam.
 #[cfg(test)]
 static CLOSED_PROBE: AtomicU64 = AtomicU64::new(0);
-
-#[cfg(test)]
-thread_local! {
-    static PROBE_THREAD: std::cell::RefCell<Option<std::thread::ThreadId>> = const { std::cell::RefCell::new(None) };
-}
 
 /// Query filter for list/count/await endpoints.
 #[derive(Debug, Clone, Default)]
@@ -440,7 +438,12 @@ impl Store {
         let mut drained: Vec<Arc<Email>> = Vec::new();
         let inboxes: Vec<String> = self.inboxes.iter().map(|e| e.key().clone()).collect();
         for inbox in inboxes {
-            drained.extend(drain_inbox(&self.inboxes, &self.index, &self.watchers, &inbox));
+            drained.extend(drain_inbox(
+                &self.inboxes,
+                &self.index,
+                &self.watchers,
+                &inbox,
+            ));
         }
         // The sweep also releases channels of awaited-but-never-mailed
         // inboxes — the population issue #14's probe creates, which leaves no
@@ -536,10 +539,14 @@ impl Store {
             match tokio::time::timeout(remaining, rx.recv()).await {
                 Ok(Ok(_)) | Ok(Err(RecvError::Lagged(_))) => {}
                 Ok(Err(RecvError::Closed)) => {
-                    // MUTATION B: no re-subscribe (pre-fix spin)
-                    CLOSED_PROBE.fetch_add(1, Ordering::Relaxed);
+                    // The inbox's mail was removed and its channel released:
+                    // re-apply decision 0002 per iteration — subscribe, then
+                    // scan.
+                    rx = self.subscribe(inbox);
                     #[cfg(test)]
                     self.run_post_subscribe_gate();
+                    #[cfg(test)]
+                    CLOSED_PROBE.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(_elapsed) => {} // parked past the deadline; the next scan reports it
             }
@@ -734,11 +741,22 @@ mod tests {
         for i in 0..N {
             held = Some(store.subscribe(&format!("awaited{i}")));
         }
-        assert_eq!(store.watcher_count(), N, "each fresh subscription created a channel");
+        assert_eq!(
+            store.watcher_count(),
+            N,
+            "each fresh subscription created a channel"
+        );
         store.clear_all();
-        assert_eq!(store.watcher_count(), 0, "the sweep returns the count to baseline");
+        assert_eq!(
+            store.watcher_count(),
+            0,
+            "the sweep returns the count to baseline"
+        );
         assert!(
-            matches!(held.unwrap().try_recv(), Err(broadcast::error::TryRecvError::Closed)),
+            matches!(
+                held.unwrap().try_recv(),
+                Err(broadcast::error::TryRecvError::Closed)
+            ),
             "the sweep released the held channel"
         );
     }
@@ -846,23 +864,29 @@ mod wait_tests {
         let out = store
             .wait_for("box", &Filter::default(), 1, Duration::from_secs(5))
             .await;
-        assert_eq!(fires.load(Ordering::SeqCst), 2, "both subscribe sites fired the gate");
+        assert_eq!(
+            fires.load(Ordering::SeqCst),
+            2,
+            "both subscribe sites fired the gate"
+        );
         match out {
             WaitOutcome::Found(matches) => assert_eq!(matches[0].id, "late"),
             WaitOutcome::Timeout { .. } => {
-                panic!("the re-subscribe precedes the rescan: the mail inserted after the release must be found")
+                panic!(
+                    "the re-subscribe precedes the rescan: the mail inserted after the release must be found"
+                )
             }
         }
     }
 
-    /// A waiter on a released channel *sleeps* (decision 0010, AC4): on a
-    /// single-worker runtime a 5 ms ticker is co-scheduled with the waiter;
-    /// a reintroduced spin (answering `Closed` without re-subscribing, or
-    /// rescan-spinning) would starve its own worker and collapse the count.
-    /// The gate's fire 1 clears the inbox; fire 2 is a deliberate no-op, so
-    /// the wait rides to its deadline and reports the honest `matched: 0`.
-    /// No wall-clock CPU-percentage assertion anywhere — the starved ticker
-    /// is the structural evidence.
+    /// A waiter on a released channel *sleeps* (decision 0010, AC4). The
+    /// gate's fire 1 clears the inbox; fire 2 is a deliberate no-op, so the
+    /// wait rides to its deadline and reports the honest `matched: 0`. The
+    /// deterministic teeth are the `Closed`-arm delta bound below — one hit
+    /// per release, where a reintroduced spin measured 202k–276k in this
+    /// window — and the 5 ms co-scheduled ticker is the canary (it advanced
+    /// 33 of ~40 ticks under a live spin: tokio's budget yields a spinner).
+    /// No wall-clock CPU-percentage assertion anywhere.
     #[tokio::test(flavor = "current_thread")]
     async fn a_waiter_on_a_released_channel_sleeps_until_its_deadline() {
         let store = Arc::new(Store::new(0));
@@ -881,28 +905,34 @@ mod wait_tests {
                 loop {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                     ticks.fetch_add(1, Ordering::Relaxed);
-                    PROBE_THREAD.with(|t| *t.borrow_mut() = Some(std::thread::current().id()));
                 }
             })
         };
+        let hits_before = CLOSED_PROBE.load(Ordering::Relaxed);
         let out = store
             .wait_for("box", &Filter::default(), 1, Duration::from_millis(200))
             .await;
         ticker.abort();
-        match out {
-            WaitOutcome::Timeout { matched } => assert_eq!(matched, 0),
-            WaitOutcome::Found(_) => panic!("no mail was ever inserted"),
-        }
-        let advanced = ticks.load(Ordering::Relaxed);
-        eprintln!(
-            "PROBE advanced={advanced} closed_arm_hits={} main={:?} ticker={:?}",
-            CLOSED_PROBE.load(Ordering::Relaxed),
-            std::thread::current().id(),
-            PROBE_THREAD.with(|t| t.borrow().clone()),
+        // `Timeout { matched: 0 }` in one assert: the honest deadline outcome
+        // is the pass path, so an unreachable panic arm would be a line the
+        // exact coverage gate can never see executed.
+        assert!(
+            matches!(out, WaitOutcome::Timeout { matched: 0 }),
+            "no mail was ever inserted: the released-channel wait must ride to its deadline"
         );
+        let advanced = ticks.load(Ordering::Relaxed);
         assert!(
             advanced >= 10,
             "a spinning waiter starves its single worker: the 5 ms ticker advanced only {advanced} of ~40 times"
+        );
+        // Deterministic teeth (delta, not absolute — the counter is
+        // process-global and the harness runs tests in parallel): a parked
+        // waiter answers its one release with one `Closed`-arm hit; a
+        // reintroduced spin measured 202k–276k inside this window.
+        let hits = CLOSED_PROBE.load(Ordering::Relaxed) - hits_before;
+        assert!(
+            hits <= 4,
+            "a single release must be answered with one Closed arm hit, not {hits}"
         );
     }
 }
