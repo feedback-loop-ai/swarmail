@@ -122,6 +122,63 @@ async fn await_times_out_cleanly() {
     assert_eq!(body["matched"], 0);
 }
 
+/// A released inbox keeps serving waiters over the real protocol (epic 13
+/// wave 3, decision 0010, AC6): the first `await` creates the inbox's
+/// watcher channel and times out honestly (`matched: 0`); the API clear
+/// releases that channel; a later SMTP insert and a second `await` must
+/// still meet — the re-created channel is live and the wait finds the mail.
+#[tokio::test]
+async fn await_survives_a_release_and_finds_later_mail() {
+    let srv = start().await;
+
+    // (1) Await on a fresh inbox with a short timeout: honest `matched: 0`,
+    // and the channel now exists.
+    let (status, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/await?to=late@example.com&timeout_ms=100",
+        None,
+    )
+    .await;
+    assert_eq!(status, 408);
+    assert_eq!(body["matched"], 0);
+
+    // (2) Clear the inbox via the API — the drain releases its channel.
+    let (status, body) = http_json(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/inboxes/default/messages",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["removed"], 0);
+
+    // (3) Insert via the real SMTP helper.
+    smtp_send(
+        srv.smtp_addr,
+        None,
+        "noreply@x.io",
+        "late@example.com",
+        "after the release",
+        "hello",
+    )
+    .await
+    .unwrap();
+
+    // (4) Await again: the released inbox keeps serving waiters.
+    let (status, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/await?to=late@example.com&timeout_ms=5000&count=1",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["matched"], 1);
+    assert_eq!(body["emails"][0]["subject"], "after the release");
+}
+
 #[tokio::test]
 async fn per_inbox_isolation_via_auth() {
     let srv = start().await;
