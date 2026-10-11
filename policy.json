@@ -1,6 +1,6 @@
 {
   "schema": "forge.phase-machine/v1",
-  "description": "The realm's phase machine: intake frames, a contrarian design panel argues before any code, implement builds, hermetic gates verify, a split review panel judges (the protected phase), ship signs. Design and review are model seats; verify, ship and the design check are deterministic exec drivers \u2014 the hybrid. security-hold is a hard stop, security residuals never take the tracked-debt path.",
+  "description": "The realm's phase machine: intake frames, a contrarian design panel argues before any code, implement builds, hermetic gates verify, a split review panel judges (the protected phase), ship signs. Design and review are model seats; verify, ship and the design check are deterministic exec drivers — the hybrid. security-hold is a hard stop, security residuals never take the tracked-debt path.",
   "phases": [
     "intake",
     "design",
@@ -33,6 +33,13 @@
       "result": "designed",
       "next": "implement",
       "reason": "Spec committed and structurally validated by the deterministic check; the speckit dialect's design instructions reached the council."
+    },
+    {
+      "id": "DESIGN-OK-DRAFTED",
+      "from": "design",
+      "result": "drafted",
+      "next": "implement",
+      "reason": "The chief sometimes names the drafted spec 'drafted' instead of 'designed'; the artifact contract (committed spec + plan + tasks passing the deterministic check) is identical, so proceed to implement."
     },
     {
       "id": "DESIGN-FAIL-TWICE",
