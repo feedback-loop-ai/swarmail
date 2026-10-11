@@ -12,7 +12,8 @@
         "blocked"
       ],
       "limits": {
-        "max_attempts": 3
+        "max_attempts": 3,
+        "timeout_seconds": 7200
       }
     },
     "intake": {
