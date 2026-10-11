@@ -23,6 +23,15 @@ mid-pipeline, a hostile `DATA` body, a cert expiring under a test.
 For each: the design that answers it, or the honest sentence for why
 it is acceptable to lose.
 
+Exploration budget: orient with at most twelve tool calls before you
+begin writing. The audit's depth comes from reasoning over what you
+read, not from reading everything — read the diff surface and the
+guarantees the framing names, then argue. A turn that ends with a
+written position beats a turn that reads the whole tree and dies. If
+you cannot finish, still write the result file with what you have and
+name the gap in its notes: a partial position the chief can weigh
+outranks no position at all.
+
 1. Read the framing in `.forge/tasks/` and the code your position must
    be grounded in — the store, the SMTP session loop, the dispatcher.
 2. Write your position to `.forge/design/positions/robustness.md`: the
