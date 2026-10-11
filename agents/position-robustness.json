@@ -3,9 +3,5 @@
   "description": "Argues the design that survives hostile bytes, restarts and bursts; names what the small design breaks.",
   "models": [
     "glm-flash"
-  ],
-  "limits": {
-    "max_attempts": 2,
-    "timeout_seconds": 7200
-  }
+  ]
 }

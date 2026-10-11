@@ -3,9 +3,5 @@
   "description": "Synthesizes the design panel into one committed spec: adopts, rejects and rules on the contrarian positions.",
   "models": [
     "glm-flash"
-  ],
-  "limits": {
-    "max_attempts": 2,
-    "timeout_seconds": 7200
-  }
+  ]
 }

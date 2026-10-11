@@ -3,9 +3,5 @@
   "description": "Argues the smallest design that satisfies the framing; names what the feature does not need.",
   "models": [
     "glm-flash"
-  ],
-  "limits": {
-    "max_attempts": 2,
-    "timeout_seconds": 7200
-  }
+  ]
 }
