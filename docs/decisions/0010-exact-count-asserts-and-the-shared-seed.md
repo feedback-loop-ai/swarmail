@@ -125,3 +125,8 @@ confirms it deterministically.
   The gate refusing an uncovered arm is the constitution working.
 - Zero diff to `src/store.rs`, `src/persist.rs` and the SMTP accept path:
   the `250` sequence stays byte-identical. No new dependencies.
+- Ratification (2026-10-11) names two adjacent residuals in the honest
+  losses ledger, doc-only and untouched by this decision: a non-UTF-8 DATA
+  body ends the session with no reply code (follow-up: a `read_until` byte
+  reader), and the per-inbox watchers map is append-only
+  (`src/store.rs:375-384`; follow-up: a `receiver_count` reap).
