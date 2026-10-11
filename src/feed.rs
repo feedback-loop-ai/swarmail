@@ -76,8 +76,12 @@ pub fn feed_events(
                 Ok(_) | Err(RecvError::Lagged(_)) => {
                     Some((view_frame(&feed.store, &feed.inbox), feed))
                 }
-                // The watcher's sender is only gone if the store is: end the
-                // stream, which ends the response.
+                // The sender is released when the inbox's mail is removed
+                // (decision 0010): a drain is a destructive teardown, the
+                // end-of-stream is its honest signal, and the browser's
+                // `EventSource` reconnect re-establishes decision 0002 at
+                // the wire boundary (`feed_stream` subscribes before the
+                // first view scan) with the post-drain snapshot.
                 Err(RecvError::Closed) => None,
             }
         },
@@ -164,6 +168,29 @@ mod tests {
         // The snapshot goes out regardless; the next poll ends the stream.
         assert_eq!(stream.as_mut().next().await.unwrap().0, EVENT);
         assert!(stream.as_mut().next().await.is_none());
+    }
+
+    /// The feed ends when its inbox's mail is removed (decision 0010, AC4
+    /// feed half): the clear releases the channel the feed holds, and the
+    /// `Closed` arm — the honest end-of-stream signal — becomes reachable.
+    /// Deterministic by injection: `feed_events` takes the receiver the
+    /// caller subscribed with, so no scheduler trick is needed to place the
+    /// release after the snapshot.
+    #[tokio::test]
+    async fn a_cleared_inbox_ends_the_feed_after_the_snapshot() {
+        let store = Arc::new(Store::new(0));
+        let stream = feed_events(store.clone(), "box".into(), store.subscribe("box"));
+        tokio::pin!(stream);
+        // The snapshot goes out first: the post-subscribe view of the box.
+        assert_eq!(
+            json_of(&stream.as_mut().next().await.unwrap()),
+            serde_json::json!([])
+        );
+        store.clear("box"); // the drain releases the feed's channel
+        assert!(
+            stream.as_mut().next().await.is_none(),
+            "the released channel must end the stream"
+        );
     }
 
     #[tokio::test]

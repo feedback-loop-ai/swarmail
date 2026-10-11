@@ -11,6 +11,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
+
+/// The per-inbox wake ring's capacity. A watcher channel is a wake token,
+/// not a mailbox — both consumers (`wait_for`, the SSE feed) discard the
+/// payload and re-read the store — so the ring is sized for waking, not for
+/// buffering. A full ring lags (never blocks: `send` is non-blocking at any
+/// capacity, so the 250 path is untouched) and lag is repaired by the rescan
+/// the wait loop already performs (decision 0010).
+const WATCHER_CAP: usize = 16;
+
+/// Test-only count of `Closed`-arm hits in `wait_for` — the deterministic
+/// no-spin instrument: one hit per release, hundreds of thousands under a
+/// reintroduced spin. Compiled out of the shipping binary like the seam.
+#[cfg(test)]
+static CLOSED_PROBE: AtomicU64 = AtomicU64::new(0);
 
 /// Query filter for list/count/await endpoints.
 #[derive(Debug, Clone, Default)]
@@ -76,11 +91,21 @@ pub struct Totals {
 
 /// Drop one inbox out of the maps and return the dropped mail; shared by
 /// `clear` and `clear_all` so both mirror exactly the ids they removed.
+///
+/// The drain is where an inbox dies, so it is where its watcher channel
+/// dies: the remove is unconditional — an *empty* clear may still release a
+/// channel (an awaited-but-never-mailed inbox's mail is vacuously gone) and
+/// is miss-free because the waiter answers `Closed` with a re-subscribe
+/// before its next scan (decision 0002, re-applied per iteration). The
+/// nonexistent-inbox "no-op" means *removes no mail, returns 0*, not
+/// channel immortality.
 fn drain_inbox(
     inboxes: &DashMap<String, Vec<Arc<Email>>>,
     index: &DashMap<String, Arc<Email>>,
+    watchers: &DashMap<String, broadcast::Sender<Arc<Email>>>,
     inbox: &str,
 ) -> Vec<Arc<Email>> {
+    watchers.remove(inbox);
     match inboxes.remove(inbox) {
         Some((_, list)) => {
             for e in &list {
@@ -96,6 +121,12 @@ pub struct Store {
     inboxes: DashMap<String, Vec<Arc<Email>>>,
     /// id -> email, a global index for O(1) lookup.
     index: DashMap<String, Arc<Email>>,
+    /// Per-inbox wake channels: created by the first `subscribe` to an inbox
+    /// (atomically, under the shard lock) and released when the inbox's mail
+    /// is gone — by `drain_inbox` (shared by `clear`/`clear_all`), by a
+    /// `delete` that empties the inbox's list, and by the `clear_all` sweep
+    /// (decision 0010). `insert` never creates one: a notify with no entry
+    /// is a no-op.
     watchers: DashMap<String, broadcast::Sender<Arc<Email>>>,
     /// Process-wide channel: every accepted email, for webhooks.
     global_tx: broadcast::Sender<Arc<Email>>,
@@ -112,6 +143,17 @@ pub struct Store {
     /// Compiled only under test; never set in production.
     #[cfg(test)]
     pre_mirror_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+    /// Test-only seam for the watcher release/wait interplay (decision 0010):
+    /// when set, the closure runs after *every* `subscribe` inside `wait_for`
+    /// — the initial one and each `Closed`-arm re-subscribe — so a test can
+    /// interleave a clear or an insert into the exact subscribe→scan window
+    /// deterministically instead of winning a thread-timing lottery.
+    /// Compiled only under test; never set in production. It must fire only
+    /// after `subscribe()` returns — never inside an `entry()` expression —
+    /// because its closures re-enter the store and would deadlock on the
+    /// same shard write lock.
+    #[cfg(test)]
+    post_subscribe_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Totals {
@@ -147,6 +189,8 @@ impl Store {
             persist: None,
             #[cfg(test)]
             pre_mirror_gate: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            post_subscribe_gate: std::sync::Mutex::new(None),
         }
     }
 
@@ -218,6 +262,43 @@ impl Store {
         }
     }
 
+    /// Test-only: how many inbox watcher channels currently live. The
+    /// release tests' observable — issue #14's "count returns to baseline"
+    /// criterion made literal; the production `/metrics` gauge is a
+    /// deliberate follow-up recorded in decision 0010.
+    #[cfg(test)]
+    pub(crate) fn watcher_count(&self) -> usize {
+        self.watchers.len()
+    }
+
+    /// Test-only: install (or remove) the post-subscribe gate. See the
+    /// field doc.
+    #[cfg(test)]
+    pub(crate) fn set_post_subscribe_gate(
+        &self,
+        gate: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    ) {
+        *self
+            .post_subscribe_gate
+            .lock()
+            .expect("post-subscribe gate poisoned") = gate;
+    }
+
+    /// Test-only: fire the post-subscribe gate, if one is installed. The
+    /// Arc is cloned out before the call so the closure may re-enter the
+    /// store.
+    #[cfg(test)]
+    fn run_post_subscribe_gate(&self) {
+        let gate = self
+            .post_subscribe_gate
+            .lock()
+            .expect("post-subscribe gate poisoned")
+            .clone();
+        if let Some(gate) = gate {
+            gate();
+        }
+    }
+
     /// Subscribe to every accepted email (webhook dispatcher).
     pub fn subscribe_all(&self) -> broadcast::Receiver<Arc<Email>> {
         self.global_tx.subscribe()
@@ -258,7 +339,10 @@ impl Store {
             )
         });
         // Notify watchers; a full channel means a slow await reader — the email
-        // is still safely stored, the watcher re-polls the store.
+        // is still safely stored, the watcher re-polls the store. A missing
+        // entry means no subscribers yet, or the channel was released with
+        // the inbox's mail (decision 0010): the waiter re-subscribes before
+        // its next scan, so the store-is-truth rescan still finds this mail.
         if let Some(sender) = self.watchers.get(&inbox) {
             let _ = sender.send(email.clone());
         }
@@ -318,6 +402,12 @@ impl Store {
                 .get_mut(&email.inbox)
                 .expect("indexed mail always has its inbox list");
             list.retain(|e| e.id != id);
+            // An emptied inbox's mail is gone, so its watcher channel is
+            // released with it (decision 0010). Disjoint maps: the inboxes
+            // guard is held, the watchers map is a separate shard set.
+            if list.is_empty() {
+                self.watchers.remove(&email.inbox);
+            }
         }
         self.record("delete", |persist| persist.record_delete(id));
         removed.is_some()
@@ -325,7 +415,7 @@ impl Store {
 
     /// Remove all emails from one inbox; returns how many were removed.
     pub fn clear(&self, inbox: &str) -> usize {
-        let drained = drain_inbox(&self.inboxes, &self.index, inbox);
+        let drained = drain_inbox(&self.inboxes, &self.index, &self.watchers, inbox);
         #[cfg(test)]
         self.run_pre_mirror_gate();
         // The mirror deletes exactly the drained ids, never `WHERE inbox =
@@ -348,8 +438,19 @@ impl Store {
         let mut drained: Vec<Arc<Email>> = Vec::new();
         let inboxes: Vec<String> = self.inboxes.iter().map(|e| e.key().clone()).collect();
         for inbox in inboxes {
-            drained.extend(drain_inbox(&self.inboxes, &self.index, &inbox));
+            drained.extend(drain_inbox(
+                &self.inboxes,
+                &self.index,
+                &self.watchers,
+                &inbox,
+            ));
         }
+        // The sweep also releases channels of awaited-but-never-mailed
+        // inboxes — the population issue #14's probe creates, which leaves no
+        // entries for the per-inbox drain above to iterate (decision 0010).
+        // A subscriber racing the sweep sees `Closed` and takes the
+        // re-subscribe arm — bounded at one extra rescan per waiter.
+        self.watchers.clear();
         #[cfg(test)]
         self.run_pre_mirror_gate();
         // Per-id mirror for the same reason as `clear` (the race finding):
@@ -371,16 +472,19 @@ impl Store {
         out
     }
 
-    /// Subscribe to new-mail notifications for an inbox (lazy per-inbox channel).
+    /// Subscribe to new-mail notifications for an inbox (lazy per-inbox
+    /// channel).
+    ///
+    /// One atomic path: the `entry()` holds the shard write lock across
+    /// channel creation, so concurrent first subscribers serialize on one
+    /// boundary and every receiver attaches to the same live channel — the
+    /// get-then-insert window is deleted, not fenced (decision 0010). The
+    /// next `subscribe` after a release re-creates the channel.
     pub fn subscribe(&self, inbox: &str) -> broadcast::Receiver<Arc<Email>> {
-        match self.watchers.get(inbox) {
-            Some(sender) => sender.subscribe(),
-            None => {
-                let (sender, receiver) = broadcast::channel(4096);
-                self.watchers.insert(inbox.to_string(), sender.clone());
-                receiver
-            }
-        }
+        self.watchers
+            .entry(inbox.to_string())
+            .or_insert_with(|| broadcast::channel(WATCHER_CAP).0)
+            .subscribe()
     }
 }
 
@@ -397,10 +501,13 @@ impl Store {
     /// timeout elapses.
     ///
     /// Subscribes **before** scanning so a mail delivered during the check
-    /// cannot be missed (decision 0002). The store remains the source of
-    /// truth: every wakeup re-scans, so slow or lagging watchers are safe —
-    /// a full channel or a closed one both fall through to the deadline
-    /// re-check.
+    /// cannot be missed (decision 0002), and the ordering is re-applied **per
+    /// iteration**: a released channel (`Closed` — the inbox's mail was
+    /// removed and its watcher released) is answered with exactly one
+    /// re-subscribe before the next scan, never a spin and never a miss.
+    /// The store remains the source of truth: every wakeup re-scans, so
+    /// slow or lagging watchers are safe — a full channel (`Lagged`) and the
+    /// elapsed deadline both fall through to the re-check.
     pub async fn wait_for(
         &self,
         inbox: &str,
@@ -409,6 +516,8 @@ impl Store {
         timeout: Duration,
     ) -> WaitOutcome {
         let mut rx = self.subscribe(inbox);
+        #[cfg(test)]
+        self.run_post_subscribe_gate();
         let deadline = Instant::now() + timeout;
         loop {
             let mut matches = self.list(inbox, filter);
@@ -423,8 +532,24 @@ impl Store {
                 };
             }
             // Block until any event (new mail, lag, channel close) or the
-            // deadline; the loop re-scans either way.
-            let _ = tokio::time::timeout(remaining, rx.recv()).await;
+            // deadline; the loop re-scans either way. Every `recv` parks on
+            // a live channel unless the channel is closed, and a closed one
+            // is answered by the single re-subscribe below — there is no
+            // schedule in which an iteration does neither (decision 0010).
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Ok(_)) | Ok(Err(RecvError::Lagged(_))) => {}
+                Ok(Err(RecvError::Closed)) => {
+                    // The inbox's mail was removed and its channel released:
+                    // re-apply decision 0002 per iteration — subscribe, then
+                    // scan.
+                    rx = self.subscribe(inbox);
+                    #[cfg(test)]
+                    self.run_post_subscribe_gate();
+                    #[cfg(test)]
+                    CLOSED_PROBE.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(_elapsed) => {} // parked past the deadline; the next scan reports it
+            }
         }
     }
 }
@@ -521,6 +646,120 @@ mod tests {
         assert_eq!(store.count("test-a", &Filter::default()), 0);
         assert_eq!(store.count("test-b", &Filter::default()), 1);
     }
+
+    /// Eight threads race to be the first subscriber of one fresh inbox
+    /// (decision 0010, AC1): registration is atomic, so every receiver
+    /// attaches to the *same live* channel and one insert is seen by all
+    /// eight. On the pre-fix get-then-insert code this failed whenever two
+    /// threads overlapped — the displaced receivers hung off a sender the
+    /// map no longer held. Seam-free by design: post-fix the assertion holds
+    /// under every schedule, so the race is deleted, not controlled.
+    #[test]
+    fn concurrent_first_subscribers_all_attach_and_all_see_the_insert() {
+        let store = Arc::new(Store::new(0));
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut receivers = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let store = Arc::clone(&store);
+                    let barrier = Arc::clone(&barrier);
+                    s.spawn(move || {
+                        barrier.wait();
+                        store.subscribe("race")
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        store.insert(email("race-1", "race", "a@x.io"));
+        for (i, rx) in receivers.iter_mut().enumerate() {
+            assert_eq!(
+                rx.try_recv().map(|e| e.id.clone()).unwrap(),
+                "race-1",
+                "receiver {i} attached to a displaced channel"
+            );
+        }
+    }
+
+    /// `clear` is where an inbox dies, so it is where its watcher channel
+    /// dies (decision 0010, AC2-i): the receiver held across the clear
+    /// observes the release. An empty clear still releases — the channel is
+    /// not immortal — and the held receiver is safe: its waiter answers
+    /// `Closed` with a re-subscribe before its next scan.
+    #[test]
+    fn a_cleared_inbox_releases_its_watcher_channel() {
+        let store = Store::new(0);
+        let mut rx = store.subscribe("box");
+        assert_eq!(store.clear("box"), 0);
+        assert!(
+            matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Closed)),
+            "the channel held across the clear must observe the release"
+        );
+    }
+
+    /// A `delete` that empties an inbox's list releases the channel
+    /// (decision 0010, AC2-ii); a delete that leaves mail behind must keep
+    /// it live — a pushed insert still reaches the held receiver.
+    #[test]
+    fn a_delete_that_empties_an_inbox_releases_its_watcher_channel() {
+        let store = Store::new(0);
+        let mut rx = store.subscribe("box");
+        store.insert(email("d1", "box", "a@x.io"));
+        store.insert(email("d2", "box", "a@x.io"));
+        // Drain the two buffered pushes so later asserts read only pushes
+        // that land after the deletes.
+        assert_eq!(rx.try_recv().map(|e| e.id.clone()).unwrap(), "d1");
+        assert_eq!(rx.try_recv().map(|e| e.id.clone()).unwrap(), "d2");
+        store.delete("d1");
+        store.insert(email("d3", "box", "a@x.io"));
+        assert_eq!(
+            rx.try_recv().map(|e| e.id.clone()).unwrap(),
+            "d3",
+            "a non-emptying delete keeps the channel live"
+        );
+        store.delete("d2");
+        store.delete("d3"); // the list is now empty: the channel is released
+        assert!(
+            matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Closed)),
+            "a delete that empties the inbox must release the channel"
+        );
+    }
+
+    /// `clear_all` sweeps every watcher channel, including the
+    /// awaited-but-never-mailed population no per-inbox drain can reach —
+    /// issue #14's 5,000-fresh-inbox probe (decision 0010, AC2-iii): the
+    /// test-visible count returns to baseline, and a held receiver observes
+    /// the release.
+    #[test]
+    fn clear_all_releases_channels_of_awaited_never_mailed_inboxes() {
+        let store = Store::new(0);
+        const N: usize = 3;
+        let mut held = None;
+        for i in 0..N {
+            held = Some(store.subscribe(&format!("awaited{i}")));
+        }
+        assert_eq!(
+            store.watcher_count(),
+            N,
+            "each fresh subscription created a channel"
+        );
+        store.clear_all();
+        assert_eq!(
+            store.watcher_count(),
+            0,
+            "the sweep returns the count to baseline"
+        );
+        assert!(
+            matches!(
+                held.unwrap().try_recv(),
+                Err(broadcast::error::TryRecvError::Closed)
+            ),
+            "the sweep released the held channel"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -585,7 +824,8 @@ mod wait_tests {
             })
         };
         // The subscribe happens inside wait_for; give it a beat, then
-        // overflow the 4096-slot channel.
+        // overflow the 16-slot wake ring (WATCHER_CAP): lag is repaired by
+        // the rescan, not by ring headroom (decision 0010, AC5).
         tokio::time::sleep(Duration::from_millis(100)).await;
         for i in 0..4200u32 {
             let mut e = email(&format!("lag{i}"), "box", "a@x.io");
@@ -596,6 +836,104 @@ mod wait_tests {
             WaitOutcome::Found(matches) => assert_eq!(matches.len(), 3),
             WaitOutcome::Timeout { .. } => panic!("the store had the mails"),
         }
+    }
+
+    /// A released channel cannot strand a waiter (decision 0010, AC3). The
+    /// gate fires once after the initial subscribe — the clear releases the
+    /// waiter's channel — and once after the `Closed` arm's re-subscribe,
+    /// inserting the mail; the wait must return `Found`. Red on all three
+    /// regressions: no release on clear (the insert only happens in the
+    /// re-subscribe gate → parks to `Timeout`), no re-subscribe on `Closed`
+    /// (the gate never fires again → `Timeout`), and sleep-through-on-
+    /// `Closed` (`Timeout`). The asserted state is unreachable without the
+    /// controlled interleaving, and the insert being observed proves the
+    /// 0002 per-iteration ordering: the re-subscribe precedes the rescan.
+    #[tokio::test]
+    async fn a_waiter_on_a_released_channel_is_not_stranded() {
+        let store = Arc::new(Store::new(0));
+        let fires = Arc::new(AtomicU64::new(0));
+        let s = store.clone();
+        let gate_fires = fires.clone();
+        store.set_post_subscribe_gate(Some(Arc::new(move || {
+            if gate_fires.fetch_add(1, Ordering::SeqCst) == 0 {
+                s.clear("box"); // fire 1: releases the just-created channel
+            } else {
+                s.insert(email("late", "box", "a@x.io")); // fire 2: after the re-subscribe
+            }
+        })));
+        let out = store
+            .wait_for("box", &Filter::default(), 1, Duration::from_secs(5))
+            .await;
+        assert_eq!(
+            fires.load(Ordering::SeqCst),
+            2,
+            "both subscribe sites fired the gate"
+        );
+        match out {
+            WaitOutcome::Found(matches) => assert_eq!(matches[0].id, "late"),
+            WaitOutcome::Timeout { .. } => {
+                panic!(
+                    "the re-subscribe precedes the rescan: the mail inserted after the release must be found"
+                )
+            }
+        }
+    }
+
+    /// A waiter on a released channel *sleeps* (decision 0010, AC4). The
+    /// gate's fire 1 clears the inbox; fire 2 is a deliberate no-op, so the
+    /// wait rides to its deadline and reports the honest `matched: 0`. The
+    /// deterministic teeth are the `Closed`-arm delta bound below — one hit
+    /// per release, where a reintroduced spin measured 202k–276k in this
+    /// window — and the 5 ms co-scheduled ticker is the canary (it advanced
+    /// 33 of ~40 ticks under a live spin: tokio's budget yields a spinner).
+    /// No wall-clock CPU-percentage assertion anywhere.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_waiter_on_a_released_channel_sleeps_until_its_deadline() {
+        let store = Arc::new(Store::new(0));
+        let ticks = Arc::new(AtomicU64::new(0));
+        let fires = Arc::new(AtomicU64::new(0));
+        let s = store.clone();
+        let gate_fires = fires.clone();
+        store.set_post_subscribe_gate(Some(Arc::new(move || {
+            if gate_fires.fetch_add(1, Ordering::SeqCst) == 0 {
+                s.clear("box"); // release the channel: the waiter must re-subscribe, then sleep
+            }
+        })));
+        let ticker = {
+            let ticks = ticks.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    ticks.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        };
+        let hits_before = CLOSED_PROBE.load(Ordering::Relaxed);
+        let out = store
+            .wait_for("box", &Filter::default(), 1, Duration::from_millis(200))
+            .await;
+        ticker.abort();
+        // `Timeout { matched: 0 }` in one assert: the honest deadline outcome
+        // is the pass path, so an unreachable panic arm would be a line the
+        // exact coverage gate can never see executed.
+        assert!(
+            matches!(out, WaitOutcome::Timeout { matched: 0 }),
+            "no mail was ever inserted: the released-channel wait must ride to its deadline"
+        );
+        let advanced = ticks.load(Ordering::Relaxed);
+        assert!(
+            advanced >= 10,
+            "a spinning waiter starves its single worker: the 5 ms ticker advanced only {advanced} of ~40 times"
+        );
+        // Deterministic teeth (delta, not absolute — the counter is
+        // process-global and the harness runs tests in parallel): a parked
+        // waiter answers its one release with one `Closed`-arm hit; a
+        // reintroduced spin measured 202k–276k inside this window.
+        let hits = CLOSED_PROBE.load(Ordering::Relaxed) - hits_before;
+        assert!(
+            hits <= 4,
+            "a single release must be answered with one Closed arm hit, not {hits}"
+        );
     }
 }
 
@@ -729,7 +1067,7 @@ mod filter_tests {
     async fn second_subscriber_on_the_same_inbox_gets_the_live_channel() {
         let store = Store::new(0);
         let mut rx1 = store.subscribe("hot");
-        let mut rx2 = store.subscribe("hot"); // the Some(sender) branch
+        let mut rx2 = store.subscribe("hot");
         store.insert(email("s1", "hot", "a@x.io"));
         assert_eq!(rx1.try_recv().unwrap().id, "s1");
         assert_eq!(rx2.try_recv().unwrap().id, "s1");

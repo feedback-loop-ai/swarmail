@@ -25,7 +25,16 @@ cargo deny check licenses
 Commits are signed (`commit.gpgsign` is set repo-locally); write messages
 in the repository's imperative style with a body that says why.
 
-Result:
+**Result contract (mandatory).** Your task block names an absolute
+`result_path` ending in `.json`. At the END of your turn you MUST write
+your result there yourself, as JSON:
+
+    {"result": "complete"|"broken"|"blocked", "notes": "..."}
+
+Without that file your whole implementation is discarded no matter how
+good it is: write it before you finish, even if you think the harness
+will infer it.
+
 - `complete` — implemented, proved locally, gates clean.
 - `broken` — you could not get it working; `notes` names the specific gap
   so a re-run can address it.
