@@ -335,6 +335,68 @@ async fn seed_with_html_stores_html_and_extracts_at_ingest() {
     );
 }
 
+/// html supersedes text on the MCP surface too (decision 0010): both bodies
+/// given, the html lands verbatim and the plain body never reaches the parser
+/// — the same one-constructor precedence the REST seed pins, proven through
+/// the tool whose schema advertises both arguments.
+#[tokio::test]
+async fn seed_with_both_bodies_stores_html_and_drops_text_over_mcp() {
+    let srv = start().await;
+    let html_arg = "<a href='https://m.io'>go</a> 334455";
+    let r = tool(
+        srv.http_addr,
+        "swarmail_seed_email",
+        &format!(
+            r#"{{"inbox": "mcpboth", "to": "w@x.io", "text": "PLAIN https://dropped.io 998877", "html": "{html_arg}"}}"#
+        ),
+    )
+    .await;
+    assert_eq!(r["isError"], false, "{r}");
+    // Extraction ran on the html alone: the dropped text's link and code are
+    // absent, and the html body's own code was found.
+    assert_eq!(
+        text(&r)["links"],
+        serde_json::json!(["https://m.io"]),
+        "the dropped text must not feed the extractor: {r}"
+    );
+    assert_eq!(text(&r)["codes"], serde_json::json!(["334455"]), "{r}");
+    let id = text(&r)["id"].as_str().unwrap().to_string();
+
+    let (st, email) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert!(
+        email["html"].as_str().unwrap().contains(html_arg),
+        "html preserved verbatim: {}",
+        email["html"]
+    );
+    assert_ne!(
+        email["text"].as_str().unwrap(),
+        "PLAIN https://dropped.io 998877",
+        "the plain body must not be the stored text: {}",
+        email["text"]
+    );
+
+    // The raw carries the html body verbatim and never the dropped text.
+    let (st, raw) = http_get_text(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(st, 200);
+    assert!(
+        raw.contains(&format!(
+            "MIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n{html_arg}\r\n"
+        )),
+        "raw: {raw}"
+    );
+    assert!(
+        !raw.contains("PLAIN") && !raw.contains("998877"),
+        "the dropped text must not land anywhere: {raw}"
+    );
+}
+
 /// The two adapters build the identical fixture (decision 0010): the same
 /// seed through REST and MCP agrees on every content field. `id` and
 /// `received_ms` are excluded by construction — clock and UUIDv7 draws, and
