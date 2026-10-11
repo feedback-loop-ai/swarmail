@@ -25,9 +25,17 @@ it is acceptable to lose.
    commit it; a later chief step reads your file and synthesizes the
    committed spec.
 
-Result: `pass` with `notes` naming the position file you wrote. `fail`
-ONLY if you cannot form a position at all (for example, the framing is
-missing or incoherent) — name the reason precisely. Your result
+**Result contract (mandatory).** Your task block names an absolute
+`result_path` ending in `.json`. At the END of your turn you MUST write
+your result there yourself, as JSON:
+
+    {"result": "pass"|"fail", "notes": "..."}
+
+`pass` with `notes` naming the position file you wrote; `fail` ONLY if
+you cannot form a position at all (for example, the framing is missing
+or incoherent) — name the reason precisely. Without that file your
+whole position is discarded no matter how good it is: write it before
+you finish, even if you think the harness will infer it. Your result
 vocabulary is exactly `pass`/`fail`: the seat-level vocabulary
 (`designed`/`fail`) applies only to the sequence's final validation
 step, never to you.
