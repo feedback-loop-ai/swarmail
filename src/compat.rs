@@ -613,8 +613,10 @@ fn plain_response(email: &Email) -> Response {
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
 
-/// The full source as an .eml download — MailHog's download shape.
-fn raw_response(email: &Email) -> Response {
+/// The full source as an .eml download — MailHog's download shape. The one
+/// owner of that shape: the compat route and the native `/raw` route both
+/// serve it, so the bytes stay exact everywhere.
+pub(crate) fn raw_response(email: &Email) -> Response {
     let disposition = format!("attachment; filename=\"{}.eml\"", email.id);
     (
         [

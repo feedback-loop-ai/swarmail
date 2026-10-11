@@ -13,7 +13,8 @@ pub enum ChaosEvent {
     MailFrom,
     /// Reject RCPT TO.
     Rcpt,
-    /// Fail after DATA (mail is NOT stored).
+    /// Applied after DATA completes: a delay-only rule stores the mail and
+    /// answers `250` after the wait; a rule with an error stores nothing.
     Data,
 }
 
