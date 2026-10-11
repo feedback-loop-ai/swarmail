@@ -10,7 +10,10 @@
         "complete",
         "broken",
         "blocked"
-      ]
+      ],
+      "limits": {
+        "max_attempts": 3
+      }
     },
     "intake": {
       "agent": "intake",
@@ -31,7 +34,7 @@
         "max_residual_severity"
       ],
       "limits": {
-        "max_attempts": 2,
+        "max_attempts": 3,
         "timeout_seconds": 3600
       },
       "aggregate": "review-panel",
@@ -118,7 +121,7 @@
         "fail"
       ],
       "limits": {
-        "max_attempts": 2,
+        "max_attempts": 3,
         "timeout_seconds": 3600
       },
       "sequence": [
