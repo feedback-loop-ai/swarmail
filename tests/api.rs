@@ -103,6 +103,62 @@ async fn assert_endpoint_returns_ok_or_conflict() {
     assert_eq!(body["matched"], 1);
 }
 
+/// `count=0` is an exact expectation, not a request to wait for one mail
+/// (issue #6): it holds only when nothing matches — the "no mail was sent"
+/// assertion — with or without a filter, and an omitted count still means 1.
+#[tokio::test]
+async fn assert_endpoint_accepts_zero_as_an_exact_count() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let check = move |query: &'static str| {
+        let path = format!("/api/v1/inboxes/zero/assert?{query}");
+        async move { http_json(addr, "GET", &path, None).await }
+    };
+
+    // An empty inbox: exactly zero matched.
+    let (st, body) = check("count=0").await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["matched"], 0);
+
+    // One mail: zero no longer holds, and the failure names 0 as expected.
+    seed(srv.http_addr, "zero", "user@example.com").await;
+    let (st, body) = check("count=0").await;
+    assert_eq!(st, 409, "{body}");
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["expected"], 0);
+    assert_eq!(body["matched"], 1);
+
+    // Filtered zero: nothing for another recipient, though the inbox is not
+    // empty; the filtered recipient itself does not hold at zero.
+    let (st, body) = check("count=0&to=nobody@example.com").await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 0);
+    let (st, body) = check("count=0&to=user@example.com").await;
+    assert_eq!(st, 409, "{body}");
+    assert_eq!(body["expected"], 0);
+    assert_eq!(body["matched"], 1);
+
+    // An omitted count still expects exactly one.
+    let (st, body) = check("").await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 1);
+
+    // Multiple mails: exact counts above one, and zero still refuses.
+    seed(srv.http_addr, "zero", "other@example.com").await;
+    let (st, body) = check("count=2").await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 2);
+    let (st, body) = check("").await;
+    assert_eq!(st, 409, "{body}");
+    assert_eq!(body["expected"], 1);
+    assert_eq!(body["matched"], 2);
+    let (st, body) = check("count=0").await;
+    assert_eq!(st, 409, "{body}");
+    assert_eq!(body["expected"], 0);
+    assert_eq!(body["matched"], 2);
+}
+
 #[tokio::test]
 async fn await_endpoint_finds_and_times_out() {
     let srv = start().await;

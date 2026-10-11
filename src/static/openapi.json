@@ -85,7 +85,7 @@
         "parameters": [
           { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "to", "in": "query", "schema": { "type": "string" } },
-          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 } }
+          { "name": "count", "in": "query", "description": "Exact number of matching emails expected; 0 asserts that none matched", "schema": { "type": "integer", "minimum": 0, "default": 1 } }
         ],
         "responses": { "200": { "description": "Assertion held" }, "409": { "description": "Assertion failed" } }
       }
