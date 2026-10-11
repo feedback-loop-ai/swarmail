@@ -118,7 +118,7 @@
         "fail"
       ],
       "limits": {
-        "max_attempts": 2,
+        "max_attempts": 3,
         "timeout_seconds": 3600
       },
       "sequence": [
