@@ -5,7 +5,8 @@ Epic: feedback-loop-ai/swarmail#13, wave 5 (issues #4, #5, #6). Branch:
 
 Decision: 0010 —
 [docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md](../../docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md)
-(status `proposed`; acceptance is the operator's).
+(status `accepted` — ratified 2026-10-11 at wave-4 intake; see the
+decision's ratification note).
 
 ## The problem — three published contracts that lie
 
