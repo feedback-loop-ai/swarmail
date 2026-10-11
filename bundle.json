@@ -135,7 +135,11 @@
               "agent": "position-simplicity"
             },
             "robustness": {
-              "agent": "position-robustness"
+              "agent": "position-robustness",
+              "limits": {
+                "max_attempts": 2,
+                "timeout_seconds": 7200
+              }
             }
           }
         },
