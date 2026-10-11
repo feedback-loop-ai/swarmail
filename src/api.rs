@@ -128,8 +128,7 @@ impl ListQuery {
 pub struct AwaitQuery {
     #[serde(flatten)]
     pub common: ListQuery,
-    /// Number of matching emails to wait for (default 1). A wait needs at
-    /// least one arrival to mean anything, so 0 is raised to 1.
+    /// Number of matching emails to wait for (default 1).
     pub count: Option<usize>,
     /// Give up after this long; default 5000ms.
     pub timeout_ms: Option<u64>,
@@ -140,30 +139,22 @@ impl AwaitQuery {
         self.common.filter()
     }
 
-    fn count(&self) -> usize {
+    /// WAIT semantics (decision 0010): a caller waiting for mail must never
+    /// get an instant success against an empty inbox, so `count=0` still
+    /// means at least one. Pinned by the `await?count=0` tests.
+    fn min_one_count(&self) -> usize {
         self.count.unwrap_or(1).max(1)
+    }
+
+    /// ASSERT semantics (decision 0010): the exact filtered match count,
+    /// zero included — `count=0` is the negative assertion. `assert` never
+    /// waits and never subscribes; a snapshot is a snapshot.
+    fn exact_count(&self) -> usize {
+        self.count.unwrap_or(1)
     }
 
     fn timeout(&self) -> Duration {
         Duration::from_millis(self.timeout_ms.unwrap_or(5000))
-    }
-}
-
-/// The `/assert` query: the shared filters and the exact count expected.
-/// Kept apart from [`AwaitQuery`] because the two disagree about zero: a
-/// wait for nothing is meaningless, while "exactly 0 matched" is the
-/// assertion that no mail was sent, so it is never raised to 1 (issue #6).
-#[derive(Debug, Deserialize)]
-pub struct AssertQuery {
-    #[serde(flatten)]
-    pub common: ListQuery,
-    /// Exact number of matching emails expected (default 1; 0 is valid).
-    pub count: Option<usize>,
-}
-
-impl AssertQuery {
-    fn expected(&self) -> usize {
-        self.count.unwrap_or(1)
     }
 }
 
@@ -286,7 +277,7 @@ async fn await_messages(
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Response> {
     let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "await")?;
-    let want = q.count();
+    let want = q.min_one_count();
     let total = state.store.count(&inbox, &Filter::default());
     match state
         .store
@@ -322,9 +313,9 @@ async fn assert_messages(
     Path(inbox): Path<String>,
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Response> {
-    let q: AssertQuery = parse_query(raw.0.as_deref().unwrap_or(""), "assert")?;
-    let want = q.expected();
-    let matched = state.store.count(&inbox, &q.common.filter());
+    let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "assert")?;
+    let want = q.exact_count();
+    let matched = state.store.count(&inbox, &q.filter());
     if matched == want {
         Ok((
             StatusCode::OK,
@@ -439,25 +430,26 @@ pub struct SeedRequest {
     pub html: Option<String>,
 }
 
-/// Inject a synthetic email without SMTP — full pipeline (parse, extract) runs.
+/// Inject a synthetic email without SMTP — full pipeline (parse, extract)
+/// runs. Construction is the one shared seed policy (`build_seed_email`,
+/// decision 0010); a refused fixture (a hostile envelope field) answers `400`
+/// naming the field and stores nothing.
 async fn seed_inbox(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
     Json(seed): Json<SeedRequest>,
-) -> Json<Email> {
-    let from = seed.from.unwrap_or_else(|| "fixture@swarmail.dev".into());
-    let subject = seed.subject.unwrap_or_else(|| "(no subject)".into());
-    let mut raw = format!("From: {from}\r\nTo: {}\r\nSubject: {subject}\r\n", seed.to);
-    if let Some(html) = &seed.html {
-        raw.push_str(&format!(
-            "MIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n{html}\r\n"
-        ));
-    } else {
-        raw.push_str(&format!("\r\n{}\r\n", seed.text.unwrap_or_default()));
-    }
-    let email = smtp::build_email(raw.as_bytes(), &inbox, std::slice::from_ref(&seed.to), from);
+) -> ApiResult<Json<Email>> {
+    let email = smtp::build_seed_email(
+        &inbox,
+        &seed.to,
+        seed.from.as_deref(),
+        seed.subject.as_deref(),
+        seed.text.as_deref(),
+        seed.html.as_deref(),
+    )
+    .map_err(bad_request)?;
     let stored = state.store.insert(email);
-    Json((*stored).clone())
+    Ok(Json((*stored).clone()))
 }
 
 // ---------- webhooks ----------

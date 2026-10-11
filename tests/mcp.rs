@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{SmtpConn, http_json, smtp_send, start};
+use common::{SmtpConn, http_get_text, http_json, smtp_send, start};
 
 fn base64_of(s: &str) -> String {
     use base64::Engine;
@@ -44,6 +44,47 @@ async fn initialize_and_tools_list() {
     let (_, body) = rpc(srv.http_addr, "tools/list", "{}").await;
     let tools = body["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 12);
+
+    // inputSchema is a JSON *object* for all twelve tools — the JSON type,
+    // not a substring (a substring check is how the string-schema bug
+    // survived). Decision 0010, issue #4.
+    let by_name: std::collections::HashMap<&str, &serde_json::Value> = tools
+        .iter()
+        .map(|t| (t["name"].as_str().unwrap(), t))
+        .collect();
+    for (name, tool) in &by_name {
+        let schema = &tool["inputSchema"];
+        assert!(
+            schema.is_object(),
+            "{name} publishes a non-object inputSchema: {schema}"
+        );
+    }
+
+    // The five repaired tools carry the verbatim re-kind of the old string
+    // constants: same fields, types, descriptions and `required` arrays.
+    for name in [
+        "swarmail_get_email",
+        "swarmail_delete_email",
+        "swarmail_extract_links",
+        "swarmail_extract_codes",
+    ] {
+        let schema = &by_name[name]["inputSchema"];
+        assert_eq!(
+            schema["properties"]["id"],
+            serde_json::json!({ "type": "string", "description": "Email id" }),
+            "{name}"
+        );
+        assert_eq!(schema["required"], serde_json::json!(["id"]), "{name}");
+    }
+    let inbox_only = &by_name["swarmail_clear_inbox"]["inputSchema"];
+    assert_eq!(
+        inbox_only["properties"]["inbox"],
+        serde_json::json!({ "type": "string", "description": "Inbox name (default: default)" })
+    );
+    assert!(
+        inbox_only["required"].is_null(),
+        "the inbox-only schema has no required array"
+    );
 }
 
 #[tokio::test]
@@ -249,6 +290,204 @@ async fn seed_email_and_set_clear_chaos() {
     assert_eq!(text(&r)["chaos"], "disabled");
 }
 
+/// The advertised `html` finally reaches the extractor at ingest (decision
+/// 0010): the shared constructor preserves it verbatim under
+/// `Content-Type: text/html` — the same raw shape the REST seed writes — and
+/// the response carries the extracted codes.
+#[tokio::test]
+async fn seed_with_html_stores_html_and_extracts_at_ingest() {
+    let srv = start().await;
+    let html_arg = "<a href='https://q.io?a=1&b=2'>go</a> 555555";
+    let r = tool(
+        srv.http_addr,
+        "swarmail_seed_email",
+        &format!(
+            r#"{{"inbox": "mcphtml", "to": "h@x.io", "subject": "hi", "html": "{html_arg}"}}"#
+        ),
+    )
+    .await;
+    assert_eq!(r["isError"], false, "{r}");
+    assert_eq!(text(&r)["codes"][0], "555555", "extraction ran: {r}");
+    let id = text(&r)["id"].as_str().unwrap().to_string();
+
+    let (st, email) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert!(
+        email["html"].as_str().unwrap().contains(html_arg),
+        "html preserved verbatim: {}",
+        email["html"]
+    );
+
+    // The raw carries the html body verbatim — the shape the REST seed writes.
+    let (st, raw) = http_get_text(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(st, 200);
+    assert!(
+        raw.contains(&format!(
+            "MIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n{html_arg}\r\n"
+        )),
+        "raw: {raw}"
+    );
+}
+
+/// The two adapters build the identical fixture (decision 0010): the same
+/// seed through REST and MCP agrees on every content field. `id` and
+/// `received_ms` are excluded by construction — clock and UUIDv7 draws, and
+/// a parity test that touches them is a flake factory.
+#[tokio::test]
+async fn the_same_fixture_agrees_across_rest_and_mcp() {
+    let srv = start().await;
+    // One html fixture (the shape MCP never had) and one text-only fixture.
+    let fixtures = [
+        (
+            "parityhtml",
+            r#"{"to": "p@x.io", "subject": "parity", "html": "<a href='https://p.io'>go</a> 778899"}"#,
+        ),
+        (
+            "paritytext",
+            r#"{"to": "t@x.io", "subject": "plain", "text": "Go https://t.io 112233"}"#,
+        ),
+    ];
+    for (inbox, rest_body) in fixtures {
+        let (st, rest) = http_json(
+            srv.http_addr,
+            "POST",
+            &format!("/api/v1/inboxes/{inbox}-rest/seed"),
+            Some(rest_body),
+        )
+        .await;
+        assert_eq!(st, 200);
+
+        // The same fixture over MCP: the arguments body with an inbox name in
+        // front of it.
+        let mcp_args = format!(r#"{{"inbox": "{inbox}-mcp", {}"#, &rest_body[1..]);
+        let r = tool(srv.http_addr, "swarmail_seed_email", &mcp_args).await;
+        let id = text(&r)["id"].as_str().unwrap().to_string();
+
+        // Read the MCP-seeded mail back through REST (the same store) and
+        // compare the content fields only.
+        let (st, mcp) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/messages/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 200);
+        for field in ["text", "html", "subject", "links", "codes"] {
+            assert_eq!(rest[field], mcp[field], "{field} disagrees on {inbox}");
+        }
+    }
+}
+
+/// A fixture whose envelope field smuggles CR/LF/NUL is refused before any
+/// insert on BOTH surfaces (decision 0010): REST answers 400 naming the
+/// field, MCP answers isError with the same reason, and the inbox count is
+/// unchanged — the refusal composes with the exact-count assert.
+#[tokio::test]
+async fn hostile_envelope_fields_are_refused_on_both_surfaces() {
+    let srv = start().await;
+    // CR+LF smuggles a header line, NUL is the classic poison byte, a bare
+    // LF is the lenient-client shape — one of the three per field. Each
+    // fixture runs through both surfaces verbatim.
+    for (field, rest_body, mcp_args) in [
+        (
+            "to",
+            r#"{"to": "a@b.io\r\nBcc: smuggled@x.io"}"#,
+            r#"{"inbox": "mcprefused", "to": "a@b.io\r\nBcc: smuggled@x.io"}"#,
+        ),
+        (
+            "from",
+            r#"{"to": "ok@x.io", "from": "nul@\u0000x.io"}"#,
+            r#"{"inbox": "mcprefused", "to": "ok@x.io", "from": "nul@\u0000x.io"}"#,
+        ),
+        (
+            "subject",
+            r#"{"to": "ok@x.io", "subject": "line\nbreak"}"#,
+            r#"{"inbox": "mcprefused", "to": "ok@x.io", "subject": "line\nbreak"}"#,
+        ),
+    ] {
+        let (st, body) = http_json(
+            srv.http_addr,
+            "POST",
+            "/api/v1/inboxes/restrefused/seed",
+            Some(rest_body),
+        )
+        .await;
+        assert_eq!(st, 400, "{field}: {body}");
+        assert!(
+            body["error"].as_str().unwrap().contains(field),
+            "{field} must be named: {body}"
+        );
+
+        let (st, body) = rpc(
+            srv.http_addr,
+            "tools/call",
+            &format!(r#"{{"name": "swarmail_seed_email", "arguments": {mcp_args}}}"#),
+        )
+        .await;
+        assert_eq!(st, 200, "{field}");
+        let r = body["result"].clone();
+        assert_eq!(r["isError"], true, "{field}: {r}");
+        assert!(
+            r["content"][0]["text"].as_str().unwrap().contains(field),
+            "{field} must be named: {r}"
+        );
+    }
+
+    // Nothing was stored on either surface.
+    for inbox in ["restrefused", "mcprefused"] {
+        let (st, body) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/{inbox}/count"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 200);
+        assert_eq!(body["count"], 0, "nothing stored in {inbox}");
+    }
+}
+
+/// The second min-one clamp (decision 0010): `count: 0` on the MCP wait
+/// still means at least one — a timeout against an empty inbox, never an
+/// instant success — and `matched: 1` once a matching mail has landed.
+#[tokio::test]
+async fn wait_for_email_keeps_minimum_one_for_zero() {
+    let srv = start().await;
+    let r = tool(
+        srv.http_addr,
+        "swarmail_wait_for_email",
+        r#"{"inbox": "waitzero", "count": 0, "timeout_ms": 150}"#,
+    )
+    .await;
+    assert_eq!(text(&r)["timed_out"], true, "{r}");
+    assert_eq!(text(&r)["matched"], 0);
+
+    smtp_send(
+        srv.smtp_addr,
+        Some("waitzero"),
+        "noreply@x.io",
+        "w@x.io",
+        "w",
+        "body",
+    )
+    .await
+    .unwrap();
+    let r = tool(
+        srv.http_addr,
+        "swarmail_wait_for_email",
+        r#"{"inbox": "waitzero", "count": 0, "timeout_ms": 1000}"#,
+    )
+    .await;
+    assert_eq!(text(&r)["matched"], 1, "{r}");
+}
+
 #[tokio::test]
 async fn unknown_tool_and_missing_args_are_errors() {
     let srv = start().await;
@@ -275,6 +514,45 @@ async fn unknown_tool_and_missing_args_are_errors() {
             .unwrap()
             .contains("missing id")
     );
+
+    // Schema/handler parity (decision 0010): every `required` argument of the
+    // tools this wave owns is actually enforced by its handler — the drift
+    // class that let seed_email advertise `html` while its handler dropped it.
+    for name in [
+        "swarmail_delete_email",
+        "swarmail_extract_links",
+        "swarmail_extract_codes",
+    ] {
+        let (st, body) = rpc(
+            srv.http_addr,
+            "tools/call",
+            &format!(r#"{{"name": "{name}", "arguments": {{}}}}"#),
+        )
+        .await;
+        assert_eq!(st, 200, "{name}");
+        assert_eq!(body["error"]["message"], "missing id", "{name}");
+    }
+
+    // seed_email without its required `to`.
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_seed_email", "arguments": {"inbox": "x"}}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["error"]["message"], "missing to");
+
+    // Named residual (decision 0010): set_chaos declares `probability`
+    // required yet defaults it to 0 when absent — pinned bare-call behavior.
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_set_chaos", "arguments": {"event": "data"}}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(text(&body["result"])["data"]["probability"], 0, "{body}");
 }
 
 /// Every tool's fallback closures (`unwrap_or_else` defaults) only run when

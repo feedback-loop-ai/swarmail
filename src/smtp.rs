@@ -520,6 +520,62 @@ fn collect_addresses(address: Option<&Address>) -> Vec<EmailAddress> {
     out
 }
 
+/// The seed defaults both adapters share (decision 0010) — one owner, so the
+/// two fixtures cannot drift apart again.
+const SEED_FROM: &str = "fixture@swarmail.dev";
+const SEED_SUBJECT: &str = "(no subject)";
+
+/// Build the fixture both adapters seed with (decision 0010, issue #5): the
+/// shared defaults, HTML preserved verbatim (superseding `text` when both are
+/// given), and the raw shape the REST seed has always written — ending in the
+/// ordinary [`build_email`], so extraction still happens at ingest (0005).
+///
+/// Unlike [`build_email`], which runs on hostile wire bytes all day, a
+/// fixture *promises* the caller that the mail that lands is the fixture
+/// that was asked for. So `CR`, `LF` or `NUL` in `to`, `from` or `subject`
+/// is refused with an `Err` naming the field **before** any insert: nothing
+/// is stored and the inbox count is unchanged, which is what lets the refusal
+/// compose with the exact-count assert (issue #6).
+pub fn build_seed_email(
+    inbox: &str,
+    to: &str,
+    from: Option<&str>,
+    subject: Option<&str>,
+    text: Option<&str>,
+    html: Option<&str>,
+) -> Result<Email, String> {
+    let envelope = [
+        ("to", to),
+        ("from", from.unwrap_or(SEED_FROM)),
+        ("subject", subject.unwrap_or(SEED_SUBJECT)),
+    ];
+    for (field, value) in envelope {
+        if value.contains(['\r', '\n', '\0']) {
+            return Err(format!(
+                "invalid {field}: envelope fields refuse CR, LF and NUL"
+            ));
+        }
+    }
+    let mut raw = format!(
+        "From: {}\r\nTo: {to}\r\nSubject: {}\r\n",
+        from.unwrap_or(SEED_FROM),
+        subject.unwrap_or(SEED_SUBJECT)
+    );
+    if let Some(html) = html {
+        raw.push_str(&format!(
+            "MIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n{html}\r\n"
+        ));
+    } else {
+        raw.push_str(&format!("\r\n{}\r\n", text.unwrap_or_default()));
+    }
+    Ok(build_email(
+        raw.as_bytes(),
+        inbox,
+        &[to.to_string()],
+        from.unwrap_or(SEED_FROM).to_string(),
+    ))
+}
+
 pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope: String) -> Email {
     let now = Utc::now();
     let parsed = MessageParser::default().parse(raw);

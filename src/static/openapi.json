@@ -70,7 +70,7 @@
           { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "to", "in": "query", "schema": { "type": "string" } },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
-          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 } },
+          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 }, "description": "Minimum one — a count of 0 still waits for at least one matching message (decision 0010)" },
           { "name": "timeout_ms", "in": "query", "schema": { "type": "integer", "default": 5000 } }
         ],
         "responses": {
@@ -85,7 +85,7 @@
         "parameters": [
           { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "to", "in": "query", "schema": { "type": "string" } },
-          { "name": "count", "in": "query", "description": "Exact number of matching emails expected; 0 asserts that none matched", "schema": { "type": "integer", "minimum": 0, "default": 1 } }
+          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 }, "description": "Exact match count — 0 asserts the filtered inbox is empty; the count is never clamped to one" }
         ],
         "responses": { "200": { "description": "Assertion held" }, "409": { "description": "Assertion failed" } }
       }
@@ -119,9 +119,13 @@
     "/api/v1/inboxes/{inbox}/seed": {
       "post": {
         "summary": "Inject a synthetic email (full parse/extract pipeline runs)",
+        "description": "Builds the fixture through the same seed constructor the MCP `swarmail_seed_email` tool uses (decision 0010). When `html` is given it is preserved verbatim under `Content-Type: text/html` and supersedes `text`; extraction (links, codes) runs at ingest. Envelope fields containing CR, LF or NUL are refused before anything is stored.",
         "parameters": [{ "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } }],
         "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SeedRequest" } } } },
-        "responses": { "200": { "description": "The stored email" } }
+        "responses": {
+          "200": { "description": "The stored email" },
+          "400": { "description": "Refused fixture — an envelope field (to, from or subject) contains CR, LF or NUL; nothing was stored" }
+        }
       }
     },
     "/api/v1/messages": {
@@ -317,12 +321,13 @@
       },
       "SeedRequest": {
         "type": "object",
+        "description": "Fixture body. `html` is preserved verbatim and supersedes `text` when both are given. `to`, `from` and `subject` refuse CR, LF and NUL.",
         "properties": {
-          "from": { "type": "string" },
-          "to": { "type": "string" },
-          "subject": { "type": "string" },
-          "text": { "type": "string" },
-          "html": { "type": "string" }
+          "from": { "type": "string", "description": "Defaults to fixture@swarmail.dev; refuses CR, LF and NUL" },
+          "to": { "type": "string", "description": "The recipient envelope address; refuses CR, LF and NUL" },
+          "subject": { "type": "string", "description": "Defaults to (no subject); refuses CR, LF and NUL" },
+          "text": { "type": "string", "description": "Plain-text body; ignored when html is given" },
+          "html": { "type": "string", "description": "HTML body, preserved verbatim under Content-Type: text/html; supersedes text" }
         },
         "required": ["to"]
       },

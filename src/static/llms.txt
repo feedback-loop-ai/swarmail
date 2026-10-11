@@ -26,11 +26,18 @@
 2. Trigger the flow (signup, reset, invite...).
 3. `GET /api/v1/inboxes/{inbox}/await?to=user@x.io&count=1&timeout_ms=5000` —
    blocks until the mail arrives (push-based; no sleep-polling). Returns the email.
+   `count` means "at least one" — even `count=0` waits rather than succeeding
+   instantly (decision 0010).
 4. Assert subject/body: fields `subject`, `text`, `html` are on every email; the
    `links` array holds every URL and `codes` holds likely OTP/verification codes —
-   no regexing HTML required.
+   no regexing HTML required. Exact counts: `GET /api/v1/inboxes/{inbox}/assert?count=N`
+   answers 200 only when exactly N mails match — `assert?count=0` is the negative
+   assertion ("nothing arrived"), 200 on an empty filter and 409 with
+   expected/matched otherwise; counts are never clamped to one.
 5. `POST /api/v1/inboxes/{inbox}/seed` injects a synthetic email (full parse +
-   extraction pipeline) — fixtures without SMTP.
+   extraction pipeline) — fixtures without SMTP. A given `html` body is preserved
+   verbatim and supersedes `text`; envelope fields containing CR, LF or NUL are
+   refused before anything is stored.
 
 ## MCP
 

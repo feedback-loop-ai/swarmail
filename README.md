@@ -224,11 +224,11 @@ $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 |---|---|
 | `GET /api/v1/inboxes` | the live inbox list |
 | `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first; wipe the inbox |
-| `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`, `count`, `timeout_ms`, filtered by from/subject/contains |
-| `GET /api/v1/inboxes/{inbox}/assert` | exact-count assertion — 200 or a named failure; `count=0` asserts nothing matched |
+| `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`, `count` (minimum one, even `count=0`), `timeout_ms`, filtered by from/subject/contains |
+| `GET /api/v1/inboxes/{inbox}/assert` | exact-count assertion — `count=0` asserts an empty filter; never clamped — 200 or a named failure |
 | `GET /api/v1/inboxes/{inbox}/threads[/{key}]` | conversations, oldest first, stable keys |
 | `GET /api/v1/inboxes/{inbox}/feed` | SSE: one snapshot, then one event per accepted mail |
-| `POST /api/v1/inboxes/{inbox}/seed` | a fixture without SMTP — full parse + extraction |
+| `POST /api/v1/inboxes/{inbox}/seed` | a fixture without SMTP — full parse + extraction; `html` preserved verbatim (supersedes `text`), CR/LF/NUL envelope fields refused |
 | `GET /api/v1/messages/{id}[/raw]` | one mail; the RFC 5322 source as `message/rfc822` |
 
 Every mail carries `text`, `html`, `links`, `codes` — extracted at ingest.

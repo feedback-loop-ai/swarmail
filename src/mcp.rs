@@ -10,7 +10,7 @@
 //! exactly what was accepted, with no polling loops.
 
 use crate::chaos::{Chaos, ChaosEvent, ChaosRule};
-use crate::smtp::build_email;
+use crate::smtp::build_seed_email;
 use crate::store::{Filter, Store, WaitOutcome};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -174,11 +174,24 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
         "swarmail_seed_email" => {
             let inbox = arg_str(a, "inbox").unwrap_or_else(|| "default".into());
             let to = arg_str(a, "to").ok_or("missing to")?;
-            let from = arg_str(a, "from").unwrap_or_else(|| "fixture@swarmail.dev".into());
-            let subject = arg_str(a, "subject").unwrap_or_else(|| "(no subject)".into());
-            let body = arg_str(a, "text").unwrap_or_default();
-            let raw = format!("From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{body}\r\n");
-            let email = build_email(raw.as_bytes(), &inbox, &[to], from);
+            let from = arg_str(a, "from");
+            let subject = arg_str(a, "subject");
+            let text = arg_str(a, "text");
+            let html = arg_str(a, "html");
+            // The one shared seed policy (decision 0010): the advertised
+            // `html` reaches the extractor at ingest, and a refused fixture
+            // is an error result that stores nothing.
+            let email = match build_seed_email(
+                &inbox,
+                &to,
+                from.as_deref(),
+                subject.as_deref(),
+                text.as_deref(),
+                html.as_deref(),
+            ) {
+                Ok(email) => email,
+                Err(reason) => return Ok(error_result(reason)),
+            };
             let id = email.id.clone();
             let links = email.links.clone();
             let codes = email.codes.clone();
@@ -217,9 +230,25 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
     }
 }
 
-/// MCP-compatible JSON input schemas.
-const SCHEMA_EMAIL_ID: &str = r#"{"type":"object","properties":{"id":{"type":"string","description":"Email id"}},"required":["id"]}"#;
-const SCHEMA_INBOX_ONLY: &str = r#"{"type":"object","properties":{"inbox":{"type":"string","description":"Inbox name (default: default)"}}}"#;
+/// MCP-compatible JSON input schemas. These are objects — the MCP spec
+/// requires an object, and a `&str` schema embedded in `json!` serialized as
+/// a JSON *string*, publishing an invalid schema for five tools (decision
+/// 0010, issue #4). The fields are the verbatim re-kind of the old string
+/// constants: same names, types, descriptions and `required` arrays.
+static SCHEMA_EMAIL_ID: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "properties": { "id": { "type": "string", "description": "Email id" } },
+        "required": ["id"],
+    })
+});
+
+static SCHEMA_INBOX_ONLY: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "object",
+        "properties": { "inbox": { "type": "string", "description": "Inbox name (default: default)" } },
+    })
+});
 
 static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     json!([
@@ -228,23 +257,23 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
             "inbox": { "type": "string" }, "to": { "type": "string" }, "from": { "type": "string" },
             "subject": { "type": "string" }, "since_ms": { "type": "integer" }, "limit": { "type": "integer" } } } },
         { "name": "swarmail_get_email", "description": "Fetch one captured email in full by id.",
-          "inputSchema": SCHEMA_EMAIL_ID },
+          "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_get_latest_email", "description": "Fetch the most recent email(s) in an inbox.",
           "inputSchema": { "type": "object", "properties": { "inbox": { "type": "string" }, "count": { "type": "integer" } } } },
         { "name": "swarmail_delete_email", "description": "Delete one captured email by id (start the next assertion clean).",
-          "inputSchema": SCHEMA_EMAIL_ID },
+          "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_clear_inbox", "description": "Delete all emails in one inbox — the 'clear' of the clear/act/assert loop.",
-          "inputSchema": SCHEMA_INBOX_ONLY },
+          "inputSchema": SCHEMA_INBOX_ONLY.clone() },
         { "name": "swarmail_clear_all", "description": "Delete every email in every inbox.", "inputSchema": { "type": "object" } },
         { "name": "swarmail_wait_for_email", "description": "Block until count emails matching the filter arrive (push-based, no polling). Returns the matched emails.",
           "inputSchema": { "type": "object", "properties": {
             "inbox": { "type": "string" }, "to": { "type": "string" }, "from": { "type": "string" },
             "subject": { "type": "string" }, "count": { "type": "integer" }, "timeout_ms": { "type": "integer" } } } },
         { "name": "swarmail_extract_links", "description": "Extract all http(s) URLs from a captured email's text/HTML bodies.",
-          "inputSchema": SCHEMA_EMAIL_ID },
+          "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_extract_codes", "description": "Extract likely OTP/verification codes from a captured email.",
-          "inputSchema": SCHEMA_EMAIL_ID },
-        { "name": "swarmail_seed_email", "description": "Inject a synthetic email into an inbox without sending SMTP — fixtures for agent tests.",
+          "inputSchema": SCHEMA_EMAIL_ID.clone() },
+        { "name": "swarmail_seed_email", "description": "Inject a synthetic email into an inbox without sending SMTP — fixtures for agent tests. HTML is preserved verbatim and supersedes text; envelope fields (to, from, subject) containing CR, LF or NUL are refused before anything is stored.",
           "inputSchema": { "type": "object", "properties": {
             "inbox": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" },
             "subject": { "type": "string" }, "text": { "type": "string" }, "html": { "type": "string" } },
