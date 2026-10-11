@@ -23,8 +23,14 @@ Ordered; each task names the test that proves it. All gates
 
 - [ ] 2. Release on drain: give `drain_inbox` a `watchers` parameter and one
        unconditional `watchers.remove(inbox)`; pass `&self.watchers` from
-       `clear` and `clear_all`. Comment: the drain is where an inbox dies,
-       so it is where its channel dies.
+       `clear` and `clear_all`. Comment (per the panel ratification): the
+       drain is where an inbox dies, so it is where its channel dies — an
+       *empty* clear may still release a channel (awaited-but-never-mailed
+       inbox), miss-free because the waiter answers `Closed` with a
+       re-subscribe before its next scan (0002 per iteration); the
+       nonexistent-inbox "no-op" (AC2-iv) means *removes no mail, returns
+       0*, not channel immortality. Do not condition the remove on the
+       drain having found mail.
        — *Proved by: `a_cleared_inbox_releases_its_watcher_channel`
        (AC2-i): subscribe → `clear` → `try_recv() == Err(TryRecvError::Closed)`;
        the nonexistent-inbox no-op path stays covered by
@@ -104,12 +110,15 @@ Ordered; each task names the test that proves it. All gates
        — *Proved by: the test itself (AC6); run with
        `cargo test --test burst await_survives_a_release -- --nocapture`.*
 
-- [ ] 10. Record the ruling: commit
+- [ ] 10. Verify the ruling is recorded (verify-only — it was committed with
+        the spec at `126632a`):
         `docs/decisions/0010-watcher-channel-lifetime.md` (status
-        `proposed`) alongside the spec, and reference it from
-        `spec.md`. No edit to accepted decisions; the deferred
-        `/metrics` gauge is recorded in the spec's out-of-scope section
-        with its follow-up shape.
+        `proposed`) exists and is referenced from `spec.md`. Do not
+        re-edit the decision or the spec; any contradiction found during
+        implement goes back through the design phase, not a silent edit.
+        No edit to accepted decisions; the deferred `/metrics` gauge is
+        recorded in the spec's out-of-scope section with its follow-up
+        shape.
         — *Proved by: the decision file exists with `proposed` status and
         the spec references it by relative path; `brokkr compile --bundle .`
-        and the other five gates stay green after it.*
+        and the other five gates stay green.*

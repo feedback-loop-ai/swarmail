@@ -149,7 +149,11 @@ No new files under `src/`; no new test files; no touch on `tests/p2.rs`,
 `#[cfg(test)] Mutex<Option<Arc<dyn Fn() + Send + Sync>>>` field, a
 `set_post_subscribe_gate` setter, a `run_post_subscribe_gate` runner, fired
 after **every** `subscribe` inside `wait_for` (the initial one and each
-re-subscribe — two call sites). It carries wave 1's unsettled
+re-subscribe — two call sites). **Placement is load-bearing:** the gate
+fires only after `subscribe()` returns, when no DashMap guard is held — its
+closures re-enter the store (`clear`, `insert`), and firing inside the
+`entry()` expression would hold the shard write lock across that re-entry
+and deadlock on the same shard. It carries wave 1's unsettled
 subscribe→scan window too, so the seam serves both waves. Compiled out of
 the shipping binary; self-covering: the `Some` arm by the two gate-driven
 tests, the `None` arm by every existing wait test.
@@ -220,6 +224,9 @@ no `coverage-gate.sh` change (the floor stays exactly 100).
 | **The ticker probe could flake on a loaded runner.** | Gate-ordered setup (no sleep-and-hope), a lenient margin (≥ 10 of ~40 ticks), and a recorded fallback: if it proves flaky in CI, raise the margin or drop to the outcome-level `not_stranded` test — the structural no-spin invariant stays the reviewed property. Its red-on-today's-code is probabilistic under cooperative budgeting; its regression teeth (a spin starves its own worker) are structural. |
 | **New seam + accessor lines enter the 100% denominator.** | Self-covering by construction (gate `Some` arm ← the two gate tests; `None` arm ← every existing wait test; accessor ← the sweep test), one-time, compiled out of production. An uncovered seam is the signal its exemplar rotted — the gate doing its job. |
 | **`delete`-empties release churns in selective-delete loops.** | Each release is a map remove; a parked waiter pays one rescan + re-subscribe; a non-emptying delete is untouched. |
+| **Residue is bounded per inbox, not in total** (the panel's honest arithmetic). | ~0.5 KiB per awaited-but-never-cleared inbox; the total is bounded by *distinct inboxes awaited since the last teardown* — a ~256× improvement over today's ~128 KiB each, not infinity. The deferred `swarmail_watchers` gauge is the operational answer to the invisible case; until it lands the regression-pinned `watcher_count()` is the only observability. |
+| **A wake-storm, or a buffered push landing microseconds before a close (the ghost wakeup).** | Each waiter cycle is driven by a real clear the adversary paid for and ends parked on a live channel — never self-sustaining. A push that lands in the ring before the clear may wake a waiter once for already-drained mail: rescan (empty) → `Closed` on the dead receiver → re-subscribe → rescan → park; two cheap iterations, no miss (the post-subscribe scan covers), no spin. Recognized and named, not "fixed". |
+| **Gate re-entrancy deadlock if the seam ever fires under a map guard.** | The gate fires after `subscribe()` returns — the `pre_mirror_gate` placement discipline verbatim. Refused: firing inside the `entry()` expression (shard write lock held across the closure's store re-entry). If implement discovers this by hanging, the fix is the gate's placement, not a lock "upgrade". |
 | **A crash between accept and commit / hostile bodies / hung webhooks.** | Out of this change's blast radius and answered upstream (0001's ordering untouched; extraction at ingest; `POST_TIMEOUT`-bounded dispatch). The wake is an optimization over the store-is-truth rescan and is proven by deterministic tests, not probabilistic injection. |
 
 ## Quickstart (reviewer)

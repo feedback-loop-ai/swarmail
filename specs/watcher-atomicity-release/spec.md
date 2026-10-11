@@ -124,6 +124,50 @@ subscribe/re-subscribe boundary in `wait_for`.
   both break push semantics; re-subscribe is the only arm that preserves
   them, and it is one line.
 
+## Ratified by the contrarian panel (wave 3 continuation)
+
+Both seats re-audited the committed spec against the code and the frozen
+guarantees this run and returned **ratify — zero amendments**: every line
+anchor holds (`src/store.rs:374-384` get-then-insert race, `:427`
+discarded-recv spin, `:79-93` the shared drain, `:262-264` notify-only
+insert, `src/feed.rs:79-81` `Closed => None`, `src/mcp.rs:148` and
+`src/api.rs:274` both delegating to the one wait loop), and no
+`watchers.remove`/`watchers.clear` exists anywhere in `src/` — the leak is
+total, which is what forces the `clear_all` sweep and the capacity shrink.
+Adopted from this round's positions, now binding on implement:
+
+- **The `drain_inbox` remove stays unconditional**, with one clarifying
+  comment line (task 2): an *empty* clear may still release a channel —
+  an awaited-but-never-mailed inbox's mail is vacuously gone — and it is
+  miss-free because the waiter answers `Closed` with a re-subscribe
+  *before* its next scan (0002 re-applied per iteration). AC2-iv's
+  "no-op" reads as *removes no mail, returns 0*, not channel immortality.
+  A conditional remove was refused: the special case would re-leak the
+  awaited-but-never-mailed population on selective clears.
+- **The gate fires only after `subscribe()` returns** — never inside the
+  `entry()` expression: the gate's closures re-enter the store, and firing
+  under the shard write lock would deadlock on the same shard (plan,
+  seam section).
+- **`#[cfg(test)] watcher_count()` ships** — this round's one genuine seat
+  conflict, ruled: simplicity designated it the first cut if the 100%
+  denominator fought back; robustness demanded it self-covering. It ships
+  because the sweep test executes it (the denominator does not fight
+  back) and it makes issue #14's "count returns to baseline" criterion
+  literal rather than inferred. The cut stays recorded and pre-authorized.
+- **AC3 is the deterministic teeth; AC4 the starvation detector** with its
+  recorded fallback. Both ship; no wall-clock CPU-percentage assertion.
+- **Task 10 is verify-only**: the ruling (`0010`, `proposed`) is already
+  committed with this spec — implement verifies it exists and is
+  referenced; it never re-edits the decision or the spec. Any
+  contradiction implement discovers with the code or a frozen guarantee
+  goes back through the design phase, not a silent edit.
+- The refusal list is unchanged and binding: one `entry()` registration
+  path (no get-fast-path), one wait loop shared by HTTP and MCP, no TTL
+  sweeper, no subscriber-count release machinery, no new files or
+  dependencies, no `coverage(off)`, `insert` comment-only, the fan-out
+  ordering untouched (0001), and `wait_for_covers_the_lagging_watcher`'s
+  assertion frozen (AC5).
+
 ## Why a decision document, despite the panel's votes
 
 Both seats voted "no decision document". The chief overrides, narrowly: the
