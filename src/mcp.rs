@@ -123,7 +123,7 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
         }
         "swarmail_delete_email" => {
             let id = arg_str(a, "id").ok_or("missing id")?;
-            if store.delete(&id) {
+            if store.clone().delete_async(id.clone()).await {
                 Ok(text_result(json!({ "deleted": true })))
             } else {
                 Ok(error_result(format!("message {id} not found")))
@@ -131,9 +131,13 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
         }
         "swarmail_clear_inbox" => {
             let inbox = arg_str(a, "inbox").unwrap_or_else(|| "default".into());
-            Ok(text_result(json!({ "removed": store.clear(&inbox) })))
+            Ok(text_result(
+                json!({ "removed": store.clone().clear_async(inbox).await }),
+            ))
         }
-        "swarmail_clear_all" => Ok(text_result(json!({ "removed": store.clear_all() }))),
+        "swarmail_clear_all" => Ok(text_result(
+            json!({ "removed": store.clone().clear_all_async().await }),
+        )),
         "swarmail_wait_for_email" => {
             let inbox = arg_str(a, "inbox").unwrap_or_else(|| "default".into());
             let filter = Filter {
@@ -182,7 +186,7 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
             let id = email.id.clone();
             let links = email.links.clone();
             let codes = email.codes.clone();
-            store.insert(email);
+            store.clone().insert_async(email).await;
             Ok(text_result(
                 json!({ "id": id, "links": links, "codes": codes }),
             ))

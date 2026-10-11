@@ -69,10 +69,21 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 name = "ingest"
 harness = false
 
+# The stall bench is its own harness (it prints a before/after table, not
+# criterion samples): one process, one data file, a current-thread runtime,
+# and a 1 ms ticker task whose lateness IS the stall being measured.
+[[bench]]
+name = "writer_stall"
+harness = false
+
 [dev-dependencies]
 criterion = "0.7"
 base64 = "0.22"
 libc = "0.2"
+# For the stall bench's current-thread runtime and ticker task. Already a
+# main dependency — this only makes it visible to the bench target; no new
+# crate enters the tree.
+tokio = { version = "1", features = ["rt", "time"] }
 
 [profile.release]
 opt-level = 3

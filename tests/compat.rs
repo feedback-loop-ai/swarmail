@@ -631,11 +631,29 @@ async fn shim_deletes_go_through_the_store() {
         assert_eq!(status, 200, "{id} must survive");
     }
 
-    // MailHog's wipe: no body at all.
+    // An unknown id deletes nothing: the counted loop only counts ids the
+    // store actually removed.
+    let payload = json!({"ids": [a2, "no-such-id"]}).to_string();
+    let (status, _, raw) = http_raw(
+        s.http_addr,
+        "DELETE",
+        "/api/v1/messages",
+        Some(("application/json", &payload)),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let removed: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(
+        removed,
+        json!({"removed": 1}),
+        "the unknown id counts for nothing"
+    );
+
+    // MailHog's wipe: no body at all — only b1 is left to remove.
     let (status, _, raw) = http_raw(s.http_addr, "DELETE", "/api/v1/messages", None).await;
     assert_eq!(status, 200);
     let removed: Value = serde_json::from_slice(&raw).unwrap();
-    assert_eq!(removed, json!({"removed": 2}));
+    assert_eq!(removed, json!({"removed": 1}));
     let (status, body) = http_json(s.http_addr, "GET", "/api/v1/messages", None).await;
     assert_eq!(status, 200);
     assert_eq!(body["total"], 0);

@@ -346,7 +346,7 @@ async fn clear_inbox(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
 ) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "removed": state.store.clear(&inbox) }))
+    Json(serde_json::json!({ "removed": state.store.clone().clear_async(inbox).await }))
 }
 
 async fn get_message(
@@ -364,7 +364,7 @@ async fn delete_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    if state.store.delete(&id) {
+    if state.store.clone().delete_async(id).await {
         Ok(Json(serde_json::json!({ "deleted": true })))
     } else {
         Err(ApiError(StatusCode::NOT_FOUND, "message not found".into()))
@@ -456,7 +456,7 @@ async fn seed_inbox(
         raw.push_str(&format!("\r\n{}\r\n", seed.text.unwrap_or_default()));
     }
     let email = smtp::build_email(raw.as_bytes(), &inbox, std::slice::from_ref(&seed.to), from);
-    let stored = state.store.insert(email);
+    let stored = state.store.clone().insert_async(email).await;
     Json((*stored).clone())
 }
 

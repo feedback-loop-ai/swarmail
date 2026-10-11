@@ -10,7 +10,10 @@
 //! Layout: one `emails` table (one row per mail, `seq` preserving insertion
 //! order) and one `meta` table (counters). All writes serialize through a
 //! single connection guarded by a `std` mutex — held for one small
-//! transaction, never across an `await`, so it cannot stall the runtime.
+//! transaction, never across an `await`. When the mutation is driven from an
+//! async handler, the store's awaited wrappers (`insert_async` and friends)
+//! run the whole commit on tokio's blocking pool, so the wait on the disk
+//! never occupies an async worker (decision 0010) — it parks a task instead.
 
 use crate::model::Email;
 use rusqlite::{Connection, OptionalExtension, params};

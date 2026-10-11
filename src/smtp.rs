@@ -452,7 +452,11 @@ async fn session(
                 let email =
                     build_email(&raw, &inbox, &rcpts, mail_from.clone().unwrap_or_default());
                 let id = email.id.clone();
-                store.insert(email);
+                // Whole mutation on the blocking pool, awaited before the
+                // reply: the 250 below stays *after* the commit outcome is
+                // known (decision 0001), it just no longer occupies an async
+                // worker (decision 0010).
+                store.clone().insert_async(email).await;
                 write_line(reader.get_mut(), &format!("250 2.0.0 OK: stored as {id}")).await?;
             }
             "RSET" => {

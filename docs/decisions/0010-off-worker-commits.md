@@ -77,3 +77,29 @@ synchronous", so the interpretation must be recorded where future intake seats w
   softened-pragma regression, because graceful-shutdown restarts cannot.
 - The measured before/after worker-stall numbers are recorded verbatim (docs note or PR body);
   if the win is not clear, the operator rules on the numbers as measured.
+
+## Measured (benches/writer_stall.rs, release, one process, one data file, current-thread runtime)
+
+`cargo bench --bench writer_stall -- --data-file /tmp/writer-stall.db --rows 400`, 256 KiB rows,
+`PRAGMA synchronous = FULL`, pre-parsed mails so the measured loop is the mutation alone. Two
+lenses, one run (a second run agreed within ~10%):
+
+```
+per-mail async-worker occupancy (direct, on the calling thread):
+  sync insert (old shape)   p50=  0.688 ms  p99=  2.432 ms  max=  2.571 ms
+  spawn_blocking handoff    p50=  5.118 us  p99=  6.826 us  max=143.603 us   (the floor the offloaded shape pays)
+
+1 ms ticker overshoot on the same runtime (what every other task feels):
+  yield only (baseline)      4058326                1.002 ms              1.191 ms            151
+  sync insert (old shape)       1046                3.008 ms              3.836 ms            132
+  insert_async (offloaded)       973                1.760 ms              1.830 ms            203
+```
+
+Reading: under the old shape the whole mutation (memory half + prune + `synchronous = FULL`
+commit) occupied the calling thread — the only async worker on a current-thread runtime — for
+p99 2.432 ms per 256 KiB mail; a concurrent 1 ms task saw p99 3.008 ms overshoot against a
+1.002 ms timer-granularity floor. After the move the worker only parks: the per-mail cost is a
+~5–7 µs `spawn_blocking` handoff and the ticker settles near its floor (p99 1.760 ms). This is
+not a throughput optimization: commit-rate-bound ingest is unchanged within run-to-run noise
+(1046 → 973 mails/s on this run; the commit still happens, on a blocking-pool thread instead of
+the worker). The handoff is the entire cost of the repair.
