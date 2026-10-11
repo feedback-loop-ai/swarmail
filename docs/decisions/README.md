@@ -16,6 +16,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0007](0007-hermetic-gates-single-model.md) | Hermetic gates + single-model delivery bundle | accepted (operator, 2026-10-07) |
 | [0008](0008-kubernetes-deployment-contract.md) | The Kubernetes deployment contract (Helm) | **proposed** (awaiting operator) |
 | [0009](0009-agent-council-hybrid.md) | The agent council: a hybrid machine on the speckit dialect | **proposed** (awaiting operator) |
+| [0010](0010-off-worker-commits.md) | Commits run off the async workers: the disk leg is ordering, not thread identity | **proposed** (awaiting operator) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
