@@ -48,6 +48,48 @@ change; lowering it is refused. Attribute-based coverage exclusions
 denominator. Every new line of production code ships with a test that
 executes it; a feature without its tests is an incomplete feature.
 
+### Regression-test placement (decision 0011)
+
+Decision [0011](decisions/0011-concurrency-tests-and-the-coverage-gate.md)
+(*proposed*, awaiting the operator) settles where a concurrency regression
+test lives; the axis is **cold-path presence**, not seam access:
+
+1. **Inline `#[cfg(test)]` in `src/<module>.rs` is the default and stays
+   measured.** Inline modules are part of the production report — every line
+   and branch must be taken on every run, which is the exact gate's vacuity
+   detector working. A branch-stable deterministic interleaving test stays
+   inline even when it drives a crate-private seam; seam access alone never
+   forces a move.
+2. **A test that needs a cold failure path** — a line that runs only while
+   the bug is present or the schedule betrays (an exhausted retry budget, a
+   "window never hit" diagnostic, a sleep-as-sync residual) — is unwritable
+   inline. Its home is `src/<module>/<name>_tests.rs`, declared
+   `#[cfg(test)] mod <name>_tests;` beside its owner: it runs under
+   `cargo test`, sees `pub(crate)`, is excluded from the coverage report by
+   its harness name, and still covers the production lines it executes. The
+   harness is a refuge for the cold path, never a landfill for the
+   inconvenient: an inline module moves only when a concrete test demands it.
+3. **Public-API, wire-shaped races live in `tests/*.rs`** — real protocol
+   against real servers, no mocks (0004). A `tests/` test must not need a
+   crate-private seam; if it does, it is a rule-2 test.
+4. **Seams stay `#[cfg(test)]`-only** on the owning module, `pub(crate)`
+   where a sibling harness file needs them — never a feature flag, which
+   would double every gate's build matrix. Every seam keeps at least one test
+   that installs it: the dead-arm refusal follows execution, not file
+   location, because harness execution of production lines still feeds the
+   report.
+5. **Writing disciplines, wherever the test lives:** chaos at the poles only
+   (probability 0 or 100 — a mid-band rule is unreproducible by
+   construction); no wall-clock validity assertions (generate the fixture
+   per run, or drive the branch behind a generated fixture); no sleep as
+   synchronization (a sleep a test depends on is a race wearing a timeout —
+   use a seam or a real deadline); no shared global mutable state without a
+   seam (fresh `Store::new` inline; per-test inboxes on the wire).
+6. **Harness names are reserved under `src/`** (`tests.rs`, `*_tests.rs`,
+   `*-tests.rs`): the coverage gate refuses any such file that its parent
+   module does not declare under `#[cfg(test)]` — the one silent way to
+   shrink the measured denominator, closed structurally (decision 0011).
+
 ## Dependencies
 
 `deny.toml` allowlists permissive licenses only (MIT, Apache-2.0, BSD, ISC,
