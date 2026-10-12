@@ -124,7 +124,7 @@
       ],
       "limits": {
         "max_attempts": 3,
-        "timeout_seconds": 7200
+        "timeout_seconds": 14400
       },
       "sequence": [
         {
