@@ -251,7 +251,7 @@ async fn search_hog(
 
 /// DELETE /api/v1/delete-all — MailHog's alias for wiping the mailbox.
 async fn delete_all(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({ "removed": state.store.clear_all() }))
+    Json(json!({ "removed": state.store.clone().clear_all_async().await }))
 }
 
 /// DELETE /api/v1/messages — MailHog deletes all; Mailpit sends
@@ -264,9 +264,20 @@ pub async fn delete_messages(
     let ids = body
         .ok()
         .and_then(|Json(b)| if b.ids.is_empty() { None } else { Some(b.ids) });
+    // Each delete is individually atomic and mirrors its own id — the batch
+    // was never one transaction — so a counted loop of awaited deletes keeps
+    // the semantics exactly, off the async workers (decision 0010).
     let removed = match ids {
-        Some(ids) => ids.iter().filter(|id| state.store.delete(id)).count(),
-        None => state.store.clear_all(),
+        Some(ids) => {
+            let mut removed = 0;
+            for id in ids {
+                if state.store.clone().delete_async(id).await {
+                    removed += 1;
+                }
+            }
+            removed
+        }
+        None => state.store.clone().clear_all_async().await,
     };
     Json(json!({ "removed": removed }))
 }
