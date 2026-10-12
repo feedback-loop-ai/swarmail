@@ -68,7 +68,9 @@ pub struct SearchParams {
     pub inbox: Option<String>,
 }
 
-/// Mailpit's delete body (`{"ids": [...]}`); absent/empty means delete all.
+/// Mailpit's delete body: `{"ids": [...]}` — a non-empty list of message
+/// ids is the only selector `DELETE /api/v1/messages` accepts (decision
+/// 0011); anything else is a `400`.
 #[derive(Debug, Default, Deserialize)]
 pub struct IdsBody {
     #[serde(default)]
@@ -254,34 +256,37 @@ async fn delete_all(State(state): State<AppState>) -> Json<Value> {
     Json(json!({ "removed": state.store.clone().clear_all_async().await }))
 }
 
-/// DELETE /api/v1/messages — MailHog deletes all; Mailpit sends
-/// `{"ids": [...]}` and deletes exactly those. Both work: an absent, empty
-/// or unparseable body wipes everything, like upstream's decoders do.
+/// DELETE /api/v1/messages — Mailpit's `{"ids": [...]}` delete: the named
+/// ids and nothing else (decision 0011). Every other body — absent, empty,
+/// unparseable, wrong-typed, or an empty `ids` array — is a `400` that
+/// deletes nothing: one client's typo must never be every parallel session's
+/// data loss, and the cross-inbox wipe lives only at `DELETE
+/// /api/v1/delete-all`. The deletion itself flows synchronously through the
+/// store, so removals still wake `await` watchers (decisions 0001/0002).
 pub async fn delete_messages(
     State(state): State<AppState>,
     body: Result<Json<IdsBody>, JsonRejection>,
-) -> Json<Value> {
-    let ids = body
-        .ok()
-        .and_then(|Json(b)| if b.ids.is_empty() { None } else { Some(b.ids) });
+) -> Result<Json<Value>, ApiError> {
+    let ids = match body {
+        Ok(Json(ids)) if !ids.ids.is_empty() => ids.ids,
+        _ => {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                "deletion requires a non-empty \"ids\" list".into(),
+            ));
+        }
+    };
     // Each delete is individually atomic and mirrors its own id — the batch
     // was never one transaction — so a counted loop of awaited deletes keeps
     // the semantics exactly, off the async workers (decision 0010).
-    let removed = match ids {
-        Some(ids) => {
-            let mut removed = 0;
-            for id in ids {
-                if state.store.clone().delete_async(id).await {
-                    removed += 1;
-                }
-            }
-            removed
+    let mut removed = 0;
+    for id in ids {
+        if state.store.clone().delete_async(id).await {
+            removed += 1;
         }
-        None => state.store.clone().clear_all_async().await,
-    };
-    Json(json!({ "removed": removed }))
+    }
+    Ok(Json(json!({ "removed": removed })))
 }
-
 // ---------- shared internals ----------
 
 /// The store as one mailbox (all inboxes), or one inbox when scoped.

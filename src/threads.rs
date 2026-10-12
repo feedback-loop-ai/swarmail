@@ -8,10 +8,19 @@
 //!
 //! Node naming is load-bearing: members are prefixed `id:`, `subject:` and
 //! `mail:`, and a component's representative is its lexicographically
-//! smallest member — so a thread's identity prefers a real message id, then
-//! the subject, then a lone mail's uuid, whatever order the mail arrived in.
-//! The representative is hashed (FNV-1a) into the URL-safe `key` the UI and
-//! the REST thread view address threads by.
+//! smallest member, so the grouping itself never depends on arrival order.
+//! The advertised identity is deliberately NOT that representative: the
+//! URL-safe `key` the UI and the REST thread view address threads by is the
+//! FNV-1a of the conversation's own first mail's node — the oldest member,
+//! whose anchor a reply can never rewrite — so a later reply, even one whose
+//! message-id sorts before the root's, cannot move an advertised URL.
+//!
+//! The key is derived per request, so mail stored before this derivation
+//! (or before any upgrade) is re-keyed on the next request — there is no
+//! thread state to migrate. A key still moves when the conversation's oldest
+//! mail leaves the newest-`VIEW_CAP` window, is deleted or cap-pruned, or
+//! when two mails share a receive millisecond and the id tie-break re-orders
+//! them; those are the documented residuals of anchoring on the oldest mail.
 
 use crate::model::Email;
 use crate::store::{Filter, Store};
@@ -28,7 +37,8 @@ pub const VIEW_CAP: usize = 200;
 /// order (oldest first).
 #[derive(Debug, Clone, Serialize)]
 pub struct Thread {
-    /// URL-safe identity: FNV-1a of the thread's canonical member.
+    /// URL-safe identity: FNV-1a of the conversation's first mail's node —
+    /// append-stable as replies arrive (issue #9).
     pub key: String,
     /// The subject of the oldest mail in the thread that has one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,7 +170,9 @@ fn thread_node(email: &Email) -> String {
 }
 
 /// FNV-1a 64-bit, hex-encoded: a stable, dependency-free way to turn a
-/// thread's canonical member into a short URL-safe key.
+/// thread's anchor — its first mail's node — into a short URL-safe key.
+/// Distinct components never share a node, so distinct threads never share
+/// a key.
 fn thread_key(canonical: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in canonical.as_bytes() {
@@ -216,15 +228,19 @@ pub fn group_threads(emails: &[Arc<Email>]) -> Vec<Thread> {
     }
 
     let mut threads: Vec<Thread> = grouped
-        .into_iter()
-        .map(|(representative, mut emails)| {
+        .into_values()
+        .map(|mut emails| {
             emails.sort_by(|a, b| {
                 a.received_ms
                     .cmp(&b.received_ms)
                     .then_with(|| a.id.cmp(&b.id))
             });
             Thread {
-                key: thread_key(&representative),
+                // The anchor is the conversation's own first message (the
+                // bucket is sorted oldest first), not the union-find
+                // representative: appending replies — even one whose
+                // message-id sorts before the root's — cannot change it.
+                key: thread_key(&thread_node(&emails[0])),
                 subject: emails.iter().find_map(|e| e.subject.clone()),
                 count: emails.len(),
                 last_received_ms: emails.last().map_or(0, |e| e.received_ms),
@@ -483,6 +499,39 @@ mod tests {
         assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(key, thread_key("id:a@x.io"), "stable");
         assert_ne!(key, thread_key("id:b@x.io"), "distinct per thread");
+    }
+
+    #[test]
+    fn the_thread_key_survives_a_reply_with_a_smaller_message_id() {
+        // The issue's exact scenario: the reply's id sorts before the root's,
+        // so the lexicographic representative would flip — but the advertised
+        // key is anchored on the conversation's own first mail, and must not
+        // move. (Red on the representative scheme, which re-keyed here.)
+        let mut root = chained("root", Some("Stable"), 100, &[]);
+        root.message_id = Some("z@x.io".into());
+        let threads = group(vec![root.clone()]);
+        assert_eq!(threads.len(), 1, "{threads:?}");
+        let advertised = threads[0].key.clone();
+
+        let mut reply = chained("reply", Some("Re: Stable"), 200, &[]);
+        reply.message_id = Some("a@x.io".into());
+        reply.in_reply_to = Some("z@x.io".into());
+        let grown = group(vec![root.clone(), reply.clone()]);
+        assert_eq!(grown.len(), 1, "{grown:?}");
+        assert_eq!(
+            grown[0].key, advertised,
+            "a reply with a smaller message-id must not move the thread URL"
+        );
+        assert_eq!(grown[0].count, 2);
+
+        // And it stays put under further growth: the anchor is the oldest
+        // mail, which appends can never replace.
+        let mut third = chained("third", Some("Re: Stable"), 300, &[]);
+        third.message_id = Some("0@x.io".into());
+        third.in_reply_to = Some("a@x.io".into());
+        let grown = group(vec![root, reply, third]);
+        assert_eq!(grown[0].key, advertised, "the key is append-stable");
+        assert_eq!(grown[0].count, 3);
     }
 
     #[test]

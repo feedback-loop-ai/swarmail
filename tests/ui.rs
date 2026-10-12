@@ -372,6 +372,55 @@ async fn thread_endpoints_group_a_references_chain_over_real_smtp() {
     assert_eq!(body["error"], "thread not found");
 }
 
+/// The issue's exact scenario (#9): a reply whose message-id sorts before
+/// the root's used to flip the lexicographic representative and re-key the
+/// conversation. The advertised URL must survive ordinary growth.
+#[tokio::test]
+async fn the_thread_url_survives_a_reply_with_a_smaller_message_id() {
+    let srv = start().await;
+    send_headers(
+        srv.smtp_addr,
+        "keys",
+        &[("Message-ID", "<z@x.io>")],
+        "Stable",
+    )
+    .await;
+    let (_, threads) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/keys/threads", None).await;
+    let advertised = threads[0]["key"].as_str().unwrap().to_string();
+
+    send_headers(
+        srv.smtp_addr,
+        "keys",
+        &[("Message-ID", "<a@x.io>"), ("In-Reply-To", "<z@x.io>")],
+        "Re: Stable",
+    )
+    .await;
+
+    let (st, threads) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/keys/threads", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(threads.as_array().unwrap().len(), 1, "{threads}");
+    assert_eq!(
+        threads[0]["key"].as_str().unwrap(),
+        advertised,
+        "the thread URL the first request handed out must not move"
+    );
+    assert_eq!(threads[0]["count"], 2);
+
+    // The view the UI addresses by that key still resolves to the grown
+    // conversation.
+    let (st, thread) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/inboxes/keys/threads/{advertised}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let emails = thread["emails"].as_array().unwrap();
+    assert_eq!(emails[0]["message_id"], "z@x.io", "oldest first");
+    assert_eq!(emails[1]["message_id"], "a@x.io");
+}
+
 #[tokio::test]
 async fn thread_endpoints_fall_back_to_the_normalized_subject() {
     let srv = start().await;

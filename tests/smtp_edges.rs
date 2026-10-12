@@ -356,7 +356,63 @@ async fn chaos_on_connect_mailfrom_and_data_with_and_without_error() {
     drop(c);
     http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
 
-    // data chaos with only a delay: the mail is still stored after the wait.
+    // mail_from with only a delay: the stage's default failure — the one
+    // consistent policy (issue #17). Deterministic: probability 100, no
+    // sleeps, the reply line is asserted exactly.
+    let (st, _) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"mail_from": {"probability": 100, "delay_ms": 5}}"#),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<a@x.io>").await;
+    assert_eq!(c.reply().await, "451 4.3.0 chaos");
+    drop(c);
+    http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
+
+    // mail_from chaos with a custom error: the explicit line, delay applied.
+    let (st, _) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"mail_from": {"probability": 100, "error": "450 busy"}}"#),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<a@x.io>").await;
+    assert_eq!(c.reply().await, "450 busy");
+    drop(c);
+    http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
+
+    // rcpt with only a delay: the same default failure, the same one policy.
+    let (st, _) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"rcpt": {"probability": 100, "delay_ms": 5}}"#),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<f@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<r@x.io>").await;
+    assert_eq!(c.reply().await, "451 4.3.0 chaos");
+    drop(c);
+    http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
+
+    // data chaos with only a delay: the mail is NOT stored — a delay-only
+    // rule is a failure, never a slow success (issue #17).
     let (st, _) = http_json(
         srv.http_addr,
         "PUT",
@@ -365,12 +421,17 @@ async fn chaos_on_connect_mailfrom_and_data_with_and_without_error() {
     )
     .await;
     assert_eq!(st, 200);
-    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "delayed", "x")
-        .await
-        .unwrap();
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<f@x.io>").await;
+    c.reply().await;
+    c.send("RCPT TO:<r@x.io>").await;
+    c.reply().await;
+    assert_eq!(c.data("Subject: delayed\r\n\r\nx").await, "451 4.3.0 chaos");
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
-    assert_eq!(body["count"], 1);
+    assert_eq!(body["count"], 0, "the delayed DATA stored nothing");
     http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
 
     // data chaos with an error: the mail is NOT stored — that is the chaos.
@@ -392,9 +453,12 @@ async fn chaos_on_connect_mailfrom_and_data_with_and_without_error() {
     assert_eq!(c.data("Subject: nope\r\n\r\nx").await, "554 rejected");
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
-    assert_eq!(body["count"], 1); // only the delayed one
+    assert_eq!(body["count"], 0, "nothing was stored in this test at all");
 }
 
+/// Delay-only connect chaos (issue #17): the wait happens, then the session
+/// closes with NO line at all — not the banner and not the stages' default
+/// `451`; the greeting is the one stage with no reply to fail with.
 #[tokio::test]
 async fn connect_chaos_with_delay_only_still_drops_the_session() {
     let srv = start().await;
@@ -406,10 +470,11 @@ async fn connect_chaos_with_delay_only_still_drops_the_session() {
     )
     .await;
     assert_eq!(st, 200);
-    // No error line configured: the connection just closes silently.
     let mut c = SmtpConn::connect_raw(srv.smtp_addr).await;
-    let greeted = tokio::time::timeout(std::time::Duration::from_millis(500), c.reply()).await;
-    assert!(greeted.is_err() || !greeted.unwrap().starts_with("220"));
+    let line = tokio::time::timeout(std::time::Duration::from_secs(1), c.reply())
+        .await
+        .expect("the session must close after the delay, not hang");
+    assert_eq!(line, "", "no banner and no error line: a silent close");
 }
 
 fn base64_of(s: &str) -> String {

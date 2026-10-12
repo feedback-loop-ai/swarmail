@@ -602,12 +602,49 @@ async fn long_bodies_get_a_truncated_snippet() {
     assert!(snippet.ends_with("..."));
 }
 
+/// The shim DELETE contract (decision 0011): an explicit non-empty `ids`
+/// list deletes exactly those mails through the real store; every other
+/// body — absent, empty, unparseable, wrong-typed or `{"ids": []}` — is a
+/// `400` that deletes nothing, and `delete-all` stays the sole wipe.
 #[tokio::test]
 async fn shim_deletes_go_through_the_store() {
     let s = start().await;
     let (a1, a2, b1, b2) = seed(&s).await;
 
-    // Mailpit's selective delete: exactly the named ids.
+    // Every destructive-looking request that names no target refuses — and
+    // after each one both inboxes still hold exactly their mail (exact
+    // before/after counts, not just a status: a silent wipe must never read
+    // as a pass, the #6 shape).
+    for body in [
+        None,
+        Some(("application/json", "")),
+        Some(("application/json", "not json at all")),
+        Some(("application/json", r#"{"ids": null}"#)),
+        Some(("application/json", r#"{"ids": "alpha one"}"#)),
+        Some(("application/json", r#"{"ids": [1, 2]}"#)),
+        Some(("application/json", r#"{"ids": []}"#)),
+    ] {
+        let (status, _, raw) = http_raw(s.http_addr, "DELETE", "/api/v1/messages", body).await;
+        assert_eq!(
+            status,
+            400,
+            "{body:?} must refuse: {}",
+            String::from_utf8_lossy(&raw)
+        );
+        let refused: Value = serde_json::from_slice(&raw).unwrap();
+        assert!(
+            refused["error"].as_str().unwrap().contains("ids"),
+            "the 400 names the contract: {refused}"
+        );
+        assert_eq!(
+            inbox_counts(&s).await,
+            (2, 2),
+            "the refusal deleted nothing: {body:?}"
+        );
+    }
+
+    // The selector: exactly the named ids, across inboxes, synchronously
+    // through the store.
     let payload = json!({"ids": [a1, b2]}).to_string();
     let (status, _, raw) = http_raw(
         s.http_addr,
@@ -630,10 +667,15 @@ async fn shim_deletes_go_through_the_store() {
             http_json(s.http_addr, "GET", &format!("/api/v1/messages/{id}"), None).await;
         assert_eq!(status, 200, "{id} must survive");
     }
+    assert_eq!(
+        inbox_counts(&s).await,
+        (1, 1),
+        "the selective delete touched nothing else"
+    );
 
-    // An unknown id deletes nothing: the counted loop only counts ids the
-    // store actually removed.
-    let payload = json!({"ids": [a2, "no-such-id"]}).to_string();
+    // The other half through the same selector: the store is now empty, so
+    // the next seed is the only mail there is.
+    let payload = json!({"ids": [a2, b1]}).to_string();
     let (status, _, raw) = http_raw(
         s.http_addr,
         "DELETE",
@@ -643,52 +685,38 @@ async fn shim_deletes_go_through_the_store() {
     .await;
     assert_eq!(status, 200);
     let removed: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(removed, json!({"removed": 2}));
     assert_eq!(
-        removed,
-        json!({"removed": 1}),
-        "the unknown id counts for nothing"
+        inbox_counts(&s).await,
+        (0, 0),
+        "the selector empties exactly what it names"
     );
 
-    // MailHog's wipe: no body at all — only b1 is left to remove.
-    let (status, _, raw) = http_raw(s.http_addr, "DELETE", "/api/v1/messages", None).await;
-    assert_eq!(status, 200);
-    let removed: Value = serde_json::from_slice(&raw).unwrap();
-    assert_eq!(removed, json!({"removed": 1}));
-    let (status, body) = http_json(s.http_addr, "GET", "/api/v1/messages", None).await;
-    assert_eq!(status, 200);
-    assert_eq!(body["total"], 0);
-
-    // Re-seed and wipe through the alias + the unparseable-body path.
+    // The sole cross-inbox wipe: the explicit alias, unchanged (0004) —
+    // it takes exactly the store it finds, here the freshly seeded 4.
     let (_a1, _a2, _b1, _b2) = seed(&s).await;
     let (status, _, raw) = http_raw(s.http_addr, "DELETE", "/api/v1/delete-all", None).await;
     assert_eq!(status, 200);
     let removed: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(removed, json!({"removed": 4}));
+    assert_eq!(
+        inbox_counts(&s).await,
+        (0, 0),
+        "the alias is the one and only wipe"
+    );
+}
 
-    let (_a1, _a2, _b1, _b2) = seed(&s).await;
-    let (status, _, raw) = http_raw(
-        s.http_addr,
-        "DELETE",
-        "/api/v1/messages",
-        Some(("application/json", "not json at all")),
+/// Exact per-inbox counts: destructive assertions are proven by before/after
+/// mail over BOTH inboxes, never by a status code alone.
+async fn inbox_counts(s: &RunningServer) -> (u64, u64) {
+    let (st, alpha) = http_json(s.http_addr, "GET", "/api/v1/inboxes/alpha/count", None).await;
+    assert_eq!(st, 200);
+    let (st, beta) = http_json(s.http_addr, "GET", "/api/v1/inboxes/beta/count", None).await;
+    assert_eq!(st, 200);
+    (
+        alpha["count"].as_u64().unwrap(),
+        beta["count"].as_u64().unwrap(),
     )
-    .await;
-    assert_eq!(status, 200);
-    let removed: Value = serde_json::from_slice(&raw).unwrap();
-    assert_eq!(removed, json!({"removed": 4}));
-
-    // An empty ids array is "delete everything", like upstream.
-    let (_a1, _a2, _b1, _b2) = seed(&s).await;
-    let (status, _, raw) = http_raw(
-        s.http_addr,
-        "DELETE",
-        "/api/v1/messages",
-        Some(("application/json", r#"{"ids": []}"#)),
-    )
-    .await;
-    assert_eq!(status, 200);
-    let removed: Value = serde_json::from_slice(&raw).unwrap();
-    assert_eq!(removed, json!({"removed": 4}));
 }
 
 #[tokio::test]

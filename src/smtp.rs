@@ -437,16 +437,18 @@ async fn session(
                     continue;
                 }
                 if let Some(rule) = chaos.check(ChaosEvent::Data) {
+                    // One policy at every stage (issue #17): a fired rule
+                    // waits, then fails — an explicit `error` line, else this
+                    // stage's default `451 4.3.0 chaos`. A delay-only DATA
+                    // rule is a failure, not a slow success: the mail is
+                    // never stored.
                     tokio::time::sleep(std::time::Duration::from_millis(rule.delay_ms)).await;
-                    if rule.error.is_some() {
-                        // Mail is intentionally NOT stored — that is the chaos.
-                        write_line(
-                            reader.get_mut(),
-                            rule.error.as_deref().unwrap_or("451 4.3.0 chaos"),
-                        )
-                        .await?;
-                        continue;
-                    }
+                    write_line(
+                        reader.get_mut(),
+                        rule.error.as_deref().unwrap_or("451 4.3.0 chaos"),
+                    )
+                    .await?;
+                    continue;
                 }
 
                 let email =

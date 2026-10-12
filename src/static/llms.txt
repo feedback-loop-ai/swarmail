@@ -71,7 +71,11 @@ built-in root store).
 - `GET /api/v1/inboxes/{inbox}/threads` — the inbox grouped into conversations:
   References/In-Reply-To/Message-ID chains first, the normalized subject
   (Re:/Fwd: stripped, case-folded) as the fallback; each thread lists its mails
-  oldest first and has a stable `key` for `/api/v1/inboxes/{inbox}/threads/{key}`.
+  oldest first and has a stable `key` for
+  `/api/v1/inboxes/{inbox}/threads/{key}` — the hash of the conversation's
+  first mail's anchor, so replies (even one with a smaller message-id) never
+  move an advertised URL. Threads are recomputed per request: pre-existing
+  mail is re-keyed once on the next request, no migration.
 - `GET /api/v1/inboxes/{inbox}/feed` — server-sent events, one `threads` event
   per change carrying the full thread view as JSON (the first event is the
   snapshot; a lagging watcher is repaired with a recomputed view). The web UI
@@ -89,9 +93,10 @@ Same store, the two shapes existing suites already speak:
   `messages`), newest first. `?inbox=` scopes to one swarmail inbox;
   `?limit=`/`?start=` page.
 - `GET /api/v1/message/{id}` — Mailpit's full message; `/plain` serves the
-  extracted text part. `DELETE /api/v1/messages` deletes the `{"ids": [...]}`
-  named mails (or everything when the body is absent/empty/unparseable) and
-  replies `{"removed": n}`; `DELETE /api/v1/delete-all` is the wipe alias.
+  extracted text part. `DELETE /api/v1/messages` deletes exactly the
+  non-empty `{"ids": [...]}` named mails and replies `{"removed": n}`; any
+  other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that
+  deletes nothing — `DELETE /api/v1/delete-all` is the only cross-inbox wipe.
 - `GET /api/v2/messages` — MailHog's `{total, count, start, items}` with
   `data.Message` shapes (`Content.{Headers,Body,Size,MIME}`,
   `Raw.{From,To,Data,Helo}`). `GET /api/v2/search` takes

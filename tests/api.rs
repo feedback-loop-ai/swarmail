@@ -247,7 +247,9 @@ async fn clear_inbox_and_clear_all_count_removals() {
     assert_eq!(st, 200);
     assert_eq!(body["removed"], 1);
 
-    let (st, body) = http_json(srv.http_addr, "DELETE", "/api/v1/messages", None).await;
+    // The cross-inbox wipe is the explicit alias now (decision 0011): a
+    // body-less shim DELETE is a 400, not a wipe.
+    let (st, body) = http_json(srv.http_addr, "DELETE", "/api/v1/delete-all", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["removed"], 1);
 

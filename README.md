@@ -290,7 +290,7 @@ test suites actually hit, answered from one store:
 | `GET /api/v1/messages` | Mailpit's summary envelope, newest first; `?inbox=` scopes, `?limit=`/`?start=` page |
 | `GET /api/v1/message/{id}` | Mailpit's full message shape (`Text`, `HTML`, `ReturnPath`, …) |
 | `GET /api/v1/message/{id}/plain`, `GET /api/v1/messages/{id}/plain` | the extracted text part as `text/plain; charset=utf-8` |
-| `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete — or a wipe when the body is absent/empty/unparseable; replies `{"removed": n}` |
+| `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete — the named ids and nothing else; every other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that deletes nothing |
 | `DELETE /api/v1/delete-all` | MailHog's wipe alias |
 | `GET /api/v1/search` | Mailpit search: `kind=from\|to\|subject\|containing`, `?query=` required |
 | `GET /api/v2/messages` | MailHog v2 `{total, count, start, items}` with `data.Message` shapes |
@@ -310,7 +310,18 @@ is the shim.
 `GET /api/v1/inboxes/{inbox}/threads` groups the inbox into conversations —
 References/In-Reply-To/Message-ID chains when they resolve, the normalized
 subject (Re:/Fwd: stripped, case-folded) as the fallback — each with a
-stable `key`. `…/feed` is the SSE stream of the full thread view: one
+stable `key`: the hash of the conversation's *first* mail's anchor (its
+`Message-ID`, else its `In-Reply-To`/first `References` entry, else the
+normalized subject, else its own id). A reply — even one whose message-id
+sorts before the root's — can never move the URL a client was already
+given.
+
+Mail stored before this derivation is re-keyed on the next request —
+threads are recomputed per request, so there is no data migration and
+nothing to run; a key also moves when its conversation's oldest mail
+leaves the newest-200 view window, is deleted or cap-pruned, or when two
+mails share a receive millisecond and the id tie-break re-orders them.
+`…/feed` is the SSE stream of the full thread view: one
 snapshot, then one event per accepted mail, driven by the same per-inbox
 watcher that powers `await`. The human UI at `/ui/inbox/{inbox}` and
 `/ui/inbox/{inbox}/thread/{key}` is a thin shell over these endpoints and
@@ -352,6 +363,24 @@ $ curl -X DELETE localhost:8025/api/v1/chaos                  # recovery is a te
 Chaos is per-stage — `connect`, `mail_from`, `rcpt`, `data` — each with its
 own probability, error line and delay. Set it, run the retry suite, clear
 it. MCP: `swarmail_set_chaos` / `swarmail_clear_chaos`.
+
+A fired rule always applies its delay, then always fails its stage — a
+delay-only rule (probability set, no `error`) is a slow failure, never a
+harmless slow-down (issue #17):
+
+| Stage | Delay-only rule (no `error`) | With `error` |
+|---|---|---|
+| `connect` | wait, then close with no line at all — neither banner nor error | wait, then the given line replaces the banner |
+| `mail_from` | wait, then `451 4.3.0 chaos` | wait, then the given line |
+| `rcpt` | wait, then `451 4.3.0 chaos` | wait, then the given line |
+| `data` | wait, then `451 4.3.0 chaos` — the mail is **not** stored | wait, then the given line — the mail is **not** stored |
+
+So `error: null` means *the stage's default failure*, not *no failure* —
+turn chaos off with `probability: 0` or by clearing the config. Two
+orderings are pinned: a genuine over-limit `552 5.3.4` is answered before
+the data chaos rule is consulted (resource failures precede injected
+ones), and a data rule's delay applies after the body has been received
+and before the reply — the transfer itself is never slowed.
 
 ### Persistence — the restart copy
 
