@@ -7,6 +7,7 @@
 use crate::model::Email;
 use crate::persist;
 use dashmap::DashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -100,7 +101,7 @@ pub struct Totals {
 /// nonexistent-inbox "no-op" means *removes no mail, returns 0*, not
 /// channel immortality.
 fn drain_inbox(
-    inboxes: &DashMap<String, Vec<Arc<Email>>>,
+    inboxes: &DashMap<String, VecDeque<Arc<Email>>>,
     index: &DashMap<String, Arc<Email>>,
     watchers: &DashMap<String, broadcast::Sender<Arc<Email>>>,
     inbox: &str,
@@ -111,14 +112,20 @@ fn drain_inbox(
             for e in &list {
                 index.remove(&e.id);
             }
-            list
+            list.into_iter().collect()
         }
         None => Vec::new(),
     }
 }
 
 pub struct Store {
-    inboxes: DashMap<String, Vec<Arc<Email>>>,
+    /// Oldest at the front, newest at the back (insertion order). A deque
+    /// because eviction pops the front: a `Vec`'s front-drain memmoves every
+    /// remaining element on each capped insert, which at the default cap
+    /// costs more than the whole rest of the accept path (the steady-state
+    /// bench measures it). The law is decision 0003's, unchanged — the
+    /// container only changes what eviction costs.
+    inboxes: DashMap<String, VecDeque<Arc<Email>>>,
     /// id -> email, a global index for O(1) lookup.
     index: DashMap<String, Arc<Email>>,
     /// Per-inbox wake channels: created by the first `subscribe` to an inbox
@@ -202,14 +209,17 @@ impl Store {
         let mut store = Self::new(max_per_inbox);
         // Restore in insertion order without going through `insert`: the rows
         // are already committed, and restored mail must not re-fire watchers
-        // or webhooks on every restart.
+        // or webhooks on every restart. `push_back` keeps front = oldest, so
+        // the restored order matches the live one; restore still does NOT
+        // prune (0003 puts eviction in `insert`) — a restore over a lowered
+        // cap is trimmed by the first insert's catch-up, not silently here.
         for email in emails {
             let email = Arc::new(email);
             store
                 .inboxes
                 .entry(email.inbox.clone())
                 .or_default()
-                .push(email.clone());
+                .push_back(email.clone());
             store.index.insert(email.id.clone(), email);
         }
         store
@@ -313,12 +323,26 @@ impl Store {
         let mut pruned: Vec<Arc<Email>> = Vec::new();
         {
             let mut list = self.inboxes.entry(inbox.clone()).or_default();
-            list.push(email.clone());
+            list.push_back(email.clone());
             if self.max_per_inbox > 0 && list.len() > self.max_per_inbox {
+                // The front of the deque is the oldest mail: `pop_front`
+                // evicts shift-free, where a Vec's `drain(..overflow)`
+                // memmoves every remaining element on every capped insert
+                // (781 KiB per accept at the default cap — the bulk of the
+                // steady-state bench's number). The loop is general, not a
+                // single `pop_front`: a restore over a lowered cap owes more
+                // than one eviction on the first insert, and the `expect` is
+                // an invariant — a list above its cap always has a front to
+                // evict. Push and prune share the shard write guard, so the
+                // cap is never observed exceeded and `emails_dropped` counts
+                // every eviction exactly (0003).
                 let overflow = list.len() - self.max_per_inbox;
-                pruned = list.drain(..overflow).collect();
-                for p in &pruned {
-                    self.index.remove(&p.id);
+                for _ in 0..overflow {
+                    let oldest = list
+                        .pop_front()
+                        .expect("a list above its cap has a front to evict");
+                    self.index.remove(&oldest.id);
+                    pruned.push(oldest);
                 }
                 self.totals
                     .emails_dropped
@@ -367,6 +391,27 @@ impl Store {
         }
     }
 
+    /// The newest `cap` emails in `inbox` matching `filter`, newest first.
+    ///
+    /// The filter is applied **before** the bound: the result is the newest
+    /// `cap` *matches*, never the newest mails filtered down — exactly the
+    /// `list(inbox, filter).into_iter().take(cap)` window, walked only as
+    /// far along the list as the cap needs. The thread view's cap is the
+    /// caller this exists for: an inbox at the default cap is scanned no
+    /// deeper than the window it renders.
+    pub fn list_bounded(&self, inbox: &str, filter: &Filter, cap: usize) -> Vec<Arc<Email>> {
+        match self.inboxes.get(inbox) {
+            Some(list) => list
+                .iter()
+                .rev()
+                .filter(|e| filter.matches(e))
+                .take(cap)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
     /// Newest-first listing across ALL inboxes matching `filter`.
     ///
     /// The MailHog/Mailpit compat shims expose a single global mailbox, so
@@ -387,8 +432,18 @@ impl Store {
         all
     }
 
+    /// How many emails in `inbox` match `filter`.
+    ///
+    /// A count inspects matching mail; it does not need to own it — the scan
+    /// is the inherent cost, the per-match `Arc` clones and the `Vec` they
+    /// land in are not. Decision 0010's exactness is untouched: the same
+    /// filter over the same list, counted, is the same integer `list` would
+    /// return a length for.
     pub fn count(&self, inbox: &str, filter: &Filter) -> usize {
-        self.list(inbox, filter).len()
+        match self.inboxes.get(inbox) {
+            Some(list) => list.iter().filter(|e| filter.matches(e)).count(),
+            None => 0,
+        }
     }
 
     pub fn delete(&self, id: &str) -> bool {
@@ -1140,6 +1195,40 @@ mod persist_tests {
         assert_eq!(store.emails_dropped(), 1);
     }
 
+    /// Restore never prunes (0003 puts eviction in `insert`): a data file
+    /// written under a higher cap, reopened under a lower one, holds every
+    /// restored mail until the first insert pays the catch-up — trimming
+    /// exactly to the lower cap, oldest evicted first, `emails_dropped`
+    /// counting the whole excess. This is the `overflow > 1` arm of the
+    /// eviction loop, which live ingest alone can never produce.
+    #[test]
+    fn restore_over_a_lowered_cap_trims_on_the_first_insert() {
+        let path = db_path("lowered-cap");
+        {
+            let store = Store::open(0, &path).unwrap();
+            for id in ["1", "2", "3", "4", "5"] {
+                store.insert(email(id, "box", "a@x.io"));
+            }
+        }
+        let store = Store::open(2, &path).unwrap();
+        assert_eq!(store.count("box", &Filter::default()), 5);
+        assert_eq!(store.emails_dropped(), 0, "restore does not prune");
+        store.insert(email("6", "box", "a@x.io"));
+        assert_eq!(store.count("box", &Filter::default()), 2);
+        assert_eq!(store.emails_dropped(), 4, "the whole catch-up, counted");
+        assert_eq!(
+            store
+                .list("box", &Filter::default())
+                .iter()
+                .map(|e| e.id.as_str())
+                .collect::<Vec<_>>(),
+            ["6", "5"],
+            "oldest evicted first, newest kept"
+        );
+        assert!(store.get("1").is_none());
+        assert!(store.get("4").is_none());
+    }
+
     #[test]
     fn clear_and_clear_all_are_mirrored_to_the_data_file() {
         let path = db_path("clear");
@@ -1232,6 +1321,111 @@ mod persist_tests {
         assert!(
             reopened.get("r1").is_none(),
             "the drained mail stays drained"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::*;
+
+    /// The cap is respected and the newest mails are the ones kept — the
+    /// same window `list(..).take(cap)` produces.
+    #[test]
+    fn list_bounded_respects_the_cap_keeping_the_newest() {
+        let store = Store::new(0);
+        for i in 0..10 {
+            let mut e = email(&format!("b{i}"), "box", "a@x.io");
+            e.received_ms = i;
+            store.insert(e);
+        }
+        let bounded = store.list_bounded("box", &Filter::default(), 3);
+        assert_eq!(
+            bounded.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["b9", "b8", "b7"]
+        );
+        let window: Vec<String> = store
+            .list("box", &Filter::default())
+            .into_iter()
+            .take(3)
+            .map(|e| e.id.clone())
+            .collect();
+        assert_eq!(
+            bounded.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
+            window
+        );
+    }
+
+    /// The filter is applied **before** the bound: the newest `cap`
+    /// *matches*, never the newest mails filtered down. The distinguishing
+    /// case: a filter whose newest match is not among the newest mails.
+    #[test]
+    fn list_bounded_filters_before_it_bounds() {
+        let store = Store::new(0);
+        for i in 0..10 {
+            let subject = if i % 2 == 0 { "keep" } else { "skip" };
+            let mut e = email(&format!("b{i}"), "box", "a@x.io");
+            e.subject = Some(subject.into());
+            e.received_ms = i;
+            store.insert(e);
+        }
+        let filter = Filter {
+            subject: Some("keep".into()),
+            ..Default::default()
+        };
+        let bounded = store.list_bounded("box", &filter, 2);
+        assert_eq!(
+            bounded.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["b8", "b6"],
+            "the newest two matches, not the newest mails filtered down"
+        );
+        let window: Vec<String> = store
+            .list("box", &filter)
+            .into_iter()
+            .take(2)
+            .map(|e| e.id.clone())
+            .collect();
+        assert_eq!(
+            bounded.iter().map(|e| e.id.clone()).collect::<Vec<_>>(),
+            window
+        );
+    }
+
+    #[test]
+    fn list_bounded_of_a_missing_inbox_is_empty() {
+        let store = Store::new(0);
+        assert!(
+            store
+                .list_bounded("ghost", &Filter::default(), 5)
+                .is_empty()
+        );
+    }
+
+    /// Decision 0010's exactness is allocation-free now: a count equals the
+    /// length of the list the same filter produces, for a needle that
+    /// matches a subset — and for the default filter over the whole inbox.
+    #[test]
+    fn count_matches_list_len_for_a_non_trivial_filter() {
+        let store = Store::new(0);
+        for i in 0..6 {
+            let subject = if i % 2 == 0 { "hit" } else { "miss" };
+            let mut e = email(&format!("c{i}"), "box", "a@x.io");
+            e.subject = Some(subject.into());
+            e.received_ms = i;
+            store.insert(e);
+        }
+        let filter = Filter {
+            subject: Some("hit".into()),
+            ..Default::default()
+        };
+        assert_eq!(store.count("box", &filter), 3);
+        assert_eq!(
+            store.count("box", &filter),
+            store.list("box", &filter).len()
+        );
+        assert_eq!(
+            store.count("box", &Filter::default()),
+            store.list("box", &Filter::default()).len()
         );
     }
 }

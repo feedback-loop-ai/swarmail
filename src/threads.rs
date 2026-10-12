@@ -242,13 +242,10 @@ pub fn group_threads(emails: &[Arc<Email>]) -> Vec<Thread> {
 
 /// The thread view of one inbox: the newest `VIEW_CAP` emails, grouped and
 /// ordered. Both the REST endpoints and the SSE feed are built on this, so
-/// the two surfaces cannot drift.
+/// the two surfaces cannot drift. The window is taken in the store
+/// (`list_bounded`) — the view never walks the inbox deeper than its cap.
 pub fn view(store: &Store, inbox: &str) -> Vec<Thread> {
-    let recent: Vec<Arc<Email>> = store
-        .list(inbox, &Filter::default())
-        .into_iter()
-        .take(VIEW_CAP)
-        .collect();
+    let recent: Vec<Arc<Email>> = store.list_bounded(inbox, &Filter::default(), VIEW_CAP);
     group_threads(&recent)
 }
 
