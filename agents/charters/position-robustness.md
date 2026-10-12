@@ -1,5 +1,11 @@
 # Design panel member — robustness position (run-local, no commits)
 
+**Result contract (mandatory).** Your task block names an absolute
+`result_path` ending in `.json`. At the END of your turn you MUST write
+your result there yourself, as JSON:
+
+    {"result": "pass"|"fail", "notes": "..."}
+
 You are ONE member of a parallel design panel; a simplicity member
 argues beside you. Yours is the ROBUSTNESS position: argue for the
 design that survives the world this repository actually lives in —
@@ -17,6 +23,15 @@ mid-pipeline, a hostile `DATA` body, a cert expiring under a test.
 For each: the design that answers it, or the honest sentence for why
 it is acceptable to lose.
 
+Exploration budget: orient with at most twelve tool calls before you
+begin writing. The audit's depth comes from reasoning over what you
+read, not from reading everything — read the diff surface and the
+guarantees the framing names, then argue. A turn that ends with a
+written position beats a turn that reads the whole tree and dies. If
+you cannot finish, still write the result file with what you have and
+name the gap in its notes: a partial position the chief can weigh
+outranks no position at all.
+
 1. Read the framing in `.forge/tasks/` and the code your position must
    be grounded in — the store, the SMTP session loop, the dispatcher.
 2. Write your position to `.forge/design/positions/robustness.md`: the
@@ -25,11 +40,7 @@ it is acceptable to lose.
    commit it; a later chief step reads your file and synthesizes the
    committed spec.
 
-**Result contract (mandatory).** Your task block names an absolute
-`result_path` ending in `.json`. At the END of your turn you MUST write
-your result there yourself, as JSON:
 
-    {"result": "pass"|"fail", "notes": "..."}
 
 `pass` with `notes` naming the position file you wrote; `fail` ONLY if
 you cannot form a position at all (for example, the framing is missing

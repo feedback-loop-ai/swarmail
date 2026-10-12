@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{http_get_text, http_json, start};
+use common::{http_get_text, http_json, smtp_send, start};
 
 /// Seed one fixture mail into `inbox` (the default extractor path).
 async fn seed(addr: std::net::SocketAddr, inbox: &str, to: &str) -> serde_json::Value {
@@ -101,6 +101,53 @@ async fn assert_endpoint_returns_ok_or_conflict() {
     assert_eq!(body["ok"], false);
     assert_eq!(body["expected"], 2);
     assert_eq!(body["matched"], 1);
+
+    // Exact zero (decision 0010): the negative assertion on an empty inbox…
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/emptyassert/assert?count=0",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["matched"], 0);
+    // …and a named 409 when one message is present.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/assert/assert?count=0",
+        None,
+    )
+    .await;
+    assert_eq!(st, 409);
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["expected"], 0);
+    assert_eq!(body["matched"], 1);
+    // Filtered zero: 200 while other mail is present — the negative-assertion
+    // primitive ("nothing from this sender arrived").
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/assert/assert?count=0&to=absent@x",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 0);
+    // No count: the default stays an exact 1 — 409 with expected 1 on an
+    // empty inbox, never a clamp to the match.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/emptyassert/assert",
+        None,
+    )
+    .await;
+    assert_eq!(st, 409, "{body}");
+    assert_eq!(body["expected"], 1);
+    assert_eq!(body["matched"], 0);
 }
 
 /// `count=0` is an exact expectation, not a request to wait for one mail
@@ -319,6 +366,164 @@ async fn seed_with_invalid_body_is_a_bad_request() {
     assert_eq!(st, 400);
 }
 
+/// The bare REST seed lands the shared defaults (decision 0010): one owner
+/// beside `build_email`, so the raw is byte-identical to the shape the text
+/// path always wrote.
+#[tokio::test]
+async fn bare_seed_lands_the_shared_defaults() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/defaults/seed",
+        Some(r#"{"to": "d@x.io"}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["from"]["address"], "fixture@swarmail.dev");
+    assert_eq!(body["subject"], "(no subject)");
+    assert_eq!(body["recipients"], serde_json::json!(["d@x.io"]));
+    let id = body["id"].as_str().unwrap().to_string();
+    let (st, raw) = http_get_text(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        raw,
+        "From: fixture@swarmail.dev\r\nTo: d@x.io\r\nSubject: (no subject)\r\n\r\n\r\n"
+    );
+}
+
+/// html supersedes text when both are given (decision 0010): the html lands
+/// verbatim under `Content-Type: text/html` and the text argument never
+/// reaches the raw — the parsed `text` is the html-derived part, as ever.
+#[tokio::test]
+async fn seed_with_both_bodies_stores_html_and_drops_text() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/bothwins/seed",
+        Some(r#"{"to": "w@x.io", "text": "PLAIN BODY", "html": "<b>HTML BODY</b> 222333"}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert!(
+        body["html"]
+            .as_str()
+            .unwrap()
+            .contains("<b>HTML BODY</b> 222333")
+    );
+    assert_ne!(body["text"].as_str().unwrap(), "PLAIN BODY");
+    assert_eq!(body["codes"][0], "222333", "extraction ran: {body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let (st, raw) = http_get_text(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(st, 200);
+    assert!(
+        raw.contains(
+            "MIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n<b>HTML BODY</b> 222333\r\n"
+        ),
+        "raw: {raw}"
+    );
+    assert!(
+        !raw.contains("PLAIN BODY"),
+        "the dropped text must not land: {raw}"
+    );
+}
+
+/// The WAIT keeps minimum-one (decision 0010): `await?count=0` on an empty
+/// inbox still waits and answers 408 — never an instant success — and
+/// answers `200 {matched: 1}` once one matching mail has landed. The absent
+/// count defaults to minimum-one too.
+#[tokio::test]
+async fn await_keeps_minimum_one_for_zero() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/waitzero/await?count=0&timeout_ms=150",
+        None,
+    )
+    .await;
+    assert_eq!(st, 408, "{body}");
+    assert_eq!(body["matched"], 0);
+    let (st, _) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/waitzero/await?timeout_ms=150",
+        None,
+    )
+    .await;
+    assert_eq!(st, 408);
+
+    seed(srv.http_addr, "waitzero", "user@example.com").await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/waitzero/await?count=0",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 1);
+}
+
+/// A negative count is not a valid `usize` — the query parse refuses it with
+/// the standing 400 (decision 0010 adds no new error vocabulary).
+#[tokio::test]
+async fn negative_assert_count_is_a_bad_request() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/x/assert?count=-1",
+        None,
+    )
+    .await;
+    assert_eq!(st, 400);
+    assert!(body["error"].as_str().unwrap().contains("assert"), "{body}");
+}
+
+/// The chaos pair (decision 0010): a deterministic `data` chaos rule refuses
+/// the delivery before insert (probability 100 — never a sleep-and-hope
+/// race), and `assert?count=0` proves nothing landed. Act and assertion
+/// agree, deterministically.
+#[tokio::test]
+async fn chaos_data_failure_and_the_exact_zero_assert_agree() {
+    let srv = start().await;
+    let (st, _) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 100, "error": "451 4.3.0 chaos", "delay_ms": 0}}"#),
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // A real delivery attempt: the error line answers where the 250 would be,
+    // and nothing is stored.
+    let reply = smtp_send(
+        srv.smtp_addr,
+        Some("chaoszero"),
+        "noreply@x.io",
+        "c@x.io",
+        "chaos",
+        "body",
+    )
+    .await;
+    let err = reply.unwrap_err();
+    assert!(err.contains("451"), "the chaos line answers: {err}");
+
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/chaoszero/assert?count=0",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["matched"], 0);
+}
+
 #[tokio::test]
 async fn invalid_query_strings_are_bad_requests() {
     let srv = start().await;
@@ -397,10 +602,45 @@ async fn machine_docs_are_served_from_the_binary() {
     assert_eq!(st, 200);
     let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(doc["openapi"], "3.1.0");
+    // The docs carry the wave-4 contracts (decision 0010): the seed refusal,
+    // the verbatim-html rule and both count semantics are documented where an
+    // agent reads them.
+    let seed = &doc["paths"]["/api/v1/inboxes/{inbox}/seed"]["post"];
+    assert!(
+        seed["responses"]["400"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("CR, LF"),
+        "the seed refusal is documented: {seed}"
+    );
+    assert!(
+        doc["components"]["schemas"]["SeedRequest"]["properties"]["html"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("verbatim"),
+        "the html rule is documented on SeedRequest"
+    );
+    let count_of = |path: &str| {
+        doc["paths"][path]["get"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "count")
+            .unwrap()["description"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(count_of("/api/v1/inboxes/{inbox}/assert").contains("never clamped"));
+    assert!(count_of("/api/v1/inboxes/{inbox}/await").contains("Minimum one"));
 
     let (st, text) = http_get_text(srv.http_addr, "/llms.txt").await;
     assert_eq!(st, 200);
     assert!(text.contains("Swarmail"));
+    assert!(
+        text.contains("assert?count=0"),
+        "the negative-assertion recipe is in the agent loop"
+    );
 }
 
 /// Deleting an unknown id walks `Store::delete`'s no-hit arm and answers 404.

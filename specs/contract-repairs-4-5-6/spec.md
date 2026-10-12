@@ -5,7 +5,8 @@ Epic: feedback-loop-ai/swarmail#13, wave 5 (issues #4, #5, #6). Branch:
 
 Decision: 0010 —
 [docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md](../../docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md)
-(status `proposed`; acceptance is the operator's).
+(status `accepted` — ratified 2026-10-11 at wave-4 intake; see the
+decision's ratification note).
 
 ## The problem — three published contracts that lie
 
@@ -217,7 +218,14 @@ beyond the three repaired contracts.
   crash in the post-commit/pre-response window is a duplicate fixture (new
   UUIDv7, one mailbox, caller's clear-before-reseed); unbounded webhook
   in-flight tasks under sustained hostile bursts; exact counts only under
-  the cap; unbounded DATA *time* on the plaintext path.
+  the cap; unbounded DATA *time* on the plaintext path. Ratification adds
+  two doc-only residuals from the robustness pass, named here so the ledger
+  is honest about them (both pre-authorized as follow-ups, neither touched
+  by this wave): a non-UTF-8 DATA body ends the session with no reply code
+  (the line-based reader assumes UTF-8; the follow-up is a `read_until`
+  byte reader), and the per-inbox watchers map is append-only
+  (`src/store.rs:375-384`; a vanished receiver's entry is reaped only by
+  the cap — the follow-up is a `receiver_count` reap).
 
 ## Acceptance Criteria
 

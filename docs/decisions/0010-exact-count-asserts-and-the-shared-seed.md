@@ -1,6 +1,14 @@
 # 0010 — Exact-count asserts and the one shared seed
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted — ratified 2026-10-11 at epic #13 wave-4 intake (run
+  `epic-13-wave-4-completion-the-de-40d5452a`): every anchor re-verified on
+  the working tree (`src/mcp.rs:221-222` string schemas and the five string
+  `inputSchema` sites, the `.max(1)` clamp at `src/api.rs:142-143`,
+  `seed_inbox` at `src/api.rs:424`, `build_email` at `src/smtp.rs:523`) and
+  no contradiction with the code or the frozen guarantees found, so no
+  amendment was required. The "wave 5" label vs the run's "wave 4
+  completion" is cosmetic; issues #4/#5/#6 and branch
+  `feat/epic13-04-05-06-contract-repairs` are the authoritative anchors.
 - **Date:** 2026-10-11
 - **Supersedes:** none
 - **Companion:** epic #13 wave 5 (issues #4, #5, #6)
@@ -117,3 +125,8 @@ confirms it deterministically.
   The gate refusing an uncovered arm is the constitution working.
 - Zero diff to `src/store.rs`, `src/persist.rs` and the SMTP accept path:
   the `250` sequence stays byte-identical. No new dependencies.
+- Ratification (2026-10-11) names two adjacent residuals in the honest
+  losses ledger, doc-only and untouched by this decision: a non-UTF-8 DATA
+  body ends the session with no reply code (follow-up: a `read_until` byte
+  reader), and the per-inbox watchers map is append-only
+  (`src/store.rs:375-384`; follow-up: a `receiver_count` reap).
