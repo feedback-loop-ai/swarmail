@@ -692,13 +692,43 @@ async fn shim_deletes_go_through_the_store() {
         "the selector empties exactly what it names"
     );
 
+    // An id the store cannot find is counted honestly: the loop skips it,
+    // the reply reports only what was actually removed, and the live mail
+    // is untouched — a stale id in a client's list is not an error, but it
+    // is never a removal either.
+    let (_a1, a2, _b1, _b2) = seed(&s).await;
+    let payload = json!({"ids": [a2, "no-such-id"]}).to_string();
+    let (status, _, raw) = http_raw(
+        s.http_addr,
+        "DELETE",
+        "/api/v1/messages",
+        Some(("application/json", &payload)),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let removed: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(
+        removed,
+        json!({"removed": 1}),
+        "{}",
+        String::from_utf8_lossy(&raw)
+    );
+    let (status, _) = http_json(s.http_addr, "GET", "/api/v1/messages/no-such-id", None).await;
+    assert_eq!(status, 404);
+    assert_eq!(
+        inbox_counts(&s).await,
+        (1, 2),
+        "the unknown id removed nothing else"
+    );
+
     // The sole cross-inbox wipe: the explicit alias, unchanged (0004) —
-    // it takes exactly the store it finds, here the freshly seeded 4.
+    // it takes exactly the store it finds: the unknown-id leg's survivor
+    // plus the freshly seeded 4.
     let (_a1, _a2, _b1, _b2) = seed(&s).await;
     let (status, _, raw) = http_raw(s.http_addr, "DELETE", "/api/v1/delete-all", None).await;
     assert_eq!(status, 200);
     let removed: Value = serde_json::from_slice(&raw).unwrap();
-    assert_eq!(removed, json!({"removed": 4}));
+    assert_eq!(removed, json!({"removed": 7}));
     assert_eq!(
         inbox_counts(&s).await,
         (0, 0),

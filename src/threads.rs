@@ -539,7 +539,7 @@ mod tests {
         let store = Store::new(0);
         for i in 0..(VIEW_CAP as i64 + 25) {
             let email = mail(&format!("id-{i}"), Some("s"), i);
-            store.insert(email);
+            let _ = store.insert(email);
         }
         let threads = view(&store, "box");
         let covered: usize = threads.iter().map(|t| t.count).sum();

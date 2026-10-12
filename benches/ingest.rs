@@ -33,7 +33,9 @@ fn prefill(store: &Store, cap: usize) {
             &["user@example.com".to_string()],
             "noreply@x.io".into(),
         );
-        store.insert(email);
+        store
+            .insert(email)
+            .expect("bench prefill: a memory-only store has no commit to fail");
     }
 }
 
@@ -75,7 +77,9 @@ fn bench_full_insert(c: &mut Criterion) {
                 &["user@example.com".to_string()],
                 "noreply@x.io".into(),
             );
-            store.insert(email);
+            store
+                .insert(email)
+                .expect("uncapped insert leg: a memory-only store has no commit to fail");
             i += 1;
         });
     });
@@ -114,7 +118,9 @@ fn bench_capped_ingest(c: &mut Criterion) {
                 &["user@example.com".to_string()],
                 "noreply@x.io".into(),
             );
-            store.insert(email);
+            store
+                .insert(email)
+                .expect("cap-steady insert leg: a memory-only store has no commit to fail");
             i += 1;
         });
         let inserted = store.emails_inserted() - inserted_before;

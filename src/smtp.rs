@@ -600,9 +600,20 @@ async fn session(
                 // Whole mutation on the blocking pool, awaited before the
                 // reply: the 250 below stays *after* the commit outcome is
                 // known (decision 0001), it just no longer occupies an async
-                // worker (decision 0010).
-                store.clone().insert_async(email).await;
-                write_line(reader.get_mut(), &format!("250 2.0.0 OK: stored as {id}")).await?;
+                // worker (decision 0010). A failed commit refuses (decision
+                // 0012) with the fixed line — a transient 451 (RFC 5321
+                // §4.2.2, requested action aborted), distinct from chaos's
+                // fixed `451 4.3.0 chaos`, internals to the log and never to
+                // the peer — where the old tree acknowledged the lie.
+                match store.clone().insert_async(email).await {
+                    Ok(_) => {
+                        write_line(reader.get_mut(), &format!("250 2.0.0 OK: stored as {id}"))
+                            .await?
+                    }
+                    Err(_) => {
+                        write_line(reader.get_mut(), "451 4.3.0 storage commit failed").await?
+                    }
+                }
             }
             "RSET" => {
                 mail_from = None;

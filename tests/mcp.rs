@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{SmtpConn, http_get_text, http_json, smtp_send, start};
+use common::{SmtpConn, http_get_text, http_json, smtp_send, start, start_with};
 
 fn base64_of(s: &str) -> String {
     use base64::Engine;
@@ -824,4 +824,81 @@ async fn header_names_and_single_token_plain_auth() {
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/solobox/count", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1);
+}
+
+/// Contract #1's MCP seed leg (decision 0012 §3): with a second real
+/// connection holding the writer lock, the seed tool's commit fails and
+/// the tool answers an error result naming the cause — never an `ok`
+/// result carrying an id that was never durable. The memory truth still
+/// stands (the refused seed is queryable over REST), and the restart copy
+/// stays empty.
+#[tokio::test]
+async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-e2e-refuse-mcp-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+    let srv = start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+
+    let _lock = common::hold_write_lock(&db);
+    let r = tool(
+        srv.http_addr,
+        "swarmail_seed_email",
+        r#"{"inbox": "blocked", "to": "s@x.io", "subject": "refused seed", "text": "hello"}"#,
+    )
+    .await;
+    assert_eq!(r["isError"], true, "the blocked commit must refuse: {r}");
+    let msg = r["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("storage commit failed"),
+        "the error result must name the cause: {msg}"
+    );
+
+    // Memory truth: the refused seed is queryable while live.
+    let (st, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/blocked/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(list["total"], 1, "the refused seed must stay queryable");
+    assert_eq!(list["emails"][0]["subject"], "refused seed");
+
+    // And it is not durable: the restart copy has no row for it.
+    srv.stop().await;
+    drop(_lock);
+    let srv = start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let (st, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/blocked/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        list["total"], 0,
+        "the refused seed must not reach the restart copy"
+    );
+    srv.stop().await;
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
 }

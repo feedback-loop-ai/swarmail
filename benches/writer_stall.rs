@@ -121,7 +121,9 @@ fn main() {
                 &["user@example.com".to_string()],
                 "noreply@x.io".into(),
             );
-            store.insert(email);
+            store
+                .insert(email)
+                .expect("stall-bench warmup: a memory-only store has no commit to fail");
         }
 
         // Pre-parse every measured mail: the loops below must be the
@@ -163,7 +165,9 @@ fn main() {
         let started = Instant::now();
         for email in mails.by_ref().take(rows) {
             let at = Instant::now();
-            store.insert(email);
+            store
+                .insert(email)
+                .expect("sync insert leg: a memory-only store has no commit to fail");
             sync_occupancy.push(at.elapsed());
             tokio::task::yield_now().await;
         }
@@ -179,7 +183,11 @@ fn main() {
         let ticker = spawn_ticker(done.clone());
         let started = Instant::now();
         for email in mails {
-            store.clone().insert_async(email).await;
+            store
+                .clone()
+                .insert_async(email)
+                .await
+                .expect("offloaded insert leg: a memory-only store has no commit to fail");
         }
         let off_elapsed = started.elapsed();
         done.store(true, Ordering::Relaxed);

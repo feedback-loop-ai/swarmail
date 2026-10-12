@@ -1,6 +1,4 @@
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 
 fn db_path(tag: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -21,7 +19,7 @@ fn a_reopened_store_restores_mail_order_and_counters() {
         for id in ["1", "2", "3"] {
             let mut e = email(id, "box", "a@x.io");
             e.raw = vec![b'r', id.as_bytes()[0]];
-            store.insert(e);
+            let _ = store.insert(e);
         }
         assert!(store.delete("2")); // a delete must be mirrored too
     }
@@ -46,7 +44,7 @@ fn cap_pruning_is_mirrored_to_the_data_file() {
     {
         let store = Store::open(2, &path).unwrap();
         for id in ["1", "2", "3"] {
-            store.insert(email(id, "box", "a@x.io"));
+            let _ = store.insert(email(id, "box", "a@x.io"));
         }
     }
     let store = Store::open(2, &path).unwrap();
@@ -69,8 +67,8 @@ fn clear_and_clear_all_are_mirrored_to_the_data_file() {
     let path = db_path("clear");
     {
         let store = Store::open(0, &path).unwrap();
-        store.insert(email("c1", "box-a", "a@x.io"));
-        store.insert(email("c2", "box-b", "a@x.io"));
+        let _ = store.insert(email("c1", "box-a", "a@x.io"));
+        let _ = store.insert(email("c2", "box-b", "a@x.io"));
         assert_eq!(store.clear("box-a"), 1);
     }
     {
@@ -88,14 +86,39 @@ fn clear_and_clear_all_are_mirrored_to_the_data_file() {
 fn a_failing_data_file_never_blocks_the_store() {
     let store = Store::open(0, &db_path("failing")).unwrap();
     store.persist.as_ref().unwrap().fail_writes();
-    // Insert still returns the mail and the memory store stays truthful.
-    let stored = store.insert(email("f1", "box", "a@x.io"));
-    assert_eq!(stored.id, "f1");
+    // The watchers exist before the refused insert: fan-out is part of
+    // acceptance (AC4), so a commit-failed mail must fire neither channel.
+    let mut inbox_rx = store.subscribe("box");
+    let mut global_rx = store.subscribe_all();
+    // The commit failure surfaces (AC1): insert refuses instead of returning
+    // the mail — red against the tree that logged and acknowledged.
+    assert!(
+        store.insert(email("f1", "box", "a@x.io")).is_err(),
+        "a failed commit must refuse, not acknowledge"
+    );
+    // Memory truth stands (AC5): the refused mail is queryable and counted.
     assert_eq!(store.count("box", &Filter::default()), 1);
+    assert!(store.get("f1").is_some());
+    assert_eq!(store.emails_inserted(), 1);
+    assert_eq!(store.emails_dropped(), 0);
+    // Fan-out is gated on commit success (AC4): neither channel saw the mail.
+    assert!(
+        inbox_rx.try_recv().is_err(),
+        "a refused mail must not wake an inbox watcher"
+    );
+    assert!(
+        global_rx.try_recv().is_err(),
+        "a refused mail must not enter the webhook feed"
+    );
+    // The other mutations keep their shape under failing writes (AC6): only
+    // `insert`'s seam is fallible, their record outcome is logged and dropped
+    // (decision 0012 §5 — the refused-delete debt is named, not taken here).
     assert!(store.delete("f1"));
     assert_eq!(store.clear("box"), 0);
-    store.insert(email("f2", "box", "a@x.io"));
+    assert!(store.insert(email("f2", "box", "a@x.io")).is_err());
+    assert_eq!(store.count("box", &Filter::default()), 1);
     assert_eq!(store.clear_all(), 1);
+    assert_eq!(store.count("box", &Filter::default()), 0);
 }
 
 #[test]
@@ -113,11 +136,11 @@ fn open_refuses_an_unusable_data_file() {
 fn a_clear_racing_an_insert_cannot_erase_the_inserts_row() {
     let path = db_path("clear-race");
     let store = Arc::new(Store::open(0, &path).unwrap());
-    store.insert(email("r1", "box", "a@x.io"));
+    let _ = store.insert(email("r1", "box", "a@x.io"));
     let s = store.clone();
     store.set_pre_mirror_gate(Some(Arc::new(move || {
         // The racing insert: lands after the drain, before the mirror.
-        s.insert(email("r2", "box", "a@x.io"));
+        let _ = s.insert(email("r2", "box", "a@x.io"));
     })));
     assert_eq!(store.clear("box"), 1);
     // Queryable in memory: the clear drained r1, not the later r2.
@@ -140,10 +163,10 @@ fn a_clear_racing_an_insert_cannot_erase_the_inserts_row() {
 fn a_clear_all_racing_an_insert_cannot_erase_the_inserts_row() {
     let path = db_path("clear-all-race");
     let store = Arc::new(Store::open(0, &path).unwrap());
-    store.insert(email("r1", "box", "a@x.io"));
+    let _ = store.insert(email("r1", "box", "a@x.io"));
     let s = store.clone();
     store.set_pre_mirror_gate(Some(Arc::new(move || {
-        s.insert(email("r2", "other", "a@x.io"));
+        let _ = s.insert(email("r2", "other", "a@x.io"));
     })));
     assert_eq!(store.clear_all(), 1);
     assert_eq!(store.count("other", &Filter::default()), 1);
@@ -157,30 +180,6 @@ fn a_clear_all_racing_an_insert_cannot_erase_the_inserts_row() {
         reopened.get("r1").is_none(),
         "the drained mail stays drained"
     );
-}
-
-/// Bounded wait until the pre-mirror gate reports it has been entered.
-async fn await_gate_entered(entered: &AtomicBool) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !entered.load(Ordering::SeqCst) {
-        assert!(
-            Instant::now() < deadline,
-            "the mutation never reached the pre-mirror gate"
-        );
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-}
-
-/// One temp data-file path per test; parallel tests never share one.
-fn pin_db_path(tag: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "swarmail-pin-{tag}-{}-{nanos}.db",
-        std::process::id()
-    ))
 }
 
 /// The panic-symmetry pin: a mutation that panics inside the mirror path
