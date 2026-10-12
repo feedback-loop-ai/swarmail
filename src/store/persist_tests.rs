@@ -1,4 +1,6 @@
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 fn db_path(tag: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -155,4 +157,40 @@ fn a_clear_all_racing_an_insert_cannot_erase_the_inserts_row() {
         reopened.get("r1").is_none(),
         "the drained mail stays drained"
     );
+}
+
+/// Bounded wait until the pre-mirror gate reports it has been entered.
+async fn await_gate_entered(entered: &AtomicBool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !entered.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "the mutation never reached the pre-mirror gate"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// One temp data-file path per test; parallel tests never share one.
+fn pin_db_path(tag: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "swarmail-pin-{tag}-{}-{nanos}.db",
+        std::process::id()
+    ))
+}
+
+/// The panic-symmetry pin: a mutation that panics inside the mirror path
+/// re-raises in the awaiting caller, exactly as the synchronous call would.
+/// This pin is also the deterministic cover for `offload`'s `Err` arm — the
+/// `resume_unwind` path the gate executes here and nothing else does.
+#[tokio::test]
+#[should_panic(expected = "the held gate panics")]
+async fn a_panicking_mutation_re_raises_in_the_awaiting_caller() {
+    let store = Arc::new(Store::new(0));
+    store.set_pre_mirror_gate(Some(Arc::new(|| panic!("the held gate panics"))));
+    let _ = store.clone().clear_async("box".to_string()).await;
 }
