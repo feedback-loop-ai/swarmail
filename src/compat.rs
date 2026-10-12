@@ -276,15 +276,10 @@ pub async fn delete_messages(
             ));
         }
     };
-    // Each delete is individually atomic and mirrors its own id — the batch
-    // was never one transaction — so a counted loop of awaited deletes keeps
-    // the semantics exactly, off the async workers (decision 0010).
-    let mut removed = 0;
-    for id in ids {
-        if state.store.clone().delete_async(id).await {
-            removed += 1;
-        }
-    }
+    // The deletion itself flows synchronously through the store (the doc
+    // contract above): removals wake `await` watchers (decisions 0001/0002),
+    // and the counted result is exactly the ids the store removed.
+    let removed = ids.iter().filter(|id| state.store.delete(id)).count();
     Ok(Json(json!({ "removed": removed })))
 }
 // ---------- shared internals ----------

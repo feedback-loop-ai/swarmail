@@ -194,3 +194,40 @@ async fn a_panicking_mutation_re_raises_in_the_awaiting_caller() {
     store.set_pre_mirror_gate(Some(Arc::new(|| panic!("the held gate panics"))));
     let _ = store.clone().clear_async("box".to_string()).await;
 }
+
+/// The ordering pin: the awaited mutation does not resolve while its commit
+/// is still in flight. Red against fire-and-forget (the await would resolve
+/// while the gate holds) and against any reply-before-commit reorder (the
+/// resolution is the reply's only licence).
+#[tokio::test]
+async fn the_awaited_mutation_does_not_resolve_while_its_commit_is_in_flight() {
+    let path = pin_db_path("ordering");
+    let store = Arc::new(Store::open(0, &path).unwrap());
+    store.insert(email("committed", "box", "a@x.io"));
+    store.persist.as_ref().unwrap().fail_writes();
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(AtomicBool::new(false));
+    let (en, rel, racing_store) = (entered.clone(), release.clone(), store.clone());
+    store.set_pre_mirror_gate(Some(Arc::new(move || {
+        racing_store.insert(email("racing", "box", "a@x.io"));
+        en.store(true, Ordering::SeqCst);
+        while !rel.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    })));
+
+    let task = tokio::spawn(store.clone().clear_async("box".to_string()));
+    await_gate_entered(&entered).await;
+    assert!(
+        !task.is_finished(),
+        "the awaited mutation resolved while the commit was still held: fire-and-forget"
+    );
+
+    release.store(true, Ordering::SeqCst);
+    assert_eq!(
+        task.await.unwrap(),
+        1,
+        "the clear drains only its pre-race mail"
+    );
+}
