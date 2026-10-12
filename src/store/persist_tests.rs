@@ -1,4 +1,6 @@
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 fn db_path(tag: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
@@ -126,6 +128,30 @@ fn open_refuses_an_unusable_data_file() {
     assert!(Store::open(0, &db_path("nope").join("missing-dir").join("x.db")).is_err());
 }
 
+/// Bounded wait until the pre-mirror gate reports it has been entered.
+async fn await_gate_entered(entered: &AtomicBool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !entered.load(Ordering::SeqCst) {
+        assert!(
+            Instant::now() < deadline,
+            "the mutation never reached the pre-mirror gate"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// One temp data-file path per test; parallel tests never share one.
+fn pin_db_path(tag: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "swarmail-pin-{tag}-{}-{nanos}.db",
+        std::process::id()
+    ))
+}
+
 /// The clear/insert persistence race (review finding in run
 /// sqlite-persistence-data-file-swa-dc3a9a2a), forced deterministically:
 /// the gate runs a live insert inside the drain→mirror window of
@@ -202,14 +228,16 @@ async fn a_panicking_mutation_re_raises_in_the_awaiting_caller() {
 async fn the_awaited_mutation_does_not_resolve_while_its_commit_is_in_flight() {
     let path = pin_db_path("ordering");
     let store = Arc::new(Store::open(0, &path).unwrap());
-    store.insert(email("committed", "box", "a@x.io"));
+    store.insert(email("committed", "box", "a@x.io")).unwrap();
     store.persist.as_ref().unwrap().fail_writes();
 
     let entered = Arc::new(AtomicBool::new(false));
     let release = Arc::new(AtomicBool::new(false));
     let (en, rel, racing_store) = (entered.clone(), release.clone(), store.clone());
     store.set_pre_mirror_gate(Some(Arc::new(move || {
-        racing_store.insert(email("racing", "box", "a@x.io"));
+        // Under decision 0012 the racing insert's own mirror also fails —
+        // the memory keeps the row and the acceptance is refused.
+        let _ = racing_store.insert(email("racing", "box", "a@x.io"));
         en.store(true, Ordering::SeqCst);
         while !rel.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(1));

@@ -805,7 +805,7 @@ mod loop_tests {
         spawn_dispatcher(&store, &webhooks, shutdown_rx, &mut tasks);
         // The accept, before any listener could exist: the mail lands in
         // the firehose the dispatcher above already subscribed to.
-        store.insert(email());
+        store.insert(email()).unwrap();
         spin_until(5000, || webhooks.snapshot().delivered == 1).await;
         assert_eq!(
             hits.load(Ordering::Relaxed),

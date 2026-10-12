@@ -249,7 +249,7 @@ mod tests {
         );
         tokio::pin!(stream);
         assert_eq!(stream.as_mut().next().await.unwrap().0, EVENT);
-        store.insert(email("m1", "box", "to@x.io"));
+        store.insert(email("m1", "box", "to@x.io")).unwrap();
         let push = stream.as_mut().next().await.unwrap();
         assert_eq!(json_of(&push)[0]["count"], 1);
         let _ = shutdown_tx.send(true);
