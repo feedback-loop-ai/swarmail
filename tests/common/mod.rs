@@ -577,3 +577,30 @@ pub async fn assert_starttls_handshake_fails(
         .await;
     assert!(res.is_err(), "handshake unexpectedly succeeded");
 }
+
+/// A live second connection holding SQLite's writer lock (`BEGIN
+/// IMMEDIATE`) against the server's WAL data file. Any commit the server
+/// attempts while this is held blocks on the WAL write lock, burns its
+/// busy timeout and fails with `SQLITE_BUSY` — the deterministic refusal
+/// of decision 0012 §3, no fault-injection needed: the conflict is real,
+/// at the real layer, through a real second connection. Dropping the value
+/// rolls the empty transaction back and frees the lock, so later legs see
+/// a clean database.
+pub struct WriteLock {
+    _conn: rusqlite::Connection,
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        let _ = self._conn.execute_batch("ROLLBACK;");
+    }
+}
+
+pub fn hold_write_lock(db: &std::path::Path) -> WriteLock {
+    let conn = rusqlite::Connection::open(db).expect("second connection opens the data file");
+    conn.busy_timeout(std::time::Duration::from_secs(10))
+        .expect("busy timeout set");
+    conn.execute_batch("BEGIN IMMEDIATE;")
+        .expect("second connection takes the writer lock");
+    WriteLock { _conn: conn }
+}

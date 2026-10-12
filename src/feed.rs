@@ -120,7 +120,7 @@ mod tests {
         // An accepted email wakes the watcher; the frame is the whole view.
         let mut mail = email("m1", "box", "to@x.io");
         mail.subject = Some("Hello".into());
-        store.insert(mail);
+        let _ = store.insert(mail);
         let push = stream.as_mut().next().await.unwrap();
         let view = json_of(&push);
         assert_eq!(view[0]["subject"], "Hello");
@@ -143,8 +143,8 @@ mod tests {
         first.subject = Some("First".into());
         let mut second = email("lag-2", "box", "to@x.io");
         second.subject = Some("Second".into());
-        store.insert(first);
-        store.insert(second);
+        let _ = store.insert(first);
+        let _ = store.insert(second);
         tx.send(Arc::new(email("wake-1", "box", "to@x.io")))
             .unwrap();
         tx.send(Arc::new(email("wake-2", "box", "to@x.io")))

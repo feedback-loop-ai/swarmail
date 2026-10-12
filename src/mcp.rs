@@ -199,10 +199,15 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
             let id = email.id.clone();
             let links = email.links.clone();
             let codes = email.codes.clone();
-            store.clone().insert_async(email).await;
-            Ok(text_result(
-                json!({ "id": id, "links": links, "codes": codes }),
-            ))
+            // A failed commit refuses (decision 0012): an `isError` result
+            // with the fixed text — the same vocabulary as a refused fixture —
+            // while the refused mail stays queryable in memory.
+            match store.clone().insert_async(email).await {
+                Ok(_) => Ok(text_result(
+                    json!({ "id": id, "links": links, "codes": codes }),
+                )),
+                Err(_) => Ok(error_result("storage commit failed".to_string())),
+            }
         }
         "swarmail_set_chaos" => {
             let event = arg_str(a, "event").ok_or("missing event")?;

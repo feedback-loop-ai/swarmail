@@ -451,8 +451,17 @@ async fn seed_inbox(
         seed.html.as_deref(),
     )
     .map_err(bad_request)?;
-    let stored = state.store.clone().insert_async(email).await;
-    Ok(Json((*stored).clone()))
+    // A failed commit refuses (decision 0012): 503 — the cause is usually
+    // transient (a full volume, a read-only remount, SQLITE_BUSY), so retry
+    // after repair — with the fixed text, never a leaked SQLite detail.
+    // Memory truth stands: the refused mail is still queryable.
+    match state.store.clone().insert_async(email).await {
+        Ok(stored) => Ok(Json((*stored).clone())),
+        Err(_) => Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage commit failed".into(),
+        )),
+    }
 }
 
 // ---------- webhooks ----------

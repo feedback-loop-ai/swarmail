@@ -137,6 +137,15 @@ pub struct Store {
     watchers: DashMap<String, broadcast::Sender<Arc<Email>>>,
     /// Process-wide channel: every accepted email, for webhooks.
     global_tx: broadcast::Sender<Arc<Email>>,
+    /// Serializes the memory phase of every mutation (decision 0012 §4):
+    /// the inbox deque and the global ID index are one unit, so their
+    /// updates share a store-wide lock instead of trusting disjoint DashMap
+    /// shard guards — `insert`'s push-then-index, `delete`'s
+    /// index-then-deque and the clear drains cannot interleave, which is
+    /// what the 8-thread probe proves. Held only across the memory phase:
+    /// never across `record`, never across the pre-mirror test gate, never
+    /// across an await.
+    mutation: std::sync::Mutex<()>,
     /// Maximum emails retained per inbox (oldest pruned). 0 = unlimited.
     max_per_inbox: usize,
     totals: Totals,
@@ -191,6 +200,7 @@ impl Store {
             index: DashMap::new(),
             watchers: DashMap::new(),
             global_tx,
+            mutation: std::sync::Mutex::new(()),
             max_per_inbox,
             totals: Totals::default(),
             persist: None,
@@ -234,19 +244,24 @@ impl Store {
         Ok(store)
     }
 
-    /// Mirror a mutation to the data file, if any. Persistence failures are
-    /// logged and swallowed: the memory store stays authoritative (the mail
-    /// is queryable — decision 0001 still holds), the restart copy degrades.
+    /// Mirror a mutation to the data file, if any. The outcome is the
+    /// mutation's: a failed commit is logged here — the log stays the one
+    /// witness at the single owner of the mirror — and **returned**, so the
+    /// acceptance path refuses instead of acknowledging (decision 0012).
+    /// The memory store remains authoritative either way (the mail is
+    /// queryable — decision 0001 still holds); only the reply changes.
     fn record(
         &self,
         what: &'static str,
         write: impl FnOnce(&persist::Persist) -> rusqlite::Result<()>,
-    ) {
+    ) -> rusqlite::Result<()> {
         if let Some(persist) = &self.persist
             && let Err(e) = write(persist)
         {
             tracing::error!(error = %e, what, "persistence write failed; memory store remains authoritative");
+            return Err(e);
         }
+        Ok(())
     }
 
     /// Test-only: install (or remove) the pre-mirror gate. See the field doc.
@@ -318,16 +333,28 @@ impl Store {
     /// message, it is queryable (and on disk, when persisting). Prunes oldest
     /// beyond the per-inbox cap.
     ///
+    /// The mirror commit is the one failure mode (the memory phase has no
+    /// fallible step): a failed commit is returned, never swallowed, so an
+    /// acceptance path can refuse instead of acknowledging a mail the
+    /// restart copy will never hold (decision 0012). Memory truth stands:
+    /// the refused mail is queryable, counted and never rolled back — only
+    /// the reply and the fan-out change.
+    ///
     /// From an async handler, prefer the awaited [`Store::insert_async`]: it
     /// runs this whole mutation on tokio's blocking pool, so the mirror
     /// commit — which completes before the wrapper resolves — never occupies
     /// an async worker (decision 0010). The ordering is identical either way:
     /// the commit outcome is known before the caller replies (decision 0001).
-    pub fn insert(&self, email: Email) -> Arc<Email> {
+    pub fn insert(&self, email: Email) -> Result<Arc<Email>, rusqlite::Error> {
         let email = Arc::new(email);
         let inbox = email.inbox.clone();
         let mut pruned: Vec<Arc<Email>> = Vec::new();
         {
+            // The memory phase is one unit (decision 0012 §4): push, prune,
+            // index and counter share the mutation lock, so a concurrent
+            // delete/clear can never observe the deque and the index
+            // disagreeing.
+            let _guard = self.mutation.lock().expect("store mutation lock poisoned");
             let mut list = self.inboxes.entry(inbox.clone()).or_default();
             list.push_back(email.clone());
             if self.max_per_inbox > 0 && list.len() > self.max_per_inbox {
@@ -354,11 +381,13 @@ impl Store {
                     .emails_dropped
                     .fetch_add(overflow as u64, Ordering::Relaxed);
             }
+            self.index.insert(email.id.clone(), email.clone());
+            self.totals.emails_inserted.fetch_add(1, Ordering::Relaxed);
         }
-        self.index.insert(email.id.clone(), email.clone());
-        self.totals.emails_inserted.fetch_add(1, Ordering::Relaxed);
         // Persist before any fan-out and before the caller's 250: when SMTP
-        // accepts, the mail is queryable AND committed (decision 0001).
+        // accepts, the mail is queryable AND committed (decision 0001). A
+        // failed commit propagates (decision 0012): the `?` refuses the mail
+        // — no acceptance, no fan-out — while the memory truth above stands.
         self.record("insert", |persist| {
             let pruned_ids: Vec<&str> = pruned.iter().map(|e| e.id.as_str()).collect();
             persist.record_insert(
@@ -367,7 +396,7 @@ impl Store {
                 self.totals.emails_inserted(),
                 self.totals.emails_dropped(),
             )
-        });
+        })?;
         // Notify watchers; a full channel means a slow await reader — the email
         // is still safely stored, the watcher re-polls the store. A missing
         // entry means no subscribers yet, or the channel was released with
@@ -377,7 +406,7 @@ impl Store {
             let _ = sender.send(email.clone());
         }
         let _ = self.global_tx.send(email.clone());
-        email
+        Ok(email)
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<Email>> {
@@ -453,30 +482,49 @@ impl Store {
     }
 
     pub fn delete(&self, id: &str) -> bool {
-        let removed = self.index.remove(id);
-        if let Some((_, email)) = &removed {
-            // Every indexed mail was inserted with its inbox list present
-            // (insert creates both together), so this is an invariant, not
-            // a search: a missing list would mean the two maps disagree.
-            let mut list = self
-                .inboxes
-                .get_mut(&email.inbox)
-                .expect("indexed mail always has its inbox list");
-            list.retain(|e| e.id != id);
-            // An emptied inbox's mail is gone, so its watcher channel is
-            // released with it (decision 0010). Disjoint maps: the inboxes
-            // guard is held, the watchers map is a separate shard set.
-            if list.is_empty() {
-                self.watchers.remove(&email.inbox);
+        // The memory phase is one unit (decision 0012 §4): index removal,
+        // deque retain and the watcher release cannot interleave with
+        // another mutation's memory phase — without this, a clear draining
+        // the inbox between the two steps strands an indexed id with no
+        // list (the probe's red).
+        let removed;
+        {
+            let _guard = self.mutation.lock().expect("store mutation lock poisoned");
+            removed = self.index.remove(id);
+            if let Some((_, email)) = &removed {
+                // Every indexed mail was inserted with its inbox list present
+                // (insert creates both together), so this is an invariant, not
+                // a search: a missing list would mean the two maps disagree.
+                let mut list = self
+                    .inboxes
+                    .get_mut(&email.inbox)
+                    .expect("indexed mail always has its inbox list");
+                list.retain(|e| e.id != id);
+                // An emptied inbox's mail is gone, so its watcher channel is
+                // released with it (decision 0010). Disjoint maps: the inboxes
+                // guard is held, the watchers map is a separate shard set.
+                if list.is_empty() {
+                    self.watchers.remove(&email.inbox);
+                }
             }
         }
-        self.record("delete", |persist| persist.record_delete(id));
+        // The refusal seam is `insert` only (decision 0012 §5): delete/clear/
+        // clear_all log their mirror outcome and keep their exact shape — the
+        // refused-delete resurrection debt is named, not taken here.
+        let _ = self.record("delete", |persist| persist.record_delete(id));
         removed.is_some()
     }
 
     /// Remove all emails from one inbox; returns how many were removed.
     pub fn clear(&self, inbox: &str) -> usize {
-        let drained = drain_inbox(&self.inboxes, &self.index, &self.watchers, inbox);
+        // The drain is the memory phase (decision 0012 §4): one unit, then
+        // the guard is gone before the gate and the mirror — a gate closure
+        // that re-enters the store (the race probes) would deadlock on a
+        // lock held across it.
+        let drained = {
+            let _guard = self.mutation.lock().expect("store mutation lock poisoned");
+            drain_inbox(&self.inboxes, &self.index, &self.watchers, inbox)
+        };
         #[cfg(test)]
         self.run_pre_mirror_gate();
         // The mirror deletes exactly the drained ids, never `WHERE inbox =
@@ -490,35 +538,40 @@ impl Store {
         // operations interleave; the disk outcome for everything the clear
         // actually drained is unchanged.
         let ids: Vec<&str> = drained.iter().map(|e| e.id.as_str()).collect();
-        self.record("clear_inbox", |persist| persist.record_deletes(&ids));
+        let _ = self.record("clear_inbox", |persist| persist.record_deletes(&ids));
         drained.len()
     }
 
     /// Remove every email from every inbox.
     pub fn clear_all(&self) -> usize {
         let mut drained: Vec<Arc<Email>> = Vec::new();
-        let inboxes: Vec<String> = self.inboxes.iter().map(|e| e.key().clone()).collect();
-        for inbox in inboxes {
-            drained.extend(drain_inbox(
-                &self.inboxes,
-                &self.index,
-                &self.watchers,
-                &inbox,
-            ));
+        // Same unit rule as `clear` (decision 0012 §4): the key collection,
+        // every drain and the final watchers release are one memory phase.
+        {
+            let _guard = self.mutation.lock().expect("store mutation lock poisoned");
+            let inboxes: Vec<String> = self.inboxes.iter().map(|e| e.key().clone()).collect();
+            for inbox in inboxes {
+                drained.extend(drain_inbox(
+                    &self.inboxes,
+                    &self.index,
+                    &self.watchers,
+                    &inbox,
+                ));
+            }
+            // The sweep also releases channels of awaited-but-never-mailed
+            // inboxes — the population issue #14's probe creates, which leaves no
+            // entries for the per-inbox drain above to iterate (decision 0010).
+            // A subscriber racing the sweep sees `Closed` and takes the
+            // re-subscribe arm — bounded at one extra rescan per waiter.
+            self.watchers.clear();
         }
-        // The sweep also releases channels of awaited-but-never-mailed
-        // inboxes — the population issue #14's probe creates, which leaves no
-        // entries for the per-inbox drain above to iterate (decision 0010).
-        // A subscriber racing the sweep sees `Closed` and takes the
-        // re-subscribe arm — bounded at one extra rescan per waiter.
-        self.watchers.clear();
         #[cfg(test)]
         self.run_pre_mirror_gate();
         // Per-id mirror for the same reason as `clear` (the race finding):
         // the racing insert is not among the drained ids, so it keeps its
         // row; the one-transaction wipe would erase it.
         let ids: Vec<&str> = drained.iter().map(|e| e.id.as_str()).collect();
-        self.record("clear_all", |persist| persist.record_deletes(&ids));
+        let _ = self.record("clear_all", |persist| persist.record_deletes(&ids));
         drained.len()
     }
 
@@ -550,8 +603,13 @@ impl Store {
     /// future resolves only once it has completed. Awaited before any
     /// acceptance reply, an SMTP `250` still means the mail is queryable and
     /// committed (decision 0001); the commit merely stops occupying an async
-    /// worker (decision 0010). Panics propagate to the awaiting caller.
-    pub async fn insert_async(self: Arc<Self>, email: Email) -> Arc<Email> {
+    /// worker (decision 0010). Panics propagate to the awaiting caller, and
+    /// so does a failed commit — the `Err` is the refusal the acceptance
+    /// path answers with (decision 0012).
+    pub async fn insert_async(
+        self: Arc<Self>,
+        email: Email,
+    ) -> Result<Arc<Email>, rusqlite::Error> {
         Self::offload(move || self.insert(email)).await
     }
 
@@ -697,9 +755,9 @@ mod tests {
     #[test]
     fn insert_prunes_oldest_beyond_cap() {
         let store = Store::new(2);
-        store.insert(email("1", "default", "a@x.io"));
-        store.insert(email("2", "default", "a@x.io"));
-        store.insert(email("3", "default", "a@x.io"));
+        let _ = store.insert(email("1", "default", "a@x.io"));
+        let _ = store.insert(email("2", "default", "a@x.io"));
+        let _ = store.insert(email("3", "default", "a@x.io"));
         assert_eq!(store.count("default", &Filter::default()), 2);
         assert!(store.get("1").is_none());
         assert!(store.get("2").is_some());
@@ -709,8 +767,8 @@ mod tests {
     #[test]
     fn filter_by_recipient() {
         let store = Store::new(0);
-        store.insert(email("1", "default", "a@x.io"));
-        store.insert(email("2", "default", "b@x.io"));
+        let _ = store.insert(email("1", "default", "a@x.io"));
+        let _ = store.insert(email("2", "default", "b@x.io"));
         let f = Filter {
             to: Some("b@x.io".into()),
             ..Default::default()
@@ -728,8 +786,8 @@ mod tests {
         old.received_ms = 100;
         let mut new = email("new", "two", "a@x.io");
         new.received_ms = 200;
-        store.insert(old);
-        store.insert(new);
+        let _ = store.insert(old);
+        let _ = store.insert(new);
 
         let all = store.list_all(&Filter::default());
         assert_eq!(all.len(), 2);
@@ -747,8 +805,8 @@ mod tests {
     #[test]
     fn inboxes_are_isolated() {
         let store = Store::new(0);
-        store.insert(email("1", "test-a", "a@x.io"));
-        store.insert(email("2", "test-b", "b@x.io"));
+        let _ = store.insert(email("1", "test-a", "a@x.io"));
+        let _ = store.insert(email("2", "test-b", "b@x.io"));
         assert_eq!(store.count("test-a", &Filter::default()), 1);
         assert_eq!(store.count("test-b", &Filter::default()), 1);
         store.clear("test-a");
@@ -783,7 +841,7 @@ mod tests {
                 .map(|h| h.join().unwrap())
                 .collect::<Vec<_>>()
         });
-        store.insert(email("race-1", "race", "a@x.io"));
+        let _ = store.insert(email("race-1", "race", "a@x.io"));
         for (i, rx) in receivers.iter_mut().enumerate() {
             assert_eq!(
                 rx.try_recv().map(|e| e.id.clone()).unwrap(),
@@ -816,14 +874,14 @@ mod tests {
     fn a_delete_that_empties_an_inbox_releases_its_watcher_channel() {
         let store = Store::new(0);
         let mut rx = store.subscribe("box");
-        store.insert(email("d1", "box", "a@x.io"));
-        store.insert(email("d2", "box", "a@x.io"));
+        let _ = store.insert(email("d1", "box", "a@x.io"));
+        let _ = store.insert(email("d2", "box", "a@x.io"));
         // Drain the two buffered pushes so later asserts read only pushes
         // that land after the deletes.
         assert_eq!(rx.try_recv().map(|e| e.id.clone()).unwrap(), "d1");
         assert_eq!(rx.try_recv().map(|e| e.id.clone()).unwrap(), "d2");
         store.delete("d1");
-        store.insert(email("d3", "box", "a@x.io"));
+        let _ = store.insert(email("d3", "box", "a@x.io"));
         assert_eq!(
             rx.try_recv().map(|e| e.id.clone()).unwrap(),
             "d3",
@@ -878,7 +936,7 @@ mod wait_tests {
     #[tokio::test]
     async fn wait_for_finds_what_is_already_there() {
         let store = Store::new(0);
-        store.insert(email("w1", "box", "a@x.io"));
+        let _ = store.insert(email("w1", "box", "a@x.io"));
         let out = store
             .wait_for("box", &Filter::default(), 1, Duration::from_millis(100))
             .await;
@@ -894,7 +952,7 @@ mod wait_tests {
         let s = store.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
-            s.insert(email("w2", "box", "a@x.io"));
+            let _ = s.insert(email("w2", "box", "a@x.io"));
         });
         let out = store
             .wait_for("box", &Filter::default(), 1, Duration::from_secs(2))
@@ -908,7 +966,7 @@ mod wait_tests {
     #[tokio::test]
     async fn wait_for_times_out_with_the_match_count() {
         let store = Store::new(0);
-        store.insert(email("w3", "box", "a@x.io"));
+        let _ = store.insert(email("w3", "box", "a@x.io"));
         let out = store
             .wait_for("box", &Filter::default(), 5, Duration::from_millis(80))
             .await;
@@ -939,7 +997,7 @@ mod wait_tests {
         for i in 0..4200u32 {
             let mut e = email(&format!("lag{i}"), "box", "a@x.io");
             e.id = format!("lag{i}");
-            s.insert(e);
+            let _ = s.insert(e);
         }
         match handle.await.unwrap() {
             WaitOutcome::Found(matches) => assert_eq!(matches.len(), 3),
@@ -967,7 +1025,7 @@ mod wait_tests {
             if gate_fires.fetch_add(1, Ordering::SeqCst) == 0 {
                 s.clear("box"); // fire 1: releases the just-created channel
             } else {
-                s.insert(email("late", "box", "a@x.io")); // fire 2: after the re-subscribe
+                let _ = s.insert(email("late", "box", "a@x.io")); // fire 2: after the re-subscribe
             }
         })));
         let out = store
@@ -1067,7 +1125,7 @@ mod filter_tests {
         let store = Store::new(0);
         let mut e = email("f1", "box", "a@x.io");
         e.from = None;
-        store.insert(e);
+        let _ = store.insert(e);
         // A from-filter can never match a mail with no from at all.
         let f = Filter {
             from: Some("a@x.io".into()),
@@ -1080,7 +1138,7 @@ mod filter_tests {
             name: None,
             address: "sender@x.io".into(),
         });
-        store.insert(e);
+        let _ = store.insert(e);
         let f = Filter {
             from: Some("sender@x.io".into()),
             ..Default::default()
@@ -1096,8 +1154,8 @@ mod filter_tests {
     #[test]
     fn filter_subject_is_case_insensitive_and_null_safe() {
         let store = Store::new(0);
-        store.insert(with_subject("s1", Some("Quarterly REPORT")));
-        store.insert(with_subject("s2", None));
+        let _ = store.insert(with_subject("s1", Some("Quarterly REPORT")));
+        let _ = store.insert(with_subject("s2", None));
 
         let f = Filter {
             subject: Some("quarterly".into()),
@@ -1114,8 +1172,8 @@ mod filter_tests {
     #[test]
     fn filter_since_ms_is_inclusive() {
         let store = Store::new(0);
-        store.insert(with_received("t1", 100));
-        store.insert(with_received("t2", 200));
+        let _ = store.insert(with_received("t1", 100));
+        let _ = store.insert(with_received("t2", 200));
 
         let f = Filter {
             since_ms: Some(150),
@@ -1141,7 +1199,7 @@ mod filter_tests {
         assert!(!store.delete("missing"));
         assert_eq!(store.clear("no-such-inbox"), 0);
 
-        store.insert(email("d1", "box", "a@x.io"));
+        let _ = store.insert(email("d1", "box", "a@x.io"));
         assert!(store.delete("d1"));
         assert!(store.get("d1").is_none());
         assert_eq!(store.count("box", &Filter::default()), 0);
@@ -1151,9 +1209,9 @@ mod filter_tests {
     fn inboxes_are_sorted_with_counts() {
         let store = Store::new(0);
         assert!(store.inboxes().is_empty());
-        store.insert(email("1", "zeta", "a@x.io"));
-        store.insert(email("2", "alpha", "a@x.io"));
-        store.insert(email("3", "alpha", "a@x.io"));
+        let _ = store.insert(email("1", "zeta", "a@x.io"));
+        let _ = store.insert(email("2", "alpha", "a@x.io"));
+        let _ = store.insert(email("3", "alpha", "a@x.io"));
         assert_eq!(
             store.inboxes(),
             vec![("alpha".to_string(), 2), ("zeta".to_string(), 1)]
@@ -1165,9 +1223,9 @@ mod filter_tests {
         let store = Store::new(2);
         assert_eq!(store.emails_inserted(), 0);
         assert_eq!(store.emails_dropped(), 0);
-        store.insert(email("1", "box", "a@x.io"));
-        store.insert(email("2", "box", "a@x.io"));
-        store.insert(email("3", "box", "a@x.io"));
+        let _ = store.insert(email("1", "box", "a@x.io"));
+        let _ = store.insert(email("2", "box", "a@x.io"));
+        let _ = store.insert(email("3", "box", "a@x.io"));
         assert_eq!(store.emails_inserted(), 3);
         assert_eq!(store.emails_dropped(), 1);
     }
@@ -1177,7 +1235,7 @@ mod filter_tests {
         let store = Store::new(0);
         let mut rx1 = store.subscribe("hot");
         let mut rx2 = store.subscribe("hot");
-        store.insert(email("s1", "hot", "a@x.io"));
+        let _ = store.insert(email("s1", "hot", "a@x.io"));
         assert_eq!(rx1.try_recv().unwrap().id, "s1");
         assert_eq!(rx2.try_recv().unwrap().id, "s1");
     }
@@ -1201,7 +1259,7 @@ mod bounded_tests {
         for i in 0..10 {
             let mut e = email(&format!("b{i}"), "box", "a@x.io");
             e.received_ms = i;
-            store.insert(e);
+            let _ = store.insert(e);
         }
         let bounded = store.list_bounded("box", &Filter::default(), 3);
         assert_eq!(
@@ -1231,7 +1289,7 @@ mod bounded_tests {
             let mut e = email(&format!("b{i}"), "box", "a@x.io");
             e.subject = Some(subject.into());
             e.received_ms = i;
-            store.insert(e);
+            let _ = store.insert(e);
         }
         let filter = Filter {
             subject: Some("keep".into()),
@@ -1276,7 +1334,7 @@ mod bounded_tests {
             let mut e = email(&format!("c{i}"), "box", "a@x.io");
             e.subject = Some(subject.into());
             e.received_ms = i;
-            store.insert(e);
+            let _ = store.insert(e);
         }
         let filter = Filter {
             subject: Some("hit".into()),
@@ -1291,5 +1349,254 @@ mod bounded_tests {
             store.count("box", &Filter::default()),
             store.list("box", &Filter::default()).len()
         );
+    }
+
+    /// One role's output: the ids an insert role accepted, or the ids a
+    /// delete role removed. The clear roles return nothing to assert — their
+    /// work shows up in the rest state the probe inspects.
+    #[derive(Default)]
+    struct ProbeRole {
+        accepted: Vec<String>,
+        deleted: Vec<String>,
+    }
+
+    /// One round: a fresh memory-only store, eight roles released by one
+    /// barrier — 3× insert on "A", 1× delete on "A", 1× clear on "A",
+    /// 2× insert on "B", 1× clear_all — run to completion and joined. The
+    /// delete role sweeps every A id the round can name, so its successes
+    /// spread across the whole round and race every drain.
+    fn run_probe_round(store: &Arc<Store>, round: usize, per_role: usize) -> ProbeRole {
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let mut accepted = Vec::new();
+        let mut deleted = Vec::new();
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            // 3× insert on "A".
+            for role in 0..3 {
+                let barrier = barrier.clone();
+                let store = store.clone();
+                handles.push(s.spawn(move || {
+                    barrier.wait();
+                    let mut ids = Vec::with_capacity(per_role);
+                    for j in 0..per_role {
+                        let id = format!("a{round}-{role}-{j}");
+                        let mail = store
+                            .insert(email(&id, "A", "a@x.io"))
+                            .expect("memory-only probe store has no commit to fail");
+                        ids.push(mail.id.clone());
+                    }
+                    ProbeRole {
+                        accepted: ids,
+                        deleted: Vec::new(),
+                    }
+                }));
+            }
+            // 2× insert on "B".
+            for role in 0..2 {
+                let barrier = barrier.clone();
+                let store = store.clone();
+                handles.push(s.spawn(move || {
+                    barrier.wait();
+                    let mut ids = Vec::with_capacity(per_role);
+                    for j in 0..per_role {
+                        let id = format!("b{round}-{role}-{j}");
+                        let mail = store
+                            .insert(email(&id, "B", "b@x.io"))
+                            .expect("memory-only probe store has no commit to fail");
+                        ids.push(mail.id.clone());
+                    }
+                    ProbeRole {
+                        accepted: ids,
+                        deleted: Vec::new(),
+                    }
+                }));
+            }
+            // 1× delete on "A": repeated sweeps over the whole A id space.
+            {
+                let barrier = barrier.clone();
+                let store = store.clone();
+                handles.push(s.spawn(move || {
+                    barrier.wait();
+                    let mut removed = Vec::new();
+                    for _ in 0..per_role {
+                        for role in 0..3 {
+                            for j in 0..per_role {
+                                let id = format!("a{round}-{role}-{j}");
+                                if store.delete(&id) {
+                                    removed.push(id);
+                                }
+                            }
+                        }
+                    }
+                    ProbeRole {
+                        accepted: Vec::new(),
+                        deleted: removed,
+                    }
+                }));
+            }
+            // 1× clear on "A".
+            {
+                let barrier = barrier.clone();
+                let store = store.clone();
+                handles.push(s.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..per_role {
+                        let _ = store.clear("A");
+                    }
+                    ProbeRole::default()
+                }));
+            }
+            // 1× clear_all.
+            {
+                let barrier = barrier.clone();
+                let store = store.clone();
+                handles.push(s.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..per_role {
+                        let _ = store.clear_all();
+                    }
+                    ProbeRole::default()
+                }));
+            }
+            for handle in handles {
+                let role: ProbeRole = handle.join().unwrap_or_default();
+                accepted.extend(role.accepted);
+                deleted.extend(role.deleted);
+            }
+        });
+        ProbeRole { accepted, deleted }
+    }
+
+    /// The rest-state check: after the round's join, the two maps must be
+    /// one unit. The count form is the contract's phrasing — `count(inbox)`
+    /// equals the number of accepted ids retrievable in that inbox; the
+    /// per-id form names both race directions — an index entry with no
+    /// deque entry (the ghost) and a deque entry with no index entry (a
+    /// lost id). A successfully deleted id is asserted absent: nothing
+    /// re-inserts a round's id, so a delete that returned true must stick.
+    fn assert_probe_round(
+        store: &Arc<Store>,
+        round: usize,
+        accepted: &[String],
+        deleted: &[String],
+    ) {
+        let mut retrievable: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for id in accepted {
+            if let Some(e) = store.get(id) {
+                *retrievable.entry(e.inbox.clone()).or_default() += 1;
+            }
+        }
+        for inbox in ["A", "B"] {
+            assert_eq!(
+                store.count(inbox, &Filter::default()),
+                retrievable.get(inbox).copied().unwrap_or(0),
+                "round {round}: count({inbox}) disagrees with the retrievable id set"
+            );
+        }
+        let listed: Vec<String> = ["A", "B"]
+            .iter()
+            .flat_map(|i| {
+                store
+                    .list(i, &Filter::default())
+                    .iter()
+                    .map(|e| e.id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for id in accepted {
+            let in_index = store.get(id).is_some();
+            let in_deque = listed.contains(id);
+            assert_eq!(
+                in_index, in_deque,
+                "round {round}: {id} is split across the maps (index: {in_index}, list: {in_deque})"
+            );
+        }
+        for id in deleted {
+            assert!(
+                store.get(id).is_none(),
+                "round {round}: {id} was deleted but is still retrievable"
+            );
+        }
+    }
+
+    /// Runs `task` on a worker thread under a real deadline: a panic inside
+    /// the task is re-raised here with its original payload, and a task
+    /// that never finishes fails this call instead of hanging the suite.
+    /// Both failure arms are warm — exercised below by
+    /// [`a_panicking_round_role_re_raises_here`] and
+    /// [`a_wedged_round_fails_instead_of_hanging`] — because a cold arm is
+    /// an uncovered line under the exact coverage gate (decision 0011 §2).
+    fn join_with_deadline<T, F>(task: F, deadline: Duration, stuck: &str) -> T
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = done_tx.send(std::panic::catch_unwind(std::panic::AssertUnwindSafe(task)));
+        });
+        match done_rx.recv_timeout(deadline) {
+            Ok(Ok(value)) => value,
+            Ok(Err(payload)) => std::panic::resume_unwind(payload),
+            Err(_) => panic!("{stuck}"),
+        }
+    }
+
+    /// The deadline machinery's panic arm: a round role that panics
+    /// re-raises here with its original payload — never a swallowed
+    /// `Err`, which is the shape an `.unwrap()` would mint and the
+    /// reason `offload` shares it (the panic-symmetry contract).
+    #[test]
+    #[should_panic(expected = "the round role panics")]
+    fn a_panicking_round_role_re_raises_here() {
+        join_with_deadline(
+            || panic!("the round role panics"),
+            Duration::from_secs(60),
+            "a role never finished",
+        );
+    }
+
+    /// The deadline machinery's stuck arm: a round that never finishes
+    /// fails the call in bounded time instead of hanging the suite — the
+    /// probe's real-deadline guarantee, pinned at 50 ms.
+    #[test]
+    #[should_panic(expected = "a wedged role never finished")]
+    fn a_wedged_round_fails_instead_of_hanging() {
+        join_with_deadline(
+            || {
+                let (tx, rx) = std::sync::mpsc::channel::<()>();
+                std::mem::forget(tx);
+                let _ = rx.recv();
+            },
+            Duration::from_millis(50),
+            "a wedged role never finished",
+        );
+    }
+
+    /// The 8-thread barrier probe (epic #13 contract #2): concurrent
+    /// insert/delete/clear/clear_all over one store must leave
+    /// `count(inbox)` exactly equal to the set of ids `get(id)` retrieves —
+    /// the inbox map and the global ID index mutate as one unit (decision
+    /// 0012), never as separate DashMap steps. Fifty rounds, eight roles on
+    /// a barrier each, joined per round. The deadline is a real one: a role
+    /// that never finishes fails the round instead of hanging the suite,
+    /// and a role panic re-raises here with its original payload.
+    #[test]
+    fn eight_threads_cannot_split_an_inbox_from_its_index() {
+        const ROUNDS: usize = 50;
+        const PER_ROLE: usize = 25;
+        for round in 0..ROUNDS {
+            let store = Arc::new(Store::new(0));
+            let outcome = join_with_deadline(
+                {
+                    let store = store.clone();
+                    move || run_probe_round(&store, round, PER_ROLE)
+                },
+                Duration::from_secs(60),
+                &format!("probe round {round} stuck: a role never finished"),
+            );
+            assert_probe_round(&store, round, &outcome.accepted, &outcome.deleted);
+        }
     }
 }

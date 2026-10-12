@@ -584,3 +584,146 @@ async fn a_write_heavy_data_file_server_stays_live_and_loses_no_250_answered_mai
     srv.stop().await;
     clean_up(&db);
 }
+
+/// Contract #1's SMTP wire leg (decision 0012 §3): with a second real
+/// connection holding the writer lock, the next DATA's commit fails and
+/// the reply is the fixed `451 4.3.0 storage commit failed` line — never a
+/// `250`. The memory truth stands (the refused mail is queryable over
+/// REST), the restart copy taken without the lock does not contain it, and
+/// once the lock is released the same wire path accepts again.
+#[tokio::test]
+async fn a_blocked_commit_answers_451_and_never_claims_250() {
+    let db = data_file("refuse-smtp");
+    clean_up(&db);
+
+    let srv = serve_data_file(&db).await;
+    // One committed mail first: the mirror works before the lock lands.
+    let committed = send(&srv, "refuse", "committed before the lock").await;
+    assert!(!committed.is_empty());
+
+    let _lock = common::hold_write_lock(&db);
+    let reply = common::smtp_send(
+        srv.smtp_addr,
+        Some("refuse"),
+        "sender@x.io",
+        "rcpt@x.io",
+        "refused while locked",
+        "the body",
+    )
+    .await
+    .expect_err("the blocked commit must refuse the DATA");
+    assert!(
+        reply.starts_with("451 4.3.0 storage commit failed"),
+        "the blocked commit must answer the fixed refusal line, got: {reply}"
+    );
+    assert!(
+        !reply.contains("250"),
+        "no acceptance may ride the refusal: {reply}"
+    );
+
+    // Memory truth: the refused mail is queryable while live — only the
+    // durability claim is withdrawn, not the storage (decision 0012 §6).
+    let (st, list) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/refuse/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let subjects: Vec<&str> = list["emails"]
+        .as_array()
+        .expect("email list")
+        .iter()
+        .map(|e| e["subject"].as_str().expect("subject"))
+        .collect();
+    assert!(
+        subjects.contains(&"refused while locked"),
+        "the refused mail is not queryable while live: {subjects:?}"
+    );
+
+    // The restart copy, taken with the lock released, holds the committed
+    // mail and not the refused one: nothing claimed a 250 for it, and no
+    // row exists to restore.
+    srv.stop().await;
+    drop(_lock);
+    let srv = serve_data_file(&db).await;
+    let (st, list) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/refuse/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let subjects: Vec<&str> = list["emails"]
+        .as_array()
+        .expect("email list")
+        .iter()
+        .map(|e| e["subject"].as_str().expect("subject"))
+        .collect();
+    assert_eq!(
+        subjects,
+        vec!["committed before the lock"],
+        "the refused mail must not reach the restart copy"
+    );
+
+    // The lock is gone: the same wire path accepts again.
+    let retried = send(&srv, "refuse", "accepted after release").await;
+    assert!(!retried.is_empty(), "the retry must be accepted with a 250");
+    srv.stop().await;
+    clean_up(&db);
+}
+
+/// Contract #1's REST seed leg: the blocked commit refuses the seed with
+/// the fixed `503` + `storage commit failed` body, the memory truth still
+/// stands, and the restart copy stays empty — the seed's caller is told
+/// the truth instead of a `200` for an uncommitted row.
+#[tokio::test]
+async fn a_blocked_commit_refuses_the_rest_seed_with_503() {
+    let db = data_file("refuse-rest");
+    clean_up(&db);
+
+    let srv = serve_data_file(&db).await;
+    let _lock = common::hold_write_lock(&db);
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/blocked/seed",
+        Some(r#"{"to":"fixture@x.io","subject":"refused seed","text":"hello"}"#),
+    )
+    .await;
+    assert_eq!(st, 503, "the blocked commit must refuse the seed: {body}");
+    assert_eq!(body["error"], "storage commit failed");
+
+    // Memory truth: the refused seed is queryable while live.
+    let (st, list) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/blocked/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(list["total"], 1, "the refused seed must stay queryable");
+    assert_eq!(list["emails"][0]["subject"], "refused seed");
+
+    // And it is not durable: the restart copy has no row for it.
+    srv.stop().await;
+    drop(_lock);
+    let srv = serve_data_file(&db).await;
+    let (st, list) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/blocked/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        list["total"], 0,
+        "the refused seed must not reach the restart copy"
+    );
+    srv.stop().await;
+    clean_up(&db);
+}
