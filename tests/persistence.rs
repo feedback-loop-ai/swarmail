@@ -250,8 +250,10 @@ impl BurstSender {
 
     /// One batch: K mails' command blocks in a single write (the replies
     /// coalesce the same way), then the 4K reply lines read back — every
-    /// fourth is the mail's acceptance.
-    async fn send_batch(&mut self, subjects: &[String]) {
+    /// fourth is the mail's acceptance. Returns the ids of every mail whose
+    /// `250` line was fully observed (an observed acceptance is durable —
+    /// the commit precedes the reply byte).
+    async fn send_batch(&mut self, subjects: &[String]) -> Vec<String> {
         let mut mail = String::new();
         for subject in subjects {
             mail.push_str(&format!(
@@ -260,14 +262,23 @@ impl BurstSender {
             ));
         }
         self.writer.write_all(mail.as_bytes()).await.unwrap();
+        let mut observed = Vec::new();
         let mut line = String::new();
         for i in 0..subjects.len() * 4 {
             line.clear();
             self.reader.read_line(&mut line).await.unwrap();
             if i % 4 == 3 {
                 assert!(line.starts_with("250"), "mail rejected: {line}");
+                observed.push(
+                    line.trim()
+                        .rsplit_once("stored as ")
+                        .expect("the 250 names the stored id")
+                        .1
+                        .to_string(),
+                );
             }
         }
+        observed
     }
 }
 
@@ -440,4 +451,135 @@ async fn a_broken_data_file_refuses_to_serve() {
         Err(e) => e,
     };
     assert!(err.to_string().contains("data file"), "{err}");
+}
+
+/// The write-heavy leg: more concurrent pipelined writer sessions than the
+/// runtime has workers (eight sessions on a two-worker runtime), a separate
+/// connection keeping the server live with NOOPs throughout, and every
+/// `250`-answered id required back — queryable while live, present in the
+/// restart copy. The NOOP bound only catches a wedged server, never a slow
+/// one; the structural stall proof lives in the in-crate pin, and the kill
+/// proof (a server that dies mid-burst) lives in the binary suite — this leg
+/// is the sustained-load one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_heavy_data_file_server_stays_live_and_loses_no_250_answered_mail() {
+    let db = data_file("write-heavy");
+    clean_up(&db);
+    let srv = serve_data_file(&db).await;
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Eight writer sessions on two workers: if a commit ever ran on the
+    // runtime thread again, this is the load that would starve it.
+    let mut writers = Vec::new();
+    for w in 0..8u32 {
+        let addr = srv.smtp_addr;
+        let stop = stop.clone();
+        writers.push(tokio::spawn(async move {
+            let mut sender = BurstSender::connect(addr, "heavy").await;
+            let mut observed: Vec<String> = Vec::new();
+            let mut sent = 0u32;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let subjects: Vec<String> = (0..25)
+                    .map(|n| format!("heavy-{w}-{}-{n}", sent + n))
+                    .collect();
+                observed.extend(sender.send_batch(&subjects).await);
+                sent += 25;
+            }
+            observed
+        }));
+    }
+
+    // The liveness probe: its own connection, NOOP → 250, over and over,
+    // while the writers hammer the same data file. A generous 10 s bound —
+    // a wedged (not slow) server would hang a round past it.
+    let nooper = {
+        let addr = srv.smtp_addr;
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            let mut conn = common::SmtpConn::connect(addr).await;
+            let mut rounds = 0u32;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    conn.send("NOOP").await;
+                    let reply = conn.reply().await;
+                    assert!(reply.starts_with("250"), "NOOP rejected: {reply}");
+                })
+                .await
+                .expect("the server wedged: a NOOP got no reply within 10 s while writes were in flight");
+                rounds += 1;
+            }
+            rounds
+        })
+    };
+
+    // A bounded hammer window, then quiesce everything.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut observed: Vec<String> = Vec::new();
+    for writer in writers {
+        observed.extend(writer.await.unwrap());
+    }
+    let noop_rounds = nooper.await.unwrap();
+    assert!(
+        !observed.is_empty(),
+        "the writers never got a mail accepted"
+    );
+    assert!(
+        noop_rounds > 0,
+        "the NOOP probe never completed a round: {noop_rounds}"
+    );
+
+    // Every observed acceptance is queryable while the server is live —
+    // a 250 means the mail is already there (decision 0001).
+    let (st, live) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/heavy/messages?limit=1000000",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let live_ids: std::collections::HashSet<String> = live["emails"]
+        .as_array()
+        .expect("email list")
+        .iter()
+        .map(|e| e["id"].as_str().expect("id").to_string())
+        .collect();
+    for id in &observed {
+        assert!(
+            live_ids.contains(id),
+            "a mail answered 250 ({id}) is not queryable while the server is live"
+        );
+    }
+
+    // And the restart copy gives every one of them back: a write-heavy
+    // window is exactly where a soft flush would drop rows.
+    srv.stop().await;
+    let srv = serve_data_file(&db).await;
+    let (st, post) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/heavy/messages?limit=1000000",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let post_ids: std::collections::HashSet<String> = post["emails"]
+        .as_array()
+        .expect("email list")
+        .iter()
+        .map(|e| e["id"].as_str().expect("id").to_string())
+        .collect();
+    let lost: Vec<&String> = observed
+        .iter()
+        .filter(|id| !post_ids.contains(*id))
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "restart lost {} mail(s) answered 250 under write-heavy load: {:?}",
+        lost.len(),
+        &lost[..lost.len().min(5)]
+    );
+    srv.stop().await;
+    clean_up(&db);
 }

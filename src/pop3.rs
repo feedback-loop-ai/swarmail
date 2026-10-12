@@ -352,9 +352,13 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
             }
             (Phase::Transaction, "QUIT") => {
                 // RFC 1939 update state — only now do the marks go, through
-                // the store's existing delete path (synchronous, mirrored).
+                // the store's existing delete path (awaited off the async
+                // workers, decision 0010) — before the signing-off reply.
                 for num in &deleted {
-                    store.delete(&maildrop[*num - 1].id);
+                    store
+                        .clone()
+                        .delete_async(maildrop[*num - 1].id.clone())
+                        .await;
                 }
                 write_line(&mut write, "+OK Swarmail POP3 server signing off").await?;
                 return Ok(());
