@@ -56,6 +56,19 @@ async fn metrics_exposes_counters_and_gauges() {
         "# TYPE swarmail_webhook_ca_cache_entries gauge",
         "# TYPE swarmail_webhook_ca_cache_builds_total counter",
         "# TYPE swarmail_webhook_ca_cache_evictions_total counter",
+        // The delivery ledger: five counters, fresh-zero on a fresh server.
+        // An operator watches `dropped` for bound refusals and `aborted`
+        // for deliveries the shutdown counted instead of losing silently.
+        "# TYPE swarmail_webhook_delivered_total counter",
+        "swarmail_webhook_delivered_total 0",
+        "# TYPE swarmail_webhook_dropped_total counter",
+        "swarmail_webhook_dropped_total 0",
+        "# TYPE swarmail_webhook_lagged_total counter",
+        "swarmail_webhook_lagged_total 0",
+        "# TYPE swarmail_webhook_exhausted_total counter",
+        "swarmail_webhook_exhausted_total 0",
+        "# TYPE swarmail_webhook_aborted_total counter",
+        "swarmail_webhook_aborted_total 0",
     ] {
         assert!(text.contains(needle), "metrics missing {needle}:\n{text}");
     }

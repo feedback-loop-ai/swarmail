@@ -351,6 +351,21 @@ Clients pinned to a `ca_pem` are cached per PEM under a fixed bound of 32
 delivery rebuilds it. `swarmail_webhook_ca_cache_{entries,builds_total,
 evictions_total}` on `/metrics` lets you watch the bound hold.
 
+Delivery is best-effort with the loss made observable — there is no durable
+outbox: a mail whose fan-out cannot fire is never re-fired after a restart.
+At most 32 deliveries are in flight per process
+(`swarmail::webhook::WEBHOOK_DELIVERY_CAP`); a mail whose every target's
+slot is taken has its notification refused at the bound, counted once in
+`swarmail_webhook_dropped_total`, and never retried. A target that accepts
+and never answers wedges its delivery for the dispatcher's whole budget —
+about 22.1 s (four attempts under the 5 s POST timeout plus the backoff) —
+so a stalled slot holds the bound for that long, then the delivery is
+counted in `swarmail_webhook_exhausted_total`. The five ledger counters —
+`swarmail_webhook_{delivered,dropped,lagged,exhausted,aborted}_total` — are
+cumulative since process start (they reset on restart, they are not
+persisted), and a shutdown counts its backlog of undelivered notifications
+in `swarmail_webhook_aborted_total` instead of dropping them silently.
+
 ### Chaos — break SMTP on purpose
 
 ```

@@ -9,6 +9,13 @@
 //! regardless of case. The per-root clients are cached, but under a fixed
 //! bound with least-recently-used eviction — a long-lived server pointed at
 //! many distinct roots must not grow the cache without limit.
+//!
+//! Delivery is best-effort with observable loss: at most
+//! [`WEBHOOK_DELIVERY_CAP`] deliveries are in flight, every death a
+//! notification can die has a row in the per-instance ledger
+//! ([`Webhooks::snapshot`]), and nothing is ever durable — there is no
+//! outbox. Every bound is `try`-shaped (drop-and-count, never
+//! wait-and-delay), so the fan-out can never push back on the accept path.
 
 use crate::store::Store;
 use serde::{Deserialize, Serialize};
@@ -33,6 +40,15 @@ static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 /// rebuilds its client. Surfaced on `/metrics` as
 /// `swarmail_webhook_ca_cache_*`.
 pub const CA_CLIENT_CAP: usize = 32;
+
+/// The maximum number of webhook deliveries in flight at once. The bound is
+/// `try`-shaped: a fan-out that cannot fit is dropped and counted in the
+/// `dropped` ledger row, never waited for — the accept path is downstream of
+/// the commit and must never be delayed by the delivery side. A stalled
+/// target holds its slot for at most the retry budget (four 5 s attempt
+/// timeouts plus the 100/400/1600 ms backoff — 22.1 s expected worst case)
+/// before the budget is named `exhausted`. Surfaced on `/metrics`.
+pub const WEBHOOK_DELIVERY_CAP: usize = 32;
 
 /// The bounded per-PEM client cache: clients keyed by their root PEM, plus
 /// those keys in recency order (front = least recently used) so eviction is
@@ -126,9 +142,41 @@ pub struct WebhookTarget {
     pub ca_pem: Option<String>,
 }
 
+/// A copy of the delivery ledger: every death a notification can die has a
+/// row. One instance per `Webhooks` — two servers count independently, and
+/// no counter is process-global. The rows are cumulative since instance
+/// start; they are exact at quiescence (when `/metrics` is read between
+/// bursts), not under a live reader.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WebhookLedger {
+    /// Deliveries answered 2xx.
+    pub delivered: u64,
+    /// Fan-outs refused at [`WEBHOOK_DELIVERY_CAP`] — and nothing else:
+    /// shutdown loss has its own row.
+    pub dropped: u64,
+    /// Mails evicted from the firehose ring before the dispatcher saw them
+    /// (`Lagged`). Unit: mails, not notifications — a lagged mail's fan-out
+    /// is unknowable by construction.
+    pub lagged: u64,
+    /// Deliveries whose four-attempt retry budget was spent.
+    pub exhausted: u64,
+    /// Deliveries that ended without reporting an outcome: aborted at
+    /// shutdown (together with any backlog mail's matching targets), or
+    /// orphaned by a firehose close.
+    pub aborted: u64,
+}
+
+/// Per-instance webhook state: the configured targets and the delivery
+/// ledger. Plain `AtomicU64` fields — no statics, so an embedded second
+/// server in one process counts independently of the first.
 #[derive(Default)]
 pub struct Webhooks {
     targets: RwLock<Vec<WebhookTarget>>,
+    delivered: AtomicU64,
+    dropped: AtomicU64,
+    lagged: AtomicU64,
+    exhausted: AtomicU64,
+    aborted: AtomicU64,
 }
 
 impl Webhooks {
@@ -139,14 +187,27 @@ impl Webhooks {
     pub fn current(&self) -> Vec<WebhookTarget> {
         self.targets.read().unwrap().clone()
     }
+
+    /// A `Copy` of the ledger, in the `CaCacheStats` shape. Relaxed loads:
+    /// the rows are independent observations, nothing is ordered behind
+    /// them, and the exactness that matters holds at quiescence.
+    pub fn snapshot(&self) -> WebhookLedger {
+        WebhookLedger {
+            delivered: self.delivered.load(Ordering::Relaxed),
+            dropped: self.dropped.load(Ordering::Relaxed),
+            lagged: self.lagged.load(Ordering::Relaxed),
+            exhausted: self.exhausted.load(Ordering::Relaxed),
+            aborted: self.aborted.load(Ordering::Relaxed),
+        }
+    }
 }
 
 /// What a firehose wakeup means; a pure function so every arm is provable.
 enum Wake {
     /// A new email to deliver.
     Mail(Arc<crate::model::Email>),
-    /// A transient condition (lag) — keep looping, the store is the truth.
-    Again,
+    /// The watcher fell behind: `n` mails were lost. The store is the truth.
+    Lagged(u64),
     /// The channel closed — the store is gone; stop.
     Stop,
 }
@@ -161,57 +222,178 @@ fn classify(
                 "webhook dispatcher lagged, skipped {n}; the store remains the source of truth"
             );
             tracing::warn!("{note}");
-            Wake::Again
+            Wake::Lagged(n)
         }
         Err(_) => Wake::Stop, // closed
     }
 }
 
-/// The dispatcher core: consume the firehose until it closes. Owned fn so
-/// the wake arms are provable without a live server.
+/// The dispatcher core: consume the firehose until it closes or stop is
+/// signaled, hold at most [`WEBHOOK_DELIVERY_CAP`] deliveries at once, and
+/// name every death in the ledger. Owned fn so the wake arms are provable
+/// without a live server.
 pub(crate) async fn dispatch_loop(
     mut rx: tokio::sync::broadcast::Receiver<Arc<crate::model::Email>>,
     webhooks: Arc<Webhooks>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
+    let mut deliveries: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
-        match classify(rx.recv().await) {
+        // Biased: the firehose is polled first, the shutdown watch second. A
+        // mail already in the ring is handed to the `Mail` arm — whose first
+        // statement re-checks stop — so a buffered mail is counted, never
+        // serialized; only an empty ring reaches the shutdown arm. Stop
+        // latency stays decoupled from backlog × payload size.
+        let wake = tokio::select! {
+            biased;
+            res = rx.recv() => classify(res),
+            _ = shutdown.changed() => Wake::Stop,
+        };
+        match wake {
             Wake::Mail(email) => {
-                let targets = webhooks.current();
-                for t in targets {
-                    if t.inbox.as_deref().is_some_and(|i| i != email.inbox) {
-                        continue;
+                // First statement: the shutdown check. Once stop is signaled
+                // the payload is never built — counting is O(targets), the
+                // build is O(bytes). A closed watch is a stop too: the
+                // error path's drop-cascade rides the same arm.
+                if shutdown.has_changed().unwrap_or(true) {
+                    let matching = matching_count(webhooks.current(), &email);
+                    webhooks
+                        .aborted
+                        .fetch_add(matching as u64, Ordering::Relaxed);
+                    break;
+                }
+                let matching: Vec<WebhookTarget> = webhooks
+                    .current()
+                    .into_iter()
+                    .filter(|t| t.inbox.as_deref().is_none_or(|i| i == email.inbox))
+                    .collect();
+                if matching.is_empty() {
+                    // Nothing is owed for this mail.
+                } else {
+                    // Harvest finished deliveries first, so the bound
+                    // reflects live capacity and not last pass's dead weight.
+                    while deliveries.try_join_next().is_some() {}
+                    if deliveries.len() >= WEBHOOK_DELIVERY_CAP {
+                        // The bound is full before any bytes are touched: the
+                        // whole fan-out is refused, and the payload that would
+                        // have been built is never built.
+                        webhooks
+                            .dropped
+                            .fetch_add(matching.len() as u64, Ordering::Relaxed);
+                    } else {
+                        // The payload is built once per mail — an `Arc<str>`
+                        // the deliveries own. A delivery that outlives the
+                        // mail (a sink that delays its reply, a retry against
+                        // a pruned inbox) replays these bytes; it never
+                        // re-reads the store.
+                        let payload: Arc<str> = serde_json::json!({
+                            "event": "received",
+                            "email": &*email,
+                        })
+                        .to_string()
+                        .into();
+                        for target in matching {
+                            // Re-checked per spawn: a mail that straddles the
+                            // cap fills it and the rest of its targets are
+                            // counted, one row each.
+                            if deliveries.len() < WEBHOOK_DELIVERY_CAP {
+                                let webhooks = Arc::clone(&webhooks);
+                                let WebhookTarget {
+                                    url,
+                                    secret,
+                                    ca_pem,
+                                    ..
+                                } = target;
+                                deliveries.spawn(deliver(
+                                    webhooks,
+                                    url,
+                                    secret,
+                                    ca_pem,
+                                    Arc::clone(&payload),
+                                ));
+                            } else {
+                                webhooks.dropped.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
                     }
-                    let payload = serde_json::json!({
-                        "event": "received",
-                        "email": &*email,
-                    });
-                    let body = payload.to_string();
-                    tokio::spawn(deliver(t.url, t.secret, t.ca_pem, body));
                 }
             }
-            Wake::Again => {}
-            Wake::Stop => return,
+            Wake::Lagged(n) => {
+                // Unit: mails. Their fan-out is unknowable — the store stays
+                // the truth, and the loss is a row, not a warn line alone.
+                webhooks.lagged.fetch_add(n, Ordering::Relaxed);
+            }
+            Wake::Stop => break,
+        }
+    }
+    // The tail — the one place both the stop arm and a firehose close land.
+    // Every death before the loop returns gets a name: the sweep counts the
+    // ring residents that never got a pass, then every delivery that ends
+    // without reporting its own outcome is counted (an `Ok` already
+    // reported, at its last await).
+    while let Ok(email) = rx.try_recv() {
+        let matching = matching_count(webhooks.current(), &email);
+        webhooks
+            .aborted
+            .fetch_add(matching as u64, Ordering::Relaxed);
+    }
+    deliveries.abort_all();
+    while let Some(res) = deliveries.join_next().await {
+        if res.is_err() {
+            webhooks.aborted.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
 
-/// Spawn the dispatcher: consume the global firehose, deliver with retry.
-pub fn spawn_dispatcher(store: Arc<Store>, webhooks: Arc<Webhooks>) {
-    let rx = store.subscribe_all();
-    tokio::spawn(dispatch_loop(rx, webhooks));
+/// How many of `targets` fire for `email`.
+fn matching_count(targets: Vec<WebhookTarget>, email: &crate::model::Email) -> usize {
+    targets
+        .into_iter()
+        .filter(|t| t.inbox.as_deref().is_none_or(|i| i == email.inbox))
+        .count()
 }
 
-async fn deliver(url: String, secret: Option<String>, ca_pem: Option<String>, body: String) {
+/// Spawn the dispatcher into the caller's task set: consume the global
+/// firehose, deliver with retry, honor `shutdown`. The subscription happens
+/// HERE, synchronously, before the spawn — the caller is required to invoke
+/// this before any listener binds, so a mail accepted at startup can never
+/// miss its webhook (decision 0002, one layer down). The task lives in the
+/// tracker, so [`crate::RunningServer::stop`] joins it.
+pub fn spawn_dispatcher(
+    store: &Store,
+    webhooks: &Arc<Webhooks>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    tasks: &mut tokio::task::JoinSet<()>,
+) {
+    let rx = store.subscribe_all();
+    tasks.spawn(dispatch_loop(rx, Arc::clone(webhooks), shutdown));
+}
+
+/// Deliver one fan-out, retrying within the budget. The outcome is
+/// self-reported: both increments follow the function's last await, so a
+/// task that reported can never also be counted aborted (cancellation takes
+/// effect only at a yield point) — the drain can trust `Ok` arms.
+async fn deliver(
+    webhooks: Arc<Webhooks>,
+    url: String,
+    secret: Option<String>,
+    ca_pem: Option<String>,
+    body: Arc<str>,
+) {
     for attempt in 0..4u32 {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(100 * 4u64.pow(attempt - 1))).await;
         }
         match post_json(&url, &body, secret.as_deref(), ca_pem.as_deref()).await {
-            Ok(status) if (200..300).contains(&status) => return,
+            Ok(status) if (200..300).contains(&status) => {
+                webhooks.delivered.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
             Ok(status) => tracing::debug!(%url, status, "webhook non-2xx"),
             Err(e) => tracing::debug!(%url, error = %e, "webhook delivery failed"),
         }
     }
+    webhooks.exhausted.fetch_add(1, Ordering::Relaxed);
     tracing::warn!(%url, "webhook dropped after retries");
 }
 
@@ -331,11 +513,11 @@ mod tests {
 
     /// Every arm of the firehose classifier, provable without a live server.
     #[test]
-    fn classify_mail_again_stop() {
+    fn classify_mail_lagged_stop() {
         assert!(matches!(classify(Ok(Arc::new(email()))), Wake::Mail(_)));
         assert!(matches!(
             classify(Err(broadcast::error::RecvError::Lagged(3))),
-            Wake::Again
+            Wake::Lagged(3)
         ));
         assert!(matches!(
             classify(Err(broadcast::error::RecvError::Closed)),
@@ -348,6 +530,7 @@ mod tests {
 mod loop_tests {
     use super::*;
     use crate::model::Email;
+    use std::sync::atomic::AtomicUsize;
     use tokio::sync::broadcast;
 
     fn email() -> Email {
@@ -375,19 +558,26 @@ mod loop_tests {
 
     /// Mail is delivered, a lagging watcher retries, a closed firehose ends
     /// the loop — all three wake arms against a real broadcast channel, and
-    /// the lag actually lands in the log, as promised.
+    /// the lag actually lands in the log, as promised. The lag also lands in
+    /// the ledger: a lost mail is a row, not a warn line alone.
     #[tokio::test]
     async fn dispatch_loop_handles_mail_lag_and_close() {
         let log = captured_log();
         let webhooks = Arc::new(Webhooks::default()); // no targets: delivery is a no-op
         let (tx, rx) = broadcast::channel(1);
+        // The stop watch's sender is held for the whole test: the loop must
+        // end on the firehose close (the `classify` arm), not on a signal.
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         // Both sends happen BEFORE the loop exists: the first recv is then
         // guaranteed to lag (capacity 1 holds one mail, one was lost), so
         // the Lagged arm is deterministic — no race with the loop's speed.
         tx.send(Arc::new(email())).unwrap(); // lost: overwritten in the ring
         tx.send(Arc::new(email())).unwrap(); // buffered: the next recv after the lag
-        let loop_task = tokio::spawn(dispatch_loop(rx, webhooks));
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let loop_task = tokio::spawn(dispatch_loop(rx, Arc::clone(&webhooks), shutdown_rx));
+        // The wait is on the ledger row the loop itself writes (never a
+        // sleep the test depends on): once `lagged` moved, the ring is
+        // drained and the close below can only hit the `Stop` arm.
+        spin_until(2000, || webhooks.snapshot().lagged == 1).await;
         drop(tx); // close the firehose → Stop → the loop returns
 
         tokio::time::timeout(std::time::Duration::from_secs(2), loop_task)
@@ -395,11 +585,354 @@ mod loop_tests {
             .expect("the loop must end when the firehose closes")
             .unwrap();
         std::io::Write::flush(&mut log.clone()).unwrap();
+        let logged = String::from_utf8_lossy(&log.0.lock().unwrap()).to_string();
         assert!(
-            String::from_utf8_lossy(&log.0.lock().unwrap()).contains("lagged"),
-            "the lag warning must be logged: {:?}",
-            String::from_utf8_lossy(&log.0.lock().unwrap())
+            logged.contains("lagged"),
+            "the lag warning must be logged: {logged}"
         );
+        assert_eq!(
+            webhooks.snapshot().lagged,
+            1,
+            "the lost mail is a ledger row (unit: mails)"
+        );
+    }
+
+    /// A stop-signaled backlog is counted, never serialized (AC2): the stop
+    /// and two mails land with no await between, so on this current-thread
+    /// runtime the loop's first poll sees both ready and the biased select
+    /// hands it the firehose — the `Mail` arm's first statement sees the
+    /// signaled watch, counts the mail's matching targets and breaks; the
+    /// tail sweep counts the ring resident the loop never got to. The sink
+    /// records nothing.
+    #[tokio::test]
+    async fn a_stop_signaled_backlog_is_counted_and_never_serialized() {
+        let (addr, hits, _retire, _sink) = counting_sink(None).await;
+        let webhooks = Arc::new(Webhooks::default());
+        webhooks.set(vec![target(format!("http://{addr}/hook"))]);
+        let (tx, rx) = broadcast::channel(8);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let loop_task = tokio::spawn(dispatch_loop(rx, Arc::clone(&webhooks), shutdown_rx));
+
+        let _ = shutdown_tx.send(true);
+        tx.send(Arc::new(email())).unwrap();
+        tx.send(Arc::new(email())).unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), loop_task)
+            .await
+            .expect("stop must end the loop")
+            .unwrap();
+        let ledger = webhooks.snapshot();
+        assert_eq!(
+            ledger.aborted, 2,
+            "one counted at the arm check, one swept at the tail"
+        );
+        assert_eq!(ledger.delivered, 0, "nothing was delivered");
+        assert_eq!(ledger.dropped, 0, "a shutdown loss is not a bound refusal");
+        assert_eq!(
+            hits.load(Ordering::Relaxed),
+            0,
+            "the sink records nothing: no payload was ever built"
+        );
+    }
+
+    /// The tail drain: a delivery that finished before the watch fired is
+    /// counted as its own outcome (an `Ok` already reported at its last
+    /// await, so it can never also be counted aborted); the one cancelled
+    /// mid-flight is counted aborted. AC2's counting half.
+    #[tokio::test]
+    async fn the_drain_counts_reported_deliveries_and_cancels_the_rest() {
+        let (fast, _, _retire, _sink) = counting_sink(Some(FAST_REPLY)).await;
+        let (stalled, _, stalled_retire, stalled_sink) = counting_sink(None).await;
+        let webhooks = Arc::new(Webhooks::default());
+        webhooks.set(vec![
+            target(format!("http://{fast}/hook")),
+            target(format!("http://{stalled}/hook")),
+        ]);
+        let (tx, rx) = broadcast::channel(8);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let loop_task = tokio::spawn(dispatch_loop(rx, Arc::clone(&webhooks), shutdown_rx));
+
+        tx.send(Arc::new(email())).unwrap();
+        // The report is the delivery task's final statements — after its
+        // last await — so `delivered == 1` proves the task is complete and
+        // sits unreaped in the set: exactly the `Ok` arm the drain must see.
+        spin_until(5000, || webhooks.snapshot().delivered == 1).await;
+        let _ = shutdown_tx.send(true);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), loop_task)
+            .await
+            .expect("stop must end the loop")
+            .unwrap();
+        let ledger = webhooks.snapshot();
+        assert_eq!(
+            ledger.delivered, 1,
+            "the reported delivery is its own outcome"
+        );
+        assert_eq!(ledger.aborted, 1, "the cancelled delivery is aborted");
+        assert_eq!(ledger.dropped, 0);
+        assert_eq!(ledger.exhausted, 0);
+        assert_eq!(ledger.lagged, 0);
+
+        // The sink outlives nothing: retiring it ends its accept loop —
+        // no test leaves a listener spinning under the coverage run.
+        drop(stalled_retire);
+        tokio::time::timeout(std::time::Duration::from_secs(2), stalled_sink)
+            .await
+            .expect("the retired sink's accept loop must end")
+            .unwrap();
+        drop(_retire);
+    }
+
+    /// The reap keeps the bound honest and a straddling mail fills it: 31
+    /// stalled deliveries hold the cap while the one fast delivery is
+    /// reaped on the next pass, so a two-target mail spawns one and counts
+    /// exactly one dropped — the per-spawn re-check firing mid-mail.
+    #[tokio::test]
+    async fn the_reap_keeps_the_bound_honest_and_a_straddling_mail_fills_it() {
+        let (fast, _, _fast_retire, _fast_sink) = counting_sink(Some(FAST_REPLY)).await;
+        let (stalled, stalled_hits, _stalled_retire, _stalled_sink) = counting_sink(None).await;
+        let webhooks = Arc::new(Webhooks::default());
+        let mut targets = vec![target(format!("http://{fast}/hook"))];
+        targets.extend(std::iter::repeat_n(
+            target(format!("http://{stalled}/hook")),
+            WEBHOOK_DELIVERY_CAP - 1,
+        ));
+        webhooks.set(targets);
+        let (tx, rx) = broadcast::channel(8);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let loop_task = tokio::spawn(dispatch_loop(rx, Arc::clone(&webhooks), shutdown_rx));
+
+        tx.send(Arc::new(email())).unwrap();
+        // All 32 spawned: the stalled sink holds 31 slots and the fast one
+        // has reported. Only one mail exists, so no later pass can reap the
+        // fast delivery — it sits in the set, complete.
+        spin_until(5000, || {
+            stalled_hits.load(Ordering::Relaxed) == WEBHOOK_DELIVERY_CAP - 1
+        })
+        .await;
+        spin_until(5000, || webhooks.snapshot().delivered == 1).await;
+
+        // Now the bound is exactly full. Two more targets in one pass: the
+        // reap removes the finished delivery, the first spawn fills the
+        // cap, and the second target is counted dropped.
+        webhooks.set(vec![
+            target(format!("http://{stalled}/hook")),
+            target(format!("http://{stalled}/hook")),
+        ]);
+        tx.send(Arc::new(email())).unwrap();
+        spin_until(5000, || webhooks.snapshot().dropped == 1).await;
+        spin_until(5000, || {
+            stalled_hits.load(Ordering::Relaxed) == WEBHOOK_DELIVERY_CAP
+        })
+        .await;
+
+        let _ = shutdown_tx.send(true);
+        tokio::time::timeout(std::time::Duration::from_secs(2), loop_task)
+            .await
+            .expect("stop must end the loop")
+            .unwrap();
+        let ledger = webhooks.snapshot();
+        assert_eq!(ledger.dropped, 1, "exactly one target refused at the bound");
+        assert_eq!(ledger.delivered, 1);
+        assert_eq!(
+            ledger.aborted, WEBHOOK_DELIVERY_CAP as u64,
+            "every stalled slot was cancelled and counted"
+        );
+        assert_eq!(
+            stalled_hits.load(Ordering::Relaxed),
+            WEBHOOK_DELIVERY_CAP,
+            "32 connections reached the sink: the reap kept a slot free"
+        );
+        assert_eq!(ledger.exhausted, 0);
+        assert_eq!(ledger.lagged, 0);
+    }
+
+    /// Two `Webhooks::default()` ledgers count independently — the refusal
+    /// of the process-global statics precedent (AC5's cross-contamination
+    /// half). Each loop's stop-signaled backlog counts only its own ledger.
+    #[tokio::test]
+    async fn two_ledgers_count_independently() {
+        // The URL is never dialed: the stop path counts, it never spawns.
+        let a = Arc::new(Webhooks::default());
+        a.set(vec![target("http://127.0.0.1:9/hook".into())]);
+        let (tx_a, rx_a) = broadcast::channel(8);
+        let (stop_a, rx_stop_a) = tokio::sync::watch::channel(false);
+        let loop_a = tokio::spawn(dispatch_loop(rx_a, Arc::clone(&a), rx_stop_a));
+        let _ = stop_a.send(true);
+        tx_a.send(Arc::new(email())).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), loop_a)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.snapshot().aborted, 1, "loop a counts its own backlog");
+        assert_eq!(a.snapshot().delivered, 0);
+
+        let b = Arc::new(Webhooks::default());
+        b.set(vec![target("http://127.0.0.1:9/hook".into())]);
+        let (tx_b, rx_b) = broadcast::channel(8);
+        let (stop_b, rx_stop_b) = tokio::sync::watch::channel(false);
+        let loop_b = tokio::spawn(dispatch_loop(rx_b, Arc::clone(&b), rx_stop_b));
+        let _ = stop_b.send(true);
+        tx_b.send(Arc::new(email())).unwrap();
+        tx_b.send(Arc::new(email())).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), loop_b)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(b.snapshot().aborted, 2, "loop b counts its own backlog");
+        assert_eq!(
+            a.snapshot().aborted,
+            1,
+            "a's ledger must not move: no cross-contamination"
+        );
+    }
+
+    /// The subscription is synchronous: the moment `spawn_dispatcher`
+    /// returns, the dispatcher is a live firehose consumer. `run_on` calls
+    /// it before TLS is parsed and before any listener binds, so a mail
+    /// accepted in the startup window — however early — cannot miss its
+    /// webhook (subscribe-before-bind, 0002 one layer down). This test
+    /// binds nothing: the insert plays the accept that would otherwise race
+    /// the first listener.
+    #[tokio::test]
+    async fn a_mail_landing_after_spawn_dispatcher_returns_is_delivered() {
+        let (addr, hits, retire, sink) = counting_sink(Some(FAST_REPLY)).await;
+        let webhooks = Arc::new(Webhooks::default());
+        webhooks.set(vec![target(format!("http://{addr}/hook"))]);
+        let store = Store::new(0);
+        let mut tasks = tokio::task::JoinSet::new();
+        let (_stop_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        spawn_dispatcher(&store, &webhooks, shutdown_rx, &mut tasks);
+        // The accept, before any listener could exist: the mail lands in
+        // the firehose the dispatcher above already subscribed to.
+        store.insert(email());
+        spin_until(5000, || webhooks.snapshot().delivered == 1).await;
+        assert_eq!(
+            hits.load(Ordering::Relaxed),
+            1,
+            "the startup mail reached the wire"
+        );
+
+        // The sink outlives nothing: retiring it ends its accept loop.
+        drop(retire);
+        tokio::time::timeout(std::time::Duration::from_secs(2), sink)
+            .await
+            .expect("the retired sink's accept loop must end")
+            .unwrap();
+        drop(tasks);
+    }
+
+    /// The reply a fast sink sends: 204, connection closed after.
+    const FAST_REPLY: &str =
+        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+    fn target(url: String) -> WebhookTarget {
+        WebhookTarget {
+            url,
+            inbox: None,
+            secret: None,
+            ca_pem: None,
+        }
+    }
+
+    /// Spin-yield until a production observable holds. Not sleep-as-sync:
+    /// the wait is on a counter the production code itself writes — the
+    /// deadline only turns a broken implementation into a failure message
+    /// instead of a hang.
+    async fn spin_until(deadline_ms: u64, fact: impl Fn() -> bool) {
+        let fut = async {
+            while !fact() {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_millis(deadline_ms), fut)
+            .await
+            .expect("the production observable never became true");
+    }
+
+    /// A real loopback HTTP sink for the dispatcher core. `reply`: `None`
+    /// accepts and never answers — a stalled target holds its slot for the
+    /// budget; `Some` answers every request with those exact bytes. Returns
+    /// the bound address, the connection count — a production observable the
+    /// tests spin on — the retire switch, and the accept task: a test that
+    /// drops the switch and awaits the task leaves no accept loop spinning
+    /// under the coverage run. Every connection is served in its own task.
+    async fn counting_sink(
+        reply: Option<&'static str>,
+    ) -> (
+        std::net::SocketAddr,
+        Arc<AtomicUsize>,
+        tokio::sync::watch::Sender<bool>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&hits);
+        let (retire, mut retired) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move {
+            loop {
+                let accepted = tokio::select! {
+                    res = listener.accept() => res,
+                    // Retired (or the test's sender dropped): end the loop.
+                    _ = retired.changed() => break,
+                };
+                let (mut stream, _) = accepted.expect("the sink's listener must keep accepting");
+                counter.fetch_add(1, Ordering::Relaxed);
+                match reply {
+                    // Answered: read the request, reply, close.
+                    Some(status) => {
+                        let _ = read_request(&mut stream).await;
+                        let _ = stream.write_all(status.as_bytes()).await;
+                        let _ = stream.flush().await;
+                    }
+                    // Stalled: read the request, then never answer. The
+                    // socket is parked rather than dropped — the drop would
+                    // close it and un-wedge the delivery. The fd comes back
+                    // when the test process exits.
+                    None => {
+                        let _ = read_request(&mut stream).await;
+                        std::mem::forget(stream);
+                    }
+                }
+            }
+        });
+        (addr, hits, retire, task)
+    }
+
+    /// One HTTP request off a raw socket: head plus its content-length
+    /// body. The dispatcher's payloads are small; this only ever walks a
+    /// few hundred bytes. `None` when the peer hangs up mid-request.
+    async fn read_request(stream: &mut tokio::net::TcpStream) -> Option<String> {
+        use tokio::io::AsyncReadExt;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            if let Some(pos) = find(&buf, b"\r\n\r\n") {
+                let body_start = pos + 4;
+                let head = String::from_utf8_lossy(&buf[..pos]).to_ascii_lowercase();
+                let len = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if buf.len() >= body_start + len {
+                    return Some(String::from_utf8_lossy(&buf).into_owned());
+                }
+            }
+            let n = stream.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+    }
+
+    fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
     }
 
     /// The process-wide capturing log: the dispatcher's warnings must be
@@ -438,6 +971,62 @@ mod loop_tests {
             );
             capture
         })
+    }
+    /// The sink's reader is pinned at its edges, because the dispatcher
+    /// tests above lean on it: a request split across segments is read
+    /// whole, and a peer that hangs up before the body is complete is no
+    /// request at all.
+    #[tokio::test]
+    async fn the_sink_reader_takes_split_requests_and_refuses_silent_ones() {
+        use tokio::io::AsyncWriteExt;
+
+        // Split across segments: the head with a partial body, a yield so
+        // the sink is parked mid-request, then the rest — one request.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_request(&mut stream).await
+        });
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"POST /hook HTTP/1.1\r\nHost: sink\r\nContent-Length: 6\r\n\r\nhe")
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        client.write_all(b"llo!").await.unwrap();
+        let read = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("the split request must be read")
+            .unwrap();
+        assert_eq!(
+            read.as_deref()
+                .map(|r| r.rsplit("\r\n\r\n").next().unwrap_or("")),
+            Some("hello!"),
+            "a request split across segments is one request: {read:?}"
+        );
+
+        // A peer that promises a body it never finishes and hangs up
+        // mid-request: the incomplete-body check runs against a present
+        // head, the next read is the peer's EOF, and no request is
+        // invented. Deterministic — no split timing to bet on.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_request(&mut stream).await
+        });
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"POST /hook HTTP/1.1\r\nContent-Length: 6\r\n\r\nhe")
+            .await
+            .unwrap();
+        drop(client);
+        let read = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("the silent peer must not hang the reader")
+            .unwrap();
+        assert_eq!(read, None, "no body, no request: {read:?}");
     }
 }
 

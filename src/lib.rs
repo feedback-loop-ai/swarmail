@@ -27,7 +27,9 @@ fn log_stopped(what: &str, res: std::io::Result<()>) {
     }
 }
 
-/// A running server: every listener bound, tasks spawned.
+/// A running server: every listener bound, tasks spawned — and every task
+/// the process runs owned by this struct's tracker, the dispatcher
+/// included. Dropping it (without `stop`) aborts the lot; `stop` joins.
 pub struct RunningServer {
     pub smtp_addr: std::net::SocketAddr,
     pub http_addr: std::net::SocketAddr,
@@ -37,16 +39,19 @@ pub struct RunningServer {
     pub chaos: Arc<chaos::Chaos>,
     pub webhooks: Arc<webhook::Webhooks>,
     shutdown: tokio::sync::watch::Sender<bool>,
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    tasks: tokio::task::JoinSet<()>,
 }
 
 impl RunningServer {
-    /// Ask the servers to stop and wait until they have logged their exit.
+    /// Ask the servers to stop and wait until every owned task — the three
+    /// serve loops and the webhook dispatcher — has returned. Nothing the
+    /// process spawned is left untracked: an SSE feed ends on the same
+    /// signal, a delivery in flight is aborted and counted, and a session
+    /// mid-transaction dies with its socket.
     pub async fn stop(self) {
         let _ = self.shutdown.send(true);
-        for task in self.tasks {
-            let _ = task.await;
-        }
+        let mut tasks = self.tasks;
+        while tasks.join_next().await.is_some() {}
     }
 }
 
@@ -64,7 +69,16 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     };
     let chaos = Arc::new(chaos::Chaos::default());
     let webhooks = Arc::new(webhook::Webhooks::default());
-    webhook::spawn_dispatcher(store.clone(), webhooks.clone());
+    // The shutdown watch is born where the store is, and the dispatcher
+    // spawns immediately after it — subscribing to the firehose before TLS
+    // is parsed and before any listener binds (decision 0002, one layer
+    // down): a mail accepted at startup can never miss its webhook. No
+    // cleanup is added to the error legs below: on a failure the store
+    // sender and this watch sender both drop, the firehose closes, and the
+    // dispatcher self-resolves.
+    let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut tasks = tokio::task::JoinSet::new();
+    webhook::spawn_dispatcher(&store, &webhooks, shutdown_rx.clone(), &mut tasks);
 
     // TLS is parsed before anything binds: a server that answers must not
     // answer with a broken TLS config. Both halves of the pair are required.
@@ -92,16 +106,13 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     let pop3_listener = tokio::net::TcpListener::bind(&cfg.pop3_listen).await?;
     let pop3_addr = pop3_listener.local_addr()?;
 
-    let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
-    let mut tasks = Vec::new();
-
     {
         let store = store.clone();
         let chaos = chaos.clone();
         let smtp_cfg = cfg.smtp.clone();
         let tls = tls;
         let mut shutdown_rx = shutdown_rx.clone();
-        tasks.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             log_stopped(
                 "smtp",
                 smtp::serve(smtp_listener, store, chaos, smtp_cfg, tls, async move {
@@ -109,7 +120,7 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
                 })
                 .await,
             );
-        }));
+        });
     }
 
     {
@@ -121,9 +132,10 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
             chaos,
             webhooks,
             started: std::time::Instant::now(),
+            shutdown: shutdown_rx.clone(),
         };
         let mut shutdown_rx = shutdown_rx.clone();
-        tasks.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             log_stopped(
                 "http",
                 api::serve(http_listener, state, async move {
@@ -131,13 +143,13 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
                 })
                 .await,
             );
-        }));
+        });
     }
 
     {
         let store = store.clone();
         let mut shutdown_rx = shutdown_rx.clone();
-        tasks.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             log_stopped(
                 "pop3",
                 pop3::serve(pop3_listener, store, async move {
@@ -145,7 +157,7 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
                 })
                 .await,
             );
-        }));
+        });
     }
 
     Ok(RunningServer {
