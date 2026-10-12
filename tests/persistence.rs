@@ -186,8 +186,9 @@ async fn deletes_and_clears_survive_a_restart() {
         "{metrics}"
     );
 
-    // clear_all is mirrored too.
-    let (st, _) = common::http_json(srv.http_addr, "DELETE", "/api/v1/messages", None).await;
+    // clear_all is mirrored too — reached through the explicit wipe alias
+    // (decision 0011: the shim DELETE no longer falls back to it).
+    let (st, _) = common::http_json(srv.http_addr, "DELETE", "/api/v1/delete-all", None).await;
     assert_eq!(st, 200);
     srv.stop().await;
 

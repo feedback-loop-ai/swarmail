@@ -6,7 +6,7 @@ order; task 9 is verify-only. The exact 100/100/100 gate is the arbiter:
 if an arm measures uncovered, the arm is dead or under-tested and the fix
 is a test — `coverage(off)` is forbidden.
 
-- [ ] **1. Change the one hashed input in `group_threads`** — in
+- [x] **1. Change the one hashed input in `group_threads`** — in
   `src/threads.rs:227`, hash the conversation's own first message instead
   of the union-find representative: `key: thread_key(&thread_node(emails[0]))`
   (the bucket is already sorted oldest-first at :221-225). Reword the
@@ -21,7 +21,7 @@ is a test — `coverage(off)` is forbidden.
   `key(group([root])) == key(group([root, reply]))` (red on current
   code, where the representative flips to `id:a@x.io`). Proves AC1
   (the unit half) and AC2.
-- [ ] **2. Pin grouping as unchanged** — no code; the proof that pass 1
+- [x] **2. Pin grouping as unchanged** — no code; the proof that pass 1
   and the `Components` union rules are untouched.
   *Test:* `a_reference_chain_is_one_thread_in_conversation_order`,
   `in_reply_to_alone_links_a_reply`,
@@ -31,7 +31,7 @@ is a test — `coverage(off)` is forbidden.
   `cyclic_references_collapse_into_one_thread`,
   `duplicate_message_ids_still_land_in_one_thread` pass **unmodified**.
   Proves AC3.
-- [ ] **3. Add the real-SMTP regression for the issue's exact scenario** —
+- [x] **3. Add the real-SMTP regression for the issue's exact scenario** —
   in `tests/ui.rs`, beside
   `thread_endpoints_group_a_references_chain_over_real_smtp` (:313):
   send `<z@x.io>` (inbox `keys`, subject "Stable"), record the key from
@@ -41,7 +41,7 @@ is a test — `coverage(off)` is forbidden.
   *Test:* the regression itself, plus
   `thread_view_is_a_live_shell_for_one_conversation` (:238) staying green
   (the UI route addresses threads by the same key). Proves AC1.
-- [ ] **4. Write the migration note** — README *Threads and the live UI*
+- [x] **4. Write the migration note** — README *Threads and the live UI*
   (:308-316): the key is the hash of the conversation's first message's
   anchor, so it cannot change as replies arrive; pre-existing mail re-keys
   once on the next request (no data migration — threads are recomputed per
@@ -51,7 +51,7 @@ is a test — `coverage(off)` is forbidden.
   *Test:* the sentence is exercised by 1 and 3; nothing else to run —
   but `the_view_caps_at_the_newest_view_cap_emails` (:492) stays green,
   proving the window semantics did not move. Proves AC4.
-- [ ] **5. Flip the shim DELETE contract** — in `src/compat.rs`
+- [x] **5. Flip the shim DELETE contract** — in `src/compat.rs`
   (:257-272): delete the `None => state.store.clear_all()` fallback.
   `Err(JsonRejection)` → `400` via
   `ApiError(StatusCode::BAD_REQUEST, "deletion requires a non-empty
@@ -67,7 +67,7 @@ is a test — `coverage(off)` is forbidden.
   nothing deleted; `{"ids": null}` and a wrong-typed `ids` → `400`
   (axum folds them into `JsonRejection`); `{"ids": []}` → `400` +
   nothing deleted. Proves AC5-AC8.
-- [ ] **6. Pin the valid case and the sole wipe** — no further production
+- [x] **6. Pin the valid case and the sole wipe** — no further production
   change; the same rewritten test keeps the previously valid path and
   0004's posture honest.
   *Test:* in `shim_deletes_go_through_the_store`: `{"ids": [a1, b2]}` →
@@ -76,7 +76,7 @@ is a test — `coverage(off)` is forbidden.
   `DELETE /api/v1/delete-all` (no body) → `200 {"removed": 4}` — the
   alias is unchanged and remains the only cross-inbox wipe. Proves
   AC9/AC10.
-- [ ] **7. Sweep the shim docs and draft decision 0011** — README API row
+- [x] **7. Sweep the shim docs and draft decision 0011** — README API row
   (:293), the `delete` operation in `src/static/openapi.json` (:141-145),
   the shim line in `src/static/llms.txt` (:92-94), and new
   `docs/decisions/0011-shim-delete-contract.md` with status `proposed`:
@@ -88,7 +88,7 @@ is a test — `coverage(off)` is forbidden.
   *Test:* `machine_docs_are_served_from_the_binary` (`tests/binary.rs`)
   stays green — the served OpenAPI must match the new contract text.
   Proves AC11/AC13.
-- [ ] **8. Flatten the DATA chaos arm and document the one policy** — in
+- [x] **8. Flatten the DATA chaos arm and document the one policy** — in
   `src/smtp.rs` (:439-450), remove the `if rule.error.is_some()` nesting:
   a fired DATA rule sleeps, answers `rule.error.unwrap_or("451 4.3.0
   chaos")` and `continue`s — mail is never stored. One doc sentence on
@@ -104,7 +104,7 @@ is a test — `coverage(off)` is forbidden.
   endorses the bug by asserting the mail is stored); the custom-error
   DATA section (:375-395) keeps `554 rejected` with the count still `0`.
   Proves AC14 (data row)/AC16 (data)/AC17 (data).
-- [ ] **9. Pin the other three stages' delay-only behavior** — no further
+- [x] **9. Pin the other three stages' delay-only behavior** — no further
   production change (connect/mail_from/rcpt already implement the table);
   tests only, in `tests/smtp_edges.rs`.
   *Test:* add delay-only MAIL FROM and RCPT sections to
@@ -116,7 +116,7 @@ is a test — `coverage(off)` is forbidden.
   `timeout(1s, c.reply()) == ""` — neither a banner nor a `451`. The
   existing custom-error sections (connect `451 go away`, mail_from
   `450 busy`) keep pinning AC17. Proves AC14/AC15/AC16/AC17.
-- [ ] **10. Run the gates** — `cargo fmt --all -- --check`,
+- [x] **10. Run the gates** — `cargo fmt --all -- --check`,
   `cargo clippy --all-targets -- -D warnings`, `cargo test`,
   `brokkr compile --bundle .`, `bash scripts/coverage-gate.sh`,
   `cargo deny check licenses`. The diff must show `src/store.rs`,

@@ -22,6 +22,10 @@ pub struct ChaosRule {
     /// Percentage chance (0–100) the event fires.
     pub probability: u8,
     /// SMTP error line to reply with, e.g. "451 4.7.1 try again later".
+    /// `None` is not a pass: a fired rule always fails its stage, with the
+    /// stage's default when no line is set — `451 4.3.0 chaos` at
+    /// `mail_from`/`rcpt`/`data` (and at `data` the mail is never stored),
+    /// a close with no banner at `connect` (issue #17).
     #[serde(default)]
     pub error: Option<String>,
     /// Delay before responding/processing, milliseconds.

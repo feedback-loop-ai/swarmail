@@ -140,9 +140,9 @@
         "responses": { "200": { "description": "Mailpit MessageSummary envelope" } }
       },
       "delete": {
-        "summary": "Delete the named ids (Mailpit) or wipe every inbox (MailHog)",
-        "description": "Body `{\"ids\":[...]}` deletes exactly those messages; an absent, empty or unparseable body wipes everything, like upstream's decoders. Replies `{\"removed\": n}`.",
-        "responses": { "200": { "description": "{\"removed\": n}" } }
+        "summary": "Delete the named ids (Mailpit)",
+        "description": "Body `{\"ids\":[...]}` — a non-empty array of message ids — deletes exactly those messages and replies `{\"removed\": n}`. Every other body (absent, empty, unparseable, wrong-typed, or an empty `ids` array) is answered `400` and deletes nothing; the cross-inbox wipe is `DELETE /api/v1/delete-all`.",
+        "responses": { "200": { "description": "{\"removed\": n}" }, "400": { "description": "No usable selector — nothing was deleted" } }
       }
     },
     "/api/v1/message/{id}": {
