@@ -167,7 +167,11 @@ pub struct InboxSummary {
 #[derive(Debug, Serialize)]
 pub struct EmailList {
     pub total: usize,
-    pub emails: Vec<Email>,
+    /// Held as `Arc<Email>` and serialized through serde's `rc` support:
+    /// `raw` is `#[serde(skip)]`, so a page of whole-`Email` clones would
+    /// deep-copy bytes (potentially many megabytes of them) that
+    /// serialization provably never reads. The wire is byte-identical.
+    pub emails: Vec<Arc<Email>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -250,11 +254,10 @@ async fn list_messages(
     let all = state.store.list(&inbox, &q.filter());
     let total = all.len();
     let offset = q.offset.unwrap_or(0);
-    let emails: Vec<Email> = all
+    let emails: Vec<Arc<Email>> = all
         .into_iter()
         .skip(offset)
         .take(q.limit.unwrap_or(100))
-        .map(|e| (*e).clone())
         .collect();
     Ok(Json(EmailList { total, emails }))
 }
@@ -496,4 +499,35 @@ async fn openapi_json() -> Json<serde_json::Value> {
 
 async fn llms_txt() -> &'static str {
     include_str!("static/llms.txt")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The listing page's wire is byte-identical to the whole-clone shape it
+    /// replaced — serde's `rc` support serializes `Arc<Email>` exactly as
+    /// `Email` — and no `raw` key ever appears: the page holds `Arc`s
+    /// precisely so the dead bytes serialization skips are never copied.
+    #[test]
+    fn the_listing_page_is_byte_identical_and_carries_no_raw() {
+        let mut email = crate::store::email("p1", "box", "to@x.io");
+        email.raw = b"raw source bytes".to_vec();
+        let page = EmailList {
+            total: 1,
+            emails: vec![Arc::new(email.clone())],
+        };
+        let serialized = serde_json::to_string(&page).unwrap();
+        // The emails array is indistinguishable from the Vec<Email> clone it
+        // replaced, byte for byte.
+        assert_eq!(
+            serde_json::to_string(&vec![email.clone()]).unwrap(),
+            serde_json::to_string(&page.emails).unwrap(),
+            "the page's emails serialize as the Vec<Email> shape"
+        );
+        let value: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(value["total"], 1);
+        assert!(value["emails"][0].get("raw").is_none(), "raw is skipped");
+        assert_eq!(value["emails"][0]["id"], "p1");
+    }
 }
