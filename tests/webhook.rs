@@ -16,8 +16,10 @@
 
 mod common;
 
-use common::{http_get_text, http_json, smtp_send, start};
+use common::{http_get_text, http_json, smtp_send, start, start_with};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot::Receiver;
@@ -750,11 +752,13 @@ fn metric(text: &str, name: &str) -> u64 {
 
 /// The per-PEM client cache is bounded: one more distinct root than the cap
 /// forces evictions, and every delivery still succeeds — an evicted root's
-/// client is rebuilt on its next delivery, never a failed delivery. One mail
-/// fans out to 33 real TLS servers, each with its own freshly minted CA, so
-/// the dispatcher must cycle the whole cache and rebuild on the way. On the
-/// old unbounded cache this is red: `/metrics` carried no ca_cache counters,
-/// and nothing kept `entries` at the cap.
+/// client is rebuilt on its next delivery, never a failed delivery. 33 real
+/// TLS servers, each with its own freshly minted CA, are fanned out in two
+/// waves (the delivery bound is 32 in flight, and a wave that fit under it
+/// would not prove the point), so the dispatcher must cycle the whole cache
+/// and rebuild on the way. On the old unbounded cache this is red:
+/// `/metrics` carried no ca_cache counters, and nothing kept `entries` at
+/// the cap.
 #[tokio::test]
 async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
     let srv = start().await;
@@ -777,45 +781,50 @@ async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
         sinks.push((ca_pem, addr, rx));
     }
 
-    let targets: Vec<serde_json::Value> = sinks
-        .iter()
-        .map(|(ca_pem, addr, _)| {
-            serde_json::json!({
-                "url": format!("https://127.0.0.1:{}/hook", addr.port()),
-                "ca_pem": ca_pem,
+    // The fan-out is bounded at WEBHOOK_DELIVERY_CAP deliveries in flight,
+    // so the 33 targets go in two waves, each under the bound: one accepted
+    // mail per wave, every target of the wave served by that pass.
+    let wave_size = swarmail::webhook::WEBHOOK_DELIVERY_CAP / 2 + 1;
+    for (w, wave) in sinks.chunks_mut(wave_size).enumerate() {
+        let targets: Vec<serde_json::Value> = wave
+            .iter()
+            .map(|(ca_pem, addr, _)| {
+                serde_json::json!({
+                    "url": format!("https://127.0.0.1:{}/hook", addr.port()),
+                    "ca_pem": ca_pem,
+                })
             })
-        })
-        .collect();
-    let body = serde_json::to_string(&targets).unwrap();
-    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
-    assert_eq!(st, 200);
+            .collect();
+        let body = serde_json::to_string(&targets).unwrap();
+        let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+        assert_eq!(st, 200);
 
-    // One accepted mail fans out to every target: 33 distinct ca_pems go
-    // through the cache in one dispatcher pass.
-    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "cachebound", "x")
-        .await
-        .unwrap();
-
-    // Every one of the `count` deliveries must have happened over real TLS:
-    // an empty `tls` capture would mean its handshake was rejected. The bound
-    // is generous — the dispatcher's whole 4-attempt budget plus slack — but
-    // a generous bound alone is not the fix: the sinks above now stay bound
-    // through that same budget, so a transient attempt failure (an EMFILE
-    // accept under a starved sandbox, a handshake that dies mid-flight) is
-    // retried against a live listener instead of being lost with its sink.
-    for (i, (_, _, rx)) in sinks.into_iter().enumerate() {
-        let captured = tokio::time::timeout(Duration::from_secs(30), rx)
+        smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "cachebound", "x")
             .await
-            .unwrap_or_else(|_| panic!("delivery {i} timed out"))
             .unwrap();
-        assert!(
-            captured.tls.contains("TLSv1"),
-            "delivery {i} was not over TLS: {captured:?}"
-        );
-        assert!(
-            captured.head.contains("\"event\":\"received\""),
-            "delivery {i} carried no payload: {captured:?}"
-        );
+
+        // Every one of this wave's deliveries must have happened over real
+        // TLS: an empty `tls` capture would mean its handshake was rejected.
+        // The bound is generous — the dispatcher's whole 4-attempt budget
+        // plus slack — but a generous bound alone is not the fix: the sinks
+        // above now stay bound through that same budget, so a transient
+        // attempt failure (an EMFILE accept under a starved sandbox, a
+        // handshake that dies mid-flight) is retried against a live
+        // listener instead of being lost with its sink.
+        for (i, (_, _, rx)) in wave.iter_mut().enumerate() {
+            let captured = tokio::time::timeout(Duration::from_secs(30), rx)
+                .await
+                .unwrap_or_else(|_| panic!("delivery {i} of wave {w} timed out"))
+                .unwrap();
+            assert!(
+                captured.tls.contains("TLSv1"),
+                "delivery {i} of wave {w} was not over TLS: {captured:?}"
+            );
+            assert!(
+                captured.head.contains("\"event\":\"received\""),
+                "delivery {i} of wave {w} carried no payload: {captured:?}"
+            );
+        }
     }
 
     // The production-honest introspection: the bound held and eviction
@@ -981,4 +990,343 @@ async fn garbage_ca_pem_builds_no_client_and_dials_nothing() {
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1);
     drop(rx_req);
+}
+
+// ---------- the delivery bound (AC4/AC5/AC6/AC7) ----------
+
+/// A sink that answers every request with 200 after `hold`, and counts
+/// concurrent in-flight requests. The hold is the deterministic way to fill
+/// the delivery bound: it outlasts the whole accept phase, so the bound —
+/// not a completed delivery — is what refuses the excess.
+async fn delaying_sink(
+    hold: Duration,
+) -> (std::net::SocketAddr, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let max = Arc::new(AtomicUsize::new(0));
+    let cur = Arc::new(AtomicUsize::new(0));
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+    let max_counter = Arc::clone(&max);
+    let hits_counter = Arc::clone(&hits);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            hits_counter.fetch_add(1, Ordering::Relaxed);
+            let now = cur.fetch_add(1, Ordering::Relaxed) + 1;
+            max_counter.fetch_max(now, Ordering::Relaxed);
+            let cur = Arc::clone(&cur);
+            let reply = reply.clone();
+            tokio::spawn(async move {
+                let hold = tokio::time::sleep(hold);
+                tokio::pin!(hold);
+                // Reply after the hold — unless the peer hangs up first,
+                // which ends the request's in-flight life just as surely
+                // (a timed-out attempt leaves a ghost behind otherwise).
+                let mut buf = [0u8; 4096];
+                let peer_left = loop {
+                    tokio::select! {
+                        _ = &mut hold => break false,
+                        read = stream.read(&mut buf) => {
+                            if read.unwrap_or(0) == 0 {
+                                break true;
+                            }
+                        }
+                    }
+                };
+                if !peer_left {
+                    let _ = stream.write_all(&reply).await;
+                }
+                cur.fetch_sub(1, Ordering::Relaxed);
+            });
+        }
+    });
+    (addr, hits, max)
+}
+
+/// A sink that accepts every connection and never answers: each delivery it
+/// receives wedges until the server kills it. Reports the connection count
+/// (a wedged delivery is a connection) and the count's resolution channel.
+async fn stalled_sink() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&hits);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            tokio::spawn(async move {
+                // Read until the peer hangs up — the EOF is the abort.
+                let mut buf = [0u8; 4096];
+                loop {
+                    match stream.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+            });
+        }
+    });
+    (addr, hits)
+}
+
+/// A sink that captures every request body, holds every request until
+/// `release` fires, then answers the first with 500 and the rest with 200.
+/// The hold is what makes the payload-replay proof deterministic: the first
+/// delivery is still in flight when the store has already pruned its mail.
+async fn gated_sink() -> (
+    std::net::SocketAddr,
+    Arc<AtomicUsize>,
+    Arc<std::sync::Mutex<Vec<String>>>,
+    watch::Sender<bool>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let bodies: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let (release, gate) = watch::channel(false);
+    let counter = Arc::clone(&hits);
+    let all = Arc::clone(&bodies);
+    tokio::spawn(async move {
+        let mut first = true;
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            counter.fetch_add(1, Ordering::Relaxed);
+            let is_first = first;
+            first = false;
+            let bodies = Arc::clone(&all);
+            let mut gate = gate.clone();
+            tokio::spawn(async move {
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut chunk).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                    if content_length(&buf).is_some_and(|len| buf.len() >= len) {
+                        break;
+                    }
+                }
+                bodies
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf).to_string());
+                let _ = gate.changed().await;
+                let reply = if is_first {
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                let _ = stream.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    (addr, hits, bodies, release)
+}
+
+/// Poll `/metrics` until `name` reaches `want`, under a deadline. The metric
+/// is the production observable the dispatcher itself writes; the deadline
+/// turns a broken implementation into a failure instead of a hang.
+async fn poll_metric(addr: std::net::SocketAddr, name: &str, want: u64) -> u64 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(25);
+    loop {
+        let (st, text) = http_get_text(addr, "/metrics").await;
+        assert_eq!(st, 200, "metrics must answer while polling {name}");
+        let value = metric(&text, name);
+        if value >= want {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} never reached {want} (stuck at {value})"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The POSTed payload of a captured request: everything after the head.
+fn payload_of(request: &str) -> &str {
+    request.split("\r\n\r\n").nth(1).unwrap_or("")
+}
+
+/// AC4: the bound holds exactly. Fifty mails against one target that replies
+/// slower than the accept path can feed it: 32 deliveries are in flight
+/// (each a connection at the sink), the other 18 fan-outs are refused at the
+/// bound, and nothing else — one refused row per refused mail.
+#[tokio::test]
+async fn the_delivery_bound_holds_exactly_and_the_excess_is_counted() {
+    let srv = start().await;
+    // The hold outlives the whole observation: no attempt ever gets a
+    // reply, so a delivery leaves the bound only through its own budget
+    // (22.1 s, past this test) — the arithmetic below cannot be blurred by
+    // a completed delivery. The dispatcher's own POST_TIMEOUT turns each
+    // attempt into a retry, which the high-water mark absorbs.
+    let (addr, hits, max) = delaying_sink(Duration::from_secs(40)).await;
+    let body = serde_json::json!([{ "url": format!("http://{addr}/hook") }]).to_string();
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+    assert_eq!(st, 200);
+
+    for i in 0..50 {
+        let reply = smtp_send(srv.smtp_addr, None, "f@x.io", "storm@x.io", "storm", "x")
+            .await
+            .unwrap_or_else(|e| panic!("mail {i} refused: {e}"));
+        assert!(reply.starts_with("250"), "mail {i} refused: {reply}");
+    }
+
+    poll_metric(srv.http_addr, "swarmail_webhook_dropped_total", 18).await;
+    assert_eq!(
+        max.load(Ordering::Relaxed),
+        32,
+        "the bound is exactly the high-water mark of requests in flight"
+    );
+    assert!(
+        hits.load(Ordering::Relaxed) >= 32,
+        "every one of the 32 deliveries reached the wire at least once"
+    );
+    let (_, text) = http_get_text(srv.http_addr, "/metrics").await;
+    assert_eq!(metric(&text, "swarmail_webhook_delivered_total"), 0);
+    assert_eq!(metric(&text, "swarmail_webhook_aborted_total"), 0);
+}
+
+/// AC5+AC6: a storm against one stalled target never pushes back on the
+/// accept path. Every mail is accepted synchronously and stored — the wedge
+/// downstream costs the accept path nothing — and the bound refuses exactly
+/// the excess, one row per refused mail.
+#[tokio::test]
+async fn a_storm_against_a_stalled_target_never_pushes_back_on_the_accept_path() {
+    let srv = start().await;
+    let (addr, hits) = stalled_sink().await;
+    let body = serde_json::json!([{ "url": format!("http://{addr}/hook") }]).to_string();
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+    assert_eq!(st, 200);
+
+    for i in 0..50 {
+        // smtp_send asserts the 250: a pushback would fail right here.
+        smtp_send(
+            srv.smtp_addr,
+            Some("stormbox"),
+            "f@x.io",
+            "storm@x.io",
+            "storm",
+            "x",
+        )
+        .await
+        .unwrap_or_else(|e| panic!("mail {i} refused: {e}"));
+    }
+
+    // Decision 0001 intact: every accepted mail is queryable, exactly.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/stormbox/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        body["count"], 50,
+        "the accept path never waited on delivery"
+    );
+
+    poll_metric(srv.http_addr, "swarmail_webhook_dropped_total", 18).await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while hits.load(Ordering::Relaxed) < 32 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("32 wedged deliveries must reach the sink");
+}
+
+/// AC7: a delivery that outlives its mail replays its own bytes. The first
+/// delivery is held while two more mails prune its mail out of a
+/// `max_per_inbox: 2` store — the payload is gone from the store (404) but
+/// the delivery still completes with byte-identical content, because it
+/// never re-reads the store.
+#[tokio::test]
+async fn a_delivery_outliving_its_mail_replays_its_own_bytes() {
+    let srv = start_with(|mut c| {
+        c.max_per_inbox = 2;
+        c
+    })
+    .await;
+    let (addr, hits, bodies, release) = gated_sink().await;
+    let body = serde_json::json!([{ "url": format!("http://{addr}/hook") }]).to_string();
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+    assert_eq!(st, 200);
+
+    let first = smtp_send(
+        srv.smtp_addr,
+        Some("prunebox"),
+        "f@x.io",
+        "prune@x.io",
+        "one",
+        "body one",
+    )
+    .await
+    .unwrap();
+    let (_, id) = first
+        .rsplit_once("stored as ")
+        .expect("the 250 names the id");
+    let id = id.trim();
+
+    // The first delivery is in flight (and held) before the flood.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while hits.load(Ordering::Relaxed) < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the first delivery must reach the sink");
+
+    // Two more mails prune the original, oldest-only (decision 0003).
+    smtp_send(
+        srv.smtp_addr,
+        Some("prunebox"),
+        "f@x.io",
+        "prune@x.io",
+        "two",
+        "body two",
+    )
+    .await
+    .unwrap();
+    smtp_send(
+        srv.smtp_addr,
+        Some("prunebox"),
+        "f@x.io",
+        "prune@x.io",
+        "three",
+        "body three",
+    )
+    .await
+    .unwrap();
+    let (st, _) = http_get_text(srv.http_addr, &format!("/api/v1/messages/{id}")).await;
+    assert_eq!(
+        st, 404,
+        "the mail must be pruned before the delivery is released"
+    );
+
+    // The held delivery is answered 500; every later request 200. The retry
+    // replays the same bytes; the two later mails deliver on their own.
+    let _ = release.send(true);
+    poll_metric(srv.http_addr, "swarmail_webhook_delivered_total", 3).await;
+
+    let captured = bodies.lock().unwrap().clone();
+    assert_eq!(
+        captured.len(),
+        4,
+        "the held delivery, the two later mails, and the retry: {captured:?}"
+    );
+    let first_payload = payload_of(&captured[0]);
+    let replays = captured
+        .iter()
+        .filter(|b| payload_of(b) == first_payload)
+        .count();
+    assert!(
+        replays >= 2,
+        "the payload must be replayed byte-identical, not re-read from the pruned store: {captured:?}"
+    );
 }

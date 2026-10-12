@@ -30,6 +30,10 @@ pub struct AppState {
     pub chaos: Arc<Chaos>,
     pub webhooks: Arc<Webhooks>,
     pub started: Instant,
+    /// The server's stop watch. It ends open feeds (`feed::feed_stream`)
+    /// so an SSE client can never hold `RunningServer::stop` hostage, and
+    /// it is the only state a graceful shutdown needs that the router owns.
+    pub shutdown: tokio::sync::watch::Receiver<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +198,7 @@ async fn metrics(State(state): State<AppState>) -> String {
     let inboxes = state.store.inboxes();
     let stored: usize = inboxes.iter().map(|(_, c)| c).sum();
     let ca_cache = ca_cache_stats();
+    let ledger = state.webhooks.snapshot();
     let rows = [
         (
             "counter",
@@ -223,6 +228,36 @@ async fn metrics(State(state): State<AppState>) -> String {
             "counter",
             "swarmail_webhook_ca_cache_evictions_total",
             ca_cache.evictions.to_string(),
+        ),
+        // The delivery ledger: every death a notification can die has a row,
+        // all zero until the first delivery is attempted. `lagged` counts
+        // mails (a lagged mail's fan-out is unknowable); the rest count
+        // deliveries/targets. Cumulative since server start, exact at
+        // quiescence — see `webhook::WebhookLedger`.
+        (
+            "counter",
+            "swarmail_webhook_delivered_total",
+            ledger.delivered.to_string(),
+        ),
+        (
+            "counter",
+            "swarmail_webhook_dropped_total",
+            ledger.dropped.to_string(),
+        ),
+        (
+            "counter",
+            "swarmail_webhook_lagged_total",
+            ledger.lagged.to_string(),
+        ),
+        (
+            "counter",
+            "swarmail_webhook_exhausted_total",
+            ledger.exhausted.to_string(),
+        ),
+        (
+            "counter",
+            "swarmail_webhook_aborted_total",
+            ledger.aborted.to_string(),
         ),
     ];
     rows.iter()
@@ -421,7 +456,12 @@ async fn inbox_feed(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(feed::feed_stream(state.store.clone(), inbox)).keep_alive(KeepAlive::default())
+    Sse::new(feed::feed_stream(
+        state.store.clone(),
+        inbox,
+        state.shutdown.clone(),
+    ))
+    .keep_alive(KeepAlive::default())
 }
 
 // ---------- seed ----------

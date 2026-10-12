@@ -1,6 +1,8 @@
 //! Shared end-to-end helpers: real servers, real protocol, no mocks.
 #![allow(dead_code)] // compiled per test binary; not every binary uses every helper
 
+use std::time::Duration;
+
 use swarmail::RunningServer;
 use swarmail::config::Config;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -180,6 +182,26 @@ impl Pop3 {
         assert!(self.cmd(&format!("USER {user}")).await.starts_with("+OK"));
         assert!(self.cmd("PASS whatever").await.starts_with("+OK"));
     }
+
+    /// Read the connection to EOF and return whatever came since the last
+    /// reply. How a server shutdown shows up on a session: the socket
+    /// closes with no goodbye — an abort is no QUIT, so no update state.
+    /// The per-read deadline turns a session that never ends into a failed
+    /// test instead of a hung one.
+    pub async fn read_to_eof(&mut self) -> String {
+        let mut all = String::new();
+        loop {
+            let mut line = String::new();
+            let read =
+                tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
+                    .await
+                    .expect("the session never reached EOF");
+            match read {
+                Ok(0) | Err(_) => return all,
+                Ok(_) => all.push_str(&line),
+            }
+        }
+    }
 }
 
 /// Start with a custom SMTP config (auth flags, message-size limit).
@@ -232,6 +254,25 @@ impl SmtpConn {
             let cont = line.starts_with("250-");
             if !cont {
                 return line.trim_end().to_string();
+            }
+        }
+    }
+
+    /// Read the connection to EOF and return whatever came since the last
+    /// reply. How a server shutdown shows up on a session: the socket
+    /// closes with no goodbye. The per-read deadline turns a session that
+    /// never ends into a failed test instead of a hung one.
+    pub async fn read_to_eof(&mut self) -> String {
+        let mut all = String::new();
+        loop {
+            let mut line = String::new();
+            let read =
+                tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
+                    .await
+                    .expect("the session never reached EOF");
+            match read {
+                Ok(0) | Err(_) => return all,
+                Ok(_) => all.push_str(&line),
             }
         }
     }
@@ -439,6 +480,25 @@ impl TlsSmtp {
         line.trim_end().to_string()
     }
 
+    /// Read the connection to EOF and return whatever came since the last
+    /// reply. How a server shutdown shows up on a session: the socket
+    /// closes with no goodbye. The per-read deadline turns a session that
+    /// never ends into a failed test instead of a hung one.
+    pub async fn read_to_eof(&mut self) -> String {
+        let mut all = String::new();
+        loop {
+            let mut line = String::new();
+            let read =
+                tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
+                    .await
+                    .expect("the session never reached EOF");
+            match read {
+                Ok(0) | Err(_) => return all,
+                Ok(_) => all.push_str(&line),
+            }
+        }
+    }
+
     /// Read a full multi-line reply (EHLO etc.), lines joined with \n.
     pub async fn reply_multi(&mut self) -> String {
         let mut all = Vec::new();
@@ -525,6 +585,25 @@ impl SseReader {
                 data.push_str(rest.trim_start());
             }
             // anything else (comments, field names we do not use) is ignored
+        }
+    }
+
+    /// Read the connection to EOF, returning everything after the last
+    /// frame. How a server shutdown shows up on an open feed: the response
+    /// body terminates and the socket closes. The per-read deadline turns a
+    /// feed that never ends into a failed test instead of a hung one.
+    pub async fn read_until_eof(&mut self) -> String {
+        let mut all = String::new();
+        loop {
+            let mut line = String::new();
+            let read =
+                tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
+                    .await
+                    .expect("the feed never reached EOF");
+            match read {
+                Ok(0) | Err(_) => return all,
+                Ok(_) => all.push_str(&line),
+            }
         }
     }
 }

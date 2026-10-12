@@ -84,10 +84,20 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> io::Result<()> {
     let mut shutdown = std::pin::pin!(shutdown);
+    // Every session is owned by this loop: the set is drained on the
+    // shutdown arm, so no session socket outlives the serve loop. (Dropping
+    // the set would abort its children — the drain makes the wait explicit,
+    // and the abort is the point: a session mid-DATA has no commit to land,
+    // so the closed socket is the only goodbye it gets.)
+    let mut sessions: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
         let (stream, peer) = tokio::select! {
             res = listener.accept() => res?,
-            _ = &mut shutdown => return Ok(()),
+            _ = &mut shutdown => {
+                sessions.abort_all();
+                while sessions.join_next().await.is_some() {}
+                return Ok(());
+            }
         };
         let session = SESSIONS.fetch_add(1, Ordering::Relaxed);
         debug!(%peer, session, "smtp connection accepted");
@@ -95,7 +105,7 @@ pub async fn serve(
         let chaos = chaos.clone();
         let cfg = cfg.clone();
         let tls = tls.clone();
-        tokio::spawn(async move {
+        sessions.spawn(async move {
             if let Err(e) = handle_conn(stream, store, chaos, cfg, tls).await {
                 debug!(session, error = %e, "connection ended");
             }
