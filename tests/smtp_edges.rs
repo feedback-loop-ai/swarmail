@@ -3,6 +3,7 @@
 
 mod common;
 
+use base64::Engine as _;
 use common::{SmtpConn, http_json, smtp_send, start, start_smtp};
 use swarmail::smtp::SmtpConfig;
 
@@ -642,4 +643,283 @@ async fn data_terminated_by_bare_lf_dot_is_accepted() {
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1, "the bare-LF-terminated mail was stored");
+}
+
+/// An exactly-cap message whose final line is dot-stuffed fits: the per-line
+/// allowance is one byte more than the message may still accept, because a
+/// leading `..` unstuffs one byte shorter. Under cap 64 the payload is
+/// `Subject: e\r\n\r\n` (14 bytes) plus a stuffed line that unstuffs to 50.
+#[tokio::test]
+async fn exactly_cap_is_stored_with_a_dot_stuffed_final_line() {
+    let srv = start_smtp(SmtpConfig {
+        max_message_size: 64,
+        ..Default::default()
+    })
+    .await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<exact@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<exact@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    // 14 bytes of headers, then ".." + 47 a's + CRLF: 51 bytes on the wire,
+    // 50 unstuffed — 64 in total, on the boundary, nothing over.
+    c.send_bytes(b"Subject: e\r\n\r\n..aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n")
+        .await;
+    c.send(".").await;
+    let reply = c.reply().await;
+    assert!(
+        reply.starts_with("250"),
+        "the boundary is inclusive: {reply}"
+    );
+
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1, "an exactly-cap mail is stored");
+}
+
+/// One line over the cap is refused whole — `552`, nothing stored — and the
+/// session stays in sync: the tail was drained, so the terminator is
+/// recognized and the next command is answered.
+#[tokio::test]
+async fn one_oversized_line_gets_552_and_stays_in_sync() {
+    let srv = start_smtp(SmtpConfig {
+        max_message_size: 64,
+        ..Default::default()
+    })
+    .await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<big@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<big@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    // A single 65-byte line (its CRLF pushes it past the allowance) and then
+    // the terminator — the message is over the cap, arrived as one line.
+    let mut line = vec![b'x'; 65];
+    line.extend_from_slice(b"\r\n");
+    c.send_bytes(&line).await;
+    c.send(".").await;
+    let reply = c.reply().await;
+    assert!(reply.starts_with("552"), "{reply}");
+
+    // In sync, nothing stored, session alive.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 0);
+    c.send("NOOP").await;
+    assert!(c.reply().await.starts_with("250"));
+}
+
+/// An over-cap line that never ends is drained to EOF unbuffered: the
+/// session ends quietly, nothing stored, no reply, no hang.
+#[tokio::test]
+async fn an_oversized_line_without_a_terminator_is_drained_to_eof() {
+    let srv = start_smtp(SmtpConfig {
+        max_message_size: 64,
+        ..Default::default()
+    })
+    .await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<drip@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<drip@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    c.send_bytes(&vec![b'y'; 4096]).await; // no newline, far over the cap
+    c.shutdown_write().await;
+    let tail = c.read_to_end().await;
+    assert!(tail.is_empty(), "no reply after a drained vanish: {tail:?}");
+
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 0);
+}
+
+/// A command line over 4096 bytes — POP3's own line cap — is drained and
+/// answered `500 5.5.2 Line too long`; the session continues.
+#[tokio::test]
+async fn a_command_line_over_the_cap_gets_500_and_stays_in_sync() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    // The line's own CRLF is what the drain consumes.
+    let line = vec![b'A'; 5000];
+    c.send_bytes(&line).await;
+    c.send("").await;
+    assert_eq!(c.reply().await, "500 5.5.2 Line too long");
+    c.send("NOOP").await;
+    assert!(c.reply().await.starts_with("250"));
+}
+
+/// AUTH continuation lines are protocol units too: an over-long one fails
+/// only the attempt it arrived on, and the session continues.
+#[tokio::test]
+async fn auth_continuations_over_the_cap_fail_only_the_attempt() {
+    let srv = start().await;
+
+    // AUTH PLAIN, continuation over the cap.
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("AUTH PLAIN").await;
+    assert!(c.reply().await.starts_with("334"));
+    let line = vec![b'B'; 5000];
+    c.send_bytes(&line).await;
+    c.send("").await; // the line ending the drain consumes
+    assert_eq!(c.reply().await, "500 5.5.2 Line too long");
+    c.send("NOOP").await;
+    assert!(c.reply().await.starts_with("250"));
+
+    // AUTH LOGIN, username over the cap.
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("AUTH LOGIN").await;
+    assert_eq!(c.reply().await, "334 VXNlcm5hbWU6");
+    c.send_bytes(&line).await;
+    c.send("").await; // the line ending the drain consumes
+    assert_eq!(c.reply().await, "500 5.5.2 Line too long");
+    c.send("NOOP").await;
+    assert!(c.reply().await.starts_with("250"));
+
+    // AUTH LOGIN, password over the cap.
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("AUTH LOGIN").await;
+    assert_eq!(c.reply().await, "334 VXNlcm5hbWU6");
+    let user_b64 = base64::engine::general_purpose::STANDARD.encode("capuser");
+    c.send(&user_b64).await;
+    assert_eq!(c.reply().await, "334 UGFzc3dvcmQ6");
+    c.send_bytes(&line).await;
+    c.send("").await; // the line ending the drain consumes
+    assert_eq!(c.reply().await, "500 5.5.2 Line too long");
+    c.send("NOOP").await;
+    assert!(c.reply().await.starts_with("250"));
+}
+
+/// A binary body is stored, answered `250` and followed by a working
+/// session: 8BITMIME is real, DATA is octets — never UTF-8-validated, never
+/// silenced.
+#[tokio::test]
+async fn a_binary_body_is_accepted_and_the_session_survives() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<bin@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<bin8@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    c.send_bytes(b"Subject: 8bit\r\n\r\n\x00\x80\xff\xfe\r\n")
+        .await;
+    c.send(".").await;
+    let reply = c.reply().await;
+    assert!(
+        reply.starts_with("250"),
+        "binary DATA must be stored, never silenced: {reply:?}"
+    );
+    c.send("NOOP").await;
+    assert!(c.reply().await.starts_with("250"), "the session survives");
+
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1);
+}
+
+/// A command line that is not UTF-8 keeps read_line's session-end posture:
+/// no reply, clean close. Commands are protocol words; DATA is where bytes
+/// live.
+#[tokio::test]
+async fn non_utf8_command_bytes_still_end_the_session() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send_bytes(b"MAIL FROM:<\xff\xfe@x.io>\r\n").await;
+    let tail = c.read_to_end().await;
+    assert!(tail.is_empty(), "no reply; the session ends: {tail:?}");
+}
+
+/// A peer that connects and goes silent ends the session quietly — the
+/// command loop's EOF arm.
+#[tokio::test]
+async fn a_session_that_goes_silent_ends_quietly() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.shutdown_write().await;
+    let tail = c.read_to_end().await;
+    assert!(tail.is_empty(), "{tail:?}");
+}
+
+/// The accumulate check is the backstop: an unstuffed line that exactly
+/// fills the per-line allowance pushes the message one byte over the cap —
+/// the same wire line the dot-stuffed variant is accepted with — and the
+/// message is refused whole.
+#[tokio::test]
+async fn an_unstuffed_line_that_fills_the_allowance_pushes_over_the_cap() {
+    let srv = start_smtp(SmtpConfig {
+        max_message_size: 64,
+        ..Default::default()
+    })
+    .await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<spill@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<spill@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    // "Subject: e\r\n\r\n" is 14 bytes; a plain 49-a line with its CRLF is 51 —
+    // exactly the allowance (64 − 14 + 1), one byte more than the message
+    // may still accept. The reader passes it; the accumulator refuses it.
+    let mut line = b"Subject: e\r\n\r\n".to_vec();
+    line.extend(vec![b'a'; 49]);
+    line.extend_from_slice(b"\r\n");
+    c.send_bytes(&line).await;
+    c.send(".").await;
+    let reply = c.reply().await;
+    assert!(reply.starts_with("552"), "{reply}");
+
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 0);
+    c.send("NOOP").await;
+    assert!(c.reply().await.starts_with("250"));
+}
+
+/// A peer that starts an AUTH and then goes silent ends the session
+/// quietly — every continuation read's EOF arm.
+#[tokio::test]
+async fn an_auth_that_goes_silent_ends_the_session_quietly() {
+    let srv = start().await;
+
+    // PLAIN: silence at the continuation.
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("AUTH PLAIN").await;
+    assert!(c.reply().await.starts_with("334"));
+    c.shutdown_write().await;
+    assert!(c.read_to_end().await.is_empty());
+
+    // LOGIN: silence at the username read.
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("AUTH LOGIN").await;
+    assert_eq!(c.reply().await, "334 VXNlcm5hbWU6");
+    c.shutdown_write().await;
+    assert!(c.read_to_end().await.is_empty());
+
+    // LOGIN: silence at the password read.
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("AUTH LOGIN").await;
+    assert_eq!(c.reply().await, "334 VXNlcm5hbWU6");
+    let user_b64 = base64::engine::general_purpose::STANDARD.encode("capuser");
+    c.send(&user_b64).await;
+    assert_eq!(c.reply().await, "334 UGFzc3dvcmQ6");
+    c.shutdown_write().await;
+    assert!(c.read_to_end().await.is_empty());
 }

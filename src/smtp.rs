@@ -34,6 +34,13 @@ use tracing::debug;
 /// Hard cap on a single message (50 MiB).
 const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
 
+/// Hard cap on one protocol line: verbs, arguments and AUTH continuations.
+/// POP3 draws the same line for its own loop (`pop3.rs` `MAX_COMMAND_LINE`):
+/// a command line is a protocol unit, not a message, and a longer one is
+/// drained and refused — never buffered — so a hostile peer cannot grow
+/// server memory with an unterminated line.
+const MAX_COMMAND_LINE: usize = 4096;
+
 /// How long a STARTTLS handshake may take by default. A real rustls
 /// handshake over loopback is milliseconds; ten seconds already forgives a
 /// very slow peer while a stalled one cannot hold a session task forever.
@@ -221,6 +228,113 @@ async fn handle_conn(
     result
 }
 
+/// One protocol line, as the wire delivered it.
+#[derive(Debug, PartialEq, Eq)]
+enum Line {
+    /// A whole line including its delimiter — bytes intact, no trim, no
+    /// UTF-8 validation. DATA is octets (8BITMIME); nothing here re-encodes.
+    Command(Vec<u8>),
+    /// Over the caller's cap: the tail was drained, the stream is in sync.
+    TooLong,
+    /// EOF before any byte, or a final line with no terminator — not a line
+    /// the session can act on (the pop3 sibling's posture).
+    Eof,
+}
+
+/// The next line, capped. Reads through the buffer so an over-long line
+/// neither blocks nor accumulates: once the cap is passed with no end in
+/// sight the tail is drained unbuffered and the line is refused — the
+/// buffer never grows past the cap plus one `fill_buf` chunk. The
+/// delimiter is kept and no byte is transformed. Mirrors pop3's
+/// `read_line_capped`; each listener owns its reader, beside its loop.
+async fn read_line_capped(
+    reader: &mut (impl tokio::io::AsyncBufRead + Unpin),
+    cap: usize,
+) -> io::Result<Line> {
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            // EOF: a partial line has no terminator, so it is not a line.
+            return Ok(Line::Eof);
+        }
+        match available.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                // The delimiter is part of the line: bytes stay as sent.
+                bytes.extend_from_slice(&available[..=i]);
+                reader.consume(i + 1);
+                if bytes.len() > cap {
+                    return Ok(Line::TooLong);
+                }
+                return Ok(Line::Command(bytes));
+            }
+            None => {
+                bytes.extend_from_slice(available);
+                let len = available.len();
+                reader.consume(len);
+                if bytes.len() > cap {
+                    // Already over the cap and still no newline: stop
+                    // buffering, drain the rest of the line, refuse it.
+                    drain_line(reader).await?;
+                    return Ok(Line::TooLong);
+                }
+            }
+        }
+    }
+}
+
+/// Consume the rest of an over-long line — up to and including its newline —
+/// without buffering it, so the byte stream stays in sync and the next line
+/// is read whole. A peer that never sends the newline just idles; its
+/// connection ends whenever it goes away.
+async fn drain_line(reader: &mut (impl tokio::io::AsyncBufRead + Unpin)) -> io::Result<()> {
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        match available.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                reader.consume(i + 1);
+                return Ok(());
+            }
+            None => {
+                let len = available.len();
+                reader.consume(len);
+            }
+        }
+    }
+}
+
+/// The outcome of one command-path read.
+enum CmdLine {
+    /// A whole line, UTF-8-validated: a command is a protocol word, not
+    /// payload — DATA is where bytes live.
+    Line(String),
+    /// Over `MAX_COMMAND_LINE`: drained, answered `500 5.5.2 Line too long`
+    /// (the SMTP sibling of POP3's `-ERR line too long`), failing only the
+    /// attempt it arrived on.
+    Refused,
+    /// The peer is gone: no line, no reply, session over.
+    Gone,
+}
+
+/// One line for the command loop and the AUTH continuations: capped like
+/// POP3's, UTF-8-validated like `read_line`'s — invalid command bytes still
+/// end the session, as they always did.
+async fn read_command_line(reader: &mut BufReader<Conn>) -> io::Result<CmdLine> {
+    match read_line_capped(&mut *reader, MAX_COMMAND_LINE).await? {
+        Line::Command(bytes) => Ok(CmdLine::Line(
+            String::from_utf8(bytes).map_err(io::Error::other)?,
+        )),
+        Line::TooLong => {
+            write_line(reader.get_mut(), "500 5.5.2 Line too long").await?;
+            Ok(CmdLine::Refused)
+        }
+        Line::Eof => Ok(CmdLine::Gone),
+    }
+}
+
 /// One command loop over the session transport. `STARTTLS` swaps the reader
 /// for a TLS one in place — the state below restarts there per RFC 3207.
 async fn session(
@@ -240,14 +354,13 @@ async fn session(
     let mut rcpts: Vec<String> = Vec::new();
     let mut inbox = "default".to_string();
 
-    let mut line = String::new();
     loop {
-        line.clear();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
-            return Ok(()); // peer closed
-        }
-        let cmd_line = line.trim_end_matches(['\r', '\n']);
+        let cmd_line = match read_command_line(reader).await? {
+            CmdLine::Line(line) => line,
+            CmdLine::Refused => continue, // over-long: drained, answered, session alive
+            CmdLine::Gone => return Ok(()), // peer closed
+        };
+        let cmd_line = cmd_line.trim_end_matches(['\r', '\n']);
         let (verb, arg) = match cmd_line.find(' ') {
             Some(i) => (
                 cmd_line[..i].to_ascii_uppercase(),
@@ -340,9 +453,16 @@ async fn session(
                             Some(b) => Some(b),
                             None => {
                                 write_line(reader.get_mut(), "334 ").await?;
-                                line.clear();
-                                reader.read_line(&mut line).await?;
-                                Some(line.trim_end_matches(['\r', '\n']).to_string())
+                                match read_command_line(reader).await? {
+                                    CmdLine::Line(line) => {
+                                        Some(line.trim_end_matches(['\r', '\n']).to_string())
+                                    }
+                                    CmdLine::Refused => {
+                                        // Fails only this AUTH attempt.
+                                        continue;
+                                    }
+                                    CmdLine::Gone => return Ok(()),
+                                }
                             }
                         };
                         if let Some(inbox_name) = auth_plain_inbox(b64.as_deref()) {
@@ -352,14 +472,20 @@ async fn session(
                     }
                     "LOGIN" => {
                         write_line(reader.get_mut(), "334 VXNlcm5hbWU6").await?;
-                        line.clear();
-                        reader.read_line(&mut line).await?;
-                        if let Some(user) = b64_decode(line.trim_end_matches(['\r', '\n'])) {
+                        let user = match read_command_line(reader).await? {
+                            CmdLine::Line(line) => b64_decode(line.trim_end_matches(['\r', '\n'])),
+                            CmdLine::Refused => continue, // fails only this AUTH attempt
+                            CmdLine::Gone => return Ok(()),
+                        };
+                        if let Some(user) = user {
                             inbox = String::from_utf8_lossy(&user).trim().to_string();
                         }
                         write_line(reader.get_mut(), "334 UGFzc3dvcmQ6").await?;
-                        line.clear();
-                        reader.read_line(&mut line).await?;
+                        match read_command_line(reader).await? {
+                            CmdLine::Line(_) => {}
+                            CmdLine::Refused => continue, // fails only this AUTH attempt
+                            CmdLine::Gone => return Ok(()),
+                        }
                         write_line(reader.get_mut(), "235 2.7.0 Accepted").await?;
                     }
                     _ => {
@@ -412,19 +538,36 @@ async fn session(
                 let mut raw: Vec<u8> = Vec::with_capacity(4096);
                 let mut over_limit = false;
                 loop {
-                    line.clear();
-                    let n = reader.read_line(&mut line).await?;
-                    if n == 0 {
-                        return Ok(()); // peer vanished mid-DATA; nothing to store
-                    }
-                    if line == ".\r\n" || line == ".\n" {
+                    // The per-line allowance: one byte more than the message
+                    // may still accept, because a leading `..` unstuffs one
+                    // byte shorter — an exactly-cap message whose final line
+                    // is dot-stuffed fits — and floored at 3 so the
+                    // terminator, `.` CRLF or `.` LF, is always recognizable
+                    // at the cap and while draining.
+                    let allowance = cfg
+                        .max_message_size
+                        .saturating_sub(raw.len())
+                        .saturating_add(1)
+                        .max(3);
+                    let bytes = match read_line_capped(&mut *reader, allowance).await? {
+                        Line::Command(bytes) => bytes,
+                        // A line the allowance refuses belongs to an over-cap
+                        // message: it was drained unbuffered, the flag sticks
+                        // and the stream is in sync for the terminator.
+                        Line::TooLong => {
+                            over_limit = true;
+                            continue;
+                        }
+                        Line::Eof => return Ok(()), // peer vanished mid-DATA; nothing to store
+                    };
+                    if bytes == b".\r\n" || bytes == b".\n" {
                         break;
                     }
                     // Dot-unstuffing: RFC 5321 §4.5.2
-                    let payload: &[u8] = if line.as_bytes().starts_with(b"..") {
-                        &line.as_bytes()[1..]
+                    let payload: &[u8] = if bytes.starts_with(b"..") {
+                        &bytes[1..]
                     } else {
-                        line.as_bytes()
+                        &bytes
                     };
                     if raw.len() + payload.len() > cfg.max_message_size {
                         over_limit = true;
@@ -688,6 +831,89 @@ fn header_ids(value: &HeaderValue<'_>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An `AsyncRead` that yields its bytes one per poll — the harshest
+    /// chunking a peer can produce, so every buffer boundary is a chunk
+    /// boundary and every line straddles reads.
+    struct Bytewise {
+        data: Vec<u8>,
+        pos: usize,
+    }
+
+    impl Bytewise {
+        fn new(data: &[u8]) -> Self {
+            Self {
+                data: data.to_vec(),
+                pos: 0,
+            }
+        }
+    }
+
+    impl AsyncRead for Bytewise {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            let this = self.get_mut();
+            if this.pos >= this.data.len() {
+                return Poll::Ready(Ok(())); // EOF
+            }
+            buf.put_slice(&this.data[this.pos..this.pos + 1]);
+            this.pos += 1;
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A complete line survives straddled chunks byte-intact: CRLF kept, no
+    /// trim, no re-encoding, and the following line is still next.
+    #[tokio::test]
+    async fn a_complete_line_survives_straddled_chunks_byte_intact() {
+        let mut reader = BufReader::new(Bytewise::new(b"EHLO test\r\nMAIL FROM:<a@b>\r\n"));
+        let line = read_line_capped(&mut reader, MAX_COMMAND_LINE)
+            .await
+            .unwrap();
+        assert_eq!(line, Line::Command(b"EHLO test\r\n".to_vec()));
+        let line = read_line_capped(&mut reader, MAX_COMMAND_LINE)
+            .await
+            .unwrap();
+        assert_eq!(line, Line::Command(b"MAIL FROM:<a@b>\r\n".to_vec()));
+    }
+
+    /// An over-long line is refused once its cap is passed and — the part a
+    /// wire test cannot see — the tail was drained, so the next line is read
+    /// whole afterwards.
+    #[tokio::test]
+    async fn an_over_long_line_is_refused_and_the_next_line_read_whole() {
+        let mut reader = BufReader::new(Bytewise::new(b"0123456789ABCDEF\r\nnext\r\n"));
+        let line = read_line_capped(&mut reader, 8).await.unwrap();
+        assert_eq!(line, Line::TooLong);
+        let line = read_line_capped(&mut reader, 8).await.unwrap();
+        assert_eq!(line, Line::Command(b"next\r\n".to_vec()));
+    }
+
+    /// EOF before any byte, or a final line with no terminator: neither is a
+    /// line the session can act on.
+    #[tokio::test]
+    async fn eof_before_any_byte_or_without_a_terminator_is_not_a_line() {
+        let mut reader = BufReader::new(Bytewise::new(b""));
+        assert_eq!(read_line_capped(&mut reader, 8).await.unwrap(), Line::Eof);
+
+        let mut reader = BufReader::new(Bytewise::new(b"NOOP"));
+        assert_eq!(read_line_capped(&mut reader, 8).await.unwrap(), Line::Eof);
+    }
+
+    /// An over-long line that never ends is drained to EOF unbuffered and
+    /// still refused; the session then just sees EOF.
+    #[tokio::test]
+    async fn an_over_long_line_without_a_terminator_drains_to_eof() {
+        let mut reader = BufReader::new(Bytewise::new(b"0123456789ABCDEF"));
+        assert_eq!(
+            read_line_capped(&mut reader, 8).await.unwrap(),
+            Line::TooLong
+        );
+        assert_eq!(read_line_capped(&mut reader, 8).await.unwrap(), Line::Eof);
+    }
 
     /// A transport that has already handed out its socket reads as EOF and
     /// refuses writes: there is nothing left to talk to once the handshake

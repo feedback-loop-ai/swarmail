@@ -314,6 +314,53 @@ pub async fn http_get_text(addr: std::net::SocketAddr, path: &str) -> (u16, Stri
     )
 }
 
+/// The body-honest GET: `(status, body as raw octets)`. `http_get_text`'s
+/// lossy read is exactly what masked the raw-bytes defect — never use it on
+/// a body that must round-trip. Stringification stays confined to the ASCII
+/// status-line/head; see `http_head_text`.
+pub async fn http_bytes(addr: std::net::SocketAddr, path: &str) -> (u16, Vec<u8>) {
+    let (status, _, body) = http_get_parts(addr, path).await;
+    (status, body)
+}
+
+/// The ASCII head of a GET — status line plus headers, never the body.
+pub async fn http_head_text(addr: std::net::SocketAddr, path: &str) -> (u16, String) {
+    let (status, head, _) = http_get_parts(addr, path).await;
+    (status, head)
+}
+
+/// One raw GET, split byte-exactly on the first `\r\n\r\n` (bodies like
+/// `/raw` carry `\r\n\r\n` of their own): (status, head-as-text, body octets).
+async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String, Vec<u8>) {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut buf = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
+        .await
+        .unwrap();
+    let split = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("no header/body boundary");
+    // The head is ASCII by construction; the body is octets and stays octets.
+    let head = String::from_utf8_lossy(&buf[..split]).to_string();
+    let status: u16 = head
+        .lines()
+        .next()
+        .unwrap()
+        .split(' ')
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    (status, head, buf[split + 4..].to_vec())
+}
+
 /// Tiny raw-HTTP client — enough for Swarmail's own JSON API, no client dep.
 pub async fn http_json(
     addr: std::net::SocketAddr,

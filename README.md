@@ -201,7 +201,14 @@ assertions), which is also the CI `chart` job.
 `:1025` — EHLO, AUTH PLAIN/LOGIN (accept-any; **username = inbox**),
 PIPELINING, 8BITMIME, SMTPUTF8, SIZE, a 50 MiB cap. Every mail is inserted
 synchronously on `DATA` completion — the `250` *is* the durability
-contract, not an eventual promise.
+contract, not an eventual promise. 8BITMIME is true: a DATA body is stored
+as the exact octets it arrived as, and `/api/v1/messages/{id}/raw` serves
+those same bytes back as `message/rfc822`. A message over the cap is
+refused whole — `552 5.3.4 Message too big`, nothing stored, nothing
+truncated — with the cap binding memory where the bytes arrive, not just
+the accumulator; a protocol line over 4096 bytes — POP3's own line cap —
+is drained and answered `500 5.5.2 Line too long`, and the session
+continues.
 
 **STARTTLS** is real: with `--tls-cert`/`--tls-key` (or the env pairs), EHLO
 advertises `STARTTLS`, the session upgrades with rustls/ring, and the

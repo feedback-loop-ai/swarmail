@@ -365,11 +365,13 @@ async fn delete_message(
     }
 }
 
-async fn get_raw(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<String> {
+async fn get_raw(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
     state
         .store
         .get(&id)
-        .map(|e| String::from_utf8_lossy(&e.raw).to_string())
+        // The exact received bytes — no charset re-encoding, no newline
+        // translation — in the one shape that owns them: message/rfc822.
+        .map(|e| compat::raw_response(&e))
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "message not found".into()))
 }
 

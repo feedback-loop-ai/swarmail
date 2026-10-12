@@ -276,15 +276,10 @@ pub async fn delete_messages(
             ));
         }
     };
-    // Each delete is individually atomic and mirrors its own id — the batch
-    // was never one transaction — so a counted loop of awaited deletes keeps
-    // the semantics exactly, off the async workers (decision 0010).
-    let mut removed = 0;
-    for id in ids {
-        if state.store.clone().delete_async(id).await {
-            removed += 1;
-        }
-    }
+    // The deletion itself flows synchronously through the store (the doc
+    // contract above): removals wake `await` watchers (decisions 0001/0002),
+    // and the counted result is exactly the ids the store removed.
+    let removed = ids.iter().filter(|id| state.store.delete(id)).count();
     Ok(Json(json!({ "removed": removed })))
 }
 // ---------- shared internals ----------
@@ -613,8 +608,10 @@ fn plain_response(email: &Email) -> Response {
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
 
-/// The full source as an .eml download — MailHog's download shape.
-fn raw_response(email: &Email) -> Response {
+/// The full source as an .eml download — MailHog's download shape. The one
+/// owner of that shape: the compat route and the native `/raw` route both
+/// serve it, so the bytes stay exact everywhere.
+pub(crate) fn raw_response(email: &Email) -> Response {
     let disposition = format!("attachment; filename=\"{}.eml\"", email.id);
     (
         [

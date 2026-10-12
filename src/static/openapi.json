@@ -242,7 +242,7 @@
       "get": {
         "summary": "Raw RFC 5322 source",
         "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "text/plain" }, "404": { "description": "Not found" } }
+        "responses": { "200": { "description": "message/rfc822, Content-Disposition: attachment; filename=\"<id>.eml\"" }, "404": { "description": "Not found" } }
       }
     },
     "/api/v1/chaos": {
