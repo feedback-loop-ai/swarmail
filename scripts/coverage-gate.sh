@@ -115,6 +115,72 @@ if awk '
   exit 1
 fi
 
+# Decision 0011 (proposed): harness names are reserved under src/. A file
+# named tests.rs / *_tests.rs / *-tests.rs is dropped from the report by
+# cargo-llvm-cov's default ignore regex, and the leak-check above fires only
+# on paths PRESENT in the report — so production code parked in a
+# harness-named file would be invisible to both while cargo build succeeds
+# and the exact verdict silently lies (the denominator shrinks by whatever
+# was hidden). Every harness-named file under src/ must therefore be
+# declared by its parent module under #[cfg(test)]; anything else refuses,
+# fail-closed, the same species as the coverage(off) grep above: a false
+# positive is loud and names the file; the failure direction is refuse,
+# never silently mis-count. This is a refusal, not a recount — no counting
+# stage is added and none may be.
+harness_refusals=""
+while IFS= read -r harness; do
+  stem="$(basename "$harness" .rs)"
+  dir="$(dirname "$harness")"
+  if [ "$dir" = "src" ]; then
+    # A top-level harness file is declared by the crate root.
+    parents=(src/lib.rs src/main.rs)
+  else
+    # src/store/persist_tests.rs is declared by src/store.rs (or the
+    # conventional src/store/mod.rs fallback).
+    parents=("${dir}.rs" "${dir}/mod.rs")
+  fi
+  declared=""
+  for parent in "${parents[@]}"; do
+    if [ -f "$parent" ] && awk -v stem="$stem" '
+      BEGIN {
+        escaped = stem;
+        gsub(/[^A-Za-z0-9_]/, "\\\\&", escaped);
+        re = "^[[:space:]]*mod[[:space:]]+" escaped "[[:space:]]*;$";
+        re_attr = "^[[:space:]]*#\\[[^]]*\\][[:space:]]+mod[[:space:]]+" escaped "[[:space:]]*;$";
+      }
+      { lines[NR] = $0 }
+      $0 ~ re || $0 ~ re_attr { mods[NR] = $0 }
+      END {
+        # Any declaration of `mod <stem>;` counts; the attribute stack
+        # directly above it (over blank and comment lines) must carry
+        # #[cfg(test)] — and no `mod` keyword may appear between, which the
+        # non-attribute break enforces.
+        for (m in mods) {
+          if (mods[m] ~ /#\[cfg\(test\)\]/) exit 0;
+          for (i = m - 1; i >= 1; i--) {
+            up = lines[i];
+            if (up ~ /^[[:space:]]*$/) continue;
+            if (up ~ /^[[:space:]]*\/\//) continue;
+            if (up ~ /^[[:space:]]*#/) {
+              if (up ~ /#\[cfg\(test\)\]/) exit 0;
+              continue;
+            }
+            break;
+          }
+        }
+        exit 1;
+      }
+    ' "$parent"; then declared="$parent"; break; fi
+  done
+  if [ -z "$declared" ]; then
+    harness_refusals="$harness_refusals $harness"
+  fi
+done < <(find src -type f \( -name 'tests.rs' -o -name '*_tests.rs' -o -name '*-tests.rs' \) | sort)
+if [ -n "$harness_refusals" ]; then
+  printf '%s\n' "coverage refusal: harness-named file(s) under src/ not declared by their parent module under #[cfg(test)]:${harness_refusals} — decision 0011 (docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md)" >&2
+  exit 1
+fi
+
 read -r line_count line_covered branch_count branch_covered function_count function_covered < <(
   awk '
     /^DA:/ {
