@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -u
+# The hermetic seat has no network, and the workspace graph is fully cached
+# (cargo fetch --locked ran on the host before this seat fires). Making the
+# refusal explicit keeps a cache miss a one-line "no matching package" instead
+# of three DNS retries per crate — and keeps the gate's verdict deterministic.
+export CARGO_NET_OFFLINE=true
 prompt_file="${1:-}"
 brokkr="${2:-brokkr}"
 [ -f "$prompt_file" ] || { echo "verify-seat: prompt file missing" >&2; exit 2; }

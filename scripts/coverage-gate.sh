@@ -28,9 +28,13 @@
 #      *_tests.rs, tests/) leaking into the production report refuses; and
 #      any coverage(off) attribute exclusion in src/ refuses — production
 #      code cannot shrink the denominator.
-#   4. The measurement is nightly: cargo +nightly llvm-cov --workspace
-#      --locked --branch. --branch is why nightly is required; without it
-#      there are no BRDA records and the branch dimension would not exist.
+#   4. The measurement is nightly: cargo +<nightly> llvm-cov --workspace
+#      --locked --branch, where <nightly> is an installed toolchain that
+#      actually carries llvm-tools. An unqualified `+nightly` is refused by
+#      construction: rustup resolves it to the latest channel build and will
+#      try to auto-install it — impossible inside a hermetic seat, and a
+#      silent toolchain drift everywhere else. Without a nightly there are
+#      no BRDA records and the branch dimension would not exist.
 set -euo pipefail
 
 # Exact 100/100/100 has no percentage knob. COVERAGE_FLOOR survives only as a
@@ -65,8 +69,24 @@ if [ -n "$attribute_hits" ]; then
   exit 1
 fi
 
-if ! cargo +nightly llvm-cov --version >/dev/null 2>&1; then
-  printf '%s\n' 'coverage refusal: cargo +nightly llvm-cov is unavailable — nightly with llvm-tools-preview and cargo-llvm-cov are required (rustup toolchain install nightly --component llvm-tools-preview && cargo install cargo-llvm-cov)' >&2
+# Resolve the measurement toolchain: an installed nightly whose llvm-tools
+# component is present. Nothing is auto-installed — a hermetic seat cannot
+# install toolchains, and the gate's verdict must come from what is on disk.
+coverage_toolchain=""
+while IFS= read -r tc; do
+  tc="${tc%% *}"
+  case "$tc" in nightly-*) ;; *) continue ;; esac
+  if rustup component list --installed --toolchain "$tc" 2>/dev/null | grep -q '^llvm-tools'; then
+    coverage_toolchain="$tc"
+    break
+  fi
+done < <(rustup toolchain list 2>/dev/null)
+if [ -z "$coverage_toolchain" ]; then
+  printf '%s\n' 'coverage refusal: no installed nightly toolchain carries llvm-tools — install one with rustup toolchain install nightly-<date> --component llvm-tools-preview; the gate never auto-installs' >&2
+  exit 1
+fi
+if ! cargo +"$coverage_toolchain" llvm-cov --version >/dev/null 2>&1; then
+  printf '%s\n' "coverage refusal: cargo +$coverage_toolchain llvm-cov is unavailable — cargo-llvm-cov must be installed (cargo install cargo-llvm-cov)" >&2
   exit 1
 fi
 
@@ -80,9 +100,9 @@ export CARGO_LLVM_COV_TARGET_DIR="$forge_coverage_dir/target"
 
 # A report is candidate-bound only when no instrumented executable or profile
 # from an earlier source graph can participate in the merge.
-cargo +nightly llvm-cov clean --workspace >/dev/null 2>&1
+cargo +"$coverage_toolchain" llvm-cov clean --workspace >/dev/null 2>&1
 
-if ! cargo +nightly llvm-cov \
+if ! cargo +"$coverage_toolchain" llvm-cov \
   --workspace \
   --locked \
   --branch \
