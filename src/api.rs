@@ -52,6 +52,30 @@ fn bad_request(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 
+/// The largest `timeout_ms` a wait may ask for, on every surface (REST and
+/// MCP — decision 0018). A parked wait holds a connection and a task; an
+/// unbounded client timeout would let one request park a worker for hours
+/// and — before the shutdown race existed — hold `stop()` hostage for its
+/// remainder. Over the cap is a refusal, never a clamp: silently waiting
+/// only 60s for a caller who asked for an hour is the same narrowing disease
+/// as the wire casts this decision removes. The stop budget (10s) is
+/// independent of any caller's wait: waits observe the stop watch.
+pub(crate) const MAX_AWAIT_TIMEOUT_MS: u64 = 60_000;
+
+/// Resolve once the stop has fired — at once if it already has, else on the
+/// next change. Every wait surface races its wait against this signal (the
+/// same receiver the SSE feed consumes: one source of "stopping", never a
+/// second channel). A dropped sender resolves as stopping: the last sender
+/// is gone only when the server is going away. This is 0002's per-iteration
+/// re-check applied to the stop watch — the receiver is borrowed *and
+/// updated* first, so a stop that fired before the call is never missed by
+/// a stale cached value.
+pub(crate) async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) {
+    if !*rx.borrow_and_update() {
+        let _ = rx.changed().await;
+    }
+}
+
 pub async fn serve(
     listener: TcpListener,
     state: AppState,
@@ -157,8 +181,16 @@ impl AwaitQuery {
         self.count.unwrap_or(1)
     }
 
-    fn timeout(&self) -> Duration {
-        Duration::from_millis(self.timeout_ms.unwrap_or(5000))
+    fn timeout(&self) -> Result<Duration, ApiError> {
+        let ms = self.timeout_ms.unwrap_or(5000);
+        if ms > MAX_AWAIT_TIMEOUT_MS {
+            // Refused before any subscribe: an over-cap wait never registers
+            // a watcher (decision 0018 — bounds are refusals, never clamps).
+            return Err(bad_request(format!(
+                "timeout_ms must be at most {MAX_AWAIT_TIMEOUT_MS}"
+            )));
+        }
+        Ok(Duration::from_millis(ms))
     }
 }
 
@@ -316,13 +348,25 @@ async fn await_messages(
 ) -> ApiResult<Response> {
     let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "await")?;
     let want = q.min_one_count();
+    let timeout = q.timeout()?;
+    let filter = q.filter();
+    // The wait races the stop watch (decision 0018): a client parked on a
+    // long timeout cannot hold `stop()` for its remainder — the moment the
+    // server begins stopping, the wait answers 503 and lets the shutdown
+    // proceed. `shutdown_signal` subscribes (clones) the receiver before
+    // `wait_for`'s first scan; nothing is checked before subscribing.
+    let outcome = tokio::select! {
+        outcome = state.store.wait_for(&inbox, &filter, want, timeout) => Some(outcome),
+        _ = shutdown_signal(state.shutdown.clone()) => None,
+    };
+    // The total is counted *after* the wait, in both arms: it describes the
+    // response's observed state, not a snapshot taken before the wait could
+    // change it (decision 0018). The residual — inserts landing between the
+    // wait's last scan and this count — is bounded by one insert and named
+    // in the decision.
     let total = state.store.count(&inbox, &Filter::default());
-    match state
-        .store
-        .wait_for(&inbox, &q.filter(), want, q.timeout())
-        .await
-    {
-        WaitOutcome::Found(matches) => {
+    match outcome {
+        Some(WaitOutcome::Found(matches)) => {
             let emails = matches.iter().map(|e| (**e).clone()).collect();
             Ok((
                 StatusCode::OK,
@@ -334,7 +378,7 @@ async fn await_messages(
             )
                 .into_response())
         }
-        WaitOutcome::Timeout { matched } => Ok((
+        Some(WaitOutcome::Timeout { matched }) => Ok((
             StatusCode::REQUEST_TIMEOUT,
             Json(AwaitResponse {
                 matched,
@@ -343,6 +387,12 @@ async fn await_messages(
             }),
         )
             .into_response()),
+        // The stop won the race: the fixed wire string, the one new answer a
+        // parked wait can give.
+        None => Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "shutting down".into(),
+        )),
     }
 }
 
@@ -550,6 +600,7 @@ async fn mcp_endpoint(
     let ctx = McpContext {
         store: state.store.clone(),
         chaos: state.chaos.clone(),
+        shutdown: state.shutdown.clone(),
     };
     match mcp::handle(&ctx, &req).await {
         Some(response) => Json(response).into_response(),
@@ -571,6 +622,36 @@ async fn llms_txt() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stop watch's two arms, probed in isolation (decision 0011): an
+    /// already-fired stop resolves at once — the receiver is borrowed and
+    /// updated before the check, so a stop that fired before the call is
+    /// never missed behind a stale cached value.
+    #[tokio::test]
+    async fn an_already_fired_stop_resolves_the_wait_at_once() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        tx.send(true).expect("the stop fires");
+        tokio::time::timeout(std::time::Duration::from_millis(100), shutdown_signal(rx))
+            .await
+            .expect("the already-fired stop resolves without parking");
+    }
+
+    /// The live arm: a stop that fires while the caller is parked resolves
+    /// the wait through the watch's real wake — no poll loop, no sleep.
+    #[tokio::test]
+    async fn a_stop_firing_while_parked_resolves_the_wait() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let wait = tokio::spawn(shutdown_signal(rx));
+        // One yield on the single-threaded runtime runs the spawned waiter
+        // to its first suspension: it has observed `false` and parked on
+        // `changed()` before the stop fires.
+        tokio::task::yield_now().await;
+        tx.send(true).expect("the stop fires");
+        tokio::time::timeout(std::time::Duration::from_millis(100), wait)
+            .await
+            .expect("the stop resolves the parked waiter")
+            .expect("the waiter completes");
+    }
 
     /// The listing page's wire is byte-identical to the whole-clone shape it
     /// replaced — serde's `rc` support serializes `Arc<Email>` exactly as

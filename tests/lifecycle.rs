@@ -287,3 +287,174 @@ async fn a_pop3_session_mid_transaction_dies_with_the_socket_and_deletes_nothing
     );
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------- decision 0018: the stop budget and the waits that observe it ----------
+
+/// The stop budget (decision 0018): the SQLite busy bound (5000ms) plus a
+/// scheduling margin (5000ms) — the number every stop assertion is written
+/// against, independent of any client's wait timeout or any commit's burn.
+const STOP_BUDGET: Duration = Duration::from_secs(10);
+
+/// AC2 (0018): a parked await cannot hold stop hostage. A 60s REST wait
+/// parks on an empty inbox; the stop completes inside the budget and the
+/// parked request answers `503` with the fixed text — axum's graceful drain
+/// would otherwise hold `stop()` for the wait's whole remainder. The 300ms
+/// pause is sequencing, not an outcome wait: nothing here waits for the
+/// wait to answer (it cannot answer before the stop), the request only has
+/// to be parked when the stop fires.
+#[tokio::test]
+async fn a_parked_await_does_not_hold_stop_hostage() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let request = tokio::spawn(common::http_json(
+        addr,
+        "GET",
+        "/api/v1/inboxes/parked/await?count=1&timeout_ms=60000",
+        None,
+    ));
+    tokio::time::sleep(Duration::from_millis(300)).await; // the wait parks
+
+    let started = std::time::Instant::now();
+    tokio::time::timeout(STOP_BUDGET, srv.stop())
+        .await
+        .expect("a parked await must not hold stop hostage");
+    assert!(
+        started.elapsed() < STOP_BUDGET,
+        "stop took {:?} with a wait parked on a 60s timeout",
+        started.elapsed()
+    );
+    let (st, body) = tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("the parked wait must answer once the stop is underway")
+        .unwrap();
+    assert_eq!(st, 503);
+    assert_eq!(
+        body,
+        serde_json::json!({ "error": "shutting down" }),
+        "{body}"
+    );
+}
+
+/// AC2's MCP twin: a parked `swarmail_wait_for_email` observes the same stop
+/// and answers an `isError` result with the fixed text.
+#[tokio::test]
+async fn a_parked_mcp_wait_does_not_hold_stop_hostage() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"swarmail_wait_for_email","arguments":{"inbox":"parkedmcp","count":1,"timeout_ms":60000}}}"#;
+    let request = tokio::spawn(common::http_json(addr, "POST", "/mcp", Some(body)));
+    tokio::time::sleep(Duration::from_millis(300)).await; // the wait parks
+
+    let started = std::time::Instant::now();
+    tokio::time::timeout(STOP_BUDGET, srv.stop())
+        .await
+        .expect("a parked MCP wait must not hold stop hostage");
+    assert!(
+        started.elapsed() < STOP_BUDGET,
+        "stop took {:?} with an MCP wait parked on a 60s timeout",
+        started.elapsed()
+    );
+    let (st, body) = tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("the parked MCP wait must answer once the stop is underway")
+        .unwrap();
+    assert_eq!(st, 200);
+    assert_eq!(body["result"]["isError"], true, "{body}");
+    assert_eq!(body["result"]["content"][0]["text"], "shutting down");
+}
+
+/// R11 (0018): a commit already in flight at stop is not cancelled — the
+/// blocking pool runs it to completion — but it does not hold stop. Under a
+/// held write lock the delivery's commit burns its whole busy bound; the
+/// stop lands inside the budget, the client never saw `250`, and a fresh
+/// read of the data file shows the refused commit stored nothing.
+#[tokio::test]
+async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
+    let dir = std::env::temp_dir().join(format!("swarmail-stop-burn-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("burn.db");
+    let srv = start_with(|mut c| {
+        c.data_file = Some(path.clone());
+        c
+    })
+    .await;
+    // A real second connection holds the writer lock: the delivery's commit
+    // will burn its full busy bound and refuse (decision 0012 §3, at the
+    // real layer).
+    let _lock = common::hold_write_lock(&path);
+
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("MAIL FROM:<f@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<burn@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    // The reply to the dot is where the commit burns: drive it on a task and
+    // stop under it. The bound is 5s, so a 100ms sequencing pause puts the
+    // stop inside the burn with certainty — no outcome is awaited here.
+    let reply = tokio::spawn(async move { c.data("a mail that cannot commit").await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let smtp_addr = srv.smtp_addr;
+    let http_addr = srv.http_addr;
+    let started = std::time::Instant::now();
+    tokio::time::timeout(STOP_BUDGET, srv.stop())
+        .await
+        .expect("an in-flight commit must not hold stop");
+    assert!(
+        started.elapsed() < STOP_BUDGET,
+        "stop took {:?} while a commit burned its busy bound",
+        started.elapsed()
+    );
+
+    // The socket died with the session: whatever the client reads, it is
+    // never a `250` — a commit that outlives its socket cannot half-land.
+    let tail = tokio::time::timeout(Duration::from_secs(10), reply)
+        .await
+        .expect("the delivery task must see the socket close")
+        .unwrap();
+    assert!(
+        !tail.starts_with("250"),
+        "a refused commit must never answer 250: {tail:?}"
+    );
+    refuses(smtp_addr).await;
+    refuses(http_addr).await;
+
+    // A read-only look at the real data file while the lock is still held:
+    // the burned commit stored nothing (the write lock makes this exact,
+    // not racy — the insert cannot land while it is held).
+    let ro =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("the data file opens read-only");
+    let stored: i64 = ro
+        .query_row("SELECT COUNT(*) FROM emails", [], |row| row.get(0))
+        .expect("the emails table reads");
+    assert_eq!(stored, 0, "a commit in flight at stop stored nothing");
+    drop(ro);
+
+    // Release the writer lock: the commit the stop did not wait for runs to
+    // completion on the blocking pool and lands — losslessly, one copy,
+    // though the client never saw `250` (R11: "retry is lossless"). If the
+    // commit had been cancelled instead, nothing would ever land.
+    drop(_lock);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let ro = rusqlite::Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("the data file opens read-only");
+        let stored: i64 = ro
+            .query_row("SELECT COUNT(*) FROM emails", [], |row| row.get(0))
+            .expect("the emails table reads");
+        drop(ro);
+        if stored == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the in-flight commit never completed after the stop: {stored} rows"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}

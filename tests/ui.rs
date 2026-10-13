@@ -466,13 +466,23 @@ async fn malformed_thread_headers_degrade_without_losing_mail() {
         "Bent",
     )
     .await;
-    send_headers(srv.smtp_addr, "bent", &[], "bent").await;
+    // The reply cites the published parent: the chain links them. The
+    // malformed References stay on the parent alone — subject affinity is
+    // orphan-only, so the salvaged junk ids never authorize a subject merge
+    // (spec R6, decision 0018).
+    send_headers(
+        srv.smtp_addr,
+        "bent",
+        &[("In-Reply-To", "<root@x.io>")],
+        "Bent",
+    )
+    .await;
 
     let (st, threads) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/bent/threads", None).await;
     assert_eq!(st, 200, "a malformed header must not 500: {threads}");
     assert_eq!(
         threads[0]["count"], 2,
-        "the subject still hooks them together"
+        "the chain still hooks them together"
     );
     let email = &threads[0]["emails"][0];
     assert_eq!(
@@ -482,13 +492,14 @@ async fn malformed_thread_headers_degrade_without_losing_mail() {
     );
     assert_eq!(email["message_id"], "root@x.io");
 
-    // The empty Message-ID stays absent rather than becoming a bogus key.
+    // The reply's empty Message-ID stays absent rather than becoming a
+    // bogus key — In-Reply-To alone never invents one.
     let (_, list) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/bent/messages", None).await;
     let bent = list["emails"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["subject"] == "bent")
+        .find(|e| e["in_reply_to"] == "root@x.io")
         .unwrap();
     assert_eq!(bent["message_id"], serde_json::Value::Null);
 }

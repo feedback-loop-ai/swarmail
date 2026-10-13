@@ -179,11 +179,14 @@ The chart adds nothing the binary does not read — configuration is exactly
 the env contract, passed through `config: {SWARMAIL_MAX_PER_INBOX: "0"}`
 or `envExtra`. One Service carries all three ports, so one DNS name serves
 every client; the optional Ingress exposes only the HTTP surface (SMTP and
-POP3 are plain TCP). The contract worth knowing before you scale it:
+POP3 are plain TCP). The contract worth knowing before you scale it — you
+cannot: the chart refuses a `replicaCount` above 1 at render time, naming
+the contract ([0008 §4](docs/decisions/0008-kubernetes-deployment-contract.md)):
 
 | Turn on | What it changes |
 |---|---|
-| `persistence.enabled` | SQLite on an RWO PVC (`/data/swarmail.db`), **strategy → Recreate** — the store is single-replica by design ([0001](docs/decisions/0001-synchronous-insert-lossless.md)); scaling would silently fork the mailboxes |
+| `replicaCount` | must stay 1 — a second pod would fork the mailboxes or mount the same RWO claim twice; anything above 1 fails `helm template` |
+| `persistence.enabled` | SQLite on an RWO PVC (`/data/swarmail.db`) — the strategy is **Recreate at every setting** ([0008 §5](docs/decisions/0008-kubernetes-deployment-contract.md)): a rolling surge would run two pods behind one Service, and the store is single-replica by design ([0001](docs/decisions/0001-synchronous-insert-lossless.md)) |
 | `ingress.enabled` | the UI/API/MCP surface on your ingress class; SMTP/POP3 stay cluster-internal |
 | `serviceMonitor.enabled` | a prometheus-operator ServiceMonitor on `/metrics` — **fails closed with a named refusal** if the CRDs are absent |
 | `networkPolicy.enabled` | same-namespace ingress on the three ports only |
@@ -231,7 +234,7 @@ $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 |---|---|
 | `GET /api/v1/inboxes` | the live inbox list |
 | `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first; wipe the inbox |
-| `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`, `count` (minimum one, even `count=0`), `timeout_ms`, filtered by from/subject/contains |
+| `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`/`from`/`subject`/`since_ms` filters, `count` (minimum one, even `count=0`), `timeout_ms` (≤ 60000: refused with 400 above, never clamped; a stopping server answers 503 `shutting down` instead of parking) |
 | `GET /api/v1/inboxes/{inbox}/assert` | exact-count assertion — `count=0` asserts an empty filter; never clamped — 200 or a named failure |
 | `GET /api/v1/inboxes/{inbox}/threads[/{key}]` | conversations, oldest first, stable keys |
 | `GET /api/v1/inboxes/{inbox}/feed` | SSE: one snapshot, then one event per accepted mail |
@@ -316,7 +319,10 @@ is the shim.
 
 `GET /api/v1/inboxes/{inbox}/threads` groups the inbox into conversations —
 References/In-Reply-To/Message-ID chains when they resolve, the normalized
-subject (Re:/Fwd: stripped, case-folded) as the fallback — each with a
+subject (Re:/Fwd: stripped, case-folded) as the fallback for the *chain-less*
+mails only: a reply threads by its References even when the parent id was
+never published, because absence does not authorize a subject merge. Each
+conversation carries a
 stable `key`: the hash of the conversation's *first* mail's anchor (its
 `Message-ID`, else its `In-Reply-To`/first `References` entry, else the
 normalized subject, else its own id). A reply — even one whose message-id
@@ -326,8 +332,10 @@ given.
 Mail stored before this derivation is re-keyed on the next request —
 threads are recomputed per request, so there is no data migration and
 nothing to run; a key also moves when its conversation's oldest mail
-leaves the newest-200 view window, is deleted or cap-pruned, or when two
-mails share a receive millisecond and the id tie-break re-orders them.
+leaves the newest-200 view window, is deleted or cap-pruned, when two
+mails share a receive millisecond and the id tie-break re-orders them, or
+when a bridge mail merges two chains — the merged chains retire their old
+keys, which answer a loud 404; re-list to find the surviving anchor's key.
 `…/feed` is the SSE stream of the full thread view: one
 snapshot, then one event per accepted mail, driven by the same per-inbox
 watcher that powers `await`. The human UI at `/ui/inbox/{inbox}` and
@@ -384,7 +392,11 @@ $ curl -X DELETE localhost:8025/api/v1/chaos                  # recovery is a te
 
 Chaos is per-stage — `connect`, `mail_from`, `rcpt`, `data` — each with its
 own probability, error line and delay. Set it, run the retry suite, clear
-it. MCP: `swarmail_set_chaos` / `swarmail_clear_chaos`.
+it. MCP: `swarmail_set_chaos` / `swarmail_clear_chaos`. Wire values are
+never narrowed: `probability` must be an integer 0..=100 — present, a true
+integer, within the ceiling — each stage refusing by name, and a
+wrong-typed `delay_ms` is refused while an absent one honestly means "no
+delay" (decision 0018).
 
 A fired rule always applies its delay, then always fails its stage — a
 delay-only rule (probability set, no `error`) is a slow failure, never a
@@ -490,7 +502,7 @@ bar the machine is already held to; these are required jobs in
 
 The coverage gate is not a percentage to trend upwards. It demands literal
 integer equality — `covered == count` — over **lines, branches and
-functions** (today 4162/4162, 252/252, 558/558), refuses
+functions** (today 5497/5497, 316/316, 692/692), refuses
 `#[coverage(off)]` outright so production code cannot shrink its own
 denominator, and preserves the full report under `target/coverage/` when
 red so the burn-down starts from evidence, not from a number. There is no
@@ -516,7 +528,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
 | `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart, refused certs, stalled handshakes, malformed PEM refusal, gen-cert file handling |
-| `tests/lifecycle.rs` | graceful stop: serve futures return, ports release |
+| `tests/lifecycle.rs` | graceful stop: serve futures return, ports release, parked awaits answer 503 inside the stop budget, an in-flight commit neither holds stop nor half-lands |
 | `tests/binary.rs` | the shipped binary: SIGINT → clean exit, mcp EOF → 0 |
 | `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT |
 | `tests/compat.rs` | the shims: Mailpit + MailHog envelopes, searches, deletes, 404/400 branches |

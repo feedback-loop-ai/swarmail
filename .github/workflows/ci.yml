@@ -83,10 +83,16 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # Publication is one gated run (decision 0018 §6): the docker build cannot
+  # start until the five gates of the same invocation are green, and it runs
+  # only for main and v* tag refs. `main` pushes the rolling `:main` and the
+  # exact-commit `:sha-<sha>`; the `:<version>` tag publishes only from a
+  # `v<version>` ref, so a released version is never silently replaced by a
+  # branch build.
   docker:
     runs-on: ubuntu-latest
-    needs: test
-    if: github.ref == 'refs/heads/main'
+    needs: [quality, test, coverage, deny, dependency-audit]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       packages: write
@@ -101,23 +107,36 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - name: Push the continuous tags (main + the exact commit)
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
             ghcr.io/feedback-loop-ai/swarmail:main
-            ghcr.io/feedback-loop-ai/swarmail:${{ steps.ver.outputs.version }}
+            ghcr.io/feedback-loop-ai/swarmail:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Push the release tag (v* refs only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/feedback-loop-ai/swarmail:${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   # The Helm chart: lint + render both profiles + assert the deployment
-  # contract (scripts/chart-verify.sh, helm-only, no cluster), then publish
-  # the packaged chart to the same OCI registry as the image. A pull_request
-  # cannot push, so the publish step is main-only.
+  # contract (scripts/chart-verify.sh, helm-only, no cluster) on every push
+  # and PR. The packaged chart publishes only from a `v*` tag ref (decision
+  # 0018 §6): an OCI chart of a given version is immutable, so a main push
+  # would chronically red on the second 0.1.0.
   chart:
     name: helm chart
     runs-on: ubuntu-latest
+    needs: [quality, test, coverage, deny, dependency-audit]
     permissions:
       contents: read
       packages: write
@@ -128,13 +147,13 @@ jobs:
           version: v3.16.3
       - run: bash scripts/chart-verify.sh
       - uses: docker/login-action@v3
-        if: github.ref == 'refs/heads/main'
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the chart (OCI, ghcr.io)
-        if: github.ref == 'refs/heads/main'
+      - name: Publish the chart (OCI, ghcr.io, v* refs only)
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           helm package charts/swarmail
           helm push swarmail-*.tgz oci://ghcr.io/feedback-loop-ai/charts

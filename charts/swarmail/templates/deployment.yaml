@@ -5,16 +5,16 @@ metadata:
   labels:
     {{- include "swarmail.labels" . | nindent 4 }}
 spec:
+  {{- if gt (int .Values.replicaCount) 1 }}
+  {{- fail (printf "replicaCount must be 1: the store is one process's memory or one SQLite file — a second pod would fork the mailboxes or mount the same RWO volume twice (decision 0008 §4)") }}
+  {{- end }}
   replicas: {{ .Values.replicaCount }}
-  {{- if .Values.persistence.enabled }}
-  # A SQLite file on an RWO volume: the old pod must be gone before the new
-  # one mounts. Single replica is the design (HA needs a shared database).
+  # Recreate at every persistence setting (decision 0008 §5): a rolling
+  # surge would run two pods behind one Service — with the file, both mount
+  # the same RWO claim; with memory, each pod would hold a different
+  # mailbox. One pod at a time is the honest posture either way.
   strategy:
     type: Recreate
-  {{- else }}
-  strategy:
-    type: RollingUpdate
-  {{- end }}
   selector:
     matchLabels:
       {{- include "swarmail.selectorLabels" . | nindent 6 }}

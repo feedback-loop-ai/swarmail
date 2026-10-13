@@ -1,10 +1,14 @@
 //! Thread grouping.
 //!
 //! Mails belong to one thread when an id chain connects them — `References`
-//! and `In-Reply-To`, unioned over their `Message-ID`s — falling back to the
-//! normalized subject when a mail carries no chain at all. The grouping is a
-//! pure function of the inbox contents, recomputed per request: no thread
-//! state exists anywhere, so it can never disagree with the store.
+//! and `In-Reply-To`, unioned over their `Message-ID`s (decision 0018: a mail
+//! threads by its chain even when the parent is absent from the inbox —
+//! absence never authorizes a subject merge). A mail with no chain at all
+//! falls back to its normalized subject, and groups only with other
+//! chain-less orphans of the same normalized subject: the fallback is
+//! orphan-only and never bridges two chains. The grouping is a pure function
+//! of the inbox contents, recomputed per request: no thread state exists
+//! anywhere, so it can never disagree with the store.
 //!
 //! Node naming is load-bearing: members are prefixed `id:`, `subject:` and
 //! `mail:`, and a component's representative is its lexicographically
@@ -188,14 +192,14 @@ fn thread_key(canonical: &str) -> String {
 /// render deterministically).
 pub fn group_threads(emails: &[Arc<Email>]) -> Vec<Thread> {
     // Pass 1: connect the id graph — every mail's own message id, its
-    // In-Reply-To and its References are one component, which also claims the
-    // mail's normalized subject (the fallback hook for chain-less mail).
-    // Subject nodes are case-folded: "Re: STATUS" and "status" are one
-    // conversation; the display subject keeps its own case.
+    // In-Reply-To and its References are one component. The mail's subject
+    // node is deliberately NOT unioned in (decision 0018): a subject hook
+    // here would let any id-bearing mail bridge two unrelated chains whose
+    // mails merely share a subject. The normalized subject groups chain-less
+    // orphans only — pass 2 lands a mail with no ids on its subject node,
+    // where other orphans of the same normalized subject already wait.
     let mut components = Components::default();
     for email in emails {
-        let subject_node = normalize_subject(email.subject.as_deref())
-            .map(|subject| format!("subject:{}", subject.to_ascii_lowercase()));
         let mut ids: Vec<String> = email
             .references
             .iter()
@@ -210,9 +214,6 @@ pub fn group_threads(emails: &[Arc<Email>]) -> Vec<Thread> {
         if let Some(first) = ids.first() {
             for other in &ids[1..] {
                 components.union(first, other);
-            }
-            if let Some(node) = &subject_node {
-                components.union(first, node);
             }
         }
     }
@@ -347,11 +348,14 @@ mod tests {
 
     #[test]
     fn a_reference_chain_is_one_thread_in_conversation_order() {
-        let threads = group(vec![
-            chained("root", Some("Plan"), 300, &[]),
-            chained("mid", Some("Re: Plan"), 200, &["root"]),
-            chained("leaf", Some("Re: Plan"), 100, &["root", "mid"]),
-        ]);
+        // The chain's mails publish the ids their replies cite — the wire
+        // evidence is what links them (decision 0018).
+        let mut root = chained("root", Some("Plan"), 300, &[]);
+        root.message_id = Some("root@x.io".into());
+        let mut mid = chained("mid", Some("Re: Plan"), 200, &["root@x.io"]);
+        mid.message_id = Some("mid@x.io".into());
+        let leaf = chained("leaf", Some("Re: Plan"), 100, &["root@x.io", "mid@x.io"]);
+        let threads = group(vec![root, mid, leaf]);
         assert_eq!(threads.len(), 1, "one chain, one thread: {threads:?}");
         assert_eq!(ids_of(&threads[0]), ["leaf", "mid", "root"]);
         assert_eq!(threads[0].count, 3);
@@ -361,10 +365,31 @@ mod tests {
     }
 
     #[test]
+    fn an_unpublished_parent_leaves_the_chain_on_its_dangling_id() {
+        // The reply cites an id no inbox mail publishes: it still threads by
+        // that reference — with any other mail citing the same id — while
+        // the chain-less parent stays an orphan on its subject. Absence does
+        // not authorize a subject merge (decision 0018).
+        let threads = group(vec![
+            chained("root", Some("Plan"), 300, &[]),
+            chained("mid", Some("Re: Plan"), 200, &["root"]),
+            chained("leaf", Some("Re: Plan"), 100, &["root", "mid"]),
+        ]);
+        assert_eq!(threads.len(), 2, "{threads:?}");
+        let chain = threads.iter().find(|t| t.count == 2).unwrap();
+        assert_eq!(ids_of(chain), ["leaf", "mid"]);
+        assert_eq!(chain.key, thread_key("id:root"), "the dangling id anchors");
+        let orphan = threads.iter().find(|t| t.count == 1).unwrap();
+        assert_eq!(ids_of(orphan), ["root"]);
+    }
+
+    #[test]
     fn in_reply_to_alone_links_a_reply() {
         let mut reply = mail("r2", Some("Re: Hello"), 200);
         reply.in_reply_to = Some("r1".to_string());
-        let threads = group(vec![reply, mail("r1", Some("Hello"), 100)]);
+        let mut root = mail("r1", Some("Hello"), 100);
+        root.message_id = Some("r1".into());
+        let threads = group(vec![reply, root]);
         assert_eq!(threads.len(), 1, "{threads:?}");
         assert_eq!(ids_of(&threads[0]), ["r1", "r2"]);
     }
@@ -408,7 +433,10 @@ mod tests {
     }
 
     #[test]
-    fn a_chainless_reply_on_the_same_subject_joins_the_chain() {
+    fn a_chainless_reply_on_the_same_subject_stays_out_of_the_chain() {
+        // Decision 0018: the subject fallback is orphan-only. A mail with no
+        // chain never joins a chain merely because their subjects match —
+        // "Re: Re: Kickoff" carries no ids, so it threads alone.
         let mut root = chained("m1", Some("Kickoff"), 100, &[]);
         root.message_id = Some("m1@x.io".into());
         let threads = group(vec![
@@ -421,8 +449,114 @@ mod tests {
             ),
             mail("m3", Some("Re: Re: Kickoff"), 300),
         ]);
-        assert_eq!(threads.len(), 1, "{threads:?}");
-        assert_eq!(threads[0].count, 3);
+        assert_eq!(threads.len(), 2, "{threads:?}");
+        let chain = threads.iter().find(|t| t.count == 2).unwrap();
+        assert_eq!(ids_of(chain), ["m1", "m2"]);
+        let orphan = threads.iter().find(|t| t.count == 1).unwrap();
+        assert_eq!(ids_of(orphan), ["m3"]);
+    }
+
+    #[test]
+    fn two_chains_sharing_a_subject_stay_apart() {
+        // Two explicit chains whose mails share a normalized subject are two
+        // conversations; subject equality alone never welds them (red on the
+        // deleted pass-1 subject-union, which merged them for the wrong
+        // reason).
+        let mut first = chained("a1", Some("Verify your email"), 100, &[]);
+        first.message_id = Some("a1@x.io".into());
+        let mut first_reply = chained("a2", Some("Re: Verify your email"), 150, &["a1@x.io"]);
+        first_reply.message_id = Some("a2@x.io".into());
+        let mut second = chained("b1", Some("verify your email"), 200, &[]);
+        second.message_id = Some("b1@x.io".into());
+        let threads = group(vec![first, first_reply, second]);
+        assert_eq!(threads.len(), 2, "{threads:?}");
+        // Newest thread first: b1 (received at 200) leads.
+        assert_eq!(threads.iter().map(|t| t.count).collect::<Vec<_>>(), [1, 2]);
+    }
+
+    #[test]
+    fn a_chain_and_a_subject_only_mail_with_equal_subjects_stay_apart() {
+        let mut root = chained("r1", Some("Plan"), 100, &[]);
+        root.message_id = Some("r1@x.io".into());
+        let threads = group(vec![
+            root,
+            chained("r2", Some("Re: Plan"), 200, &["r1@x.io"]),
+            mail("lonely", Some("Re: Fwd: Plan"), 300),
+        ]);
+        assert_eq!(threads.len(), 2, "{threads:?}");
+        assert!(
+            threads
+                .iter()
+                .all(|t| t.count == 1 || ids_of(t) == ["r1", "r2"])
+        );
+    }
+
+    #[test]
+    fn a_bridge_mail_merges_two_chains_and_the_retired_key_answers_nothing() {
+        // A mail referencing two existing threads is a genuine bridge: one
+        // conversation. The surviving key is the merged thread's anchor — the
+        // oldest first mail — and every other pre-merge key is simply gone
+        // from the view: a held client re-lists rather than silently reading
+        // the wrong thread (decision 0018: merges pay in docs, not aliases).
+        let mut a = chained("a", Some("Thread A"), 100, &[]);
+        a.message_id = Some("a@x.io".into());
+        let mut b = chained("b", Some("Thread B"), 200, &[]);
+        b.message_id = Some("b@x.io".into());
+        let separate = group(vec![a.clone(), b.clone()]);
+        assert_eq!(separate.len(), 2, "{separate:?}");
+        let key_a = separate
+            .iter()
+            .find(|t| ids_of(t) == ["a"])
+            .unwrap()
+            .key
+            .clone();
+        let key_b = separate
+            .iter()
+            .find(|t| ids_of(t) == ["b"])
+            .unwrap()
+            .key
+            .clone();
+        assert_ne!(key_a, key_b);
+
+        let mut bridge = chained("bridge", Some("Both"), 300, &["a@x.io", "b@x.io"]);
+        bridge.message_id = Some("c@x.io".into());
+        let merged = group(vec![a, b, bridge]);
+        assert_eq!(
+            merged.len(),
+            1,
+            "the bridge welds the two chains: {merged:?}"
+        );
+        assert_eq!(ids_of(&merged[0]), ["a", "b", "bridge"]);
+        // The surviving key is the merged thread's own anchor: the oldest
+        // first mail's node — not the union-find representative.
+        let expected = thread_key(&thread_node(&merged[0].emails[0]));
+        assert_eq!(merged[0].key, expected);
+        // The other pre-merge key is not an alias for the merged thread:
+        // whichever one the merged thread does not carry is retired.
+        let retired = [key_a, key_b]
+            .into_iter()
+            .find(|k| merged[0].key != *k)
+            .expect("the merged thread keeps exactly one pre-merge key");
+        assert!(
+            !merged.iter().any(|t| t.key == *retired),
+            "the retired key answers nothing: {retired}"
+        );
+    }
+
+    #[test]
+    fn malformed_reference_headers_do_not_authorize_a_subject_merge() {
+        // "<bogus" parses (token fallback) to a dangling id: harmless. The
+        // mail owns its chain, so it threads by it even though the parent is
+        // absent — and the chain-less mail on the same subject stays apart
+        // (decision 0018: absence does not authorize subject merging).
+        let threads = group(vec![
+            chained("a", Some("Plan"), 100, &["<bogus"]),
+            mail("b", Some("Plan"), 200),
+        ]);
+        assert_eq!(threads.len(), 2, "{threads:?}");
+        for thread in &threads {
+            assert_eq!(thread.count, 1);
+        }
     }
 
     #[test]
@@ -440,18 +574,6 @@ mod tests {
     }
 
     #[test]
-    fn malformed_reference_headers_degrade_without_losing_the_subject_hook() {
-        // "<bogus" parses (token fallback) to a dangling id: harmless. The
-        // mail still owns its subject, so a chain-less mail on it joins.
-        let threads = group(vec![
-            chained("a", Some("Plan"), 100, &["<bogus"]),
-            mail("b", Some("Plan"), 200),
-        ]);
-        assert_eq!(threads.len(), 1, "{threads:?}");
-        assert_eq!(threads[0].count, 2);
-    }
-
-    #[test]
     fn duplicate_message_ids_still_land_in_one_thread() {
         let mut first = chained("dup-1", Some("Hi"), 100, &[]);
         first.message_id = Some("same@x.io".to_string());
@@ -464,9 +586,11 @@ mod tests {
 
     #[test]
     fn cyclic_references_collapse_into_one_thread() {
-        let mut a = chained("a", Some("Loop"), 100, &["b"]);
+        // A genuine cycle — each mail cites the id the other publishes — is
+        // one id component (decision 0018: the id graph alone links them).
+        let mut a = chained("a", Some("Loop"), 100, &["b@x.io"]);
         a.message_id = Some("a@x.io".into());
-        let mut b = chained("b", Some("Re: Loop"), 200, &["a"]);
+        let mut b = chained("b", Some("Re: Loop"), 200, &["a@x.io"]);
         b.message_id = Some("b@x.io".into());
         let threads = group(vec![a, b]);
         assert_eq!(threads.len(), 1, "a cycle is one component: {threads:?}");

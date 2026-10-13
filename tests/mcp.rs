@@ -605,8 +605,9 @@ async fn unknown_tool_and_missing_args_are_errors() {
     assert_eq!(st, 200);
     assert_eq!(body["error"]["message"], "missing to");
 
-    // Named residual (decision 0010): set_chaos declares `probability`
-    // required yet defaults it to 0 when absent — pinned bare-call behavior.
+    // The declared requirement is enforced (decision 0018): a bare
+    // set_chaos refuses by name — the argument is never silently defaulted
+    // to a probability the operator never chose.
     let (st, body) = rpc(
         srv.http_addr,
         "tools/call",
@@ -614,7 +615,10 @@ async fn unknown_tool_and_missing_args_are_errors() {
     )
     .await;
     assert_eq!(st, 200);
-    assert_eq!(text(&body["result"])["data"]["probability"], 0, "{body}");
+    assert_eq!(
+        body["error"]["message"], "probability must be an integer between 0 and 100",
+        "{body}"
+    );
 }
 
 /// Every tool's fallback closures (`unwrap_or_else` defaults) only run when
@@ -680,12 +684,14 @@ async fn bare_tool_calls_hit_every_default_and_clear_all() {
     );
     assert!(result.is_object(), "{result}");
 
-    // set_chaos with no delay_ms: the zero-delay default.
+    // set_chaos with no delay_ms: the zero-delay default. The probability is
+    // a JSON integer — a float (`0.0`) is a wrong-typed wire value and is
+    // refused by name (decision 0018: no narrowing casts).
     let result = text(
         &tool(
             srv.http_addr,
             "swarmail_set_chaos",
-            r#"{"event": "data", "probability": 0.0, "error": "nope"}"#,
+            r#"{"event": "data", "probability": 0, "error": "nope"}"#,
         )
         .await,
     );
@@ -695,7 +701,7 @@ async fn bare_tool_calls_hit_every_default_and_clear_all() {
         &tool(
             srv.http_addr,
             "swarmail_set_chaos",
-            r#"{"event": "data", "probability": 0.0, "error": "nope", "delay_ms": 5}"#,
+            r#"{"event": "data", "probability": 0, "error": "nope", "delay_ms": 5}"#,
         )
         .await,
     );
@@ -991,4 +997,195 @@ async fn a_blocked_delete_refuses_the_mcp_delete_tools_with_error_results() {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
+}
+
+// ---------- explicit bounds and observed totals (decision 0018) ----------
+
+/// The wait cap is an `isError` refusal naming the maximum — the same text
+/// REST refuses with — and it answers without parking (decision 0018: the
+/// bound is refused before any subscribe, never clamped to it).
+#[tokio::test]
+async fn wait_over_the_cap_is_refused_without_parking() {
+    let srv = start().await;
+    let started = std::time::Instant::now();
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_wait_for_email", "arguments": {"inbox": "cap", "count": 1, "timeout_ms": 60001}}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["result"]["isError"], true, "{body}");
+    assert_eq!(
+        body["result"]["content"][0]["text"],
+        "timeout_ms must be at most 60000"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "the cap refusal must not park: {:?}",
+        started.elapsed()
+    );
+}
+
+/// The wait results carry a `total` counted after the wait, in both arms —
+/// the observed state, not a pre-wait snapshot (decision 0018).
+#[tokio::test]
+async fn wait_results_carry_the_post_wait_total_in_both_arms() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+
+    // Found arm: the mail arrives mid-wait; total counts it.
+    let request = tokio::spawn(tool(
+        addr,
+        "swarmail_wait_for_email",
+        r#"{"inbox": "observed", "to": "racer@x.io", "count": 1, "timeout_ms": 10000}"#,
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the wait parks
+    smtp_send(
+        srv.smtp_addr,
+        Some("observed"),
+        "f@x.io",
+        "racer@x.io",
+        "midwait",
+        "body",
+    )
+    .await
+    .unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), request)
+        .await
+        .expect("the wait must resolve on the delivery")
+        .unwrap();
+    assert_eq!(text(&result)["matched"], 1);
+    assert_eq!(text(&result)["total"], 1, "{result}");
+
+    // Timeout arm: a non-matching mail lands mid-wait; total counts it.
+    let result = text(
+        &tool(
+            srv.http_addr,
+            "swarmail_wait_for_email",
+            r#"{"inbox": "observed408", "to": "nobody@x.io", "count": 9, "timeout_ms": 1500}"#,
+        )
+        .await,
+    );
+    assert_eq!(result["timed_out"], true, "{result}");
+    assert_eq!(result["total"], 0);
+    smtp_send(
+        srv.smtp_addr,
+        Some("observed408"),
+        "f@x.io",
+        "someone-else@x.io",
+        "unrelated",
+        "body",
+    )
+    .await
+    .unwrap();
+    let result = text(
+        &tool(
+            srv.http_addr,
+            "swarmail_wait_for_email",
+            r#"{"inbox": "observed408", "to": "nobody@x.io", "count": 9, "timeout_ms": 1500}"#,
+        )
+        .await,
+    );
+    assert_eq!(result["timed_out"], true, "{result}");
+    assert_eq!(result["matched"], 0);
+    assert_eq!(
+        result["total"], 1,
+        "total is counted after the wait: {result}"
+    );
+}
+
+/// Every validation stage of `swarmail_set_chaos` refuses by name, and a
+/// legal value still sets the rule (decision 0018: presence, type, `u8`
+/// range and the 100 ceiling are distinct refusals; no cast, no clamp, no
+/// silent default on any wire value).
+#[tokio::test]
+async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
+    let srv = start().await;
+
+    // 256 does not become 0: it does not fit u8.
+    for (args, label) in [
+        (
+            r#"{"event": "data", "probability": 256}"#,
+            "256 must refuse, not narrow to 0",
+        ),
+        (
+            r#"{"event": "data", "probability": "high"}"#,
+            "a string is a wrong-typed wire value",
+        ),
+        (
+            r#"{"event": "data", "probability": 0.0}"#,
+            "a float would be a narrowing cast",
+        ),
+        (
+            r#"{"event": "data", "probability": 150}"#,
+            "150 is over the 100 ceiling",
+        ),
+        (
+            r#"{"event": "data"}"#,
+            "an absent probability is refused, not defaulted",
+        ),
+    ] {
+        let (st, body) = rpc(
+            srv.http_addr,
+            "tools/call",
+            &format!(r#"{{"name": "swarmail_set_chaos", "arguments": {args}}}"#),
+        )
+        .await;
+        assert_eq!(st, 200, "{label}: {body}");
+        assert_eq!(
+            body["error"]["message"], "probability must be an integer between 0 and 100",
+            "{label}: {body}"
+        );
+    }
+
+    // Wrong-typed delay_ms refuses by name; absent stays the honest zero.
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_set_chaos", "arguments": {"event": "data", "probability": 10, "delay_ms": "soon"}}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        body["error"]["message"], "delay_ms must be a non-negative integer",
+        "{body}"
+    );
+
+    // A legal value sets the rule — the pole case is already pinned by the
+    // chaos tests; this is the interior.
+    let r = tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event": "data", "probability": 50, "error": "451 busy", "delay_ms": 5}"#,
+    )
+    .await;
+    assert_eq!(text(&r)["data"]["probability"], 50, "{r}");
+    assert_eq!(text(&r)["data"]["delay_ms"], 5);
+    assert_eq!(text(&r)["data"]["error"], "451 busy");
+}
+
+/// The published input schemas carry the bounds, so compliant clients refuse
+/// at the tool layer (decision 0018).
+#[tokio::test]
+async fn the_schemas_publish_the_wire_bounds() {
+    let srv = start().await;
+    let (_, body) = rpc(srv.http_addr, "tools/list", "{}").await;
+    let tools = body["result"]["tools"].as_array().unwrap();
+    let by_name: std::collections::HashMap<&str, &serde_json::Value> = tools
+        .iter()
+        .map(|t| (t["name"].as_str().unwrap(), t))
+        .collect();
+
+    let wait = &by_name["swarmail_wait_for_email"]["inputSchema"]["properties"];
+    assert_eq!(wait["timeout_ms"]["maximum"], 60000, "{wait}");
+    assert!(
+        wait["since_ms"].is_object(),
+        "the since_ms filter is advertised: {wait}"
+    );
+
+    let chaos = &by_name["swarmail_set_chaos"]["inputSchema"]["properties"];
+    assert_eq!(chaos["probability"]["minimum"], 0, "{chaos}");
+    assert_eq!(chaos["probability"]["maximum"], 100, "{chaos}");
+    assert_eq!(chaos["delay_ms"]["minimum"], 0, "{chaos}");
 }

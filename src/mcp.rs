@@ -21,6 +21,11 @@ pub const PROTOCOL_VERSION: &str = "2025-03-26";
 pub struct McpContext {
     pub store: Arc<Store>,
     pub chaos: Arc<Chaos>,
+    /// The server's stop watch: the wait tool races its wait against it so a
+    /// parked client cannot hold `stop()` for its timeout's remainder
+    /// (decision 0018). The same receiver the SSE feed consumes — one
+    /// source of "stopping", never a second channel.
+    pub shutdown: tokio::sync::watch::Receiver<bool>,
 }
 
 /// Handle one JSON-RPC request. Returns `None` for notifications (no reply).
@@ -152,19 +157,41 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
                 since_ms: a.get("since_ms").and_then(|v| v.as_i64()),
             };
             let want = arg_usize(a, "count").unwrap_or(1).max(1);
-            let timeout =
-                Duration::from_millis(a.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(5000));
-            match store.wait_for(&inbox, &filter, want, timeout).await {
-                WaitOutcome::Found(matches) => {
+            let timeout_ms = a.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(5000);
+            if timeout_ms > crate::api::MAX_AWAIT_TIMEOUT_MS {
+                // Refused before any subscribe, naming the bound — the same
+                // refusal REST gives (decision 0018: bounds are refusals,
+                // never clamps).
+                return Ok(error_result(format!(
+                    "timeout_ms must be at most {}",
+                    crate::api::MAX_AWAIT_TIMEOUT_MS
+                )));
+            }
+            let timeout = Duration::from_millis(timeout_ms);
+            // The wait races the stop watch (decision 0018) — the same race
+            // the REST await runs, against the same receiver.
+            let outcome = tokio::select! {
+                outcome = store.wait_for(&inbox, &filter, want, timeout) => Some(outcome),
+                _ = crate::api::shutdown_signal(ctx.shutdown.clone()) => None,
+            };
+            // The total is counted *after* the wait, in both arms: it
+            // describes the response's observed state (decision 0018) — the
+            // same residual the REST await names, bounded by one insert.
+            let total = store.count(&inbox, &Filter::default());
+            match outcome {
+                Some(WaitOutcome::Found(matches)) => {
                     let emails: Vec<Value> = matches
                         .iter()
                         .map(|e| serde_json::to_value(&**e).unwrap())
                         .collect();
-                    Ok(text_result(json!({ "matched": want, "emails": emails })))
+                    Ok(text_result(
+                        json!({ "matched": want, "total": total, "emails": emails }),
+                    ))
                 }
-                WaitOutcome::Timeout { matched } => Ok(text_result(
-                    json!({ "matched": matched, "timed_out": true }),
+                Some(WaitOutcome::Timeout { matched }) => Ok(text_result(
+                    json!({ "matched": matched, "total": total, "timed_out": true }),
                 )),
+                None => Ok(error_result("shutting down".into())),
             }
         }
         "swarmail_extract_links" | "swarmail_extract_codes" => {
@@ -216,14 +243,30 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
         }
         "swarmail_set_chaos" => {
             let event = arg_str(a, "event").ok_or("missing event")?;
-            let probability = a.get("probability").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            let event_enum: ChaosEvent = serde_json::from_value(json!(event))
+                .map_err(|_| format!("unknown event: {event} (use connect|mail_from|rcpt|data)"))?;
+            // Wire values are never narrowed (decision 0018): the argument
+            // must be present, must be an integer at all, must fit `u8`
+            // (256 refusing — not becoming 0) and must be at most 100. Each
+            // stage refuses by name; no cast, no clamp, no silent default.
+            const PROBABILITY_REFUSAL: &str = "probability must be an integer between 0 and 100";
+            let probability_value = a.get("probability").ok_or(PROBABILITY_REFUSAL)?;
+            let probability_u64 = probability_value.as_u64().ok_or(PROBABILITY_REFUSAL)?;
+            let probability = u8::try_from(probability_u64).map_err(|_| PROBABILITY_REFUSAL)?;
+            if probability > 100 {
+                return Err(PROBABILITY_REFUSAL.to_string());
+            }
+            let delay_ms = match a.get("delay_ms") {
+                None => 0,
+                Some(v) => v
+                    .as_u64()
+                    .ok_or("delay_ms must be a non-negative integer")?,
+            };
             let rule = ChaosRule {
                 probability,
                 error: arg_str(a, "error"),
-                delay_ms: a.get("delay_ms").and_then(|v| v.as_u64()).unwrap_or(0),
+                delay_ms,
             };
-            let event_enum: ChaosEvent = serde_json::from_value(json!(event))
-                .map_err(|_| format!("unknown event: {event} (use connect|mail_from|rcpt|data)"))?;
             let mut cfg = ctx.chaos.current();
             match event_enum {
                 ChaosEvent::Connect => cfg.connect = Some(rule),
@@ -279,10 +322,12 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
         { "name": "swarmail_clear_inbox", "description": "Delete all emails in one inbox — the 'clear' of the clear/act/assert loop.",
           "inputSchema": SCHEMA_INBOX_ONLY.clone() },
         { "name": "swarmail_clear_all", "description": "Delete every email in every inbox.", "inputSchema": { "type": "object" } },
-        { "name": "swarmail_wait_for_email", "description": "Block until count emails matching the filter arrive (push-based, no polling). Returns the matched emails.",
+        { "name": "swarmail_wait_for_email", "description": "Block until count emails matching the filter arrive (push-based, no polling). Returns the matched emails. Waits at most timeout_ms (60000 at most) and races the server's shutdown, answering an error once it begins stopping.",
           "inputSchema": { "type": "object", "properties": {
             "inbox": { "type": "string" }, "to": { "type": "string" }, "from": { "type": "string" },
-            "subject": { "type": "string" }, "count": { "type": "integer" }, "timeout_ms": { "type": "integer" } } } },
+            "subject": { "type": "string" }, "since_ms": { "type": "integer" },
+            "count": { "type": "integer", "minimum": 1 },
+            "timeout_ms": { "type": "integer", "minimum": 0, "maximum": 60000 } } } },
         { "name": "swarmail_extract_links", "description": "Extract all http(s) URLs from a captured email's text/HTML bodies.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_extract_codes", "description": "Extract likely OTP/verification codes from a captured email.",
@@ -295,7 +340,8 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
         { "name": "swarmail_set_chaos", "description": "Enable deliberate SMTP failure: event = connect|mail_from|rcpt|data, probability 0-100, optional SMTP error line and delay_ms.",
           "inputSchema": { "type": "object", "properties": {
             "event": { "type": "string", "enum": ["connect", "mail_from", "rcpt", "data"] },
-            "probability": { "type": "integer" }, "error": { "type": "string" }, "delay_ms": { "type": "integer" } },
+            "probability": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "error": { "type": "string" }, "delay_ms": { "type": "integer", "minimum": 0 } },
             "required": ["event", "probability"] } },
         { "name": "swarmail_clear_chaos", "description": "Disable all chaos rules.", "inputSchema": { "type": "object" } },
     ])

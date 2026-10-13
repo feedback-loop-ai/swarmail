@@ -69,13 +69,17 @@
         "parameters": [
           { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "to", "in": "query", "schema": { "type": "string" } },
+          { "name": "from", "in": "query", "schema": { "type": "string" } },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
-          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 }, "description": "Minimum one — a count of 0 still waits for at least one matching message (decision 0010)" },
-          { "name": "timeout_ms", "in": "query", "schema": { "type": "integer", "default": 5000 } }
+          { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
+          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1, "minimum": 1 }, "description": "Minimum one — a count of 0 still waits for at least one matching message (decision 0010)" },
+          { "name": "timeout_ms", "in": "query", "schema": { "type": "integer", "default": 5000, "minimum": 0, "maximum": 60000 }, "description": "Above 60000 the request is refused with 400, never clamped (decision 0018)" }
         ],
         "responses": {
-          "200": { "description": "Matched", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AwaitResponse" } } } },
-          "408": { "description": "Timed out" }
+          "200": { "description": "Matched — `total` is counted after the wait, describing the response's observed state (decision 0018)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AwaitResponse" } } } },
+          "400": { "description": "`timeout_ms` above 60000 — refused, never clamped (decision 0018)" },
+          "408": { "description": "Timed out" },
+          "503": { "description": "The server is stopping — the wait answers `{\"error\":\"shutting down\"}` instead of parking (decision 0018)" }
         }
       }
     },
@@ -124,7 +128,8 @@
         "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SeedRequest" } } } },
         "responses": {
           "200": { "description": "The stored email" },
-          "400": { "description": "Refused fixture — an envelope field (to, from or subject) contains CR, LF or NUL; nothing was stored" }
+          "400": { "description": "Refused fixture — an envelope field (to, from or subject) contains CR, LF or NUL; nothing was stored" },
+          "503": { "description": "`storage commit failed` — the commit refused, nothing was stored (decision 0012)" }
         }
       }
     },
@@ -289,8 +294,7 @@
           "codes": { "type": "array", "items": { "type": "string" } },
           "message_id": { "type": "string", "description": "The Message-ID header value, angle brackets stripped; absent when the mail has none" },
           "in_reply_to": { "type": "string", "description": "The first In-Reply-To id; absent when the mail has none" },
-          "references": { "type": "array", "items": { "type": "string" }, "description": "The References ids in header order; absent when the mail has none" },
-          "session": { "type": "integer" }
+          "references": { "type": "array", "items": { "type": "string" }, "description": "The References ids in header order; absent when the mail has none" }
         }
       },
       "Thread": {

@@ -544,3 +544,116 @@ async fn openapi_describes_the_raw_route_as_rfc822() {
         "the raw route must promise exact bytes: {description}"
     );
 }
+
+// ---------- await bounds, shutdown race and observed totals (decision 0018) ----------
+
+/// The wait cap is a refusal, never a clamp: over the cap answers 400 naming
+/// the maximum, before anything is subscribed (decision 0018). Within the
+/// cap the wait is accepted — proven by parking 60000 and satisfying it
+/// mid-wait; a refusal would have answered 400 instead.
+#[tokio::test]
+async fn await_timeout_over_the_cap_is_refused_and_the_cap_itself_is_accepted() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/cap/await?count=1&timeout_ms=60001",
+        None,
+    )
+    .await;
+    assert_eq!(st, 400);
+    assert_eq!(
+        body,
+        serde_json::json!({ "error": "timeout_ms must be at most 60000" }),
+        "{body}"
+    );
+
+    // 60000 is legal: the wait parks and the mid-wait delivery satisfies it.
+    let addr = srv.http_addr;
+    let request = tokio::spawn(http_json(
+        addr,
+        "GET",
+        "/api/v1/inboxes/cap/await?count=1&to=capped@x.io&timeout_ms=60000",
+        None,
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the wait parks
+    common::smtp_send(
+        srv.smtp_addr,
+        Some("cap"),
+        "f@x.io",
+        "capped@x.io",
+        "within the cap",
+        "body",
+    )
+    .await
+    .unwrap();
+    let (st, body) = tokio::time::timeout(std::time::Duration::from_secs(10), request)
+        .await
+        .expect("a within-cap wait must not outlive its bound")
+        .unwrap();
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 1);
+}
+
+/// The await's `total` describes the response's observed state: counted
+/// after the wait, in both arms (decision 0018). The pre-wait snapshot this
+/// replaces would report the inbox as it stood before the wait's mail
+/// arrived — the stale-total disease.
+#[tokio::test]
+async fn await_total_is_counted_after_the_wait_in_both_arms() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+
+    // 200 arm: the mail arrives mid-wait; total counts it.
+    let request = tokio::spawn(http_json(
+        addr,
+        "GET",
+        "/api/v1/inboxes/observed/await?count=1&to=racer@x.io&timeout_ms=10000",
+        None,
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the wait parks
+    common::smtp_send(
+        srv.smtp_addr,
+        Some("observed"),
+        "f@x.io",
+        "racer@x.io",
+        "midwait",
+        "body",
+    )
+    .await
+    .unwrap();
+    let (st, body) = tokio::time::timeout(std::time::Duration::from_secs(10), request)
+        .await
+        .expect("the wait must resolve on the delivery")
+        .unwrap();
+    assert_eq!(st, 200);
+    assert_eq!(body["matched"], 1);
+    assert_eq!(body["total"], 1, "total is counted after the wait: {body}");
+
+    // 408 arm: a non-matching mail lands mid-wait; total counts it while
+    // `matched` stays honest about the filter.
+    let request = tokio::spawn(http_json(
+        addr,
+        "GET",
+        "/api/v1/inboxes/observed408/await?count=1&to=nobody@x.io&timeout_ms=1500",
+        None,
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the wait parks
+    common::smtp_send(
+        srv.smtp_addr,
+        Some("observed408"),
+        "f@x.io",
+        "someone-else@x.io",
+        "unrelated",
+        "body",
+    )
+    .await
+    .unwrap();
+    let (st, body) = tokio::time::timeout(std::time::Duration::from_secs(10), request)
+        .await
+        .expect("the wait must time out on its own bound")
+        .unwrap();
+    assert_eq!(st, 408);
+    assert_eq!(body["matched"], 0);
+    assert_eq!(body["total"], 1, "total is counted after the wait: {body}");
+}

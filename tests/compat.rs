@@ -897,3 +897,107 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
+
+/// R10 (issue #31 finding 2, decision 0018): the shim's bulk delete runs on
+/// the blocking pool, so a multi-id DELETE burning on a held writer lock
+/// cannot stall the async runtime. A 10ms timer canary keeps ticking through
+/// the whole burn — its budget is the busy bound's scheduling margin, far
+/// above tick noise and far below the burn itself (deadline-based, like the
+/// stalled-sink legs, never a latency percentile). The delete answers `503`
+/// naming the cause within the busy bound plus margin, and every untouched
+/// mail stays committed.
+#[tokio::test]
+async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-compat-offload-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+
+    let mut ids = Vec::new();
+    for subject in ["offload one", "offload two", "offload three"] {
+        smtp_send(
+            srv.smtp_addr,
+            Some("offload"),
+            "sender@x.io",
+            "rcpt@x.io",
+            subject,
+            "body",
+        )
+        .await
+        .unwrap();
+        ids.push(latest_id(srv.http_addr, "offload").await);
+    }
+
+    // A real second connection holds the writer lock: the bulk delete will
+    // burn the busy bound on the blocking pool (decision 0012 §3, at the
+    // real layer) and refuse.
+    let _lock = common::hold_write_lock(&db);
+
+    // The canary: tick every 10ms and record the widest gap between ticks.
+    let widest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let canary_widest = widest.clone();
+    let canary = tokio::spawn(async move {
+        let mut last = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let now = tokio::time::Instant::now();
+            canary_widest.fetch_max(
+                (now - last).as_micros() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            last = now;
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let payload = json!({ "ids": ids }).to_string();
+    let (status, _, raw) = http_raw(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/messages",
+        Some(("application/json", &payload)),
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(status, 503, "a burning bulk delete must not claim success");
+    let refused: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(refused["error"], "storage commit failed", "{refused}");
+    // The busy bound (5s) plus a scheduling margin (1s) — a hang would
+    // outlive this assertion.
+    assert!(
+        elapsed <= std::time::Duration::from_secs(6),
+        "the burning bulk delete answered in {elapsed:?}, past the busy bound and margin"
+    );
+
+    canary.abort();
+    let widest_us = widest.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        widest_us < 1_000_000,
+        "the async runtime stalled {}µs during a burning bulk delete — the delete did not offload",
+        widest_us
+    );
+
+    // The refusal is wholesale: every untouched mail stays committed.
+    let (st, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/offload/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        count["count"], 3,
+        "a refused bulk delete must leave every mail committed: {count}"
+    );
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+}

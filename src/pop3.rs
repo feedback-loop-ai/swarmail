@@ -15,6 +15,8 @@ use crate::store::{Filter, Store};
 use std::collections::BTreeSet;
 use std::io;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -28,6 +30,13 @@ const MAX_COMMAND_LINE: usize = 4096;
 /// Total POP3 sessions served, for the debug log correlation id.
 static SESSIONS: AtomicU64 = AtomicU64::new(0);
 
+/// Test-only: sessions reaped by the accept loop's harvest. Its only reader
+/// is the inline probe that installs it (decision 0011 rule 4) — the probe
+/// drives the real `serve`, and the counter must track completed sessions
+/// across successive connection batches or the deadline expires red.
+#[cfg(test)]
+static REAPED: AtomicUsize = AtomicUsize::new(0);
+
 /// Accept POP3 connections until `shutdown`, one task per session.
 pub async fn serve(
     listener: TcpListener,
@@ -35,12 +44,20 @@ pub async fn serve(
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> io::Result<()> {
     let mut shutdown = std::pin::pin!(shutdown);
-    // Every session is owned by this loop: the set is drained on the
-    // shutdown arm, so no session socket outlives the serve loop. A session
-    // mid-transaction has no commit to land — the closed socket is the only
-    // goodbye it gets.
+    // Every session is owned by this loop: ready completions are reaped at
+    // the top of every iteration — never parked — so a finished session
+    // cannot accumulate in the set with the cumulative connection count; the
+    // set is drained on the shutdown arm, so no session socket outlives the
+    // serve loop. A session mid-transaction has no commit to land — the
+    // closed socket is the only goodbye it gets.
     let mut sessions: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
+        // Reap ready completions without blocking: `try_join_next` never
+        // parks the accept path and never touches a session still running.
+        while sessions.try_join_next().is_some() {
+            #[cfg(test)]
+            REAPED.fetch_add(1, Ordering::Relaxed);
+        }
         let (stream, peer) = tokio::select! {
             res = listener.accept() => res?,
             _ = &mut shutdown => {
@@ -622,5 +639,53 @@ mod tests {
             "no such message"
         );
         assert_eq!(resolve(&maildrop, &deleted, 1).unwrap().id, "a");
+    }
+
+    /// The accept loop reaps completed sessions: each offered connection is
+    /// one loop iteration, and each iteration's harvest joins every session
+    /// completed so far — so a completed entry is reaped by a later accept
+    /// instead of accumulating in the set. Polled against a real deadline
+    /// (never a sleep): with the harvest gone the counter never advances and
+    /// the deadline expires red. Returns the counter so a second batch can
+    /// prove the reap keeps tracking completions.
+    async fn reap_completed_sessions_until(count: usize) -> usize {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(
+            listener,
+            Arc::new(Store::new(0)),
+            std::future::pending(),
+        ));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let reaped = loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the accept loop never reaped {count} completed session(s)"
+            );
+            // EOF on arrival: the session ends, the next accept reaps it.
+            drop(TcpStream::connect(addr).await.unwrap());
+            let reaped = REAPED.load(Ordering::Relaxed);
+            if reaped >= count {
+                break reaped;
+            }
+            tokio::task::yield_now().await;
+        };
+        server.abort();
+        reaped
+    }
+
+    /// Completed connection entries do not accumulate across successive
+    /// batches: the first batch is reaped, and the second advances the
+    /// counter beyond it — the harvest is continuous, not a shutdown-only
+    /// drain (red on the join-in-shutdown-arm-only shape, which never reaps).
+    #[tokio::test]
+    async fn the_accept_loop_reaps_completed_sessions_across_batches() {
+        let after_first_batch = reap_completed_sessions_until(1).await;
+        assert!(after_first_batch >= 1, "{after_first_batch}");
+        let after_second_batch = reap_completed_sessions_until(after_first_batch + 1).await;
+        assert!(
+            after_second_batch > after_first_batch,
+            "the reap must keep tracking completions: {after_first_batch} -> {after_second_batch}"
+        );
     }
 }

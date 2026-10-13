@@ -27,7 +27,9 @@
 3. `GET /api/v1/inboxes/{inbox}/await?to=user@x.io&count=1&timeout_ms=5000` —
    blocks until the mail arrives (push-based; no sleep-polling). Returns the email.
    `count` means "at least one" — even `count=0` waits rather than succeeding
-   instantly (decision 0010).
+   instantly (decision 0010). `timeout_ms` above 60000 is refused with 400,
+   never clamped, and a stopping server answers the wait with 503
+   `shutting down` instead of parking (decision 0018).
 4. Assert subject/body: fields `subject`, `text`, `html` are on every email; the
    `links` array holds every URL and `codes` holds likely OTP/verification codes —
    no regexing HTML required. Exact counts: `GET /api/v1/inboxes/{inbox}/assert?count=N`
@@ -53,7 +55,9 @@ subprocess; talks to the same server).
 
 `PUT /api/v1/chaos` with e.g. `{"data": {"probability": 30, "error": "451 4.3.0
 tempfail", "delay_ms": 250}}` — inject SMTP failures to test your retry logic.
-`DELETE /api/v1/chaos` disables it.
+`DELETE /api/v1/chaos` disables it. Wire values are never narrowed:
+`probability` must be an integer 0..=100 and a wrong-typed `delay_ms` is
+refused by name (decision 0018).
 
 ## Webhooks
 
