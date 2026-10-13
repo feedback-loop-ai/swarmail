@@ -1,0 +1,11 @@
+{
+  "charter": "charters/review-tests.md",
+  "description": "Audits the tests as the proof: realism, placement, coverage honesty. Read-only.",
+  "models": [
+    "fable",
+    "glm-flash"
+  ],
+  "efforts": {
+    "fable": "high"
+  }
+}

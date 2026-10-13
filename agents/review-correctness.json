@@ -2,6 +2,10 @@
   "charter": "charters/review-correctness.md",
   "description": "Reviews the diff for guarantees, acceptance criteria and test realism. Read-only.",
   "models": [
+    "qwen-max",
     "glm-flash"
-  ]
+  ],
+  "efforts": {
+    "qwen-max": "high"
+  }
 }

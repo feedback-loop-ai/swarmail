@@ -2,10 +2,12 @@
   "provider": "dsh",
   "trust_tier": "trusted",
   "routes": {
-    "spark-glm": "local"
+    "spark-glm": "local",
+    "dashscope": "uncontracted"
   },
   "credentials": {
-    "spark-glm": "SPARK_API_KEY"
+    "spark-glm": "SPARK_API_KEY",
+    "dashscope": "DASHSCOPE_API_KEY"
   },
   "binary": "dsh",
   "driver": [
@@ -15,10 +17,12 @@
     "--"
   ],
   "models": {
-    "glm-flash": "spark-glm/GLM-5.3-Flash-EXL3"
+    "glm-flash": "spark-glm/GLM-5.3-Flash-EXL3",
+    "qwen-max": "dashscope/qwen3.8-max"
   },
   "judges": [
-    "glm-flash"
+    "glm-flash",
+    "qwen-max"
   ],
   "model_flag": "--model",
   "effort_flag": "--effort",

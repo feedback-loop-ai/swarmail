@@ -20,6 +20,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0010](0010-exact-count-asserts-and-the-shared-seed.md) | Exact-count asserts and the one shared seed | accepted (ratified at epic #13 wave-4 intake, 2026-10-11) |
 | [0010](0010-watcher-channel-lifetime.md) | Watcher channel lifetime: a wake ring released with its inbox's mail | **proposed** (awaiting operator) |
 | [0011](0011-concurrency-tests-and-the-coverage-gate.md) | Concurrency regression tests and the exact coverage gate: the harness moves, the bar does not | **proposed** (awaiting operator) | (Land decision 0011: move persist_tests to the harness, tripwire reserved names)
+| [0013](0013-four-model-review-panel.md) | A four-model review panel (qwen-max, opus, astra, fable) | accepted (operator, 2026-10-13) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

@@ -114,6 +114,9 @@ panel argues before any code, a chief commits the spec, a deterministic
 check rules the artifacts, and review splits into correctness +
 security members); the review gate is constitutionally protected and
 security-hold is a hard stop. `verify` and `ship` are hermetic exec
-seats — a shell proves what a model claims. The model adapter is pinned
-to `spark-glm/GLM-5.3-Flash-EXL3` (`glm-flash`) only; adding a route is
-a decision document, not an edit.
+seats — a shell proves what a model claims. The work axis (intake,
+design, implement) is pinned to `spark-glm/GLM-5.3-Flash-EXL3`
+(`glm-flash`) only; the review panel is one independent model route per
+member — `qwen-max`, `opus`, `astra`, `fable`, each falling back to
+`glm-flash` (decision 0013). Adding a route is a decision document, not
+an edit.

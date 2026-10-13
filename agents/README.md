@@ -8,9 +8,10 @@ references a seat the library cannot resolve.
 The machine is the hybrid (decision 0009, *proposed*): a contrarian
 design panel argues before any code, a chief synthesizes and commits the
 spec, a deterministic script rules the artifacts; verify and ship are
-hermetic exec gates; review splits into a correctness member and a
-security member whose worst verdict rules and whose `security-hold` is
-the operator's alone.
+hermetic exec gates; review is a four-member panel (decision 0013) —
+correctness, security, guarantees and tests, one independent model route
+each — whose worst verdict rules and whose `security-hold` is the
+operator's alone.
 
 | Agent | Seat | Charter |
 |---|---|---|
@@ -21,6 +22,8 @@ the operator's alone.
 | `implementer` | implement | [charters/implementer.md](charters/implementer.md) |
 | `review-correctness` | review:correctness | [charters/review-correctness.md](charters/review-correctness.md) |
 | `review-security` | review:security | [charters/review-security.md](charters/review-security.md) |
+| `review-guarantees` | review:guarantees | [charters/review-guarantees.md](charters/review-guarantees.md) |
+| `review-tests` | review:tests | [charters/review-tests.md](charters/review-tests.md) |
 | `muninn` | standing overseer (no phase) | [charters/muninn.md](charters/muninn.md) |
 
 The phase machine is [`policy.json`](../policy.json); the `design`

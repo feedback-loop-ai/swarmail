@@ -1,0 +1,11 @@
+{
+  "charter": "charters/review-guarantees.md",
+  "description": "Audits the diff against the frozen guarantees and the decisions index. Read-only.",
+  "models": [
+    "astra",
+    "glm-flash"
+  ],
+  "efforts": {
+    "astra": "high"
+  }
+}

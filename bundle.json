@@ -41,10 +41,20 @@
       "aggregate": "review-panel",
       "panel": {
         "correctness": {
-          "agent": "review-correctness"
+          "agent": "review-correctness",
+          "class": "gate"
         },
         "security": {
-          "agent": "review-security"
+          "agent": "review-security",
+          "class": "gate"
+        },
+        "guarantees": {
+          "agent": "review-guarantees",
+          "class": "gate"
+        },
+        "tests": {
+          "agent": "review-tests",
+          "class": "gate"
         }
       }
     },
