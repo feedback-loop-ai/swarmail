@@ -8,10 +8,14 @@ spark only", mirroring xbox-inference)
 The delivery constitution (bundle.json + policy.json) has five phases —
 intake → implement → verify → review → ship — with two hard rules:
 
-- **`verify` and `ship` are exec seats.** They run
-  `scripts/verify-seat.sh` and `scripts/ship-seat.sh` — plain bash, no
-  model in the loop. A shell proves what a model claims; a model must
-  never be the thing that certifies its own work.
+- **`verify` and `ship` are exec seats.** They run the bundle's own
+  `bundles/self/scripts/verify-seat.sh` and `bundles/self/scripts/ship-seat.sh`
+  — plain bash, no model in the loop. The scripts live inside the
+  constitution so the hermetic box mounts the exact bytes the bundle pins
+  (the exec dispatch resolves a seat script against the bundle root and
+  re-walks its directory into the namespace), never whatever the worktree
+  carries. A shell proves what a model claims; a model must never be the
+  thing that certifies its own work.
 - **One model route.** Every model seat runs `glm-flash` →
   `spark-glm/GLM-5.3-Flash-EXL3` via the `dsh` driver on the local spark
   route (`SPARK_API_KEY`). The adapter declares no other route, and the
