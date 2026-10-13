@@ -804,3 +804,96 @@ async fn cc_addresses_render_in_the_mailpit_list() {
     assert_eq!(cc.len(), 2, "{one}");
     assert_eq!(cc[0]["name"], "Cara C");
 }
+
+/// Finding 3's compat-shim leg (issue #31, decision 0014): with a real
+/// rejecting BEFORE DELETE trigger on the data file, the shim's deletes
+/// answer `503` naming the cause — never a `200` for work that did not
+/// commit — and the mail survives the restart untouched.
+#[tokio::test]
+async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-e2e-refuse-shim-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    smtp_send(
+        srv.smtp_addr,
+        Some("alpha"),
+        "sender@x.io",
+        "rcpt@x.io",
+        "doomed mail",
+        "alpha one",
+    )
+    .await
+    .unwrap();
+    let doomed = latest_id(srv.http_addr, "alpha").await;
+
+    let trigger = common::refusing_trigger(&db, "delete");
+
+    // The shim's selector delete refuses with the fixed cause.
+    let payload = json!({"ids": [doomed]}).to_string();
+    let (status, _, raw) = http_raw(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/messages",
+        Some(("application/json", &payload)),
+    )
+    .await;
+    assert_eq!(status, 503, "a failed shim delete must not claim success");
+    let refused: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(refused["error"], "storage commit failed", "{refused}");
+
+    // delete-all refuses the same way.
+    let (status, _, raw) = http_raw(srv.http_addr, "DELETE", "/api/v1/delete-all", None).await;
+    assert_eq!(status, 503, "a failed delete-all must not claim success");
+    let refused: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(refused["error"], "storage commit failed", "{refused}");
+
+    // Committed state is preserved, live and across a restart.
+    let (st, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/alpha/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        count["count"], 1,
+        "a refused shim delete must preserve the mail: {count}"
+    );
+    srv.stop().await;
+    drop(trigger);
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let (st, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/alpha/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        count["count"], 1,
+        "a refused shim delete must not lose the mail across a restart: {count}"
+    );
+
+    // Recovery: the trigger is gone, the same delete succeeds and sticks.
+    let (status, _, raw) = http_raw(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/messages",
+        Some(("application/json", &payload)),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let removed: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(removed, json!({"removed": 1}));
+    srv.stop().await;
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+}

@@ -60,46 +60,62 @@ require for public-contract changes.
    sits before the per-inbox watcher send and the `global_tx` send. A
    commit-failed mail fires no webhook, wakes no watcher. `subscribe_all`
    is documented as "every *accepted* email"; a refused mail was not
-   accepted. Decision 0002 is untouched: the ghost never fires a channel,
-   and a scanning awaiter finds it via the store-is-truth rescan — the
-   same shape as every other stored-but-unnotified mail.
-4. **Memory truth stands; there is no rollback.** A refused mail stays
-   queryable in memory, and the lifetime counters count it. Rollback is
-   refused: it is a second, inverse mutation over the very two-map seam
-   contract #2 exists to make atomic; it must un-increment
+   accepted. Decision 0002 is untouched: *(amended by
+   [0014](0014-one-ordered-mutation-boundary.md), under which the refused
+   mail exists in neither tree, so there is no ghost to fire a channel or
+   to be found by a rescan — a waiter that was mid-poll at the refusal
+   simply keeps waiting, exactly as if the mail had never been sent)*.
+4. **A failed commit is a refusal with zero trace.** *(Amended by
+   [0014](0014-one-ordered-mutation-boundary.md), which supersedes the
+   original "memory truth stands" wording: the ghost is unrepresentable,
+   not bounded.)* A refused insert applies nothing — the mail is
+   queryable through no surface, evicts no committed mail, fires no
+   watcher and no webhook, increments no counter and mints no phantom
+   inbox. Rollback is refused: under the one ordered boundary there is
+   *nothing to roll back* — the memory phase never ran — so the second,
+   inverse mutation over the two-map seam (which must un-increment
    `emails_dropped`, which 0003 requires to count every eviction
-   *exactly*; and it doubles the cold path with an undo that must itself
-   be infallible, for a cosmetic payoff — the ghost is bounded by the
-   per-inbox cap and "stored but refused" breaks no frozen guarantee.
-5. **The refusal seam is the acceptance seam — `insert` only.**
-   `delete`/`clear`/`clear_all` keep their logged swallow
-   (`let _ = self.record(...)`). No acknowledgement is minted on their
-   behalf in this epic; widening would drag refusal shapes into REST
-   `DELETE`, the compat shims and POP3 `DELE` session semantics — a
-   protocol change with zero framed criteria, each new line owing its own
-   leg under the exact 100/100/100 gate. The hazard the widening would
-   address — a failed delete commit leaves the row behind, so a restart
-   resurrects mail the live store shows deleted — is real, pre-existing,
-   and *not closed by widening either* (on refusal the row stays behind
-   until the next successful mirror); it is tracked as the mirror-image
-   debt noted in `tests/persistence.rs:401-407`. A follow-up epic owns it
-   if the operator wants it.
-6. **The memory half of each mutation becomes one unit.** One
-   `std::sync::Mutex<()>` field spans the memory phase of all four
-   mutations: `insert` (push + prune + pruned-id index removals + global
-   index insert + the counter), `delete` (index remove + retain + watcher
-   release), `clear`/`clear_all` (the drain). After any mutation
-   completes, `count(inbox)` equals the number of ids retrievable via
-   `get(id)` whose inbox is that inbox. The lock is **never held across
-   the commit, an `await`, or a gate callback** — the pre-mirror gate's
-   closures re-enter the store, so a boundary spanning the gate would
-   deadlock the existing clear-race tests by construction; and it adds
-   nothing across `record`, which is already serialized by
-   `persist::State`'s own mutex. Readers (`count`, `get`, `list`,
-   `inboxes`, `wait_for`, `subscribe`) stay lock-free: the invariant is a
-   rest-state invariant, proven at barriers, not a mid-mutation observer
-   guarantee. Pruning stays oldest-only and `emails_dropped` still counts
-   every eviction exactly (0003) — the eviction choice is untouched.
+   *exactly*, and which would double the cold path with an undo that must
+   itself be infallible) is never needed. The refusal leaves memory and
+   data file agreeing: the same wire path can simply retry after repair.
+5. **The refusal seam is every persistent mutation.** *(Amended by
+   [0014](0014-one-ordered-mutation-boundary.md), which widens the seam
+   from `insert` to `delete`/`clear`/`clear_all` — the mirror-image debt
+   named below is closed, not tracked.)* `delete` reports
+   `Result<bool, rusqlite::Error>` and `clear`/`clear_all`
+   `Result<usize, rusqlite::Error>`; a failed commit propagates through
+   every applicable adapter — REST `DELETE`/clear `503`, the compat shims
+   `503`, MCP `isError: true` with the fixed text, POP3 `QUIT` `-ERR` with
+   the session left in TRANSACTION and its marks unapplied — never
+   acknowledging work that did not commit. The original refusal to widen
+   (below) was a scoping decision for epic #13's contracts #1 + #2, not a
+   claim that the widening is wrong: issue #31's finding 3 *is* the
+   hazard, and 0014's boundary is what makes the widened seam defensible
+   — the refusal leaves memory and disk agreeing, so an id the store
+   never removed is an honest `Ok(false)`/`404`/not-found, and a failed
+   removal is a `503` the client retries.
+6. **One ordered boundary spans each mutation: plan → commit → apply.**
+   *(Amended by [0014](0014-one-ordered-mutation-boundary.md): the
+   original text held the lock across the memory phase only and claimed a
+   boundary spanning the commit "adds nothing" — that claim treated two
+   serializations as one order and is exactly issue #31's finding 1.)*
+   The `std::sync::Mutex<()>` covers the whole mutation, the SQLite
+   transaction included: `insert` plans the eviction and the
+   post-counters, commits (`record_insert`), and only on `Ok` applies the
+   memory phase (push + prune + pruned-id index removals + global index
+   insert + the counters); `delete` commits its mirror delete, then
+   applies (index remove + retain + watcher release); `clear`/
+   `clear_all` commit their per-id mirror deletes, then drain. After any
+   mutation completes, `count(inbox)` equals the number of ids
+   retrievable via `get(id)` whose inbox is that inbox — on both trees,
+   live and restart. The lock is **never held across an `await`** — the
+   whole mutation still runs on tokio's blocking pool (0010) — and no
+   callback inside it re-enters the store: the pre-mirror gate fires
+   pre-commit inside the boundary, so its closures block or panic, never
+   re-enter (re-entry deadlocks by construction). Readers (`count`,
+   `get`, `list`, `inboxes`, `wait_for`, `subscribe`) stay lock-free.
+   Pruning stays oldest-only and `emails_dropped` still counts every
+   eviction exactly (0003) — the eviction choice is untouched.
 7. **Poison is fail-stop, in the house's existing vocabulary.** A panic
    inside the boundary means memory truth is already broken; the guard
    uses `.expect("store mutation lock poisoned")` — panic and propagate,
@@ -149,13 +165,13 @@ require for public-contract changes.
   remaining call sites are inline tests, a mechanical `let _ =` ripple
   forced by `Result`'s `#[must_use]`. The restore path deliberately
   bypasses `insert` (`Store::open`) and is untouched.
-- On refusal the memory copy and the disk copy diverge, bounded by the
-  per-inbox cap: the ghost is queryable in memory, REST, MCP, POP3 and
-  the UI until restart; invisible to watchers and webhooks; absent from
-  the restart copy; and the counters on restart read lower (they come
-  from disk). A client that got `451`, retried after repair, and got
-  `250` can observe the refused copy still in memory — two mails for two
-  transactions, which SMTP already is.
+- On refusal the memory copy and the disk copy **agree** *(amended by
+  [0014](0014-one-ordered-mutation-boundary.md); the original bullet
+  described the ghost the pre-boundary tree produced)*: nothing was
+  applied, so there is no divergence to bound and no restart copy that
+  contradicts what the client was told. A client that got `451`, retried
+  after repair, and got `250` has one mail for the one accepted
+  transaction.
 - Cross-inbox serialization of the memory phase: nanoseconds, and the
   persist mutex already serializes far more.
 - Every new production line ships with the test that executes it: the

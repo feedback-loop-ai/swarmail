@@ -621,3 +621,101 @@ async fn pop3_deletions_survive_a_restart_with_a_data_file() {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
+
+/// Finding 3's POP3 leg (issue #31, decision 0014): a failed commit at QUIT
+/// is answered `-ERR`, the session stays in TRANSACTION with the marks
+/// intact but unapplied to the store — the mail is still served, so no
+/// sign-off, no silent loss. Once the trigger is gone the retry signs off
+/// and the mail is gone for good. No fault shim: the refusal is the
+/// database's own.
+#[tokio::test]
+async fn a_failed_quit_answers_err_and_keeps_the_marks() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-e2e-refuse-pop3-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let mail = deliver(&srv, "quitbox", "doomed", "body").await;
+
+    let mut c = Pop3::connect(srv.pop3_addr).await;
+    c.login("quitbox").await;
+    assert_eq!(c.cmd("DELE 1").await, "+OK message 1 deleted");
+
+    let trigger = common::refusing_trigger(&db, "delete");
+
+    // The failed sign-off: `-ERR`, never a `+OK` for work that did not
+    // commit (AC3).
+    let reply = c.cmd("QUIT").await;
+    assert!(
+        reply.starts_with("-ERR"),
+        "a failed QUIT must not sign off: {reply}"
+    );
+    assert!(
+        reply.contains("storage commit failed"),
+        "the -ERR must name the cause: {reply}"
+    );
+
+    // The update is abandoned, not half-done: the session is still in
+    // TRANSACTION with the marks intact (its own view excludes the marked
+    // mail), while the store still serves the mail — unapplied means the
+    // maildrop and the data file were never touched.
+    assert_eq!(
+        c.cmd("LIST").await,
+        "+OK 0 messages (0 octets)",
+        "the session's own view still excludes the marked mail: {reply}"
+    );
+    assert_eq!(
+        c.data().await,
+        "",
+        "no scan listing survives the failed update"
+    );
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{mail}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "a failed QUIT must not delete the mail: {body}");
+
+    // Recovery: the trigger is gone, the retry signs off and applies.
+    trigger.remove();
+    assert_eq!(c.cmd("QUIT").await, "+OK Swarmail POP3 server signing off");
+    let (st, _) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{mail}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 404, "the retry must apply the marks: {st}");
+
+    // And the deletion is durable: the restart copy has no row.
+    srv.stop().await;
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let (st, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/quitbox/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        count["count"], 0,
+        "the retried QUIT must stay deleted across a restart: {count}"
+    );
+    srv.stop().await;
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+}

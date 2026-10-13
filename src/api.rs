@@ -374,8 +374,17 @@ async fn assert_messages(
 async fn clear_inbox(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
-) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "removed": state.store.clone().clear_async(inbox).await }))
+) -> ApiResult<Json<serde_json::Value>> {
+    // A failed commit is the answer (decision 0014): the clear did not
+    // commit, so the caller must hear a failure — `503`, the cause usually
+    // transient — instead of a count for work that never happened.
+    match state.store.clone().clear_async(inbox).await {
+        Ok(removed) => Ok(Json(serde_json::json!({ "removed": removed }))),
+        Err(_) => Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage commit failed".into(),
+        )),
+    }
 }
 
 async fn get_message(
@@ -393,10 +402,17 @@ async fn delete_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    if state.store.clone().delete_async(id).await {
-        Ok(Json(serde_json::json!({ "deleted": true })))
-    } else {
-        Err(ApiError(StatusCode::NOT_FOUND, "message not found".into()))
+    // A failed commit is the answer (decision 0014): the delete did not
+    // commit, so the mail is still there — `503`, the cause usually
+    // transient — never a `200` for work that never happened. `404` stays
+    // the answer for an id the store never held.
+    match state.store.clone().delete_async(id).await {
+        Ok(true) => Ok(Json(serde_json::json!({ "deleted": true }))),
+        Ok(false) => Err(ApiError(StatusCode::NOT_FOUND, "message not found".into())),
+        Err(_) => Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage commit failed".into(),
+        )),
     }
 }
 

@@ -398,13 +398,12 @@ async fn a_clear_racing_inserts_never_loses_a_250_answered_mail_on_restart() {
         "restart lost {} mail(s) the pre-restart store still held: {lost:?} — the racing clear erased rows memory kept",
         lost.len()
     );
-    // Note on the mirror-image hazard, deliberately not asserted here: a mail
-    // pushed just before the drain whose INSERT commit lands *after* the
-    // clear's DELETE commit resurfaces on restart (the row is written after
-    // the erase). That ordering race exists identically with the old
-    // inbox-wide DELETE and with the per-id mirror — it is a separate,
-    // pre-existing hazard (an epoch/generation scheme would be needed to
-    // close it), tracked as new debt rather than smuggled into this fix.
+    // The mirror-image hazard this note once tracked — a mail pushed just
+    // before the drain whose INSERT commit lands *after* the clear's DELETE
+    // commit, resurfacing on restart — is closed structurally by decision
+    // 0014's one ordered boundary: plan → commit → apply share one lock, so
+    // a commit can never land after the erase that memory already applied.
+    // The 16-thread probe in `src/store.rs` holds that property on the wire.
     srv.stop().await;
     clean_up(&db);
 }
@@ -430,6 +429,38 @@ async fn counters_keep_counting_across_restarts() {
     let (_, list) =
         common::http_json(srv.http_addr, "GET", "/api/v1/inboxes/box/messages", None).await;
     assert_eq!(list["total"], 3);
+
+    // A refused insert moves no counter (decision 0014): with a real
+    // rejecting trigger on the data file the send is refused, the lifetime
+    // counters stand exactly where they were, and the next accepted send
+    // resumes from there — no gap, no rewind.
+    let trigger = common::refusing_trigger(&db, "insert");
+    let reply = common::smtp_send(
+        srv.smtp_addr,
+        Some("box"),
+        "sender@x.io",
+        "rcpt@x.io",
+        "refused while counting",
+        "the body",
+    )
+    .await
+    .expect_err("the refused insert must not answer 250");
+    assert!(
+        reply.starts_with("451 4.3.0 storage commit failed"),
+        "got: {reply}"
+    );
+    let (_, metrics) = common::http_get_text(srv.http_addr, "/metrics").await;
+    assert!(
+        metrics.contains("swarmail_emails_inserted_total 3\n"),
+        "a refused insert must not count: {metrics}"
+    );
+    trigger.remove();
+    send(&srv, "box", "fourth").await;
+    let (_, metrics) = common::http_get_text(srv.http_addr, "/metrics").await;
+    assert!(
+        metrics.contains("swarmail_emails_inserted_total 4\n"),
+        "the counter must resume without a gap: {metrics}"
+    );
     srv.stop().await;
     clean_up(&db);
 }
@@ -621,8 +652,22 @@ async fn a_blocked_commit_answers_451_and_never_claims_250() {
         "no acceptance may ride the refusal: {reply}"
     );
 
-    // Memory truth: the refused mail is queryable while live — only the
-    // durability claim is withdrawn, not the storage (decision 0012 §6).
+    // Zero trace (decision 0014): the refused mail is nowhere in memory —
+    // the zero assertion for its subject matches nothing — and the
+    // committed-first mail is untouched. Nothing half-applied, nothing
+    // queryable that no restart copy can back.
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/refuse/assert?count=0&subject=refused%20while%20locked",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        body["matched"], 0,
+        "the refused mail must be nowhere while live: {body}"
+    );
     let (st, list) = common::http_json(
         srv.http_addr,
         "GET",
@@ -637,9 +682,10 @@ async fn a_blocked_commit_answers_451_and_never_claims_250() {
         .iter()
         .map(|e| e["subject"].as_str().expect("subject"))
         .collect();
-    assert!(
-        subjects.contains(&"refused while locked"),
-        "the refused mail is not queryable while live: {subjects:?}"
+    assert_eq!(
+        subjects,
+        vec!["committed before the lock"],
+        "the refused mail must not be queryable while live, and the committed mail must be untouched: {subjects:?}"
     );
 
     // The restart copy, taken with the lock released, holds the committed
@@ -696,7 +742,9 @@ async fn a_blocked_commit_refuses_the_rest_seed_with_503() {
     assert_eq!(st, 503, "the blocked commit must refuse the seed: {body}");
     assert_eq!(body["error"], "storage commit failed");
 
-    // Memory truth: the refused seed is queryable while live.
+    // Zero trace (decision 0014): the refused seed is nowhere in memory —
+    // not even minted as an inbox — so the list is empty and the await
+    // matches nothing.
     let (st, list) = common::http_json(
         srv.http_addr,
         "GET",
@@ -705,8 +753,19 @@ async fn a_blocked_commit_refuses_the_rest_seed_with_503() {
     )
     .await;
     assert_eq!(st, 200);
-    assert_eq!(list["total"], 1, "the refused seed must stay queryable");
-    assert_eq!(list["emails"][0]["subject"], "refused seed");
+    assert_eq!(
+        list["total"], 0,
+        "the refused seed must not be queryable while live: {list}"
+    );
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/blocked/await?count=1&timeout_ms=300",
+        None,
+    )
+    .await;
+    assert_eq!(st, 408, "the refused seed must match nothing: {body}");
+    assert_eq!(body["matched"], 0);
 
     // And it is not durable: the restart copy has no row for it.
     srv.stop().await;
@@ -723,6 +782,394 @@ async fn a_blocked_commit_refuses_the_rest_seed_with_503() {
     assert_eq!(
         list["total"], 0,
         "the refused seed must not reach the restart copy"
+    );
+    srv.stop().await;
+    clean_up(&db);
+}
+
+/// A real HTTP sink that answers 204 and captures every request head until
+/// stopped: the webhook leg's receipt. The refusal must fire nothing; the
+/// recovery send is the positive control that the target really is wired.
+async fn capture_sink(
+    stop: tokio::sync::watch::Receiver<bool>,
+) -> (
+    std::net::SocketAddr,
+    tokio::sync::oneshot::Receiver<Vec<String>>,
+) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let mut stop = stop;
+        let mut captured = Vec::new();
+        loop {
+            tokio::select! {
+                _ = stop.changed() => break,
+                accepted = listener.accept() => {
+                    let Ok((mut stream, _)) = accepted else { break };
+                    let mut buf = vec![0u8; 8192];
+                    let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                        .await
+                        .unwrap_or(0);
+                    captured.push(String::from_utf8_lossy(&buf[..n]).to_string());
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                        .await;
+                }
+            }
+        }
+        let _ = tx.send(captured);
+    });
+    (addr, rx)
+}
+
+/// Poll one metrics line until it reads exactly `want`, or fail with the
+/// last seen text: webhook delivery is asynchronous, so the leg waits for
+/// the receipt instead of sleeping a guess.
+async fn poll_metric(addr: std::net::SocketAddr, name: &str, want: &str) {
+    let line = format!("{name} {want}\n");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let (_, metrics) = common::http_get_text(addr, "/metrics").await;
+        if metrics.contains(&line) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{name} never reached {want}: {metrics}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Finding 2's wire leg (issue #31, decision 0014 §3): with a real
+/// rejecting BEFORE INSERT trigger on the real data file, a capped send's
+/// refusal is the truth on every surface — a `451` that claims no storage,
+/// nothing queryable, no counter moved, no eviction of the committed
+/// incumbent, no webhook — and the retry once the trigger is gone is an
+/// ordinary accepted insert. No fault shim anywhere: the refusal is the
+/// database's own.
+#[tokio::test]
+async fn a_refused_insert_is_never_exposed_as_accepted_mail() {
+    let db = data_file("refuse-insert");
+    clean_up(&db);
+
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c.max_per_inbox = 1;
+        c
+    })
+    .await;
+
+    // One committed mail: the cap's incumbent, and the eviction bait.
+    let committed = send(&srv, "capped", "committed first").await;
+    assert!(!committed.is_empty());
+
+    // A real webhook target: the refusal must fire nothing, the recovery
+    // send must fire exactly once — the sink is the receipt.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let (dest, rx) = capture_sink(stop_rx).await;
+    let targets = format!(r#"[{{"url": "http://{dest}", "secret": "s"}}]"#);
+    let (st, _) = common::http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200);
+
+    // The refusal: a real trigger on the real data file. The reply claims
+    // no storage (decision 0012): the fixed refusal line, never a 250.
+    let trigger = common::refusing_trigger(&db, "insert");
+    let reply = common::smtp_send(
+        srv.smtp_addr,
+        Some("capped"),
+        "sender@x.io",
+        "rcpt@x.io",
+        "refused at the cap",
+        "the body",
+    )
+    .await
+    .expect_err("the refused insert must not answer 250");
+    assert!(
+        reply.starts_with("451 4.3.0 storage commit failed"),
+        "the refused insert must answer the fixed refusal line, got: {reply}"
+    );
+
+    // No eviction (AC2): the committed incumbent is untouched.
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{committed}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        st, 200,
+        "the refused insert must not evict committed mail: {body}"
+    );
+
+    // Absence everywhere (AC2). List: exactly the incumbent, nothing else.
+    let (st, list) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/capped/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        list["total"], 1,
+        "the refused mail must not be listed: {list}"
+    );
+    assert_eq!(list["emails"][0]["id"], committed.as_str());
+
+    // Count: the refusal moves no count.
+    let (st, body) =
+        common::http_json(srv.http_addr, "GET", "/api/v1/inboxes/capped/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        body["count"], 1,
+        "the refused mail must not be counted: {body}"
+    );
+
+    // Assert: the exact form still sees one mail, so the refusal cannot
+    // have over-counted the inbox.
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/capped/assert?count=1",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "the refused mail must not over-count: {body}");
+    assert_eq!(body["matched"], 1);
+
+    // Await: a filtered long-poll for the refused subject times out empty.
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/capped/await?count=1&subject=refused%20at%20the%20cap&timeout_ms=300",
+        None,
+    )
+    .await;
+    assert_eq!(st, 408, "the refused mail must match nothing: {body}");
+    assert_eq!(body["matched"], 0);
+
+    // A second refusal into a fresh inbox: it must not even mint the inbox.
+    let reply = common::smtp_send(
+        srv.smtp_addr,
+        Some("ghostbox"),
+        "sender@x.io",
+        "rcpt@x.io",
+        "refused fresh",
+        "the body",
+    )
+    .await
+    .expect_err("the refused fresh insert must not answer 250");
+    assert!(
+        reply.starts_with("451 4.3.0 storage commit failed"),
+        "got: {reply}"
+    );
+
+    // POP3: no maildrop was minted for the refused mail.
+    let mut pop = common::Pop3::connect(srv.pop3_addr).await;
+    let reply = pop.cmd("USER ghostbox").await;
+    assert!(
+        reply.starts_with("-ERR"),
+        "a refused insert must not mint a maildrop: {reply}"
+    );
+
+    // UI: no phantom inbox on the index, and no thread was started.
+    let (_, page) = common::http_get_text(srv.http_addr, "/").await;
+    assert!(
+        !page.contains("ghostbox"),
+        "a refused insert must not mint a UI inbox: {page}"
+    );
+    let (st, threads) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/ghostbox/threads",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        threads.as_array().expect("threads").len(),
+        0,
+        "the refused mail must start no thread: {threads}"
+    );
+
+    // Metrics: no counter moved (AC2) — not the accepted counter, and not
+    // the eviction counter the cap's prune would have bumped.
+    let (_, metrics) = common::http_get_text(srv.http_addr, "/metrics").await;
+    assert!(
+        metrics.contains("swarmail_emails_inserted_total 1\n"),
+        "a refused insert must not count as accepted: {metrics}"
+    );
+    assert!(
+        metrics.contains("swarmail_emails_dropped_total 0\n"),
+        "a refused insert must not count an eviction: {metrics}"
+    );
+
+    // Recovery: the trigger is gone, the same wire path accepts again, and
+    // the recovery send is the sink's only receipt — a refused insert may
+    // notify nobody (AC2).
+    trigger.remove();
+    let recovered = send(&srv, "capped", "recovered").await;
+    assert!(
+        !recovered.is_empty(),
+        "the retry must be accepted with a 250"
+    );
+    poll_metric(srv.http_addr, "swarmail_webhook_delivered_total", "1").await;
+    stop_tx.send(true).unwrap();
+    let captured = rx.await.unwrap();
+    assert_eq!(
+        captured.len(),
+        1,
+        "exactly the recovery send may notify: {captured:?}"
+    );
+    assert!(
+        captured[0].contains("recovered"),
+        "a refused insert must notify nobody: {:?}",
+        &captured[..]
+    );
+
+    // Restart: the refused mails leave no row to resurrect — the copy holds
+    // exactly what the cap holds now, the recovery mail (which, at cap 1,
+    // lawfully evicted the incumbent on its accepted commit).
+    srv.stop().await;
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c.max_per_inbox = 1;
+        c
+    })
+    .await;
+    let (st, list) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/capped/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let ids: Vec<&str> = list["emails"]
+        .as_array()
+        .expect("email list")
+        .iter()
+        .map(|e| e["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![recovered.as_str()],
+        "the restart copy must hold only the recovery mail — the refused mails leave no row to resurrect: {list}"
+    );
+    assert!(
+        !list["emails"][0]["subject"]
+            .as_str()
+            .unwrap_or("")
+            .contains("refused"),
+        "a refused mail must not resurrect after restart: {list}"
+    );
+    srv.stop().await;
+    clean_up(&db);
+}
+
+/// Finding 3's wire leg (issue #31, decision 0014 §3): with a real
+/// rejecting BEFORE DELETE trigger on the real data file, the delete is
+/// reported as the failure it is — never a success claim — and the
+/// committed state survives intact on every surface and across a restart.
+/// Once the trigger is gone the same delete succeeds and stays gone.
+#[tokio::test]
+async fn a_failed_delete_answers_failure_and_never_resurrects() {
+    let db = data_file("refuse-delete");
+    clean_up(&db);
+
+    let srv = serve_data_file(&db).await;
+    let doomed = send(&srv, "del", "doomed mail").await;
+    send(&srv, "del", "kept mail").await;
+
+    let trigger = common::refusing_trigger(&db, "delete");
+
+    // The native delete is the failure it is (AC3): `503` with the fixed
+    // body, never a `200` claiming the mail is gone.
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "DELETE",
+        &format!("/api/v1/messages/{doomed}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        st, 503,
+        "a failed delete must not claim success: {st} {body}"
+    );
+    assert_eq!(body["error"], "storage commit failed");
+
+    // The native clear fails the same way, for the same reason.
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/inboxes/del/messages",
+        None,
+    )
+    .await;
+    assert_eq!(
+        st, 503,
+        "a failed clear must not claim success: {st} {body}"
+    );
+    assert_eq!(body["error"], "storage commit failed");
+
+    // Committed state is preserved: nothing half-applied, both mails still
+    // live and queryable.
+    let (st, list) =
+        common::http_json(srv.http_addr, "GET", "/api/v1/inboxes/del/messages", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        list["total"], 2,
+        "a failed delete must preserve committed state: {list}"
+    );
+
+    // And no resurrection: the restart copy is the live copy.
+    srv.stop().await;
+    let srv = serve_data_file(&db).await;
+    let (st, list) =
+        common::http_json(srv.http_addr, "GET", "/api/v1/inboxes/del/messages", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        list["total"], 2,
+        "a failed delete must not lose committed state across a restart: {list}"
+    );
+
+    // Recovery: the trigger is gone, the delete succeeds and stays gone.
+    trigger.remove();
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "DELETE",
+        &format!("/api/v1/messages/{doomed}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "the recovered delete must succeed: {body}");
+    assert_eq!(body["deleted"], true);
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{doomed}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 404, "the deleted mail must be gone: {st} {body}");
+    srv.stop().await;
+    let srv = serve_data_file(&db).await;
+    let (st, list) =
+        common::http_json(srv.http_addr, "GET", "/api/v1/inboxes/del/messages", None).await;
+    assert_eq!(st, 200);
+    let subjects: Vec<&str> = list["emails"]
+        .as_array()
+        .expect("email list")
+        .iter()
+        .map(|e| e["subject"].as_str().expect("subject"))
+        .collect();
+    assert_eq!(
+        subjects,
+        vec!["kept mail"],
+        "the recovered delete must stay deleted across a restart: {list}"
     );
     srv.stop().await;
     clean_up(&db);

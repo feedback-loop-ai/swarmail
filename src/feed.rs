@@ -225,7 +225,7 @@ mod tests {
             json_of(&stream.as_mut().next().await.unwrap()),
             serde_json::json!([])
         );
-        store.clear("box"); // the drain releases the feed's channel
+        let _ = store.clear("box"); // the drain releases the feed's channel
         assert!(
             stream.as_mut().next().await.is_none(),
             "the released channel must end the stream"

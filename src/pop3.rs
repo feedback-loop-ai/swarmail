@@ -362,12 +362,33 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
             (Phase::Transaction, "QUIT") => {
                 // RFC 1939 update state — only now do the marks go, through
                 // the store's existing delete path (awaited off the async
-                // workers, decision 0010) — before the signing-off reply.
+                // workers, decision 0010) — before the signing-off reply. A
+                // failed commit is the answer (decision 0014): `-ERR` with
+                // the fixed text, no sign-off — the session stays in
+                // TRANSACTION and the update is abandoned whole: the marks
+                // are unapplied (LIST names the mail again), so the client
+                // can retry DELE+QUIT or RSET. Nothing is lost: the
+                // maildrop snapshot and the store both still hold the mail,
+                // and the already-deleted part of a partial batch stays
+                // deleted (its commit landed; the retry of the rest is
+                // idempotent).
+                let mut commit_failed = false;
                 for num in &deleted {
-                    store
+                    match store
                         .clone()
                         .delete_async(maildrop[*num - 1].id.clone())
-                        .await;
+                        .await
+                    {
+                        Ok(_) => {}
+                        Err(_) => {
+                            commit_failed = true;
+                            break;
+                        }
+                    }
+                }
+                if commit_failed {
+                    write_line(&mut write, "-ERR storage commit failed").await?;
+                    continue;
                 }
                 write_line(&mut write, "+OK Swarmail POP3 server signing off").await?;
                 return Ok(());

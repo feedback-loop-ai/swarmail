@@ -826,12 +826,12 @@ async fn header_names_and_single_token_plain_auth() {
     assert_eq!(body["count"], 1);
 }
 
-/// Contract #1's MCP seed leg (decision 0012 §3): with a second real
-/// connection holding the writer lock, the seed tool's commit fails and
-/// the tool answers an error result naming the cause — never an `ok`
-/// result carrying an id that was never durable. The memory truth still
-/// stands (the refused seed is queryable over REST), and the restart copy
-/// stays empty.
+/// Contract #1's MCP seed leg (decision 0012 §3, amended by 0014): with a
+/// second real connection holding the writer lock, the seed tool's commit
+/// fails and the tool answers an error result naming the cause — never an
+/// `ok` result carrying an id that was never durable. Zero trace: the
+/// refused seed is nowhere while live and the restart copy stays empty —
+/// memory and data file agree, so the same call can simply retry.
 #[tokio::test]
 async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
     let db = std::env::temp_dir().join(format!(
@@ -865,7 +865,9 @@ async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
         "the error result must name the cause: {msg}"
     );
 
-    // Memory truth: the refused seed is queryable while live.
+    // Zero trace (decision 0014): the refused seed is nowhere while live —
+    // the tool claimed a failure, so the memory must agree with the data
+    // file it failed to write.
     let (st, list) = http_json(
         srv.http_addr,
         "GET",
@@ -874,8 +876,10 @@ async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
     )
     .await;
     assert_eq!(st, 200);
-    assert_eq!(list["total"], 1, "the refused seed must stay queryable");
-    assert_eq!(list["emails"][0]["subject"], "refused seed");
+    assert_eq!(
+        list["total"], 0,
+        "the refused seed must be nowhere while live: {list}"
+    );
 
     // And it is not durable: the restart copy has no row for it.
     srv.stop().await;
@@ -897,6 +901,92 @@ async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
         list["total"], 0,
         "the refused seed must not reach the restart copy"
     );
+    srv.stop().await;
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+}
+
+/// Finding 3's MCP leg (issue #31, decision 0014): with a real rejecting
+/// BEFORE DELETE trigger on the data file, every destructive tool answers
+/// an error result naming the cause — never an `ok` result for work that
+/// did not commit — and the mail survives the restart untouched. No fault
+/// shim: the refusal is the database's own.
+#[tokio::test]
+async fn a_blocked_delete_refuses_the_mcp_delete_tools_with_error_results() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-e2e-refuse-mcp-del-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+    let srv = start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+
+    let r = tool(
+        srv.http_addr,
+        "swarmail_seed_email",
+        r#"{"inbox": "del", "to": "s@x.io", "subject": "doomed", "text": "hello"}"#,
+    )
+    .await;
+    let id = text(&r)["id"].as_str().unwrap().to_string();
+
+    let trigger = common::refusing_trigger(&db, "delete");
+
+    // Every destructive tool refuses with the fixed cause, never an `ok`.
+    for (name, args, what) in [
+        (
+            "swarmail_delete_email",
+            format!(r#"{{"id": "{id}"}}"#),
+            "delete by id",
+        ),
+        (
+            "swarmail_clear_inbox",
+            r#"{"inbox": "del"}"#.to_string(),
+            "clear",
+        ),
+        ("swarmail_clear_all", "{}".to_string(), "clear all"),
+    ] {
+        let r = tool(srv.http_addr, name, &args).await;
+        assert_eq!(r["isError"], true, "{what} must refuse: {r}");
+        let msg = r["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("storage commit failed"),
+            "{what} must name the cause: {msg}"
+        );
+    }
+
+    // The commit is the truth: the mail is still there, live.
+    let (st, list) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/del/messages", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        list["total"], 1,
+        "a refused delete must preserve the mail: {list}"
+    );
+
+    // And it survives the restart: nothing half-applied, nothing lost.
+    srv.stop().await;
+    drop(trigger);
+    let srv = start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let (st, list) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/del/messages", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        list["total"], 1,
+        "a refused delete must not lose the mail across a restart: {list}"
+    );
+    assert_eq!(list["emails"][0]["subject"], "doomed");
     srv.stop().await;
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));

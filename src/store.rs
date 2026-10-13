@@ -137,26 +137,29 @@ pub struct Store {
     watchers: DashMap<String, broadcast::Sender<Arc<Email>>>,
     /// Process-wide channel: every accepted email, for webhooks.
     global_tx: broadcast::Sender<Arc<Email>>,
-    /// Serializes the memory phase of every mutation (decision 0012 §4):
-    /// the inbox deque and the global ID index are one unit, so their
-    /// updates share a store-wide lock instead of trusting disjoint DashMap
-    /// shard guards — `insert`'s push-then-index, `delete`'s
-    /// index-then-deque and the clear drains cannot interleave, which is
-    /// what the 8-thread probe proves. Held only across the memory phase:
-    /// never across `record`, never across the pre-mirror test gate, never
-    /// across an await.
+    /// The one ordered consistency boundary for every persistent mutation
+    /// (decision 0014): plan → commit → apply run inside this lock, so a
+    /// later mutation can never prune an id before an earlier mutation's
+    /// commit lands — memory and the data file are one mutation order,
+    /// which the 16-thread boundary probe proves. Held across the SQLite
+    /// transaction and the pre-mirror test gate: no await, no re-entry, no
+    /// I/O but the one commit. Readers (`list`/`get`/`count`) stay
+    /// lock-free — they only ever take DashMap shard guards, and no path
+    /// takes a shard guard and then this lock (the order is one-way).
     mutation: std::sync::Mutex<()>,
     /// Maximum emails retained per inbox (oldest pruned). 0 = unlimited.
     max_per_inbox: usize,
     totals: Totals,
     /// Write-through SQLite mirror when running with a data file.
     persist: Option<persist::Persist>,
-    /// Test-only seam for the clear/insert persistence race (review finding
-    /// in run sqlite-persistence-data-file-swa-dc3a9a2a): when set, the
-    /// closure runs *inside* the drain→mirror window of `clear`/`clear_all`,
-    /// so a test can interleave a live insert into that exact window
+    /// Test-only seam for the pins (decision 0011): when set, the closure
+    /// runs pre-commit, *inside* the mutation boundary of `clear`/
+    /// `clear_all` — so a test can hold the boundary mid-commit
     /// deterministically instead of winning a thread-timing lottery.
-    /// Compiled only under test; never set in production.
+    /// Compiled only under test; never set in production. The closure must
+    /// NOT re-enter the store: the boundary lock is held across it, so a
+    /// re-entering mutation would deadlock on itself (block on a flag, or
+    /// panic — the two pins' contracts).
     #[cfg(test)]
     pre_mirror_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
     /// Test-only seam for the watcher release/wait interplay (decision 0010):
@@ -244,12 +247,14 @@ impl Store {
         Ok(store)
     }
 
-    /// Mirror a mutation to the data file, if any. The outcome is the
-    /// mutation's: a failed commit is logged here — the log stays the one
-    /// witness at the single owner of the mirror — and **returned**, so the
-    /// acceptance path refuses instead of acknowledging (decision 0012).
-    /// The memory store remains authoritative either way (the mail is
-    /// queryable — decision 0001 still holds); only the reply changes.
+    /// Run one mirror write. The outcome is the mutation's: a failed commit
+    /// is logged here — the log stays the one witness at the single owner
+    /// of the mirror — and **returned**, so the caller refuses instead of
+    /// acknowledging (decision 0014): fixed surface text, nothing applied,
+    /// nothing acknowledged. The caller runs this inside the mutation
+    /// boundary, before its memory phase applies, so a refused commit
+    /// leaves memory and data file agreeing — there is nothing to roll
+    /// back.
     fn record(
         &self,
         what: &'static str,
@@ -258,7 +263,7 @@ impl Store {
         if let Some(persist) = &self.persist
             && let Err(e) = write(persist)
         {
-            tracing::error!(error = %e, what, "persistence write failed; memory store remains authoritative");
+            tracing::error!(error = %e, what, "storage commit failed; refused, nothing stored, committed state preserved");
             return Err(e);
         }
         Ok(())
@@ -274,7 +279,9 @@ impl Store {
     }
 
     /// Test-only: fire the pre-mirror gate, if one is installed. The Arc is
-    /// cloned out before the call so the closure may re-enter the store.
+    /// cloned out before the call; the closure runs while the mutation
+    /// boundary is held, so it must never re-enter the store (it would
+    /// deadlock on its own lock) — it blocks or panics, per the pins.
     #[cfg(test)]
     fn run_pre_mirror_gate(&self) {
         let gate = self
@@ -336,9 +343,10 @@ impl Store {
     /// The mirror commit is the one failure mode (the memory phase has no
     /// fallible step): a failed commit is returned, never swallowed, so an
     /// acceptance path can refuse instead of acknowledging a mail the
-    /// restart copy will never hold (decision 0012). Memory truth stands:
-    /// the refused mail is queryable, counted and never rolled back — only
-    /// the reply and the fan-out change.
+    /// restart copy will never hold (decision 0012). Zero trace (decision
+    /// 0014): the refusal applies nothing — no mail, no inbox minted, no
+    /// counter moved, no fan-out — so memory and data file agree and the
+    /// same wire path can simply retry once storage recovers.
     ///
     /// From an async handler, prefer the awaited [`Store::insert_async`]: it
     /// runs this whole mutation on tokio's blocking pool, so the mirror
@@ -348,60 +356,78 @@ impl Store {
     pub fn insert(&self, email: Email) -> Result<Arc<Email>, rusqlite::Error> {
         let email = Arc::new(email);
         let inbox = email.inbox.clone();
-        let mut pruned: Vec<Arc<Email>> = Vec::new();
+        // The boundary spans plan → commit → apply (decision 0014): the
+        // memory phase and the mirror commit are one mutation, so no other
+        // mutation can prune this mail's id between its plan and its commit
+        // — and push order is commit order.
+        let _guard = self.mutation.lock().expect("store mutation lock poisoned");
+        // PLAN: a read-only peek. No `entry()` here — a refused commit must
+        // not mint an inbox (the ghost-inbox wart dies with the boundary);
+        // the apply phase mints it only on success.
+        let peeked = self.inboxes.get(&inbox);
+        let overflow = if self.max_per_inbox > 0 {
+            (peeked.as_ref().map_or(0, |l| l.value().len()) + 1).saturating_sub(self.max_per_inbox)
+        } else {
+            0
+        };
+        // The post-counters the commit mirrors: the atomics' next values,
+        // computed now because the apply phase has not bumped them yet.
+        let inserted_total = self.totals.emails_inserted() + 1;
+        let dropped_total = self.totals.emails_dropped() + overflow as u64;
+        // COMMIT before visibility (decision 0001 + 0014): one transaction —
+        // the row, the pruned ids' deletes, the post-counters — inside the
+        // boundary. A failed commit propagates: the `?` refuses the mail
+        // before anything is applied, so the refusal leaves memory and data
+        // file agreeing and there is nothing to roll back.
         {
-            // The memory phase is one unit (decision 0012 §4): push, prune,
-            // index and counter share the mutation lock, so a concurrent
-            // delete/clear can never observe the deque and the index
-            // disagreeing.
-            let _guard = self.mutation.lock().expect("store mutation lock poisoned");
-            let mut list = self.inboxes.entry(inbox.clone()).or_default();
-            list.push_back(email.clone());
-            if self.max_per_inbox > 0 && list.len() > self.max_per_inbox {
-                // The front of the deque is the oldest mail: `pop_front`
-                // evicts shift-free, where a Vec's `drain(..overflow)`
-                // memmoves every remaining element on every capped insert
-                // (781 KiB per accept at the default cap — the bulk of the
-                // steady-state bench's number). The loop is general, not a
-                // single `pop_front`: a restore over a lowered cap owes more
-                // than one eviction on the first insert, and the `expect` is
-                // an invariant — a list above its cap always has a front to
-                // evict. Push and prune share the shard write guard, so the
-                // cap is never observed exceeded and `emails_dropped` counts
-                // every eviction exactly (0003).
-                let overflow = list.len() - self.max_per_inbox;
-                for _ in 0..overflow {
-                    let oldest = list
-                        .pop_front()
-                        .expect("a list above its cap has a front to evict");
-                    self.index.remove(&oldest.id);
-                    pruned.push(oldest);
-                }
-                self.totals
-                    .emails_dropped
-                    .fetch_add(overflow as u64, Ordering::Relaxed);
-            }
-            self.index.insert(email.id.clone(), email.clone());
-            self.totals.emails_inserted.fetch_add(1, Ordering::Relaxed);
+            let pruned_ids: Vec<&str> = peeked
+                .as_ref()
+                .map(|l| {
+                    l.value()
+                        .iter()
+                        .take(overflow)
+                        .map(|e| e.id.as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.record("insert", |persist| {
+                persist.record_insert(&email, &pruned_ids, inserted_total, dropped_total)
+            })?;
         }
-        // Persist before any fan-out and before the caller's 250: when SMTP
-        // accepts, the mail is queryable AND committed (decision 0001). A
-        // failed commit propagates (decision 0012): the `?` refuses the mail
-        // — no acceptance, no fan-out — while the memory truth above stands.
-        self.record("insert", |persist| {
-            let pruned_ids: Vec<&str> = pruned.iter().map(|e| e.id.as_str()).collect();
-            persist.record_insert(
-                &email,
-                &pruned_ids,
-                self.totals.emails_inserted(),
-                self.totals.emails_dropped(),
-            )
-        })?;
-        // Notify watchers; a full channel means a slow await reader — the email
-        // is still safely stored, the watcher re-polls the store. A missing
-        // entry means no subscribers yet, or the channel was released with
-        // the inbox's mail (decision 0010): the waiter re-subscribes before
-        // its next scan, so the store-is-truth rescan still finds this mail.
+        // The peek's shard read guard must be gone before the write phase
+        // takes the same shard: one thread, one guard at a time.
+        drop(peeked);
+        // APPLY, only on Ok: push, prune, index and counter are one unit —
+        // the deque and the index can never disagree, and the pruned ids are
+        // exactly the rows the commit deleted (no other mutation can run
+        // inside the boundary). `pop_front` evicts shift-free, where a Vec's
+        // `drain(..overflow)` memmoves every remaining element on every
+        // capped insert (781 KiB per accept at the default cap — the bulk of
+        // the steady-state bench's number). The loop is general, not a
+        // single `pop_front`: a restore over a lowered cap owes more than
+        // one eviction on the first insert, and the `expect` is an invariant
+        // — a list above its cap always has a front to evict (0003).
+        let mut list = self.inboxes.entry(inbox.clone()).or_default();
+        list.push_back(email.clone());
+        for _ in 0..overflow {
+            let oldest = list
+                .pop_front()
+                .expect("a list above its cap has a front to evict");
+            self.index.remove(&oldest.id);
+        }
+        self.index.insert(email.id.clone(), email.clone());
+        self.totals
+            .emails_dropped
+            .fetch_add(overflow as u64, Ordering::Relaxed);
+        self.totals.emails_inserted.fetch_add(1, Ordering::Relaxed);
+        drop(_guard);
+        // Notify watchers — outside the boundary tail; a full channel means
+        // a slow await reader — the email is still safely stored, the
+        // watcher re-polls the store. A missing entry means no subscribers
+        // yet, or the channel was released with the inbox's mail (decision
+        // 0010): the waiter re-subscribes before its next scan, so the
+        // store-is-truth rescan still finds this mail. Fan-out is part of
+        // acceptance and happens only after the commit it depends on.
         if let Some(sender) = self.watchers.get(&inbox) {
             let _ = sender.send(email.clone());
         }
@@ -481,98 +507,95 @@ impl Store {
         }
     }
 
-    pub fn delete(&self, id: &str) -> bool {
-        // The memory phase is one unit (decision 0012 §4): index removal,
-        // deque retain and the watcher release cannot interleave with
-        // another mutation's memory phase — without this, a clear draining
-        // the inbox between the two steps strands an indexed id with no
-        // list (the probe's red).
-        let removed;
-        {
-            let _guard = self.mutation.lock().expect("store mutation lock poisoned");
-            removed = self.index.remove(id);
-            if let Some((_, email)) = &removed {
-                // Every indexed mail was inserted with its inbox list present
-                // (insert creates both together), so this is an invariant, not
-                // a search: a missing list would mean the two maps disagree.
-                let mut list = self
-                    .inboxes
-                    .get_mut(&email.inbox)
-                    .expect("indexed mail always has its inbox list");
-                list.retain(|e| e.id != id);
-                // An emptied inbox's mail is gone, so its watcher channel is
-                // released with it (decision 0010). Disjoint maps: the inboxes
-                // guard is held, the watchers map is a separate shard set.
-                if list.is_empty() {
-                    self.watchers.remove(&email.inbox);
-                }
+    pub fn delete(&self, id: &str) -> Result<bool, rusqlite::Error> {
+        // The boundary spans plan → commit → apply (decision 0014): the
+        // mirror delete and the memory removal are one mutation, so the
+        // row cannot outlive the memory it belongs to nor the reverse.
+        let _guard = self.mutation.lock().expect("store mutation lock poisoned");
+        // COMMIT first: the mirror deletes the row before the memory phase
+        // drops the mail. A no-op DELETE — an id the store never held — is
+        // still committed `Ok` (it deletes nothing), so an absent id stays
+        // an honest `Ok(false)` and an orphaned row can never linger.
+        self.record("delete", |persist| persist.record_delete(id))?;
+        // APPLY, only on Ok: index removal, deque retain and the watcher
+        // release are one unit — the index and the deque can never
+        // disagree.
+        let removed = self.index.remove(id);
+        if let Some((_, email)) = &removed {
+            // Every indexed mail was inserted with its inbox list present
+            // (insert creates both together), so this is an invariant, not
+            // a search: a missing list would mean the two maps disagree.
+            let mut list = self
+                .inboxes
+                .get_mut(&email.inbox)
+                .expect("indexed mail always has its inbox list");
+            list.retain(|e| e.id != id);
+            // An emptied inbox's mail is gone, so its watcher channel is
+            // released with it (decision 0010). Disjoint maps: the inboxes
+            // guard is held, the watchers map is a separate shard set.
+            if list.is_empty() {
+                self.watchers.remove(&email.inbox);
             }
         }
-        // The refusal seam is `insert` only (decision 0012 §5): delete/clear/
-        // clear_all log their mirror outcome and keep their exact shape — the
-        // refused-delete resurrection debt is named, not taken here.
-        let _ = self.record("delete", |persist| persist.record_delete(id));
-        removed.is_some()
+        Ok(removed.is_some())
     }
 
     /// Remove all emails from one inbox; returns how many were removed.
-    pub fn clear(&self, inbox: &str) -> usize {
-        // The drain is the memory phase (decision 0012 §4): one unit, then
-        // the guard is gone before the gate and the mirror — a gate closure
-        // that re-enters the store (the race probes) would deadlock on a
-        // lock held across it.
-        let drained = {
-            let _guard = self.mutation.lock().expect("store mutation lock poisoned");
-            drain_inbox(&self.inboxes, &self.index, &self.watchers, inbox)
-        };
+    pub fn clear(&self, inbox: &str) -> Result<usize, rusqlite::Error> {
+        // The boundary spans plan → commit → apply (decision 0014): the
+        // mirror deletes and the drain are one mutation.
+        let _guard = self.mutation.lock().expect("store mutation lock poisoned");
+        // PLAN: the ids to delete, snapshotted under the boundary. The
+        // commit runs against exactly these ids and the drain applies
+        // exactly these ids — no other mutation can run in between to
+        // widen or shrink the set.
+        let drained_ids: Vec<Arc<Email>> = self
+            .inboxes
+            .get(inbox)
+            .map(|l| l.value().iter().cloned().collect())
+            .unwrap_or_default();
+        let ids: Vec<&str> = drained_ids.iter().map(|e| e.id.as_str()).collect();
         #[cfg(test)]
         self.run_pre_mirror_gate();
-        // The mirror deletes exactly the drained ids, never `WHERE inbox =
-        // ?`. An insert landing between the drain and this mirror is answered
-        // 250 and queryable in memory (decision 0001); an inbox-wide DELETE
-        // would erase its row and the mail would vanish on restart — the
-        // clear/insert persistence race (review finding in run
-        // sqlite-persistence-data-file-swa-dc3a9a2a). A post-drain insert's
-        // id is by construction not among the drained ids, so mirroring
-        // per-id deletes can never erase it, whichever way the two
-        // operations interleave; the disk outcome for everything the clear
-        // actually drained is unchanged.
-        let ids: Vec<&str> = drained.iter().map(|e| e.id.as_str()).collect();
-        let _ = self.record("clear_inbox", |persist| persist.record_deletes(&ids));
-        drained.len()
+        // COMMIT before visibility: per-id deletes — never `WHERE inbox =
+        // ?`. The boundary holds the whole mutation, so a racing insert
+        // cannot land between the plan and the commit; per-id deletes
+        // remain the honest mirror of a per-id plan whatever the data file
+        // holds (the clear/insert persistence race, review finding in run
+        // sqlite-persistence-data-file-swa-dc3a9a2a, is closed by the
+        // boundary itself).
+        self.record("clear_inbox", |persist| persist.record_deletes(&ids))?;
+        // APPLY, only on Ok: the drain is the memory phase.
+        let drained = drain_inbox(&self.inboxes, &self.index, &self.watchers, inbox);
+        debug_assert_eq!(drained.len(), ids.len(), "the drain must match the plan");
+        Ok(drained.len())
     }
 
     /// Remove every email from every inbox.
-    pub fn clear_all(&self) -> usize {
-        let mut drained: Vec<Arc<Email>> = Vec::new();
-        // Same unit rule as `clear` (decision 0012 §4): the key collection,
-        // every drain and the final watchers release are one memory phase.
-        {
-            let _guard = self.mutation.lock().expect("store mutation lock poisoned");
-            let inboxes: Vec<String> = self.inboxes.iter().map(|e| e.key().clone()).collect();
-            for inbox in inboxes {
-                drained.extend(drain_inbox(
-                    &self.inboxes,
-                    &self.index,
-                    &self.watchers,
-                    &inbox,
-                ));
-            }
-            // The sweep also releases channels of awaited-but-never-mailed
-            // inboxes — the population issue #14's probe creates, which leaves no
-            // entries for the per-inbox drain above to iterate (decision 0010).
-            // A subscriber racing the sweep sees `Closed` and takes the
-            // re-subscribe arm — bounded at one extra rescan per waiter.
-            self.watchers.clear();
+    pub fn clear_all(&self) -> Result<usize, rusqlite::Error> {
+        // The boundary spans plan → commit → apply (decision 0014).
+        let _guard = self.mutation.lock().expect("store mutation lock poisoned");
+        // PLAN: snapshot every inbox's ids under the boundary.
+        let mut drained_ids: Vec<Arc<Email>> = Vec::new();
+        for entry in self.inboxes.iter() {
+            drained_ids.extend(entry.value().iter().cloned());
         }
+        let ids: Vec<&str> = drained_ids.iter().map(|e| e.id.as_str()).collect();
         #[cfg(test)]
         self.run_pre_mirror_gate();
-        // Per-id mirror for the same reason as `clear` (the race finding):
-        // the racing insert is not among the drained ids, so it keeps its
-        // row; the one-transaction wipe would erase it.
-        let ids: Vec<&str> = drained.iter().map(|e| e.id.as_str()).collect();
-        let _ = self.record("clear_all", |persist| persist.record_deletes(&ids));
-        drained.len()
+        // COMMIT: per-id deletes, for the same reason as `clear`.
+        self.record("clear_all", |persist| persist.record_deletes(&ids))?;
+        // APPLY, only on Ok: every drain plus the sweep's watcher release —
+        // the population issue #14's probe creates, which leaves no entries
+        // for the per-inbox drain above to iterate (decision 0010). A
+        // subscriber racing the sweep sees `Closed` and takes the
+        // re-subscribe arm — bounded at one extra rescan per waiter.
+        let inboxes: Vec<String> = self.inboxes.iter().map(|e| e.key().clone()).collect();
+        for inbox in inboxes {
+            drain_inbox(&self.inboxes, &self.index, &self.watchers, &inbox);
+        }
+        self.watchers.clear();
+        Ok(drained_ids.len())
     }
 
     /// Runs a whole mutation on tokio's blocking pool. The returned future
@@ -614,17 +637,17 @@ impl Store {
     }
 
     /// [`Store::delete`] off the async workers. See [`Store::insert_async`].
-    pub async fn delete_async(self: Arc<Self>, id: String) -> bool {
+    pub async fn delete_async(self: Arc<Self>, id: String) -> Result<bool, rusqlite::Error> {
         Self::offload(move || self.delete(&id)).await
     }
 
     /// [`Store::clear`] off the async workers. See [`Store::insert_async`].
-    pub async fn clear_async(self: Arc<Self>, inbox: String) -> usize {
+    pub async fn clear_async(self: Arc<Self>, inbox: String) -> Result<usize, rusqlite::Error> {
         Self::offload(move || self.clear(&inbox)).await
     }
 
     /// [`Store::clear_all`] off the async workers. See [`Store::insert_async`].
-    pub async fn clear_all_async(self: Arc<Self>) -> usize {
+    pub async fn clear_all_async(self: Arc<Self>) -> Result<usize, rusqlite::Error> {
         Self::offload(move || self.clear_all()).await
     }
 
@@ -809,7 +832,7 @@ mod tests {
         let _ = store.insert(email("2", "test-b", "b@x.io"));
         assert_eq!(store.count("test-a", &Filter::default()), 1);
         assert_eq!(store.count("test-b", &Filter::default()), 1);
-        store.clear("test-a");
+        let _ = store.clear("test-a");
         assert_eq!(store.count("test-a", &Filter::default()), 0);
         assert_eq!(store.count("test-b", &Filter::default()), 1);
     }
@@ -860,7 +883,7 @@ mod tests {
     fn a_cleared_inbox_releases_its_watcher_channel() {
         let store = Store::new(0);
         let mut rx = store.subscribe("box");
-        assert_eq!(store.clear("box"), 0);
+        assert_eq!(store.clear("box").unwrap(), 0);
         assert!(
             matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Closed)),
             "the channel held across the clear must observe the release"
@@ -880,15 +903,15 @@ mod tests {
         // that land after the deletes.
         assert_eq!(rx.try_recv().map(|e| e.id.clone()).unwrap(), "d1");
         assert_eq!(rx.try_recv().map(|e| e.id.clone()).unwrap(), "d2");
-        store.delete("d1");
+        let _ = store.delete("d1");
         let _ = store.insert(email("d3", "box", "a@x.io"));
         assert_eq!(
             rx.try_recv().map(|e| e.id.clone()).unwrap(),
             "d3",
             "a non-emptying delete keeps the channel live"
         );
-        store.delete("d2");
-        store.delete("d3"); // the list is now empty: the channel is released
+        let _ = store.delete("d2");
+        let _ = store.delete("d3"); // the list is now empty: the channel is released
         assert!(
             matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Closed)),
             "a delete that empties the inbox must release the channel"
@@ -913,7 +936,7 @@ mod tests {
             N,
             "each fresh subscription created a channel"
         );
-        store.clear_all();
+        let _ = store.clear_all();
         assert_eq!(
             store.watcher_count(),
             0,
@@ -1023,7 +1046,7 @@ mod wait_tests {
         let gate_fires = fires.clone();
         store.set_post_subscribe_gate(Some(Arc::new(move || {
             if gate_fires.fetch_add(1, Ordering::SeqCst) == 0 {
-                s.clear("box"); // fire 1: releases the just-created channel
+                let _ = s.clear("box"); // fire 1: releases the just-created channel
             } else {
                 let _ = s.insert(email("late", "box", "a@x.io")); // fire 2: after the re-subscribe
             }
@@ -1063,7 +1086,7 @@ mod wait_tests {
         let gate_fires = fires.clone();
         store.set_post_subscribe_gate(Some(Arc::new(move || {
             if gate_fires.fetch_add(1, Ordering::SeqCst) == 0 {
-                s.clear("box"); // release the channel: the waiter must re-subscribe, then sleep
+                let _ = s.clear("box"); // release the channel: the waiter must re-subscribe, then sleep
             }
         })));
         let ticker = {
@@ -1196,11 +1219,11 @@ mod filter_tests {
     fn get_delete_and_clear_edge_cases() {
         let store = Store::new(0);
         assert!(store.get("missing").is_none());
-        assert!(!store.delete("missing"));
-        assert_eq!(store.clear("no-such-inbox"), 0);
+        assert!(!store.delete("missing").unwrap());
+        assert_eq!(store.clear("no-such-inbox").unwrap(), 0);
 
         let _ = store.insert(email("d1", "box", "a@x.io"));
-        assert!(store.delete("d1"));
+        assert!(store.delete("d1").unwrap());
         assert!(store.get("d1").is_none());
         assert_eq!(store.count("box", &Filter::default()), 0);
     }
@@ -1422,7 +1445,7 @@ mod bounded_tests {
                         for role in 0..3 {
                             for j in 0..per_role {
                                 let id = format!("a{round}-{role}-{j}");
-                                if store.delete(&id) {
+                                if store.delete(&id).unwrap_or(false) {
                                     removed.push(id);
                                 }
                             }
@@ -1597,6 +1620,178 @@ mod bounded_tests {
                 &format!("probe round {round} stuck: a role never finished"),
             );
             assert_probe_round(&store, round, &outcome.accepted, &outcome.deleted);
+        }
+    }
+
+    /// One temp data-file path per boundary round; parallel rounds (and the
+    /// harness's own files) must never share one.
+    fn boundary_db_path(round: usize) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "swarmail-boundary-{}-{nanos}-{round}.db",
+            std::process::id()
+        ))
+    }
+
+    /// One boundary round: a fresh persisted store at cap 1 on a real data
+    /// file, sixteen barrier-released roles — 6× insert on "A", 6× insert on
+    /// "B", 1× delete on "A", 1× delete on "B", 1× clear on "A", 1×
+    /// clear_all — run to completion and joined. Cap 1 makes *every* insert
+    /// prune, so the insert→commit seam the two orders disagree about is
+    /// crossed twelve times per instant; no storage failure is injected
+    /// (finding 1's repro conditions, verbatim).
+    fn run_boundary_round(store: &Arc<Store>, round: usize, per_role: usize) {
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            // 12× insert: roles 0-5 on "A", roles 6-11 on "B".
+            for role in 0..12 {
+                let (inbox, prefix) = if role < 6 { ("A", "a") } else { ("B", "b") };
+                let role = role % 6;
+                let barrier = barrier.clone();
+                let store = store.clone();
+                handles.push(s.spawn(move || {
+                    barrier.wait();
+                    for j in 0..per_role {
+                        let id = format!("{prefix}{round}-{role}-{j}");
+                        store
+                            .insert(email(&id, inbox, "a@x.io"))
+                            .expect("the boundary probe injects no storage failures");
+                    }
+                }));
+            }
+            // 1× delete on "A", 1× delete on "B": repeated sweeps over the
+            // whole id space the round can name.
+            for (prefix, roles) in [("a", 6), ("b", 6)] {
+                let barrier = barrier.clone();
+                let store = store.clone();
+                handles.push(s.spawn(move || {
+                    barrier.wait();
+                    for j in 0..per_role {
+                        for role in 0..roles {
+                            let _ = store.delete(&format!("{prefix}{round}-{role}-{j}"));
+                        }
+                    }
+                }));
+            }
+            // 1× clear on "A".
+            {
+                let barrier = barrier.clone();
+                let store = store.clone();
+                handles.push(s.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..per_role {
+                        let _ = store.clear("A");
+                    }
+                }));
+            }
+            // 1× clear_all.
+            {
+                let barrier = barrier.clone();
+                let store = store.clone();
+                handles.push(s.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..per_role {
+                        let _ = store.clear_all();
+                    }
+                }));
+            }
+            for handle in handles {
+                handle
+                    .join()
+                    .expect("boundary round role panicked inside the scope");
+            }
+        });
+    }
+
+    /// The boundary round's rest-state check: after the join, the live store
+    /// and a fresh reopen of the same file must be one state — the same
+    /// per-inbox id lists (sets *and* order: the commit order under the
+    /// boundary is the push order), the same counts, the same counters —
+    /// and neither inbox may exceed its cap after the restart. On the
+    /// two-orders tree a later insert prunes an earlier id before that
+    /// insert's commit lands, so the earlier transaction persists an
+    /// already-evicted message and the restart copy names a mail live never
+    /// held (finding 1).
+    fn assert_boundary_round(store: &Arc<Store>, round: usize, path: &std::path::Path) {
+        let restarted = Store::open(1, path).expect("the same data file reopens");
+        for inbox in ["A", "B"] {
+            let live: Vec<String> = store
+                .list(inbox, &Filter::default())
+                .iter()
+                .map(|e| e.id.clone())
+                .collect();
+            let disk: Vec<String> = restarted
+                .list(inbox, &Filter::default())
+                .iter()
+                .map(|e| e.id.clone())
+                .collect();
+            assert_eq!(
+                live, disk,
+                "round {round}: live {inbox} and the restart copy are two states"
+            );
+            assert_eq!(
+                store.count(inbox, &Filter::default()),
+                restarted.count(inbox, &Filter::default()),
+                "round {round}: count({inbox}) disagrees with the restart copy"
+            );
+            for e in store.list(inbox, &Filter::default()) {
+                assert!(
+                    restarted.get(&e.id).is_some(),
+                    "round {round}: live mail {id} has no restart row",
+                    id = e.id
+                );
+            }
+            assert!(
+                disk.len() <= 1,
+                "round {round}: {inbox} exceeds its cap after the restart"
+            );
+        }
+        assert_eq!(
+            store.emails_inserted(),
+            restarted.emails_inserted(),
+            "round {round}: the inserted counter disagrees with the restart copy"
+        );
+        assert_eq!(
+            store.emails_dropped(),
+            restarted.emails_dropped(),
+            "round {round}: the dropped counter disagrees with the restart copy"
+        );
+    }
+
+    /// The 16-thread boundary probe (issue #31 finding 1, decision 0014):
+    /// memory and disk are one mutation order, so after sixteen
+    /// barrier-released roles hammer a persisted store at cap 1, live
+    /// `list`/`get`/`count` and a fresh reopen of the same file agree —
+    /// and no inbox exceeds the cap after the restart. Red on the
+    /// two-orders tree (the finding's repro, three runs), green under the
+    /// boundary on every schedule: the mutation lock now spans plan →
+    /// commit → apply, so push order *is* commit order and a commit can
+    /// never outlive its own eviction.
+    #[test]
+    fn sixteen_threads_cannot_leave_memory_and_disk_in_two_orders() {
+        const ROUNDS: usize = 6;
+        const PER_ROLE: usize = 15;
+        for round in 0..ROUNDS {
+            let path = boundary_db_path(round);
+            {
+                let store = Arc::new(Store::open(1, &path).unwrap());
+                join_with_deadline(
+                    {
+                        let store = store.clone();
+                        move || run_boundary_round(&store, round, PER_ROLE)
+                    },
+                    Duration::from_secs(120),
+                    &format!("boundary round {round} stuck: a role never finished"),
+                );
+                assert_boundary_round(&store, round, &path);
+            }
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+            }
         }
     }
 }

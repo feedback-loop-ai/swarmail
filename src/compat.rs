@@ -252,8 +252,17 @@ async fn search_hog(
 // ---------- deletes ----------
 
 /// DELETE /api/v1/delete-all — MailHog's alias for wiping the mailbox.
-async fn delete_all(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({ "removed": state.store.clone().clear_all_async().await }))
+///
+/// A failed commit is the answer (decision 0014): `503` with the fixed
+/// text, never a count for work that did not commit.
+async fn delete_all(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    match state.store.clone().clear_all_async().await {
+        Ok(removed) => Ok(Json(json!({ "removed": removed }))),
+        Err(_) => Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage commit failed".into(),
+        )),
+    }
 }
 
 /// DELETE /api/v1/messages — Mailpit's `{"ids": [...]}` delete: the named
@@ -261,8 +270,9 @@ async fn delete_all(State(state): State<AppState>) -> Json<Value> {
 /// unparseable, wrong-typed, or an empty `ids` array — is a `400` that
 /// deletes nothing: one client's typo must never be every parallel session's
 /// data loss, and the cross-inbox wipe lives only at `DELETE
-/// /api/v1/delete-all`. The deletion itself flows synchronously through the
-/// store, so removals still wake `await` watchers (decisions 0001/0002).
+/// /api/v1/delete-all`. The deletion flows through the store's awaited
+/// path, so the commit is known before the reply and removals still release
+/// emptied inboxes for `await` watchers to rescan (decisions 0001/0002).
 pub async fn delete_messages(
     State(state): State<AppState>,
     body: Result<Json<IdsBody>, JsonRejection>,
@@ -276,10 +286,26 @@ pub async fn delete_messages(
             ));
         }
     };
-    // The deletion itself flows synchronously through the store (the doc
-    // contract above): removals wake `await` watchers (decisions 0001/0002),
-    // and the counted result is exactly the ids the store removed.
-    let removed = ids.iter().filter(|id| state.store.delete(id)).count();
+    // The deletion itself flows through the store's awaited path, so the
+    // commit is known before the reply (decision 0010) and the counted
+    // result is exactly the ids the store removed. A failed commit is the
+    // answer (decision 0014): `503` — the ids already committed stay
+    // committed, so a retry re-runs idempotently — never a count for work
+    // that did not commit. Removals still release emptied inboxes, so
+    // `await` watchers rescan (decisions 0001/0002).
+    let mut removed = 0usize;
+    for id in &ids {
+        match state.store.clone().delete_async(id.clone()).await {
+            Ok(true) => removed += 1,
+            Ok(false) => {}
+            Err(_) => {
+                return Err(ApiError(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "storage commit failed".into(),
+                ));
+            }
+        }
+    }
     Ok(Json(json!({ "removed": removed })))
 }
 // ---------- shared internals ----------

@@ -730,3 +730,62 @@ pub fn hold_write_lock(db: &std::path::Path) -> WriteLock {
         .expect("second connection takes the writer lock");
     WriteLock { _conn: conn }
 }
+
+/// A real rejecting trigger on the real data file — the failure injection of
+/// issue #31's findings 2 and 3, at the real layer and through a real
+/// SQLite constraint: every `INSERT` (kind `"insert"`) or `DELETE` (kind
+/// `"delete"`) the server's own connection runs is `RAISE(ABORT, 'refused')`d
+/// while the guard lives. No fault-injection framework, no mock: the refusal
+/// is the database's own, and it hits every writer — the store's commits
+/// included — whatever connection issues it. [`RefusingTrigger::remove`]
+/// drops the trigger early so a later leg can commit normally; the guard's
+/// `Drop` drops it too, so an assert-panic never poisons the file.
+pub struct RefusingTrigger {
+    conn: Option<rusqlite::Connection>,
+    name: &'static str,
+}
+
+impl RefusingTrigger {
+    fn take(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            conn.execute_batch(&format!("DROP TRIGGER {}", self.name))
+                .expect("trigger dropped");
+        }
+    }
+
+    /// Drop the trigger now: later legs must commit again (the retry leg).
+    pub fn remove(mut self) {
+        self.take();
+    }
+}
+
+impl Drop for RefusingTrigger {
+    fn drop(&mut self) {
+        self.take();
+    }
+}
+
+pub fn refusing_trigger(db: &std::path::Path, kind: &str) -> RefusingTrigger {
+    let (name, sql) = match kind {
+        "insert" => (
+            "refuse_insert",
+            "CREATE TRIGGER refuse_insert BEFORE INSERT ON emails \
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        ),
+        "delete" => (
+            "refuse_delete",
+            "CREATE TRIGGER refuse_delete BEFORE DELETE ON emails \
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        ),
+        other => panic!("unknown refusing-trigger kind: {other}"),
+    };
+    let conn = rusqlite::Connection::open(db).expect("second connection opens the data file");
+    conn.busy_timeout(std::time::Duration::from_secs(10))
+        .expect("busy timeout set");
+    conn.execute_batch(sql)
+        .expect("trigger created on the data file");
+    RefusingTrigger {
+        conn: Some(conn),
+        name,
+    }
+}
