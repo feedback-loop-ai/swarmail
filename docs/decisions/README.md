@@ -24,6 +24,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0014](0014-one-ordered-mutation-boundary.md) | One ordered mutation boundary: commit before visibility | **proposed** (awaiting operator) | (Close the three P1 storage-consistency findings of issue #31)
 | [0015](0015-boundary-failure-contract.md) | The boundary's failure contract: refusal timing, a partial POP3 prefix, poison and the second writer (amends 0012) | **proposed** (awaiting operator) | (Close the three P1 storage-consistency findings of issue #31)
 | [0013](0013-four-model-review-panel.md) | A four-model review panel (qwen-max, opus, astra, fable) | accepted (operator, 2026-10-13) |
+| [0016](0016-lag-invariant.md) | The live view lags the commit: the boundary's invariant, disk exhaustion as refusal, and a loud busy bound (amends 0014, 0015) | **proposed** (awaiting operator) | (Close the three P1 storage-consistency findings of issue #31) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

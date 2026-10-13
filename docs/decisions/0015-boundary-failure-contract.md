@@ -72,7 +72,25 @@ prose that in one place claims more than the code does:
    is deliberately **not wall-clock-asserted** (0011 rule 5): the wire legs
    prove the *refusal*, never the timing. Changing the bound — an override
    in `persist.rs` or a dependency bump — rewrites the failure semantics of
-   every surface and owes a decision document.
+   every surface and owes a decision document. *(Amended by
+   [0016](0016-lag-invariant.md): **disk exhaustion is an ordinary commit
+   error.** ENOSPC, EDQUOT and a read-only remount answer the fixed-text
+   refusal on every surface after the same bounded stall, with zero new
+   code — the contract subsumes the real failure rather than adding a
+   second vocabulary for it. **A size cap and a `552` are refused:** a size
+   policy enforced atomically is a new promise and a new ordering question
+   (cap-check before or inside the boundary?) with no red criterion under
+   it, and the counter-move is deployment-owned (a volume quota), not a
+   store policy; the cost is named — a hostile peer can fill the disk and
+   every send answers `451` until an operator intervenes, bounded,
+   convergent, honest. **The bound is pinned by a fact tripwire**, not
+   prose: an inline test in `src/persist.rs`'s own `#[cfg(test)] mod tests`
+   asserts the opened connection's `PRAGMA busy_timeout` equals the
+   dependency default, and a `#[should_panic]` leg proves the instrument
+   can fire; its red state is any override reaching the server's own
+   connection — including a dependency bump that moves the default — and
+   firing it is the decision-document obligation this section already
+   imposes.)*
 3. **Poison's recovery is restart.** *(Amends 0012 §7.)* A panic inside the
    boundary fail-stops the store (the poison `expect`); the process keeps
    serving readers from memory, which a mid-apply panic may have left

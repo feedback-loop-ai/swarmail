@@ -566,4 +566,62 @@ mod tests {
         std::fs::write(&garbage, b"definitely not sqlite").unwrap();
         assert!(Persist::open(&garbage).is_err());
     }
+
+    /// The busy bound is a fact of the dependency, not of this crate:
+    /// rusqlite sets `sqlite3_busy_timeout(db, 5000)` at open (0.32.1
+    /// `src/inner_connection.rs:119`, the line 0012 §Why cites) and nothing
+    /// in `src/` overrides it. 0015 §2 makes the ~5 s bound part of the
+    /// refusal contract; 0016 §4 pins it with this tripwire. An override
+    /// that reaches the server's own connection — or a dependency bump that
+    /// moves the default — trips it, and firing it is the decision-document
+    /// obligation 0015 §2 already imposes. A fact, never a wall-clock
+    /// assertion (0011 rule 5).
+    fn assert_dependency_busy_default(conn: &Connection) {
+        let timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("busy_timeout is readable on any live connection");
+        assert_eq!(
+            timeout, 5000,
+            "the busy bound moved: PRAGMA busy_timeout is {timeout}, not the dependency \
+             default 5000 — an override reached the server's own connection (0015 §2, 0016 §4; \
+             rusqlite 0.32.1 inner_connection.rs:119)"
+        );
+    }
+
+    /// The green leg: the connection `Persist::open` created — the server's
+    /// own, the one every refusal contract delay is measured against — keeps
+    /// the dependency's default.
+    #[test]
+    fn the_opened_connection_keeps_the_dependency_busy_default() {
+        let path = db_path("busy-default");
+        let persist = Persist::open(&path).unwrap();
+        let state = persist.state.lock().expect("persist state poisoned");
+        assert_dependency_busy_default(&state.conn);
+        drop(state);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    /// The can-fire leg: an override on the opened connection trips the
+    /// tripwire — the instrument can fire, so its green result means
+    /// something. The unlink precedes the call because the tripwire panics:
+    /// a statement after it would be a line the report can never cover.
+    #[test]
+    #[should_panic(expected = "the busy bound moved")]
+    fn the_busy_default_tripwire_fires_when_the_bound_is_overridden() {
+        let path = db_path("tripwire");
+        let persist = Persist::open(&path).unwrap();
+        {
+            let state = persist.state.lock().expect("persist state poisoned");
+            state
+                .conn
+                .execute_batch("PRAGMA busy_timeout = 30000")
+                .expect("the override applies on a live connection");
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        assert_dependency_busy_default(&persist.state.lock().expect("persist state poisoned").conn);
+    }
 }

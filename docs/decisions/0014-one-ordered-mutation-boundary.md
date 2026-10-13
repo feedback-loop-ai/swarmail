@@ -94,6 +94,26 @@ exact error — it treats two orders as one.
    self-verifying); no degraded mode; no `persist_failures_total` (the
    refusal is the detector); no new commit-stage chaos event (injection
    stays real: triggers and lock-holders on the real data file).
+8. **The invariant the boundary buys.** *(Added by
+   [0016](0016-lag-invariant.md) during run 3 of the storage-consistency
+   slice; 0014 still awaits the operator, so the addition is legitimate.)*
+   **The live view lags the commit; it never leads it.** For `insert`,
+   memory ⊆ disk at every instant — the plan touches nothing, the commit
+   lands first, apply follows — so no reader can ever see an id the disk
+   does not hold. For `delete`/`clear`/`clear_all`, memory ⊇ disk at every
+   instant — the mirror deletes commit first, memory applies after — so a
+   reader may still see a mail whose deletion is committed, but that mail
+   *was* accepted and its deletion *is* committed: a delayed view of the
+   past, never a view of a state the disk never passed through. The
+   forbidden lies are exactly the two directions of *leading*: the
+   **ghost** — visible mail whose commit did not land (unrepresentable: the
+   `?` fires before apply, and there is nothing to roll back) — and the
+   **resurrection** — a success reply for a deletion the restart copy
+   contradicts (unrepresentable: the reply trails the commit, and the
+   restart copy is exactly the committed set). The one tear is poison's (a
+   mid-apply panic), bounded by the boundary itself and healed by restart
+   ([0015](0015-boundary-failure-contract.md) §3). Every future change to
+   the boundary is tested against this sentence.
 
 ## Consequences
 
