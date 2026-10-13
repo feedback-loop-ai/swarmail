@@ -1,6 +1,9 @@
 # 0019 — Release-tag integrity: the version publishes only from its own ref, and never twice
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-13 — delivered by the
+  tag-integrity run at 0be6330, reviewed by its panel, and completed by the
+  operator's build-metadata refusal at 333692e, which closes the run's one
+  low residual; Run 2's finding is superseded by this run's review ruling)
 - **Date:** 2026-10-13
 - **Supersedes:** none
 - **Amends:** 0018 §6 in place (the `v*`-prefix posture becomes an exact-ref bind

@@ -1,6 +1,8 @@
 # 0018 — Shutdown-observed waits, explicit wire bounds, and the thread fallback's exact scope
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-15 — delivered by the post-P1
+  closure run at 6ed8e3e and reviewed by its panel; the §6 posture and the
+  landing task were superseded by 0019's run)
 - **Date:** 2026-10-15
 - **Supersedes:** none
 - **Amends:** 0008 §4/§5 in place (proposed; the deployment-contract edits are a landing task of the closing run)
