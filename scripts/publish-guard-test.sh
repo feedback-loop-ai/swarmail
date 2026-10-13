@@ -178,35 +178,41 @@ expect_refusal "non-semver (garbage)" 1 "not valid semver" -- \
   env GITHUB_REF_NAME=vabc PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" vabc feedback-loop-ai/swarmail
 
-# 6. Expected ref without the v prefix: refuse, named.
+# 6. Build metadata ('+'): valid semver, refused — helm push maps '+' to
+#    '_' in OCI tags, so the probe could not check the pushed tag.
+expect_refusal "build metadata" 1 "build metadata" -- \
+  env GITHUB_REF_NAME=v0.1.0+build PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0+build feedback-loop-ai/swarmail
+
+# 7. Expected ref without the v prefix: refuse, named.
 expect_refusal "ref not v-prefixed" 1 "expected ref is not v-prefixed" -- \
   env GITHUB_REF_NAME=0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" 0.1.0 feedback-loop-ai/swarmail
 
-# 7. Probe answers 200: the version is already published — refuse.
+# 8. Probe answers 200: the version is already published — refuse.
 printf 'token=200\nmanifest=200\n' >"$control"
 expect_refusal "probe 200" 1 "already published" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 
-# 8. Probe answers 500: registry state unknown — refuse, never publish.
+# 9. Probe answers 500: registry state unknown — refuse, never publish.
 printf 'token=200\nmanifest=500\n' >"$control"
 expect_refusal "probe 500" 1 "registry state unknown" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 
-# 9. Token exchange fails (HTTP 500): registry state unknown — refuse.
+# 10. Token exchange fails (HTTP 500): registry state unknown — refuse.
 printf 'token=500\nmanifest=404\n' >"$control"
 expect_refusal "token exchange 500" 1 "registry state unknown" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 
-# 10. Connection refused (closed port): registry state unknown — refuse.
+# 11. Connection refused (closed port): registry state unknown — refuse.
 expect_refusal "connection refused" 1 "registry state unknown" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="http://127.0.0.1:${closed_port}" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 
-# 11. The chart call site: the guard probes the repo its caller asked for.
+# 12. The chart call site: the guard probes the repo its caller asked for.
 printf 'token=200\nmanifest=404\n' >"$control"
 : >"$recorded"
 expect_proceed "chart repo + 404" -- env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
@@ -214,7 +220,7 @@ expect_proceed "chart repo + 404" -- env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_RE
 grep -q "/v2/feedback-loop-ai/charts/swarmail/manifests/0.1.0" "$recorded" \
   || fail "chart repo: the guard probed the wrong repo path: $(cat "$recorded")"
 
-# 12. The drift pin: the workflow must reference the guard in both publish
+# 13. The drift pin: the workflow must reference the guard in both publish
 #     paths, or the enforcement is a comment again.
 guard_refs="$(grep -c 'scripts/publish-guard.sh' "$WORKFLOW" || true)"
 [ "${guard_refs:-0}" -ge 2 ] \
@@ -223,4 +229,4 @@ call_sites="$(grep -c 'run: scripts/publish-guard.sh' "$WORKFLOW" || true)"
 [ "${call_sites:-0}" -ge 2 ] \
   || fail "drift pin: $WORKFLOW invokes the guard from ${call_sites} run: steps; both publish paths must call it"
 
-echo "publish-guard-test: OK — all 12 poles green (refusals fire, the 404 arms proceed, the workflow is wired)"
+echo "publish-guard-test: OK — all 13 poles green (refusals fire, the 404 arms proceed, the workflow is wired)"

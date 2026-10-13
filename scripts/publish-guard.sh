@@ -24,6 +24,13 @@ version="${expected#v}"
 [ "$version" != "$expected" ] || refuse "expected ref is not v-prefixed"
 echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$' \
   || refuse "'${version}' is not valid semver"
+# Build metadata is valid semver but unprovable here: helm push maps '+' to
+# '_' in OCI tags, so the probe would check a tag the push never writes,
+# and a docker tag cannot carry '+' at all. Refuse rather than check the
+# wrong name (the review's low residual on 0be6330).
+case "$version" in
+  *+*) refuse "'${version}' carries build metadata ('+'); the probe cannot check the tag the push would write" ;;
+esac
 
 base="${PUBLISH_GUARD_REGISTRY:-https://ghcr.io}"
 bearer="$(curl -fsS --max-time 30 -u "${GH_USER:?GH_USER required}:${GH_TOKEN:?GH_TOKEN required}" \
