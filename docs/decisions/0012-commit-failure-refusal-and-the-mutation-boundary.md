@@ -86,8 +86,16 @@ require for public-contract changes.
    `Result<usize, rusqlite::Error>`; a failed commit propagates through
    every applicable adapter — REST `DELETE`/clear `503`, the compat shims
    `503`, MCP `isError: true` with the fixed text, POP3 `QUIT` `-ERR` with
-   the session left in TRANSACTION and its marks unapplied — never
-   acknowledging work that did not commit. The original refusal to widen
+   the session left in TRANSACTION and its failing suffix unapplied —
+   never acknowledging work that did not commit. *(The POP3 clause is
+   amended by [0015](0015-boundary-failure-contract.md) §1: `QUIT` is
+   **at-least-once, not atomic** — the marks are applied one store delete
+   at a time, so a mid-batch failure leaves the committed **prefix**
+   committed and the failing suffix unapplied; the original "its marks
+   unapplied" flatly claimed an atomicity the loop does not have. A retry
+   `QUIT` is idempotent over the unapplied suffix and converges; atomic
+   `QUIT` is refused for the amending run and owed to the
+   adapter-consistency run.)* The original refusal to widen
    (below) was a scoping decision for epic #13's contracts #1 + #2, not a
    claim that the widening is wrong: issue #31's finding 3 *is* the
    hazard, and 0014's boundary is what makes the widened seam defensible
@@ -121,6 +129,11 @@ require for public-contract changes.
    uses `.expect("store mutation lock poisoned")` — panic and propagate,
    exactly as `persist.rs` guards its own state mutex — not a new typed
    refusal, which would be new semantics plus a new cold path.
+   *(Amended by [0015](0015-boundary-failure-contract.md) §3: **restart
+   is the recovery.** No self-exit or recovery machinery is added — the
+   process may keep serving readers from memory, but the restart copy is
+   always exactly the committed set, so restarting the process heals the
+   poison by the same property the boundary provides.)*
 
 ## Why
 
@@ -132,10 +145,19 @@ require for public-contract changes.
 - `451` over `5xx`: a failing data file is usually transient — ENOSPC, a
   full volume, a read-only remount — and `SQLITE_BUSY` is literally
   transient (the 5 s busy handler is at
-  `rusqlite-0.32.1/src/inner_connection.rs:119`). A permanent-failure
-  code would tell every harness the send is dead forever; a well-behaved
-  client's correct move is to retry after repair, which the wire legs
-  prove works (250 on retry).
+  `rusqlite-0.32.1/src/inner_connection.rs:119` — a dependency-set
+  default, `sqlite3_busy_timeout(db, 5000)` at open, that this crate
+  never overrides). A permanent-failure code would tell every harness the
+  send is dead forever; a well-behaved client's correct move is to retry
+  after repair, which the wire legs prove works (250 on retry). *(Amended
+  by [0015](0015-boundary-failure-contract.md) §2: the ~5 s bound is part
+  of the refusal contract — a stalled or contended data file delays each
+  refusal by at most ~5 s per statement, then the fixed-text refusal
+  surfaces; the `451` arrives *after* a bounded stall, not immediately
+  and not never. The bound is deliberately not wall-clock-asserted — the
+  legs prove the refusal, never the timing — and whoever changes it, an
+  override in `persist.rs` or a dependency bump, rewrites the failure
+  semantics of every surface and owes a decision document.)*
 - One external lock instead of a restructure: DashMap shard locks are per
   map, so no internal ordering makes a cross-map mutation atomic against
   `delete`/`clear`; a per-inbox lock cannot span `clear_all`'s

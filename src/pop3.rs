@@ -365,13 +365,16 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                 // workers, decision 0010) — before the signing-off reply. A
                 // failed commit is the answer (decision 0014): `-ERR` with
                 // the fixed text, no sign-off — the session stays in
-                // TRANSACTION and the update is abandoned whole: the marks
-                // are unapplied (LIST names the mail again), so the client
-                // can retry DELE+QUIT or RSET. Nothing is lost: the
-                // maildrop snapshot and the store both still hold the mail,
-                // and the already-deleted part of a partial batch stays
-                // deleted (its commit landed; the retry of the rest is
-                // idempotent).
+                // TRANSACTION. The update is at-least-once, not atomic
+                // (decision 0015): the marks are applied one store delete at
+                // a time, so a mid-loop failure leaves the committed prefix
+                // committed — the already-deleted part of a partial batch
+                // stays deleted, its commit landed — and the failing suffix
+                // unmarked, i.e. unapplied: the maildrop snapshot and the
+                // store both still hold that mail, and a fresh session's
+                // LIST names it again. Nothing lies and every client path
+                // converges: a retry `QUIT` is idempotent over the unapplied
+                // suffix, and `RSET` unmarks.
                 let mut commit_failed = false;
                 for num in &deleted {
                     match store

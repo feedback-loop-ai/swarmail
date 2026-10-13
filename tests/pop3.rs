@@ -719,3 +719,173 @@ async fn a_failed_quit_answers_err_and_keeps_the_marks() {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
+
+/// 0015 §1's partial-prefix instrument (issue #31 finding 3, AC3): a
+/// *selective* trigger refuses exactly one id, so `QUIT` fails *mid-loop* —
+/// after an earlier mark's commit has already landed. An all-refusing
+/// trigger can never reach that state (its first delete fails and the
+/// prefix stays empty), which is why [`a_failed_quit_answers_err_and_keeps_the_marks`]
+/// proves refusal but not the prefix. The contract, driven from the wire:
+/// `-ERR storage commit failed`, never a sign-off, the session stays in
+/// TRANSACTION, the allowed mark stays committed — gone from the live tree
+/// and from a fresh open of the same file — the refused mail and the
+/// unmarked bystander stay served on both trees, and the retry `QUIT` in
+/// the same session signs off (idempotent over the committed prefix),
+/// leaving the restart copy exactly the committed set — no resurrection.
+/// One sequential session: no sleeps, no wall-clock assertions (0011 rule
+/// 5). Red on `5b09843`, which swallowed the failure and answered `+OK`.
+#[tokio::test]
+async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-e2e-pop3-prefix-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    // Maildrop order is oldest first: 1 = the allowed mark, 2 = the refused
+    // one, 3 = an unmarked bystander. The QUIT loop applies marks in
+    // maildrop-number order, so number 1's delete commits before number 2's
+    // fails — the mid-loop shape. The bystander is the exactness witness:
+    // "exactly the committed set" is only checkable against a non-empty
+    // committed set.
+    let prefix = deliver(&srv, "quitprefix", "prefix", "first").await;
+    let refused = deliver(&srv, "quitprefix", "refused", "second").await;
+    let kept = deliver(&srv, "quitprefix", "kept", "third").await;
+
+    let mut c = Pop3::connect(srv.pop3_addr).await;
+    c.login("quitprefix").await;
+    assert!(c.cmd("DELE 1").await.starts_with("+OK"));
+    assert!(c.cmd("DELE 2").await.starts_with("+OK"));
+
+    let trigger = common::refusing_trigger_except(&db, &refused);
+
+    // The mid-loop failure: `-ERR storage commit failed`, never a sign-off.
+    let reply = c.cmd("QUIT").await;
+    assert!(
+        reply.starts_with("-ERR"),
+        "a mid-loop QUIT failure must not sign off: {reply}"
+    );
+    assert!(
+        reply.contains("storage commit failed"),
+        "the -ERR must name the cause: {reply}"
+    );
+
+    // The session stays in TRANSACTION: transaction-state commands still
+    // answer (a sign-off would have closed the stream), and the session's
+    // own view still excludes its marks — only the unmarked bystander is
+    // left of its snapshot.
+    let n3 = octets("sender@x.io", "quitprefix", "kept", "third");
+    assert_eq!(
+        c.cmd("LIST").await,
+        format!("+OK 1 messages ({n3} octets)"),
+        "the session must still be in TRANSACTION: {reply}"
+    );
+    assert_eq!(c.data().await, format!("3 {n3}\r\n"));
+    assert_eq!(c.cmd("NOOP").await, "+OK");
+
+    // The prefix committed: the allowed mail is gone from the live tree and
+    // from a fresh open of the same file, while the refused mail and the
+    // bystander are present on both trees — the failure did not roll the
+    // landed commit back, and nothing half-applied.
+    let (st, _) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{prefix}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 404, "the allowed mark's commit must have landed: {st}");
+    let (st, _) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{refused}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "the refused mail must still be served: {st}");
+    let (st, _) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{kept}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "an unmarked mail is untouched: {st}");
+
+    let reopened = swarmail::store::Store::open(0, &db).expect("the same data file reopens");
+    assert!(
+        reopened.get(&prefix).is_none(),
+        "the prefix must be committed on disk, not just absent from memory"
+    );
+    assert!(
+        reopened.get(&refused).is_some(),
+        "the refused mail must still have its row"
+    );
+    assert!(
+        reopened.get(&kept).is_some(),
+        "the bystander must still have its row"
+    );
+
+    // Recovery: the trigger is gone; the retry in the same session applies
+    // the remaining mark — idempotent over the committed prefix — and signs
+    // off.
+    trigger.remove();
+    assert_eq!(c.cmd("QUIT").await, "+OK Swarmail POP3 server signing off");
+    let (st, _) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{refused}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 404, "the retry must apply the refused mark: {st}");
+
+    // The restart copy holds exactly the committed set: the bystander and
+    // nothing else — neither deleted mail resurrects.
+    srv.stop().await;
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let (st, count) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/quitprefix/count",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        count["count"], 1,
+        "the restart copy holds exactly the committed set: {count}"
+    );
+    for (id, want, why) in [
+        (&prefix, 404, "the committed prefix must stay deleted"),
+        (&refused, 404, "the retried mark must stay deleted"),
+        (&kept, 200, "the bystander must survive"),
+    ] {
+        let (st, _) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/messages/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, want, "{why}: {st}");
+    }
+    srv.stop().await;
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+}

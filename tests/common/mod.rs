@@ -735,7 +735,9 @@ pub fn hold_write_lock(db: &std::path::Path) -> WriteLock {
 /// issue #31's findings 2 and 3, at the real layer and through a real
 /// SQLite constraint: every `INSERT` (kind `"insert"`) or `DELETE` (kind
 /// `"delete"`) the server's own connection runs is `RAISE(ABORT, 'refused')`d
-/// while the guard lives. No fault-injection framework, no mock: the refusal
+/// while the guard lives. [`refusing_trigger_except`] is the selective form:
+/// one refused id, every other delete allowed (decision 0015's mid-loop
+/// instrument). No fault-injection framework, no mock: the refusal
 /// is the database's own, and it hits every writer — the store's commits
 /// included — whatever connection issues it. [`RefusingTrigger::remove`]
 /// drops the trigger early so a later leg can commit normally; the guard's
@@ -766,7 +768,7 @@ impl Drop for RefusingTrigger {
 }
 
 pub fn refusing_trigger(db: &std::path::Path, kind: &str) -> RefusingTrigger {
-    let (name, sql) = match kind {
+    let (name, sql): (&'static str, &'static str) = match kind {
         "insert" => (
             "refuse_insert",
             "CREATE TRIGGER refuse_insert BEFORE INSERT ON emails \
@@ -779,6 +781,31 @@ pub fn refusing_trigger(db: &std::path::Path, kind: &str) -> RefusingTrigger {
         ),
         other => panic!("unknown refusing-trigger kind: {other}"),
     };
+    install_refusing_trigger(db, name, sql)
+}
+
+/// A *selective* refusing delete trigger (decision 0015's instrument): it
+/// `RAISE(ABORT, 'refused')`s exactly the one named id and lets every other
+/// delete through. This is the only way a wire leg can reach a `QUIT`
+/// failure *mid-loop* — an all-refusing trigger fails on the first delete,
+/// so the committed prefix it would prove stays empty. Same guard, same
+/// `Drop` cleanup as [`refusing_trigger`].
+pub fn refusing_trigger_except(db: &std::path::Path, id: &str) -> RefusingTrigger {
+    // The id is ours (a UUIDv7 the server minted), but the quote-doubling
+    // keeps the injection honest for any payload.
+    let sql = format!(
+        "CREATE TRIGGER refuse_delete_except BEFORE DELETE ON emails \
+         WHEN OLD.id = '{}' BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        id.replace('\'', "''")
+    );
+    install_refusing_trigger(db, "refuse_delete_except", &sql)
+}
+
+fn install_refusing_trigger(
+    db: &std::path::Path,
+    name: &'static str,
+    sql: &str,
+) -> RefusingTrigger {
     let conn = rusqlite::Connection::open(db).expect("second connection opens the data file");
     conn.busy_timeout(std::time::Duration::from_secs(10))
         .expect("busy timeout set");
