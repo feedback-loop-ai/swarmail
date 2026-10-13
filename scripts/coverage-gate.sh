@@ -69,20 +69,29 @@ if [ -n "$attribute_hits" ]; then
   exit 1
 fi
 
-# Resolve the measurement toolchain: an installed nightly whose llvm-tools
-# component is present. Nothing is auto-installed — a hermetic seat cannot
-# install toolchains, and the gate's verdict must come from what is on disk.
+# Resolve the measurement toolchain: the `nightly` channel alias when it
+# carries llvm-tools — exactly what CI's rust-toolchain@nightly resolves to —
+# else an installed dated nightly that does. Nothing is auto-installed: a
+# hermetic seat cannot install toolchains, and the gate's verdict must come
+# from what is on disk.
+probe_llvm_tools() {
+  rustup component list --installed --toolchain "$1" 2>/dev/null | grep -q '^llvm-tools'
+}
 coverage_toolchain=""
-while IFS= read -r tc; do
-  tc="${tc%% *}"
-  case "$tc" in nightly-*) ;; *) continue ;; esac
-  if rustup component list --installed --toolchain "$tc" 2>/dev/null | grep -q '^llvm-tools'; then
-    coverage_toolchain="$tc"
-    break
-  fi
-done < <(rustup toolchain list 2>/dev/null)
+if probe_llvm_tools nightly; then
+  coverage_toolchain="nightly"
+else
+  while IFS= read -r tc; do
+    tc="${tc%% *}"
+    case "$tc" in nightly-*) ;; *) continue ;; esac
+    if probe_llvm_tools "$tc"; then
+      coverage_toolchain="$tc"
+      break
+    fi
+  done < <(rustup toolchain list 2>/dev/null)
+fi
 if [ -z "$coverage_toolchain" ]; then
-  printf '%s\n' 'coverage refusal: no installed nightly toolchain carries llvm-tools — install one with rustup toolchain install nightly-<date> --component llvm-tools-preview; the gate never auto-installs' >&2
+  printf '%s\n' 'coverage refusal: no installed nightly toolchain carries llvm-tools — install one with rustup toolchain install nightly --component llvm-tools-preview; the gate never auto-installs' >&2
   exit 1
 fi
 if ! cargo +"$coverage_toolchain" llvm-cov --version >/dev/null 2>&1; then
