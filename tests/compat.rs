@@ -904,8 +904,17 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
 /// the whole burn — its budget is the busy bound's scheduling margin, far
 /// above tick noise and far below the burn itself (deadline-based, like the
 /// stalled-sink legs, never a latency percentile). The delete answers `503`
-/// naming the cause within the busy bound plus margin, and every untouched
-/// mail stays committed.
+/// naming the cause, and every untouched mail stays committed.
+///
+/// The guarantees are asserted separately (issue #32 finding 3): the canary
+/// carries the offload proof — a synchronous delete would block this
+/// current-thread runtime and its timers with it, blowing the widest-tick
+/// bound from milliseconds to never — while a plain OS-thread watchdog
+/// carries the finite-hang proof, because a stalled runtime cannot fire
+/// tokio's own timeouts. Neither asserts a narrow elapsed ceiling: the busy
+/// bound bounds SQLite's lock retries, not the request's total latency on a
+/// loaded runner, and the refusal's truth is not made truer by arriving
+/// quickly.
 #[tokio::test]
 async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
     let db = std::env::temp_dir().join(format!(
@@ -945,9 +954,16 @@ async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
     // real layer) and refuse.
     let _lock = common::hold_write_lock(&db);
 
-    // The canary: tick every 10ms and record the widest gap between ticks.
+    // The canary: tick every 10ms and record both the widest gap between
+    // ticks and the tick count. The gap bounds per-tick scheduling delay;
+    // the count proves the runtime actually POLLED the canary across the
+    // burn — a stalled runtime records neither a wide gap nor any ticks at
+    // all, so a bare widest-gap bound passes a stall vacuously (issue #32
+    // finding 3: the count is what makes a synchronous delete fail here).
     let widest = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let canary_widest = widest.clone();
+    let canary_ticks = ticks.clone();
     let canary = tokio::spawn(async move {
         let mut last = tokio::time::Instant::now();
         loop {
@@ -957,12 +973,37 @@ async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
                 (now - last).as_micros() as u64,
                 std::sync::atomic::Ordering::Relaxed,
             );
+            canary_ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             last = now;
         }
     });
 
     let started = std::time::Instant::now();
     let payload = json!({ "ids": ids }).to_string();
+    // The finite-hang watchdog: a plain OS thread, because the hang it
+    // watches — a handler that stalled the runtime — freezes tokio's own
+    // timers, so no tokio timeout could ever fire. Its 30s ceiling is six
+    // busy bounds: far above anything a loaded runner's scheduling can add
+    // to a refusal that burns 5s of lock retry, far below the job timeout.
+    // It proves the request ANSWERS; it asserts nothing about how soon.
+    let answered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watchdog_answered = answered.clone();
+    let watchdog = std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if watchdog_answered.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(30) {
+                eprintln!(
+                    "the burning bulk delete never answered within 30s — the \
+                 handler stalled the runtime (a hang, not a slow burn); \
+                 failing loudly instead of hanging the job"
+                );
+                std::process::exit(101);
+            }
+        }
+    });
     let (status, _, raw) = http_raw(
         srv.http_addr,
         "DELETE",
@@ -970,24 +1011,31 @@ async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
         Some(("application/json", &payload)),
     )
     .await;
-    let elapsed = started.elapsed();
+    answered.store(true, std::sync::atomic::Ordering::Relaxed);
+    watchdog.join().expect("the watchdog thread joins");
 
     assert_eq!(status, 503, "a burning bulk delete must not claim success");
     let refused: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(refused["error"], "storage commit failed", "{refused}");
-    // The busy bound (5s) plus a scheduling margin (1s) — a hang would
-    // outlive this assertion.
-    assert!(
-        elapsed <= std::time::Duration::from_secs(6),
-        "the burning bulk delete answered in {elapsed:?}, past the busy bound and margin"
-    );
 
     canary.abort();
+    let elapsed = started.elapsed();
     let widest_us = widest.load(std::sync::atomic::Ordering::Relaxed);
     assert!(
         widest_us < 1_000_000,
-        "the async runtime stalled {}µs during a burning bulk delete — the delete did not offload",
-        widest_us
+        "the async runtime stalled {widest_us}µs between canary ticks during a burning bulk delete — the delete did not offload"
+    );
+    // Offload proof: the canary must have been POLLED across the burn. Its
+    // 10ms cadence covers the request whenever the runtime is free, while a
+    // handler that blocked the runtime leaves a handful of ticks at most —
+    // the widest-gap bound alone passes such a stall vacuously, because a
+    // stalled runtime records no gaps at all. The floor is a fifth of the
+    // observed request: a burn stretching on a loaded runner never softens
+    // the proof, and the proof never depends on a narrow elapsed ceiling.
+    let ticks_us = u128::from(ticks.load(std::sync::atomic::Ordering::Relaxed)) * 10_000;
+    assert!(
+        ticks_us >= elapsed.as_micros() / 5,
+        "the canary covered only {ticks_us}µs of a {elapsed:?} request — the runtime was not live across the burn; the delete did not offload"
     );
 
     // The refusal is wholesale: every untouched mail stays committed.
