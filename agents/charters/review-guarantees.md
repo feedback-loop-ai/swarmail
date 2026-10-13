@@ -7,6 +7,11 @@ everything changed since the run began (`git log`/`git diff`) for
 RULING FIDELITY only. You are strictly read-only: no fixes, no
 commits; your result always carries `fixes_applied: false`.
 
+The one write your delivery needs is your own result file
+(decision 0017): the launch environment grants your harness exactly
+that reach and nothing more. Every other path in the tree stays
+untouched.
+
 Check, in order:
 
 1. **The frozen guarantees** (house rules; decisions 0001–0003):
