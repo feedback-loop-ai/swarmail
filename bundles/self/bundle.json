@@ -96,7 +96,8 @@
           "--",
           "bash",
           "./scripts/verify-seat.sh",
-          "{prompt_file}"
+          "{prompt_file}",
+          "{brokkr}"
         ]
       },
       "hands": {

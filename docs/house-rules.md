@@ -2,9 +2,13 @@
 
 This realm is a single Rust crate. Production code is Rust under `src/`; the
 integration tests under `tests/` speak the real protocol against real servers.
-The delivery constitution lives in `bundle.json` + `policy.json` and is
-compiled by brokkr (`brokkr compile --bundle .`); the journal is
-`.forge/forge.db` (append-only, gitignored).
+The delivery constitution lives in `bundles/self/` (`bundle.json` +
+`policy.json`) and is compiled by brokkr (`brokkr compile --bundle
+bundles/self`); the journal is `.forge/forge.db` (append-only, gitignored).
+The constitution is a bundle directory and not the repo root so the run's
+own journal writes and git objects stay outside the pinned manifest — a
+root-level bundle pins its whole directory and could never survive a
+resume.
 
 ## The frozen guarantees
 
@@ -32,7 +36,7 @@ Leave all of these clean before reporting success:
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-brokkr compile --bundle .
+brokkr compile --bundle bundles/self
 bash scripts/coverage-gate.sh     # the floor may rise, never fall
 cargo deny check licenses         # permissive-only tree
 ```

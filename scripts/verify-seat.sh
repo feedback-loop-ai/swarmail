@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -u
 prompt_file="${1:-}"
+brokkr="${2:-brokkr}"
 [ -f "$prompt_file" ] || { echo "verify-seat: prompt file missing" >&2; exit 2; }
 result_path=""
 while IFS= read -r line; do
@@ -33,7 +34,7 @@ run() {
 run "cargo fmt --all -- --check"  'cargo fmt --all -- --check'
 run "cargo clippy -D warnings"    'cargo clippy --workspace --all-targets --locked -- -D warnings'
 run "cargo test"                  'cargo test --workspace --locked'
-run "brokkr compile --bundle ."   'brokkr compile --bundle .'
+run "brokkr compile --bundle bundles/self"   "\"$brokkr\" compile --bundle bundles/self"
 run "coverage gate (exact 100% lines+branches+functions)"  'bash scripts/coverage-gate.sh'
 run "cargo deny licenses"         'cargo deny check licenses'
 # Webhook TLS (reqwest + rustls) must be the only HTTP/TLS story: native-tls

@@ -15,7 +15,8 @@ tests are.
 (decision 0001). `await` subscribes before it checks (0002). Pruning is
 oldest-only (0003). Extraction happens at ingest, not query time (0005).
 Leave `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test`, `brokkr compile --bundle .`, `scripts/coverage-gate.sh` and
+`cargo test`, `brokkr compile --bundle bundles/self`,
+`scripts/coverage-gate.sh` and
 `cargo deny check licenses` clean before reporting success. Never report
 `complete` while required work remains; never widen the dependency allowlist
 without a defensible reason.
@@ -27,6 +28,6 @@ without a defensible reason.
 | `docs/house-rules.md` | the realm charter (start here) |
 | `docs/decisions/` | accepted rulings (ADR discipline; proposed status needs the operator) |
 | `docs/releases/` | release notes per version |
-| `bundle.json` + `policy.json` | the delivery constitution — compiled by brokkr |
+| `bundles/self/` | the delivery constitution — compiled by brokkr |
 | `agents/` + `adapters/` | seat charters and the pinned model adapter |
 | `tests/` | real-protocol integration suites (`burst`, `p2`, `rate`) |
