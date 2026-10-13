@@ -4,6 +4,7 @@
 - **Date:** 2026-10-15
 - **Supersedes:** none
 - **Amends:** 0008 §4/§5 in place (proposed; the deployment-contract edits are a landing task of the closing run)
+- **Amended by:** 0019 — §6's `v*`-prefix posture and the §Refused registry-probe item are superseded by the exact-ref bind and the fail-closed probe (a landing task of the closing run)
 
 ## Context
 
@@ -70,13 +71,17 @@ bypass (`delete_many_async`) stays refused.
    answers a loud `404`, never a wrong thread. No alias table: the view is
    derived per request, and aliases would claim a stability the `VIEW_CAP`
    window already denies.
-6. **Publication is one gated run, and version tags publish only from tag
-   refs.** The docker and chart publish jobs `needs:` the five gate jobs of
-   the same workflow invocation; version-tagged bytes publish only from
-   `v*` tag refs; `main` pushes `:main` and `:sha-<sha>` only. A released
-   version is never silently replaced by a branch build — with `Cargo.toml`
-   at `0.1.0`, a main-publish would rebuild the same tag perpetually.
-   Releases require pushing `v<version>`.
+6. **Publication is one gated run, and each version publishes only from its
+   own ref.** The docker and chart publish jobs `needs:` the five gate jobs
+   of the same workflow invocation; each publish path binds its own
+   manifest's declared version to the triggering ref by full-string equality
+   and probes the registry before pushing, failing closed on an existing tag
+   or an unreadable registry (0019); `main` pushes `:main` and `:sha-<sha>`
+   only. A released version is never silently replaced by a branch build —
+   with `Cargo.toml` at `0.1.0`, a main-publish would rebuild the same tag
+   perpetually. Releases require pushing `v<version>` and an absent registry
+   tag: a typo'd ref, a re-pushed stale tag and a registry that cannot be
+   read all refuse before any push.
 
 ## Consequences
 
@@ -101,8 +106,13 @@ bypass (`delete_many_async`) stays refused.
 
 - `wait_for` gaining a cancellation token, a `Shutdown` outcome variant, or
   any other signature — the adapter-level select is the whole change.
-- A registry-probe guard against republishing (it races and drags registry
-  credentials into a job a workflow `if` enforces).
+- (Rescinded by 0019) A registry-probe guard against republishing: both of
+  this list's grounds fail — the probe uses the credential the push itself
+  already requires (`packages: write`; nothing new is dragged anywhere), and
+  the check-then-push race is priced, not pretended away (a concurrent
+  publish of one version can still both see `404`; GHCR is last-writer-wins).
+  The probe now stands in both publish paths, fail closed. See
+  [0019](0019-release-tag-integrity.md).
 - `values.schema.json`, a configurable await cap, a session-supervisor
   module, a shared harvest abstraction, deliberate-broken-value CI
   matrices, and any edit to `src/store.rs`/`src/persist.rs` for these

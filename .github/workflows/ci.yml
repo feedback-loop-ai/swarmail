@@ -9,9 +9,11 @@ env:
 
 jobs:
   # Style and lint once, on the fast runner. --locked: a stale Cargo.lock is
-  # a red gate, never a silent dependency resolve.
+  # a red gate, never a silent dependency resolve. The publish guard's proof
+  # rides this job because both publish jobs `needs:` it (decision 0018 §6):
+  # a publish step may not execute guard logic that is red (decision 0019).
   quality:
-    name: format, clippy
+    name: format, clippy, publish guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -21,6 +23,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: bash scripts/publish-guard-test.sh
 
   # The whole suite on every OS the realm supports — Linux and macOS per
   # decision 0063 (no windows). --locked for the same freshness contract.
@@ -86,9 +89,15 @@ jobs:
   # Publication is one gated run (decision 0018 §6): the docker build cannot
   # start until the five gates of the same invocation are green, and it runs
   # only for main and v* tag refs. `main` pushes the rolling `:main` and the
-  # exact-commit `:sha-<sha>`; the `:<version>` tag publishes only from a
-  # `v<version>` ref, so a released version is never silently replaced by a
-  # branch build.
+  # exact-commit `:sha-<sha>` only. The `:<version>` tag publishes only when
+  # the triggering ref is exactly `v<Cargo.toml version>` (publish-guard.sh,
+  # full-string match) and the registry probe reports that tag absent (404):
+  # an existing tag refuses, an unreadable registry refuses — fail closed.
+  # A pre-push check, not registry-side immutability (GHCR enforces none):
+  # a concurrent publish can still race the probe, and re-publishing a
+  # version means deleting the registry tag — the deliberate recovery.
+  # NOT enforced: anything about :main/:sha-<sha> (re-publishable by design)
+  # and any actor who can already push tags or delete packages.
   docker:
     runs-on: ubuntu-latest
     needs: [quality, test, coverage, deny, dependency-audit]
@@ -107,6 +116,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Guard the release tag (exact ref match; refuse a republish)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_USER: ${{ github.actor }}
+        run: scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/swarmail
       - name: Push the continuous tags (main + the exact commit)
         if: github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v6
@@ -131,8 +147,14 @@ jobs:
   # The Helm chart: lint + render both profiles + assert the deployment
   # contract (scripts/chart-verify.sh, helm-only, no cluster) on every push
   # and PR. The packaged chart publishes only from a `v*` tag ref (decision
-  # 0018 §6): an OCI chart of a given version is immutable, so a main push
-  # would chronically red on the second 0.1.0.
+  # 0018 §6) — and only when the triggering ref is exactly `v<Chart.yaml
+  # version>` (publish-guard.sh, full-string match) and the OCI probe
+  # reports that version absent (404): an existing version refuses, an
+  # unreadable registry refuses — fail closed. A pre-push check, not
+  # registry-side immutability (GHCR enforces none).
+  # NOT enforced: a concurrent publish can still race the probe (GHCR is
+  # last-writer-wins) and any actor who can already push tags or delete
+  # packages; re-publishing a version means deleting the registry tag.
   chart:
     name: helm chart
     runs-on: ubuntu-latest
@@ -152,6 +174,19 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Read the chart version (the guard binds it to the ref)
+        id: chartver
+        # Block scalar: the sed idiom carries `version: ` — a plain YAML
+        # scalar cannot.
+        run: |
+          echo "version=$(sed -n 's/^version: \(.*\)/\1/p' charts/swarmail/Chart.yaml | head -1)" >> "$GITHUB_OUTPUT"
+      - name: Guard the chart version (exact ref match; refuse a republish)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          VERSION: ${{ steps.chartver.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_USER: ${{ github.actor }}
+        run: scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/charts/swarmail
       - name: Publish the chart (OCI, ghcr.io, v* refs only)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

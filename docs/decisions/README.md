@@ -26,6 +26,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0013](0013-four-model-review-panel.md) | A four-model review panel (qwen-max, opus, astra, fable) | accepted (operator, 2026-10-13) |
 | [0016](0016-lag-invariant.md) | The live view lags the commit: the boundary's invariant, disk exhaustion as refusal, and a loud busy bound (amends 0014, 0015) | **proposed** (awaiting operator) | (Close the three P1 storage-consistency findings of issue #31) |
 | [0018](0018-shutdown-observed-waits-and-explicit-bounds.md) | Shutdown-observed waits, explicit wire bounds, and the thread fallback's exact scope (amends 0008) | **proposed** (awaiting operator) | (Close the six post-P1 findings: lifecycle, contracts, surfaces) |
+| [0019](0019-release-tag-integrity.md) | Release-tag integrity: the version publishes only from its own ref, and never twice (amends 0018 §6) | **proposed** (awaiting operator) | (Close the release-tag integrity residual of REVIEW-RESIDUAL-SECURITY) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
