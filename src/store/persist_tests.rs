@@ -238,6 +238,21 @@ async fn a_panicking_clear_all_re_raises_in_the_awaiting_caller() {
 /// is still in flight. Red against fire-and-forget (the await would resolve
 /// while the gate holds) and against any reply-before-commit reorder (the
 /// resolution is the reply's only licence).
+///
+/// The gate releases on every exit path, not just the green one: if the
+/// mid-test assertion fails, a dropped `release` would strand the boundary
+/// thread in its spin — `spawn_blocking` threads are never aborted, so the
+/// red test would hang the whole process at runtime teardown instead of
+/// failing loudly (decision 0020 rule 2). `GateRelease` is the panic-safe
+/// net; the explicit store below is the sequencing step.
+struct GateRelease(Arc<AtomicBool>);
+
+impl Drop for GateRelease {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
 #[tokio::test]
 async fn the_awaited_mutation_does_not_resolve_while_its_commit_is_in_flight() {
     let path = pin_db_path("ordering");
@@ -257,6 +272,7 @@ async fn the_awaited_mutation_does_not_resolve_while_its_commit_is_in_flight() {
             std::thread::sleep(Duration::from_millis(1));
         }
     })));
+    let _release_on_exit = GateRelease(release.clone());
 
     let task = tokio::spawn(store.clone().clear_async("box".to_string()));
     await_gate_entered(&entered).await;

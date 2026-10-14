@@ -80,10 +80,11 @@ harness = false
 criterion = "0.7"
 base64 = "0.22"
 libc = "0.2"
-# For the stall bench's current-thread runtime and ticker task. Already a
-# main dependency — this only makes it visible to the bench target; no new
-# crate enters the tree.
-tokio = { version = "1", features = ["rt", "time"] }
+# For the stall bench's current-thread runtime and ticker task, and for the
+# binary tests, which spawn the shipped `serve` process and read its startup
+# line back. Already a main dependency — this only makes the features
+# visible to the test/bench targets; no new crate enters the tree.
+tokio = { version = "1", features = ["rt", "time", "process"] }
 
 [profile.release]
 opt-level = 3
