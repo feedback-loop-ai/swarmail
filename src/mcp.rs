@@ -9,12 +9,11 @@
 //! Every tool maps to the same store the SMTP server writes — an agent sees
 //! exactly what was accepted, with no polling loops.
 
-use crate::chaos::{Chaos, ChaosEvent, ChaosRule};
+use crate::chaos::{Chaos, ChaosEvent, ChaosRule, PROBABILITY_REFUSAL};
 use crate::smtp::build_seed_email;
 use crate::store::{Filter, Store, WaitOutcome};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::Duration;
 
 pub const PROTOCOL_VERSION: &str = "2025-03-26";
 
@@ -157,17 +156,29 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
                 since_ms: a.get("since_ms").and_then(|v| v.as_i64()),
             };
             let want = arg_usize(a, "count").unwrap_or(1).max(1);
-            let timeout_ms = a.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(5000);
-            if timeout_ms > crate::api::MAX_AWAIT_TIMEOUT_MS {
-                // Refused before any subscribe, naming the bound — the same
-                // refusal REST gives (decision 0018: bounds are refusals,
-                // never clamps).
-                return Ok(error_result(format!(
-                    "timeout_ms must be at most {}",
-                    crate::api::MAX_AWAIT_TIMEOUT_MS
-                )));
-            }
-            let timeout = Duration::from_millis(timeout_ms);
+            // Omission takes the documented default (decision 0025); a
+            // *supplied* value that does not parse is refused — never
+            // silently defaulted. `null` is supplied (the key is present):
+            // `Value::Null.as_u64()` is None, so it refuses with no special
+            // case — the same answer `delay_ms` already gives an explicit
+            // null.
+            let timeout_ms = match a.get("timeout_ms") {
+                None => crate::api::DEFAULT_WAIT_TIMEOUT_MS,
+                Some(v) => match v.as_u64() {
+                    Some(ms) => ms,
+                    None => {
+                        return Ok(error_result(crate::api::WAIT_TIMEOUT_REFUSAL.to_string()));
+                    }
+                },
+            };
+            // The cap check is the shared one (decision 0025); its refusal
+            // is the same `isError` envelope the cap refusal already has
+            // (decision 0018). Both refusals answer before `store.wait_for`
+            // — a rejected wait registers no waiter.
+            let timeout = match crate::api::checked_wait_timeout_ms(timeout_ms) {
+                Ok(timeout) => timeout,
+                Err(msg) => return Ok(error_result(msg)),
+            };
             // The wait races the stop watch (decision 0018) — the same race
             // the REST await runs, against the same receiver.
             let outcome = tokio::select! {
@@ -246,16 +257,14 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
             let event_enum: ChaosEvent = serde_json::from_value(json!(event))
                 .map_err(|_| format!("unknown event: {event} (use connect|mail_from|rcpt|data)"))?;
             // Wire values are never narrowed (decision 0018): the argument
-            // must be present, must be an integer at all, must fit `u8`
-            // (256 refusing — not becoming 0) and must be at most 100. Each
+            // must be present, must be an integer at all, and must fit
+            // `u8` (256 refusing — not becoming 0). The 0..=100 ceiling is
+            // the domain's own rule (decision 0025): `rule.validate()` is
+            // its one owner — this tool carries no parallel copy. Each
             // stage refuses by name; no cast, no clamp, no silent default.
-            const PROBABILITY_REFUSAL: &str = "probability must be an integer between 0 and 100";
             let probability_value = a.get("probability").ok_or(PROBABILITY_REFUSAL)?;
             let probability_u64 = probability_value.as_u64().ok_or(PROBABILITY_REFUSAL)?;
             let probability = u8::try_from(probability_u64).map_err(|_| PROBABILITY_REFUSAL)?;
-            if probability > 100 {
-                return Err(PROBABILITY_REFUSAL.to_string());
-            }
             let delay_ms = match a.get("delay_ms") {
                 None => 0,
                 Some(v) => v
@@ -267,6 +276,11 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
                 error: arg_str(a, "error"),
                 delay_ms,
             };
+            // The ceiling refusal lands in the JSON-RPC `error` envelope —
+            // exactly what `?` already produces for the staging refusals
+            // above, and what `set_chaos_refuses_every_malformed_wire_value_
+            // by_name` pins byte-for-byte.
+            rule.validate()?;
             let mut cfg = ctx.chaos.current();
             match event_enum {
                 ChaosEvent::Connect => cfg.connect = Some(rule),
@@ -327,7 +341,7 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
             "inbox": { "type": "string" }, "to": { "type": "string" }, "from": { "type": "string" },
             "subject": { "type": "string" }, "since_ms": { "type": "integer" },
             "count": { "type": "integer", "minimum": 1 },
-            "timeout_ms": { "type": "integer", "minimum": 0, "maximum": 60000 } } } },
+            "timeout_ms": { "type": "integer", "default": 5000, "minimum": 0, "maximum": 60000 } } } },
         { "name": "swarmail_extract_links", "description": "Extract all http(s) URLs from a captured email's text/HTML bodies.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_extract_codes", "description": "Extract likely OTP/verification codes from a captured email.",
@@ -346,3 +360,42 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
         { "name": "swarmail_clear_chaos", "description": "Disable all chaos rules.", "inputSchema": { "type": "object" } },
     ])
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The published schema is pinned to the domain's constants (issue #32
+    /// slice 2, decision 0025): the wait's `timeout_ms` default is the one
+    /// documented default and the bounds are the domain's, not this file's
+    /// literals — a schema literal and a constant can drift only by
+    /// failing CI.
+    #[test]
+    fn the_schemas_publish_the_shared_domain() {
+        let tools = TOOLS.clone();
+        let find = |name: &str| {
+            tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .expect("every published tool is listed")["inputSchema"]["properties"]
+                .clone()
+        };
+
+        let wait = find("swarmail_wait_for_email");
+        let timeout_ms = &wait["timeout_ms"];
+        assert_eq!(timeout_ms["type"], "integer", "{timeout_ms}");
+        assert_eq!(timeout_ms["default"], crate::api::DEFAULT_WAIT_TIMEOUT_MS);
+        assert_eq!(timeout_ms["minimum"], 0, "{timeout_ms}");
+        assert_eq!(timeout_ms["maximum"], crate::api::MAX_AWAIT_TIMEOUT_MS);
+
+        let chaos = find("swarmail_set_chaos");
+        assert_eq!(chaos["probability"]["minimum"], 0, "{chaos}");
+        assert_eq!(
+            chaos["probability"]["maximum"],
+            crate::chaos::PROBABILITY_MAX,
+            "{chaos}"
+        );
+    }
+}

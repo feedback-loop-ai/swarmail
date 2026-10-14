@@ -363,6 +363,62 @@ async fn a_parked_mcp_wait_does_not_hold_stop_hostage() {
     assert_eq!(body["result"]["content"][0]["text"], "shutting down");
 }
 
+/// Omission keeps the documented default on both transports (issue #32
+/// slice 2, decision 0025): an await with no `timeout_ms` parks on the
+/// 5000 the docs publish and answers the stop's fixed 503 — a refused
+/// parser would have answered 400 and a zeroed default 408 before the
+/// stop ever fired. The 300ms pause is the established sequencing
+/// discipline; the asserted outcome is the answer's shape, not a clock.
+#[tokio::test]
+async fn an_omitted_timeout_parks_on_the_documented_default() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let request = tokio::spawn(common::http_json(
+        addr,
+        "GET",
+        "/api/v1/inboxes/omitted/await?count=1&to=nobody@x.io",
+        None,
+    ));
+    tokio::time::sleep(Duration::from_millis(300)).await; // the wait parks
+
+    tokio::time::timeout(STOP_BUDGET, srv.stop())
+        .await
+        .expect("stop completes with an await parked on the default");
+    let (st, body) = tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("the parked wait answers once the stop is underway")
+        .unwrap();
+    assert_eq!(st, 503, "{body}");
+    assert_eq!(
+        body,
+        serde_json::json!({ "error": "shutting down" }),
+        "{body}"
+    );
+}
+
+/// The MCP twin: `swarmail_wait_for_email` with no `timeout_ms` parks on
+/// the documented default and answers the stop's fixed `isError` text —
+/// the same omitted value, the same default, one domain (decision 0025).
+#[tokio::test]
+async fn an_omitted_mcp_timeout_parks_on_the_documented_default() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"swarmail_wait_for_email","arguments":{"inbox":"omittedmcp","count":1,"to":"nobody@x.io"}}}"#;
+    let request = tokio::spawn(common::http_json(addr, "POST", "/mcp", Some(body)));
+    tokio::time::sleep(Duration::from_millis(300)).await; // the wait parks
+
+    tokio::time::timeout(STOP_BUDGET, srv.stop())
+        .await
+        .expect("stop completes with an MCP wait parked on the default");
+    let (st, body) = tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("the parked MCP wait answers once the stop is underway")
+        .unwrap();
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["result"]["isError"], true, "{body}");
+    assert_eq!(body["result"]["content"][0]["text"], "shutting down");
+}
+
 /// R11 (0018): a commit already in flight at stop is not cancelled — the
 /// blocking pool runs it to completion — but it does not hold stop. Under a
 /// held write lock the delivery's commit burns its whole busy bound; the

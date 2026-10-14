@@ -34,6 +34,29 @@ pub struct ChaosRule {
     pub delay_ms: u64,
 }
 
+/// The probability domain, ruled once (issue #32 slice 2, decision 0025):
+/// an integer 0..=100. Both transports validate against it — REST's PUT for
+/// every rule it would install, MCP's `set_chaos` for the rule it would
+/// set — so the wires cannot drift again.
+pub(crate) const PROBABILITY_MAX: u8 = 100;
+
+/// The one refusal sentence for an out-of-domain probability, shared by
+/// both transports' envelopes: REST's `400` body and MCP's JSON-RPC error
+/// message carry the same words because they enforce the same rule.
+pub(crate) const PROBABILITY_REFUSAL: &str = "probability must be an integer between 0 and 100";
+
+impl ChaosRule {
+    /// The rule's own domain check (decision 0025): the probability must be
+    /// an integer 0..=`PROBABILITY_MAX`. Called by both transports before
+    /// any effect, so a refused rule is never stored.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.probability > PROBABILITY_MAX {
+            return Err(PROBABILITY_REFUSAL.to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChaosConfig {
     #[serde(default)]
@@ -44,6 +67,27 @@ pub struct ChaosConfig {
     pub rcpt: Option<ChaosRule>,
     #[serde(default)]
     pub data: Option<ChaosRule>,
+}
+
+impl ChaosConfig {
+    /// A PUT replaces the whole config: every present rule must be in the
+    /// domain, in all four events, before any caller sets it (decision
+    /// 0025) — a partial check would accept a bad rule in a slot it forgot
+    /// to look at.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for rule in [
+            self.connect.as_ref(),
+            self.mail_from.as_ref(),
+            self.rcpt.as_ref(),
+            self.data.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            rule.validate()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -113,6 +157,74 @@ mod tests {
         });
         for _ in 0..100 {
             assert!(chaos.check(ChaosEvent::Data).is_some());
+        }
+    }
+
+    /// The domain's poles and ceiling (issue #32 slice 2, decision 0025):
+    /// 0 and 100 validate, everything above refuses with the one shared
+    /// sentence both transports carry.
+    #[test]
+    fn probability_validates_at_the_poles_and_refuses_above_the_ceiling() {
+        let rule = |p: u8| ChaosRule {
+            probability: p,
+            error: None,
+            delay_ms: 0,
+        };
+        assert_eq!(rule(0).validate(), Ok(()));
+        assert_eq!(rule(100).validate(), Ok(()));
+        for p in [101u8, 150, 255] {
+            assert_eq!(
+                rule(p).validate(),
+                Err(PROBABILITY_REFUSAL.to_string()),
+                "{p}"
+            );
+        }
+    }
+
+    /// The config walk sees all four events (decision 0025): an in-domain
+    /// all-four config validates, an all-absent one validates, and a bad
+    /// rule planted in *each* slot refuses with the shared sentence —
+    /// every `Option` arm of the walk taken on every run.
+    #[test]
+    fn config_validation_walks_every_event_slot() {
+        let rule = |p: u8| ChaosRule {
+            probability: p,
+            error: None,
+            delay_ms: 0,
+        };
+        let full = ChaosConfig {
+            connect: Some(rule(10)),
+            mail_from: Some(rule(20)),
+            rcpt: Some(rule(30)),
+            data: Some(rule(40)),
+        };
+        assert_eq!(full.validate(), Ok(()));
+        assert_eq!(ChaosConfig::default().validate(), Ok(()));
+
+        let bad_rule = || ChaosRule {
+            probability: 150,
+            error: None,
+            delay_ms: 0,
+        };
+        for bad in [
+            ChaosConfig {
+                connect: Some(bad_rule()),
+                ..Default::default()
+            },
+            ChaosConfig {
+                mail_from: Some(bad_rule()),
+                ..Default::default()
+            },
+            ChaosConfig {
+                rcpt: Some(bad_rule()),
+                ..Default::default()
+            },
+            ChaosConfig {
+                data: Some(bad_rule()),
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(bad.validate(), Err(PROBABILITY_REFUSAL.to_string()));
         }
     }
 }

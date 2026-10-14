@@ -31,6 +31,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0022](0022-bounded-data-raw-bytes.md) | The DATA path is bounded and byte-honest; `/raw` serves the stored bytes (filed as 0011) | **proposed** (awaiting operator) |
 | [0023](0023-off-worker-commits.md) | Commits run off the async workers: the disk leg is ordering, not thread identity (filed as 0010) | **proposed** (awaiting operator) |
 | [0024](0024-shutdown-refusal-at-the-boundary.md) | The boundary refuses to start a commit once stopping: one shutdown policy for mutations (amends 0018) | **proposed** (awaiting operator) | (Close issue #32's slices 1, 5 and 6) |
+| [0025](0025-shared-domain-validation.md) | Shared domain validation: a supplied malformed value refuses, an omitted optional value keeps its default (amends 0018) | **proposed** (awaiting operator) | (Close issue #32's slice 2) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

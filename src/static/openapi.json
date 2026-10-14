@@ -255,7 +255,10 @@
       "put": {
         "summary": "Replace chaos rules (event: connect|mail_from|rcpt|data; probability 0-100; optional error line and delay_ms)",
         "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChaosConfig" } } } },
-        "responses": { "200": { "description": "OK" } }
+        "responses": {
+          "200": { "description": "OK" },
+          "400": { "description": "A rule outside the domain — probability must be an integer between 0 and 100 — refused, never stored; the active rules are unchanged (issue #32 slice 2, decision 0025)" }
+        }
       },
       "delete": { "summary": "Disable all chaos", "responses": { "200": { "description": "OK" } } }
     },
@@ -338,7 +341,7 @@
       "ChaosRule": {
         "type": "object",
         "properties": {
-          "probability": { "type": "integer" },
+          "probability": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage chance the event fires. Outside 0-100 the PUT is refused with 400 — probability must be an integer between 0 and 100 (issue #32 slice 2, decision 0025)." },
           "error": { "type": ["string", "null"] },
           "delay_ms": { "type": "integer" }
         }

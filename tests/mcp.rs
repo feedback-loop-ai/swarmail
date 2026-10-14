@@ -1125,6 +1125,18 @@ async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
             r#"{"event": "data"}"#,
             "an absent probability is refused, not defaulted",
         ),
+        (
+            r#"{"event": "data", "probability": null}"#,
+            "a supplied null is supplied, not omission",
+        ),
+        (
+            r#"{"event": "data", "probability": 101}"#,
+            "101 is over the ceiling, refused by the shared validator",
+        ),
+        (
+            r#"{"event": "data", "probability": 255}"#,
+            "255 is the u8 ceiling, still over the domain's",
+        ),
     ] {
         let (st, body) = rpc(
             srv.http_addr,
@@ -1165,6 +1177,117 @@ async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
     assert_eq!(text(&r)["data"]["error"], "451 busy");
 }
 
+/// A refused `set_chaos` never stores its rule (decision 0025): the set
+/// tail is the read-back — after the refused data rule, a legal rcpt set
+/// returns the current config with rcpt armed and data still null.
+#[tokio::test]
+async fn a_refused_set_chaos_never_stores_its_rule() {
+    let srv = start().await;
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_set_chaos", "arguments": {"event": "data", "probability": 150}}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        body["error"]["message"], "probability must be an integer between 0 and 100",
+        "{body}"
+    );
+
+    let r = tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event": "rcpt", "probability": 50}"#,
+    )
+    .await;
+    let current = text(&r);
+    assert_eq!(current["rcpt"]["probability"], 50, "{current}");
+    assert!(
+        current["data"].is_null(),
+        "the refused rule was never stored: {current}"
+    );
+}
+
+/// A supplied malformed `timeout_ms` refuses by name and registers no
+/// waiter (decision 0025): against an inbox that already holds a matching
+/// message, the refusal answers immediately — never the Found shape a
+/// silent 5000ms default would give — and the seeded mail is untouched.
+#[tokio::test]
+async fn a_supplied_malformed_timeout_refuses_and_registers_no_waiter() {
+    let srv = start().await;
+    smtp_send(
+        srv.smtp_addr,
+        Some("malformed-wait"),
+        "f@x.io",
+        "seeded@x.io",
+        "seeded",
+        "body",
+    )
+    .await
+    .unwrap();
+
+    for (value, label) in [
+        (r#""invalid""#, "a string is not an integer"),
+        ("-1", "a negative is over no bound — it is unparseable"),
+        ("1.5", "a float would be a narrowing cast"),
+        ("null", "null is supplied: the key is present"),
+    ] {
+        let started = std::time::Instant::now();
+        let (st, body) = rpc(
+            srv.http_addr,
+            "tools/call",
+            &format!(
+                r#"{{"name": "swarmail_wait_for_email", "arguments": {{"inbox": "malformed-wait", "to": "seeded@x.io", "timeout_ms": {value}}}}}"#
+            ),
+        )
+        .await;
+        assert_eq!(st, 200, "{label}: {body}");
+        assert_eq!(body["result"]["isError"], true, "{label}: {body}");
+        assert_eq!(
+            body["result"]["content"][0]["text"],
+            "timeout_ms must be an integer between 0 and 60000",
+            "{label}: {body}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{label}: the refusal must answer immediately, not after a wait: {:?}",
+            started.elapsed()
+        );
+    }
+
+    // The seeded mail is untouched: still listable, never consumed.
+    let r = tool(
+        srv.http_addr,
+        "swarmail_search_emails",
+        r#"{"inbox": "malformed-wait"}"#,
+    )
+    .await;
+    assert_eq!(text(&r)["total"], 1, "{r}");
+}
+
+/// The `timeout_ms: 0` pole is legal on the domain layer: the wait answers
+/// its own real zero deadline at once — `timed_out`, never a refusal and
+/// never the 5000ms default (decision 0025).
+#[tokio::test]
+async fn wait_zero_timeout_is_a_real_zero_deadline() {
+    let srv = start().await;
+    let started = std::time::Instant::now();
+    let result = tool(
+        srv.http_addr,
+        "swarmail_wait_for_email",
+        r#"{"inbox": "zero-wait", "to": "nobody@x.io", "timeout_ms": 0}"#,
+    )
+    .await;
+    assert_eq!(text(&result)["timed_out"], true, "{result}");
+    assert_eq!(text(&result)["matched"], 0, "{result}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "timeout_ms=0 must answer at once: {:?}",
+        started.elapsed()
+    );
+}
+
 /// The published input schemas carry the bounds, so compliant clients refuse
 /// at the tool layer (decision 0018).
 #[tokio::test]
@@ -1179,6 +1302,11 @@ async fn the_schemas_publish_the_wire_bounds() {
 
     let wait = &by_name["swarmail_wait_for_email"]["inputSchema"]["properties"];
     assert_eq!(wait["timeout_ms"]["maximum"], 60000, "{wait}");
+    assert_eq!(wait["timeout_ms"]["minimum"], 0, "{wait}");
+    assert_eq!(
+        wait["timeout_ms"]["default"], 5000,
+        "the schema publishes the one documented default (decision 0025): {wait}"
+    );
     assert!(
         wait["since_ms"].is_object(),
         "the since_ms filter is advertised: {wait}"

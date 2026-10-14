@@ -62,6 +62,29 @@ fn bad_request(msg: impl Into<String>) -> ApiError {
 /// independent of any caller's wait: waits observe the stop watch.
 pub(crate) const MAX_AWAIT_TIMEOUT_MS: u64 = 60_000;
 
+/// The documented wait default (issue #32 slice 2, decision 0025): named
+/// once and used by both parsers — REST's query default and MCP's omitted
+/// `timeout_ms` arm — so an omitted value keeps one documented default and
+/// a *supplied* malformed value can never ride it.
+pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5_000;
+
+/// The supplied-malformed refusal: one sentence, both transports (decision
+/// 0025). A `timeout_ms` that is *present but unparseable* is refused,
+/// naming the field and the domain — it is never treated like omission.
+pub(crate) const WAIT_TIMEOUT_REFUSAL: &str = "timeout_ms must be an integer between 0 and 60000";
+
+/// The one cap check for every wait surface (0018 §3, made shared by
+/// decision 0025): over the cap is a refusal naming the bound, never a
+/// clamp. Both transports call this — REST's query and the MCP wait tool —
+/// so the cap and its words have exactly one owner. Refusal precedes every
+/// effect: an over-cap wait never registers a watcher.
+pub(crate) fn checked_wait_timeout_ms(ms: u64) -> Result<Duration, String> {
+    if ms > MAX_AWAIT_TIMEOUT_MS {
+        return Err(format!("timeout_ms must be at most {MAX_AWAIT_TIMEOUT_MS}"));
+    }
+    Ok(Duration::from_millis(ms))
+}
+
 /// Resolve once the stop has fired — at once if it already has, else on the
 /// next change. Every wait surface races its wait against this signal (the
 /// same receiver the SSE feed consumes: one source of "stopping", never a
@@ -182,15 +205,12 @@ impl AwaitQuery {
     }
 
     fn timeout(&self) -> Result<Duration, ApiError> {
-        let ms = self.timeout_ms.unwrap_or(5000);
-        if ms > MAX_AWAIT_TIMEOUT_MS {
-            // Refused before any subscribe: an over-cap wait never registers
-            // a watcher (decision 0018 — bounds are refusals, never clamps).
-            return Err(bad_request(format!(
-                "timeout_ms must be at most {MAX_AWAIT_TIMEOUT_MS}"
-            )));
-        }
-        Ok(Duration::from_millis(ms))
+        // `unwrap_or` touches only genuine omission (decision 0025): a
+        // supplied malformed `timeout_ms` never reaches here — the query
+        // parse refused it with 400 before the handler ran. Over the cap
+        // is the shared refusal (0018), never a clamp.
+        checked_wait_timeout_ms(self.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS))
+            .map_err(bad_request)
     }
 }
 
@@ -483,9 +503,13 @@ async fn get_chaos(State(state): State<AppState>) -> Json<ChaosConfig> {
 async fn set_chaos(
     State(state): State<AppState>,
     Json(config): Json<ChaosConfig>,
-) -> Json<ChaosConfig> {
+) -> ApiResult<Json<ChaosConfig>> {
+    // The domain rule is owned once (issue #32 slice 2, decision 0025):
+    // validate before any effect — a rejected PUT never calls `Chaos::set`,
+    // so the active rules are unchanged by construction, not by rollback.
+    config.validate().map_err(bad_request)?;
     state.chaos.set(config);
-    Json(state.chaos.current())
+    Ok(Json(state.chaos.current()))
 }
 
 async fn clear_chaos(State(state): State<AppState>) -> Json<ChaosConfig> {
@@ -683,5 +707,64 @@ mod tests {
         assert_eq!(value["total"], 1);
         assert!(value["emails"][0].get("raw").is_none(), "raw is skipped");
         assert_eq!(value["emails"][0]["id"], "p1");
+    }
+
+    /// The shared cap check (decision 0025): the cap arm keeps the exact
+    /// 0018 text the wire tests pin, and the boundary values are real
+    /// durations — the poles are honored, never clamped.
+    #[test]
+    fn checked_wait_timeout_refuses_over_the_cap_and_honors_the_poles() {
+        assert_eq!(
+            checked_wait_timeout_ms(MAX_AWAIT_TIMEOUT_MS + 1),
+            Err(format!("timeout_ms must be at most {MAX_AWAIT_TIMEOUT_MS}"))
+        );
+        assert_eq!(
+            checked_wait_timeout_ms(u64::MAX),
+            Err(format!("timeout_ms must be at most {MAX_AWAIT_TIMEOUT_MS}"))
+        );
+        assert_eq!(checked_wait_timeout_ms(0), Ok(Duration::from_millis(0)));
+        assert_eq!(
+            checked_wait_timeout_ms(MAX_AWAIT_TIMEOUT_MS),
+            Ok(Duration::from_millis(MAX_AWAIT_TIMEOUT_MS))
+        );
+    }
+
+    /// The served contract is pinned to the constants (decision 0025):
+    /// openapi.json's `ChaosRule.probability` bounds, the PUT's documented
+    /// 400 and the await `timeout_ms` default/minimum/maximum all equal the
+    /// domain's numbers — the fourth copy of each can drift only by
+    /// failing CI.
+    #[test]
+    fn the_served_openapi_publishes_the_shared_domain() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("static/openapi.json")).expect("openapi.json");
+        let probability = &doc["components"]["schemas"]["ChaosRule"]["properties"]["probability"];
+        assert_eq!(probability["type"], "integer", "{probability}");
+        assert_eq!(probability["minimum"], 0, "{probability}");
+        assert_eq!(probability["maximum"], crate::chaos::PROBABILITY_MAX);
+
+        let put_400 = &doc["paths"]["/api/v1/chaos"]["put"]["responses"]["400"]["description"];
+        assert!(
+            put_400
+                .as_str()
+                .unwrap()
+                .contains(crate::chaos::PROBABILITY_REFUSAL),
+            "{put_400}"
+        );
+
+        let parameters = &doc["paths"]["/api/v1/inboxes/{inbox}/await"]["get"]["parameters"];
+        let timeout_ms = parameters
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "timeout_ms")
+            .expect("the await documents timeout_ms")["schema"]
+            .clone();
+        assert_eq!(
+            timeout_ms["default"], DEFAULT_WAIT_TIMEOUT_MS,
+            "{timeout_ms}"
+        );
+        assert_eq!(timeout_ms["minimum"], 0, "{timeout_ms}");
+        assert_eq!(timeout_ms["maximum"], MAX_AWAIT_TIMEOUT_MS, "{timeout_ms}");
     }
 }
