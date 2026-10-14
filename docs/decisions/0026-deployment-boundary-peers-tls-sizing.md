@@ -1,6 +1,8 @@
 # 0026 — The deployment boundary admits peers, mounts TLS, and sizes its own restore
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-14 — proposed by run
+  `finalize-the-make-the-gates-test-d4ee2547`'s design panel; the tree
+  implements it and the chart-verify assertions prove the three postures)
 - **Date:** 2026-10-14
 - **Supersedes:** none
 - **Amends:** 0008 §6 in place (the probe contract gains a startup probe
