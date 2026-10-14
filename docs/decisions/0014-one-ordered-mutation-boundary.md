@@ -1,6 +1,6 @@
 # 0014 — One ordered mutation boundary: commit before visibility
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-14 — issue #32 finding 5 resolves the backlog's proposed decisions)
 - **Date:** 2026-10-13
 - **Amends:** [0012](0012-commit-failure-refusal-and-the-mutation-boundary.md)
   (proposed) §4, §5 and §6 **in place** — 0012 still awaits the operator, so

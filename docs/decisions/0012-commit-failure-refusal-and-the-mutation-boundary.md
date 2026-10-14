@@ -1,6 +1,6 @@
 # 0012 — A failed commit refuses, and the memory half of a mutation is one unit
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-14 — issue #32 finding 5 resolves the backlog's proposed decisions)
 - **Date:** 2026-10-12
 - **Supersedes:** none
 - **Preserves:** [0001](0001-synchronous-insert-lossless.md) — strengthened, not weakened; [0003](0003-oldest-only-pruning.md) — untouched; [0023](0023-off-worker-commits.md) (proposed) — built upon, its load-bearing lines not redone

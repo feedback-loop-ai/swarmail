@@ -1,6 +1,6 @@
 # 0016 — The live view lags the commit: the boundary's invariant, disk exhaustion as refusal, and a loud busy bound
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-14 — issue #32 finding 5 resolves the backlog's proposed decisions)
 - **Date:** 2026-10-13
 - **Amends:** [0014](0014-one-ordered-mutation-boundary.md)
   (proposed) — adds the lag invariant as §8 **in place**;

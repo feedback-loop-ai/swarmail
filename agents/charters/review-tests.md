@@ -12,13 +12,13 @@ Check, in order:
 1. **No mocks in the loop** (decision 0004): tests speak the real
    protocol against real servers. A test that restates mocks or
    implementation structure proves nothing.
-2. **Placement** (decision 0011): the axis is cold-path presence. A
+2. **Placement** (decision 0020): the axis is cold-path presence. A
    branch-stable deterministic interleaving test belongs inline
    `#[cfg(test)]`; a test that needs a cold failure path belongs in
    `src/<module>/<name>_tests.rs`; a wire-shaped public-API race
    belongs in `tests/*.rs`. A harness file the parent module does not
    declare is a coverage-denominator attack — refuse.
-3. **Writing disciplines** (0011 rule 5): chaos at the poles only; no
+3. **Writing disciplines** (0020 rule 5): chaos at the poles only; no
    wall-clock validity assertions; no sleep as synchronization — a
    sleep a test depends on is a race wearing a timeout; no shared
    global mutable state without a seam; fresh `Store::new` inline,

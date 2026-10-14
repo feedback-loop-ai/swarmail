@@ -1,6 +1,6 @@
 # 0015 — The boundary's failure contract: refusal timing, a partial POP3 prefix, poison and the second writer
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-14 — issue #32 finding 5 resolves the backlog's proposed decisions)
 - **Date:** 2026-10-14
 - **Amends:** [0012](0012-commit-failure-refusal-and-the-mutation-boundary.md)
   (proposed) §5 and §7 **in place** — 0012 still awaits the operator, so the
