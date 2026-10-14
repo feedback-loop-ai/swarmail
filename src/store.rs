@@ -1900,6 +1900,17 @@ mod bounded_tests {
                     Duration::from_secs(120),
                     &format!("boundary round {round} stuck: a role never finished"),
                 );
+                // A final synchronous insert per inbox pins a non-empty rest
+                // state: the clear_all role may lawfully land last and empty
+                // the store, and a vacuous check (0 == 0 on both sides)
+                // proves nothing about the order the boundary serialized —
+                // the coverage gate refuses exactly that schedule.
+                store
+                    .insert(email(&format!("a{round}-final"), "A", "a@x.io"))
+                    .expect("the boundary probe injects no storage failures");
+                store
+                    .insert(email(&format!("b{round}-final"), "B", "b@x.io"))
+                    .expect("the boundary probe injects no storage failures");
                 assert_boundary_round(&store, round, &path);
             }
             for suffix in ["", "-wal", "-shm"] {
