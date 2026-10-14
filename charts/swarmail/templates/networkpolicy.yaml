@@ -13,8 +13,15 @@ spec:
       {{- include "swarmail.selectorLabels" . | nindent 6 }}
   ingress:
     # SMTP, POP3 and the HTTP surface — every port the server speaks.
+    # The peers are the values' `ingressPeers` rendered verbatim (decision
+    # 0026 §1): the empty default leaves exactly this one same-namespace
+    # `podSelector: {}` entry, so the unset posture is today's byte for
+    # byte; policyTypes stays Ingress-only.
     - from:
         - podSelector: {}
+        {{- with .Values.networkPolicy.ingressPeers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: 1025

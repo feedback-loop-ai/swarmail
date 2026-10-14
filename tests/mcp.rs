@@ -2,7 +2,9 @@
 
 mod common;
 
-use common::{SmtpConn, http_get_text, http_json, smtp_send, start, start_with};
+use common::{
+    SmtpConn, http_get_text, http_json, smtp_send, start, start_with, wait_for_metric_row,
+};
 
 fn base64_of(s: &str) -> String {
     use base64::Engine;
@@ -1040,7 +1042,10 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
         "swarmail_wait_for_email",
         r#"{"inbox": "observed", "to": "racer@x.io", "count": 1, "timeout_ms": 10000}"#,
     ));
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the wait parks
+    // The wait parks, observed under its own inbox — the mail arrives
+    // strictly after the wait registered, so the post-wait total counts it
+    // deterministically (issue #51).
+    wait_for_metric_row(addr, "swarmail_awaits_active{inbox=\"observed\"}", 1).await;
     smtp_send(
         srv.smtp_addr,
         Some("observed"),

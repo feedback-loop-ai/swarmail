@@ -1,6 +1,7 @@
 //! Swarmail — the fastest AI-native SMTP mail mock.
 
 use clap::Parser;
+use std::io::IsTerminal;
 use swarmail::config::{Cli, Command};
 
 #[tokio::main]
@@ -10,11 +11,29 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "swarmail=info,tower_http=off".into()),
         )
+        // ANSI only when stdout can render it: a piped or captured log
+        // (CI, systemd, `docker logs`, the binary tests' own readback of
+        // the startup line) gets plain text, so the tracing fields stay
+        // machine-parseable — `smtp=` must literally appear. A terminal
+        // keeps its color.
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
 
     match Cli::parse().command {
         Command::Serve(args) => {
             let cfg = swarmail::config::Config::from(&args);
+            // The interrupt watcher registers the SIGINT handler before the
+            // servers bind: `tokio::signal::ctrl_c()` registers on its first
+            // poll, and a signal arriving between the startup line and that
+            // first poll would kill the process at the default disposition —
+            // no graceful stop, no drain. A spawned watcher is polled at
+            // run_on's first yield, long before the line the binary tests
+            // (and an operator's terminal) read.
+            let (interrupted_tx, mut interrupted_rx) = tokio::sync::watch::channel(false);
+            tokio::spawn(async move {
+                tokio::signal::ctrl_c().await.expect("ctrl_c handler");
+                let _ = interrupted_tx.send(true);
+            });
             // A server that fails to come up (bad bind, broken TLS pair)
             // exits non-zero with the reason — it must not sit half-alive.
             match swarmail::run_on(&cfg).await {
@@ -27,7 +46,7 @@ async fn main() {
                         server.http_addr
                     );
                     // Serve until interrupted, then stop both servers gracefully.
-                    tokio::signal::ctrl_c().await.expect("ctrl_c handler");
+                    let _ = interrupted_rx.changed().await;
                     tracing::info!("shutting down");
                     server.stop().await;
                 }

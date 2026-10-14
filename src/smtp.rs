@@ -98,9 +98,18 @@ pub async fn serve(
     // cannot accumulate in the set with the cumulative connection count; the
     // set is drained on the shutdown arm, so no session socket outlives the
     // serve loop. (Dropping the set would abort its children — the drain
-    // makes the wait explicit, and the abort is the point: a session
-    // mid-DATA has no commit to land, so the closed socket is the only
-    // goodbye it gets.)
+    // makes the wait explicit, and the abort's reach is stage-precise: a
+    // session that has not crossed the DATA terminator has no commit to
+    // land, so the closed socket is the only goodbye it gets; a session
+    // parked at the insert's await still lands its commit — `insert_async`
+    // offloads the whole mutation to `spawn_blocking` (src/store.rs), and
+    // an abort cannot cancel a blocking closure — so the row is stored but
+    // never acknowledged, the client's retry a duplicate, never a loss
+    // (0001's honest asymmetry), and the parked `_in_flight` guard releases
+    // at the abort, before the orphaned commit resolves — a shutdown-only
+    // observability skew on a process that is leaving anyway.
+    // tests/lifecycle.rs::an_in_flight_commit_neither_holds_stop_nor_half_lands
+    // asserts the wire truth.)
     let mut sessions: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
         // Reap ready completions without blocking: `try_join_next` never
@@ -633,6 +642,14 @@ async fn session(
                 // §4.2.2, requested action aborted), distinct from chaos's
                 // fixed `451 4.3.0 chaos`, internals to the log and never to
                 // the peer — where the old tree acknowledged the lie.
+                // The delivery is observable from the DATA terminator until
+                // the insert resolves: its inbox's
+                // `swarmail_deliveries_in_flight` row is live exactly while
+                // 0001's seam is in motion, so a test can sequence
+                // stop/chaos against a mid-commit delivery instead of
+                // sleeping. The guard releases the row on resolve or
+                // unwind.
+                let _in_flight = crate::api::park_delivery(&email.inbox);
                 match store.clone().insert_async(email).await {
                     Ok(_) => {
                         write_line(reader.get_mut(), &format!("250 2.0.0 OK: stored as {id}"))

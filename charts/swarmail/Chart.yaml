@@ -19,7 +19,7 @@ maintainers:
   - name: feedback-loop-ai
     url: https://github.com/feedback-loop-ai
 annotations:
-  artifacthub.io/license: MIT
+  artifacthub.io/license: MIT OR Apache-2.0
   artifacthub.io/links: |
     - name: source
       url: https://github.com/feedback-loop-ai/swarmail

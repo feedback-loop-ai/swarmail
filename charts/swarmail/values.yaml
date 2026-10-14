@@ -46,12 +46,32 @@ ingress:
   host: swarmail.local
   tls: []
 
+# The memory relation, documented rather than invented (decision 0026 §3):
+# the store holds the restored state resident — every mail read back from
+# the data file lives in memory — so `limits.memory` must cover the
+# restored size of the claim actually mounted, and `SWARMAIL_MAX_PER_INBOX`
+# (config, above) is the knob that bounds what can accumulate per inbox.
+# Size the limit against the claim's restored size; the chart codes no
+# override, because a constant that claims to fit operator data is a guess
+# wearing a default.
 resources:
   requests:
     cpu: 50m
     memory: 32Mi
   limits:
     memory: 256Mi
+
+# The startup window (decision 0026 §3): the data-file restore runs before
+# the first listener binds (accept == stored on the first bind), so the
+# startupProbe is the window in which that restore may run without the
+# kubelet restarting the pod — budget = periodSeconds × failureThreshold,
+# 10s × 90 = 15 minutes by default, sized against a full restore of the
+# default 1 Gi PVC. A slower claim is an operator-sized value, not a crash
+# loop; liveness and readiness keep their own cadence below.
+startupProbe:
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 90
 
 # Every SWARMAIL_* env knob: { "SWARMAIL_MAX_PER_INBOX": "0", ... }
 config: {}
@@ -71,6 +91,30 @@ serviceMonitor:
 
 networkPolicy:
   enabled: false
+  # Extra `from:` peers rendered verbatim into the policy's single ingress
+  # rule (decision 0026 §1) — `namespaceSelector`, `podSelector` or
+  # `ipBlock` entries, e.g. an out-of-namespace Prometheus:
+  #   ingressPeers:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: monitoring
+  #     - ipBlock:
+  #         cidr: 10.0.0.0/8
+  # The empty default renders exactly the same-namespace `podSelector: {}`
+  # posture — an operator who sets nothing inherits it byte for byte.
+  # policyTypes stays Ingress-only: no egress section exists to configure.
+  ingressPeers: []
+
+# TLS for the SMTP/POP3 listeners, fed from an operator-supplied Secret
+# named by `secretName` (decision 0026 §2). The chart mints nothing: the
+# Secret must carry the standard `tls.crt`/`tls.key` keys, mounted
+# read-only at /etc/swarmail/tls and handed to the binary through its own
+# SWARMAIL_TLS_CERT / SWARMAIL_TLS_KEY env contract. With `enabled: false`
+# the chart renders no volume, no mount and no TLS env — the listeners stay
+# plaintext, byte-identical to the unset path.
+tls:
+  enabled: false
+  secretName: ""
 
 tests:
   enabled: true

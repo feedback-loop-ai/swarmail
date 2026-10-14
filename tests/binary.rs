@@ -4,29 +4,126 @@
 
 mod common;
 
-use std::process::{Child, Command, Stdio};
+use std::net::SocketAddr;
+use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::process::{Child, Command};
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_swarmail")
 }
 
-fn serve_cmd() -> Command {
+/// A `serve` child whose bound addresses were read back from its own
+/// startup line (the tracing subscriber's stdout). Fixed ports would make
+/// these tests collide with themselves — cargo runs a binary's tests in
+/// parallel, and one leaked server from a failed assertion would wedge
+/// every later run — so the child binds `:0` and the test learns the real
+/// ports from the process's own observability: the same startup line an
+/// operator sees. On drop, a child that was not reaped is killed: a
+/// failing assertion must never leak a server (still bound, still holding
+/// its data file) into the rest of the run.
+struct Serve {
+    child: Child,
+    smtp_addr: SocketAddr,
+    http_addr: SocketAddr,
+    reaped: bool,
+}
+
+impl Drop for Serve {
+    fn drop(&mut self) {
+        if !self.reaped {
+            // A failed assertion must not leave the binary alive: SIGKILL
+            // is fired synchronously (`start_kill`) — `Drop` cannot await
+            // the reap, and the killed process cannot outlive this test
+            // process for long.
+            let _ = self.child.start_kill();
+        }
+    }
+}
+
+/// The startup line carries the bound addrs as tracing fields
+/// (`... smtp=127.0.0.1:45678 http=127.0.0.1:45679`); the prose in the
+/// message body would be a format contract too fragile to parse.
+fn parse_addrs(line: &str) -> Option<(SocketAddr, SocketAddr)> {
+    let smtp = line.split("smtp=").nth(1)?.split_whitespace().next()?;
+    let http = line.split("http=").nth(1)?.split_whitespace().next()?;
+    Some((smtp.parse().ok()?, http.parse().ok()?))
+}
+
+/// A `serve` command on OS-assigned ports.
+fn serve_command() -> Command {
     let mut cmd = Command::new(binary());
     cmd.args([
         "serve",
         "--smtp-listen",
-        "127.0.0.1:23456",
+        "127.0.0.1:0",
         "--pop3-listen",
         "127.0.0.1:0",
         "--http-listen",
-        "127.0.0.1:23457",
-    ])
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
+        "127.0.0.1:0",
+    ]);
     cmd
+}
+
+/// `serve --data-file <db>` on OS-assigned ports — the persistence tests'
+/// spawn shape.
+fn serve_with_data(db: &std::path::Path) -> Command {
+    let mut cmd = serve_command();
+    cmd.arg("--data-file").arg(db);
+    cmd
+}
+
+/// Spawn `serve` and read its bound addrs off the startup line; the rest of
+/// stderr is drained in the background so the pipe can never fill and block
+/// the server. A server that dies before it is up fails here loudly, with
+/// whatever it said on the way out.
+async fn spawn_serve(cmd: Command) -> Serve {
+    let mut cmd = cmd;
+    // The startup line is the tracing subscriber's output — stdout. Both
+    // pipes are drained (stderr in the background) so neither can fill and
+    // block the server.
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn swarmail serve");
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr);
+        let mut rest = String::new();
+        loop {
+            let n = reader.read_line(&mut rest).await.unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            rest.clear();
+        }
+    });
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let mut transcript = String::new();
+    let addrs = loop {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .await
+            .expect("read the startup line");
+        if n == 0 {
+            break None;
+        }
+        if let Some(pair) = parse_addrs(&line) {
+            break Some(pair);
+        }
+        transcript.push_str(&line);
+    };
+    let (smtp_addr, http_addr) =
+        addrs.unwrap_or_else(|| panic!("the server exited before it was up:\n{transcript}"));
+    Serve {
+        child,
+        smtp_addr,
+        http_addr,
+        reaped: false,
+    }
 }
 
 /// Poll the HTTP port until the server answers (or fail loudly).
@@ -53,7 +150,7 @@ async fn wait_http_up(addr: std::net::SocketAddr) {
 /// by the API-level held-lock tests on the server's own clock.
 async fn sigint_and_wait(child: &mut Child, deadline: Duration) -> std::process::ExitStatus {
     unsafe {
-        libc::kill(child.id() as i32, libc::SIGINT);
+        libc::kill(child.id().expect("a live pid") as i32, libc::SIGINT);
     }
     tokio::time::timeout(deadline, async {
         loop {
@@ -69,9 +166,10 @@ async fn sigint_and_wait(child: &mut Child, deadline: Duration) -> std::process:
 
 #[tokio::test]
 async fn serve_answers_healthz_and_stops_on_sigint() {
-    let mut child = serve_cmd().spawn().expect("spawn swarmail serve");
-    wait_http_up("127.0.0.1:23457".parse().unwrap()).await;
-    let status = sigint_and_wait(&mut child, Duration::from_secs(30)).await;
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+    let status = sigint_and_wait(&mut serve.child, Duration::from_secs(30)).await;
+    serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
 
@@ -85,29 +183,11 @@ async fn serve_restores_a_data_file_across_a_restart() {
             .unwrap()
             .as_nanos()
     ));
-    let smtp_addr: std::net::SocketAddr = "127.0.0.1:23458".parse().unwrap();
-    let http_addr: std::net::SocketAddr = "127.0.0.1:23459".parse().unwrap();
-
     // First run: --data-file as the flag; one real SMTP mail in.
-    let mut child = Command::new(binary())
-        .args([
-            "serve",
-            "--smtp-listen",
-            "127.0.0.1:23458",
-            "--pop3-listen",
-            "127.0.0.1:0",
-            "--http-listen",
-            "127.0.0.1:23459",
-            "--data-file",
-        ])
-        .arg(&db)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn swarmail serve");
-    wait_http_up(http_addr).await;
+    let mut first = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(first.http_addr).await;
     let reply = common::smtp_send(
-        smtp_addr,
+        first.smtp_addr,
         Some("binpersist"),
         "a@x.io",
         "b@x.io",
@@ -117,29 +197,20 @@ async fn serve_restores_a_data_file_across_a_restart() {
     .await
     .expect("smtp send");
     assert!(reply.starts_with("250"), "{reply}");
-    let status = sigint_and_wait(&mut child, Duration::from_secs(30)).await;
+    let status = sigint_and_wait(&mut first.child, Duration::from_secs(30)).await;
+    first.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 
     // Restart with the SWARMAIL_DATA_FILE env knob instead: same file, full
     // state back, and the port answers again.
-    let mut child = Command::new(binary())
-        .args([
-            "serve",
-            "--smtp-listen",
-            "127.0.0.1:23458",
-            "--pop3-listen",
-            "127.0.0.1:0",
-            "--http-listen",
-            "127.0.0.1:23459",
-        ])
-        .env("SWARMAIL_DATA_FILE", &db)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("respawn swarmail serve");
-    wait_http_up(http_addr).await;
+    let mut restarted = {
+        let mut cmd = serve_command();
+        cmd.env("SWARMAIL_DATA_FILE", &db);
+        spawn_serve(cmd).await
+    };
+    wait_http_up(restarted.http_addr).await;
     let (st, list) = common::http_json(
-        http_addr,
+        restarted.http_addr,
         "GET",
         "/api/v1/inboxes/binpersist/messages",
         None,
@@ -148,7 +219,8 @@ async fn serve_restores_a_data_file_across_a_restart() {
     assert_eq!(st, 200);
     assert_eq!(list["total"], 1, "mail did not survive the restart: {list}");
     assert_eq!(list["emails"][0]["subject"], "Binary persist");
-    let status = sigint_and_wait(&mut child, Duration::from_secs(30)).await;
+    let status = sigint_and_wait(&mut restarted.child, Duration::from_secs(30)).await;
+    restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
@@ -164,7 +236,7 @@ async fn mcp_bridge_exits_zero_at_eof_without_touching_the_network() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn swarmail mcp");
-    let status = child.wait().unwrap();
+    let status = child.wait().await.unwrap();
     assert!(status.success(), "mcp EOF exit: {status:?}");
 }
 
@@ -261,29 +333,9 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
             .unwrap()
             .as_nanos()
     ));
-    let smtp_addr: std::net::SocketAddr = "127.0.0.1:23470".parse().unwrap();
-    let http_addr: std::net::SocketAddr = "127.0.0.1:23471".parse().unwrap();
-    let spawn_serve = || {
-        Command::new(binary())
-            .args([
-                "serve",
-                "--smtp-listen",
-                "127.0.0.1:23470",
-                "--pop3-listen",
-                "127.0.0.1:0",
-                "--http-listen",
-                "127.0.0.1:23471",
-                "--data-file",
-            ])
-            .arg(&db)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn swarmail serve")
-    };
-
-    let mut child = spawn_serve();
-    wait_http_up(http_addr).await;
+    let mut serve = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(serve.http_addr).await;
+    let smtp_addr = serve.smtp_addr;
 
     // Three pipelined writers hammering the same data file, each recording
     // the ids of every observed acceptance.
@@ -324,12 +376,13 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     unsafe {
-        libc::kill(child.id() as i32, libc::SIGKILL);
+        libc::kill(serve.child.id().expect("a live pid") as i32, libc::SIGKILL);
     }
-    // Reap the corpse so the port is free for the respawn.
+    // Reap the corpse — nothing is left to the reaper, and the pid can
+    // never be reused under the guard's later kill.
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if child.try_wait().unwrap().is_some() {
+            if serve.child.try_wait().unwrap().is_some() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -337,6 +390,7 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
     })
     .await
     .expect("SIGKILLed server did not die");
+    serve.reaped = true;
 
     // Every sender's socket dies with the process; each returns the ids it
     // observed up to the kill.
@@ -350,10 +404,10 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
     );
 
     // Respawn on the same file and demand every observed id back.
-    let mut child = spawn_serve();
-    wait_http_up(http_addr).await;
+    let mut restarted = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(restarted.http_addr).await;
     let (st, list) = common::http_json(
-        http_addr,
+        restarted.http_addr,
         "GET",
         "/api/v1/inboxes/killbox/messages?limit=1000000",
         None,
@@ -372,7 +426,8 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
             "a mail whose 250 was observed ({id}) was lost across a hard kill"
         );
     }
-    let status = sigint_and_wait(&mut child, Duration::from_secs(30)).await;
+    let status = sigint_and_wait(&mut restarted.child, Duration::from_secs(30)).await;
+    restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
@@ -400,6 +455,7 @@ async fn gen_cert_writes_a_pair_the_server_serves() {
         .args(["gen-cert", "--domain", "localhost", "--out"])
         .arg(&dir)
         .output()
+        .await
         .expect("spawn swarmail gen-cert");
     assert!(out.status.success(), "gen-cert failed: {out:?}");
     assert!(String::from_utf8_lossy(&out.stdout).contains("cert.pem"));
@@ -408,26 +464,14 @@ async fn gen_cert_writes_a_pair_the_server_serves() {
     let key = dir.join("key.pem");
     assert!(cert.is_file() && key.is_file(), "gen-cert wrote no pair");
 
-    let mut child = Command::new(binary())
-        .args([
-            "serve",
-            "--smtp-listen",
-            "127.0.0.1:23460",
-            "--pop3-listen",
-            "127.0.0.1:0",
-            "--http-listen",
-            "127.0.0.1:23461",
-            "--tls-cert",
-        ])
-        .arg(&cert)
-        .args(["--tls-key"])
-        .arg(&key)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn swarmail serve");
-    let smtp_addr: std::net::SocketAddr = "127.0.0.1:23460".parse().unwrap();
-    wait_http_up("127.0.0.1:23461".parse().unwrap()).await;
+    let mut serve = {
+        let mut cmd = serve_command();
+        cmd.arg("--tls-cert").arg(&cert);
+        cmd.args(["--tls-key"]).arg(&key);
+        spawn_serve(cmd).await
+    };
+    wait_http_up(serve.http_addr).await;
+    let smtp_addr = serve.smtp_addr;
 
     let pair_pem = std::fs::read_to_string(&cert).unwrap();
     let root = rustls_pemfile::certs(&mut pair_pem.as_bytes())
@@ -441,7 +485,8 @@ async fn gen_cert_writes_a_pair_the_server_serves() {
     assert!(tls.reply_raw().await.starts_with("250"));
     let stored = tls.data("Subject: from the cli\r\n\r\nbody").await;
     assert!(stored.starts_with("250"), "{stored}");
-    let status = sigint_and_wait(&mut child, Duration::from_secs(30)).await;
+    let status = sigint_and_wait(&mut serve.child, Duration::from_secs(30)).await;
+    serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -454,27 +499,18 @@ async fn serve_takes_tls_from_the_environment() {
         .args(["gen-cert", "--domain", "localhost", "--out"])
         .arg(&dir)
         .output()
+        .await
         .expect("spawn swarmail gen-cert");
     assert!(out.status.success());
 
-    let mut child = Command::new(binary())
-        .args([
-            "serve",
-            "--smtp-listen",
-            "127.0.0.1:23462",
-            "--pop3-listen",
-            "127.0.0.1:0",
-            "--http-listen",
-            "127.0.0.1:23463",
-        ])
-        .env("SWARMAIL_TLS_CERT", dir.join("cert.pem"))
-        .env("SWARMAIL_TLS_KEY", dir.join("key.pem"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn swarmail serve");
-    let smtp_addr: std::net::SocketAddr = "127.0.0.1:23462".parse().unwrap();
-    wait_http_up("127.0.0.1:23463".parse().unwrap()).await;
+    let mut serve = {
+        let mut cmd = serve_command();
+        cmd.env("SWARMAIL_TLS_CERT", dir.join("cert.pem"));
+        cmd.env("SWARMAIL_TLS_KEY", dir.join("key.pem"));
+        spawn_serve(cmd).await
+    };
+    wait_http_up(serve.http_addr).await;
+    let smtp_addr = serve.smtp_addr;
 
     let pair_pem = std::fs::read_to_string(dir.join("cert.pem")).unwrap();
     let root = rustls_pemfile::certs(&mut pair_pem.as_bytes())
@@ -484,7 +520,8 @@ async fn serve_takes_tls_from_the_environment() {
     let mut tls = common::starttls(smtp_addr, "localhost", root).await;
     tls.send("NOOP").await;
     assert!(tls.reply_raw().await.starts_with("250"));
-    let status = sigint_and_wait(&mut child, Duration::from_secs(30)).await;
+    let status = sigint_and_wait(&mut serve.child, Duration::from_secs(30)).await;
+    serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -504,11 +541,11 @@ async fn serve_with_a_malformed_cert_exits_non_zero_and_says_why() {
         .args([
             "serve",
             "--smtp-listen",
-            "127.0.0.1:23464",
+            "127.0.0.1:0",
             "--pop3-listen",
             "127.0.0.1:0",
             "--http-listen",
-            "127.0.0.1:23465",
+            "127.0.0.1:0",
             "--tls-cert",
         ])
         .arg(&cert)
@@ -530,12 +567,12 @@ async fn serve_with_a_malformed_cert_exits_non_zero_and_says_why() {
     .expect("server with a broken cert must exit, not hang");
     assert!(!status.success(), "broken TLS must be a non-zero exit");
     let mut stderr = String::new();
-    use std::io::Read;
     child
         .stderr
         .take()
         .unwrap()
         .read_to_string(&mut stderr)
+        .await
         .unwrap();
     assert!(stderr.contains("tls-cert"), "{stderr}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -550,6 +587,7 @@ async fn gen_cert_to_an_occupied_target_exits_non_zero() {
         .args(["gen-cert", "--domain", "localhost", "--out"])
         .arg(&occupied)
         .output()
+        .await
         .expect("spawn swarmail gen-cert");
     assert!(!out.status.success(), "occupied --out must fail");
     assert!(String::from_utf8_lossy(&out.stderr).contains("swarmail"));
@@ -564,9 +602,10 @@ async fn gen_cert_to_an_occupied_target_exits_non_zero() {
 /// boundary — a real SIGINT, and the process exits 0 within the budget
 /// (upper bound only, sequence-independent: the seed that wins the boundary
 /// first burns its own 5s bound, the queued ones refuse at the check in
-/// microseconds). The 300ms pause is sequencing, not an outcome wait. The
-/// restarted copy is exactly the committed set — here empty, every commit
-/// having refused against the held lock — never a partial row.
+/// microseconds). The seeds' arrival on the boundary is observed over
+/// `/metrics`, not timed for. The restarted copy is exactly the committed
+/// set — here empty, every commit having refused against the held lock —
+/// never a partial row.
 #[tokio::test]
 async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
     let db = std::env::temp_dir().join(format!(
@@ -577,24 +616,9 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
             .unwrap()
             .as_nanos()
     ));
-    let http_addr: std::net::SocketAddr = "127.0.0.1:23473".parse().unwrap();
-    let mut child = Command::new(binary())
-        .args([
-            "serve",
-            "--smtp-listen",
-            "127.0.0.1:23472",
-            "--pop3-listen",
-            "127.0.0.1:0",
-            "--http-listen",
-            "127.0.0.1:23473",
-            "--data-file",
-        ])
-        .arg(&db)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn swarmail serve");
-    wait_http_up(http_addr).await;
+    let mut serve = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(serve.http_addr).await;
+    let http_addr = serve.http_addr;
 
     // The test's own connection: the writer lock the commits must refuse
     // against, held through the whole exit.
@@ -608,13 +632,25 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
             common::http_json(http_addr, "POST", &route, Some(body)).await
         }));
     }
-    tokio::time::sleep(Duration::from_millis(300)).await; // the seeds queue on the boundary
+    // The seeds are inside the router, observed: each seed's own labeled
+    // row — the request is in flight and its commit is queued on the
+    // mutation boundary. A per-inbox row can only be raised by this
+    // process's seeds, never a parallel test's scrape (issue #51).
+    for inbox in ["sigint-one", "sigint-two", "sigint-three"] {
+        common::wait_for_metric_row(
+            http_addr,
+            &format!("swarmail_http_requests_in_flight{{inbox={inbox:?}}}"),
+            1,
+        )
+        .await;
+    }
 
     // Real SIGINT: the same graceful path `stop()` takes, at the process
     // level. The exit wait is liveness (30s); the budget — at most one
     // busy bound plus ε — is what the API-level held-lock tests prove on
     // the server's own clock.
-    let status = sigint_and_wait(&mut child, Duration::from_secs(30)).await;
+    let status = sigint_and_wait(&mut serve.child, Duration::from_secs(30)).await;
+    serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 
     for seed in seeds {
@@ -633,26 +669,11 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
     // The restarted copy is exactly the committed set: empty. The lock is
     // released first — the restart must be able to restore.
     drop(_lock);
-    let mut restarted = Command::new(binary())
-        .args([
-            "serve",
-            "--smtp-listen",
-            "127.0.0.1:23472",
-            "--pop3-listen",
-            "127.0.0.1:0",
-            "--http-listen",
-            "127.0.0.1:23473",
-            "--data-file",
-        ])
-        .arg(&db)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("restart swarmail serve");
-    wait_http_up(http_addr).await;
+    let mut restarted = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(restarted.http_addr).await;
     for inbox in ["sigint-one", "sigint-two", "sigint-three"] {
         let (st, list) = common::http_json(
-            http_addr,
+            restarted.http_addr,
             "GET",
             &format!("/api/v1/inboxes/{inbox}/messages"),
             None,
@@ -661,7 +682,8 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
         assert_eq!(st, 200, "{list}");
         assert_eq!(list["total"], 0, "the refused set never landed: {list}");
     }
-    let status = sigint_and_wait(&mut restarted, Duration::from_secs(30)).await;
+    let status = sigint_and_wait(&mut restarted.child, Duration::from_secs(30)).await;
+    restarted.reaped = true;
     assert!(status.success(), "restart SIGINT exit: {status:?}");
     let _ = std::fs::remove_file(&db);
     let _ = std::fs::remove_file(db.with_extension("db-wal"));

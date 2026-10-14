@@ -4,6 +4,13 @@ on:
   push:
   pull_request:
 
+# Least privilege by default: every job runs with read-only repository
+# access unless it grants itself more (AC52.2). The publish jobs ask for
+# `packages: write`, the audit for its check annotations — everything else
+# inherits this floor, so a compromised action can at most read the tree.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -15,18 +22,21 @@ jobs:
   quality:
     name: format, clippy, publish guard
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: bash scripts/publish-guard-test.sh
 
-  # The whole suite on every OS the realm supports — Linux and macOS per
-  # decision 0063 (no windows). --locked for the same freshness contract.
+  # The whole suite on every OS the realm supports — Linux and macOS (the
+  # release notes name the two; there is no Windows runner in this realm).
+  # --locked for the same freshness contract.
   test:
     name: test (${{ matrix.os }})
     strategy:
@@ -34,28 +44,38 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo test --workspace --locked
 
   # Exact 100% of lines, branches and functions, on every push and PR — not
-  # just main. The gate itself pins nightly (+branch coverage needs it),
-  # measures with --locked, and preserves the full lcov + summary under
-  # target/coverage/ even on refusal, so the artifact below is burn-down
-  # evidence, not just a green check.
+  # just main. The gate never auto-installs a toolchain and refuses without
+  # one: it probes `nightly` first and uses it when that toolchain carries
+  # `llvm-tools`, else falls back to an installed dated `nightly-*` that
+  # does (the resolution CI satisfies below by installing nightly with the
+  # component). `dtolnay/rust-toolchain` with the `nightly` toolchain pin
+  # supplies exactly that. The gate measures with --locked and preserves the
+  # full lcov + summary under target/coverage/ even on refusal, so the
+  # artifact below is burn-down evidence, not just a green check.
   coverage:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@f0d5300ba8908d942c808f4d31c08471d7798ba3 # nightly
         with:
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@cargo-llvm-cov
-      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-llvm-cov
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: bash scripts/coverage-gate.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: coverage-evidence
@@ -63,12 +83,43 @@ jobs:
 
   # License compliance stays the cargo-deny beat; the hermetic verify-seat
   # keeps exactly this check (no network).
+  #
+  # The rustls-only posture is proved here too, fail closed (AC52.3): the
+  # native-tls probe must be *demonstrably* absent. Exit 0 means it is
+  # present — refuse; a failure that does not name the absence means cargo
+  # itself broke and the absence is unprovable — refuse. (The probe's
+  # no-match exit code varies by cargo — 1 on some versions, 101 on
+  # current — so the canonical "did not match any packages" message is the
+  # stable absence contract; anything else refuses.)
   deny:
+    name: deny
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: taiki-e/install-action@cargo-deny
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2
+        with:
+          tool: cargo-deny
       - run: cargo deny check licenses
+      - name: Prove native-tls absent (fail closed)
+        run: |
+          set +e
+          out=$(cargo tree -i native-tls 2>&1)
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "REFUSAL: native-tls is in the dependency tree; the realm is rustls-only (AC52.3):" >&2
+            echo "$out" >&2
+            exit 1
+          elif echo "$out" | grep -q "did not match any packages"; then
+            echo "native-tls absent — rustls-only confirmed"
+          else
+            echo "REFUSAL: cargo tree failed (exit $code) and did not report absence; absence cannot be proved — refusing closed:" >&2
+            echo "$out" >&2
+            exit 1
+          fi
 
   # RustSec advisories are CI-only: the advisory DB needs the network the
   # hermetic seat deliberately denies, and a vulnerable dependency is a CI
@@ -81,37 +132,106 @@ jobs:
       checks: write
       issues: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: rustsec/audit-check@v2.0.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # The delivery constitution is compiled by the *recorded* brokkr, not by
+  # whatever `cargo install` would resolve today — two 0.12.0 binaries have
+  # already disagreed (the bundle grammar moved). The pin lives in
+  # `bundles/self/tooling.json`, an operator-owned record (commit SHA, never
+  # a version string); absent or malformed, this job refuses with the name
+  # of what is wrong — fail closed, never silently skipped (AC52.1).
+  brokkr-compile:
+    name: brokkr bundle (pinned)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Read the pinned brokkr record (fail closed)
+        id: tooling
+        run: |
+          set -euo pipefail
+          record=bundles/self/tooling.json
+          if [ ! -f "$record" ]; then
+            echo "REFUSAL: $record is absent — the brokkr pin is an operator-owned record (see .forge/run6-operator-edits.md); the bundle cannot be compiled against a known toolchain without it, so this job refuses" >&2
+            exit 1
+          fi
+          if ! jq -e '.brokkr | type == "object" and (.sha | type == "string" and length == 40) and (.version | type == "string" and length > 0)' "$record" > /dev/null; then
+            echo "REFUSAL: $record is malformed — expected {\"brokkr\": {\"sha\": \"<40-hex commit>\", \"version\": \"<x.y.z>\"}}" >&2
+            exit 1
+          fi
+          echo "sha=$(jq -r '.brokkr.sha' "$record")" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r '.brokkr.version' "$record")" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: feedback-loop-ai/brokkr
+          ref: ${{ steps.tooling.outputs.sha }}
+          path: brokkr-src
+      - name: Build the pinned brokkr
+        working-directory: brokkr-src
+        run: cargo build --release
+      - name: Assert the built version is the recorded one
+        run: |
+          built="$(brokkr-src/target/release/brokkr --version)"
+          expected="brokkr ${{ steps.tooling.outputs.version }}"
+          if [ "$built" != "$expected" ]; then
+            echo "REFUSAL: the built brokkr is '$built' but the record pins '$expected'" >&2
+            exit 1
+          fi
+      - name: Compile the delivery bundle with the pinned brokkr
+        run: brokkr-src/target/release/brokkr compile --bundle bundles/self
+
+  # The 5k delivery-bound proof at release optimization, tag-scoped and
+  # non-required: a slow release run must never block a PR, but a tag that
+  # cannot survive its own rate proof does not publish. No `needs:` — it
+  # rides the same push as the gates without gating on them (the publish
+  # jobs gate on the required set; this job's verdict is evidence, not
+  # permission).
+  release-rate-5k:
+    name: release rate 5k (tags only)
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo test --release --locked --test rate -- --ignored --nocapture
+
   # Publication is one gated run (decision 0018 §6): the docker build cannot
-  # start until the five gates of the same invocation are green, and it runs
-  # only for main and v* tag refs. `main` pushes the rolling `:main` and the
-  # exact-commit `:sha-<sha>` only. The `:<version>` tag publishes only when
-  # the triggering ref is exactly `v<Cargo.toml version>` (publish-guard.sh,
-  # full-string match) and the registry probe reports that tag absent (404):
-  # an existing tag refuses, an unreadable registry refuses — fail closed.
-  # A pre-push check, not registry-side immutability (GHCR enforces none):
-  # a concurrent publish can still race the probe, and re-publishing a
-  # version means deleting the registry tag — the deliberate recovery.
+  # start until the required gates of the same invocation are green — the
+  # pinned brokkr compile among them — and it runs only for main and v* tag
+  # refs. `main` pushes the rolling `:main` and the exact-commit
+  # `:sha-<sha>` only. The `:<version>` tag publishes only when the
+  # triggering ref is exactly `v<Cargo.toml version>` (publish-guard.sh,
+  # full-string match) and the registry probe reports both tag forms absent
+  # (404/404): an existing tag refuses, an unreadable registry refuses —
+  # fail closed. A pre-push check, not registry-side immutability (GHCR
+  # enforces none): a concurrent publish can still race the probe, and
+  # re-publishing a version means deleting the registry tag — the
+  # deliberate recovery. Both `:v<version>` and `:<version>` are pushed:
+  # the two forms the docs name (issue #53).
   # NOT enforced: anything about :main/:sha-<sha> (re-publishable by design)
   # and any actor who can already push tags or delete packages.
   docker:
     runs-on: ubuntu-latest
-    needs: [quality, test, coverage, deny, dependency-audit]
+    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile]
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Read the crate version (the chart's appVersion must resolve)
         id: ver
         run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -125,7 +245,7 @@ jobs:
         run: scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/swarmail
       - name: Push the continuous tags (main + the exact commit)
         if: github.ref == 'refs/heads/main'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           push: true
@@ -134,13 +254,15 @@ jobs:
             ghcr.io/feedback-loop-ai/swarmail:sha-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Push the release tag (v* refs only)
+      - name: Push the release tags (v* refs only, both forms)
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           push: true
-          tags: ghcr.io/feedback-loop-ai/swarmail:${{ steps.ver.outputs.version }}
+          tags: |
+            ghcr.io/feedback-loop-ai/swarmail:v${{ steps.ver.outputs.version }}
+            ghcr.io/feedback-loop-ai/swarmail:${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -148,7 +270,8 @@ jobs:
   # contract (scripts/chart-verify.sh, helm-only, no cluster) on every push
   # and PR. The packaged chart publishes only from a `v*` tag ref (decision
   # 0018 §6) — and only when the triggering ref is exactly `v<Chart.yaml
-  # version>` (publish-guard.sh, full-string match) and the OCI probe
+  # version>` (publish-guard.sh, full-string match; the chart's OCI tags
+  # are the bare form, so the guard probes that one) and the OCI probe
   # reports that version absent (404): an existing version refuses, an
   # unreadable registry refuses — fail closed. A pre-push check, not
   # registry-side immutability (GHCR enforces none).
@@ -158,17 +281,17 @@ jobs:
   chart:
     name: helm chart
     runs-on: ubuntu-latest
-    needs: [quality, test, coverage, deny, dependency-audit]
+    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile]
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.16.3
       - run: bash scripts/chart-verify.sh
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           registry: ghcr.io
@@ -186,7 +309,7 @@ jobs:
           VERSION: ${{ steps.chartver.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_USER: ${{ github.actor }}
-        run: scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/charts/swarmail
+        run: scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/charts/swarmail bare
       - name: Publish the chart (OCI, ghcr.io, v* refs only)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |

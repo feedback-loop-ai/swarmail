@@ -355,6 +355,103 @@ pub async fn http_get_text(addr: std::net::SocketAddr, path: &str) -> (u16, Stri
     )
 }
 
+/// Read one metric's value out of a `/metrics` body (Prometheus text
+/// format). `None` when the row is absent — the caller decides whether that
+/// is a red test or a poll that must keep waiting.
+pub fn metric_value(text: &str, name: &str) -> Option<u64> {
+    metric_row_value(text, name)
+}
+
+/// Read one metric row's value, matched on the row's whole first token:
+/// `swarmail_awaits_active` matches only the unlabeled total and
+/// `swarmail_awaits_active{inbox="x"}` only that label's sample — a label
+/// can never be confused with its family's aggregate row.
+pub fn metric_row_value(text: &str, row: &str) -> Option<u64> {
+    text.lines()
+        .filter(|line| !line.starts_with('#'))
+        .find_map(|line| {
+            let mut parts = line.split_whitespace();
+            if parts.next() == Some(row) {
+                parts.next().and_then(|value| value.parse().ok())
+            } else {
+                None
+            }
+        })
+}
+
+/// One scrape of `name` off `/metrics`, over real HTTP — the reading leg of
+/// the gauge pair (issue #51).
+pub async fn metric_now(addr: std::net::SocketAddr, name: &str) -> u64 {
+    let (status, text) = http_get_text(addr, "/metrics").await;
+    assert_eq!(status, 200, "metrics must answer while reading {name}");
+    metric_value(&text, name).unwrap_or_else(|| panic!("metrics missing {name}:\n{text}"))
+}
+
+/// Poll `/metrics` (deadline-bounded) until `name` has risen by `delta`
+/// over `baseline`, then return the value. Capture the baseline with
+/// [`metric_now`] BEFORE the trigger exists (before the request whose park
+/// is awaited is spawned): a baseline taken afterwards can already observe
+/// the awaited state, and a delta over an already-satisfied state can
+/// never fire — the sleep's race in a nicer dress.
+///
+/// This shape is sound **only for monotonic counters** (`*_total`): a
+/// counter never falls, so only new activity can satisfy the delta. A
+/// *gauge* can fall (parallel tests' units resolve while the poll runs),
+/// so a delta over a baseline is a coin flip on one — gauge polls go
+/// through [`wait_for_metric_row`] instead, whose labeled row is
+/// per-test-unique (decision 0004) and cannot be raised by another test.
+pub async fn wait_for_metric_from(
+    addr: std::net::SocketAddr,
+    name: &str,
+    baseline: u64,
+    delta: u64,
+) -> u64 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let value = metric_now(addr, name).await;
+        if value >= baseline + delta {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{name} never rose by {delta} over {baseline} (last value {value})"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// [`wait_for_metric_from`] with the baseline taken at the first
+/// observation — the right shape for monotonic counters (`*_total`) whose
+/// trigger is still ahead of the poll: the baseline cannot already include
+/// the awaited event.
+pub async fn wait_for_metric(addr: std::net::SocketAddr, name: &str, delta: u64) -> u64 {
+    wait_for_metric_from(addr, name, metric_now(addr, name).await, delta).await
+}
+
+/// Poll `/metrics` (deadline-bounded) until the exact row `row` —
+/// `family{inbox="…"}` — reaches `wanted`, then return it. The labeled row
+/// is the sound gauge poll: the label names the caller's own unit (the
+/// per-test inbox, decision 0004), so a parallel test's parked wait or
+/// mid-commit delivery can never satisfy it, and the row's very existence
+/// is the unit's liveness — a resolved unit renders no row at all.
+pub async fn wait_for_metric_row(addr: std::net::SocketAddr, row: &str, wanted: u64) -> u64 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let (status, text) = http_get_text(addr, "/metrics").await;
+        assert_eq!(status, 200, "metrics must answer while polling {row}");
+        if let Some(value) = metric_row_value(&text, row)
+            && value >= wanted
+        {
+            return value;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{row} never reached {wanted}; last /metrics body:\n{text}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// The body-honest GET: `(status, body as raw octets)`. `http_get_text`'s
 /// lossy read is exactly what masked the raw-bytes defect — never use it on
 /// a body that must round-trip. Stringification stays confined to the ASCII
@@ -402,13 +499,17 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
     (status, head, buf[split + 4..].to_vec())
 }
 
-/// Tiny raw-HTTP client — enough for Swarmail's own JSON API, no client dep.
-pub async fn http_json(
+/// The raw-HTTP text client: `(status, body as String)` for any method.
+/// `http_json` parses on top of this; a caller that *expects* a non-JSON
+/// body (axum's text rejections, a no-content 202) comes here instead —
+/// reading a text response as JSON is exactly the dishonesty issue #50
+/// named, and so is silencing it back into `{}`.
+pub async fn http_send_text(
     addr: std::net::SocketAddr,
     method: &str,
     path: &str,
     body: Option<&str>,
-) -> (u16, serde_json::Value) {
+) -> (u16, String) {
     let mut stream = TcpStream::connect(addr).await.unwrap();
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n");
     if let Some(b) = body {
@@ -436,11 +537,42 @@ pub async fn http_json(
         .unwrap()
         .parse()
         .unwrap();
-    let body = s.split("\r\n\r\n").nth(1).unwrap_or("{}");
-    (
-        status,
-        serde_json::from_str(body).unwrap_or(serde_json::json!({})),
-    )
+    // split_once, not split: a body may itself contain \r\n\r\n.
+    let body = s
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("")
+        .to_string();
+    (status, body)
+}
+
+/// Tiny raw-HTTP client — enough for Swarmail's own JSON API, no client dep.
+///
+/// A non-JSON body is a loud failure, never a silent `{}`: the old
+/// `unwrap_or(json!({}))` could turn a 404's HTML error page — or a UI
+/// route answering an accidental wrong path — into an empty object, and an
+/// assertion against the empty object passes vacuously (issue #50). A
+/// caller that expects JSON gets JSON or a red test that names the method,
+/// the path, the status and the body; a caller that expects anything else
+/// has `http_send_text`. A genuinely empty body on a no-content status
+/// (204/304) stays absence — garbage and absence are different failures
+/// and only the first is dishonest (decision in the framing, R7).
+pub async fn http_json(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> (u16, serde_json::Value) {
+    let (status, body) = http_send_text(addr, method, path, body).await;
+    match serde_json::from_str(&body) {
+        Ok(parsed) => (status, parsed),
+        Err(_) if body.is_empty() && (status == 204 || status == 304) => {
+            (status, serde_json::Value::Null)
+        }
+        Err(err) => {
+            panic!("http_json {method} {path}: status {status} body is not JSON ({err}): {body:?}")
+        }
+    }
 }
 
 /// A rustls client that trusts exactly one root — the cert the server is

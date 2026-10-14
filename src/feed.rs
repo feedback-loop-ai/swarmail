@@ -213,11 +213,21 @@ mod tests {
     #[tokio::test]
     async fn a_cleared_inbox_ends_the_feed_after_the_snapshot() {
         let store = Arc::new(Store::new(0));
+        // The stop sender is bound for the whole test. A temporary here
+        // (`quiet_shutdown().1`) would drop the sender at the end of the
+        // statement, so after the clear *both* select arms — the closed
+        // watcher and the resolved dropped-sender watch — would be ready,
+        // and `tokio::select!` picks a ready branch at random: the
+        // `Err(RecvError::Closed) => None` arm's hit count would be a coin
+        // flip under the exact coverage gate (issue #50). With the sender
+        // alive, `changed()` provably pends and `Closed` is the only ready
+        // branch — branch-stable, inline (decision 0020 rule 1).
+        let (_shutdown_tx, shutdown_rx) = quiet_shutdown();
         let stream = feed_events(
             store.clone(),
             "box".into(),
             store.subscribe("box"),
-            quiet_shutdown().1,
+            shutdown_rx,
         );
         tokio::pin!(stream);
         // The snapshot goes out first: the post-subscribe view of the box.

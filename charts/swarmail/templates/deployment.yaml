@@ -72,6 +72,19 @@ spec:
             periodSeconds: {{ .Values.probes.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.failureThreshold }}
+          # The restore window (decision 0026 §3): the data file is fully
+          # restored before the first listener binds — accept == stored on
+          # the first bind, the deployment edge of 0001 — so this probe is
+          # the only thing standing between a slow restore and a crash
+          # loop. Its budget is its own periodSeconds × failureThreshold
+          # (values.yaml); liveness and readiness keep the cadence above.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
@@ -85,6 +98,16 @@ spec:
             - name: SWARMAIL_DATA_FILE
               value: /data/swarmail.db
             {{- end }}
+            {{- if .Values.tls.enabled }}
+            # The binary's own TLS env contract, pointed at the mounted
+            # Secret's files (decision 0026 §2): the chart mints nothing
+            # and asserts nothing about the certificate's lifetime (0020
+            # rule 5) — it only wires what the operator supplied.
+            - name: SWARMAIL_TLS_CERT
+              value: /etc/swarmail/tls/tls.crt
+            - name: SWARMAIL_TLS_KEY
+              value: /etc/swarmail/tls/tls.key
+            {{- end }}
             {{- range $name, $value := .Values.config }}
             - name: {{ $name }}
               value: {{ $value | quote }}
@@ -97,6 +120,11 @@ spec:
             - name: data
               mountPath: /data
             {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /etc/swarmail/tls
+              readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -104,6 +132,11 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ default (printf "%s-data" (include "swarmail.fullname" .)) .Values.persistence.existingClaim }}
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ required "tls.enabled requires tls.secretName (the Secret that carries tls.crt/tls.key)" .Values.tls.secretName }}
         {{- end }}
         - name: tmp
           emptyDir: {}
