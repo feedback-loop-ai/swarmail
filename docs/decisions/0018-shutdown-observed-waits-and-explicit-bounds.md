@@ -1,12 +1,20 @@
 # 0018 — Shutdown-observed waits, explicit wire bounds, and the thread fallback's exact scope
 
-- **Status:** accepted (operator, 2026-10-15 — delivered by the post-P1
+- **Status:** accepted (operator, 2026-10-13 — delivered by the post-P1
   closure run at 6ed8e3e and reviewed by its panel; the §6 posture and the
   landing task were superseded by 0019's run)
-- **Date:** 2026-10-15
+- **Date:** 2026-10-13
 - **Supersedes:** none
 - **Amends:** 0008 §4/§5 in place (proposed; the deployment-contract edits are a landing task of the closing run)
 - **Amended by:** 0019 — §6's `v*`-prefix posture and the §Refused registry-probe item are superseded by the exact-ref bind and the fail-closed probe (a landing task of the closing run)
+- **Amended by:** [0024](0024-shutdown-refusal-at-the-boundary.md) — §1's
+  last sentence and §2's mutation mechanics: the store becomes a **reader**
+  of the stop watch and `record()` refuses to **start** a commit once
+  stopping, so a queued HTTP mutation never burns its own busy bound after
+  shutdown begins — the process burns at most one busy bound (plus ε per
+  queued release) in every interleaving, a commit already started runs to
+  completion, and the refusal answers the fixed 0012 §2 text (a landing
+  task of the issue-#32 slices 1/5/6 run).
 
 ## Context
 

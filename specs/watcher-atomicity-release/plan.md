@@ -41,7 +41,7 @@ files it touches, and the risks with mitigations.
 
 Public-contract deltas (SSE stream ends on drain; wait path answers
 `Closed` with a re-subscribe; channel lifetime policy) are recorded in
-[`docs/decisions/0010-watcher-channel-lifetime.md`](../../docs/decisions/0010-watcher-channel-lifetime.md),
+[`docs/decisions/0021-watcher-channel-lifetime.md`](../../docs/decisions/0021-watcher-channel-lifetime.md),
 status `proposed`.
 
 ## Project structure — the complete diff surface
@@ -50,7 +50,7 @@ status `proposed`.
 src/store.rs            behaviour + seam + unit tests (see below)
 src/feed.rs             one comment correction + one unit test
 tests/burst.rs          one real-protocol test (HTTP await + SMTP insert + clear)
-docs/decisions/0010-watcher-channel-lifetime.md   proposed (this change)
+docs/decisions/0021-watcher-channel-lifetime.md   proposed (this change)
 specs/watcher-atomicity-release/{spec,plan,tasks}.md
 ```
 
@@ -189,7 +189,7 @@ tests, the `None` arm by every existing wait test.
 ### `src/feed.rs`
 
 - Rewrite the false comment above `Err(RecvError::Closed) => None`: the
-  sender is released when the inbox's mail is removed (decision 0010), the
+  sender is released when the inbox's mail is removed (decision 0021), the
   stream ends, and the browser's `EventSource` reconnect re-establishes
   0002 (`feed_stream` subscribes before the first view scan) with the
   post-drain snapshot. No code change to the arm.
@@ -216,7 +216,7 @@ no `coverage-gate.sh` change (the floor stays exactly 100).
 
 | Risk | Mitigation |
 |---|---|
-| **The SSE feed now ends on drain** — a client on a cleared inbox sees its stream close. | Deliberate, spec'd, and recorded in proposed decision 0010. The reconnect re-establishes 0002 at the wire boundary and re-snapshots the (empty) view; keeping the feed alive would require the server to hold a sender clone — reintroducing the leak through the front door. Pinned by the new feed test. |
+| **The SSE feed now ends on drain** — a client on a cleared inbox sees its stream close. | Deliberate, spec'd, and recorded in proposed decision 0021. The reconnect re-establishes 0002 at the wire boundary and re-snapshots the (empty) view; keeping the feed alive would require the server to hold a sender clone — reintroducing the leak through the front door. Pinned by the new feed test. |
 | **Lag arrives sooner (16 vs 4096 slots).** | Repaired by the rescan that already exists and is already pinned (`wait_for_covers_the_lagging_watcher`, unchanged assertion). `send` is non-blocking at any capacity → no 250-path delay (0001). |
 | **The `clear_all` sweep drops a channel a racing subscriber just registered.** | The subscriber's `wait_for` sees `Closed`, re-subscribes, re-scans — 0002's per-iteration ordering is the mechanism that makes blunt sweeps safe; cost is one extra rescan + re-subscribe cycle per waiter per sweep. |
 | **Entry allocates a `String` per subscribe and holds the shard write lock across channel creation.** | Once per long-poll/SSE connection and once per inbox respectively; microseconds against a 1.58 µs/mail ingest path. The fast-path alternative re-opens a second code path — the bug being deleted. |

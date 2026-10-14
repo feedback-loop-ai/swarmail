@@ -72,11 +72,11 @@ Anchors read from the working tree this round; every claim re-verifiable in seco
 | 0001 accept == stored | **Upheld.** `Store::insert`, `insert_async` and the DATA commit→250 leg are unedited. The cap and every counter live strictly downstream of `recv()`; the only accept-path edit in the whole diff is zero lines (AC6 is a regression test, not a change). |
 | 0002 await subscribes before it checks | **Tightened.** The feed still subscribes before its first scan; the dispatcher's firehose subscription is frozen *before the first listener binds* (the watch creation moves up to the store's birthplace, the spawn stays ahead of TLS and binds). A consumer created after a bind could miss a webhook for mail accepted in between — and the HTTP insert API accepts mail, so the window needs no SMTP. |
 | 0003 pruning is oldest-only | **Untouched.** The enqueued payload is an owned `Arc<str>`; pruning never touches a delivery in flight (AC7 proves it; any future re-read is the tripwire AC7 pins). |
-| 0004 per-test inboxes / no mocks | Upheld: all new tests speak real protocol against real servers on per-test inboxes; the inline unit tests drive crate seams per 0011 rules 1 and 4. |
+| 0004 per-test inboxes / no mocks | Upheld: all new tests speak real protocol against real servers on per-test inboxes; the inline unit tests drive crate seams per 0020 rules 1 and 4. |
 | 0005 extraction at ingest | Untouched: the dispatcher serializes the already-extracted `Email`; a hostile body's parse cost stays on the accept path where it already lived, never re-paid per delivery. |
 | Coverage floor (exact 100/100/100) | **Not weakened.** Every new line is warm on every run (driver map below); no `coverage(off)`; no new harness file — no new line is cold-path-only. |
-| Decision 0010 (proposed, watcher lifetime) | Composes: the feed's `Closed` arm and the new shutdown arm coexist in one select; the dispatcher's subscription ordering is untouched by 0010's release semantics. |
-| Decision 0011 (proposed, test placement) | Followed: inline `#[cfg(test)]` stays the default; every new test is branch-stable, so no harness move is demanded. |
+| Decision 0021 (proposed, watcher lifetime) | Composes: the feed's `Closed` arm and the new shutdown arm coexist in one select; the dispatcher's subscription ordering is untouched by 0010's release semantics. |
+| Decision 0020 (proposed, test placement) | Followed: inline `#[cfg(test)]` stays the default; every new test is branch-stable, so no harness move is demanded. |
 
 ## Project structure
 
@@ -182,7 +182,7 @@ Every new line/branch must execute on every `cargo test` run. Named drivers:
 The yield-spin is not sleep-as-sync: it waits on a production counter, no deadline, and
 terminates exactly when the fact it needs is true. If any arm proves unwritable warm
 (e.g. an abort-during-await residue), it moves to `src/<module>/<name>_tests.rs` declared
-`#[cfg(test)]` beside its owner per 0011 rule 2 — but the design intends none.
+`#[cfg(test)]` beside its owner per 0020 rule 2 — but the design intends none.
 
 ## Risks
 
@@ -195,8 +195,8 @@ terminates exactly when the fact it needs is true. If any arm proves unwritable 
 | An open long-poll stretches `stop()` by the client's own uncapped `timeout_ms` | Named residual (spec): bounded by the client's choice, not the server. Capping `timeout_ms` changes a public contract; waking long-polls at stop threads the watch through every handler — both refused here. The named fallback (a `stop()`-wide deadline-and-abort) covers it if it ever matters. |
 | `aborted` over-counts a delivery that dies by panic (no report, `Err` join) | Documented: the row means "ended without reporting its outcome"; `deliver` has no panic path (every fallible operation returns `Result`), so the case is a bug signal, not a counted class. |
 | The ledger's cumulative-since-start semantics mislead an operator across restarts | AC8's doc text says so explicitly; the CA-cache counters set the same precedent. |
-| A frame races the closing feed socket | Harmless by construction: the client's `EventSource` reconnect re-subscribes before its first scan (0002) and re-snapshots (0010 §5). |
-| 0010 acceptance later changes the firehose/watcher release semantics | The dispatcher and the feed both speak the watch vocabulary 0010's machinery already uses; its proposed release policy touches the per-inbox ring, not `global_tx`. Composition is a sentence in 0010, not a code fork here. |
+| A frame races the closing feed socket | Harmless by construction: the client's `EventSource` reconnect re-subscribes before its first scan (0002) and re-snapshots (0021 §5). |
+| 0010 acceptance later changes the firehose/watcher release semantics | The dispatcher and the feed both speak the watch vocabulary 0021's machinery already uses; its proposed release policy touches the per-inbox ring, not `global_tx`. Composition is a sentence in 0021, not a code fork here. |
 | Review re-demands the startup-failure `abort()` the spec refused | The refusal is evidential (no `Arc<Store>` in the task; two self-resolutions), not budgetary stubbornness: if the operator wants it, it lands as one error-leg line **with its own error-leg test** — never silently, never untested. |
 | Ingest bench regresses (the bound sits on the post-insert fan-out) | Nothing is added to `insert`; the dispatcher's per-mail work grows by one harvest check, one `len()` compare and one atomic load. `cargo bench` gates the change. |
 | GPG/signing divergence | Commit unsigned like the rest of this worktree's history (`commit.gpgsign` resolves false under the worktree config); drive `git` with `GIT_CONFIG_COUNT=0`; never push. |

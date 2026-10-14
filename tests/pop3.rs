@@ -732,7 +732,7 @@ async fn a_failed_quit_answers_err_and_keeps_the_marks() {
 /// unmarked bystander stay served on both trees, and the retry `QUIT` in
 /// the same session signs off (idempotent over the committed prefix),
 /// leaving the restart copy exactly the committed set — no resurrection.
-/// One sequential session: no sleeps, no wall-clock assertions (0011 rule
+/// One sequential session: no sleeps, no wall-clock assertions (0020 rule
 /// 5). Red on `5b09843`, which swallowed the failure and answered `+OK`.
 #[tokio::test]
 async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {

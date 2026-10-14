@@ -2,10 +2,10 @@
 
 Ordered; each task names the test that proves it. Scope guard: the #2 and #3 regression
 tests are **not** written here (no test function beyond the migrated module's existing
-seven); the diff touches only decision 0011, the decisions README rows,
+seven); the diff touches only decision 0020, the decisions README rows,
 `docs/house-rules.md`, `scripts/coverage-gate.sh` (one refusal block) and the one migrated
 module with its parent's declaration swap. Decision
-[0011](../../docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md) is the
+[0020](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md) is the
 ruling; this list is its landing sequence.
 
 - [ ] 1. Record the baseline on the pristine tree: run `bash scripts/coverage-gate.sh`
@@ -33,7 +33,7 @@ ruling; this list is its landing sequence.
        `src/<dir>/mod.rs`) that declares it with `#[cfg(test)]` governing the declaration
        (one-line `#[cfg(test)] mod <stem>;`, or `#[cfg(test)]` first in the attribute
        stack directly above `mod <stem>;`); missing parent, missing declaration or an
-       ungated declaration exits 1 naming the file and citing decision 0011. The four
+       ungated declaration exits 1 naming the file and citing decision 0020. The four
        hardening blocks (`:39-42` floor, `:56-66` `coverage(off)`, `:103-116` leak-check,
        `:181-187` exact equality) stay byte-identical; no counting stage is added.
        — *Proved by: the gate exits 0 on the migrated tree (the worked example passes);
@@ -61,7 +61,7 @@ ruling; this list is its landing sequence.
        the harness file (the dead-seam refusal follows execution).*
 
 - [ ] 6. Write the placement rules into `docs/house-rules.md` under **Gates**, after the
-       `coverage(off)` paragraph: decision 0011's six rules (inline default and its
+       `coverage(off)` paragraph: decision 0020's six rules (inline default and its
        vacuity policing; the cold-path harness `src/<module>/<name>_tests.rs` declared
        `#[cfg(test)] mod <name>_tests;` beside its owner, a refuge for cold paths never a
        landfill; `tests/*.rs` for public-API wire-shaped races with no crate-private
@@ -71,14 +71,14 @@ ruling; this list is its landing sequence.
        The exact-floor and `coverage(off)` sentences stay verbatim.
        — *Proved by: `git diff main -- docs/house-rules.md` shows only the appended
        paragraph, the floor and `coverage(off)` sentences unchanged, and no sentence
-       contradicting decision 0011 (AC7).*
+       contradicting decision 0020 (AC7).*
 
-- [ ] 7. Index the decisions: add the 0011 row to `docs/decisions/README.md` with status
+- [ ] 7. Index the decisions: add the 0020 row (filed as 0011) to `docs/decisions/README.md` with status
        **proposed (awaiting operator)** in the 0008/0009 shape, and index the two
        committed 0010 records with their recorded statuses
        (`0010-exact-count-asserts-and-the-shared-seed` — accepted;
-       `0010-watcher-channel-lifetime` — proposed). No other churn.
-       — *Proved by: the rendered table lists 0009, both 0010s and 0011 in order with
+       `0021-watcher-channel-lifetime` — proposed). No other churn.
+       — *Proved by: the rendered table lists 0009, both 0010s and the filed-as-0011 row in order with
        statuses matching each file's `- **Status:**` line (AC8).*
 
 - [ ] 8. Leave all six gates green on the final tree and commit exactly the diff surface:
@@ -86,7 +86,7 @@ ruling; this list is its landing sequence.
        `cargo test`; `brokkr compile --bundle .`; `bash scripts/coverage-gate.sh`;
        `cargo deny check licenses` — then a single commit of `src/store.rs`,
        `src/store/persist_tests.rs`, `scripts/coverage-gate.sh`, `docs/house-rules.md`,
-       `docs/decisions/README.md` (decision 0011 and the spec artifacts are already
+       `docs/decisions/README.md` (decision 0020 and the spec artifacts are already
        committed by the chief). Commit unsigned, like the rest of this worktree's history;
        never push. Confirm the scope guard: no #2/#3 test bodies anywhere in the diff.
        — *Proved by: all six commands exit 0 (AC10); `git show --stat` lists exactly the

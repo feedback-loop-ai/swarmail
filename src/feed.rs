@@ -93,7 +93,7 @@ pub fn feed_events(
                     Some((view_frame(&feed.store, &feed.inbox), feed))
                 }
                 // The sender is released when the inbox's mail is removed
-                // (decision 0010): a drain is a destructive teardown, the
+                // (decision 0021): a drain is a destructive teardown, the
                 // end-of-stream is its honest signal, and the browser's
                 // `EventSource` reconnect re-establishes decision 0002 at
                 // the wire boundary (`feed_stream` subscribes before the
@@ -204,7 +204,7 @@ mod tests {
         assert!(stream.as_mut().next().await.is_none());
     }
 
-    /// The feed ends when its inbox's mail is removed (decision 0010, AC4
+    /// The feed ends when its inbox's mail is removed (decision 0021, AC4
     /// feed half): the clear releases the channel the feed holds, and the
     /// `Closed` arm — the honest end-of-stream signal — becomes reachable.
     /// Deterministic by injection: `feed_events` takes the receiver the

@@ -99,7 +99,7 @@ would add nothing to `persist.rs`, whose zero-line diff 0014 §5 records as a
 virtue. **Adopted**, because the alternative is the silent rewrite 0015 §2
 itself names: a dependency bump that moves the default rewrites every
 surface's refusal timing and nothing in the tree objects. The tripwire is a
-*fact*, never a wall-clock assertion (0011 rule 5), branch-stable, and adds
+*fact*, never a wall-clock assertion (0020 rule 5), branch-stable, and adds
 zero production lines — 0014 §5's freeze guards the mirror's *behavior*, and
 0015 already edited a comment there by exactly that reasoning; test-only
 lines in the measured inline module shrink no denominator. Two legs, per the
@@ -136,7 +136,7 @@ REST/compat `503`, MCP `isError: true`, POP3 `-ERR`) lives in 0012 §2 as
 amended and 0015 §1; this run rewrites none of it — referencing, not
 re-stating, is how drift is avoided. Refused for this run and every run
 until a red criterion says otherwise: a bounded writer / write-behind queue
-(0010 §3), an undo/rollback engine (nothing runs on refusal — there is
+(0023 §3), an undo/rollback engine (nothing runs on refusal — there is
 nothing to roll back), per-inbox locks (they cannot span `clear_all` or the
 global index), disk-first reordering, a degraded-mode latch, a
 `persist_failures_total` counter, a size cap / `552` (Ruling 3), poison
@@ -152,7 +152,7 @@ triggers and lock-holders on the real data file), and any edit to
 | **0001** accept == stored | **Unchanged, still strengthened.** No behavior line moves in this run; the lag invariant states why `250 ⇒ stored` holds and when the refusal answers instead. |
 | **0002** await subscribes before it checks | Untouched. `wait_for` is not edited. |
 | **0003** pruning is oldest-only | Untouched. No eviction path changes; counters are events of the commit (0014 §4). |
-| **0010**, **0011**, **0012**, **0014**, **0015** (proposed) | Built upon. 0014 and 0015 are amended **in place** by this run's tasks with markers naming 0016 — legitimate because both still await the operator (0014's own precedent). No accepted decision is edited. |
+| **0023**, **0020**, **0012**, **0014**, **0015** (proposed) | Built upon. 0014 and 0015 are amended **in place** by this run's tasks with markers naming 0016 — legitimate because both still await the operator (0014's own precedent). No accepted decision is edited. |
 | Exact 100/100/100 gate | Held. The only `src/` change is two tests in persist.rs's existing inline module; every tripwire line executes on every run; the denominator does not shrink (no harness file, no `coverage(off)`). |
 
 ## Acceptance Criteria

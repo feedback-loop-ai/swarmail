@@ -29,7 +29,9 @@
    `count` means "at least one" — even `count=0` waits rather than succeeding
    instantly (decision 0010). `timeout_ms` above 60000 is refused with 400,
    never clamped, and a stopping server answers the wait with 503
-   `shutting down` instead of parking (decision 0018).
+   `shutting down` instead of parking (decision 0018) and refuses new
+   mutations with their usual 503 `storage commit failed`, nothing
+   applied (decision 0024).
 4. Assert subject/body: fields `subject`, `text`, `html` are on every email; the
    `links` array holds every URL and `codes` holds likely OTP/verification codes —
    no regexing HTML required. Exact counts: `GET /api/v1/inboxes/{inbox}/assert?count=N`

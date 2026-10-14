@@ -46,7 +46,7 @@ parent `fa93a61`, so every anchor below is read from the working tree.
 | 0003 pruning is oldest-only | Untouched. |
 | 0004 / 0005 | Untouched. |
 | Coverage floor (exact 100/100/100) | The denominator **shrinks** (`PROBE_THREAD`, the `eprintln!`, the misfiring call site die); the kept probe lines and the restored `subscribe` line are executed by the two existing gate-driven tests. No `coverage(off)` anywhere. |
-| Public contract | No new delta. The deltas already recorded in proposed 0010 (SSE ends on drain; wait path re-subscribes) become *real* instead of *documented*. |
+| Public contract | No new delta. The deltas already recorded in proposed 0021 (SSE ends on drain; wait path re-subscribes) become *real* instead of *documented*. |
 
 ## Project structure — the complete diff surface
 
@@ -152,7 +152,7 @@ if a gate forced an edit there, the commit body says so in one sentence.
 | **The ticker canary flakes on a loaded runner** (its recorded honest loss). | Unchanged margin (≥ 10 of ~40), gate-ordered setup, and the recorded fallback: drop to the outcome-level `not_stranded` + the delta bound, which now carry the property deterministically. The fallback's cost is lower than at ratification time because the teeth no longer depend on the ticker. |
 | **The burst AC6 test is flaky against a real server.** | It is gate-ordered and honest: the first await's `408`/`matched: 0` is asserted at a 100 ms timeout, the clear is a synchronous API call, and the final await has 5 s against a 1.58 µs ingest path. If it still flakes, that is a finding about the server, not about the test's shape — fix what is exposed, in this surface. |
 | **A gate exposes an unexpected failure** (fmt on the arm, clippy on the assert message, coverage moving off exactly 100). | Fix only the exposure; do not re-derive settled tasks, add files, or touch feed.rs/burst.rs beyond the exposure. Anything that needs a *design* answer (a new seam, a signature change, a guarantee interaction) returns through design per the ratified spec's task-10 rule. |
-| **The routed 0001 hole is mistaken for "fixed by this wave".** | spec.md's routing section and AC8 record the measured rates and the 0011 requirement; the completion's commit body does not claim it. Review checks the claim, not the wish. |
+| **The routed 0001 hole is mistaken for "fixed by this wave".** | spec.md's routing section and AC8 record the measured rates and the 0020 requirement; the completion's commit body does not claim it. Review checks the claim, not the wish. |
 | **GPG**: the house rules describe signed commits, but this worktree's effective `commit.gpgsign` is **false** (brokkr's config overlay) and all eight recent commits are unsigned. | Commit like the rest of the history; do not flip config the operator set. If the operator re-signs history later, this commit is in the re-sign set like every other. |
 
 ## Quickstart (reviewer)

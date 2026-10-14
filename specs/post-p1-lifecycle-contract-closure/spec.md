@@ -45,7 +45,7 @@ the shutdown arm (the bug itself).
 
 Test placement: **inline** (`src/smtp.rs`, `src/pop3.rs` `#[cfg(test)]`
 modules). The harvest is hot-path presence — every connection completes — so
-decision 0011 rule 1 applies: a branch-stable, deterministic probe driving the
+decision 0020 rule 1 applies: a branch-stable, deterministic probe driving the
 real `pub async fn serve` on a real loopback listener, no mocks. The probe
 installs a `#[cfg(test)]`-only private `REAPED: AtomicUsize` seam written by
 the harvest line itself (rule 4: every seam keeps the test that installs it),

@@ -59,7 +59,7 @@ re-verifiable in seconds:
 | 0002 await subscribes before it checks | Untouched. `wait_for` is not edited; the ghost fires no channel and is found by the store-is-truth rescan. |
 | 0003 pruning is oldest-only | Preserved. Push and prune still share the shard write guard; `pop_front` still evicts; `emails_dropped` counts exactly (AC 8). |
 | 0004/0005 | Untouched. Per-test inboxes still via SMTP AUTH; extraction still at ingest (`build_email` runs before `insert` either way). |
-| 0010 (proposed) | Built upon: `PRAGMA synchronous = FULL` and the reply-after-outcome ordering untouched; `Err` flows through the same `offload`; panic symmetry stays. |
+| 0023 (proposed) | Built upon: `PRAGMA synchronous = FULL` and the reply-after-outcome ordering untouched; `Err` flows through the same `offload`; panic symmetry stays. |
 | Exact 100/100/100 | Held. Every new production line has an executing test; no `coverage(off)`; the denominator never shrinks; no new `src/` item exists to serve tests (AC 9). |
 
 ## Project structure — files touched
@@ -101,7 +101,7 @@ section holds no I/O). No `tests.rs`/`*_tests.rs` file is added.
    `let _ = self.record(...)` — the only diff at those three lines.
 5. SMTP DATA (`src/smtp.rs:461-462`):
    `match store.clone().insert_async(email).await { Ok(_) => write_line(..., &format!("250 2.0.0 OK: stored as {id}")).await?, Err(_) => write_line(..., "451 4.3.0 storage commit failed").await? }`
-   — the reply still follows the outcome (0010), one arm per outcome, and
+   — the reply still follows the outcome (0023), one arm per outcome, and
    the `id` is only named on acceptance.
 6. REST seed (`src/api.rs:454`):
    `let stored = state.store.clone().insert_async(email).await.map_err(|_| ApiError(StatusCode::SERVICE_UNAVAILABLE, "storage commit failed".to_string()))?;`
@@ -130,7 +130,7 @@ section holds no I/O). No `tests.rs`/`*_tests.rs` file is added.
   house's existing poison vocabulary. The locked regions contain only
   DashMap ops and an `AtomicU64` increment, so poisoning means an
   invariant already broke; fail-stop is honest.
-- The probe (inline `#[cfg(test)]` in `src/store.rs`, per 0011 rule 1 —
+- The probe (inline `#[cfg(test)]` in `src/store.rs`, per 0020 rule 1 —
   it drives existing warm branches only): N rounds, each round a fresh
   `Store::new(0)`; eight threads with barrier-sampled roles — three
   inserts on `A`, one delete on `A`, one clear on `A`, two inserts on
@@ -143,7 +143,7 @@ section holds no I/O). No `tests.rs`/`*_tests.rs` file is added.
   `Some`) and the `expect` panic both fire under hammering; green after
   the boundary under every schedule.
 
-## Test placement (decision 0011)
+## Test placement (decision 0020)
 
 - **Rewritten degraded test → `src/store/persist_tests.rs`** (the
   existing harness file): the refusal branch is a cold failure path — it
@@ -247,7 +247,7 @@ on the wire too.
   persuasive sentence away from "while we're here"). *Mitigation:*
   decision 0012 §5 and the tree's own note (`tests/persistence.rs:401-407`)
   name both as follow-up work; the tasks carry a scope guard like the
-  0011 settlement did.
+  0020 settlement did.
 
 ## Quickstart (reviewer)
 

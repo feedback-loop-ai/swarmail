@@ -94,7 +94,7 @@ Ordered; each task names the test that proves it. All gates
        task-6 test (plan.md, Risks).*
 
 - [x] 8. Correct `src/feed.rs`'s now-false `Closed`-arm comment (the sender
-       is released when the inbox's mail is removed — decision 0010; the
+       is released when the inbox's mail is removed — decision 0021; the
        stream ends and the browser's `EventSource` reconnect re-establishes
        0002 with the post-drain snapshot). No code change to the arm.
        — *Proved by: `a_cleared_inbox_ends_the_feed_after_the_snapshot`
@@ -112,7 +112,7 @@ Ordered; each task names the test that proves it. All gates
 
 - [x] 10. Verify the ruling is recorded (verify-only — it was committed with
         the spec at `126632a`):
-        `docs/decisions/0010-watcher-channel-lifetime.md` (status
+        `docs/decisions/0021-watcher-channel-lifetime.md` (status
         `proposed`) exists and is referenced from `spec.md`. Do not
         re-edit the decision or the spec; any contradiction found during
         implement goes back through the design phase, not a silent edit.

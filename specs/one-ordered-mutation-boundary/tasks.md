@@ -8,7 +8,7 @@ the storage-consistency slice — no lifecycle, offloading, chart,
 contract-agreement or CI work; `src/persist.rs`, `src/smtp.rs`,
 `src/ui.rs` and `src/stdio.rs` change by **zero lines**; no new `src/` file,
 type or dependency; the exact 100/100/100 gate is never relaxed. Concurrency
-tests follow 0011: the probe inline, cold failure paths in the harness,
+tests follow 0020: the probe inline, cold failure paths in the harness,
 wire-shaped races in `tests/`.
 
 - [ ] 1. Write the refusal suite **red first**. In
@@ -55,7 +55,7 @@ wire-shaped races in `tests/`.
         --test mcp` passes (their failure legs land in task 5).
 
 - [ ] 3. Write the 16-thread barrier probe **red** into the inline
-        `#[cfg(test)]` mod of `src/store.rs` (0011 rule 1 — warm branches
+        `#[cfg(test)]` mod of `src/store.rs` (0020 rule 1 — warm branches
         only): a fresh `Store::open(1, &real_data_file)` per round, 16
         barrier-released threads on public `Store::insert` across two
         inboxes plus `delete`/`clear`/`clear_all` racer roles, several

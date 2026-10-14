@@ -5,8 +5,8 @@ settlement wave — issue [#18](https://github.com/feedback-loop-ai/swarmail/iss
 Unblocks issues #2 and #3: their regression tests are **not** written here — this wave
 settles the ground they stand on, before they exist.
 
-Decision: 0011 —
-[docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md](../../docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md)
+Decision: 0020 —
+[docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md)
 (status `proposed` — acceptance is the operator's). The panel's positions:
 [`.forge/design/positions/simplicity.md`](../../../.forge/design/positions/simplicity.md) and
 [`.forge/design/positions/robustness.md`](../../../.forge/design/positions/robustness.md)
@@ -96,7 +96,7 @@ proof must be reproducible by the verifier, so the migration is not reverted aft
 proving; the file becomes the home beside the owner where #2's conditional descendants
 land (it already owns the pre-mirror-gate window tests and the `db_path` helper). This is
 the single deliberate exception to "inline is the default", grandfathered with its cost
-named in decision 0011 — a future reader must be able to see it was chosen, not drift.
+named in decision 0020 — a future reader must be able to see it was chosen, not drift.
 
 **Adopted from robustness, into house rules: the writing disciplines.** Chaos at the poles
 only (0 or 100); no wall-clock validity assertions (generate fixtures per run); no sleep as
@@ -107,7 +107,7 @@ These are the rules that keep a regression test honest in *any* home, and they a
 
 ## What changes
 
-- `docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md` — the settlement, status
+- `docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md` — the settlement, status
   `proposed` (this wave's semantic ruling; the operator accepts).
 - `scripts/coverage-gate.sh` — **one** new refusal block: every harness-named file under
   `src/` (`tests.rs`, `*_tests.rs`, `*-tests.rs`) must be declared by its parent module
@@ -119,9 +119,9 @@ These are the rules that keep a regression test honest in *any* home, and they a
   keeps `#[cfg(test)]` and gains `mod persist_tests;`. No production item moves; the
   `#[cfg(test)] pub(crate) fn email` fixture and the seams stay where they are.
 - `docs/house-rules.md` — the regression-test placement rule set under **Gates**,
-  mirroring decision 0011, with the exact-floor and `coverage(off)` sentences preserved
+  mirroring decision 0020, with the exact-floor and `coverage(off)` sentences preserved
   verbatim.
-- `docs/decisions/README.md` — the 0011 row (status **proposed**), plus indexing the two
+- `docs/decisions/README.md` — the 0020 row (filed as 0011; status **proposed**), plus indexing the two
   committed 0010 records with their recorded statuses (the index currently stops at 0009
   and contradicts the directory).
 
@@ -139,7 +139,7 @@ These are the rules that keep a regression test honest in *any* home, and they a
 
 ## Acceptance Criteria
 
-- **AC1.** `docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md` exists with
+- **AC1.** `docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md` exists with
   `- **Status:** proposed` and rules all three questions with single named answers — no
   "may", "either" or open option on placement, seam exposure or the counted file set —
   and names the cost of each refused position.
@@ -168,14 +168,14 @@ These are the rules that keep a regression test honest in *any* home, and they a
   default; the cold-path harness beside the owner; `tests/` for the wire;
   `#[cfg(test)]`-only seams; the writing disciplines; reserved harness names), while the
   exact-100/100/100 and `coverage(off)` sentences stay verbatim and nothing in the section
-  contradicts decision 0011.
-- **AC8.** `docs/decisions/README.md` carries the 0011 row with status **proposed** (same
+  contradicts decision 0020.
+- **AC8.** `docs/decisions/README.md` carries the 0020 row (filed as 0011) with status **proposed** (same
   shape as the 0008/0009 proposed rows) and indexes the two committed 0010 records with
   their recorded statuses (`0010-exact-count-asserts` accepted,
-  `0010-watcher-channel-lifetime` proposed).
+  `0021-watcher-channel-lifetime` proposed).
 - **AC9.** Scope guard: the #2 and #3 regression tests are **not** written — no test
   function is added beyond the migrated module's existing seven — and the diff touches
-  nothing but decision 0011, the decisions README row, `docs/house-rules.md`,
+  nothing but decision 0020, the decisions README row, `docs/house-rules.md`,
   `scripts/coverage-gate.sh` (per AC6) and the one migrated module with its parent's
   declaration swap.
 - **AC10.** All six gates are green on the final tree (`cargo fmt --all -- --check`,

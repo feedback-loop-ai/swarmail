@@ -287,7 +287,7 @@ pub async fn delete_messages(
         }
     };
     // The deletion itself flows through the store's awaited path, so the
-    // commit is known before the reply (decision 0010) and the counted
+    // commit is known before the reply (decision 0023) and the counted
     // result is exactly the ids the store removed. A failed commit is the
     // answer (decision 0014): `503` — the ids already committed stay
     // committed, so a retry re-runs idempotently — never a count for work

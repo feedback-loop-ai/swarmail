@@ -52,9 +52,9 @@ change; lowering it is refused. Attribute-based coverage exclusions
 denominator. Every new line of production code ships with a test that
 executes it; a feature without its tests is an incomplete feature.
 
-### Regression-test placement (decision 0011)
+### Regression-test placement (decision 0020)
 
-Decision [0011](decisions/0011-concurrency-tests-and-the-coverage-gate.md)
+Decision [0020](decisions/0020-concurrency-tests-and-the-coverage-gate.md)
 (*proposed*, awaiting the operator) settles where a concurrency regression
 test lives; the axis is **cold-path presence**, not seam access:
 
@@ -92,7 +92,7 @@ test lives; the axis is **cold-path presence**, not seam access:
 6. **Harness names are reserved under `src/`** (`tests.rs`, `*_tests.rs`,
    `*-tests.rs`): the coverage gate refuses any such file that its parent
    module does not declare under `#[cfg(test)]` — the one silent way to
-   shrink the measured denominator, closed structurally (decision 0011).
+   shrink the measured denominator, closed structurally (decision 0020).
 
 ## Dependencies
 

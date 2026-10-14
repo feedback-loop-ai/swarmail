@@ -3,7 +3,7 @@
 Technical context → constitution check → design → project structure → contracts → test
 architecture → measurement → quickstart → **Risks** → rejected alternatives. Companion documents:
 [spec.md](spec.md) (WHAT and WHY, acceptance criteria) and
-[docs/decisions/0010-off-worker-commits.md](../../docs/decisions/0010-off-worker-commits.md)
+[docs/decisions/0023-off-worker-commits.md](../../docs/decisions/0023-off-worker-commits.md)
 (status `proposed`).
 
 ## Technical context
@@ -36,7 +36,7 @@ architecture → measurement → quickstart → **Risks** → rejected alternati
 
 | Guarantee / rule | Effect of this change | Verdict |
 |---|---|---|
-| 0001 — accept == stored | Strengthened in placement, identical in behaviour: memory insert + prune + mirror commit all complete **before** the `250`; failure observed before the reply byte; `synchronous = FULL` untouched. Interpretation ruling recorded in decision 0010 (`proposed`). | Compliant |
+| 0001 — accept == stored | Strengthened in placement, identical in behaviour: memory insert + prune + mirror commit all complete **before** the `250`; failure observed before the reply byte; `synchronous = FULL` untouched. Interpretation ruling recorded in decision 0023 (`proposed`). | Compliant |
 | 0002 — await subscribes before checking | No change: watchers are subscribed by `await` callers independently; the awaited mirror does not reorder subscribe-before-check. | Compliant |
 | 0003 — oldest-only pruning | No change: the prune stays inside the moved mutation, under the same DashMap entry lock, mirrored per-pruned-id in the same transaction. | Compliant |
 | 0005 — extraction at ingest | No change: `build_email` stays on the worker at `src/smtp.rs:452-453`. | Compliant |
@@ -130,7 +130,7 @@ Mirror the same phrase in `insert`'s doc comment.
 | `tests/` (write-heavy leg) | + real-server concurrency leg with `--data-file` (correctness, no wall-clock asserts) — in `tests/persistence.rs` or a sibling suite at the implementer's discretion |
 | `benches/writer_stall.rs` + `Cargo.toml` `[[bench]]` | new measurement target, `harness = false` |
 | docs note or PR body | the recorded before/after numbers (verbatim) |
-| `docs/decisions/0010-off-worker-commits.md` | the proposed decision (+ its one-line index row in `docs/decisions/README.md`, per the 0009 precedent) |
+| `docs/decisions/0023-off-worker-commits.md` | the proposed decision (+ its one-line index row in `docs/decisions/README.md`, per the 0009 precedent) |
 
 No new `src/` files, no new dependency, no flag, no mode branch, no config surface.
 

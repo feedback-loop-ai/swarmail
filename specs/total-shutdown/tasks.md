@@ -4,7 +4,7 @@ Ordered; each task names the test that proves it. Scope guard: no new files unde
 beyond none (six existing production files + README), no new dependencies, no decision
 document (the spec's non-semantic ruling), no edits to `insert`/`insert_async` or the
 commit→250 leg (`smtp.rs:461-462`), no `coverage(off)`, no new harness file unless an arm
-proves unwritable warm (0011 rule 2 — none is expected). The ruling lives in
+proves unwritable warm (0020 rule 2 — none is expected). The ruling lives in
 [`spec.md`](spec.md); the mechanism and the coverage driver map in
 [`plan.md`](plan.md).
 

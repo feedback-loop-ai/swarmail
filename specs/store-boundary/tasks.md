@@ -35,7 +35,7 @@ mirror-ordering/epoch) stay out.
         remaining `must_use` sites (the ripple, task 6).
 
 - [ ] 3. Write the 8-thread barrier probe into the inline `#[cfg(test)]`
-        `tests` mod of `src/store.rs` (0011 rule 1 — warm branches only):
+        `tests` mod of `src/store.rs` (0020 rule 1 — warm branches only):
         ~50 rounds, each a fresh `Store::new(0)`, eight threads — 3× insert
         on `A`, 1× delete on `A`, 1× clear on `A`, 2× insert on `B`,
         1× `clear_all` — joined per round; per round assert, for every

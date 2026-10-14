@@ -50,7 +50,7 @@ rules rather than averages.
 **Adopted from both (convergent):** the one ordered mutation boundary is the
 closing design for findings 1–3 and is not reopened. The standing refusal
 list is carried as a check every successor must answer — no bounded writer or
-write-behind queue (0010 §3), no undo/rollback engine (the ghost is
+write-behind queue (0023 §3), no undo/rollback engine (the ghost is
 unrepresentable; there is nothing to roll back), no per-inbox locks (they
 cannot span `clear_all` and re-derive finding 1), no inbox-wide
 `DELETE … WHERE inbox = ?` (the per-id mirror is self-verifying), no
@@ -97,7 +97,7 @@ sentence this run writes into the documents: a stalled or contended data file
 delays each refusal by at most ~5 s per statement, then `SQLITE_BUSY`
 surfaces as the refusal (451/503/`isError`/`-ERR`) — the `451` arrives *after*
 a bounded stall, not immediately and not never; the bound is deliberately not
-wall-clock-asserted (0011 rule 5 — the legs prove the *refusal*, never the
+wall-clock-asserted (0020 rule 5 — the legs prove the *refusal*, never the
 timing); and whoever changes the bound — an override in `persist.rs` or a
 dependency bump — rewrites the failure semantics of every surface and owes a
 decision document. **Cost of adoption:** one more paragraph of frozen prose
@@ -164,7 +164,7 @@ returns.
 | **0001** accept == stored | **Preserved, strengthened posture unchanged.** The refusal (451/503/`isError`/`-ERR`) is the converse arm that keeps the promise honest; 0015 writes down when that refusal arrives (after a bounded stall) and what a mid-batch refusal leaves behind. |
 | **0002** await subscribes before it checks | Untouched. `wait_for` is not edited in this run. |
 | **0003** pruning is oldest-only | Untouched. No eviction code path changes; the refusal residue stays exactly 0014's. |
-| **0010**, **0011** (proposed) | Built upon (test-code only, plus comment/doc edits); the new leg obeys 0011 rule 5 — no sleeps, no wall-clock validity assertions. |
+| **0023**, **0020** (proposed) | Built upon (test-code only, plus comment/doc edits); the new leg obeys 0020 rule 5 — no sleeps, no wall-clock validity assertions. |
 | **0012**, **0014** (proposed) | 0012 amended in place by this run's tasks (§5 QUIT truth, §7 poison→restart); 0014 stands untouched; 0015 is the new ruling. All three stay `proposed` for the operator. |
 | Exact 100/100/100 gate | Held. The only `src/` change is a comment; the new test lives in `tests/`; the denominator does not move. |
 

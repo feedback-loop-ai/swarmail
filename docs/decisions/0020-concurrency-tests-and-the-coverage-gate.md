@@ -1,16 +1,20 @@
-# 0011 — Concurrency regression tests and the exact coverage gate: the harness moves, the bar does not
+# 0020 — Concurrency regression tests and the exact coverage gate: the harness moves, the bar does not
 
 - **Status:** proposed (awaiting operator acceptance)
 - **Date:** 2026-10-12
 - **Supersedes:** none
+- **Provenance:** originally filed as `0011-concurrency-tests-and-the-coverage-gate`;
+  renumbered 0011 → 0020 at issue #32's docs pass — it was the second 0011
+  to land, so the shim-delete contract kept 0011.
 - **Companion:** epic [#13](https://github.com/feedback-loop-ai/swarmail#13) settlement wave,
   issue [#18](https://github.com/feedback-loop-ai/swarmail/issues/18); spec at
   [`specs/concurrency-tests-coverage-gate/spec.md`](../../specs/concurrency-tests-coverage-gate/spec.md);
   unblocks issues #2 and #3 (their regression tests are *not* written by that wave — this
   ruling is the ground they stand on).
-- **Numbering:** 0011 is the next free number on `main`; two 0010 records already exist
+- **Numbering:** 0011 was the next free number on `main` at filing; two 0010 records already exist
   (`0010-exact-count-asserts-and-the-shared-seed`, accepted, and
-  `0010-watcher-channel-lifetime`, proposed on the wave-3 branch). Per the
+  `0021-watcher-channel-lifetime` — filed as `0010-watcher-channel-lifetime`,
+  proposed on the wave-3 branch). Per the
   operator-renumbers-at-acceptance protocol recorded in 0010-exact-count-asserts, the
   operator resolves any collision at acceptance.
 
@@ -183,8 +187,10 @@ harness file** — harness execution of production lines still feeds the report.
   cold-path harness beside the owner; `tests/` for the wire; `#[cfg(test)]`-only seams;
   the writing disciplines; reserved harness names), keeping verbatim that the floor is
   exact 100/100/100 and that `coverage(off)` is forbidden.
-- `docs/decisions/README.md` gains the 0011 row (status **proposed**) — and indexes the two
-  committed 0010 records with their recorded statuses, which the index currently omits.
+- `docs/decisions/README.md` gains the 0020 row (status **proposed**, filed
+  as 0011) — and indexes the two committed 0010 records (exact-count, and
+  watcher-lifetime now 0021) with their recorded statuses, which the index
+  currently omits.
 - The exclusion depends on cargo-llvm-cov's upstream default regex. Accepted residual:
   `Cargo.lock` + `--locked` pin the graph, and both failure directions are tripped —
   harness leaking *in* refuses via the leak-check (the drift alarm if upstream changes);

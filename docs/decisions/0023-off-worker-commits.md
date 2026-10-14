@@ -1,8 +1,12 @@
-# 0010 — Commits run off the async workers: the disk leg is ordering, not thread identity
+# 0023 — Commits run off the async workers: the disk leg is ordering, not thread identity
 
 - **Status:** proposed (awaiting operator acceptance)
 - **Date:** 2026-10-11
 - **Supersedes:** none
+- **Provenance:** originally filed as `0010-off-worker-commits`;
+  renumbered 0010 → 0023 at issue #32's docs pass — it was the last 0010
+  to land, so the exact-count and watcher-lifetime records kept their
+  earlier numbers.
 - **Preserves:** [0001](0001-synchronous-insert-lossless.md) — accept == stored, unweakened
 
 ## Context

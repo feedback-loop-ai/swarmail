@@ -1,6 +1,6 @@
 # 0015 — The boundary's failure contract: refusal timing, a partial POP3 prefix, poison and the second writer
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-14 — issue #32 finding 5 resolves the backlog's proposed decisions)
 - **Date:** 2026-10-14
 - **Amends:** [0012](0012-commit-failure-refusal-and-the-mutation-boundary.md)
   (proposed) §5 and §7 **in place** — 0012 still awaits the operator, so the
@@ -9,7 +9,7 @@
 - **Preserves:** [0001](0001-synchronous-insert-lossless.md) — the refusal
   contract recorded here is the converse arm that keeps `250 ⇒ stored`
   honest; [0002](0002-awaits-subscribe-before-checking.md) and
-  [0003](0003-oldest-only-pruning.md) — untouched; [0011](0011-concurrency-tests-and-the-coverage-gate.md)
+  [0003](0003-oldest-only-pruning.md) — untouched; [0020](0020-concurrency-tests-and-the-coverage-gate.md)
   (proposed) — its no-wall-clock discipline governs the contract's new
   instrument; [0014](0014-one-ordered-mutation-boundary.md) (proposed) —
   built upon, not reopened: no line of the boundary changes.
@@ -69,7 +69,7 @@ prose that in one place claims more than the code does:
    busy timeout (~5 s per statement), set by the dependency at open and
    **never overridden in this crate**; after the bound, `SQLITE_BUSY`
    surfaces as the fixed-text refusal (451/503/`isError`/`-ERR`). The bound
-   is deliberately **not wall-clock-asserted** (0011 rule 5): the wire legs
+   is deliberately **not wall-clock-asserted** (0020 rule 5): the wire legs
    prove the *refusal*, never the timing. Changing the bound — an override
    in `persist.rs` or a dependency bump — rewrites the failure semantics of
    every surface and owes a decision document. *(Amended by

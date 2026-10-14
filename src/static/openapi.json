@@ -129,7 +129,7 @@
         "responses": {
           "200": { "description": "The stored email" },
           "400": { "description": "Refused fixture — an envelope field (to, from or subject) contains CR, LF or NUL; nothing was stored" },
-          "503": { "description": "`storage commit failed` — the commit refused, nothing was stored (decision 0012)" }
+          "503": { "description": "`storage commit failed` — the commit refused, nothing was stored (decision 0012); during shutdown the boundary refuses before any commit with the same text (decision 0024)" }
         }
       }
     },

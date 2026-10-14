@@ -4,7 +4,7 @@ Epic #13, wave 3 · issues [feedback-loop-ai/swarmail#3](https://github.com/feed
 and [feedback-loop-ai/swarmail#14](https://github.com/feedback-loop-ai/swarmail/issues/14) —
 one change, one registration code path, per the epic's pairing.
 
-Decision: 0010 — [`docs/decisions/0010-watcher-channel-lifetime.md`](../../docs/decisions/0010-watcher-channel-lifetime.md)
+Decision: 0021 — [`docs/decisions/0021-watcher-channel-lifetime.md`](../../docs/decisions/0021-watcher-channel-lifetime.md)
 (status `proposed`; the operator accepts). See
 [Why a decision document](#why-a-decision-document-despite-the-panels-votes).
 
@@ -156,7 +156,7 @@ Adopted from this round's positions, now binding on implement:
   literal rather than inferred. The cut stays recorded and pre-authorized.
 - **AC3 is the deterministic teeth; AC4 the starvation detector** with its
   recorded fallback. Both ship; no wall-clock CPU-percentage assertion.
-- **Task 10 is verify-only**: the ruling (`0010`, `proposed`) is already
+- **Task 10 is verify-only**: the ruling (`0021`, `proposed`) is already
   committed with this spec — implement verifies it exists and is
   referenced; it never re-edits the decision or the spec. Any
   contradiction implement discovers with the code or a frozen guarantee
@@ -179,7 +179,7 @@ concurrency and per iteration; 0003, 0004, 0005 untouched), and no wakeup
 can be missed (the re-subscribe precedes the rescan; the store is the
 truth). But 0002's letter says reviewers check the subscribe-before-scan
 ordering explicitly, and the feed's lifetime is observable by clients — so
-[`0010`](../../docs/decisions/0010-watcher-channel-lifetime.md) records the
+[`0021`](../../docs/decisions/0021-watcher-channel-lifetime.md) records the
 policy with status `proposed` for the operator. This is belt-and-braces
 paperwork in the exact form simplicity said was acceptable.
 

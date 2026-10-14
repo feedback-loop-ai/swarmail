@@ -1,6 +1,6 @@
 # 0014 — One ordered mutation boundary: commit before visibility
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-14 — issue #32 finding 5 resolves the backlog's proposed decisions)
 - **Date:** 2026-10-13
 - **Amends:** [0012](0012-commit-failure-refusal-and-the-mutation-boundary.md)
   (proposed) §4, §5 and §6 **in place** — 0012 still awaits the operator, so
@@ -11,7 +11,7 @@
   a `250` implies live **and** committed; [0002](0002-awaits-subscribe-before-checking.md)
   — untouched; [0003](0003-oldest-only-pruning.md) — the eviction choice is
   byte-identical, its counter exactness settled in §4 below;
-  [0010](0010-off-worker-commits.md) (proposed) — built upon, not redone.
+  [0023](0023-off-worker-commits.md) (proposed) — built upon, not redone.
 
 ## Context
 
@@ -40,7 +40,7 @@ exact error — it treats two orders as one.
    (inner), with no path back. Inside the boundary there are no callbacks
    that re-enter the store, no `await`, and no I/O except the one SQLite
    transaction; the whole mutation still runs on tokio's blocking pool
-   (0010), so a std mutex is never held across an `await`. Readers stay
+   (0023), so a std mutex is never held across an `await`. Readers stay
    lock-free.
 2. **Commit before visibility.** `insert` *plans* (peeks the tentative
    eviction: the front `overflow` ids, and post-counters `inserted + 1`,
@@ -86,7 +86,7 @@ exact error — it treats two orders as one.
    race property stays with the wire legs and the 16-thread probe.
 7. **Refused alternatives, reaffirmed or newly refused:** no bounded writer
    (a queue between SMTP and the store, a full-queue policy and a
-   shutdown-drain obligation — 0010 §3 forbids write-behind); no
+   shutdown-drain obligation — 0023 §3 forbids write-behind); no
    undo/rollback engine (inverse paths over the two-map seam versus a
    reorder that makes the ghost unrepresentable); no per-inbox locks (they
    cannot span `clear_all` and re-derive finding 1); no inbox-wide
@@ -145,8 +145,8 @@ exact error — it treats two orders as one.
   `tests/persistence.rs:401-407` (an "epoch/generation scheme" would be
   needed) is retired — the boundary closes that race structurally.
 - **Every new production line ships with the test that executes it** — the
-  rewritten `src/store/persist_tests.rs` failure paths (0011 rule 2), the
-  16-thread barrier probe inline in `src/store.rs` (0011 rule 1), and
+  rewritten `src/store/persist_tests.rs` failure paths (0020 rule 2), the
+  16-thread barrier probe inline in `src/store.rs` (0020 rule 1), and
   real-protocol wire legs with no mocks (0004): a real rejecting trigger on
   the real data file, a second connection holding the write lock, restarts
   against the same file. No new `src/` file, no new type, no new

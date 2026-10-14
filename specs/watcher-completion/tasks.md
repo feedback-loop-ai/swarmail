@@ -60,11 +60,11 @@ are verify-only (task 5); no new files, no new dependencies.
        finds the mail (AC5 feed half, AC6).*
 
 - [ ] 6. Tick the ten checkboxes in `specs/watcher-atomicity-release/tasks.md` — after
-       the gates, never before; do not edit the ratified `spec.md` or decision 0010
+       the gates, never before; do not edit the ratified `spec.md` or decision 0021
        (task 10 there is verify-only: the decision exists, is `proposed`, and is
        referenced from its spec).
        — *Proved by: the ticked file diff and the green suite behind each tick (AC7);
-       `docs/decisions/0010-watcher-channel-lifetime.md` unchanged with status
+       `docs/decisions/0021-watcher-channel-lifetime.md` unchanged with status
        `proposed`.*
 
 - [ ] 7. Land the completion as **one** commit on top of `HEAD`, repository style

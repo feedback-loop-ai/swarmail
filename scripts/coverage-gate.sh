@@ -144,7 +144,7 @@ if awk '
   exit 1
 fi
 
-# Decision 0011 (proposed): harness names are reserved under src/. A file
+# Decision 0020 (proposed): harness names are reserved under src/. A file
 # named tests.rs / *_tests.rs / *-tests.rs is dropped from the report by
 # cargo-llvm-cov's default ignore regex, and the leak-check above fires only
 # on paths PRESENT in the report — so production code parked in a
@@ -206,7 +206,7 @@ while IFS= read -r harness; do
   fi
 done < <(find src -type f \( -name 'tests.rs' -o -name '*_tests.rs' -o -name '*-tests.rs' \) | sort)
 if [ -n "$harness_refusals" ]; then
-  printf '%s\n' "coverage refusal: harness-named file(s) under src/ not declared by their parent module under #[cfg(test)]:${harness_refusals} — decision 0011 (docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md)" >&2
+  printf '%s\n' "coverage refusal: harness-named file(s) under src/ not declared by their parent module under #[cfg(test)]:${harness_refusals} — decision 0020 (docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md)" >&2
   exit 1
 fi
 
