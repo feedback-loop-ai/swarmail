@@ -88,6 +88,7 @@ jobs:
   # native-tls probe must be *demonstrably* absent — a cargo failure is
   # indistinguishable from an absence only if we refuse on it.
   deny:
+    name: deny
     runs-on: ubuntu-latest
     permissions:
       contents: read
