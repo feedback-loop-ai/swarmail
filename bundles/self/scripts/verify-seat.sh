@@ -36,14 +36,37 @@ run() {
 # nightly switch lives inside the gate, so the seat command stays the same.
 # --locked everywhere: a stale Cargo.lock is a red gate, never a silent
 # resolve — and the hermetic seat has no network to resolve with anyway.
+#
+# The Helm chart contract (scripts/chart-verify.sh) is CI-only, by design:
+# it renders both value profiles with helm and asserts the deployment
+# boundary against the working tree — the hermetic seat proves the rust
+# story (and the publish guard's own proof, below), the chart job in CI
+# proves the chart.
+#
+# The publish guard's proof rides this seat now that "publish guard" is a
+# required check name in CI (decision 0018 §6): the guard's test is
+# hermetic by construction — a real HTTP server bound to 127.0.0.1 with
+# the registry seam injected, no external network.
+#
+# The gate's own contract too: `coverage-gate.sh selftest` rebuilds the
+# refusal arms against a synthetic source tree — a gate that cannot fail
+# is not a gate.
 run "cargo fmt --all -- --check"  'cargo fmt --all -- --check'
 run "cargo clippy -D warnings"    'cargo clippy --workspace --all-targets --locked -- -D warnings'
 run "cargo test"                  'cargo test --workspace --locked'
 run "brokkr compile --bundle bundles/self"   "\"$brokkr\" compile --bundle bundles/self"
 run "coverage gate (exact 100% lines+branches+functions)"  'bash scripts/coverage-gate.sh'
+run "coverage gate selftest"      'bash scripts/coverage-gate.sh selftest'
+run "publish guard proof"         'bash scripts/publish-guard-test.sh'
 run "cargo deny licenses"         'cargo deny check licenses'
 # Webhook TLS (reqwest + rustls) must be the only HTTP/TLS story: native-tls
 # may never re-enter the tree (e.g. via a reqwest default-feature regression).
-run "no native-tls in the tree"   '! cargo tree -i native-tls >/dev/null 2>&1'
-printf 'all gates passed (fmt, clippy, test, bundle, exact 100/100/100 coverage, deny licenses, no native-tls) with network denied' > "$notes"
+# Fail closed: the absence is proved by the probe's own "did not match any
+# packages" report — the no-match exit code varies by cargo (1 on some,
+# 101 on current) — so exit 0 (present) refuses, a failure that does not
+# name the absence refuses, and only the named absence passes. The old
+# `! cargo tree` passed on every failure including a broken cargo, which
+# is the opposite of a proof.
+run "no native-tls in the tree (fail closed)"  'out=$(cargo tree -i native-tls 2>&1); code=$?; if [ "$code" -eq 0 ]; then echo "REFUSAL: native-tls is in the dependency tree:" >&2; echo "$out" >&2; exit 1; elif printf "%s" "$out" | grep -q "did not match any packages"; then exit 0; else echo "REFUSAL: cargo tree failed (exit $code) and did not report absence; absence cannot be proved:" >&2; echo "$out" >&2; exit 1; fi'
+printf 'all gates passed (fmt, clippy, test, bundle, exact 100/100/100 coverage + selftest, publish-guard proof, deny licenses, no native-tls fail-closed) with network denied' > "$notes"
 write_result pass
