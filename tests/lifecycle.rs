@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{SmtpConn, start, start_with};
+use common::{SmtpConn, start, start_with, wait_for_metric_row};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -298,10 +298,11 @@ const STOP_BUDGET: Duration = Duration::from_secs(10);
 /// AC2 (0018): a parked await cannot hold stop hostage. A 60s REST wait
 /// parks on an empty inbox; the stop completes inside the budget and the
 /// parked request answers `503` with the fixed text — axum's graceful drain
-/// would otherwise hold `stop()` for the wait's whole remainder. The 300ms
-/// pause is sequencing, not an outcome wait: nothing here waits for the
-/// wait to answer (it cannot answer before the stop), the request only has
-/// to be parked when the stop fires.
+/// would otherwise hold `stop()` for the wait's whole remainder. The park
+/// is *observed*, not timed: `swarmail_awaits_active` over real HTTP
+/// states the request is parked before the stop fires — a sleep only
+/// hoped so (issue #51). Nothing here waits for the wait to answer (it
+/// cannot answer before the stop).
 #[tokio::test]
 async fn a_parked_await_does_not_hold_stop_hostage() {
     let srv = start().await;
@@ -312,7 +313,9 @@ async fn a_parked_await_does_not_hold_stop_hostage() {
         "/api/v1/inboxes/parked/await?count=1&timeout_ms=60000",
         None,
     ));
-    tokio::time::sleep(Duration::from_millis(300)).await; // the wait parks
+    // The wait parks, observed under its own inbox: the labeled row can
+    // only be raised by this test's wait (issue #51).
+    wait_for_metric_row(addr, "swarmail_awaits_active{inbox=\"parked\"}", 1).await;
 
     let started = std::time::Instant::now();
     tokio::time::timeout(STOP_BUDGET, srv.stop())
@@ -343,7 +346,9 @@ async fn a_parked_mcp_wait_does_not_hold_stop_hostage() {
     let addr = srv.http_addr;
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"swarmail_wait_for_email","arguments":{"inbox":"parkedmcp","count":1,"timeout_ms":60000}}}"#;
     let request = tokio::spawn(common::http_json(addr, "POST", "/mcp", Some(body)));
-    tokio::time::sleep(Duration::from_millis(300)).await; // the wait parks
+    // The wait parks, observed under its own inbox — the shared gauge's
+    // labeled row covers the MCP surface too (issue #51).
+    wait_for_metric_row(addr, "swarmail_awaits_active{inbox=\"parkedmcp\"}", 1).await;
 
     let started = std::time::Instant::now();
     tokio::time::timeout(STOP_BUDGET, srv.stop())
@@ -367,8 +372,8 @@ async fn a_parked_mcp_wait_does_not_hold_stop_hostage() {
 /// slice 2, decision 0025): an await with no `timeout_ms` parks on the
 /// 5000 the docs publish and answers the stop's fixed 503 — a refused
 /// parser would have answered 400 and a zeroed default 408 before the
-/// stop ever fired. The 300ms pause is the established sequencing
-/// discipline; the asserted outcome is the answer's shape, not a clock.
+/// stop ever fired. The park is observed, not timed (issue #51); the
+/// asserted outcome is the answer's shape, not a clock.
 #[tokio::test]
 async fn an_omitted_timeout_parks_on_the_documented_default() {
     let srv = start().await;
@@ -379,7 +384,8 @@ async fn an_omitted_timeout_parks_on_the_documented_default() {
         "/api/v1/inboxes/omitted/await?count=1&to=nobody@x.io",
         None,
     ));
-    tokio::time::sleep(Duration::from_millis(300)).await; // the wait parks
+    // The wait parks, observed under its own inbox (issue #51).
+    wait_for_metric_row(addr, "swarmail_awaits_active{inbox=\"omitted\"}", 1).await;
 
     tokio::time::timeout(STOP_BUDGET, srv.stop())
         .await
@@ -405,7 +411,8 @@ async fn an_omitted_mcp_timeout_parks_on_the_documented_default() {
     let addr = srv.http_addr;
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"swarmail_wait_for_email","arguments":{"inbox":"omittedmcp","count":1,"to":"nobody@x.io"}}}"#;
     let request = tokio::spawn(common::http_json(addr, "POST", "/mcp", Some(body)));
-    tokio::time::sleep(Duration::from_millis(300)).await; // the wait parks
+    // The wait parks, observed under its own inbox (issue #51).
+    wait_for_metric_row(addr, "swarmail_awaits_active{inbox=\"omittedmcp\"}", 1).await;
 
     tokio::time::timeout(STOP_BUDGET, srv.stop())
         .await
@@ -439,16 +446,28 @@ async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
     // real layer).
     let _lock = common::hold_write_lock(&path);
 
-    let mut c = SmtpConn::connect(srv.smtp_addr).await;
-    c.send("MAIL FROM:<f@x.io>").await;
-    assert!(c.reply().await.starts_with("250"));
-    c.send("RCPT TO:<burn@x.io>").await;
-    assert!(c.reply().await.starts_with("250"));
-    // The reply to the dot is where the commit burns: drive it on a task and
-    // stop under it. The bound is 5s, so a 100ms sequencing pause puts the
-    // stop inside the burn with certainty — no outcome is awaited here.
-    let reply = tokio::spawn(async move { c.data("a mail that cannot commit").await });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The reply to the dot is where the commit burns: drive it on a task
+    // and stop under it. The burn is observed, not timed for: the
+    // delivery's inbox row is live exactly while the delivery is between
+    // its terminator and its insert resolving — the stop is sequenced
+    // behind that observation, so it always lands inside the 5s burn
+    // (issue #51). The AUTH user names the inbox "burn", so the row is
+    // this test's alone: a parallel delivery to `default` could never
+    // satisfy its poll.
+    let reply = tokio::spawn(common::smtp_send(
+        srv.smtp_addr,
+        Some("burn"),
+        "f@x.io",
+        "r@x.io",
+        "a mail that cannot commit",
+        "x",
+    ));
+    wait_for_metric_row(
+        srv.http_addr,
+        "swarmail_deliveries_in_flight{inbox=\"burn\"}",
+        1,
+    )
+    .await;
 
     let smtp_addr = srv.smtp_addr;
     let http_addr = srv.http_addr;
@@ -464,10 +483,14 @@ async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
 
     // The socket died with the session: whatever the client reads, it is
     // never a `250` — a commit that outlives its socket cannot half-land.
+    // `smtp_send` reports every non-250 as its error half, so the refusal
+    // (or the empty read of a socket that died first) surfaces there; the
+    // join and timeout layers are mechanics, not observations.
     let tail = tokio::time::timeout(Duration::from_secs(10), reply)
         .await
         .expect("the delivery task must see the socket close")
-        .unwrap();
+        .expect("the delivery task cannot panic")
+        .unwrap_or_else(|refusal| refusal);
     assert!(
         !tail.starts_with("250"),
         "a refused commit must never answer 250: {tail:?}"
@@ -553,7 +576,19 @@ async fn queued_seeds_refuse_once_the_stop_has_fired() {
             common::http_json(http_addr, "POST", &route, Some(body)).await
         }));
     }
-    tokio::time::sleep(Duration::from_millis(300)).await; // the seeds queue on the boundary
+    // The seeds are inside the router, observed: each seed's own labeled
+    // row — the request is in flight and its commit is queued on the
+    // boundary. A per-inbox row can only be raised by this test's seeds; a
+    // global count could be satisfied by a parallel test's scrape (issue
+    // #51).
+    for inbox in ["refuse-one", "refuse-two", "refuse-three"] {
+        wait_for_metric_row(
+            http_addr,
+            &format!("swarmail_http_requests_in_flight{{inbox={inbox:?}}}"),
+            1,
+        )
+        .await;
+    }
 
     let started = std::time::Instant::now();
     tokio::time::timeout(STOP_BUDGET, srv.stop())

@@ -180,7 +180,12 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, String> {
                 Err(msg) => return Ok(error_result(msg)),
             };
             // The wait races the stop watch (decision 0018) — the same race
-            // the REST await runs, against the same receiver.
+            // the REST await runs, against the same receiver. The park
+            // registers on the shared readiness gauge first, under the
+            // wait's own inbox: a test sequencing against a parked MCP wait
+            // reads its inbox's `swarmail_awaits_active` row over HTTP
+            // instead of sleeping.
+            let _park = crate::api::park_await(&inbox);
             let outcome = tokio::select! {
                 outcome = store.wait_for(&inbox, &filter, want, timeout) => Some(outcome),
                 _ = crate::api::shutdown_signal(ctx.shutdown.clone()) => None,

@@ -21,6 +21,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
@@ -99,6 +100,172 @@ pub(crate) async fn shutdown_signal(mut rx: tokio::sync::watch::Receiver<bool>) 
     }
 }
 
+// ---------- readiness gauges (issue #51) ----------
+//
+// A test that must sequence against the server — "my wait is parked",
+// "the server has my request", "the delivery is mid-commit" — used to have
+// only a sleep, which is a race wearing a timeout (decision 0020 rule 5):
+// it proves nothing about where the request actually is. These gauges are
+// the observables the sleeps are replaced with, read over real HTTP from
+// `/metrics` — the production server's own words, never a test-side guess.
+//
+// Every gauge is **labeled by inbox** in addition to its total. The label
+// is what makes a poll sound: several test servers share one process
+// (the integration suites spawn them on one runtime), so a *global* count
+// mixes parallel tests' units — a delta-over-baseline poll on a gauge that
+// can fall is a coin flip. A labeled row named for the caller's own inbox
+// (decision 0004: per-test inboxes on the wire) can only be raised by that
+// caller's unit, so "the row reached 1" means *my* unit is in flight, not
+// merely that somebody's is. An inbox with no live unit renders no row.
+
+/// The shape every readiness gauge shares: live units per inbox. A
+/// `BTreeMap` so the rendered rows are deterministic in name order.
+type Registry = std::sync::Mutex<std::collections::BTreeMap<String, u64>>;
+
+/// Parked waits per inbox: the REST `await` and the MCP
+/// `swarmail_wait_for_email` both register through [`park_await`], so one
+/// gauge covers both surfaces. A cap refusal or a parse failure never
+/// parks, and so never counts.
+static AWAITS: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// HTTP requests currently inside the router, per inbox path — raised by
+/// [`count_in_flight`] for any request scoped to an inbox route. The
+/// router's total lives beside it in [`HTTP_REQUESTS_IN_FLIGHT`].
+static REQUESTS: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// SMTP deliveries between the DATA terminator and their insert resolving,
+/// per inbox — the accept == stored seam (0001) made observable.
+static DELIVERIES: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// HTTP requests currently inside the router: incremented before the
+/// handler runs, released when the response is produced (or the handler's
+/// task unwinds).
+static HTTP_REQUESTS_IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
+
+fn raise(registry: &Registry, inbox: &str) {
+    *registry
+        .lock()
+        .expect("a readiness registry mutex cannot poison")
+        .entry(inbox.to_string())
+        .or_insert(0) += 1;
+}
+
+fn release(registry: &Registry, inbox: &str) {
+    let mut units = registry
+        .lock()
+        .expect("a readiness registry mutex cannot poison");
+    let count = units
+        .get_mut(inbox)
+        .expect("a live unit's inbox cannot vanish before its guard drops");
+    *count -= 1;
+    if *count == 0 {
+        // No row for a quiescent inbox: a row's existence is the unit's
+        // liveness, the property the polls rely on.
+        units.remove(inbox);
+    }
+}
+
+/// A live unit of one readiness gauge — a parked wait, a queued request, a
+/// mid-commit delivery — counted under its inbox until the guard drops, on
+/// resolve *and* on unwind, so a panicking handler can never leak the row.
+pub(crate) struct UnitGuard {
+    registry: &'static Registry,
+    inbox: String,
+}
+
+impl UnitGuard {
+    fn take(registry: &'static Registry, inbox: &str) -> Self {
+        raise(registry, inbox);
+        Self {
+            registry,
+            inbox: inbox.to_string(),
+        }
+    }
+}
+
+impl Drop for UnitGuard {
+    fn drop(&mut self) {
+        release(self.registry, &self.inbox);
+    }
+}
+
+/// Register a parked wait (REST `await` or MCP `wait_for_email`) for
+/// `/metrics` observation, under its inbox. The returned guard releases
+/// the row when the wait resolves — by answer, by stop, or by unwind.
+pub(crate) fn park_await(inbox: &str) -> UnitGuard {
+    UnitGuard::take(&AWAITS, inbox)
+}
+
+/// Count one delivery between its DATA terminator and its insert
+/// resolving, under its inbox (the accept == stored seam, 0001).
+pub(crate) fn park_delivery(inbox: &str) -> UnitGuard {
+    UnitGuard::take(&DELIVERIES, inbox)
+}
+
+/// Count every request the router sees, labeled when the path scopes an
+/// inbox. A test that must know the server has its request reads the
+/// labeled row over real HTTP instead of sleeping; the guards release
+/// their counts on response, unwind *and* cancellation (a dropped
+/// connection drops the handler future — a bare fetch-sub after the await
+/// would leak the total forever).
+async fn count_in_flight(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let inbox = inbox_of_path(req.uri().path());
+    let _label = inbox.as_deref().map(|i| UnitGuard::take(&REQUESTS, i));
+    let _total = TotalGuard(&HTTP_REQUESTS_IN_FLIGHT);
+    next.run(req).await
+}
+
+/// Count one request against the router's total until the guard drops.
+struct TotalGuard(&'static AtomicU64);
+
+impl Drop for TotalGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// The inbox a request path scopes — `/api/v1/inboxes/<inbox>/…`, the wire
+/// segment as requested (untranslated): the labeled row a test polls is
+/// the path its own request carried.
+fn inbox_of_path(path: &str) -> Option<String> {
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        ["api", "v1", "inboxes", inbox, ..] => Some((*inbox).to_string()),
+        _ => None,
+    }
+}
+
+/// Waits currently parked in the wait machinery, for `/metrics`.
+pub fn awaits_active() -> u64 {
+    registry_total(&AWAITS)
+}
+
+/// HTTP requests currently inside the router, for `/metrics`.
+pub fn http_requests_in_flight() -> u64 {
+    HTTP_REQUESTS_IN_FLIGHT.load(Ordering::Relaxed)
+}
+
+/// One readiness registry's rows: the total and, sorted by inbox, one
+/// labeled sample per inbox with a live unit.
+fn registry_rows(registry: &'static Registry, name: &str, total: u64) -> String {
+    let units = registry
+        .lock()
+        .expect("a readiness registry mutex cannot poison");
+    let mut out = format!("# TYPE {name} gauge\n{name} {total}\n");
+    for (inbox, count) in units.iter() {
+        out.push_str(&format!("{name}{{inbox={inbox:?}}} {count}\n"));
+    }
+    out
+}
+
+fn registry_total(registry: &Registry) -> u64 {
+    registry
+        .lock()
+        .expect("a readiness registry mutex cannot poison")
+        .values()
+        .sum()
+}
+
 pub async fn serve(
     listener: TcpListener,
     state: AppState,
@@ -149,6 +316,7 @@ pub fn router(state: AppState) -> Router {
         .route("/llms.txt", get(llms_txt))
         .merge(ui::router())
         .merge(compat::router())
+        .layer(axum::middleware::from_fn(count_in_flight))
         .with_state(state)
 }
 
@@ -311,10 +479,43 @@ async fn metrics(State(state): State<AppState>) -> String {
             "swarmail_webhook_aborted_total",
             ledger.aborted.to_string(),
         ),
+        // The readiness gauges (issue #51): what a test used to sleep and
+        // hope for, the server states outright. `awaits_active` covers both
+        // wait surfaces (REST + MCP); `deliveries_in_flight` is the SMTP
+        // DATA-to-commit window (the accept == stored seam, 0001); the
+        // router's request count is the "the server has my request" signal.
+        // Each also renders one labeled sample per inbox with a live unit —
+        // the per-test-unique row a poll can name (0004), immune to the
+        // process-global mixing of parallel test servers.
     ];
-    rows.iter()
+    let mut out: String = rows
+        .iter()
         .map(|(kind, name, value)| format!("# TYPE {name} {kind}\n{name} {value}\n"))
-        .collect()
+        .collect();
+    // The readiness families, one TYPE line and one sample per label set.
+    let awaits_total = awaits_active();
+    out.push_str(&registry_rows(
+        &AWAITS,
+        "swarmail_awaits_active",
+        awaits_total,
+    ));
+    out.push_str(&registry_rows(
+        &REQUESTS,
+        "swarmail_http_requests_in_flight",
+        http_requests_in_flight(),
+    ));
+    out.push_str(&registry_rows(
+        &DELIVERIES,
+        "swarmail_deliveries_in_flight",
+        deliveries_in_flight(),
+    ));
+    out
+}
+
+/// Deliveries between their DATA terminator and their insert resolving,
+/// for `/metrics`.
+pub fn deliveries_in_flight() -> u64 {
+    registry_total(&DELIVERIES)
 }
 
 async fn list_inboxes(State(state): State<AppState>) -> Json<Vec<InboxSummary>> {
@@ -375,6 +576,11 @@ async fn await_messages(
     // server begins stopping, the wait answers 503 and lets the shutdown
     // proceed. `shutdown_signal` subscribes (clones) the receiver before
     // `wait_for`'s first scan; nothing is checked before subscribing.
+    // The park registers on the readiness gauge first: a test sequencing
+    // against this wait reads its inbox's `swarmail_awaits_active` row over
+    // HTTP instead of sleeping, and the guard releases the row on every
+    // resolution path.
+    let _park = park_await(&inbox);
     let outcome = tokio::select! {
         outcome = state.store.wait_for(&inbox, &filter, want, timeout) => Some(outcome),
         _ = shutdown_signal(state.shutdown.clone()) => None,
@@ -766,5 +972,49 @@ mod tests {
         );
         assert_eq!(timeout_ms["minimum"], 0, "{timeout_ms}");
         assert_eq!(timeout_ms["maximum"], MAX_AWAIT_TIMEOUT_MS, "{timeout_ms}");
+    }
+
+    /// The labeled registry's release paths, probed in isolation (decision
+    /// 0020 rule 1, branch-stable): a label survives an inner release while
+    /// an outer guard still holds it, and vanishes exactly when its last
+    /// unit resolves — the row's existence is the unit's liveness, the
+    /// property every poll relies on. The keys are test-owned (`cov-…`),
+    /// so no wire test's inbox can collide with this global.
+    #[test]
+    fn a_label_survives_inner_releases_and_vanishes_at_the_last_one() {
+        let outer = UnitGuard::take(&AWAITS, "cov-inner");
+        let inner = UnitGuard::take(&AWAITS, "cov-inner");
+        drop(inner);
+        assert_eq!(
+            awaits_active(),
+            1,
+            "one live unit remains after the inner release"
+        );
+        let rendered = registry_rows(&AWAITS, "swarmail_awaits_active", 1);
+        assert!(
+            rendered.contains("swarmail_awaits_active{inbox=\"cov-inner\"} 1"),
+            "the label survives an inner release: {rendered}"
+        );
+        drop(outer);
+        assert_eq!(awaits_active(), 0, "the last release empties the gauge");
+        let rendered = registry_rows(&AWAITS, "swarmail_awaits_active", 0);
+        assert!(
+            !rendered.contains("cov-inner"),
+            "no row for a quiescent inbox: {rendered}"
+        );
+    }
+
+    /// The request path's inbox scope: an inbox route names its label,
+    /// anything else names none — a labeled poll must be satisfiable only
+    /// by a request to the caller's own route.
+    #[test]
+    fn an_inbox_scoped_path_names_its_label_and_any_other_names_none() {
+        assert_eq!(
+            inbox_of_path("/api/v1/inboxes/cov-path/seed"),
+            Some("cov-path".to_string())
+        );
+        assert_eq!(inbox_of_path("/metrics"), None);
+        assert_eq!(inbox_of_path("/api/v1/inboxes"), None);
+        assert_eq!(inbox_of_path("/"), None);
     }
 }

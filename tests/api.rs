@@ -2,7 +2,10 @@
 
 mod common;
 
-use common::{SmtpConn, http_bytes, http_get_text, http_head_text, http_json, start};
+use common::{
+    SmtpConn, http_bytes, http_get_text, http_head_text, http_json, http_send_text, start,
+    wait_for_metric_row,
+};
 
 /// Seed one fixture mail into `inbox` (the default extractor path).
 async fn seed(addr: std::net::SocketAddr, inbox: &str, to: &str) -> serde_json::Value {
@@ -294,9 +297,15 @@ async fn chaos_roundtrip_and_invalid_body_is_a_bad_request() {
     assert_eq!(body["data"]["error"], "451 nope");
 
     // A body that fails to deserialize is rejected by the extractor with a
-    // 400 before the handler runs.
-    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some("not json")).await;
+    // 400 before the handler runs — and the rejection body is the
+    // extractor's own plain text, never a JSON envelope; `http_send_text`
+    // reads it honestly where `http_json` would refuse the body.
+    let (st, body) = http_send_text(srv.http_addr, "PUT", "/api/v1/chaos", Some("not json")).await;
     assert_eq!(st, 400);
+    assert!(
+        body.starts_with("Failed to parse the request body"),
+        "the rejection is the extractor's own text: {body:?}"
+    );
 
     let (st, body) = http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
     assert_eq!(st, 200);
@@ -323,8 +332,10 @@ async fn seed_with_html_runs_the_extraction_pipeline() {
 #[tokio::test]
 async fn seed_with_invalid_body_is_a_bad_request() {
     let srv = start().await;
-    // The Json extractor rejects malformed bodies before the handler runs.
-    let (st, _) = http_json(
+    // The Json extractor rejects malformed bodies before the handler runs,
+    // with its own plain-text body — the text cousin reads it honestly;
+    // `http_json` would (correctly) refuse a non-JSON body.
+    let (st, body) = http_send_text(
         srv.http_addr,
         "POST",
         "/api/v1/inboxes/bad/seed",
@@ -332,6 +343,10 @@ async fn seed_with_invalid_body_is_a_bad_request() {
     )
     .await;
     assert_eq!(st, 400);
+    assert!(
+        body.starts_with("Failed to parse the request body"),
+        "the rejection is the extractor's own text: {body:?}"
+    );
 }
 
 #[tokio::test]
@@ -385,7 +400,10 @@ async fn mcp_endpoint_answers_and_notifications_are_accepted() {
     assert_eq!(st, 200);
     assert_eq!(body["result"]["protocolVersion"], "2025-03-26");
 
-    let (st, _) = http_json(
+    // A notification is accepted (202) with no body — fire-and-forget has
+    // nothing to answer, and absence read as `{}` is the dishonesty issue
+    // #50 names. The text cousin keeps the absence honest.
+    let (st, body) = http_send_text(
         srv.http_addr,
         "POST",
         "/mcp",
@@ -393,6 +411,7 @@ async fn mcp_endpoint_answers_and_notifications_are_accepted() {
     )
     .await;
     assert_eq!(st, 202);
+    assert!(body.is_empty(), "a notification has no body: {body:?}");
 
     let (st, body) = http_json(
         srv.http_addr,
@@ -576,7 +595,9 @@ async fn await_timeout_over_the_cap_is_refused_and_the_cap_itself_is_accepted() 
         "/api/v1/inboxes/cap/await?count=1&to=capped@x.io&timeout_ms=60000",
         None,
     ));
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the wait parks
+    // The wait parks, observed under its own inbox — the mail can then
+    // never miss it (issue #51).
+    wait_for_metric_row(addr, "swarmail_awaits_active{inbox=\"cap\"}", 1).await;
     common::smtp_send(
         srv.smtp_addr,
         Some("cap"),
@@ -611,7 +632,10 @@ async fn await_total_is_counted_after_the_wait_in_both_arms() {
         "/api/v1/inboxes/observed/await?count=1&to=racer@x.io&timeout_ms=10000",
         None,
     ));
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the wait parks
+    // The wait parks, observed under its own inbox — the mail arrives
+    // strictly after the wait registered, so the post-wait total counts it
+    // deterministically (issue #51).
+    wait_for_metric_row(addr, "swarmail_awaits_active{inbox=\"observed\"}", 1).await;
     common::smtp_send(
         srv.smtp_addr,
         Some("observed"),
@@ -638,7 +662,10 @@ async fn await_total_is_counted_after_the_wait_in_both_arms() {
         "/api/v1/inboxes/observed408/await?count=1&to=nobody@x.io&timeout_ms=1500",
         None,
     ));
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // the wait parks
+    // The wait parks, observed under its own inbox — the unrelated mail
+    // can never arrive before the wait registered its subscription (issue
+    // #51).
+    wait_for_metric_row(addr, "swarmail_awaits_active{inbox=\"observed408\"}", 1).await;
     common::smtp_send(
         srv.smtp_addr,
         Some("observed408"),
@@ -756,9 +783,17 @@ async fn chaos_wrong_typed_probability_keeps_the_extractor_envelope_and_the_rule
         (r#"{"data": {"probability": 256}}"#, 422),
         ("not json", 400),
     ] {
-        let (st, body) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(put)).await;
+        // The extractor's rejection is plain text, never a JSON envelope —
+        // no `{"error": …}` is synthesized for a malformed body — so the
+        // text cousin reads it honestly; `http_json` would refuse the body
+        // (and the old `{}` coercion made the envelope assertion vacuous).
+        let (st, body) = http_send_text(srv.http_addr, "PUT", "/api/v1/chaos", Some(put)).await;
         assert_eq!(st, status, "{put}: {body}");
-        assert!(body["error"].is_null(), "{put}: {body}");
+        assert!(
+            body.starts_with("Failed to deserialize the JSON body")
+                || body.starts_with("Failed to parse the request body"),
+            "{put}: the rejection is the extractor's own text: {body:?}"
+        );
     }
 
     let (st, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;

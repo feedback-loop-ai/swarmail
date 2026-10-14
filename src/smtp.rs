@@ -633,6 +633,14 @@ async fn session(
                 // §4.2.2, requested action aborted), distinct from chaos's
                 // fixed `451 4.3.0 chaos`, internals to the log and never to
                 // the peer — where the old tree acknowledged the lie.
+                // The delivery is observable from the DATA terminator until
+                // the insert resolves: its inbox's
+                // `swarmail_deliveries_in_flight` row is live exactly while
+                // 0001's seam is in motion, so a test can sequence
+                // stop/chaos against a mid-commit delivery instead of
+                // sleeping. The guard releases the row on resolve or
+                // unwind.
+                let _in_flight = crate::api::park_delivery(&email.inbox);
                 match store.clone().insert_async(email).await {
                     Ok(_) => {
                         write_line(reader.get_mut(), &format!("250 2.0.0 OK: stored as {id}"))
