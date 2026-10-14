@@ -233,8 +233,8 @@ rulings above.
 ## Decision Documents
 
 This change re-places the mechanism of frozen guarantee 0001's disk leg and adds public contract
-surface, so it carries a decision record — **Decision: 0010**,
-[docs/decisions/0010-off-worker-commits.md](../../docs/decisions/0010-off-worker-commits.md),
+surface, so it carries a decision record — **Decision: 0023**,
+[docs/decisions/0023-off-worker-commits.md](../../docs/decisions/0023-off-worker-commits.md),
 status `proposed`, acceptance the operator's. It records the interpretation ruling (the disk leg
 is ordering and atomicity, not thread identity), the wrapper contract, and the two lines that
 must not move. No other decision is touched: 0002 (await subscribes before checking) and 0003

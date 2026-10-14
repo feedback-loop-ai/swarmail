@@ -9,7 +9,7 @@ Companion to the ratified wave spec
 [`specs/watcher-atomicity-release/spec.md`](../watcher-atomicity-release/spec.md) — that spec
 owns the *design* (wake ring, atomic registration, release-with-the-mail, closure-aware wait);
 this spec owns the *completion* of its parked implementation. Decision
-[0010](../../docs/decisions/0010-watcher-channel-lifetime.md) (status `proposed`, the operator
+[0021](../../docs/decisions/0021-watcher-channel-lifetime.md) (status `proposed`, the operator
 accepts) already records the public-contract deltas; **no new decision document is drafted
 here** — the completion touches no accepted ruling, adds no production surface, and its only
 new test assertion is test-only code. The two measured defects routed out of this wave are
@@ -50,7 +50,7 @@ create and must not silently carry:
    tokio's cooperative budget yields the spinner periodically, so the collapse the spec
    predicted (≈ 0 ticks) does not happen; a ~17 % dip is the worst case. The ratified
    spec's "structural" claim and its probabilistic-loss hedge are both now *measured
-   facts*; per task 10's rule the ratified spec and decision 0010 are not edited — the
+   facts*; per task 10's rule the ratified spec and decision 0021 are not edited — the
    contradiction returns through design, and **this spec is that return**.
 5. **Two same-family races stand one door down** (measured, pre-existing, not introduced by
    the WIP — routed, see below): `delete` racing `clear` panics on its `.expect`
@@ -137,7 +137,7 @@ and `tests/burst.rs`
 (`await_survives_a_release_and_finds_later_mail`) are **verify-only**: their parked state is
 correct and their tests prove it; the only reason the burst test fails today is the lib
 build break. No edits are expected in either file; if a gate exposes one, fix exactly what
-is exposed. Decision 0010 and `specs/watcher-atomicity-release/spec.md` are untouched
+is exposed. Decision 0021 and `specs/watcher-atomicity-release/spec.md` are untouched
 (task 10 is verify-only); the ten checkboxes in `specs/watcher-atomicity-release/tasks.md`
 are ticked by implement **after** the gates prove them, never before.
 
@@ -147,7 +147,7 @@ Both seats verified the same tree and agree on the skeleton: restore the arm (re
 *before* the gate), delete the ungated-reference build break, refuse the `/metrics` gauge,
 the idle-TTL sweeper, subscriber-count release machinery, the `watch`/`Notify` swap, any
 wall-clock CPU-percentage assertion, the compile-only fence (`#[cfg(test)]` on the
-`fetch_add` line while keeping the mutation), and any edit to 0010 or the ratified spec.
+`fetch_add` line while keeping the mutation), and any edit to 0021 or the ratified spec.
 They split on the probe's fate and on scope. Ruled, not averaged:
 
 | Conflict | Ruling | Cost paid by the losing side |
@@ -155,7 +155,7 @@ They split on the probe's fate and on scope. Ruled, not averaged:
 | **The probe counter**: simplicity deletes *all* probe scaffolding ("a probe kept is a permanent 100 %-denominator obligation"); robustness keeps it and adds the deterministic arm-hit bound | **Robustness wins the counter; simplicity wins the deletion of everything else.** The counter stays, gated, *as the bound's instrument* — the only deterministic teeth for the wave's core property, free (already written), and self-covering. `PROBE_THREAD`, the `eprintln!`, and the mutation comment go. Simplicity's own reason ("a probe that exists to observe a bug is deleted with the bug") does not apply to a probe that *asserts the invariant*: the build break was the *ungated reference*, which dies either way; the 100 % obligation is two lines the two existing gate tests execute. | Simplicity's side carries ~2 permanent `#[cfg(test)]` lines in the coverage denominator. Robustness's side loses the probe as a *diagnostic*: nothing prints in CI; the assert message is the only report. |
 | **The ticker probe's status**: the ratified spec calls its teeth "structural"; both seats measured that claim false (33 of ~40 ticks advanced under a 202K-iteration spin) | **Keep the ticker exactly as ratified — as a canary, not teeth — and record the demotion here** rather than editing the ratified spec (task 10 is verify-only; this document is the design-phase return of that contradiction). No margin re-tuning. | The honest loss recorded at ratification is now a measured fact: the no-spin property's *guarantee* rests on the restored code shape plus the delta bound, not on the ticker. |
 | **`not_stranded` cannot distinguish a real re-subscribe from a misfired gate** (robustness F2) | **Restoring the task-6 order repairs the mechanism, no new test** (simplicity's point, adopted): under the restored arm, a no-re-subscribe regression means `fires == 1` → `Timeout` → red. The seam's contract stays one reviewed line — fire only after `subscribe()` returns. | Robustness's demand for a *stronger* seam is refused; the protection remains review discipline on one line, not machinery. |
-| **Fold in the `delete`-races-`clear` panic and the `insert`-races-`clear` stranding (F4/F5)**: robustness argues it is the wave's own thesis applied one door down, inside the declared `src/store.rs` surface; simplicity refuses anything beyond the watcher contract | **Routed out of this wave, in writing — not refused, not deferred by oversight** (see the next section). The deciding asymmetry: the fix changes the store's critical-section discipline and `delete`'s public failure mode across four protocol surfaces, which the house rules say carries its own 0001-adjacent decision document (0011) and its own review — a rider on a deadline-bounded completion (the implement seat has already missed one 3,600 s deadline; the budget is now 7,200 s) couples two risk surfaces and re-rolls the wave. This is robustness's own recorded fallback sentence, adopted as the ruling. | Robustness's side pays in time: the measured hole persists one more change — 247/30,000 delete-panics and ~13 % stranded inserts under clear-race load — recorded with numbers and shape so the next intake cannot miss it. Simplicity's side pays in debt: the "delete the window, not fence it" thesis now has a documented exception until 0011 lands. |
+| **Fold in the `delete`-races-`clear` panic and the `insert`-races-`clear` stranding (F4/F5)**: robustness argues it is the wave's own thesis applied one door down, inside the declared `src/store.rs` surface; simplicity refuses anything beyond the watcher contract | **Routed out of this wave, in writing — not refused, not deferred by oversight** (see the next section). The deciding asymmetry: the fix changes the store's critical-section discipline and `delete`'s public failure mode across four protocol surfaces, which the house rules say carries its own 0001-adjacent decision document (0020) and its own review — a rider on a deadline-bounded completion (the implement seat has already missed one 3,600 s deadline; the budget is now 7,200 s) couples two risk surfaces and re-rolls the wave. This is robustness's own recorded fallback sentence, adopted as the ruling. | Robustness's side pays in time: the measured hole persists one more change — 247/30,000 delete-panics and ~13 % stranded inserts under clear-race load — recorded with numbers and shape so the next intake cannot miss it. Simplicity's side pays in debt: the "delete the window, not fence it" thesis now has a documented exception until 0020 lands. |
 | **Hostile DATA bodies** (non-UTF-8 line kills the session with no SMTP reply while EHLO advertises `8BITMIME`/`SMTPUTF8`; unbounded line growth) | **Adopt robustness's P2 as routing**: recorded with measurements and shape, its own change (byte-oriented `read_until` loop, bounded buffer, `552` after the terminator, `502` for undecodable command lines, real-protocol proof in `tests/smtp_edges.rs`). | The protocol lie persists this wave: a hostile peer burns one connection per attempt at zero cost to itself. Outside the declared three-file surface (`src/smtp.rs` + a new test file), so it cannot ride this wave without breaking the framing's own contract. |
 
 Adopted from simplicity: no restart (nine of ten tasks are materially in the tree);
@@ -173,7 +173,7 @@ teeth); robustness's P1 fold-in (right disease, wrong vehicle).
 
 These are **decisions of this spec**, recorded so no later seat mistakes them for oversights.
 
-- **0001-adjacent concurrency repair (robustness F4/F5) → its own change with decision 0011
+- **0001-adjacent concurrency repair (robustness F4/F5) → its own change with decision 0020
   (next free number).** Two statements, as robustness specified: `delete`'s tail becomes
   fallible — if the inbox's list is absent the drain already removed the mail, so return
   `true` (the mirror's `record_delete` is idempotent) and drop the `.expect`
@@ -233,7 +233,7 @@ These are **decisions of this spec**, recorded so no later seat mistakes them fo
   lands as one commit in the repository's style on top of `a88d601`.
 - **AC8 — The routed deferrals are on the record.** This spec's routing section carries
   the measured rates (247/30,000; 3,952/30,000 ≈ 13 %), the two-statement fix shape, the
-  0011 requirement, and the hostile-DATA evidence, so the next intake inherits evidence,
+  0020 requirement, and the hostile-DATA evidence, so the next intake inherits evidence,
   not folklore.
 
 ## Out of scope (deliberate, recorded)

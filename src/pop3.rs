@@ -31,7 +31,7 @@ const MAX_COMMAND_LINE: usize = 4096;
 static SESSIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Test-only: sessions reaped by the accept loop's harvest. Its only reader
-/// is the inline probe that installs it (decision 0011 rule 4) — the probe
+/// is the inline probe that installs it (decision 0020 rule 4) — the probe
 /// drives the real `serve`, and the counter must track completed sessions
 /// across successive connection batches or the deadline expires red.
 #[cfg(test)]
@@ -379,7 +379,7 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
             (Phase::Transaction, "QUIT") => {
                 // RFC 1939 update state — only now do the marks go, through
                 // the store's existing delete path (awaited off the async
-                // workers, decision 0010) — before the signing-off reply. A
+                // workers, decision 0023) — before the signing-off reply. A
                 // failed commit is the answer (decision 0014): `-ERR` with
                 // the fixed text, no sign-off — the session stays in
                 // TRANSACTION. The update is at-least-once, not atomic
@@ -407,6 +407,19 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                     }
                 }
                 if commit_failed {
+                    // A deliberate deviation from RFC 1939 §6, which has
+                    // QUIT end the session whatever the removal did —
+                    // "Whether the removal was successful or not, the
+                    // server then releases any exclusive-access lock on
+                    // the maildrop and closes the TCP connection." Here
+                    // the `-ERR` is not a sign-off: the socket stays open
+                    // and the session stays in TRANSACTION (Mailpit's
+                    // behavior, which the compat shims track), so the
+                    // client keeps its maildrop and its marks — it may
+                    // re-LIST, RSET to unmark, or retry QUIT, which the
+                    // loop above makes idempotent over the unapplied
+                    // suffix. Closing the connection would strand a client
+                    // that could otherwise converge.
                     write_line(&mut write, "-ERR storage commit failed").await?;
                     continue;
                 }

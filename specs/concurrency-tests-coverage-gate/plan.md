@@ -1,7 +1,7 @@
 # Plan — epic #13 settlement wave: concurrency regression tests and the exact coverage gate
 
 Companion to [`spec.md`](spec.md) (WHAT/WHY) and decision
-[`0011`](../../docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md) (status
+[`0020`](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md) (status
 `proposed`). How the settlement lands: the exact edit, the files it touches, and the risks
 with mitigations. The #2/#3 regression tests are **not** written here.
 
@@ -34,8 +34,8 @@ working tree and re-verifiable in seconds.
 - `docs/house-rules.md` — **Gates** section ends at the `coverage(off)` paragraph
   (`:44-49`); the placement rules slot in after it, verbatim sentences preserved.
 - `docs/decisions/` — `0010-exact-count-asserts-and-the-shared-seed.md` (accepted) and
-  `0010-watcher-channel-lifetime.md` (proposed) are committed but absent from
-  `README.md`'s index, which stops at 0009; the 0011 row lands with both repaired.
+  `0021-watcher-channel-lifetime.md` (proposed) are committed but absent from
+  `README.md`'s index, which stops at 0009; the 0020 row (filed as 0011) lands with both repaired.
 - Worktree facts: `commit.gpgsign` resolves **false** (brokkr's config overlay; recent
   history is unsigned) — commit like the rest of history; the harness environment exports
   a broken `GIT_CONFIG_COUNT=1` without `GIT_CONFIG_KEY_0`, so drive `git` with
@@ -57,8 +57,8 @@ working tree and re-verifiable in seconds.
 ## Project structure — the complete diff surface
 
 ```
-docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md   the ruling (committed by the chief)
-docs/decisions/README.md                                         0011 row + the two 0010 rows
+docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md   the ruling (committed by the chief)
+docs/decisions/README.md                                         0020 row + the two 0010 rows
 docs/house-rules.md                                              placement rules under Gates
 scripts/coverage-gate.sh                                         ONE structural refusal block
 src/store.rs                                                     inline mod persist_tests -> declaration
@@ -110,7 +110,7 @@ must refuse — never re-count — and name the offending file:
   `#[cfg(test)] mod <stem>;` on one line, or `#[cfg(test)]` as the first attribute of the
   attribute sequence directly above `mod <stem>;` (walk up over attribute-only lines; no
   `mod` keyword may appear between). Anything else → refuse.
-- Refusal text names the file and cites decision 0011, in the style of the existing
+- Refusal text names the file and cites decision 0020, in the style of the existing
   refusals; exit 1.
 
 The four hardening blocks (`:39-42`, `:56-66`, `:103-116`, `:181-187`) land
@@ -128,7 +128,7 @@ the leak-check.
    still succeeding is exactly the hole the tripwire closes). Revert each; re-run the
    gate green.
 
-### 5. The denominator audit (decision 0011's evidence)
+### 5. The denominator audit (decision 0020's evidence)
 
 Post-migration `target/coverage/coverage-summary.json` must show lines **4286**, branches
 **262**, functions **568**, `covered == count` in all three dimensions; delta == the moved
@@ -140,7 +140,7 @@ production line moved into the harness — refuse the migration, not the gate.
 ### 6. `docs/house-rules.md` — the placement rules
 
 Append under **Gates**, after the `coverage(off)` paragraph (`:44-49`, byte-identical), a
-paragraph **"Regression-test placement (decision 0011)"** carrying the six rules: inline
+paragraph **"Regression-test placement (decision 0020)"** carrying the six rules: inline
 default (measured, vacuity-policed, seam-driven or not); the cold-path harness
 `src/<module>/<name>_tests.rs` declared `#[cfg(test)] mod <name>_tests;` beside its owner
 (runs in `cargo test`, excluded from the report, still covers the production lines it
@@ -154,9 +154,9 @@ undeclared or ungated one).
 
 ### 7. `docs/decisions/README.md` — the index rows
 
-One row for 0011 (`proposed (awaiting operator)`, the 0008/0009 shape) between 0009 and
+One row for 0020, filed as 0011 (`proposed (awaiting operator)`, the 0008/0009 shape) between 0009 and
 the 0010 rows, plus the two committed 0010 records with their recorded statuses
-(`0010-exact-count-asserts-and-the-shared-seed` — accepted; `0010-watcher-channel-lifetime`
+(`0010-exact-count-asserts-and-the-shared-seed` — accepted; `0021-watcher-channel-lifetime`
 — proposed). No other index churn.
 
 ### 8. The six gates, then one commit
@@ -175,7 +175,7 @@ rest of this worktree's history). **No #2/#3 test bodies.**
 | **The tripwire misses an exotic alias** (`#[path = "..."]` pointing at a harness-named file, or a `mod` declared from a non-conventional parent). | Accepted residual, named in 0011: it requires deliberate misconduct, `dead_code` and review still apply, and the structural check is deliberately a grep (no heuristics that could silently mis-count). The conventional-parent rule keeps the check exact; exotic layouts refuse (no parent found → refuse). |
 | **cargo-llvm-cov changes its upstream default ignore regex** and a harness file re-enters the report. | Two tripwires fire loudly: the leak-check refuses any harness path among `SF:` records, and the harness's own cold paths would fail exact equality. `Cargo.lock` + `--locked` pin the graph; the leak-check is the drift alarm. No silent path exists in either direction. |
 | **The denominator shrink is misread as gate weakening.** | Delta attribution is the proof: `lines.count` moves by exactly the moved file's `DA:` records (−106), branches ±0, functions −12; `covered == count` holds throughout; no production line changes files. The summary before/after is preserved under `target/coverage/`. |
-| **The migration is mistaken for a license to sweep inline tests out** (the "harness as landfill" failure). | Decision 0011 names `persist_tests` the single deliberate re-homing; house rules state inline as the default and the two triggers (cold path, seam adjacency); review checks every move against them. The vacuity detector's surviving teeth are measured: branches stayed 262/262 with the only gate installers in the harness file. |
+| **The migration is mistaken for a license to sweep inline tests out** (the "harness as landfill" failure). | Decision 0020 names `persist_tests` the single deliberate re-homing; house rules state inline as the default and the two triggers (cold path, seam adjacency); review checks every move against them. The vacuity detector's surviving teeth are measured: branches stayed 262/262 with the only gate installers in the harness file. |
 | **The moved module rots unrun** (its file is invisible to the coverage report). | `cargo test` runs it — same module path `store::persist_tests`, same suite; the gate's instrumented run executes the whole workspace. Nothing escapes the six gates; it stops being *double*-counted. |
 | **The `set_post_subscribe_gate` installers stay inline while the pre-mirror ones move** — an asymmetry a reviewer may flag. | It is the ruling applied, not an oversight: the post-subscribe tests (`:857`, `:897`) are branch-stable and stay measured (0002's jurisdiction); the pre-mirror module is the worked proof and #2's future home. Both facts are stated in 0011 and the spec. |
 | **A gate exposes an unexpected failure** (fmt on the de-indent, clippy on the moved body, a count off by one). | Fix exactly the exposure; do not re-derive the settlement. A count mismatch is a stop-and-investigate (a production line moved) — not a knob. |

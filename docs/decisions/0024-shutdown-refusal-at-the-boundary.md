@@ -11,7 +11,9 @@
 - **Preserves:** [0001](0001-synchronous-insert-lossless.md) — the refusal
   precedes any acceptance: nothing was promised, so nothing is torn;
   [0002](0002-awaits-subscribe-before-checking.md) — the check reads the
-  watch with the established `borrow_and_update` discipline;
+  watch with the established borrow discipline (`borrow()`, the `&self`
+  form — the boundary takes `&self`, and nothing polls this clone's
+  change flag, so there is no seen-state to update);
   [0003](0003-oldest-only-pruning.md) — a refused insert evicts nothing;
   [0012](0012-commit-failure-refusal-and-the-mutation-boundary.md) §1/§2 —
   one public variant (`rusqlite::Error`), no new error type, the fixed
@@ -64,7 +66,7 @@ fixes the cause; the wire text stays.
    shutdown watch is born and before any listener binds. No constructor
    signature changes — the 46+ `Store::new` call sites keep their shape; a
    store never wired (every unit test, every embedding) keeps today's
-   behavior exactly. The read is `borrow_and_update()` — synchronous,
+   behavior exactly. The read is `borrow()` — synchronous,
    lock-free, no await ever enters the boundary (0014 §1). 0018 §1's
    *"The store alone does not observe shutdown"* is amended for the
    mutation half: the store is a **reader** of the same watch — one source
@@ -160,7 +162,7 @@ fixes the cause; the wire text stays.
 - Every new line is a deterministic branch: the unwired arm is the
   existing suite's behavior, the wired-not-stopping arm is every server
   test's traffic, the stopping arm is the new inline refusal probe —
-  inline, measured, per 0011 rule 1; no cold path, no harness relocation,
+  inline, measured, per 0020 rule 1; no cold path, no harness relocation,
   no `coverage(off)`.
 - **Accepted costs, named:** queued mutations still park blocking-pool
   threads until the flag flips (pre-existing, orthogonal to shutdown —
@@ -173,7 +175,7 @@ fixes the cause; the wire text stays.
 
 ## Landing tests
 
-- Inline (`src/store.rs` `#[cfg(test)]`, 0011 rule 1): a wired store whose
+- Inline (`src/store.rs` `#[cfg(test)]`, 0020 rule 1): a wired store whose
   flag is set refuses `insert` with the constructed error and applies
   nothing — no inbox minted, no counter moved, no fan-out; the same store
   before the flag inserts normally (the false arm), and the existing

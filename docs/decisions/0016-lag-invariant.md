@@ -11,8 +11,8 @@
 - **Preserves:** [0001](0001-synchronous-insert-lossless.md),
   [0002](0002-awaits-subscribe-before-checking.md),
   [0003](0003-oldest-only-pruning.md) — untouched;
-  [0010](0010-off-worker-commits.md) and
-  [0011](0011-concurrency-tests-and-the-coverage-gate.md) (proposed) — built
+  [0023](0023-off-worker-commits.md) and
+  [0020](0020-concurrency-tests-and-the-coverage-gate.md) (proposed) — built
   upon; [0012](0012-commit-failure-refusal-and-the-mutation-boundary.md)
   (proposed) — its amended text stands; 0014 and 0015 (proposed) — confirmed,
   not reopened.
@@ -102,7 +102,7 @@ the contract's most load-bearing constant is *enforced* by nothing:
    `src/inner_connection.rs:119`, the line 0012 §Why cites); a second
    `#[should_panic]` leg overrides the pragma on a throwaway connection and
    proves the tripwire fires. It is a **fact** tripwire, never a wall-clock
-   assertion (0011 rule 5), it is branch-stable, and it adds zero production
+   assertion (0020 rule 5), it is branch-stable, and it adds zero production
    lines. This does **not** breach 0014 §5's "`src/persist.rs` changes by
    zero lines": that freeze guards the mirror's *behavior* — 0015 already
    corrected a comment there by the same reasoning — and test-only lines in

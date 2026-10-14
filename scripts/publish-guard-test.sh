@@ -8,7 +8,7 @@
 # fixture signals readiness over a real deadline, and the refused pole is
 # immediate) and no wall-clock validity assertion; everything is bound to
 # 127.0.0.1. The last case pins the workflow to this script: an unwired
-# guard is the finding's shape again (0011 §5, adapted to shell).
+# guard is the finding's shape again (0020 §5, adapted to shell).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

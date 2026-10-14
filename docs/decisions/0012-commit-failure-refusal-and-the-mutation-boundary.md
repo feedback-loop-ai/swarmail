@@ -3,7 +3,7 @@
 - **Status:** proposed (awaiting operator acceptance)
 - **Date:** 2026-10-12
 - **Supersedes:** none
-- **Preserves:** [0001](0001-synchronous-insert-lossless.md) — strengthened, not weakened; [0003](0003-oldest-only-pruning.md) — untouched; [0010](0010-off-worker-commits.md) (proposed) — built upon, its load-bearing lines not redone
+- **Preserves:** [0001](0001-synchronous-insert-lossless.md) — strengthened, not weakened; [0003](0003-oldest-only-pruning.md) — untouched; [0023](0023-off-worker-commits.md) (proposed) — built upon, its load-bearing lines not redone
 
 ## Context
 
@@ -30,7 +30,7 @@ Epic #13, contracts #1 + #2. Two lies and one race are in the tree today.
    when a clear drains the inbox between delete's two steps).
 
 The framing (`.forge/intake/epic13-boundary-framing.md`) argued no decision
-document was required because the refusal *enforces* 0001/0010. That is true
+document was required because the refusal *enforces* 0001/0023. That is true
 of the guarantee, but the change also re-shapes two public contracts — the
 `Store::insert` signature and the SMTP/REST/MCP reply vocabulary — so the
 ruling is recorded here for the operator to accept, as the house rules
@@ -117,7 +117,7 @@ require for public-contract changes.
    mutation completes, `count(inbox)` equals the number of ids
    retrievable via `get(id)` whose inbox is that inbox — on both trees,
    live and restart. The lock is **never held across an `await`** — the
-   whole mutation still runs on tokio's blocking pool (0010) — and no
+   whole mutation still runs on tokio's blocking pool (0023) — and no
    callback inside it re-enters the store: the pre-mirror gate fires
    pre-commit inside the boundary, so its closures block or panic, never
    re-enter (re-entry deadlocks by construction). Readers (`count`,
@@ -138,7 +138,7 @@ require for public-contract changes.
 ## Why
 
 - The only *knowable* lie is alive-but-commit-failed. Crash windows are
-  already at-least-once (0010's ordering: a crash before the reply sent
+  already at-least-once (0023's ordering: a crash before the reply sent
   nothing; a crash after commit before the reply is SMTP's normal
   duplicate). This closes the window that code could close and does not
   pretend to close the ones it cannot.
@@ -167,7 +167,7 @@ require for public-contract changes.
   nanosecond-scale serialization against a commit-rate-bound ingest
   (0001's own bench).
 - Refused cuts, so they are not silently re-discovered: no degraded-mode
-  latch and no write-behind queue (0010 §3 extends to the failure side —
+  latch and no write-behind queue (0023 §3 extends to the failure side —
   a failed commit is *this mutation's* outcome; a recovered disk resumes
   accepting on the next mail, no restart); no disk-first reordering (it
   needs the shard guard held across the SQLite commit and resurrects the
@@ -198,8 +198,8 @@ require for public-contract changes.
   persist mutex already serializes far more.
 - Every new production line ships with the test that executes it: the
   rewritten degraded test (`src/store/persist_tests.rs`, the harness
-  0011 gives cold failure paths), the 8-thread barrier probe (inline,
-  0011 rule 1), and wire legs against real servers with no mocks —
+  0020 gives cold failure paths), the 8-thread barrier probe (inline,
+  0020 rule 1), and wire legs against real servers with no mocks —
   a second real SQLite connection holding the write lock on the real
   data file, which makes the server's real commit fail with a real
   `SQLITE_BUSY`. No new production API, no seam, and no privileges exist

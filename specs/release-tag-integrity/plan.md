@@ -37,7 +37,7 @@ coverage denominator is untouched and the exact-100% floor cannot fall.
 - **0004 (real protocol, no mocks)**: the guard test speaks real HTTP against
   a real local server — the poles of the OCI contract, not a stub of the
   guard logic; the guard under test is the exact script the workflow calls.
-- **0011 §5 disciplines, adapted to shell**: chaos at the poles only (200 /
+- **0020 §5 disciplines, adapted to shell**: chaos at the poles only (200 /
   404 / 500 / connection-refused; exact / mismatched / unset ref), inputs
   injected (env vars + argv), no sleeps, no wall-clock validity assertions,
   no shared mutable state (each case gets a fresh fixture).

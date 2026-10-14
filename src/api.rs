@@ -562,7 +562,13 @@ async fn seed_inbox(
     // A failed commit refuses (decision 0012): 503 — the cause is usually
     // transient (a full volume, a read-only remount, SQLITE_BUSY), so retry
     // after repair — with the fixed text, never a leaked SQLite detail.
-    // Memory truth stands: the refused mail is still queryable.
+    // The refusal contract is the boundary's (decision 0014 §3): nothing
+    // was applied — no mail, no inbox minted, no counter moved — so there
+    // is nothing to query, and the client may retry losslessly; the seed's
+    // body is never half-landed. During shutdown the same fixed text covers
+    // the whole refusal family — a store that has begun refusing applies
+    // nothing too (decision 0024) — the wire does not fork on the cause;
+    // the waits' `shutting down` (0018) answers only the waits.
     match state.store.clone().insert_async(email).await {
         Ok(stored) => Ok(Json((*stored).clone())),
         Err(_) => Err(ApiError(
@@ -623,7 +629,7 @@ async fn llms_txt() -> &'static str {
 mod tests {
     use super::*;
 
-    /// The stop watch's two arms, probed in isolation (decision 0011): an
+    /// The stop watch's two arms, probed in isolation (decision 0020): an
     /// already-fired stop resolves at once — the receiver is borrowed and
     /// updated before the check, so a stop that fired before the call is
     /// never missed behind a stale cached value.

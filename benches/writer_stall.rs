@@ -1,5 +1,5 @@
 //! The async worker stall a write-heavy loop inflicts on the runtime thread,
-//! measured before and after the off-worker commit move (decision 0010).
+//! measured before and after the off-worker commit move (decision 0023).
 //!
 //! One process, one data file (`--data-file`), a current-thread runtime —
 //! the runtime thread is the only async worker, so any commit that runs on

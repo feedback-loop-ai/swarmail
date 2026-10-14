@@ -44,8 +44,8 @@ run touches **no behavior line**: its entire `src/` delta is two tests in
 | 0001 accept == stored | Unchanged, still strengthened; the lag invariant is the stated reason. |
 | 0002 await subscribes first | Untouched — no `wait_for`/`subscribe` edit. |
 | 0003 oldest-only pruning | Untouched — no eviction path edit. |
-| 0010 (proposed) off-worker commits | Built upon — the tripwire runs inline under `cargo test`, never inside an offload. |
-| 0011 (proposed) test placement | Followed — the tripwire is branch-stable inline (rule 1), a fact not a timing (rule 5), and the `#[should_panic]` leg is deterministic with no sleeps. |
+| 0023 (proposed) off-worker commits | Built upon — the tripwire runs inline under `cargo test`, never inside an offload. |
+| 0020 (proposed) test placement | Followed — the tripwire is branch-stable inline (rule 1), a fact not a timing (rule 5), and the `#[should_panic]` leg is deterministic with no sleeps. |
 | 0012/0014/0015 (proposed) | Amended **in place** with markers naming 0016; both still await the operator, so the amendment is legitimate (0014's precedent). No accepted decision is edited. |
 | Semantic change? | **Yes — rulings are amended** (0014 gains §8; 0015 §2 is extended), hence 0016. |
 | Dependency policy | No dependency added; `Cargo.deny` has nothing new to judge. |
@@ -113,7 +113,7 @@ confirmation's premise is gone, and the council reopens.
   the only thing the leg calls, so the panic can only be the assertion; the
   message is asserted (`#[should_panic(expected = …)]`-style message match on
   the tripwire's own text) so a stray panic fails the leg.
-- **Inline test lines join the measured denominator.** 0011 rule 1 makes
+- **Inline test lines join the measured denominator.** 0020 rule 1 makes
   persist.rs's inline module part of the production report — an untaken line
   fails the exact gate. *Mitigation:* the helper is straight-line plus one
   assert, and *both* of its branches are executed on every run (green leg =

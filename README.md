@@ -528,8 +528,8 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
 | `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart, refused certs, stalled handshakes, malformed PEM refusal, gen-cert file handling |
-| `tests/lifecycle.rs` | graceful stop: serve futures return, ports release, parked awaits answer 503 inside the stop budget, an in-flight commit neither holds stop nor half-lands |
-| `tests/binary.rs` | the shipped binary: SIGINT → clean exit, mcp EOF → 0 |
+| `tests/lifecycle.rs` | graceful stop: serve futures return, ports release, parked awaits answer 503 inside the stop budget, an in-flight commit neither holds stop nor half-lands, queued seeds refuse once the stop has fired — at most one busy wait, never one per queued request |
+| `tests/binary.rs` | the shipped binary: SIGINT → clean exit, SIGINT with seeds queued on a held write lock exits inside the budget and stores nothing, mcp EOF → 0 |
 | `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT |
 | `tests/compat.rs` | the shims: Mailpit + MailHog envelopes, searches, deletes, 404/400 branches |
 | `tests/persistence.rs` | restart restores exact state; a racing clear never loses 250-answered mail |

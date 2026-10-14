@@ -13,7 +13,7 @@
 //! transaction, never across an `await`. When the mutation is driven from an
 //! async handler, the store's awaited wrappers (`insert_async` and friends)
 //! run the whole commit on tokio's blocking pool, so the wait on the disk
-//! never occupies an async worker (decision 0010) — it parks a task instead.
+//! never occupies an async worker (decision 0023) — it parks a task instead.
 
 use crate::model::Email;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -575,7 +575,7 @@ mod tests {
     /// that reaches the server's own connection — or a dependency bump that
     /// moves the default — trips it, and firing it is the decision-document
     /// obligation 0015 §2 already imposes. A fact, never a wall-clock
-    /// assertion (0011 rule 5).
+    /// assertion (0020 rule 5).
     fn assert_dependency_busy_default(conn: &Connection) {
         let timeout: i64 = conn
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))

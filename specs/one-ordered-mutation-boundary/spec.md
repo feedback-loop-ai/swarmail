@@ -66,7 +66,7 @@ failed deletes propagate with 0012 §2's fixed-text vocabulary;
 `record_delete`/`record_deletes` are already atomic and exact-id; the mirror
 was never wrong — the sequencing around it was). Refused cuts, for the
 reasons both seats give: no bounded writer (a queue between SMTP and the
-store, with a full-queue policy and a shutdown-drain obligation — 0010 §3
+store, with a full-queue policy and a shutdown-drain obligation — 0023 §3
 forbids write-behind), no undo/rollback engine (three inverse paths over the
 two-map seam, each infallible-by-fiat, versus a reorder that makes the ghost
 unrepresentable), no per-inbox locks (they cannot span `clear_all` and
@@ -135,7 +135,7 @@ read-only or REST-bound, so they need nothing:
 |---|---|---|
 | `src/api.rs:393` | REST `DELETE /api/v1/messages/{id}` | `503 storage commit failed` (404 stays for absent-on-`Ok(false)`) |
 | `src/api.rs:374` | REST `DELETE /api/v1/inboxes/{inbox}/messages` | `503 storage commit failed` |
-| `src/api.rs:84` → `src/compat.rs:282` | Mailpit/Mailhog `delete_messages` | `503`; the one sync call moves to `delete_async` (one line, strictly 0010) |
+| `src/api.rs:84` → `src/compat.rs:282` | Mailpit/Mailhog `delete_messages` | `503`; the one sync call moves to `delete_async` (one line, strictly 0023) |
 | `src/compat.rs:256` | Mailpit delete-all | `503 storage commit failed` |
 | `src/mcp.rs:126/135/139` | MCP delete / clear_inbox / clear_all | `error_result("storage commit failed")` → `isError: true` |
 | `src/pop3.rs:362` | POP3 `QUIT` update state | `-ERR storage commit failed`; session stays in TRANSACTION, marks unapplied |
@@ -179,7 +179,7 @@ Fan-out stays **after** apply, inside the boundary's tail but outside the
 commit: a hung webhook target can never hold the mutation lock (0012 §3
 preserved). Lock order is fixed and one-directional — `mutation` (outer) →
 `persist::State` (inner) — with no path back; the whole mutation still runs
-on tokio's blocking pool (0010), so a std mutex is never held across an
+on tokio's blocking pool (0023), so a std mutex is never held across an
 `await`. Readers (`get`, `list`, `count`, `inboxes`, `wait_for`,
 `subscribe`) stay lock-free and answer throughout, including during a
 bounded 5 s `SQLITE_BUSY` stall.
@@ -209,7 +209,7 @@ pruning on refusal would evict committed mail the boundary must protect).
 | **0001** accept == stored | **Strengthened.** A `250` now implies the mail is live **and** committed before the reply; a failed commit answers `451` and stores nothing anywhere. |
 | **0002** await subscribes before it checks | Untouched. `wait_for` is not edited; a refused mail never enters memory, fires no watcher, and the store-is-truth rescan finds nothing. |
 | **0003** pruning is oldest-only | Preserved. The eviction choice is byte-identical (front ids, peeked in order); `emails_dropped` counts every eviction exactly once, at its commit. |
-| **0010** (proposed) off-worker commits | Built upon. The whole mutation still runs on the blocking pool; `synchronous = FULL` and reply-after-outcome are untouched; panic symmetry stays. |
+| **0023** (proposed) off-worker commits | Built upon. The whole mutation still runs on the blocking pool; `synchronous = FULL` and reply-after-outcome are untouched; panic symmetry stays. |
 | **0012** (proposed) | Amended in place by this run's tasks (§4 ghost reversed, §5 swallow reversed, §6 two-orders claim replaced); 0014 is the new ruling. Both stay `proposed` for the operator. |
 | Exact 100/100/100 gate | Held. Every new production line ships with the test that executes it; no `coverage(off)`; the denominator never shrinks; no new `src/` file. |
 
@@ -218,7 +218,7 @@ pruning on refusal would evict committed mail the boundary must protect).
 - **AC1 — One ordered boundary (finding 1).** All persistent mutations
   execute plan → commit → apply inside one `mutation`-lock critical section
   that spans the SQLite transaction. *Proved by:* the 16-thread
-  barrier-released probe (inline in `src/store.rs`, 0011 rule 1) over a real
+  barrier-released probe (inline in `src/store.rs`, 0020 rule 1) over a real
   data file with `max_per_inbox = 1`: after the barrier, live
   `list`/`get`/`count` and a fresh `Store::open` on the same file agree on
   the same per-inbox ID sets, the same per-inbox ordering and the same

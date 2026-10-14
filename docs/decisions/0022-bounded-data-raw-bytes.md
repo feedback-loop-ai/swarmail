@@ -1,14 +1,18 @@
-# 0011 — The DATA path is bounded and byte-honest; `/raw` serves the stored bytes
+# 0022 — The DATA path is bounded and byte-honest; `/raw` serves the stored bytes
 
 - **Status:** proposed (awaiting operator)
 - **Date:** 2026-10-12
 - **Supersedes:** none (strengthens the wire behavior of 0001 and 0005; touches neither's ruling)
+- **Provenance:** originally filed as `0011-bounded-data-raw-bytes`;
+  renumbered 0011 → 0022 at issue #32's docs pass — two 0011 records
+  predate it on main, and the shim-delete contract kept 0011.
 - **Companion:** epic #13 wave 6 (issues #8 and #16), branch
   `feat/epic13-08-16-raw-bytes`; spec at
   [`specs/bounded-data-raw-bytes/spec.md`](../../specs/bounded-data-raw-bytes/spec.md)
-- **Numbering:** 0011 is the next free number on this branch. The two
-  provisional 0010s (`watcher-channel-lifetime` on the unmerged wave-3
-  branch, `exact-count-asserts-and-the-shared-seed` merged) are already
+- **Numbering:** 0011 was the next free number on this branch at filing. The two
+  provisional 0010s (`watcher-channel-lifetime`, now [0021](0021-watcher-channel-lifetime.md),
+  on the unmerged wave-3 branch, `exact-count-asserts-and-the-shared-seed`
+  merged) are already
   noted in their own records; if the operator renumbers at acceptance,
   this file moves with the spec reference.
 

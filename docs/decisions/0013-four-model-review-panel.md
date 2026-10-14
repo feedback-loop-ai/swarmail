@@ -13,7 +13,7 @@ a four-member parallel panel, one independent judge per model route:
 | `review-correctness` | correctness & fit | `qwen-max` | dsh → `dashscope/qwen3.8-max` |
 | `review-security` | threat model; owns `security-hold` | `opus` | claude → `claude-opus-5-5` |
 | `review-guarantees` | frozen guarantees & ADR fidelity | `astra` | codex → `gpt-6-astra` |
-| `review-tests` | test realism, 0011 placement, coverage honesty | `fable` | claude → `claude-fable-5-1` |
+| `review-tests` | test realism, 0020 placement, coverage honesty | `fable` | claude → `claude-fable-5-1` |
 
 Every member's model chain ends in `glm-flash` as the fallback route,
 so a dead provider degrades to the standing route instead of stalling

@@ -139,7 +139,7 @@ benches; the ~50 remaining call sites are inline tests, a mechanical
   (`:375-377`) and the `global_tx` send (`:378-379`): a refused mail
   fires no "accepted" event.
 - `insert_async` (`:554`) inherits the `Result` through the existing
-  generic `offload` (`:536`) — panic symmetry untouched, decision 0010's
+  generic `offload` (`:536`) — panic symmetry untouched, decision 0023's
   proven commit→reply ordering extended, not redone.
 - SMTP DATA (`src/smtp.rs:461-462`): one `match` on the awaited result →
   `250 2.0.0 OK: stored as {id}` on `Ok`, **`451 4.3.0 storage commit
@@ -188,12 +188,12 @@ benches; the ~50 remaining call sites are inline tests, a mechanical
 
 No memory rollback on refusal; no widening of the `Result` to
 `delete`/`clear`/`clear_all`; no degraded-mode latch, retry queue or
-write-behind (0010 §3 extends to the failure side); no disk-first
+write-behind (0023 §3 extends to the failure side); no disk-first
 reordering; no per-inbox boundary lock (it cannot span `clear_all`'s
 cross-inbox wipe and nests with `subscribe()`'s entry guard); no merge of
 the two `DashMap`s; no reader-side locking; no `insert_checked` beside an
 infallible `insert`; no new forcing seam (`fail_writes` stays exactly
-where 0011 puts it); no commit-stage chaos event; no new metric. Each cut
+where 0020 puts it); no commit-stage chaos event; no new metric. Each cut
 carries its cost in decision 0012 §"Why" or in the ruling above.
 
 ## Frozen guarantees — posture
@@ -203,7 +203,7 @@ carries its cost in decision 0012 §"Why" or in the ruling above.
 | **0001** accept == stored | **Strengthened.** A `250` now additionally implies a known-good commit; refusal replaces the false acknowledge. The memory half (queryable after `insert`) is unchanged; the disk leg's ordering (0010) is untouched. |
 | **0002** await subscribes before it checks | Untouched. The ghost never fires a watcher channel; a scanning awaiter finds it via the store-is-truth rescan — the same shape as every other stored-but-unnotified mail. `wait_for` is not edited. |
 | **0003** pruning is oldest-only | Preserved. The eviction choice is byte-identical; `emails_dropped` still counts every eviction exactly (AC 8). |
-| **0010** off-worker commits (*proposed*) | Built upon. `PRAGMA synchronous = FULL` and the reply-after-outcome ordering are not touched; the `Err` flows through the same awaited seam; panic symmetry stays. |
+| **0023** off-worker commits (*proposed*) | Built upon. `PRAGMA synchronous = FULL` and the reply-after-outcome ordering are not touched; the `Err` flows through the same awaited seam; panic symmetry stays. |
 | Exact 100/100/100 gate | Held. Every new production line (the surfaced error path, the refusal arms, the boundary) ships with the test that executes it; `coverage(off)` stays forbidden; the denominator never shrinks. |
 
 ## Acceptance Criteria
@@ -239,7 +239,7 @@ carries its cost in decision 0012 §"Why" or in the ruling above.
 - **AC7.** After any completed `insert`/`delete`/`clear`/`clear_all`,
   `count(inbox)` equals the number of ids retrievable via `get(id)` whose
   inbox is that inbox — for every inbox. *Proved by:* the 8-thread barrier
-  probe in `src/store.rs` (inline per 0011 rule 1): roles across two
+  probe in `src/store.rs` (inline per 0020 rule 1): roles across two
   inboxes plus a `clear_all` spanning both, barrier-sampled per-inbox
   invariants, no panics, no stuck threads. The probe is **red** on the
   current tree (the ghost and the `:464` expect) and green after.

@@ -458,3 +458,81 @@ async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// ---------- decision 0024: the boundary refuses to start a commit once stopping ----------
+
+/// R1–R3 (0024): under a held write lock, three concurrent seeds queue on
+/// the mutation boundary; the stop flips the store's flag and every queued
+/// mutation acquires the boundary, reads the watch and refuses without one
+/// SQLite call — so each burns a scheduling instant, not its own 5s busy
+/// bound. All three answer `503` with 0012 §2's fixed body (the wire does
+/// not fork: a stopping refusal and a busy refusal share the text, the
+/// cause is the log), `stop()` lands inside `STOP_BUDGET` — upper bound
+/// only, sequence-independent: the seed that wins the boundary first is
+/// past the check and burns its own bound, and the budget arithmetic
+/// (at most one commit in flight + ε per queued release) covers both. A
+/// fresh read of the data file shows the refused set stored nothing.
+/// The 300ms pause is sequencing, not an outcome wait: it only puts the
+/// three requests on the boundary before the stop fires.
+#[tokio::test]
+async fn queued_seeds_refuse_once_the_stop_has_fired() {
+    let dir = std::env::temp_dir().join(format!("swarmail-stop-refuse-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("refuse.db");
+    let srv = start_with(|mut c| {
+        c.data_file = Some(path.clone());
+        c
+    })
+    .await;
+    // A real second connection holds the writer lock: every seed's commit
+    // is forced to queue or burn (decision 0012 §3, at the real layer).
+    let _lock = common::hold_write_lock(&path);
+
+    let http_addr = srv.http_addr;
+    let mut seeds = Vec::new();
+    for inbox in ["refuse-one", "refuse-two", "refuse-three"] {
+        let body = r#"{"to": "s@x.io", "text": "a mail that must not land"}"#;
+        let route = format!("/api/v1/inboxes/{inbox}/seed");
+        seeds.push(tokio::spawn(async move {
+            common::http_json(http_addr, "POST", &route, Some(body)).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await; // the seeds queue on the boundary
+
+    let started = std::time::Instant::now();
+    tokio::time::timeout(STOP_BUDGET, srv.stop())
+        .await
+        .expect("queued mutations must not hold stop past one busy bound");
+    assert!(
+        started.elapsed() < STOP_BUDGET,
+        "stop took {:?} with three seeds queued on the boundary",
+        started.elapsed()
+    );
+
+    for seed in seeds {
+        let (st, body) = tokio::time::timeout(Duration::from_secs(10), seed)
+            .await
+            .expect("every queued seed must answer once the stop is underway")
+            .unwrap();
+        assert_eq!(st, 503, "{body}");
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": "storage commit failed" }),
+            "{body}"
+        );
+    }
+
+    // A read-only look at the real data file while the lock is still held:
+    // the refused set stored nothing — not one row, not one inbox (the
+    // held write lock makes this exact, not racy: nothing can land while
+    // it is held).
+    let ro =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("the data file opens read-only");
+    let stored: i64 = ro
+        .query_row("SELECT COUNT(*) FROM emails", [], |row| row.get(0))
+        .expect("the emails table reads");
+    assert_eq!(stored, 0, "the refused set stored nothing");
+    drop(ro);
+    let _ = std::fs::remove_dir_all(dir);
+}

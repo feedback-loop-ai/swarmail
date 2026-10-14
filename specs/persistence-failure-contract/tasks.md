@@ -20,7 +20,7 @@ framing's rule); it is never fixed silently under this spec.
   live **and** after a fresh `Store::open` (prefix committed); the refused
   id is present on both trees; drop the trigger, retry `QUIT` in the same
   session → `+OK` sign-off; the restart copy holds exactly the committed
-  set. One sequential session — no sleeps, no wall-clock assertions (0011
+  set. One sequential session — no sleeps, no wall-clock assertions (0020
   rule 5). *Proved by:* the leg itself — red on `5b09843` (which swallowed
   and answered `+OK`), green on HEAD (AC3).
 - [ ] 3. Correct the `src/pop3.rs` `QUIT` comment to the partial-prefix

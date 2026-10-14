@@ -27,7 +27,7 @@ is a test — `coverage(off)` is forbidden.
   and peer-vanish tests stay green.
 - [ ] **3. Byte terminator + byte unstuffing** — terminator check on
   `b".\r\n"` / `b".\n"`, `..` → drop one leading byte (predicate unchanged,
-  RFC receiver-rule rewrite rejected per decision 0011). *Proved by:*
+  RFC receiver-rule rewrite rejected per decision 0022). *Proved by:*
   existing `dot_stuffing_is_unstuffed_and_peer_vanish_is_silent` plus the
   new at-cap stuffed-line test (task 5) and the binary round-trip (task 4),
   which carry a `..`-stuffed line and a literal `.`-starting line.
@@ -79,7 +79,7 @@ is a test — `coverage(off)` is forbidden.
   `tests/api.rs:601-604`).
 - [ ] **12. No-dependency + decision-completeness check** — confirm no
   `Cargo.toml` change (`cargo deny check licenses` clean), and that
-  decision 0011 (`proposed`) is committed alongside the spec.
+  decision 0022 (`proposed`) is committed alongside the spec.
   *Proved by:* `cargo deny check licenses` and the committed tree.
 - [ ] **13. All six gates clean** — `cargo fmt --all -- --check`,
   `cargo clippy --all-targets -- -D warnings`, `cargo test`,

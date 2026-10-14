@@ -3,8 +3,8 @@
 Epic: feedback-loop-ai/swarmail#13, wave 6 (issues #8 and #16 — #16 lands
 with #8 by design). Branch: `feat/epic13-08-16-raw-bytes`.
 
-Decision: 0011 —
-[docs/decisions/0011-bounded-data-raw-bytes.md](../../docs/decisions/0011-bounded-data-raw-bytes.md)
+Decision: 0022 —
+[docs/decisions/0022-bounded-data-raw-bytes.md](../../docs/decisions/0022-bounded-data-raw-bytes.md)
 (status **`proposed`** — awaiting operator; it records the public-contract
 deltas and every ruled conflict with the losing side's cost).
 
@@ -97,7 +97,7 @@ adopts that skeleton and rules the four genuine deltas:
   unchanged, and a two-line follow-up if the operator asks.
 - **SCOPED OUT — robustness's command/AUTH line capping** (`500 5.5.2 Line
   too long`), which robustness itself concedes the chief may scope out and
-  simplicity cuts. *Cost accepted and documented (decision 0011):* a hostile
+  simplicity cuts. *Cost accepted and documented (decision 0022):* a hostile
   peer can still grow one session task's heap with an unterminated command
   line — pre-existing, one task, idle posture unbounded by documented
   design; the follow-up is small *because* the reader lands in `smtp.rs`.

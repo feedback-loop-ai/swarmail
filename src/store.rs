@@ -7,6 +7,7 @@
 use crate::model::Email;
 use crate::persist;
 use dashmap::DashMap;
+use rusqlite::ffi;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,7 +20,7 @@ use tokio::sync::broadcast::error::RecvError;
 /// payload and re-read the store — so the ring is sized for waking, not for
 /// buffering. A full ring lags (never blocks: `send` is non-blocking at any
 /// capacity, so the 250 path is untouched) and lag is repaired by the rescan
-/// the wait loop already performs (decision 0010).
+/// the wait loop already performs (decision 0021).
 const WATCHER_CAP: usize = 16;
 
 /// Test-only count of `Closed`-arm hits in `wait_for` — the deterministic
@@ -132,7 +133,7 @@ pub struct Store {
     /// (atomically, under the shard lock) and released when the inbox's mail
     /// is gone — by `drain_inbox` (shared by `clear`/`clear_all`), by a
     /// `delete` that empties the inbox's list, and by the `clear_all` sweep
-    /// (decision 0010). `insert` never creates one: a notify with no entry
+    /// (decision 0021). `insert` never creates one: a notify with no entry
     /// is a no-op.
     watchers: DashMap<String, broadcast::Sender<Arc<Email>>>,
     /// Process-wide channel: every accepted email, for webhooks.
@@ -152,7 +153,16 @@ pub struct Store {
     totals: Totals,
     /// Write-through SQLite mirror when running with a data file.
     persist: Option<persist::Persist>,
-    /// Test-only seam for the pins (decision 0011): when set, the closure
+    /// The shutdown observer (decision 0024): `Some` once the server wired
+    /// this store to the runtime's stop watch. The mutation boundary reads
+    /// it at the commit chokepoint; the read is `borrow_and_update()` —
+    /// synchronous and lock-free, so no await ever enters the boundary
+    /// (0014 §1). A store never wired (every unit test, every embedding)
+    /// keeps today's behavior exactly: the flag is the boundary's policy
+    /// input, not a constructor concern, so `Store::new`'s 46+ call sites
+    /// keep their shape.
+    stopping: std::sync::OnceLock<tokio::sync::watch::Receiver<bool>>,
+    /// Test-only seam for the pins (decision 0020): when set, the closure
     /// runs pre-commit, *inside* the mutation boundary of `clear`/
     /// `clear_all` — so a test can hold the boundary mid-commit
     /// deterministically instead of winning a thread-timing lottery.
@@ -162,7 +172,7 @@ pub struct Store {
     /// panic — the two pins' contracts).
     #[cfg(test)]
     pre_mirror_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
-    /// Test-only seam for the watcher release/wait interplay (decision 0010):
+    /// Test-only seam for the watcher release/wait interplay (decision 0021, the seam per 0020):
     /// when set, the closure runs after *every* `subscribe` inside `wait_for`
     /// — the initial one and each `Closed`-arm re-subscribe — so a test can
     /// interleave a clear or an insert into the exact subscribe→scan window
@@ -207,6 +217,7 @@ impl Store {
             max_per_inbox,
             totals: Totals::default(),
             persist: None,
+            stopping: std::sync::OnceLock::new(),
             #[cfg(test)]
             pre_mirror_gate: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -247,6 +258,16 @@ impl Store {
         Ok(store)
     }
 
+    /// Wire this store to the runtime's stop watch (decision 0024). One
+    /// shot, called once by `run_on` after the watch is born and before
+    /// any listener binds — so no mutation can be admitted under an
+    /// unwired flag and then refused by a wired one mid-flight. A second
+    /// call is a no-op: the first watch is the store's one source of
+    /// "stopping", never a second channel.
+    pub(crate) fn observe_shutdown(&self, rx: tokio::sync::watch::Receiver<bool>) {
+        let _ = self.stopping.set(rx);
+    }
+
     /// Run one mirror write. The outcome is the mutation's: a failed commit
     /// is logged here — the log stays the one witness at the single owner
     /// of the mirror — and **returned**, so the caller refuses instead of
@@ -260,6 +281,30 @@ impl Store {
         what: &'static str,
         write: impl FnOnce(&persist::Persist) -> rusqlite::Result<()>,
     ) -> rusqlite::Result<()> {
+        // The boundary refuses to *start* a commit once the stop has fired
+        // (decision 0024): every queued mutation acquires the boundary in
+        // turn, reads the watch synchronously and refuses without one
+        // SQLite call, so shutdown burns at most the one busy bound the
+        // in-flight commit already owes — never one per queued request.
+        // The refusal is a constructed `SQLITE_ABORT` (truthful: nothing
+        // was written) and applies nothing — no mail, no inbox, no counter
+        // move, no eviction, no fan-out — so memory and data file agree.
+        // The wire keeps 0012 §2's fixed refusal text (the mappers are
+        // `Err(_)` and stay that way); the cause is this log, at the one
+        // owner of the mirror. The check precedes the persist branch: the
+        // policy is the boundary's, not the mirror's — a memory-only store
+        // refuses too. `borrow()` is the `&self` form of the watch read:
+        // the boundary takes `&self`, and nothing ever polls this clone's
+        // change flag, so there is no seen-state to update.
+        if let Some(stopping) = self.stopping.get()
+            && *stopping.borrow()
+        {
+            tracing::info!(what, "refused: shutting down; nothing applied");
+            return Err(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(ffi::SQLITE_ABORT),
+                Some("shutting down".into()),
+            ));
+        }
         if let Some(persist) = &self.persist
             && let Err(e) = write(persist)
         {
@@ -297,7 +342,7 @@ impl Store {
     /// Test-only: how many inbox watcher channels currently live. The
     /// release tests' observable — issue #14's "count returns to baseline"
     /// criterion made literal; the production `/metrics` gauge is a
-    /// deliberate follow-up recorded in decision 0010.
+    /// deliberate follow-up recorded in decision 0021.
     #[cfg(test)]
     pub(crate) fn watcher_count(&self) -> usize {
         self.watchers.len()
@@ -351,7 +396,7 @@ impl Store {
     /// From an async handler, prefer the awaited [`Store::insert_async`]: it
     /// runs this whole mutation on tokio's blocking pool, so the mirror
     /// commit — which completes before the wrapper resolves — never occupies
-    /// an async worker (decision 0010). The ordering is identical either way:
+    /// an async worker (decision 0023). The ordering is identical either way:
     /// the commit outcome is known before the caller replies (decision 0001).
     pub fn insert(&self, email: Email) -> Result<Arc<Email>, rusqlite::Error> {
         let email = Arc::new(email);
@@ -425,9 +470,19 @@ impl Store {
         // a slow await reader — the email is still safely stored, the
         // watcher re-polls the store. A missing entry means no subscribers
         // yet, or the channel was released with the inbox's mail (decision
-        // 0010): the waiter re-subscribes before its next scan, so the
+        // 0021): the waiter re-subscribes before its next scan, so the
         // store-is-truth rescan still finds this mail. Fan-out is part of
         // acceptance and happens only after the commit it depends on.
+        //
+        // The whole truth about the shard write guard: `list` — the write
+        // guard `entry()` took on the inbox's shard — is a Drop guard, so
+        // it lives to the end of this scope, across these sends. That is
+        // harmless by construction, not an oversight: a broadcast `send`
+        // never blocks (a full channel's error is ignored above) and the
+        // webhook dispatcher owns its deliveries on its own task — a hung
+        // sink can therefore never hold the shard, and never hold this
+        // mutation boundary. What a reader on another thread may see here
+        // is at worst a shard locked by a send, i.e. for nanoseconds.
         if let Some(sender) = self.watchers.get(&inbox) {
             let _ = sender.send(email.clone());
         }
@@ -516,6 +571,16 @@ impl Store {
         // drops the mail. A no-op DELETE — an id the store never held — is
         // still committed `Ok` (it deletes nothing), so an absent id stays
         // an honest `Ok(false)` and an orphaned row can never linger.
+        //
+        // The cost of that guard is one bounded commit per 404: an absent
+        // id pays a real (empty) transaction against the mirror — its own
+        // busy bound, per 0015 §2 — instead of a cheap `!self.index`
+        // shortcut. Deliberate: the mirror is the one copy the restart
+        // restores from, so the only way to *know* no row lingers under
+        // this id is to ask the mirror, and the boundary is where that
+        // question is ordered (0014 §2). The 404 path is not the hot path
+        // (an id the store handed out is present by construction); when a
+        // caller deletes a suffix it invented, it pays for the honesty.
         self.record("delete", |persist| persist.record_delete(id))?;
         // APPLY, only on Ok: index removal, deque retain and the watcher
         // release are one unit — the index and the deque can never
@@ -531,7 +596,7 @@ impl Store {
                 .expect("indexed mail always has its inbox list");
             list.retain(|e| e.id != id);
             // An emptied inbox's mail is gone, so its watcher channel is
-            // released with it (decision 0010). Disjoint maps: the inboxes
+            // released with it (decision 0021). Disjoint maps: the inboxes
             // guard is held, the watchers map is a separate shard set.
             if list.is_empty() {
                 self.watchers.remove(&email.inbox);
@@ -587,7 +652,7 @@ impl Store {
         self.record("clear_all", |persist| persist.record_deletes(&ids))?;
         // APPLY, only on Ok: every drain plus the sweep's watcher release —
         // the population issue #14's probe creates, which leaves no entries
-        // for the per-inbox drain above to iterate (decision 0010). A
+        // for the per-inbox drain above to iterate (decision 0021). A
         // subscriber racing the sweep sees `Closed` and takes the
         // re-subscribe arm — bounded at one extra rescan per waiter.
         let inboxes: Vec<String> = self.inboxes.iter().map(|e| e.key().clone()).collect();
@@ -626,7 +691,7 @@ impl Store {
     /// future resolves only once it has completed. Awaited before any
     /// acceptance reply, an SMTP `250` still means the mail is queryable and
     /// committed (decision 0001); the commit merely stops occupying an async
-    /// worker (decision 0010). Panics propagate to the awaiting caller, and
+    /// worker (decision 0023). Panics propagate to the awaiting caller, and
     /// so does a failed commit — the `Err` is the refusal the acceptance
     /// path answers with (decision 0012).
     pub async fn insert_async(
@@ -668,7 +733,7 @@ impl Store {
     /// One atomic path: the `entry()` holds the shard write lock across
     /// channel creation, so concurrent first subscribers serialize on one
     /// boundary and every receiver attaches to the same live channel — the
-    /// get-then-insert window is deleted, not fenced (decision 0010). The
+    /// get-then-insert window is deleted, not fenced (decision 0021). The
     /// next `subscribe` after a release re-creates the channel.
     pub fn subscribe(&self, inbox: &str) -> broadcast::Receiver<Arc<Email>> {
         self.watchers
@@ -725,7 +790,7 @@ impl Store {
             // deadline; the loop re-scans either way. Every `recv` parks on
             // a live channel unless the channel is closed, and a closed one
             // is answered by the single re-subscribe below — there is no
-            // schedule in which an iteration does neither (decision 0010).
+            // schedule in which an iteration does neither (decision 0021).
             match tokio::time::timeout(remaining, rx.recv()).await {
                 Ok(Ok(_)) | Ok(Err(RecvError::Lagged(_))) => {}
                 Ok(Err(RecvError::Closed)) => {
@@ -787,6 +852,54 @@ mod tests {
         assert!(store.get("3").is_some());
     }
 
+    /// The shutdown refusal at the boundary (decision 0024, inline per 0020
+    /// rule 1): a wired store whose stop has fired refuses the commit
+    /// *before* any write — the constructed `SQLITE_ABORT`, nothing
+    /// applied: no mail, no inbox minted (the PLAN peek never runs), no
+    /// counter moved, no watcher or webhook fan-out. The store here is
+    /// memory-only on purpose: the policy is the boundary's, not the
+    /// mirror's, so the refusal must fire with `persist` unset. The same
+    /// store, wired but not stopping, inserts normally (the false arm);
+    /// the unwired arm is every other test in this suite.
+    #[test]
+    fn a_wired_stopping_store_refuses_the_commit_and_applies_nothing() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let store = Store::new(0);
+        store.observe_shutdown(rx);
+        // Wired, not stopping: the normal path.
+        let _ = store.insert(email("live", "default", "a@x.io"));
+        assert_eq!(store.count("default", &Filter::default()), 1);
+        let mut global_rx = store.subscribe_all();
+
+        let _ = tx.send(true);
+        // Asserted through the error's own accessors, not a match: a
+        // never-taken panic arm in this test would sit in `src/` and count
+        // against the exact coverage denominator.
+        let err = store
+            .insert(email("refused", "fresh-box", "b@x.io"))
+            .expect_err("a stopping store must refuse the insert");
+        assert_eq!(
+            err.sqlite_error_code(),
+            Some(ffi::ErrorCode::OperationAborted)
+        );
+        assert_eq!(
+            err.sqlite_error().map(|e| e.extended_code),
+            Some(ffi::SQLITE_ABORT)
+        );
+        // `Display` for a `SqliteFailure` with a message prints that message.
+        assert_eq!(err.to_string(), "shutting down");
+        // The refusal applied nothing — memory and data file agree because
+        // memory never moved.
+        assert!(store.get("refused").is_none());
+        assert_eq!(store.count("fresh-box", &Filter::default()), 0);
+        assert!(!store.inboxes.contains_key("fresh-box"));
+        assert_eq!(store.emails_inserted(), 1);
+        assert_eq!(store.emails_dropped(), 0);
+        assert_eq!(store.watcher_count(), 0);
+        // No fan-out: the webhook firehose carries only the live insert.
+        assert!(global_rx.try_recv().is_err());
+    }
+
     #[test]
     fn filter_by_recipient() {
         let store = Store::new(0);
@@ -838,7 +951,7 @@ mod tests {
     }
 
     /// Eight threads race to be the first subscriber of one fresh inbox
-    /// (decision 0010, AC1): registration is atomic, so every receiver
+    /// (decision 0021, AC1): registration is atomic, so every receiver
     /// attaches to the *same live* channel and one insert is seen by all
     /// eight. On the pre-fix get-then-insert code this failed whenever two
     /// threads overlapped — the displaced receivers hung off a sender the
@@ -875,7 +988,7 @@ mod tests {
     }
 
     /// `clear` is where an inbox dies, so it is where its watcher channel
-    /// dies (decision 0010, AC2-i): the receiver held across the clear
+    /// dies (decision 0021, AC2-i): the receiver held across the clear
     /// observes the release. An empty clear still releases — the channel is
     /// not immortal — and the held receiver is safe: its waiter answers
     /// `Closed` with a re-subscribe before its next scan.
@@ -891,7 +1004,7 @@ mod tests {
     }
 
     /// A `delete` that empties an inbox's list releases the channel
-    /// (decision 0010, AC2-ii); a delete that leaves mail behind must keep
+    /// (decision 0021, AC2-ii); a delete that leaves mail behind must keep
     /// it live — a pushed insert still reaches the held receiver.
     #[test]
     fn a_delete_that_empties_an_inbox_releases_its_watcher_channel() {
@@ -920,7 +1033,7 @@ mod tests {
 
     /// `clear_all` sweeps every watcher channel, including the
     /// awaited-but-never-mailed population no per-inbox drain can reach —
-    /// issue #14's 5,000-fresh-inbox probe (decision 0010, AC2-iii): the
+    /// issue #14's 5,000-fresh-inbox probe (decision 0021, AC2-iii): the
     /// test-visible count returns to baseline, and a held receiver observes
     /// the release.
     #[test]
@@ -1015,7 +1128,7 @@ mod wait_tests {
         };
         // The subscribe happens inside wait_for; give it a beat, then
         // overflow the 16-slot wake ring (WATCHER_CAP): lag is repaired by
-        // the rescan, not by ring headroom (decision 0010, AC5).
+        // the rescan, not by ring headroom (decision 0021, AC5).
         tokio::time::sleep(Duration::from_millis(100)).await;
         for i in 0..4200u32 {
             let mut e = email(&format!("lag{i}"), "box", "a@x.io");
@@ -1028,7 +1141,7 @@ mod wait_tests {
         }
     }
 
-    /// A released channel cannot strand a waiter (decision 0010, AC3). The
+    /// A released channel cannot strand a waiter (decision 0021, AC3). The
     /// gate fires once after the initial subscribe — the clear releases the
     /// waiter's channel — and once after the `Closed` arm's re-subscribe,
     /// inserting the mail; the wait must return `Found`. Red on all three
@@ -1069,7 +1182,7 @@ mod wait_tests {
         }
     }
 
-    /// A waiter on a released channel *sleeps* (decision 0010, AC4). The
+    /// A waiter on a released channel *sleeps* (decision 0021, AC4). The
     /// gate's fire 1 clears the inbox; fire 2 is a deliberate no-op, so the
     /// wait rides to its deadline and reports the honest `matched: 0`. The
     /// deterministic teeth are the `Closed`-arm delta bound below — one hit
@@ -1266,7 +1379,7 @@ mod filter_tests {
 
 #[cfg(test)]
 // The persistence suite lives in src/store/persist_tests.rs — the harness
-// side of decision 0011: the exact gate counts production, not test prose.
+// side of decision 0020: the exact gate counts production, not test prose.
 #[cfg(test)]
 mod persist_tests;
 
@@ -1549,7 +1662,7 @@ mod bounded_tests {
     /// Both failure arms are warm — exercised below by
     /// [`a_panicking_round_role_re_raises_here`] and
     /// [`a_wedged_round_fails_instead_of_hanging`] — because a cold arm is
-    /// an uncovered line under the exact coverage gate (decision 0011 §2).
+    /// an uncovered line under the exact coverage gate (decision 0020 rule 2).
     fn join_with_deadline<T, F>(task: F, deadline: Duration, stuck: &str) -> T
     where
         T: Send + 'static,

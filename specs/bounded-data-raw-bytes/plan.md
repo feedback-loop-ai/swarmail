@@ -3,7 +3,7 @@
 Implementation plan for
 [`spec.md`](spec.md) (epic #13 wave 6, issues #8 + #16). Ruling and
 rejected alternatives live in
-[`docs/decisions/0011-bounded-data-raw-bytes.md`](../../docs/decisions/0011-bounded-data-raw-bytes.md)
+[`docs/decisions/0022-bounded-data-raw-bytes.md`](../../docs/decisions/0022-bounded-data-raw-bytes.md)
 (proposed).
 
 ## Technical context
@@ -43,7 +43,7 @@ rejected alternatives live in
 | Coverage | Exact 100/100/100 — every new branch has a named test below; `coverage(off)` forbidden. |
 
 The `/raw` header/byte delta and the DATA memory-shape change are public
-contract behavior → recorded in decision 0011 (`proposed`), per the 0010
+contract behavior → recorded in decision 0022 (`proposed`), per the 0010
 precedent. Nothing here weakens a frozen guarantee, so no acceptance is
 required for the guarantees themselves — only for the observable deltas.
 
@@ -60,7 +60,7 @@ required for the guarantees themselves — only for the observable deltas.
 | `tests/smtp_edges.rs` | New: binary round-trip, over-cap drain/sync, at-cap `+1` pin; extended: EHLO `250-8BITMIME` assertion, one binary-body chaos case. |
 | `tests/starttls.rs` | New: binary round-trip over an upgraded session. |
 | `tests/persistence.rs` | New: binary body survives the data-file restart round-trip. |
-| `docs/decisions/0011-bounded-data-raw-bytes.md` | Proposed decision (committed with this spec). |
+| `docs/decisions/0022-bounded-data-raw-bytes.md` | Proposed decision (committed with this spec). |
 
 ## Data model & contracts
 
@@ -99,7 +99,7 @@ The binary probe body: `Subject: binary\r\n\r\n` + bytes containing
 1. **`/raw` consumers pinned on `text/plain` or on lossy bytes.**
    *Mitigation:* README:232 and the compat OpenAPI entry already document
    `message/rfc822`; UTF-8 bodies are byte-identical so existing assertions
-   pass; the header delta is recorded in decision 0011 for operator
+   pass; the header delta is recorded in decision 0022 for operator
    acceptance. Residual: a consumer keying on the exact header set must
    take the new `Content-Disposition` — one line in the decision.
 2. **The `+1` slack reads as magic and gets "simplified" away.**
@@ -125,5 +125,5 @@ The binary probe body: `Subject: binary\r\n\r\n` + bytes containing
    `BufReader<Conn>` (transport-agnostic) and the STARTTLS round-trip test
    pins the contract over TLS once.
 7. **Scope creep on review** (command caps, knobs, JSON views riding along).
-   *Mitigation:* the cuts are enumerated in the spec and decision 0011;
+   *Mitigation:* the cuts are enumerated in the spec and decision 0022;
    anything outside the table above is a new decision, not an edit.

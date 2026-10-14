@@ -11,9 +11,9 @@ and
 [`.forge/design/positions/robustness.md`](../../../.forge/design/positions/robustness.md),
 both `pass`), and this spec is the reconciled ruling. It supersedes the first round's
 letter in exactly two places, named and costed below. Adjacent rulings referenced:
-[0010-watcher-channel-lifetime.md](../../docs/decisions/0010-watcher-channel-lifetime.md)
+[0021-watcher-channel-lifetime.md](../../docs/decisions/0021-watcher-channel-lifetime.md)
 (`proposed`, same subsystem) and
-[0011-concurrency-tests-and-the-coverage-gate.md](../../docs/decisions/0011-concurrency-tests-and-the-coverage-gate.md)
+[0020-concurrency-tests-and-the-coverage-gate.md](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md)
 (`proposed`, test placement); exact-count discipline per
 [0010-exact-count-asserts-and-the-shared-seed.md](../../docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md).
 
@@ -159,9 +159,9 @@ HTTP task is one hyper owns, and no per-connection handle exists short of replac
 HTTP serve task) stays the named fallback — second choice, never first: it kills benign
 in-flight requests with the guilty. A frame may race the closing stream; the browser's
 `EventSource` reconnect re-subscribes before its first scan (0002) and re-snapshots —
-exactly the recovery 0010 §5 already documents. The `Closed` arm (`feed.rs:85`) remains
+exactly the recovery 0021 §5 already documents. The `Closed` arm (`feed.rs:85`) remains
 the only non-shutdown way a feed ends; the two arms coexist in one select and touch none
-of 0010's machinery.
+of 0021's machinery.
 
 **The precise `stop()` promise** (first round's wording, standing, plus the counting
 amendment above). `spawn_blocking` commits are uncancellable: a mail whose commit began
@@ -192,7 +192,7 @@ fairness maps (a stalled target holds its slot for at most 22.1 s, named by the
 ledger); a new chaos surface for webhook targets (a fired DATA rule fails the stage —
 the mail is never stored, so no webhook is owed; chaos between commit and 250 would
 manufacture stored-but-unacked mail on purpose); statics for the ledger; `coverage(off)`;
-a harness file for a warm path (0011).
+a harness file for a warm path (0020).
 
 ## Why no decision document
 
@@ -219,7 +219,7 @@ declare one, so none is drafted.
 
 Each criterion names the observable and the test that proves it; each must be able to go
 red. All tests run against real servers over the real protocol (no mocks, 0004); timing
-discipline per 0011 rule 5 (real deadlines, no sleep-as-sync, per-test inboxes, chaos at
+discipline per 0020 rule 5 (real deadlines, no sleep-as-sync, per-test inboxes, chaos at
 the poles only).
 
 1. **SHUTDOWN-COMPLETES-WITH-FEED-OPEN** — `tests/lifecycle.rs` gains a test that opens
@@ -273,7 +273,7 @@ the poles only).
    section), with the cumulative-since-start caveat and the 22.1 s stalled-slot bound;
    the doc's dropped-row name is the exact string criterion 5 asserts.
 
-Coverage posture (0011): the gate stays exact 100/100/100; every new production line is
+Coverage posture (0020): the gate stays exact 100/100/100; every new production line is
 warm-driven on every run (the driver map lives in [plan.md](plan.md) § Coverage); no
 `coverage(off)`; no new harness file is expected — no new line is cold-path-only (the
 stop-arm counting, the cap-check false arm and the startup-failure self-resolution are

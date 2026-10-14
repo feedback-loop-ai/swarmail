@@ -77,6 +77,13 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     // sender and this watch sender both drop, the firehose closes, and the
     // dispatcher self-resolves.
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
+    // The store reads the same watch (decision 0024): wired here, once,
+    // before the dispatcher spawns and before any listener binds — no
+    // mutation can be admitted under an unwired flag and then refused by a
+    // wired one mid-flight. The boundary is now the one place that knows
+    // "stopping": a mutation reaching it after the stop refuses without a
+    // SQLite call, which is what bounds shutdown to one busy wait.
+    store.observe_shutdown(shutdown_rx.clone());
     let mut tasks = tokio::task::JoinSet::new();
     webhook::spawn_dispatcher(&store, &webhooks, shutdown_rx.clone(), &mut tasks);
 

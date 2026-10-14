@@ -123,7 +123,7 @@ async fn await_times_out_cleanly() {
 }
 
 /// A released inbox keeps serving waiters over the real protocol (epic 13
-/// wave 3, decision 0010, AC6): the first `await` creates the inbox's
+/// wave 3, decision 0021, AC6): the first `await` creates the inbox's
 /// watcher channel and times out honestly (`matched: 0`); the API clear
 /// releases that channel; a later SMTP insert and a second `await` must
 /// still meet — the re-created channel is live and the wait finds the mail.

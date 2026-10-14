@@ -1,8 +1,11 @@
-# 0010 — Watcher channel lifetime: a wake ring released with its inbox's mail
+# 0021 — Watcher channel lifetime: a wake ring released with its inbox's mail
 
 - **Status:** proposed (awaiting operator acceptance)
 - **Date:** 2026-10-11
 - **Supersedes:** none
+- **Provenance:** originally filed as `0010-watcher-channel-lifetime`;
+  renumbered 0010 → 0021 at issue #32's docs pass — it landed after
+  `0010-exact-count-asserts-and-the-shared-seed`, which kept 0010.
 - **Companion:** epic #13 wave 3 — issues [#3](https://github.com/feedback-loop-ai/swarmail/issues/3)
   and [#14](https://github.com/feedback-loop-ai/swarmail/issues/14); spec at
   [`specs/watcher-atomicity-release/spec.md`](../../specs/watcher-atomicity-release/spec.md)

@@ -78,7 +78,7 @@ impl Default for SmtpConfig {
 static SESSIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Test-only: sessions reaped by the accept loop's harvest. Its only reader
-/// is the inline probe that installs it (decision 0011 rule 4) — the probe
+/// is the inline probe that installs it (decision 0020 rule 4) — the probe
 /// drives the real `serve`, and the counter must track completed sessions
 /// across successive connection batches or the deadline expires red.
 #[cfg(test)]
@@ -628,7 +628,7 @@ async fn session(
                 // Whole mutation on the blocking pool, awaited before the
                 // reply: the 250 below stays *after* the commit outcome is
                 // known (decision 0001), it just no longer occupies an async
-                // worker (decision 0010). A failed commit refuses (decision
+                // worker (decision 0023). A failed commit refuses (decision
                 // 0012) with the fixed line — a transient 451 (RFC 5321
                 // §4.2.2, requested action aborted), distinct from chaos's
                 // fixed `451 4.3.0 chaos`, internals to the log and never to

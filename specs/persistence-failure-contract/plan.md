@@ -15,7 +15,7 @@ production line changes.**
   0014 §5, and untouched here.
 - The one ordered mutation boundary is the `mutation: std::sync::Mutex<()>`
   span covering plan → commit → apply (`src/store.rs:363`, `:514`, `:547`,
-  `:577`); the whole mutation runs on tokio's blocking pool (0010); readers
+  `:577`); the whole mutation runs on tokio's blocking pool (0023); readers
   stay lock-free.
 - Refusal vocabulary is 0012 §2's fixed text (`451 4.3.0 storage commit
   failed` / `503` / `isError` / `-ERR`); no new wire string exists or is
@@ -38,8 +38,8 @@ production line changes.**
 | 0003 oldest-only pruning | Untouched; no eviction path edit; refusal residue reaffirmed as 0014 states it. |
 | 0004 real servers, no mocks | The new leg speaks real POP3 against a real server on a real data file; the trigger is real SQL on that file. |
 | 0006/0007 (dual license, hermetic gates) | No new dependency; `Cargo.toml`/`Cargo.lock` untouched; `cargo deny check licenses` stays clean. |
-| 0010 (proposed) | Built upon — test-code only; nothing reopens the off-worker shape. |
-| 0011 (proposed) | The new leg is wire-shaped → `tests/pop3.rs` (rule 3). No cold path is introduced, so no harness move; no sleep, no wall-clock validity assertion (rule 5); no seam added (rule 4). |
+| 0023 (proposed) | Built upon — test-code only; nothing reopens the off-worker shape. |
+| 0020 (proposed) | The new leg is wire-shaped → `tests/pop3.rs` (rule 3). No cold path is introduced, so no harness move; no sleep, no wall-clock validity assertion (rule 5); no seam added (rule 4). |
 | 0012 (proposed) | Amended **in place** (§5, §7) with 0015 markers — legitimate while 0012 awaits the operator (0014's precedent). |
 | 0014 (proposed) | Untouched. The mechanism, the seam and the refusal list stand. |
 | 0013 (accepted) | Review stays the four-model panel; correctness + security seats read this spec. |
@@ -124,7 +124,7 @@ cargo deny check licenses
   AC5's red state — today's self-contradictory text.
 - **Risk: the selective-trigger leg is flaky.** *Mitigation:* the trigger is
   deterministic SQL on the real file; the leg is a single sequential POP3
-  session — no timing, no sleeps, no barriers (0011 rule 5). The only
+  session — no timing, no sleeps, no barriers (0020 rule 5). The only
   cross-process element is the second connection, already the house pattern
   (`refusing_trigger`), whose own 10 s busy timeout bounds only test-side
   waits.

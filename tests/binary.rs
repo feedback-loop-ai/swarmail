@@ -551,3 +551,114 @@ async fn gen_cert_to_an_occupied_target_exits_non_zero() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("swarmail"));
     let _ = std::fs::remove_file(&occupied);
 }
+
+// ---------- decision 0024: the same refusal under the real SIGINT ----------
+
+/// The process leg of the one shutdown policy (0024): the real binary, a
+/// disposable data file, the test's own connection holding `BEGIN
+/// IMMEDIATE` through exit, three concurrent seeds queued on the mutation
+/// boundary — a real SIGINT, and the process exits 0 within the budget
+/// (upper bound only, sequence-independent: the seed that wins the boundary
+/// first burns its own 5s bound, the queued ones refuse at the check in
+/// microseconds). The 300ms pause is sequencing, not an outcome wait. The
+/// restarted copy is exactly the committed set — here empty, every commit
+/// having refused against the held lock — never a partial row.
+#[tokio::test]
+async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-sigint-refuse-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let http_addr: std::net::SocketAddr = "127.0.0.1:23473".parse().unwrap();
+    let mut child = Command::new(binary())
+        .args([
+            "serve",
+            "--smtp-listen",
+            "127.0.0.1:23472",
+            "--pop3-listen",
+            "127.0.0.1:0",
+            "--http-listen",
+            "127.0.0.1:23473",
+            "--data-file",
+        ])
+        .arg(&db)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn swarmail serve");
+    wait_http_up(http_addr).await;
+
+    // The test's own connection: the writer lock the commits must refuse
+    // against, held through the whole exit.
+    let _lock = common::hold_write_lock(&db);
+
+    let mut seeds = Vec::new();
+    for inbox in ["sigint-one", "sigint-two", "sigint-three"] {
+        let body = r#"{"to": "s@x.io", "text": "a mail that must not land"}"#;
+        let route = format!("/api/v1/inboxes/{inbox}/seed");
+        seeds.push(tokio::spawn(async move {
+            common::http_json(http_addr, "POST", &route, Some(body)).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await; // the seeds queue on the boundary
+
+    // Real SIGINT: the same graceful path `stop()` takes, at the process
+    // level. The budget is the same 10s bound (one busy wait + ε), which is
+    // what `sigint_and_wait` enforces.
+    let status = sigint_and_wait(&mut child).await;
+    assert!(status.success(), "SIGINT exit: {status:?}");
+
+    for seed in seeds {
+        let (st, body) = tokio::time::timeout(Duration::from_secs(10), seed)
+            .await
+            .expect("every queued seed must answer before the process exits")
+            .unwrap();
+        assert_eq!(st, 503, "{body}");
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": "storage commit failed" }),
+            "{body}"
+        );
+    }
+
+    // The restarted copy is exactly the committed set: empty. The lock is
+    // released first — the restart must be able to restore.
+    drop(_lock);
+    let mut restarted = Command::new(binary())
+        .args([
+            "serve",
+            "--smtp-listen",
+            "127.0.0.1:23472",
+            "--pop3-listen",
+            "127.0.0.1:0",
+            "--http-listen",
+            "127.0.0.1:23473",
+            "--data-file",
+        ])
+        .arg(&db)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("restart swarmail serve");
+    wait_http_up(http_addr).await;
+    for inbox in ["sigint-one", "sigint-two", "sigint-three"] {
+        let (st, list) = common::http_json(
+            http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/{inbox}/messages"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 200, "{list}");
+        assert_eq!(list["total"], 0, "the refused set never landed: {list}");
+    }
+    let status = sigint_and_wait(&mut restarted).await;
+    assert!(status.success(), "restart SIGINT exit: {status:?}");
+    let _ = std::fs::remove_file(&db);
+    let _ = std::fs::remove_file(db.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db.with_extension("db-shm"));
+}

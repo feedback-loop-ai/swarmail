@@ -69,7 +69,7 @@ seconds:
 | 0002 await subscribes before it checks | Untouched: `wait_for` is not edited; a refused mail never enters memory, fires no watcher, and the rescan finds nothing. |
 | 0003 pruning is oldest-only | Preserved: front ids peeked in order; `pop_front` still evicts; `emails_dropped` counts each eviction exactly once at its commit; no eviction touches a delivery in flight. |
 | 0004 per-test inboxes | Untouched (wire legs use per-test inboxes and AUTH usernames). |
-| 0010 (proposed) off-worker commits | Built upon: the whole mutation still runs on the blocking pool; `synchronous = FULL` and reply-after-outcome untouched; panic symmetry stays via the moved seam. |
+| 0023 (proposed) off-worker commits | Built upon: the whole mutation still runs on the blocking pool; `synchronous = FULL` and reply-after-outcome untouched; panic symmetry stays via the moved seam. |
 | 0012 (proposed) | Amended in place (§4/§5/§6) — its §1-§3 refusal machinery is what this run's refusal paths *use*; §7's fail-stop stands. |
 | Exact 100/100/100 gate | Held: every new production line gets an executing test; no `coverage(off)`; no new `src/` file; the denominator never shrinks. |
 
@@ -124,13 +124,13 @@ seconds:
    `isError` arms, REST/compat `503` arms via their adapters' legs. The
    moved gate stays covered by the two ported pins.
 
-## Test placement (decision 0011)
+## Test placement (decision 0020)
 
 - The 16-thread barrier probe and the delete/clear/clear-all interleaving
   rounds are **inline** in `src/store.rs` — branch-stable deterministic
-  interleavings (barrier → join → assert), warm-path, 0011 rule 1.
+  interleavings (barrier → join → assert), warm-path, 0020 rule 1.
 - The refusal/failure paths that exist only while storage betrays are
-  **harness** tests in `src/store/persist_tests.rs` (0011 rule 2) —
+  **harness** tests in `src/store/persist_tests.rs` (0020 rule 2) —
   `fail_writes()` makes every commit fail instantly; no sleeps, no
   wall-clock validity assertions, fresh `Store::open` per test, no shared
   global state.
@@ -138,7 +138,7 @@ seconds:
   triggers on the real data file, a second connection holding the write
   lock, real restarts; per-test inboxes; no mocks (0004).
 - The seam stays `#[cfg(test)]`-only on `Store`, `pub(crate)`; the two pins
-  remain its executors (0011 rule 4's "every seam keeps at least one test
+  remain its executors (0020 rule 4's "every seam keeps at least one test
   that installs it").
 
 ## Risks
