@@ -26,7 +26,7 @@ The agent loop, from any pod that can reach the service:
 
 {{- if .Values.persistence.enabled }}
 
-Data file: /data/swarmail.db on the "{{ printf "%s-data" (include "swarmail.fullname" .) }}" claim —
+Data file: /data/swarmail.db on the "{{ .Values.persistence.existingClaim | default (printf "%s-data" (include "swarmail.fullname" .)) }}" claim —
 the restart copy. The strategy is Recreate; the store is single-replica.
 {{- else }}
 
