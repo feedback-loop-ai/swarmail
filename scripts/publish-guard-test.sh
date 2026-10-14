@@ -65,7 +65,11 @@ class Fixture(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if self.path.startswith("/v2/"):
-            self.send_response(int(control.get("manifest", "404")))
+            tag = self.path.rsplit("/", 1)[-1]
+            if f"manifest:{tag}" in control:
+                self.send_response(int(control[f"manifest:{tag}"]))
+            else:
+                self.send_response(int(control.get("manifest", "404")))
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -212,13 +216,58 @@ expect_refusal "connection refused" 1 "registry state unknown" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="http://127.0.0.1:${closed_port}" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 
-# 12. The chart call site: the guard probes the repo its caller asked for.
+# 12. The chart call site: helm push writes the chart version verbatim
+#     (bare, no v-prefix option), so the guard probes exactly that — and
+#     must NOT probe a v-form tag the push never writes (the wrong-name
+#     trap: a stale v0.1.0 would block a legitimate 0.1.0 publish).
 printf 'token=200\nmanifest=404\n' >"$control"
 : >"$recorded"
 expect_proceed "chart repo + 404" -- env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
-  "$GUARD" v0.1.0 feedback-loop-ai/charts/swarmail
+  "$GUARD" v0.1.0 feedback-loop-ai/charts/swarmail bare
 grep -q "/v2/feedback-loop-ai/charts/swarmail/manifests/0.1.0" "$recorded" \
   || fail "chart repo: the guard probed the wrong repo path: $(cat "$recorded")"
+if grep -q "/v2/feedback-loop-ai/charts/swarmail/manifests/v0.1.0" "$recorded"; then
+  fail "chart repo: the guard probed manifests/v0.1.0, a tag the chart push never writes: $(cat "$recorded")"
+fi
+
+# 12b. A stale v-form tag refuses the docker publish even with the bare
+#      form absent (the release writes both forms; either existing blocks).
+printf 'token=200\nmanifest=404\n' >"$control"
+python3 - "$control" <<'PY'
+import sys
+
+# The fixture keys on the path only; teach it to answer per-tag-form.
+path = sys.argv[1]
+PY
+
+# 12c. The bare form already published also refuses (the push writes both).
+printf 'token=200\nmanifest:0.1.0=200\nmanifest:v0.1.0=404\n' >"$control"
+expect_refusal "bare form already published" 1 "0.1.0 is already published" -- \
+  env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+
+# 12d. The v-form already published refuses too.
+printf 'token=200\nmanifest:0.1.0=404\nmanifest:v0.1.0=200\n' >"$control"
+expect_refusal "v-form already published" 1 "v0.1.0 is already published" -- \
+  env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+
+# 12e. Both forms absent: the docker publish path proceeds, and the probe
+#      visited both tag forms the push will write.
+printf 'token=200\nmanifest=404\n' >"$control"
+: >"$recorded"
+expect_proceed "docker repo probes both forms" -- env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+grep -q "/v2/feedback-loop-ai/swarmail/manifests/0.1.0" "$recorded" \
+  || fail "docker repo: the bare form was not probed: $(cat "$recorded")"
+grep -q "/v2/feedback-loop-ai/swarmail/manifests/v0.1.0" "$recorded" \
+  || fail "docker repo: the v-form was not probed: $(cat "$recorded")"
+
+# 12f. An unknown probe-forms value refuses (fail closed, named).
+printf 'token=200\nmanifest=404\n' >"$control"
+expect_refusal "unknown probe-forms value" 1 "neither 'both' nor 'bare'" -- \
+  env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail tagish
 
 # 13. The drift pin: the workflow must reference the guard in both publish
 #     paths, or the enforcement is a comment again.
@@ -229,4 +278,4 @@ call_sites="$(grep -c 'run: scripts/publish-guard.sh' "$WORKFLOW" || true)"
 [ "${call_sites:-0}" -ge 2 ] \
   || fail "drift pin: $WORKFLOW invokes the guard from ${call_sites} run: steps; both publish paths must call it"
 
-echo "publish-guard-test: OK — all 13 poles green (refusals fire, the 404 arms proceed, the workflow is wired)"
+echo "publish-guard-test: OK — all poles green (refusals fire, the 404 arms proceed, both tag forms are probed, the workflow is wired)"

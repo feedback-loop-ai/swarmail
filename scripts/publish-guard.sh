@@ -6,7 +6,15 @@
 # exchange — refuses: registry state unknown. This is a pre-push check,
 # NOT registry-side immutability; a concurrent publish can still race the
 # probe, and re-publishing a version means deleting the registry tag.
-#   usage: publish-guard.sh <v<semver>> <oci-repo>
+#   usage: publish-guard.sh <v<semver>> <oci-repo> [probe-forms]
+#   probe-forms: `both` (default) or `bare`. A docker release pushes the
+#          version in BOTH tag forms (`:0.1.0` and `:v0.1.0` — the docs'
+#          `v`-form and the tooling's bare form), so its guard refuses
+#          unless both are absent. `helm push` writes the chart version
+#          verbatim (bare only — it has no v-prefix option), so the chart
+#          call site passes `bare`: probing `v<version>` there would check
+#          a tag the push never writes — the same wrong-name trap as '+'
+#          build metadata below.
 #   env:   GITHUB_REF_NAME (the triggering ref; unset refuses)
 #          GH_TOKEN, GH_USER        registry credentials (the push's own)
 #          PUBLISH_GUARD_REGISTRY   base URL; default https://ghcr.io
@@ -32,17 +40,32 @@ case "$version" in
   *+*) refuse "'${version}' carries build metadata ('+'); the probe cannot check the tag the push would write" ;;
 esac
 
+probe_forms="${3:-both}"
+case "$probe_forms" in
+  both|bare) ;;
+  *) refuse "probe forms '${probe_forms}' is neither 'both' nor 'bare'" ;;
+esac
+
 base="${PUBLISH_GUARD_REGISTRY:-https://ghcr.io}"
 bearer="$(curl -fsS --max-time 30 -u "${GH_USER:?GH_USER required}:${GH_TOKEN:?GH_TOKEN required}" \
   "${base}/token?service=ghcr.io&scope=repository:${repo}:pull" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')" \
   || refuse "registry state unknown (token exchange failed)"
-code="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' \
-  -H "Authorization: Bearer ${bearer}" -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-  "${base}/v2/${repo}/manifests/${version}")" \
-  || refuse "registry state unknown (manifest query failed)"
-case "$code" in
-  404) exit 0 ;;
-  200) refuse "v${version} is already published" ;;
-  000|*) refuse "registry state unknown (HTTP ${code:-none})" ;;
+probe() { # $1: the exact tag form the push will write
+  local code
+  code="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${bearer}" -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "${base}/v2/${repo}/manifests/$1")" \
+    || refuse "registry state unknown (manifest query failed)"
+  case "$code" in
+    404) return 0 ;;
+    200) refuse "$1 is already published" ;;
+    000|*) refuse "registry state unknown (HTTP ${code:-none})" ;;
+  esac
+}
+
+case "$probe_forms" in
+  bare) probe "$version" ;;
+  both) probe "$version"; probe "v${version}" ;;
 esac
+exit 0

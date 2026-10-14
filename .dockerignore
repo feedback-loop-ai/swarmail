@@ -3,3 +3,7 @@ target/
 .git/
 .github/
 dist/
+# The run's own harness state and evidence are not build inputs — and a
+# stray SQLite file from a local seat must never enter the image.
+.forge/
+*.db
