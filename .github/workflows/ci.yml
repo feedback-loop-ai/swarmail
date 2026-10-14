@@ -85,8 +85,12 @@ jobs:
   # keeps exactly this check (no network).
   #
   # The rustls-only posture is proved here too, fail closed (AC52.3): the
-  # native-tls probe must be *demonstrably* absent — a cargo failure is
-  # indistinguishable from an absence only if we refuse on it.
+  # native-tls probe must be *demonstrably* absent. Exit 0 means it is
+  # present — refuse; a failure that does not name the absence means cargo
+  # itself broke and the absence is unprovable — refuse. (The probe's
+  # no-match exit code varies by cargo — 1 on some versions, 101 on
+  # current — so the canonical "did not match any packages" message is the
+  # stable absence contract; anything else refuses.)
   deny:
     name: deny
     runs-on: ubuntu-latest
@@ -109,10 +113,10 @@ jobs:
             echo "REFUSAL: native-tls is in the dependency tree; the realm is rustls-only (AC52.3):" >&2
             echo "$out" >&2
             exit 1
-          elif [ "$code" -eq 1 ]; then
-            echo "native-tls absent (cargo tree found no such package) — rustls-only confirmed"
+          elif echo "$out" | grep -q "did not match any packages"; then
+            echo "native-tls absent — rustls-only confirmed"
           else
-            echo "REFUSAL: cargo tree itself failed (exit $code); absence cannot be proved — refusing closed:" >&2
+            echo "REFUSAL: cargo tree failed (exit $code) and did not report absence; absence cannot be proved — refusing closed:" >&2
             echo "$out" >&2
             exit 1
           fi
