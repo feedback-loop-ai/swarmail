@@ -1,6 +1,6 @@
 # 0024 — The boundary refuses to start a commit once stopping: one shutdown policy for mutations
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-14 — reviewed by the completion run's full panel and the slice-2 run's panel; no security residual)
 - **Date:** 2026-10-14
 - **Amends:** [0018](0018-shutdown-observed-waits-and-explicit-bounds.md)
   (accepted) §1's last sentence and §2's mutation mechanics **in place**, by

@@ -657,3 +657,151 @@ async fn await_total_is_counted_after_the_wait_in_both_arms() {
     assert_eq!(body["matched"], 0);
     assert_eq!(body["total"], 1, "total is counted after the wait: {body}");
 }
+
+// ---------- shared domain validation (issue #32 slice 2, decision 0025) ----------
+
+/// An out-of-domain chaos probability is refused with 400 and the shared
+/// sentence — the same words the MCP tool answers — and a rejected PUT
+/// leaves the active rules exactly as they were, by construction: the
+/// handler validates before any `Chaos::set`. A mixed partial config with
+/// one bad slot is refused too (the walk sees all four events), and the
+/// poles 0 and 100 are legal on the domain layer.
+#[tokio::test]
+async fn chaos_probability_out_of_domain_is_refused_and_leaves_the_rules_unchanged() {
+    let srv = start().await;
+
+    // Arm a valid data rule.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 30, "error": "451 busy", "delay_ms": 5}}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    let (st, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(st, 200);
+
+    for probability in [101, 150, 255] {
+        let put = format!(r#"{{"data": {{"probability": {probability}}}}}"#);
+        let (st, body) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(&put)).await;
+        assert_eq!(st, 400, "{probability}: {body}");
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": "probability must be an integer between 0 and 100" }),
+            "{probability}: {body}"
+        );
+    }
+
+    // A mixed partial config: one bad slot refuses the whole PUT, and the
+    // armed data rule survives the rejected request untouched.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"rcpt": {"probability": 150}}"#),
+    )
+    .await;
+    assert_eq!(st, 400, "{body}");
+    let (st, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        before, after,
+        "a rejected PUT must leave the active rules exactly as they were"
+    );
+
+    // The poles are legal on the domain layer, not clamped or refused.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 0}}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["data"]["probability"], 0, "{body}");
+    let (st, body) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 100}}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["data"]["probability"], 100, "{body}");
+}
+
+/// A well-formed body with a wrong-typed `probability` keeps the Json
+/// extractor's own rejection — 422, serde's message — and malformed JSON
+/// keeps its 400 (decision 0025: the slice shares the domain *sentence*,
+/// not the extractor's envelope). The rules survive each rejection.
+#[tokio::test]
+async fn chaos_wrong_typed_probability_keeps_the_extractor_envelope_and_the_rules() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 30}}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    let (st, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(st, 200);
+
+    for (put, status) in [
+        (r#"{"data": {"probability": "high"}}"#, 422),
+        (r#"{"data": {"probability": 1.5}}"#, 422),
+        (r#"{"data": {"probability": null}}"#, 422),
+        (r#"{"data": {"probability": 256}}"#, 422),
+        ("not json", 400),
+    ] {
+        let (st, body) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(put)).await;
+        assert_eq!(st, status, "{put}: {body}");
+        assert!(body["error"].is_null(), "{put}: {body}");
+    }
+
+    let (st, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(before, after, "an extractor rejection stores nothing");
+}
+
+/// Supplied malformed `timeout_ms` values keep REST's parse-time 400 — the
+/// query layer refuses before the handler runs, so no waiter is ever
+/// registered — while `0` is a legal, real zero deadline: an immediate 408
+/// on an empty inbox, never a clamp to the default and never a refusal
+/// (decision 0025).
+#[tokio::test]
+async fn await_supplied_malformed_timeouts_are_parse_refusals_and_zero_is_a_real_deadline() {
+    let srv = start().await;
+    for value in ["-1", "invalid", "null", "1.5"] {
+        let (st, body) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/malformed/await?count=1&timeout_ms={value}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 400, "{value}: {body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("await"),
+            "{value}: {body}"
+        );
+    }
+
+    let started = std::time::Instant::now();
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/zero-deadline/await?count=1&to=nobody@x.io&timeout_ms=0",
+        None,
+    )
+    .await;
+    assert_eq!(st, 408, "{body}");
+    assert_eq!(body["matched"], 0, "{body}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "timeout_ms=0 must answer its own deadline at once: {:?}",
+        started.elapsed()
+    );
+}

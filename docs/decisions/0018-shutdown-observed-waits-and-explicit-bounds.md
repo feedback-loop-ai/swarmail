@@ -15,6 +15,13 @@
   queued release) in every interleaving, a commit already started runs to
   completion, and the refusal answers the fixed 0012 §2 text (a landing
   task of the issue-#32 slices 1/5/6 run).
+- **Amended by:**
+  [0025](0025-shared-domain-validation.md) — §3's refusal posture extends
+  from the *bound* to the *supplied malformed value*: one shared validator
+  (`ChaosRule::validate`, `checked_wait_timeout_ms`) now owns the rule
+  both transports enforce, a present-but-unparseable `timeout_ms` refuses
+  instead of silently defaulting, and an omitted value keeps its
+  documented default (a landing task of the issue-#32 slice-2 run).
 
 ## Context
 
