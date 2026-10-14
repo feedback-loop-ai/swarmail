@@ -1,6 +1,6 @@
 # 0025 — Shared domain validation: a supplied malformed value refuses, an omitted optional value keeps its default
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-14 — reviewed by the completion run's full panel and the slice-2 run's panel; no security residual)
 - **Date:** 2026-10-14
 - **Supersedes:** none
 - **Amends:** [0018](0018-shutdown-observed-waits-and-explicit-bounds.md)
