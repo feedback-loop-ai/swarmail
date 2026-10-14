@@ -32,6 +32,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0023](0023-off-worker-commits.md) | Commits run off the async workers: the disk leg is ordering, not thread identity (filed as 0010) | **proposed** (awaiting operator) |
 | [0024](0024-shutdown-refusal-at-the-boundary.md) | The boundary refuses to start a commit once stopping: one shutdown policy for mutations (amends 0018) | **proposed** (awaiting operator) | (Close issue #32's slices 1, 5 and 6) |
 | [0025](0025-shared-domain-validation.md) | Shared domain validation: a supplied malformed value refuses, an omitted optional value keeps its default (amends 0018) | **proposed** (awaiting operator) | (Close issue #32's slice 2) |
+| [0026](0026-deployment-boundary-peers-tls-sizing.md) | The deployment boundary admits peers, mounts TLS, and sizes its own restore (amends 0008) | accepted (operator, 2026-10-14) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
