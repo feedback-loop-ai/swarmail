@@ -1,6 +1,7 @@
 //! Swarmail — the fastest AI-native SMTP mail mock.
 
 use clap::Parser;
+use std::io::IsTerminal;
 use swarmail::config::{Cli, Command};
 
 #[tokio::main]
@@ -10,6 +11,12 @@ async fn main() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "swarmail=info,tower_http=off".into()),
         )
+        // ANSI only when stdout can render it: a piped or captured log
+        // (CI, systemd, `docker logs`, the binary tests' own readback of
+        // the startup line) gets plain text, so the tracing fields stay
+        // machine-parseable — `smtp=` must literally appear. A terminal
+        // keeps its color.
+        .with_ansi(std::io::stdout().is_terminal())
         .init();
 
     match Cli::parse().command {
