@@ -930,6 +930,31 @@ mod tests {
         assert_eq!(all[0].id, "new");
         assert_eq!(all[1].id, "old");
 
+        // The id tiebreak: two mails with the same received_ms sort by id,
+        // descending (newest-first carries to the tiebreak). Without this,
+        // the tiebreak closure runs only when the wall clock hands two real
+        // inserts the same millisecond — a coin flip the exact gate
+        // refuses. Branch-stable, inline (0020 rule 1).
+        let mut tie_aaa = email("tie-aaa", "three", "a@x.io");
+        tie_aaa.received_ms = 100;
+        let mut tie_zzz = email("tie-zzz", "three", "a@x.io");
+        tie_zzz.received_ms = 100;
+        let _ = store.insert(tie_aaa);
+        let _ = store.insert(tie_zzz);
+        let all = store.list_all(&Filter::default());
+        let aaa = all
+            .iter()
+            .position(|e| e.id == "tie-aaa")
+            .expect("tie mail present");
+        let zzz = all
+            .iter()
+            .position(|e| e.id == "tie-zzz")
+            .expect("tie mail present");
+        assert!(
+            zzz < aaa,
+            "equal received_ms must fall back to the id tiebreak, descending: {all:?}"
+        );
+
         // A filter that matches nothing, the way the compat shims scope.
         let none = Filter {
             from: Some("nobody@nowhere".into()),
