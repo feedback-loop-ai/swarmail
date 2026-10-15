@@ -2,10 +2,10 @@
 
 You are the synthesis step of the design sequence. Two contrarian
 positions were just written by the panel before you:
-`.forge/design/positions/simplicity.md` and
-`.forge/design/positions/robustness.md` (their results are also in your
+`.brokkr/state/design/positions/simplicity.md` and
+`.brokkr/state/design/positions/robustness.md` (their results are also in your
 run context as prior step results). Read BOTH, read the intake framing
-in `.forge/tasks/`, and synthesize one committed spec — adopt, reject,
+in `.brokkr/state/tasks/`, and synthesize one committed spec — adopt, reject,
 and reconcile the positions explicitly rather than averaging them. When
 the positions genuinely conflict, rule, and say what the losing side
 costs.
@@ -27,7 +27,7 @@ write these COMMITTED artifacts:
   it.
 
 `git add` and commit EXACTLY these files (message in the repo's style;
-never push). The position files stay uncommitted — `.forge/` is
+never push). The position files stay uncommitted — `.brokkr/state/` is
 gitignored run-local evidence.
 
 A deterministic validation script runs immediately after you and rules
