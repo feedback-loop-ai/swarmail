@@ -1,7 +1,9 @@
 # 0029 — Supplied values are validated wherever they reach a wire, and the MCP envelope answers for its own words
 
-- **Status:** proposed (awaiting operator — acceptance is the operator's;
-  the batch ships together with this decision)
+- **Status:** accepted (operator, 2026-10-15 — proposed by the validation
+  family's design panel, run `run-9-the-validation-family-refu-0380f30b`;
+  the tree implements it, run `forge-run9b-feature-txt-4d2070ed`'s review
+  panel passed the repaired tree, and it landed as #62, squash `ad4cb45`)
 - **Date:** 2026-10-15
 - **Amends:** [0025](0025-shared-domain-validation.md) (accepted) — §1's
   residual list is closed, §4's envelope posture is *extended, not
