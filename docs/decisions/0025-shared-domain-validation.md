@@ -52,6 +52,11 @@ callers — greenly.
 
 ## Decision
 
+*(Amended by [0029](0029-supplied-values-are-validated-wherever-they-reach-a-wire.md),
+accepted 2026-10-15: §1's residual list is closed, §4's envelope posture is
+extended, not rewritten, and §5's "refused call registers no waiter" is
+carried to every new refusal.)*
+
 1. **One domain validator per rule, owned by the type it constrains;
    both transports call it.** `ChaosRule::validate` and
    `ChaosConfig::validate` live in `src/chaos.rs` (the rule's home);
