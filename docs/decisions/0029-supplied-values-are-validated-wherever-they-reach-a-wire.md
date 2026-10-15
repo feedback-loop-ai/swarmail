@@ -2,7 +2,7 @@
 
 - **Status:** proposed (awaiting operator — acceptance is the operator's;
   the batch ships together with this decision)
-- **Date:** 2026-11-13
+- **Date:** 2026-10-15
 - **Amends:** [0025](0025-shared-domain-validation.md) (accepted) — §1's
   residual list is closed, §4's envelope posture is *extended, not
   rewritten*, and §5's "refused call registers no waiter" is carried to
@@ -149,10 +149,26 @@ reply stream), it **starts with a 4xx/5xx code** (three octets, first in
 `4..=5`; the fourth octet, if any, is a space — a bare `451` is legal per
 RFC 5321's reply-line grammar; `250 2.0.0 OK`, the poison case that broke
 [0001](0001-synchronous-insert-lossless.md) through the control plane, is
-not), and it is **at most 512 octets** (RFC 5321 §4.5.3.1.2's reply-line
-bound; the CRLF `write_line` adds is the terminator). One `pub(crate)`
-refusal sentence, byte-identical from the REST `400` and the MCP
-`-32602`.
+not), and it is **at most 510 octets of text**. RFC 5321 §4.5.3.1.2 caps
+the reply line at 512 octets *including* the CRLF that `write_line`
+appends, so the text a rule may carry is 510 — stated here so no
+off-by-two hides inside a quoted "512" in a repo whose brand is protocol
+exactness. One `pub(crate)` refusal sentence, byte-identical from the
+REST `400` and the MCP `-32602`.
+
+**`delay_ms` is bounded by the same validator.** It was the one supplied
+value the struct's check waved through: `u64::MAX` parks a session task
+on a bare `tokio::time::sleep` in the DATA arm (smtp.rs:992) with no
+bound but stop's abort — a denial-of-service dial on the very struct
+this decision arms. A supplied `delay_ms` over **300 000** refuses with
+one shared sentence from both planes. The ceiling is RFC 5321 §4.5.3.2's
+stage-timer scale (five minutes covers every stage timer a lawful client
+applies) and *deliberately not* the 60 s `MAX_AWAIT_TIMEOUT_MS` — that
+constant governs the control plane's waits, not the wire's timers;
+importing it here would couple two planes that fail differently. The
+cost is named: a chaos test wanting a longer-than-five-minute wire stall
+arms successive rules or relies on the stage's own timeout. A refusal
+(not a clamp) per 0018 §3.
 
 **The chaos shape is closed:** `deny_unknown_fields` on `ChaosConfig` and
 `ChaosRule`. REST answers an unknown event key with serde's own 422
@@ -198,6 +214,14 @@ survives restart is a footgun that outlives the test run, and
 - A notification (202 with an empty or whitespace body) writes **nothing**
   to stdout. The blank-line filter in `tests/stdio.rs` is deleted — it
   was hiding this defect.
+- **A failed notification stays silent.** The missing-`id` predicate is
+  not only the server's envelope rule — the bridge applies it locally in
+  both arms: a line that parses and has no `id` is a notification, and
+  when its POST fails (connect refused, deadline expiry, a non-JSON
+  reply) the bridge still writes nothing. An error object carrying
+  `id: null` for a notification is the stdout twin of the bare-newline
+  bug — it desyncs a line-parsing client identically. The parse-once
+  id-extraction helper serves both arms.
 - Logging: tracing initialization moves into the subcommand arms; the
   `mcp` subcommand logs to **stderr** (its stdout is protocol); `serve`
   keeps stdout (the binary tests' `smtp=` piped-line contract).
@@ -221,18 +245,28 @@ survives restart is a footgun that outlives the test run, and
   the PUT validator and the delivery path (`post_json`, `client_for`) —
   one owner, both arms warm. A duplicated check would drive the
   delivery-time arms cold and the exact 100/100/100 gate red.
-- **The delivery budget is per target:** one `JoinSet` keyed by target
-  URL (a duplicate URL is one sink and shares one budget), each bounded
-  by the unchanged `WEBHOOK_DELIVERY_CAP = 32`. The two-sink acceptance —
+- **The delivery budget is per target:** one `JoinSet` keyed by the
+  target's **parsed, normalized `Url`** — never a raw string, because a
+  duplicate spelling of one sink must not buy a second budget and
+  re-open the starvation the budget exists to close — each bounded by
+  the unchanged `WEBHOOK_DELIVERY_CAP = 32`. Entries whose target has
+  vanished from the config and whose set has drained are retired, or
+  every PUT/PUT/PUT cycle leaks a dead key. The two-sink acceptance —
   *a dead target cannot cause drops for a healthy one* — is impossible
-  under a shared pool at any constant; a budget keyed by URL is the
-  smallest state that names the actual failure mode. Refused: per-target
-  4 + a global 32 (the common lone-sink topology loses its 32-at-a-time
-  throughput for a pathological case), and fair-share division (the
-  budget would shift under every PUT). The honest loss: worst-case
-  in-flight is 32 × n_targets, where n is the operator's own authored
-  config; the escalation (a global backstop) is named and refused this
-  run. Every spawn stays try-shaped — 0027's sizing posture is untouched.
+  under a shared pool at any constant, and structurally impossible under
+  a per-target budget at any n: the healthy sink's slots are its own.
+  Refused, with the losers' prices: 4-per-target plus a global 32 (the
+  common lone-sink topology delivers 4-at-a-time instead of 32, and the
+  acceptance's failure mode *survives a band* — with 32 global slots a
+  healthy sink starves once ≥8 peers are stalled simultaneously) and
+  fair-share division (the budget would shift under every PUT). The
+  honest loss of the winner: worst-case in-flight is 32 × n_targets,
+  where n is the operator's own authored config — a documented loss,
+  never a discovered one; the escalation (a global backstop) is named
+  and refused this run. Every spawn stays try-shaped — 0027's sizing
+  posture is untouched. A delivery's payload stays fixed at spawn (the
+  retry replays its bytes, never a store re-read) — pinned by test so
+  the budget remains *slots* and cannot be coupled to 0003's pruning.
 - **Failure cause:** the final `warn!` carries the last delivery error at
   the default level (no new `/metrics` family, no per-attempt spam — the
   acceptance offers "or").
@@ -267,6 +301,15 @@ survives restart is a footgun that outlives the test run, and
   line): more parsing for a bound the domain cap already fixes.
 - **A custom deserializer for REST chaos events:** 0025 §4's precedent is
   explicit, and the divergence is recorded instead.
+- **Refusing an already-expired `ca_pem` at PUT** (the robustness seat's
+  "cheap slice" of expiry): it is not cheap — honouring it needs an
+  X.509 validity parser (a new dependency, or hand-rolled ASN.1 beside a
+  TLS stack that already knows), and 0020 rule 5's no-wall-clock
+  discipline would demand per-run fixture generators for a check the
+  delivery path surfaces loudly anyway (AC's default-level cause and the
+  ledger). A cert that *parses* but is expired fails its first delivery,
+  by name; a validator cannot check the future, and pretending otherwise
+  is the false-green this run deletes.
 - **`resources/list` as an empty arm:** one deleted line beats a new
   method plus a capability lie.
 - **Chaos persistence, a metrics family for causes, an unredacted-or-
@@ -288,6 +331,10 @@ survives restart is a footgun that outlives the test run, and
   a chunked reply refuses loudly rather than being parsed. If a real
   target needs chunked replies, that is the reqwest swap reopening —
   with the deadline-expiry arm's hermeticity as the price to solve.
+- A `ca_pem` that parses but is expired (or expires mid-run) is a
+  *delivery outcome*, not a PUT refusal (§6): the first failing delivery
+  names the TLS cause at the default level. A cert expiring *later* is
+  the future, which no validator can check.
 - `jsonrpc` version members are not validated this run (a body declaring
   `"jsonrpc": "1.0"` is dispatched like any other). The taxonomy is the
   contract; the member check is ceremony until a client lies.

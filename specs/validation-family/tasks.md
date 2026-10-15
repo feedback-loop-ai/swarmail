@@ -21,7 +21,9 @@ under-tested, and the fix is a test, never `coverage(off)`.
   it, as openapi already does). Staging precedes every `store` call
   (0025 §5). MCP search reports the full match count and takes the new
   shared `pub(crate) const DEFAULT_LIST_LIMIT: usize = 100` beside
-  api.rs's constants (REST's 100; compat's 50 stays).
+  api.rs's constants (REST's 100; compat's 50 stays). Each tool's schema
+  publishes the types and bounds its staging enforces (the
+  `the_schemas_publish_the_wire_bounds` pattern).
   *Test:* legs in `tests/mcp.rs` — `a_wrong_typed_argument_refuses_by_
   name` (one leg per wrong type: string→int, int→string, `null`, negative
   limit; assert `error.code == -32602` and the field's name in the
@@ -64,14 +66,20 @@ under-tested, and the fix is a test, never `coverage(off)`.
   → JSON-RPC error with the request id; a body that *is* a JSON-RPC
   error object is forwarded verbatim), honor content-length, cap the
   read at 10 MiB (`AsyncReadExt::take`) and refuse a non-JSON body
-  instead of `unwrap_or("{}")` (`:56`); write nothing for an empty or
-  whitespace body; fix the slash join (`path.trim_end_matches('/')`).
+  instead of `unwrap_or("{}")` (`:56`); apply the missing-`id`
+  predicate locally in both arms (one parse-once id helper serves the
+  error arm and the response arm) so a failed notification — connect
+  refused, deadline, non-JSON reply — writes nothing; write nothing for
+  an empty or whitespace body; fix the slash join
+  (`path.trim_end_matches('/')`).
   In `src/main.rs`: move the tracing init below the subcommand match and
   send `mcp`'s logs to stderr (`serve` keeps stdout — the `smtp=`
   contract).
   *Test:* legs in `tests/stdio.rs` — delete the blank-line filter
   (`:58-59`); `a_notification_writes_nothing` (empty body → empty
-  stdout); `a_trailing_slash_base_does_not_double_the_slash`;
+  stdout); `a_failed_notification_writes_nothing` (an id-less line whose
+  POST fails — a dead port — leaves stdout empty);
+  `a_trailing_slash_base_does_not_double_the_slash`;
   `a_non_2xx_is_an_error_carrying_the_request_id` and
   `a_non_json_body_is_refused_not_fabricated` (in-process sinks);
   `a_wait_longer_than_ten_seconds_gets_its_result` (real server: wait
@@ -97,13 +105,16 @@ under-tested, and the fix is a test, never `coverage(off)`.
   and_assert` (parity); `the_served_schema_matches_the_parser_domain`
   (0025 §6's pattern: every parameter openapi declares for await/assert
   is accepted by the handler, and vice versa). Proves AC4.
-- [ ] **5. Validate the chaos `error` line; close the shape; make
-  set_chaos atomic (issue #41, decision 0029 §3)** — in `src/chaos.rs`:
-  `ChaosRule::validate()` (`:49-58`) gains the reply-line grammar —
-  single line (no CR/LF anywhere), 3-octet code with the first in
-  `4..=5` and the fourth octet SP-or-end, ≤512 octets (RFC 5321
-  §4.5.3.1.2) — with one `pub(crate)` refusal sentence shared by both
-  planes; add `deny_unknown_fields` to `ChaosConfig` and `ChaosRule`;
+- [ ] **5. Validate the chaos `error` line and `delay_ms`; close the
+  shape; make set_chaos atomic (issue #41, decision 0029 §3)** — in
+  `src/chaos.rs`: `ChaosRule::validate()` (`:49-58`) gains the reply-line
+  grammar — single line (no CR/LF anywhere), 3-octet code with the first
+  in `4..=5` and the fourth octet SP-or-end, ≤**510** text octets (the
+  RFC 5321 §4.5.3.1.2 512 includes the CRLF `write_line` appends) — with
+  one `pub(crate)` refusal sentence shared by both planes; the same
+  validator bounds `delay_ms` at `300_000` (RFC 5321 §4.5.3.2's stage
+  scale, not the 60 s await ceiling) with its own shared sentence;
+  add `deny_unknown_fields` to `ChaosConfig` and `ChaosRule`;
   add `Chaos::set_event(event, rule)` doing the whole match inside one
   write-lock scope, and use it from `set_chaos` (`src/mcp.rs:260-296`),
   which also refuses unknown argument keys
@@ -111,7 +122,9 @@ under-tested, and the fix is a test, never `coverage(off)`.
   (extractor's sentence) and its whole-config PUT.
   *Test:* inline unit corpus in `src/chaos.rs` (branch-stable) —
   refuses `"250 2.0.0 OK"`, `"451\r\nx"`, `"not-a-code"`, `"4514"`,
-  513 octets, CR-only; accepts `"451"`, `"450 4.7.1 no"`;
+  511 octets, CR-only, `delay_ms: 300_001`; accepts `"451"`,
+  `"450 4.7.1 no"`, 510 octets, `delay_ms: 300_000`, absent
+  `delay_ms` (the honest 0);
   `two_concurrent_set_event_arms_both_survive` (N threads, join, all
   events present — no sleeps). Wire legs in `tests/mcp.rs` /
   `tests/api.rs`: `the_poison_error_line_is_refused_at_both_doors`
@@ -139,20 +152,30 @@ under-tested, and the fix is a test, never `coverage(off)`.
   exercises the same parse — the gate verifies). Proves AC6.1.
 - [ ] **7. Budget per target; name the failure; redact the secret
   (issue #47)** — in `src/webhook.rs`: replace the single `JoinSet`
-  (`:235-330`) with a `HashMap<String, JoinSet<()>>` keyed by target
-  URL, each bounded by the unchanged `WEBHOOK_DELIVERY_CAP = 32`
-  (`dropped` counted per target; harvest every set; `abort_all` loops
-  the map at the tail); track the last error and put it in the final
-  `warn!` (`:397`); in `src/api.rs` `get_webhooks` (`:882-884`) answer
-  `secret` redacted with `ca_pem` verbatim, and say so in the endpoint
-  description; update the doc comment on `dropped` and the README
-  (~`:394`).
+  (`:235-330`) with a `HashMap<Url, JoinSet<()>>` keyed by the target's
+  *parsed, normalized* `Url` (never a raw string — `http://h:9000` and
+  `http://h:9000/` are one sink, and a duplicate spelling must not buy a
+  second budget), each bounded by the unchanged
+  `WEBHOOK_DELIVERY_CAP = 32` (`dropped` counted per target, named in
+  the log line; harvest every set; a key whose target has vanished and
+  whose set has drained is retired — a PUT cycle leaks no dead key;
+  `abort_all` loops the map at the tail); keep the payload fixed at
+  spawn (a retry replays its bytes, never a store re-read); track the
+  last error and put it in the final `warn!` (`:397`); in `src/api.rs`
+  `get_webhooks` (`:882-884`) answer `secret` redacted with `ca_pem`
+  verbatim, and say so in the endpoint description; update the doc
+  comment on `dropped` and the README (~`:394`).
   *Test:* legs in `tests/webhook.rs` — `a_dead_target_cannot_starve_a_
   healthy_one` (stalled sink + healthy sink, one burst, healthy
   deliveries complete, `dropped` rows name per-target counts — extends
-  the `:1193` bound test); `the_final_warning_names_the_cause`
-  (captured-writer pattern, default level); `get_redacts_the_secret_
-  and_keeps_the_pem`. Proves AC6.2–AC6.4.
+  the `:1193` bound test); `a_duplicate_url_spelling_shares_one_budget`
+  (PUT the same sink with a trailing slash; the bound stays one
+  budget's); `a_retry_replays_its_bytes_without_a_store_read` (prune
+  the mail mid-retry; the delivery still carries the original payload —
+  the budget stays slots, decoupled from 0003); `the_final_warning_
+  names_the_cause` (captured-writer pattern, default level);
+  `get_redacts_the_secret_and_keeps_the_pem`. Proves AC6.2–AC6.4 and
+  AC6.6.
 - [ ] **8. Count commits that finish during the drain (issue #47)** —
   split the dispatcher into its own `JoinSet` on `RunningServer`
   (`src/lib.rs`); add a one-shot `drained` watch; `stop()`

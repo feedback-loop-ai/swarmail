@@ -64,20 +64,28 @@ re-verified against the working tree at `6072564` this session.
    `DEFAULT_LIST_LIMIT` (declared beside api.rs's other constants).
 2. **#40 (stdio.rs + main.rs):** derive and parameterize the deadline;
    parse the status line; cap and validate the body; delete the
-   fabrication; move logging per subcommand; fix the slash join.
+   fabrication; apply the missing-`id` predicate locally in both arms so
+   a failed notification writes nothing (one parse-once id helper serves
+   the error arm and the response arm); move logging per subcommand;
+   fix the slash join.
 3. **#38 (api.rs + openapi.json):** de-flatten `AwaitQuery` (declare the
    fields), route both filters through `parse_query`, extend the served
    schema, pin with the served-doc-equals-parser-domain test.
 4. **#41 (chaos.rs):** the reply-line grammar in `ChaosRule::validate`
    (hand-checked: 3 octets, first in `4..=5`, then SP-or-end, no
-   CR/LF/NUL, ≤512 octets) + one shared sentence; `deny_unknown_fields`
-   on both types; `Chaos::set_event` (match inside the write lock).
+   CR/LF/NUL, ≤510 text octets — the RFC's 512 includes the CRLF) + one
+   shared sentence; the `delay_ms` ceiling (300 000, RFC 5321 §4.5.3.2
+   scale) in the same validator with its own shared sentence;
+   `deny_unknown_fields` on both types; `Chaos::set_event` (match inside
+   the write lock).
 5. **#47 (webhook.rs, api.rs, lib.rs):** extract `parse_webhook_url` /
    `parse_ca_pem` (called from *both* the PUT validator and the delivery
    path — this is what keeps the gate exact); `WebhookTarget::validate`;
-   the `HashMap<String, JoinSet>` budget; the cause in the final `warn!`;
-   the redacted GET; the dispatcher's own `JoinSet` + the `drained` watch
-   and the drain-complete sequencing in `stop()`.
+   the `HashMap<Url, JoinSet>` budget keyed by the *parsed, normalized*
+   `Url` (never a raw string; drained entries for vanished targets
+   retired); the cause in the final `warn!`; the redacted GET; the
+   dispatcher's own `JoinSet` + the `drained` watch and the
+   drain-complete sequencing in `stop()`.
 6. Docs (`README.md` ~:394 per-target slots, ~:423-444 chaos grammar,
    MCP codes/cap; `openapi.json` await/assert parameters + webhook
    descriptions + chaos 400; `llms.txt` one sentence each).
@@ -135,6 +143,17 @@ re-verified against the working tree at `6072564` this session.
    *Mitigation:* documented as deliberate (endpoint description +
    README), `secret` is the only redacted field, and the operator's own
    payload remains the source of truth.
+9. **Retiring drained budget entries could race an in-flight spawn.**
+   *Mitigation:* the map is owned by the single dispatch task; a key is
+   retired only when the target is absent from the configured set *and*
+   its `JoinSet` has drained to empty — a set that is spawning is never
+   empty, so retirement cannot race a spawn; the two-sink test exercises
+   a PUT between bursts to pin it.
+10. **The `delay_ms` ceiling is a new refusal on a previously-lawful
+    value** (`300 001+`). *Mitigation:* no pinned test uses a delay
+    above 250 ms (verified across `tests/` and README); the ceiling is
+    RFC 5321 §4.5.3.2's own scale, and the refusal is 0018 §3's posture,
+    not a clamp.
 
 ## Verification
 

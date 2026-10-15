@@ -7,8 +7,11 @@
 - **Decision:** [0029](../../docs/decisions/0029-supplied-values-are-validated-wherever-they-reach-a-wire.md)
   (proposed) — amends 0025; the contract statements below defer to it for
   the *why*.
-- **Base:** `6072564`. **Frozen guarantees:** untouched (0001/0002/0003);
-  `src/store.rs` and `src/persist.rs` stay at zero diff.
+- **Base:** `6072564` (run 8 landed). The design seat's docs-only commit
+  `8bb0cb0` sits above it — `git diff 6072564 HEAD -- src/ tests/` is
+  empty — and this revision is its synthesis of the *re-sealed* panel.
+  **Frozen guarantees:** untouched (0001/0002/0003); `src/store.rs` and
+  `src/persist.rs` stay at zero diff.
 
 ## The problem
 
@@ -44,14 +47,16 @@ over a wire:
    dead on arrival. openapi documents only part of the filter set, so
    the served contract and the parser disagree even where it works.
 4. **Chaos `error` text is written to the SMTP wire verbatim**
-   (`src/chaos.rs:53-58` checks probability only; `src/smtp.rs:993-998`
-   writes `rule.error` before the insert). `{"probability":100,
+   (`src/chaos.rs:53-58` checks probability only; `src/smtp.rs:992-1002`
+   sleeps `rule.delay_ms` unbounded and writes `rule.error` before the
+   insert). `{"probability":100,
    "error":"250 2.0.0 OK"}` answers `250` at DATA while storing nothing —
    a client's success path reads a forged success, and a CR/LF inside the
-   rule desynchronizes the session stream. REST ignores unknown event
-   keys while MCP refuses unknown events. MCP's `set_chaos` is a
-   read-modify-write with nothing serializing the three steps
-   (mcp.rs:260-296).
+   rule desynchronizes the session stream; a `u64::MAX` `delay_ms` parks a
+   session task on a bare sleep with no bound but stop's abort. REST
+   ignores unknown event keys while MCP refuses unknown events. MCP's
+   `set_chaos` is a read-modify-write with nothing serializing the three
+   steps (mcp.rs:260-296).
 5. **Webhooks accept any wire text and drop silently**
    (`src/api.rs:886-892` validates nothing; `src/webhook.rs:51` has one
    global `JoinSet` budget). A dead target can consume the shared 32
@@ -65,15 +70,19 @@ over a wire:
 
 ## The ruling
 
-Both positions agree on the *rule* and disagree on three structures. The
-rulings (full pricing in decision 0029):
+Both positions agree on the *rule*; they split on four structures (the
+budget's shape and dial, the GET posture, the bridge's client, the
+REST/`deny_unknown_fields` sentence) and on two hardening dials
+(`delay_ms`, the expired cert). Each ruling names the loser's cost.
+Full pricing in decision 0029:
 
 - **Adopted (both):** argument staging that refuses by name; the JSON-RPC
   code taxonomy `-32700`/`-32600`/`-32601`/`-32602` (messages unchanged,
   codes sharpened — no test pinned a code); notifications by missing
   `id`; `initialize` answering one constant; `total`/default-limit parity
-  across planes; the chaos `error` grammar (single line, 4xx/5xx, ≤512
-  octets) with one shared sentence; the closed chaos shape; the webhook
+  across planes; the chaos `error` grammar (single line, 4xx/5xx,
+  **≤510 octets** — RFC 5321's 512 includes the CRLF `write_line`
+  appends) with one shared sentence; the closed chaos shape; the webhook
   PUT validation; the failure cause in the final `warn!`; the derived
   bridge deadline.
 - **Batches: supported, capped at 16** — the advertised revision requires
@@ -89,13 +98,43 @@ rulings (full pricing in decision 0029):
   `reqwest` the connect timeout cannot be injected. The client gains a
   status-line parse, honors content-length, caps the body at 10 MiB, and
   refuses rather than fabricating `"{}"`.
-- **The webhook budget is per target** (`JoinSet` keyed by URL, each
-  capped at the unchanged 32): a dead target cannot cause drops for a
-  healthy one is *impossible* under a shared pool at any constant.
-  Refused: 4+32 (the lone-sink topology loses its throughput for a
-  pathological case) and fair-share (the budget shifts under every PUT).
-  Worst case 32 × n_targets is the operator's own config; the global
-  backstop is named and refused this run.
+- **The webhook budget is per target** (a `JoinSet` keyed by the
+  *parsed, normalized* `Url`, each capped at the unchanged 32):
+  starvation is structurally impossible — the healthy sink's budget is
+  its own at any n. Refused: 4-per-target plus a global 32 (robustness's
+  shape: the lone-sink topology delivers 4-at-a-time and *still* starves
+  a healthy sink at ≥8 stalled peers — the acceptance's failure mode
+  survives a band) and fair-share division (the budget shifts under
+  every PUT). The winner's named loss: worst-case in-flight is
+  32 × n_targets on the operator's own authored config — a documented
+  loss, never a discovered one; every spawn stays try-shaped (0027).
+- **The budget key is the normalized `Url`, never a raw string**:
+  `http://h:9000` and `http://h:9000/` are one sink, and a duplicate
+  spelling must not buy a second budget. Entries whose target has
+  vanished and whose set has drained are retired, or every PUT cycle
+  leaks a dead key (decision 0029 §5).
+- **`delay_ms` is bounded (decision 0029 §3)** — adopted from the
+  re-sealed robustness seat over simplicity's silence. A supplied delay
+  over 300 000 ms refuses: `u64::MAX` today parks a session task on a
+  bare sleep (smtp.rs:992) with no bound but stop's abort, and a rule
+  struct with a validated `error` and an unbounded denial-of-service
+  dial is exactly the present-but-wrong shape this run deletes. The
+  ceiling is RFC 5321 §4.5.3.2's stage-timer scale (five minutes),
+  *not* the 60 s control-plane await ceiling, which governs a different
+  plane. The loser's cost: a chaos test wanting a >5-minute wire stall
+  arms several rules or uses the stage's own timeout.
+- **A failed notification stays silent (decision 0029 §4)**: the bridge
+  applies the missing-`id` predicate locally in both arms — an id-less
+  line whose POST fails writes nothing. An `id: null` error object for
+  a notification is the stdout twin of the bare-newline bug, desyncing
+  a line-parsing client identically.
+- **An already-expired `ca_pem` is refused at no door this run** —
+  robustness's cheap-slice proposal is rejected: honouring it needs an
+  X.509 validity parser (a new dependency or hand-rolled ASN.1) for a
+  failure the delivery path already surfaces loudly (AC6.3's
+  default-level cause and the ledger). A cert that *parses* but is
+  expired answers no 400; it fails its first delivery, by name, at the
+  default level. Recorded in 0029 §6/§7.
 - **GET redacts `secret`; `ca_pem` stays verbatim** — a secret echoed
   into CI logs is the one irreversible leak; a certificate is public
   material and is the diagnostic. The round-trip loss is deliberate and
@@ -186,6 +225,10 @@ rulings (full pricing in decision 0029):
    stdout (the `smtp=` piped contract).
 5. A base URL with a trailing slash does not produce `//mcp`; the
    `http://`-only refusal is unchanged.
+6. A notification whose POST *fails* — connect refused, deadline expiry,
+   a non-JSON reply — still writes **nothing**: the missing-`id`
+   predicate is applied locally in both arms of the bridge, so a failed
+   notification never becomes an `id: null` error object.
 
 ### AC4 — REST await/assert parse their filters (issue #38)
 
@@ -204,11 +247,13 @@ rulings (full pricing in decision 0029):
 ### AC5 — Chaos wire text is a reply line or nothing (issue #41)
 
 1. A supplied `error` that is not a single line, does not start with a
-   4xx/5xx code, or exceeds 512 octets is refused with one shared
-   sentence, byte-identical from REST (`400`) and MCP (`-32602`):
+   4xx/5xx code, or exceeds **510 octets** is refused with one shared
+   sentence, byte-identical from REST (`400`) and MCP (`-32602`) —
+   RFC 5321 §4.5.3.1.2's 512 includes the CRLF `write_line` appends, so
+   the text cap is 510 and the accounting is stated, not hidden:
    `"250 2.0.0 OK"`, `"451\r\nx"`, `"not-a-code"`, `"4514 no-space"`, and
-   a 513-octet line all refuse; `"451"` (bare code) and
-   `"450 4.7.1 no"` are legal.
+   a 511-octet line all refuse; `"451"` (bare code), `"450 4.7.1 no"`
+   and a 510-octet line are legal.
 2. A legal DATA rule at probability 100 makes the SMTP client see the
    given non-2xx reply and the store count stays 0 (0001's probe);
    a refused rule never reaches the session stream (no CR/LF can
@@ -220,6 +265,11 @@ rulings (full pricing in decision 0029):
 4. Two concurrent `set_event` arms for *different* events both survive
    (deterministic in-process test, no sleeps).
 5. Chaos config is not persisted (`src/persist.rs` zero diff).
+6. A supplied `delay_ms` over **300 000** refuses with one shared
+   sentence from both planes (RFC 5321 §4.5.3.2's stage-timer scale —
+   five minutes, deliberately *not* the 60 s control-plane await
+   ceiling); `u64::MAX` can no longer park a session task on the bare
+   sleep at smtp.rs:992. An absent `delay_ms` stays the honest 0.
 
 ### AC6 — Webhook wire text, budget and shutdown counting (issues #47/#41)
 
@@ -230,10 +280,14 @@ rulings (full pricing in decision 0029):
    stack; a `secret` containing CR/LF/NUL or over 4096 octets. The same
    parse functions serve the delivery path (both arms warm — the exact
    gate holds with no duplication).
-2. Each target URL has its own budget of `WEBHOOK_DELIVERY_CAP` (32);
+2. Each target has its own budget of `WEBHOOK_DELIVERY_CAP` (32), keyed
+   by the target's **parsed, normalized `Url`** (a duplicate spelling of
+   one sink shares one budget; an entry whose target has vanished and
+   whose set has drained is retired — a PUT cycle leaks no dead key);
    two sinks where one is dead/stalled still deliver to the healthy one
-   (no shared-pool starvation); excess fan-out for a target is counted in
-   `dropped` per target; the storm test's pushback guarantee is unchanged.
+   (no shared-pool starvation); excess fan-out for a target is counted
+   in `dropped` per target and named in the log line; the storm test's
+   pushback guarantee is unchanged.
 3. The final delivery `warn!` names the last error and is visible at the
    default log level (captured-writer test); no new `/metrics` family.
 4. `GET /api/v1/webhooks` answers `secret` redacted and `ca_pem`
@@ -244,6 +298,9 @@ rulings (full pricing in decision 0029):
    counts post-stop matching fan-outs `aborted` without breaking early;
    the in-process test parks a commit mid-drain, releases it, and
    observes the `aborted` row (no sleeps; 0020 disciplines).
+6. A delivery's payload is fixed at spawn: a retry replays its bytes and
+   never re-reads the store — pinned by test, so the budget stays
+   *slots* and can never be coupled to 0003's pruning.
 
 ### AC7 — Gates and boundaries
 
