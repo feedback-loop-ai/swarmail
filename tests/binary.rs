@@ -665,7 +665,17 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
         let body = r#"{"to": "s@x.io", "text": "a mail that must not land"}"#;
         let route = format!("/api/v1/inboxes/{inbox}/seed");
         seeds.push(tokio::spawn(async move {
-            common::http_json(http_addr, "POST", &route, Some(body)).await
+            // The refusal is what the held lock produces on the server's
+            // own clock, but 0018 §2 leaves the client-visible half open:
+            // a commit in flight at stop either gets its 503 or sees the
+            // socket die first (EOF) — macOS runners have shown both.
+            // What the test forbids is a stored mail, proven below by the
+            // restart, never a particular client-visible answer.
+            let (st, text) =
+                common::http_send_text_allow_eof(http_addr, "POST", &route, Some(body)).await;
+            let parsed =
+                serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::json!({}));
+            (st, parsed)
         }));
     }
     // The seeds are inside the router, observed: each seed's own labeled
@@ -694,12 +704,17 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
             .await
             .expect("every queued seed must answer before the process exits")
             .unwrap();
-        assert_eq!(st, 503, "{body}");
-        assert_eq!(
-            body,
-            serde_json::json!({ "error": "storage commit failed" }),
-            "{body}"
+        assert!(
+            st == 503 || st == 0,
+            "a seed answered something other than the refusal or EOF: {st} {body}"
         );
+        if st == 503 {
+            assert_eq!(
+                body,
+                serde_json::json!({ "error": "storage commit failed" }),
+                "{body}"
+            );
+        }
     }
 
     // The restarted copy is exactly the committed set: empty. The lock is

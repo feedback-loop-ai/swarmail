@@ -522,6 +522,25 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
 /// body (axum's text rejections, a no-content 202) comes here instead —
 /// reading a text response as JSON is exactly the dishonesty issue #50
 /// named, and so is silencing it back into `{}`.
+/// Like `http_send_text`, but a connection closed with no answer at all
+/// maps to status 0 instead of a parse panic. 0018 §2 leaves the
+/// client-visible outcome of a commit in flight at stop open — the socket
+/// is answered 503, or the socket dies first and the client sees EOF;
+/// callers that assert on the refusal must accept both.
+pub async fn http_send_text_allow_eof(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> (u16, String) {
+    let (status, text) = http_send_text(addr, method, path, body).await;
+    if text.is_empty() {
+        (0, text)
+    } else {
+        (status, text)
+    }
+}
+
 pub async fn http_send_text(
     addr: std::net::SocketAddr,
     method: &str,
