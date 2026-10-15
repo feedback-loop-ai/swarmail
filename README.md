@@ -311,8 +311,10 @@ Streamable JSON-RPC at `POST /mcp`.
 QUIT. The maildrop **is** a swarmail inbox: `USER proj-42` names the inbox
 exactly like SMTP AUTH does, so mail delivered over SMTP reads back over
 POP3 — including mail that arrived before the session opened. UIDLs are the
-swarmail ids; octet counts are the stored raw sizes (RETR normalizes
-bare-LF to CRLF in transit, per the RFC). DELE marks in-session and applies
+swarmail ids; octet counts are the octets RETR transmits — the payload
+CRLF-terminated and dot-stuffed, the terminating `.` not counted — derived
+from the stored payload by running the same writer RETR uses, never stored
+a second time. DELE marks in-session and applies
 on QUIT — the update stage; RSET unmarks; a dropped connection leaves the
 maildrop untouched. Plaintext only: no APOP, no STLS — a test-harness
 surface behind the same trust boundary as the SMTP listener.
