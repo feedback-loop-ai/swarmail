@@ -58,8 +58,11 @@ subprocess; talks to the same server).
 `PUT /api/v1/chaos` with e.g. `{"data": {"probability": 30, "error": "451 4.3.0
 tempfail", "delay_ms": 250}}` — inject SMTP failures to test your retry logic.
 `DELETE /api/v1/chaos` disables it. Wire values are never narrowed:
-`probability` must be an integer 0..=100 and a wrong-typed `delay_ms` is
-refused by name (decision 0018).
+`probability` must be an integer 0..=100, a supplied `error` must be a
+single-line 4xx/5xx SMTP reply of at most 510 octets (a `2xx` error is
+refused — a rule that would answer success while the mail is not stored is
+a lie), and `delay_ms` is 0..=300000; each refusal names its rule with the
+same sentence on both the REST and MCP planes (decision 0025/0029).
 
 ## Webhooks
 
@@ -70,7 +73,16 @@ queued, retried 4x (100ms → 1.6s), never blocking SMTP. Delivered via
 reqwest + rustls: `http://` targets stay plain, `https://` targets are TLS
 with certificate verification on — for a self-signed test server, pass its
 CA in the target's optional `ca_pem` (PEM of a root to trust on top of the
-built-in root store).
+built-in root store). A target is validated at PUT (a 400 naming the
+defect: the URL must parse with an http/https scheme and a host, the
+`ca_pem` must load, the `secret` must be a single-line header value ≤4096
+octets) and `GET /api/v1/webhooks` redacts the secret. Delivery is bounded
+per target — 32 in flight per normalized URL (`WEBHOOK_DELIVERY_CAP`), so
+a stalled sink cannot starve a healthy one; a refused fan-out is counted
+in `swarmail_webhook_dropped_total`, a spent retry budget in
+`swarmail_webhook_exhausted_total` (its final refusal logged as a `warn`
+naming the target and the cause), and a shutdown's undelivered backlog in
+`swarmail_webhook_aborted_total` — counted, never silently lost.
 
 ## Threads and the live feed
 

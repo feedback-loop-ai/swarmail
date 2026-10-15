@@ -79,6 +79,12 @@ pub(crate) const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5_000;
 /// naming the field and the domain — it is never treated like omission.
 pub(crate) const WAIT_TIMEOUT_REFUSAL: &str = "timeout_ms must be an integer between 0 and 60000";
 
+/// The one default page size for every listing plane (decision 0029 §1):
+/// REST's list and MCP's `swarmail_search_emails` both omit to this — one
+/// constant, so the planes cannot drift. `compat`'s Mailpit shape keeps its
+/// own 50; it is a different dialect, not a second copy of this domain.
+pub(crate) const DEFAULT_LIST_LIMIT: usize = 100;
+
 /// The one cap check for every wait surface (0018 §3, made shared by
 /// decision 0025): over the cap is a refusal naming the bound, never a
 /// clamp. Both transports call this — REST's query and the MCP wait tool —
@@ -378,10 +384,17 @@ impl ListQuery {
     }
 }
 
+/// The await/assert domain, held flat (decision 0029 §1): the struct's
+/// fields *are* the advertised query parameter set — no `#[serde(flatten)]`
+/// of the list shape, so an await's domain cannot silently grow `offset`
+/// (a wait has no pages: mail arrives as it lands) or a `limit` the
+/// handler never reads.
 #[derive(Debug, Deserialize)]
 pub struct AwaitQuery {
-    #[serde(flatten)]
-    pub common: ListQuery,
+    pub to: Option<String>,
+    pub from: Option<String>,
+    pub subject: Option<String>,
+    pub since_ms: Option<i64>,
     /// Number of matching emails to wait for (default 1).
     pub count: Option<usize>,
     /// Give up after this long; default 5000ms.
@@ -390,7 +403,12 @@ pub struct AwaitQuery {
 
 impl AwaitQuery {
     fn filter(&self) -> Filter {
-        self.common.filter()
+        Filter {
+            to: self.to.clone(),
+            from: self.from.clone(),
+            subject: self.subject.clone(),
+            since_ms: self.since_ms,
+        }
     }
 
     /// WAIT semantics (decision 0010): a caller waiting for mail must never
@@ -614,7 +632,7 @@ async fn list_messages(
     let emails: Vec<Arc<Email>> = all
         .into_iter()
         .skip(offset)
-        .take(q.limit.unwrap_or(100))
+        .take(q.limit.unwrap_or(DEFAULT_LIST_LIMIT))
         .collect();
     Ok(Json(EmailList { total, emails }))
 }
@@ -879,16 +897,48 @@ async fn seed_inbox(
 
 // ---------- webhooks ----------
 
+/// GET returns the configured targets with the **secret redacted**
+/// (decision 0029 §5): an echoed secret is the one irreversible leak in the
+/// batch — a certificate is public material and `ca_pem` stays, it is the
+/// diagnostic. The round-trip loss is deliberate: PUT is the only writer,
+/// and the operator retains their own payload.
 async fn get_webhooks(State(state): State<AppState>) -> Json<Vec<WebhookTarget>> {
-    Json(state.webhooks.current())
+    Json(
+        state
+            .webhooks
+            .current()
+            .into_iter()
+            .map(|t| WebhookTarget { secret: None, ..t })
+            .collect(),
+    )
 }
 
+/// PUT validates every supplied value before any effect (decision 0029 §5):
+/// the URL must parse with an `http`/`https` scheme and a host, the
+/// `ca_pem` must load through the delivery TLS stack itself, and the
+/// `secret` must be a single-line header value of at most 4096 octets. A
+/// target that cannot be delivered is a 400 naming the defect — never a
+/// misconfiguration discovered at delivery time — and nothing is applied.
 async fn set_webhooks(
     State(state): State<AppState>,
     Json(targets): Json<Vec<WebhookTarget>>,
-) -> Json<Vec<WebhookTarget>> {
+) -> ApiResult<Json<Vec<WebhookTarget>>> {
+    for (i, target) in targets.iter().enumerate() {
+        target
+            .validate()
+            .map_err(|e| bad_request(format!("webhook target {i}: {e}")))?;
+    }
     state.webhooks.set(targets);
-    Json(state.webhooks.current())
+    Ok(Json(
+        // The echoed configuration is redacted the same way as GET: the
+        // caller wrote the secret, but a response body is still a log.
+        state
+            .webhooks
+            .current()
+            .into_iter()
+            .map(|t| WebhookTarget { secret: None, ..t })
+            .collect(),
+    ))
 }
 
 async fn clear_webhooks(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -898,20 +948,16 @@ async fn clear_webhooks(State(state): State<AppState>) -> Json<serde_json::Value
 
 // ---------- MCP ----------
 
-async fn mcp_endpoint(
-    State(state): State<AppState>,
-    Json(req): Json<serde_json::Value>,
-) -> Response {
+/// The body is taken as text and parsed inside `mcp::dispatch`: the `Json`
+/// extractor is gone, so a malformed body is a JSON-RPC error object with a
+/// null id (HTTP 400), not a plain-text rejection (decision 0029 §2).
+async fn mcp_endpoint(State(state): State<AppState>, body: String) -> Response {
     let ctx = McpContext {
         store: state.store.clone(),
         chaos: state.chaos.clone(),
         shutdown: state.shutdown.clone(),
     };
-    match mcp::handle(&ctx, &req).await {
-        Some(response) => Json(response).into_response(),
-        // Notifications get no reply.
-        None => StatusCode::ACCEPTED.into_response(),
-    }
+    mcp::dispatch(&ctx, &body).await
 }
 
 // ---------- machine-readable docs ----------
@@ -1206,6 +1252,57 @@ mod tests {
         );
         assert_eq!(timeout_ms["minimum"], 0, "{timeout_ms}");
         assert_eq!(timeout_ms["maximum"], MAX_AWAIT_TIMEOUT_MS, "{timeout_ms}");
+    }
+
+    /// The doc equals the parser (decision 0029 §1, 0025 §6 pattern): the
+    /// await/assert parameter sets the document publishes are exactly the
+    /// fields `AwaitQuery` accepts — the four-name filter, `count`, and
+    /// (await only) `timeout_ms` — with no `offset`, which a wait cannot
+    /// have: mail arrives as it lands, there are no pages to skip.
+    #[test]
+    fn the_served_openapi_publishes_the_await_and_assert_parameters() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("static/openapi.json")).expect("openapi.json");
+        let names = |path: &str| -> Vec<String> {
+            let mut v: Vec<String> = doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p["name"].as_str().unwrap().to_string())
+                .collect();
+            v.retain(|n| n != "inbox");
+            v.sort();
+            v
+        };
+        assert_eq!(
+            names("/api/v1/inboxes/{inbox}/await"),
+            ["count", "from", "since_ms", "subject", "timeout_ms", "to"],
+            "the await's advertised set is the handler's fields"
+        );
+        assert_eq!(
+            names("/api/v1/inboxes/{inbox}/assert"),
+            ["count", "from", "since_ms", "subject", "to"],
+            "the assert's advertised set is the handler's fields — no timeout, no offset"
+        );
+
+        // The parser accepts each documented name, so the document is never
+        // ahead of the handler.
+        for (params, has_timeout) in [
+            (
+                "to=a&from=b&subject=c&since_ms=1&count=2&timeout_ms=3",
+                true,
+            ),
+            ("to=a&from=b&subject=c&since_ms=1&count=2", false),
+        ] {
+            let q: AwaitQuery = serde_urlencoded::from_str(params)
+                .expect("the parser accepts every documented parameter");
+            assert_eq!(q.to.as_deref(), Some("a"), "{params}");
+            assert_eq!(q.from.as_deref(), Some("b"), "{params}");
+            assert_eq!(q.subject.as_deref(), Some("c"), "{params}");
+            assert_eq!(q.since_ms, Some(1), "{params}");
+            assert_eq!(q.count, Some(2), "{params}");
+            assert_eq!(q.timeout_ms.is_some(), has_timeout, "{params}");
+        }
     }
 
     /// The labeled registry's release paths, probed in isolation (decision

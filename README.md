@@ -388,16 +388,30 @@ Clients pinned to a `ca_pem` are cached per PEM under a fixed bound of 32
 delivery rebuilds it. `swarmail_webhook_ca_cache_{entries,builds_total,
 evictions_total}` on `/metrics` lets you watch the bound hold.
 
+A target is validated when it is PUT, not at delivery: the URL must parse
+with an `http`/`https` scheme and a host to dial (`localhost:9000` is read
+as *scheme* `localhost` and refused — the misconfiguration that would
+otherwise surface only at delivery), the `ca_pem` must load through the
+delivery TLS stack itself, and the `secret` must be a single-line header
+value of at most 4096 octets. A refusal is a 400 naming the defect and
+applies nothing. `GET /api/v1/webhooks` redacts the secret (PUT is the
+only writer; an operator retains their own payload) and returns everything
+else verbatim.
+
 Delivery is best-effort with the loss made observable — there is no durable
 outbox: a mail whose fan-out cannot fire is never re-fired after a restart.
-At most 32 deliveries are in flight per process
-(`swarmail::webhook::WEBHOOK_DELIVERY_CAP`); a mail whose every target's
-slot is taken has its notification refused at the bound, counted once in
+At most 32 deliveries are in flight **per target**
+(`swarmail::webhook::WEBHOOK_DELIVERY_CAP`, keyed by the target's
+normalized URL): a stalled sink holds only its own target's slots, so it
+cannot cause drops for a healthy one. A mail whose target's slots are all
+taken has that fan-out refused at the bound, counted once in
 `swarmail_webhook_dropped_total`, and never retried. A target that accepts
 and never answers wedges its delivery for the dispatcher's whole budget —
 about 22.1 s (four attempts under the 5 s POST timeout plus the backoff) —
 so a stalled slot holds the bound for that long, then the delivery is
-counted in `swarmail_webhook_exhausted_total`. The five ledger counters —
+counted in `swarmail_webhook_exhausted_total`, and its final refusal is
+logged at the default level: one `warn` naming the target URL and the last
+delivery error (no per-attempt spam). The five ledger counters —
 `swarmail_webhook_{delivered,dropped,lagged,exhausted,aborted}_total` — are
 cumulative since process start (they reset on restart, they are not
 persisted), and a shutdown counts its backlog of undelivered notifications
@@ -425,7 +439,14 @@ it. MCP: `swarmail_set_chaos` / `swarmail_clear_chaos`. Wire values are
 never narrowed: `probability` must be an integer 0..=100 — present, a true
 integer, within the ceiling — each stage refusing by name, and a
 wrong-typed `delay_ms` is refused while an absent one honestly means "no
-delay" (decision 0018).
+delay" (decision 0018). A supplied `error` must be a reply line: a single
+line starting `4xx`/`5xx`, at most 510 octets (RFC 5321 §4.5.3.1.2's 512
+less the CRLF `write_line` appends) — a `2xx` error is refused, because a
+rule that would answer success while the mail is not stored is a lie the
+wire cannot tell. A supplied `delay_ms` is an integer 0..=300000, the
+stage-timer scale — a chaos stall is a wire condition, not an unbounded
+hang. Refused values answer 400 with the rule's own sentence (the same
+words on the MCP plane), and a rejected PUT applies nothing.
 
 A fired rule always applies its delay, then always fails its stage — a
 delay-only rule (probability set, no `error`) is a slow failure, never a

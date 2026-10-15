@@ -4,23 +4,31 @@ use clap::Parser;
 use std::io::IsTerminal;
 use swarmail::config::{Cli, Command};
 
+/// Tracing initialization, per subcommand (decision 0029 §4): the `mcp`
+/// bridge's stdout is protocol — a line-parsing client must never read a
+/// tracing line — so its logs go to stderr; `serve` keeps stdout, where the
+/// binary tests (and an operator's terminal) read the piped `smtp=` startup
+/// line. ANSI only when the target stream can render it, so captured logs
+/// stay machine-parseable.
+fn init_tracing(to_stderr: bool) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "swarmail=info,tower_http=off".into());
+    if to_stderr {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(std::io::stderr().is_terminal())
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "swarmail=info,tower_http=off".into()),
-        )
-        // ANSI only when stdout can render it: a piped or captured log
-        // (CI, systemd, `docker logs`, the binary tests' own readback of
-        // the startup line) gets plain text, so the tracing fields stay
-        // machine-parseable — `smtp=` must literally appear. A terminal
-        // keeps its color.
-        .with_ansi(std::io::stdout().is_terminal())
-        .init();
-
     match Cli::parse().command {
         Command::Serve(args) => {
+            init_tracing(false);
             let cfg = swarmail::config::Config::from(&args);
             // The interrupt watcher registers both handlers before the
             // servers bind: the signal streams register on their first
@@ -86,6 +94,7 @@ async fn main() {
             }
         }
         Command::GenCert(args) => {
+            init_tracing(false);
             match swarmail::tls::TlsConfig::generate_self_signed(&args.domain)
                 .and_then(|pair| pair.write_to_dir(&args.out))
             {
@@ -98,6 +107,9 @@ async fn main() {
         }
         Command::Mcp(args) => {
             // stdio MCP bridge: JSON-RPC over stdin/stdout → POST {url}/mcp.
+            // Logs to stderr (decision 0029 §4): the bridge's stdout is
+            // protocol and nothing else.
+            init_tracing(true);
             let code = swarmail::stdio::run_stdio_bridge(&args.url).await;
             std::process::exit(code);
         }

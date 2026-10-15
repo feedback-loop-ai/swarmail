@@ -276,6 +276,36 @@ async fn mcp_bridge_exits_zero_at_eof_without_touching_the_network() {
     assert!(status.success(), "mcp EOF exit: {status:?}");
 }
 
+/// The mcp subcommand's stdout is protocol and nothing else (decision 0029
+/// §4): its tracing goes to stderr, so a line-parsing client reads exactly
+/// the JSON-RPC replies it asked for — one request in, one reply out, and
+/// stdout parses as that reply alone.
+#[tokio::test]
+async fn mcp_subcommand_keeps_stdout_protocol_only() {
+    let mut child = Command::new(binary())
+        .args(["mcp", "--url", "http://127.0.0.1:1"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn swarmail mcp");
+    let request = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(request)
+        .await
+        .expect("feed the bridge");
+    let out = child.wait_with_output().await.expect("mcp child");
+    assert!(out.status.success(), "mcp exit: {out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let reply: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout is protocol only: {stdout:?}");
+    assert_eq!(reply["id"], 1, "{reply}");
+    assert_eq!(reply["error"]["code"], -32000, "{reply}");
+}
+
 /// A pipelined burst sender for the kill leg: each mail's command block is
 /// one write (PIPELINING), the four replies read back in order, and every
 /// observed acceptance contributes its `stored as` id. When the socket dies
@@ -833,4 +863,56 @@ async fn a_second_signal_during_the_drain_exits_70() {
     let status = signal_and_wait(&mut serve.child, libc::SIGTERM, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert_eq!(status.code(), Some(70), "second SIGTERM exit: {status:?}");
+}
+
+/// The exhausted delivery's cause is visible in the shipped binary's own
+/// stdout at the default level (issue #47): a target that cannot be dialed
+/// burns its four attempts and the final `warn!` carries the target URL and
+/// the cause — no debug flag, no new metrics family. The line is read off
+/// the process's own stdout: the same stream an operator tails.
+#[tokio::test]
+async fn an_exhausted_delivery_names_its_target_and_cause_in_stdout() {
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+
+    // A port nothing listens on: every attempt is refused at once, so the
+    // four-attempt budget burns in ~2.1 s of backoff, not 22 s of timeouts.
+    let (st, resp) = common::http_json(
+        serve.http_addr,
+        "PUT",
+        "/api/v1/webhooks",
+        Some(r#"[{"url": "http://127.0.0.1:1/hook"}]"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{resp}");
+
+    common::smtp_send(
+        serve.smtp_addr,
+        None,
+        "f@x.io",
+        "r@x.io",
+        "visible cause",
+        "x",
+    )
+    .await
+    .expect("the mail is accepted");
+
+    let line = wait_for_line(
+        &mut serve,
+        "webhook dropped after retries",
+        Duration::from_secs(30),
+    )
+    .await;
+    assert!(
+        line.contains("http://127.0.0.1:1/hook"),
+        "the warn names the target: {line:?}"
+    );
+    assert!(
+        line.contains("error="),
+        "the warn carries the cause: {line:?}"
+    );
+
+    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    serve.reaped = true;
+    assert!(status.success(), "SIGINT exit: {status:?}");
 }

@@ -962,21 +962,25 @@ async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
     assert_eq!(hits, 2, "both passes must reach the sink over TLS");
 }
 
-/// A `ca_pem` whose base64 does not decode: `from_pem` refuses, the client
-/// build fails before any dial, and the target sees no connection at all.
+/// A `ca_pem` whose base64 does not decode: the PUT refuses with 400,
+/// naming the defect through the delivery TLS stack itself (decision 0029
+/// §5) — a misconfig is discovered at the door, never at delivery time,
+/// and nothing is applied.
 #[tokio::test]
-async fn garbage_ca_pem_builds_no_client_and_dials_nothing() {
+async fn garbage_ca_pem_is_refused_at_put_and_nothing_is_applied() {
     let srv = start().await;
+    // The sink exists only to prove the refused target never dialed: the
+    // window closes after the whole backoff budget, and the resolved count
+    // is the sink's *observed* total (issue #51's can-fire leg) — zero
+    // means no dial was ever made.
     let pair = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
-    let (addr, rx_req, rx_count) = tls_sink(
+    let (addr, _rx_req, rx_count) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         pair.cert.der().to_vec(),
         pair.key_pair.serialize_der(),
         BUDGET_WINDOW,
     )
     .await;
-    // A ca_pem whose base64 does not decode: the rustls client refuses it,
-    // so no client is ever built and the target is never dialed.
     let broken = "-----BEGIN CERTIFICATE-----\n!!!not base64!!!\n-----END CERTIFICATE-----";
     let targets = serde_json::json!([{
         "url": format!("https://127.0.0.1:{}/hook", addr.port()),
@@ -989,28 +993,30 @@ async fn garbage_ca_pem_builds_no_client_and_dials_nothing() {
         Some(&targets.to_string()),
     )
     .await;
-    assert_eq!(st, 200, "{put}");
+    assert_eq!(st, 400, "{put}");
+    assert!(
+        put["error"].as_str().unwrap().contains("ca_pem"),
+        "the refusal names the defect: {put}"
+    );
 
+    // Nothing was applied — the GET is empty, so no delivery is ever armed
+    // and the mail still lands in the store (the refusal precedes every
+    // effect, decision 0025 §5).
+    let (_, body) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(body.as_array().unwrap().len(), 0);
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "garbage ca", "x")
         .await
         .unwrap();
-
-    // The window closes after the whole backoff budget: the resolved count
-    // is the sink's *observed* total — zero means no dial was ever made.
-    // This is the can-fire leg (issue #51): a client that dialed would make
-    // `seen` non-zero and red the test, where the old timeout-probe could
-    // not tell "no connection" from "the probe gave up".
     let seen = tokio::time::timeout(BUDGET_WINDOW + Duration::from_secs(10), rx_count)
         .await
         .expect("the sink window never closed")
         .unwrap();
     assert_eq!(seen, 0, "the sink never saw a connection: {seen} arrived");
 
-    // The server still serves (the failure was contained to the delivery).
+    // The server still serves (the failure was contained to the PUT).
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1);
-    drop(rx_req);
 }
 
 // ---------- the delivery bound (AC4/AC5/AC6/AC7) ----------
@@ -1380,4 +1386,127 @@ async fn a_delivery_outliving_its_mail_replays_its_own_bytes() {
         replays >= 2,
         "the payload must be replayed byte-identical, not re-read from the pruned store: {captured:?}"
     );
+}
+
+/// The per-target budget's own acceptance (issue #47): a stalled target
+/// cannot cause drops for a healthy one. A cap's worth plus eight mails
+/// fan out to both targets; the stalled one wedges a slot per delivery
+/// (its hold outlives the whole test) and refuses its own excess — under
+/// the old shared pool those wedges filled the one cap and the healthy
+/// fan-outs were refused with them. Per target, the healthy sink receives
+/// every mail, and the ledger's `dropped` row is exactly the stalled
+/// target's own refusals — neither row is the other's.
+#[tokio::test]
+async fn a_stalled_target_cannot_starve_a_healthy_one() {
+    let srv = start().await;
+    // The stalled hold outlives the test: its wedges are still holding
+    // their slots when the assertions run, which is what makes the
+    // arithmetic exact (each excess mail's stalled spawn is refused, each
+    // healthy spawn is not).
+    let (stalled, stalled_hits, _stalled_max) = delaying_sink(Duration::from_secs(60)).await;
+    let (healthy, healthy_hits, _healthy_max) = delaying_sink(Duration::ZERO).await;
+    let body = serde_json::json!([
+        { "url": format!("http://{stalled}/hook") },
+        { "url": format!("http://{healthy}/hook") },
+    ])
+    .to_string();
+    let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+    assert_eq!(st, 200, "{resp}");
+
+    let total = swarmail::webhook::WEBHOOK_DELIVERY_CAP + 8;
+    for i in 0..total {
+        smtp_send(
+            srv.smtp_addr,
+            Some("twosink"),
+            "f@x.io",
+            "two@x.io",
+            "two sinks",
+            "x",
+        )
+        .await
+        .unwrap_or_else(|e| panic!("mail {i} refused: {e}"));
+    }
+
+    // Every mail reached the healthy sink — observed on the ledger, so the
+    // count and the wire agree, and on the sink's own counter, so the
+    // deliveries were real POSTs and not ledger bookkeeping.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while srv.webhooks.snapshot().delivered < total as u64 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("every fan-out must reach the healthy sink");
+    assert_eq!(
+        healthy_hits.load(Ordering::Relaxed),
+        total,
+        "the healthy sink saw every mail"
+    );
+
+    // The stalled target's refusals are its own: exactly the mails beyond
+    // its cap, while the wedged ones still hold their slots.
+    let ledger = srv.webhooks.snapshot();
+    assert_eq!(
+        ledger.dropped, 8,
+        "the stalled target's excess is its own refusals: {ledger:?}"
+    );
+    assert_eq!(ledger.delivered, total as u64, "{ledger:?}");
+    assert_eq!(ledger.aborted, 0, "{ledger:?}");
+    assert!(
+        stalled_hits.load(Ordering::Relaxed) >= swarmail::webhook::WEBHOOK_DELIVERY_CAP,
+        "the stall was real: wedged deliveries must have dialed the sink"
+    );
+}
+
+/// A target that cannot be delivered is refused at PUT (issue #47, decision
+/// 0029 §5): a scheme-forgotten `localhost:9000` (which `Url::parse` reads
+/// as *scheme* `localhost` — today that misconfig surfaces only at
+/// delivery), a non-HTTP scheme, an unparsable URL and a secret that could
+/// not ride a header all answer 400 naming their defect, and nothing is
+/// applied — the config the GET returns stays empty.
+#[tokio::test]
+async fn a_target_that_cannot_be_delivered_is_refused_at_put_and_applies_nothing() {
+    let srv = start().await;
+    for url in [
+        "localhost:9000/hook", // scheme-forgotten: no host to dial
+        "ftp://127.0.0.1:9/hook",
+        "http://", // parses to an empty host
+        "",
+    ] {
+        let body = serde_json::json!([{ "url": url }]).to_string();
+        let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+        assert_eq!(st, 400, "{url:?}: {resp}");
+        let message = resp["error"].as_str().expect("a JSON refusal body");
+        assert!(
+            message.contains("webhook URL"),
+            "{url:?}: the refusal names the URL defect: {resp}"
+        );
+    }
+
+    for secret in ["a\r\nb", "a\0b", "x".repeat(4097).as_str()] {
+        let body = serde_json::json!([
+            { "url": "http://127.0.0.1:9/hook", "secret": secret }
+        ])
+        .to_string();
+        let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+        assert_eq!(st, 400, "secret {secret:?}: {resp}");
+        let message = resp["error"].as_str().expect("a JSON refusal body");
+        assert!(
+            message.contains("secret"),
+            "the refusal names the secret defect: {resp}"
+        );
+    }
+
+    // A refused PUT applies nothing: the config is still empty, and a legal
+    // target stores after the refusals.
+    let (_, body) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(body.as_array().expect("the config list").len(), 0, "{body}");
+    let (st, resp) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/webhooks",
+        Some(r#"[{"url": "http://127.0.0.1:9/hook", "inbox": "ok"}]"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{resp}");
 }

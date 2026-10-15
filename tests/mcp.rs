@@ -3,7 +3,8 @@
 mod common;
 
 use common::{
-    SmtpConn, http_get_text, http_json, smtp_send, start, start_with, wait_for_metric_row,
+    SmtpConn, http_get_text, http_json, http_send_text, metric_row_value, smtp_send, start,
+    start_with, wait_for_metric_row,
 };
 
 fn base64_of(s: &str) -> String {
@@ -693,7 +694,7 @@ async fn bare_tool_calls_hit_every_default_and_clear_all() {
         &tool(
             srv.http_addr,
             "swarmail_set_chaos",
-            r#"{"event": "data", "probability": 0, "error": "nope"}"#,
+            r#"{"event": "data", "probability": 0, "error": "451 nope"}"#,
         )
         .await,
     );
@@ -703,7 +704,7 @@ async fn bare_tool_calls_hit_every_default_and_clear_all() {
         &tool(
             srv.http_addr,
             "swarmail_set_chaos",
-            r#"{"event": "data", "probability": 0, "error": "nope", "delay_ms": 5}"#,
+            r#"{"event": "data", "probability": 0, "error": "451 nope", "delay_ms": 5}"#,
         )
         .await,
     );
@@ -1182,6 +1183,58 @@ async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
     assert_eq!(text(&r)["data"]["error"], "451 busy");
 }
 
+/// The wire-text rules refuse on the MCP plane with the shared sentences
+/// (issue #41, decision 0029 §3): a 2xx `error` is not a failure, CR/LF
+/// would write two replies for one command, and `delay_ms` has the
+/// stage-timer scale. The sentences are the REST plane's own words — one
+/// domain validator, one refusal text. A legal 510-octet line and the
+/// delay ceiling itself are the interior the refusals protect.
+#[tokio::test]
+async fn set_chaos_refuses_the_wire_text_rules_by_name() {
+    let srv = start().await;
+    for (args, sentence) in [
+        (
+            r#"{"event": "data", "probability": 100, "error": "250 2.0.0 OK"}"#,
+            "error must be a single-line 4xx/5xx SMTP reply of at most 510 octets",
+        ),
+        (
+            r#"{"event": "data", "probability": 100, "error": "551 go\r\naway"}"#,
+            "error must be a single-line 4xx/5xx SMTP reply of at most 510 octets",
+        ),
+        (
+            r#"{"event": "data", "probability": 100, "error": "go away"}"#,
+            "error must be a single-line 4xx/5xx SMTP reply of at most 510 octets",
+        ),
+        (
+            r#"{"event": "data", "probability": 100, "delay_ms": 300001}"#,
+            "delay_ms must be an integer between 0 and 300000",
+        ),
+    ] {
+        let (st, body) = rpc(
+            srv.http_addr,
+            "tools/call",
+            &format!(r#"{{"name": "swarmail_set_chaos", "arguments": {args}}}"#),
+        )
+        .await;
+        assert_eq!(st, 200, "{args}: {body}");
+        assert_eq!(body["error"]["message"], sentence, "{args}: {body}");
+    }
+
+    // The interior is legal: a 510-octet single-line 5xx reply (the cap is
+    // inclusive) and the delay ceiling itself both store.
+    let line = format!("551 {}", "x".repeat(506));
+    let r = tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        &format!(
+            r#"{{"event": "data", "probability": 100, "error": {line:?}, "delay_ms": 300000}}"#
+        ),
+    )
+    .await;
+    assert_eq!(text(&r)["data"]["delay_ms"], 300000, "{r}");
+    assert_eq!(text(&r)["data"]["error"], line, "{r}");
+}
+
 /// A refused `set_chaos` never stores its rule (decision 0025): the set
 /// tail is the read-back — after the refused data rule, a legal rcpt set
 /// returns the current config with rcpt armed and data still null.
@@ -1321,4 +1374,492 @@ async fn the_schemas_publish_the_wire_bounds() {
     assert_eq!(chaos["probability"]["minimum"], 0, "{chaos}");
     assert_eq!(chaos["probability"]["maximum"], 100, "{chaos}");
     assert_eq!(chaos["delay_ms"]["minimum"], 0, "{chaos}");
+
+    // The staged domains are published where they are enforced (decision
+    // 0029 §1): the search's limit takes the shared default and its
+    // non-negative domain; get_latest's count refuses zero by name; the
+    // wait's count documents 0010's at-least-one semantic; the chaos rule's
+    // delay ceiling and reply-line grammar are on the wire.
+    let search = &by_name["swarmail_search_emails"]["inputSchema"]["properties"];
+    assert_eq!(search["limit"]["minimum"], 0, "{search}");
+    assert_eq!(search["limit"]["default"], 100, "{search}");
+    let latest = &by_name["swarmail_get_latest_email"]["inputSchema"]["properties"];
+    assert_eq!(latest["count"]["minimum"], 1, "{latest}");
+    let wait_count = &wait["count"];
+    assert_eq!(wait_count["minimum"], 0, "{wait_count}");
+    assert!(
+        wait_count["description"]
+            .as_str()
+            .unwrap()
+            .contains("at least one"),
+        "{wait_count}"
+    );
+    assert_eq!(chaos["delay_ms"]["maximum"], 300000, "{chaos}");
+    assert!(
+        chaos["error"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("510"),
+        "{chaos}"
+    );
+}
+
+// ---------- the validation family: #46 (arguments + envelope) ----------
+
+/// A *present* argument of the wrong JSON type — or explicit `null` —
+/// refuses -32602 with a sentence naming the field and its domain, on
+/// every tool that reads it (decision 0029 §1), and the effect never
+/// happens.
+#[tokio::test]
+async fn a_wrong_typed_argument_refuses_by_name() {
+    let srv = start().await;
+    let legs: &[(&str, &str, &str)] = &[
+        // (tool, arguments, field named in the refusal) — one leg per wrong
+        // shape: string→int, int→string, array→string, explicit null,
+        // a negative limit, and get_latest's refusing zero.
+        ("swarmail_clear_inbox", r#"{"inbox": 42}"#, "inbox"),
+        ("swarmail_clear_inbox", r#"{"inbox": null}"#, "inbox"),
+        ("swarmail_wait_for_email", r#"{"to": ["a@x.io"]}"#, "to"),
+        (
+            "swarmail_wait_for_email",
+            r#"{"since_ms": "yesterday"}"#,
+            "since_ms",
+        ),
+        ("swarmail_search_emails", r#"{"limit": -1}"#, "limit"),
+        ("swarmail_search_emails", r#"{"limit": "3"}"#, "limit"),
+        ("swarmail_get_latest_email", r#"{"count": "3"}"#, "count"),
+        ("swarmail_get_latest_email", r#"{"count": 0}"#, "count"),
+        ("swarmail_get_email", r#"{"id": 7}"#, "id"),
+        ("swarmail_seed_email", r#"{"to": 7}"#, "to"),
+    ];
+    for (name, args, field) in legs {
+        let (st, body) = rpc(
+            srv.http_addr,
+            "tools/call",
+            &format!(r#"{{"name": "{name}", "arguments": {args}}}"#),
+        )
+        .await;
+        assert_eq!(st, 200, "{name} {args}");
+        assert_eq!(body["error"]["code"], -32602, "{name} {args}: {body}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(message.contains(field), "{name} {args}: {message}");
+        assert!(message.contains("must be"), "{name} {args}: {message}");
+    }
+
+    // The refusal is not just words: `clear_inbox {"inbox": 42}` did not
+    // clear `default` — and stored nothing anywhere else either.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 0, "a refused clear_inbox clears nothing");
+}
+
+/// A refused wait registers no waiter (0025 §5 through the MCP plane): the
+/// staging refusal answers before `store.wait_for` — the inbox's readiness
+/// row is released — and the seeded mail is untouched for the next caller.
+#[tokio::test]
+async fn the_wait_registers_no_waiter_when_staging_refuses() {
+    let srv = start().await;
+    smtp_send(
+        srv.smtp_addr,
+        Some("nowaiter"),
+        "f@x.io",
+        "seeded@x.io",
+        "seeded",
+        "body",
+    )
+    .await
+    .unwrap();
+
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_wait_for_email", "arguments": {"inbox": "nowaiter", "to": ["a@x.io"], "timeout_ms": 60000}}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(body["error"]["message"], "to must be a string", "{body}");
+
+    // No waiter: the inbox's awaits row is gone the moment the refusal
+    // answered — a registered park would still hold the row at 1.
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    assert_eq!(
+        metric_row_value(&metrics, r#"swarmail_awaits_active{inbox="nowaiter"}"#),
+        None,
+        "a refused wait registers no waiter: {metrics}"
+    );
+
+    // The seeded mail is untouched — the refused call consumed nothing.
+    let r = tool(
+        srv.http_addr,
+        "swarmail_search_emails",
+        r#"{"inbox": "nowaiter"}"#,
+    )
+    .await;
+    assert_eq!(text(&r)["total"], 1, "{r}");
+}
+
+/// `total` is the full match count, byte-for-byte the REST shape (AC1.5):
+/// the page is the limit's business, so a caller paging at 2 of 3 matches
+/// still learns there are three.
+#[tokio::test]
+async fn mcp_search_total_is_the_full_match_count() {
+    let srv = start().await;
+    for i in 0..3 {
+        smtp_send(
+            srv.smtp_addr,
+            Some("totalbox"),
+            "f@x.io",
+            "match@x.io",
+            &format!("m{i}"),
+            "x",
+        )
+        .await
+        .unwrap();
+    }
+    for i in 0..3 {
+        smtp_send(
+            srv.smtp_addr,
+            Some("totalbox"),
+            "f@x.io",
+            "other@x.io",
+            &format!("o{i}"),
+            "x",
+        )
+        .await
+        .unwrap();
+    }
+
+    let r = tool(
+        srv.http_addr,
+        "swarmail_search_emails",
+        r#"{"inbox": "totalbox", "to": "match@x.io", "limit": 2}"#,
+    )
+    .await;
+    let t = text(&r);
+    assert_eq!(t["total"], 3, "{t}");
+    assert_eq!(t["emails"].as_array().unwrap().len(), 2, "{t}");
+
+    // `limit: 0` is inside the staged domain: an empty page, the full count.
+    let r = tool(
+        srv.http_addr,
+        "swarmail_search_emails",
+        r#"{"inbox": "totalbox", "to": "match@x.io", "limit": 0}"#,
+    )
+    .await;
+    let t = text(&r);
+    assert_eq!(t["total"], 3, "{t}");
+    assert_eq!(t["emails"].as_array().unwrap().len(), 0, "{t}");
+
+    // The default page (the shared 100) holds every match, and the total
+    // counts only matches.
+    let r = tool(
+        srv.http_addr,
+        "swarmail_search_emails",
+        r#"{"inbox": "totalbox", "to": "match@x.io"}"#,
+    )
+    .await;
+    let t = text(&r);
+    assert_eq!(t["total"], 3, "{t}");
+    assert_eq!(t["emails"].as_array().unwrap().len(), 3, "{t}");
+}
+
+/// The code taxonomy (decision 0029 §2): `-32700` for a body that is not
+/// JSON, `-32600` for a body that is not a request, `-32601` for a method
+/// or tool that does not exist, `-32602` for a supplied argument outside
+/// its domain — with the preserved messages.
+#[tokio::test]
+async fn the_envelope_carries_the_code_taxonomy() {
+    let srv = start().await;
+
+    // -32700: the parse failed before any request existed to carry an id;
+    // the answer is a JSON-RPC error object, not a plain-text 400.
+    let (st, body) = http_json(srv.http_addr, "POST", "/mcp", Some("{nope")).await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(body["jsonrpc"], "2.0", "{body}");
+    assert_eq!(body["id"], serde_json::Value::Null, "{body}");
+    assert_eq!(body["error"]["code"], -32700, "{body}");
+
+    // -32600: a request with no method, carrying its id; a non-string
+    // method is the same refusal.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":5}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["id"], 5, "{body}");
+    assert_eq!(body["error"]["code"], -32600, "{body}");
+    let (st, body) = http_json(
+        srv.http_addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":6,"method":42}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["id"], 6, "{body}");
+    assert_eq!(body["error"]["code"], -32600, "{body}");
+
+    // -32601, messages preserved: an unknown method and an unknown tool.
+    let (st, body) = rpc(srv.http_addr, "swarmail_nope", "{}").await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["id"], 1, "{body}");
+    assert_eq!(body["error"]["code"], -32601, "{body}");
+    assert_eq!(
+        body["error"]["message"], "unknown method: swarmail_nope",
+        "{body}"
+    );
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_nope", "arguments": {}}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["error"]["code"], -32601, "{body}");
+    assert_eq!(
+        body["error"]["message"], "unknown tool: swarmail_nope",
+        "{body}"
+    );
+
+    // -32602, messages preserved: a missing id argument and a missing tool
+    // name.
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_get_email", "arguments": {}}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(body["error"]["message"], "missing id", "{body}");
+    let (st, body) = rpc(srv.http_addr, "tools/call", r#"{"arguments": {}}"#).await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(body["error"]["message"], "missing tool name", "{body}");
+}
+
+/// The id predicate is JSON-RPC's, not a method-name prefix (decision 0029
+/// §2): an id-less request gets silence — 202 with an empty body over HTTP
+/// — whatever its method is called; a notification *carrying* an id is a
+/// request and answers -32601.
+#[tokio::test]
+async fn an_idless_request_is_a_notification() {
+    let srv = start().await;
+    for line in [
+        // An id-less tools/call: no reply, no effect asked for.
+        r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"swarmail_clear_all"}}"#,
+        // An id-less notification: the same silence.
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        // A non-string method with no id: silence — the id is the predicate.
+        r#"{"jsonrpc":"2.0","method":42}"#,
+    ] {
+        let (st, body) = http_send_text(srv.http_addr, "POST", "/mcp", Some(line)).await;
+        assert_eq!(st, 202, "{line}: {body}");
+        assert_eq!(
+            body, "",
+            "{line}: an id-less request is answered with silence"
+        );
+    }
+
+    // A notification that carries an id is a request.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":7,"method":"notifications/initialized"}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["id"], 7, "{body}");
+    assert_eq!(
+        body["error"]["message"], "unknown method: notifications/initialized",
+        "{body}"
+    );
+}
+
+/// Batches are answered in order and bounded (decision 0029 §2): requests
+/// get their answers, notifications their silence, and `[]` or an array
+/// over the cap is one -32600 naming the rule.
+#[tokio::test]
+async fn a_batch_is_answered_in_order_and_bounded() {
+    let srv = start().await;
+    let batch = format!(
+        "[{},{},{}]",
+        r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"swarmail_nope"}}"#,
+    );
+    let (st, body) = http_json(srv.http_addr, "POST", "/mcp", Some(&batch)).await;
+    assert_eq!(st, 200, "{body}");
+    let answers = body.as_array().expect("a batch is answered with an array");
+    assert_eq!(answers.len(), 2, "the notification gets no answer: {body}");
+    assert_eq!(answers[0]["id"], 1, "{body}");
+    assert_eq!(answers[0]["result"], serde_json::json!({}), "{body}");
+    assert_eq!(answers[1]["id"], 2, "{body}");
+    assert_eq!(
+        answers[1]["error"]["message"], "unknown tool: swarmail_nope",
+        "{body}"
+    );
+
+    // An all-notification batch: an empty 202.
+    let (st, body) = http_send_text(
+        srv.http_addr,
+        "POST",
+        "/mcp",
+        Some(r#"[{"jsonrpc":"2.0","method":"notifications/initialized"}]"#),
+    )
+    .await;
+    assert_eq!(st, 202, "{body}");
+    assert_eq!(body, "");
+
+    // Empty and over-cap: one refusal, id null, naming the rule.
+    for (batch, label, expects_cap) in [
+        ("[]", "an empty batch", false),
+        (
+            &*format!("[{}]", vec!["0"; 17].join(",")),
+            "an over-cap batch",
+            true,
+        ),
+    ] {
+        let (st, body) = http_json(srv.http_addr, "POST", "/mcp", Some(batch)).await;
+        assert_eq!(st, 200, "{label}: {body}");
+        assert_eq!(body["error"]["code"], -32600, "{label}: {body}");
+        assert_eq!(body["id"], serde_json::Value::Null, "{label}: {body}");
+        if expects_cap {
+            assert!(
+                body["error"]["message"].as_str().unwrap().contains("16"),
+                "the refusal names the cap: {body}"
+            );
+        }
+    }
+}
+
+/// `initialize` answers the one supported revision and advertises only
+/// what exists (decision 0029 §2): the client's requested version is not
+/// echoed, and `resources` — whose every method is unknown — is gone.
+#[tokio::test]
+async fn initialize_answers_the_supported_version_and_advertises_only_tools() {
+    let srv = start().await;
+    for requested in ["2025-06-18", "2024-11-05", "1999-01-01"] {
+        let (st, body) = rpc(
+            srv.http_addr,
+            "initialize",
+            &format!(r#"{{"protocolVersion": "{requested}"}}"#),
+        )
+        .await;
+        assert_eq!(st, 200, "{requested}: {body}");
+        assert_eq!(
+            body["result"]["protocolVersion"], "2025-03-26",
+            "{requested}: {body}"
+        );
+        let capabilities = &body["result"]["capabilities"];
+        assert!(capabilities["tools"].is_object(), "{capabilities}");
+        assert!(
+            capabilities.get("resources").is_none(),
+            "no resources are advertised: {capabilities}"
+        );
+    }
+    // Even with no params at all: the constant is the answer.
+    let (_, body) = rpc(srv.http_addr, "initialize", "{}").await;
+    assert_eq!(body["result"]["protocolVersion"], "2025-03-26", "{body}");
+}
+
+// ---------- the latest page's own min-one (decision 0029 §1) ----------
+
+/// `count: 0` on the latest-email tool refuses rather than clamping: the
+/// schema publishes `minimum: 1`, and a silent `.max(1)` would invent a
+/// page the caller did not ask for. A legal count is honored — the page is
+/// the newest `count` mails, newest first — and the *wait's* `count: 0`
+/// keeps 0010's at-least-one semantic: a different domain, a different rule.
+/// The honored side of the same parameter: two mails, a page of two —
+/// newest first, as the store lists them.
+#[tokio::test]
+async fn get_latest_count_zero_is_refused_and_a_legal_count_is_honored() {
+    let srv = start().await;
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_get_latest_email", "arguments": {"inbox": "pagezero", "count": 0}}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(
+        body["error"]["message"], "count must be an integer of at least 1",
+        "{body}"
+    );
+
+    // The honored side of the same parameter: two mails, a page of two.
+    for subject in ["first", "second"] {
+        smtp_send(
+            srv.smtp_addr,
+            Some("pagecount"),
+            "noreply@x.io",
+            "w@x.io",
+            subject,
+            "body",
+        )
+        .await
+        .unwrap();
+    }
+    let r = tool(
+        srv.http_addr,
+        "swarmail_get_latest_email",
+        r#"{"inbox": "pagecount", "count": 2}"#,
+    )
+    .await;
+    let page = text(&r);
+    let page: Vec<&str> = page["emails"]
+        .as_array()
+        .expect("a page of emails")
+        .iter()
+        .map(|e| e["subject"].as_str().expect("subject"))
+        .collect();
+    assert_eq!(page, ["second", "first"], "{r}");
+}
+
+// ---------- the chaos shape is closed on the tool plane too ----------
+
+/// An unknown argument key refuses with the key named (decision 0029 §3):
+/// a typo'd key must not arm nothing while answering success.
+#[tokio::test]
+async fn set_chaos_refuses_an_unknown_argument_key_by_name() {
+    let srv = start().await;
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_set_chaos", "arguments": {"event": "data", "probability": 100, "solus": 1}}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(
+        body["error"]["message"], "unknown argument: solus (use event|probability|error|delay_ms)",
+        "{body}"
+    );
+}
+
+/// Arguments that are not an object at all reach the `event` lookup and
+/// refuse as missing — nothing is armed on a shape the rules cannot read.
+#[tokio::test]
+async fn set_chaos_with_unreadable_arguments_refuses_missing_event() {
+    let srv = start().await;
+    for arguments in ["\"data\"", "7", "null"] {
+        let (st, body) = rpc(
+            srv.http_addr,
+            "tools/call",
+            &format!(r#"{{"name": "swarmail_set_chaos", "arguments": {arguments}}}"#),
+        )
+        .await;
+        assert_eq!(st, 200, "{arguments}");
+        assert_eq!(body["error"]["code"], -32602, "{arguments}: {body}");
+        assert_eq!(
+            body["error"]["message"], "missing event",
+            "{arguments}: {body}"
+        );
+    }
 }

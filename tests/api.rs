@@ -378,7 +378,10 @@ async fn webhook_targets_get_set_and_cleared() {
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
     assert_eq!(st, 200);
     assert_eq!(body[0]["inbox"], "only-this");
-    assert_eq!(body[0]["secret"], "s");
+    // The secret is redacted on read (decision 0029 §5): an echoed secret
+    // in a response body is a log line — PUT is the only writer, and the
+    // operator retains their own payload.
+    assert_eq!(body[0]["secret"], serde_json::Value::Null);
 
     let (st, body) = http_json(srv.http_addr, "DELETE", "/api/v1/webhooks", None).await;
     assert_eq!(st, 200);
@@ -839,4 +842,196 @@ async fn await_supplied_malformed_timeouts_are_parse_refusals_and_zero_is_a_real
         "timeout_ms=0 must answer its own deadline at once: {:?}",
         started.elapsed()
     );
+}
+
+/// The filters the list endpoint accepts parse identically on await and
+/// assert (issue #38): under the old `#[serde(flatten)]` the urlencoded
+/// layer handed every flattened field over as a string and serde refused
+/// the integer, so `since_ms` was refused on both while list accepted it.
+/// The flat struct (decision 0029 §1) makes the parameter set explicit — a
+/// past `since_ms` is an inclusive filter, a future one is a real filter
+/// the wait can time out and the assert can conflict on, and a malformed
+/// value keeps the parse refusal naming the field (decision 0025).
+#[tokio::test]
+async fn await_and_assert_parse_since_ms_exactly_as_list_does() {
+    let srv = start().await;
+    seed(srv.http_addr, "flt", "user@example.com").await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is set")
+        .as_millis() as i64;
+
+    // A `since_ms` in the past is inclusive: the mail matches, on both.
+    let past = now - 10_000;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/inboxes/flt/await?count=1&to=user@example.com&since_ms={past}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 1, "{body}");
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/inboxes/flt/assert?count=1&to=user@example.com&since_ms={past}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 1, "{body}");
+
+    // A `since_ms` in the future excludes the mail — the filter is live,
+    // not decoration: the wait can time out on it, the assert conflicts.
+    let future = now + 600_000;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!(
+            "/api/v1/inboxes/flt/await?count=1&to=user@example.com&since_ms={future}&timeout_ms=200"
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(st, 408, "{body}");
+    assert_eq!(body["matched"], 0, "{body}");
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/inboxes/flt/assert?count=1&to=user@example.com&since_ms={future}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 409, "{body}");
+    assert_eq!(body["matched"], 0, "{body}");
+
+    // A malformed `since_ms` is a supplied value: refused at the parse —
+    // the plane's own refusal class, the same words a malformed
+    // `timeout_ms` gets (the extractor's cause rides along).
+    for (path, what) in [
+        ("await", "invalid await query"),
+        ("assert", "invalid assert query"),
+    ] {
+        let (st, body) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/flt/{path}?since_ms=soon"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 400, "{path}: {body}");
+        assert!(
+            body["error"].as_str().unwrap().starts_with(what),
+            "{path}: the refusal names the plane: {body}"
+        );
+    }
+}
+
+/// The chaos wire-text rules refuse on the REST plane with the shared
+/// sentences (issue #41, decision 0029 §3): an `error` that would answer
+/// `250` — the rule that made every DATA acceptance a lie — is not a
+/// failure, CR/LF would desynchronize the session stream, and an over-cap
+/// `delay_ms` exceeds the stage-timer scale; an unknown event or rule key
+/// keeps the extractor's own 422. A rejected PUT leaves the armed rules
+/// exactly as they were, and a legal rule still stores after the refusals.
+#[tokio::test]
+async fn the_chaos_error_line_and_delay_refuse_on_the_rest_plane() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 30, "error": "451 busy"}}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    let (st, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(st, 200);
+
+    for (put, sentence) in [
+        // A 2xx error line is not a failure: the rule would answer success
+        // while the chaos arm stored nothing — guarantee 1 broken through
+        // the control plane.
+        (
+            r#"{"data": {"probability": 100, "error": "250 2.0.0 OK"}}"#,
+            "error must be a single-line 4xx/5xx SMTP reply of at most 510 octets",
+        ),
+        // CR/LF would write two replies for one command.
+        (
+            r#"{"data": {"probability": 100, "error": "551 go\r\naway"}}"#,
+            "error must be a single-line 4xx/5xx SMTP reply of at most 510 octets",
+        ),
+        // Not a code at all.
+        (
+            r#"{"data": {"probability": 100, "error": "go away"}}"#,
+            "error must be a single-line 4xx/5xx SMTP reply of at most 510 octets",
+        ),
+        // The delay is the stage-timer scale, never unbounded.
+        (
+            r#"{"data": {"probability": 100, "delay_ms": 300001}}"#,
+            "delay_ms must be an integer between 0 and 300000",
+        ),
+    ] {
+        let (st, body) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(put)).await;
+        assert_eq!(st, 400, "{put}: {body}");
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": sentence }),
+            "{put}: {body}"
+        );
+    }
+
+    // The cap is inclusive on the legal side and octets, not chars: 511
+    // refuses with the same sentence (510 is pinned legal below, after the
+    // unchanged check).
+    let over = format!("551 {}", "x".repeat(507));
+    let (st, body) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(&format!(
+            r#"{{"data": {{"probability": 100, "error": {over:?}}}}}"#
+        )),
+    )
+    .await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(
+        body,
+        serde_json::json!({ "error": "error must be a single-line 4xx/5xx SMTP reply of at most 510 octets" }),
+        "{body}"
+    );
+
+    // Unknown events and unknown rule keys are not silently dropped — the
+    // MCP plane refuses them, so REST does too (the extractor's own 422).
+    for put in [
+        r#"{"solo": {"probability": 100}}"#,
+        r#"{"data": {"probability": 100, "wat": 1}}"#,
+    ] {
+        let (st, body) = http_send_text(srv.http_addr, "PUT", "/api/v1/chaos", Some(put)).await;
+        assert_eq!(st, 422, "{put}: {body}");
+    }
+
+    // The armed rule survived every refusal unchanged, and the boundary is
+    // inclusive: a legal rule — 510 octets, the delay ceiling itself —
+    // still stores after them.
+    let (st, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        before, after,
+        "a rejected PUT must leave the active rules exactly as they were"
+    );
+    let boundary = format!("551 {}", "x".repeat(506));
+    let (st, body) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(&format!(
+            r#"{{"data": {{"probability": 100, "error": {boundary:?}, "delay_ms": 300000}}}}"#
+        )),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["data"]["error"], boundary, "{body}");
+    assert_eq!(body["data"]["delay_ms"], 300000, "{body}");
 }
