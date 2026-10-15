@@ -22,11 +22,11 @@ the framing smells like hardening, apply the order: delete the
 unnecessary path, simplify to one owner, restore proven behaviour,
 and only then add the smallest local guard.
 
-1. Read the framing in `.forge/tasks/` (see the run context for the
+1. Read the framing in `.brokkr/state/tasks/` (see the run context for the
    feature) and whatever code your position must be grounded in.
-2. Write your position to `.forge/design/positions/simplicity.md` in
+2. Write your position to `.brokkr/state/design/positions/simplicity.md` in
    the working directory: the design you advocate, what you would cut,
-   the risks you accept and why they are acceptable. `.forge/` is
+   the risks you accept and why they are acceptable. `.brokkr/state/` is
    run-local evidence and gitignored — do NOT commit it; a later chief
    step reads your file and synthesizes the committed spec.
 

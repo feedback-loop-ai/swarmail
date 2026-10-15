@@ -32,11 +32,11 @@ you cannot finish, still write the result file with what you have and
 name the gap in its notes: a partial position the chief can weigh
 outranks no position at all.
 
-1. Read the framing in `.forge/tasks/` and the code your position must
+1. Read the framing in `.brokkr/state/tasks/` and the code your position must
    be grounded in — the store, the SMTP session loop, the dispatcher.
-2. Write your position to `.forge/design/positions/robustness.md`: the
+2. Write your position to `.brokkr/state/design/positions/robustness.md`: the
    design you advocate, the failures it forecloses, and the costs you
-   accept. `.forge/` is run-local evidence and gitignored — do NOT
+   accept. `.brokkr/state/` is run-local evidence and gitignored — do NOT
    commit it; a later chief step reads your file and synthesizes the
    committed spec.
 
