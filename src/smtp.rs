@@ -12,6 +12,16 @@
 //! stalls mid-upgrade is dropped after `SmtpConfig::tls_handshake_timeout`
 //! instead of pinning its session task, while the plaintext idle posture
 //! (no read timeout at all) is untouched.
+//!
+//! AUTH PLAIN and AUTH LOGIN assign the session's inbox only on success: a
+//! credential that names nothing — undecodable base64, an empty decoded
+//! username, a `*` cancel, a non-UTF-8 one — is refused `501 5.5.2` and
+//! changes nothing (decision 0028 §2, amending 0004's accept-any posture;
+//! `535` is reserved for the day credentials are checked). The transaction
+//! state machine is RFC 5321's: the envelope is consumed at the DATA
+//! terminator — and by a refused MAIL — so no outcome and no abort inherits
+//! it; out-of-sequence commands are refused `503 5.5.1` (§4.1.4); and DATA
+//! ends on `.` CRLF only (§2.3.8) — a bare-LF `.` line is payload.
 
 use crate::chaos::{Chaos, ChaosEvent};
 use crate::extract::{extract_codes, extract_links};
@@ -676,6 +686,18 @@ async fn session(
                     .await?;
                     continue;
                 }
+                // RFC 4954 §4: AUTH is not permitted during a mail
+                // transaction. The transaction survives the refusal — the
+                // client may finish it or RSET first.
+                if mail_from.is_some() {
+                    write_line(
+                        reader.get_mut(),
+                        "503 5.5.1 Error: MAIL transaction in progress",
+                        cfg.idle_timeout,
+                    )
+                    .await?;
+                    continue;
+                }
                 let mut parts = arg.split_whitespace();
                 let mechanism = parts.next().unwrap_or("").to_ascii_uppercase();
                 let b64 = parts.next().map(|s| s.to_string());
@@ -697,28 +719,83 @@ async fn session(
                                 }
                             }
                         };
-                        if let Some(inbox_name) = auth_plain_inbox(b64.as_deref()) {
-                            inbox = inbox_name;
+                        match auth_plain_inbox(b64.as_deref()) {
+                            // The credential named an inbox: the session's
+                            // inbox is assigned.
+                            Some(inbox_name) => inbox = inbox_name,
+                            // It named nothing — undecodable base64, an
+                            // empty authcid, the `*` cancel, a non-UTF-8
+                            // one — so the refusal (decision 0028 §2)
+                            // changes nothing: the previous inbox (or
+                            // `default`) stays and a later delivery flows
+                            // there.
+                            None => {
+                                write_line(
+                                    reader.get_mut(),
+                                    "501 5.5.2 Credentials refused",
+                                    cfg.idle_timeout,
+                                )
+                                .await?;
+                                continue;
+                            }
                         }
                         write_line(reader.get_mut(), "235 2.7.0 Accepted", cfg.idle_timeout)
                             .await?;
                     }
                     "LOGIN" => {
-                        write_line(reader.get_mut(), "334 VXNlcm5hbWU6", cfg.idle_timeout).await?;
-                        let user = match read_command_line(reader, cfg.idle_timeout).await? {
-                            CmdLine::Line(line) => b64_decode(line.trim_end_matches(['\r', '\n'])),
+                        // RFC 4954 §4: the optional initial response is the
+                        // username; only without one is the Username prompt
+                        // sent. smtplib sends it inline and would otherwise
+                        // answer the Username prompt with the password.
+                        let username = match b64 {
+                            Some(initial) => Some(initial),
+                            None => {
+                                write_line(reader.get_mut(), "334 VXNlcm5hbWU6", cfg.idle_timeout)
+                                    .await?;
+                                match read_command_line(reader, cfg.idle_timeout).await? {
+                                    CmdLine::Line(line) => {
+                                        Some(line.trim_end_matches(['\r', '\n']).to_string())
+                                    }
+                                    CmdLine::Refused => continue, // fails only this AUTH attempt
+                                    CmdLine::Gone => return Ok(()),
+                                }
+                            }
+                        };
+                        // The username must name an inbox; anything else —
+                        // undecodable base64, non-UTF-8, empty, the `*`
+                        // cancel — is refused and changes nothing (decision
+                        // 0028 §2). The inbox is assigned only once the
+                        // whole credential is consumed: a cancelled password
+                        // must not leave a half-applied AUTH behind.
+                        let Some(user) = username.and_then(|line| auth_login_username(&line))
+                        else {
+                            write_line(
+                                reader.get_mut(),
+                                "501 5.5.2 Credentials refused",
+                                cfg.idle_timeout,
+                            )
+                            .await?;
+                            continue;
+                        };
+                        write_line(reader.get_mut(), "334 UGFzc3dvcmQ6", cfg.idle_timeout).await?;
+                        let password = match read_command_line(reader, cfg.idle_timeout).await? {
+                            CmdLine::Line(line) => line.trim_end_matches(['\r', '\n']).to_string(),
                             CmdLine::Refused => continue, // fails only this AUTH attempt
                             CmdLine::Gone => return Ok(()),
                         };
-                        if let Some(user) = user {
-                            inbox = String::from_utf8_lossy(&user).trim().to_string();
+                        if password == "*" {
+                            // The cancel token names nothing, like any
+                            // refused credential (decision 0028 §2).
+                            write_line(
+                                reader.get_mut(),
+                                "501 5.5.2 Credentials refused",
+                                cfg.idle_timeout,
+                            )
+                            .await?;
+                            continue;
                         }
-                        write_line(reader.get_mut(), "334 UGFzc3dvcmQ6", cfg.idle_timeout).await?;
-                        match read_command_line(reader, cfg.idle_timeout).await? {
-                            CmdLine::Line(_) => {}
-                            CmdLine::Refused => continue, // fails only this AUTH attempt
-                            CmdLine::Gone => return Ok(()),
-                        }
+                        // Accept-any: the password is consumed, never checked.
+                        inbox = user;
                         write_line(reader.get_mut(), "235 2.7.0 Accepted", cfg.idle_timeout)
                             .await?;
                     }
@@ -735,9 +812,28 @@ async fn session(
             "MAIL" => {
                 if let Some(rule) = chaos.check(ChaosEvent::MailFrom) {
                     tokio::time::sleep(std::time::Duration::from_millis(rule.delay_ms)).await;
+                    // A refused MAIL attempt ends the transaction it
+                    // interrupted (RFC 5321 §4.1.4: a new MAIL begins one):
+                    // the envelope is consumed here, before the refusal — no
+                    // outcome path runs cleanup, and a pipelined DATA after
+                    // the refused MAIL has no envelope to inherit.
+                    mail_from = None;
+                    rcpts.clear();
                     write_line(
                         reader.get_mut(),
                         rule.error.as_deref().unwrap_or("451 4.3.0 chaos"),
+                        cfg.idle_timeout,
+                    )
+                    .await?;
+                    continue;
+                }
+                // A transaction is open: a nested MAIL is refused and the
+                // open transaction survives (RFC 5321 §4.1.4) — state
+                // unchanged, so the client can keep adding recipients.
+                if mail_from.is_some() {
+                    write_line(
+                        reader.get_mut(),
+                        "503 5.5.1 Error: nested MAIL command",
                         cfg.idle_timeout,
                     )
                     .await?;
@@ -784,6 +880,22 @@ async fn session(
                 write_line(reader.get_mut(), "250 2.1.5 OK", cfg.idle_timeout).await?;
             }
             "DATA" => {
+                // The two 503s stay distinct and name the state the client is
+                // actually in (RFC 5321 §4.1.4 ordering): a DATA that cannot
+                // name a current MAIL — none at all, or one already consumed
+                // by its own completion — answers `need MAIL`; `need RCPT`
+                // is for an open transaction with no recipients yet, which
+                // the client can still satisfy, so it leaves the transaction
+                // open.
+                if mail_from.is_none() {
+                    write_line(
+                        reader.get_mut(),
+                        "503 5.5.1 Error: need MAIL command",
+                        cfg.idle_timeout,
+                    )
+                    .await?;
+                    continue;
+                }
                 if rcpts.is_empty() {
                     write_line(
                         reader.get_mut(),
@@ -807,8 +919,11 @@ async fn session(
                     // may still accept, because a leading `..` unstuffs one
                     // byte shorter — an exactly-cap message whose final line
                     // is dot-stuffed fits — and floored at 3 so the
-                    // terminator, `.` CRLF or `.` LF, is always recognizable
-                    // at the cap and while draining.
+                    // terminator, `.` CRLF, is always recognizable at the cap
+                    // and while draining. No other terminator is recognized
+                    // (RFC 5321 §2.3.8): a `.` + bare-LF line is payload,
+                    // passed verbatim by the `..`-only unstuffing — the
+                    // SMTP-smuggling class never opens here.
                     let allowance = cfg
                         .max_message_size
                         .saturating_sub(raw.len())
@@ -835,7 +950,7 @@ async fn session(
                             Err(e) if e.kind() == io::ErrorKind::TimedOut => return Ok(()),
                             Err(e) => return Err(e),
                         };
-                    if bytes == b".\r\n" || bytes == b".\n" {
+                    if bytes == b".\r\n" {
                         break;
                     }
                     // Dot-unstuffing: RFC 5321 §4.5.2
@@ -850,6 +965,15 @@ async fn session(
                         raw.extend_from_slice(payload);
                     }
                 }
+                // The envelope is consumed at the terminator, before any
+                // outcome: every arm below (over-cap, chaos, insert) and
+                // every mid-DATA abort runs against a taken transaction, so
+                // a refused or vanished DATA leaves nothing for the next
+                // command to inherit — no outcome path and no abort path
+                // runs cleanup, and no outcome (250, 552, 451) or chaos
+                // failure leaves recipients bleeding into the next mail.
+                let envelope = mail_from.take();
+                let rcpts = std::mem::take(&mut rcpts);
                 if over_limit {
                     write_line(
                         reader.get_mut(),
@@ -875,8 +999,7 @@ async fn session(
                     continue;
                 }
 
-                let email =
-                    build_email(&raw, &inbox, &rcpts, mail_from.clone().unwrap_or_default());
+                let email = build_email(&raw, &inbox, &rcpts, envelope.unwrap_or_default());
                 let id = email.id.clone();
                 // Whole mutation on the blocking pool, awaited before the
                 // reply: the 250 below stays *after* the commit outcome is
@@ -943,13 +1066,38 @@ async fn session(
     }
 }
 
+/// The inbox a PLAIN credential names, or `None` when it names nothing:
+/// undecodable base64, no authcid, an empty-after-trim authcid, or a
+/// non-UTF-8 one. `None` is the `501 5.5.2` refusal (decision 0028 §2) —
+/// the session's inbox is assigned only on success, never minted from a
+/// replacement character.
 fn auth_plain_inbox(b64: Option<&str>) -> Option<String> {
     let decoded = b64_decode(b64?)?;
     // PLAIN: authzid NUL authcid NUL passwd — the authcid names the inbox.
     let parts: Vec<&[u8]> = decoded.split(|b| *b == 0).collect();
     let user = parts.get(1).or_else(|| parts.first())?;
-    let user = String::from_utf8_lossy(user).trim().to_string();
-    if user.is_empty() { None } else { Some(user) }
+    let user = String::from_utf8(user.to_vec()).ok()?;
+    let user = user.trim();
+    if user.is_empty() {
+        None
+    } else {
+        Some(user.to_string())
+    }
+}
+
+/// The inbox a LOGIN username line names, or `None` when it names nothing —
+/// undecodable base64, a non-UTF-8 username, or an empty-after-trim one
+/// (decision 0028 §2). The literal `*` cancel is not valid base64 and
+/// refuses the same way.
+fn auth_login_username(line: &str) -> Option<String> {
+    let decoded = b64_decode(line)?;
+    let user = String::from_utf8(decoded).ok()?;
+    let user = user.trim();
+    if user.is_empty() {
+        None
+    } else {
+        Some(user.to_string())
+    }
 }
 
 fn b64_decode(input: &str) -> Option<Vec<u8>> {

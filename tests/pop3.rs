@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{Pop3, http_json, smtp_send, start, start_with};
+use common::{Pop3, SmtpConn, http_json, smtp_send, start, start_with};
 use std::time::Duration;
 use swarmail::RunningServer;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
@@ -15,8 +15,72 @@ fn raw_of(from: &str, to: &str, subject: &str, body: &str) -> Vec<u8> {
     format!("From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{body}\r\n").into_bytes()
 }
 
+/// The octets RETR transmits for these arguments (decision 0028 §1): the
+/// payload with every line CRLF-terminated and dot-stuffed, the final
+/// `.\r\n` excluded — derived from the payload itself, never from a stored
+/// length.
 fn octets(from: &str, to: &str, subject: &str, body: &str) -> u64 {
-    raw_of(from, to, subject, body).len() as u64
+    wire_octets(&raw_of(from, to, subject, body))
+}
+
+/// The wire form of a stored mail, computed here — an independent statement
+/// of the RFC 1939 §11 rule the server must follow (every line
+/// CRLF-terminated, dot-stuffed, no terminating "." counted) — so a server
+/// drift shows up as a red count, not a tautology.
+fn wire_octets(raw: &[u8]) -> u64 {
+    let mut n = 0u64;
+    let mut start = 0;
+    while start < raw.len() {
+        let end = raw[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(raw.len(), |i| start + i + 1);
+        let mut line = &raw[start..end];
+        line = line.strip_suffix(b"\n").unwrap_or(line);
+        line = line.strip_suffix(b"\r").unwrap_or(line);
+        n += (line.len() + if line.first() == Some(&b'.') { 1 } else { 0 } + 2) as u64;
+        start = end;
+    }
+    n
+}
+
+/// The client-side view of a payload: every line CRLF-terminated — what
+/// the client holds after undoing RETR's stuffing.
+fn crlf_of(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < raw.len() {
+        let end = raw[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(raw.len(), |i| start + i + 1);
+        let mut line = &raw[start..end];
+        line = line.strip_suffix(b"\n").unwrap_or(line);
+        line = line.strip_suffix(b"\r").unwrap_or(line);
+        out.extend_from_slice(line);
+        out.extend_from_slice(b"\r\n");
+        start = end;
+    }
+    out
+}
+
+/// Deliver a raw payload to `inbox` over real SMTP: the exact bytes go
+/// through DATA untouched (the store keeps them verbatim).
+async fn deliver_raw(s: &RunningServer, inbox: &str, raw: &[u8]) {
+    let mut c = SmtpConn::connect(s.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    smtp_auth(&mut c, inbox).await;
+    c.send("MAIL FROM:<sender@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<r@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    c.send_bytes(raw).await;
+    c.send(".").await;
+    let reply = c.reply().await;
+    assert!(reply.starts_with("250"), "raw delivery refused: {reply}");
 }
 
 /// AUTH PLAIN over a raw connection: the identity names the inbox (the RCPT
@@ -199,6 +263,166 @@ async fn stat_list_uidl_retr_answer_from_the_same_store() {
     }
 }
 
+/// The advertised octet count is the wire, for every line-ending shape
+/// (issue #44, decision 0028 §1): PASS, STAT, LIST, LIST n and RETR n all
+/// name the octets RETR actually transmits — measured here straight off the
+/// socket, no dot-unstuffing and no CRLF restoration — and that count is
+/// derived from the payload, never stored a second time. Bare-LF and
+/// dot-stuffed payloads make the stored length and the wire length differ,
+/// so a count copied from the store would be red here.
+#[tokio::test]
+async fn sizes_match_what_retr_transmits() {
+    let s = start().await;
+    let mails: Vec<Vec<u8>> = vec![
+        // Plain CRLF: the wire is exactly the stored payload.
+        raw_of("sender@x.io", "sizes", "crlf", "body"),
+        // Bare-LF lines: RETR terminates them CRLF — two octets more.
+        b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: barelf\r\n\r\nline1\nline2\n".to_vec(),
+        // Mixed: one bare-LF line, one CRLF line.
+        b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: mixed\r\n\r\na\nb\r\n".to_vec(),
+        // Dot-stuffed: each leading-dot line gains one octet on the wire.
+        b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: dotted\r\n\r\n.x\n.y\r\n".to_vec(),
+    ];
+    for raw in &mails {
+        deliver_raw(&s, "sizes", raw).await;
+    }
+    let wire: Vec<u64> = mails.iter().map(|raw| wire_octets(raw)).collect();
+    let total: u64 = wire.iter().sum();
+
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    // PASS names the wire total, not the stored total.
+    assert_eq!(c.cmd("USER sizes").await, "+OK name is a valid mailbox");
+    assert_eq!(
+        c.cmd("PASS whatever").await,
+        format!("+OK maildrop has 4 messages ({total} octets)")
+    );
+    assert_eq!(c.cmd("STAT").await, format!("+OK 4 {total}"));
+    assert_eq!(
+        c.cmd("LIST").await,
+        format!("+OK 4 messages ({total} octets)")
+    );
+    assert_eq!(
+        c.data().await,
+        format!(
+            "1 {}\r\n2 {}\r\n3 {}\r\n4 {}\r\n",
+            wire[0], wire[1], wire[2], wire[3]
+        )
+    );
+    for (i, n) in wire.iter().enumerate() {
+        let num = i + 1;
+        assert_eq!(
+            c.cmd(&format!("LIST {num}")).await,
+            format!("+OK {num} {n}")
+        );
+        // The count RETR announces is the count of the bytes that follow it
+        // — measured verbatim off the socket.
+        let reply = c.cmd(&format!("RETR {num}")).await;
+        assert_eq!(reply, format!("+OK {n} octets"), "mail {num}: {reply}");
+        let transmitted = c.raw_bytes().await;
+        assert_eq!(
+            transmitted.len() as u64,
+            *n,
+            "mail {num}: advertised {n}, transmitted {}",
+            transmitted.len()
+        );
+        // And the body the client reads is the payload with line endings
+        // normalized: stuffing undone, nothing else touched.
+        assert_eq!(
+            c.cmd(&format!("RETR {num}")).await,
+            format!("+OK {n} octets")
+        );
+        assert_eq!(
+            c.data_bytes().await,
+            crlf_of(&mails[i]),
+            "mail {num}: body is the payload, CRLF-terminated"
+        );
+    }
+    // RSET restates the same wire total.
+    assert_eq!(
+        c.cmd("RSET").await,
+        format!("+OK maildrop has 4 messages ({total} octets)")
+    );
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+}
+
+/// A failed USER clears the pending name (issue #45, decision 0028 §2):
+/// PASS after a failing USER answers `-ERR USER required first` — never
+/// logging into a mailbox a *previous* USER named.
+#[tokio::test]
+async fn a_failed_user_clears_the_pending_name() {
+    let s = start().await;
+    smtp_send(s.smtp_addr, Some("real"), "sender@x.io", "real", "t", "b")
+        .await
+        .unwrap();
+    let mut c = Pop3::connect(s.pop3_addr).await;
+
+    // A USER that names nothing clears the name USER real left.
+    assert_eq!(c.cmd("USER real").await, "+OK name is a valid mailbox");
+    assert_eq!(c.cmd("USER nobody-there").await, "-ERR no such mailbox");
+    assert_eq!(c.cmd("PASS whatever").await, "-ERR USER required first");
+
+    // So does an empty USER.
+    assert_eq!(c.cmd("USER real").await, "+OK name is a valid mailbox");
+    assert_eq!(c.cmd("USER").await, "-ERR missing username");
+    assert_eq!(c.cmd("PASS whatever").await, "-ERR USER required first");
+
+    // The session is unharmed: a good USER + PASS still logs in.
+    c.login("real").await;
+    assert!(c.cmd("STAT").await.starts_with("+OK 1 "));
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+}
+
+/// The maildrop is a snapshot, not a lock (issue #45, decision 0028 §3):
+/// mail removed elsewhere after authentication is still named by the
+/// session's listings — the documented skew — while every fetch and update
+/// goes to the store and answers honestly: `-ERR no such message` for
+/// mail that is no longer there, on RETR and on DELE alike.
+#[tokio::test]
+async fn the_session_reports_mail_removed_elsewhere() {
+    let s = start().await;
+    let first = deliver(&s, "skew", "One", "first").await;
+    let _second = deliver(&s, "skew", "Two", "second").await;
+
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    c.login("skew").await;
+
+    // Removed over HTTP, after the snapshot was taken.
+    let (st, _) = http_json(
+        s.http_addr,
+        "DELETE",
+        &format!("/api/v1/messages/{first}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // The snapshot still names both: STAT keeps counting what it
+    // authenticated with — the skew is documented, not hidden.
+    let n1 = octets("sender@x.io", "skew", "One", "first");
+    let n2 = octets("sender@x.io", "skew", "Two", "second");
+    assert_eq!(c.cmd("STAT").await, format!("+OK 2 {}", n1 + n2));
+    assert_eq!(
+        c.cmd("LIST").await,
+        format!("+OK 2 messages ({} octets)", n1 + n2)
+    );
+    assert_eq!(c.data().await, format!("1 {n1}\r\n2 {n2}\r\n"));
+
+    // But the store is the truth for fetches: the removed mail answers
+    // "no such message" on RETR. DELE is a mark, not a fetch — RFC 1939
+    // gives it no store semantics — so it answers "+OK" and its delete
+    // applies idempotently at QUIT (the named residual in 0028 §3 is
+    // RETR/TOP honesty, not DELE).
+    assert_eq!(c.cmd("RETR 1").await, "-ERR no such message");
+    assert_eq!(c.cmd("DELE 1").await, "+OK message 1 deleted");
+    // And the survivor still serves, byte-exact.
+    assert_eq!(c.cmd("RETR 2").await, format!("+OK {n2} octets"));
+    assert_eq!(
+        c.data_bytes().await,
+        raw_of("sender@x.io", "skew", "Two", "second")
+    );
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+}
+
 #[tokio::test]
 async fn retr_stuffs_leading_dots_and_normalizes_line_endings() {
     let s = start().await;
@@ -214,9 +438,12 @@ async fn retr_stuffs_leading_dots_and_normalizes_line_endings() {
 
     let mut c = Pop3::connect(s.pop3_addr).await;
     c.login("stuffed").await;
-    // The stored raw keeps the bare LF; RETR normalizes on the wire but the
-    // octet count is the stored size.
-    let expected = (".leading-dots\n".len() + "plain line\r\n".len()) as u64;
+    // The stored raw keeps the bare LF (".leading-dots\nplain line\r\n");
+    // RETR's octet count is the wire: the stuffed, CRLF-terminated bytes
+    // this RETR transmits — ".leading-dots\r\n" is re-stuffed to
+    // "..leading-dots\r\n" and every line ends CRLF (decision 0028 §1).
+    let expected = wire_octets(b".leading-dots\nplain line\r\n");
+    assert_eq!(expected, 28, "15 + 16 + 12: the stuffed wire, not the raw");
     assert_eq!(c.cmd("RETR 1").await, format!("+OK {expected} octets"));
     // Dot-stuffing is undone by the client; the bare LF became CRLF.
     assert_eq!(c.data_bytes().await, b".leading-dots\r\nplain line\r\n");
@@ -794,6 +1021,14 @@ async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
     assert_eq!(c.data().await, format!("3 {n3}\r\n"));
     assert_eq!(c.cmd("NOOP").await, "+OK");
 
+    // The snapshot carries the store's truth for the committed prefix
+    // (decision 0015 §1): its number answers "no such message" — the mail
+    // is gone, not merely marked — while the failing suffix stays marked
+    // ("already deleted") until a retry or RSET resolves it.
+    assert_eq!(c.cmd("RETR 1").await, "-ERR no such message");
+    assert_eq!(c.cmd("DELE 1").await, "-ERR no such message");
+    assert_eq!(c.cmd("RETR 2").await, "-ERR message already deleted");
+
     // The prefix committed: the allowed mail is gone from the live tree and
     // from a fresh open of the same file, while the refused mail and the
     // bystander are present on both trees — the failure did not roll the
@@ -885,6 +1120,85 @@ async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
         .await;
         assert_eq!(st, want, "{why}: {st}");
     }
+    srv.stop().await;
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+}
+
+/// RSET clears only the session's own unapplied marks (issue #45, decision
+/// 0028 §3): a slot whose delete has committed is marked `gone` on the
+/// snapshot (decision 0015 §1), so RSET cannot resurrect it — after the
+/// RSET its number answers "-ERR no such message" — while the suffix whose
+/// delete failed is unmarked and serves again. The HTTP tree witnesses
+/// both: the prefix stays deleted, the refused mail was not deleted by a
+/// mere RSET.
+#[tokio::test]
+async fn rset_never_resurrects_a_committed_delete() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-e2e-pop3-rset-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let prefix = deliver(&srv, "rsetgone", "prefix", "first").await;
+    let refused = deliver(&srv, "rsetgone", "refused", "second").await;
+    let _kept = deliver(&srv, "rsetgone", "kept", "third").await;
+    let n2 = octets("sender@x.io", "rsetgone", "refused", "second");
+    let n3 = octets("sender@x.io", "rsetgone", "kept", "third");
+
+    let mut c = Pop3::connect(srv.pop3_addr).await;
+    c.login("rsetgone").await;
+    assert!(c.cmd("DELE 1").await.starts_with("+OK"));
+    assert!(c.cmd("DELE 2").await.starts_with("+OK"));
+
+    let trigger = common::refusing_trigger_except(&db, &refused);
+    assert!(c.cmd("QUIT").await.starts_with("-ERR"), "mid-loop failure");
+
+    // RSET clears the session's own marks — including the one whose delete
+    // failed — so the summary counts the refused mail and the bystander.
+    // The committed prefix is not among them: it is gone, not unmarked.
+    assert_eq!(
+        c.cmd("RSET").await,
+        format!("+OK maildrop has 2 messages ({} octets)", n2 + n3)
+    );
+    // The gone slot stays gone: the number is not resurrectable.
+    assert_eq!(c.cmd("RETR 1").await, "-ERR no such message");
+    assert_eq!(c.cmd("DELE 1").await, "-ERR no such message");
+    // The suffix is truly unmarked: it serves again.
+    assert_eq!(c.cmd("RETR 2").await, format!("+OK {n2} octets"));
+    assert_eq!(
+        c.data_bytes().await,
+        raw_of("sender@x.io", "rsetgone", "refused", "second")
+    );
+    // And the tree saw no delete beyond the committed prefix.
+    let (st, _) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{prefix}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 404, "the committed prefix must stay deleted: {st}");
+    let (st, _) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{refused}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "RSET must not delete the refused mail: {st}");
+    trigger.remove();
     srv.stop().await;
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));

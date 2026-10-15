@@ -81,7 +81,7 @@ async fn auth_plain_continuation_form_and_login_form() {
 }
 
 #[tokio::test]
-async fn auth_with_unknown_mechanism_or_bad_b64_is_handled() {
+async fn auth_with_unknown_mechanism_or_bad_b64_is_refused() {
     let srv = start().await;
     let mut c = SmtpConn::connect(srv.smtp_addr).await;
     c.send("EHLO t").await;
@@ -90,15 +90,142 @@ async fn auth_with_unknown_mechanism_or_bad_b64_is_handled() {
     c.send("AUTH CRAM-MD5").await;
     assert!(c.reply().await.starts_with("504"));
 
-    // Undecodable PLAIN: accepted (accept-any) but the inbox stays default.
+    // Undecodable PLAIN names no inbox: refused 501 5.5.2, nothing changed
+    // (decision 0028 §2) — the session's inbox stays `default` and a later
+    // delivery on the same connection flows there.
     c.send("AUTH PLAIN !!!not-b64!!!").await;
-    assert!(c.reply().await.starts_with("235"));
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
     c.send("MAIL FROM:<a@x.io>").await;
     assert!(c.reply().await.starts_with("250"));
     c.send("RCPT TO:<b@x.io>").await;
     assert!(c.reply().await.starts_with("250"));
     let reply = c.data("Subject: b64fail\r\n\r\nx").await;
     assert!(reply.starts_with("250"), "{reply}");
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1);
+}
+
+/// A PLAIN credential whose authcid is empty after trim names no inbox:
+/// refused `501 5.5.2` and nothing changes — not minted into "default"
+/// (decision 0028 §2). Same for a non-UTF-8 authcid: bytes that are not a
+/// name are never a name.
+#[tokio::test]
+async fn a_plain_credential_that_names_nothing_is_refused() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+
+    // authzid NUL authcid NUL passwd, with the authcid empty.
+    c.send(&format!("AUTH PLAIN {}", base64_of("\u{0}\u{0}x")))
+        .await;
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
+
+    // A non-UTF-8 authcid: invalid UTF-8 is not a name.
+    let raw = [0u8, 0, 0xff, 0xfe, 0, b'x'];
+    let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
+    c.send(&format!("AUTH PLAIN {b64}")).await;
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
+
+    // Nothing changed: a later transaction still flows to the default
+    // inbox the session started with.
+    c.send("MAIL FROM:<a@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<b@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(c.data("Subject: unnamed\r\n\r\nx").await.starts_with("250"));
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1);
+}
+
+/// The smtplib shape (decision 0028 §2, issue #43): a LOGIN initial
+/// response is the username, so only the password is prompted — a client
+/// that answers the Username prompt with the password would otherwise log
+/// into a nonsense mailbox. The username names the inbox, and a delivery
+/// on that same connection lands there.
+#[tokio::test]
+async fn a_login_initial_response_is_the_username() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+
+    c.send(&format!("AUTH LOGIN {}", base64_of("smtplibbox")))
+        .await;
+    // Exactly one further prompt: the password.
+    assert_eq!(c.reply().await, "334 UGFzc3dvcmQ6");
+    c.send(&base64_of("pw")).await;
+    assert_eq!(c.reply().await, "235 2.7.0 Accepted");
+
+    c.send("MAIL FROM:<f@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<r@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(c.data("Subject: named\r\n\r\nhi").await.starts_with("250"));
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/smtplibbox/count",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1);
+}
+
+/// A credential that names nothing — an empty username, the `*` cancel at
+/// either prompt — is refused `501 5.5.2` and changes nothing (decision
+/// 0028 §2). A LOGIN whose username line is undecodable base64, or decodes
+/// to invalid UTF-8, refuses the same way.
+#[tokio::test]
+async fn a_login_credential_that_names_nothing_is_refused() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+
+    // Empty username.
+    c.send("AUTH LOGIN").await;
+    assert_eq!(c.reply().await, "334 VXNlcm5hbWU6");
+    c.send("").await; // empty line
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
+
+    // Undecodable username.
+    c.send("AUTH LOGIN !!!not-b64!!!").await;
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
+
+    // A username that decodes to invalid UTF-8 — both as the initial
+    // response and at the prompt — is not a name.
+    let b64 = base64::engine::general_purpose::STANDARD.encode([0xff, 0xfe, 0x0a]);
+    c.send(&format!("AUTH LOGIN {b64}")).await;
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
+    c.send("AUTH LOGIN").await;
+    assert_eq!(c.reply().await, "334 VXNlcm5hbWU6");
+    c.send(&b64).await;
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
+
+    // The `*` cancel at the username prompt.
+    c.send("AUTH LOGIN").await;
+    assert_eq!(c.reply().await, "334 VXNlcm5hbWU6");
+    c.send("*").await;
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
+
+    // The `*` cancel at the password prompt — after a valid username.
+    c.send("AUTH LOGIN").await;
+    assert_eq!(c.reply().await, "334 VXNlcm5hbWU6");
+    c.send(&base64_of("cancelbox")).await;
+    assert_eq!(c.reply().await, "334 UGFzc3dvcmQ6");
+    c.send("*").await;
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
+
+    // Nothing changed: the session is alive and still unnamed.
+    c.send("MAIL FROM:<a@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<b@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(c.data("Subject: refused\r\n\r\nx").await.starts_with("250"));
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1);
@@ -535,10 +662,11 @@ async fn mail_from_without_brackets_uses_the_key_value_fallback() {
     assert!(froms.contains(&">weird<".to_string()), "got {froms:?}");
 }
 
-/// AUTH LOGIN with an undecodable username: the inbox stays whatever it was
-/// (the `if let Some(user)` arm is skipped) and the handshake still succeeds.
+/// AUTH LOGIN whose username line (at the prompt) does not decode: refused
+/// `501 5.5.2` and nothing changed (decision 0028 §2) — the session stays
+/// unnamed and a later delivery on it flows to the default inbox.
 #[tokio::test]
-async fn auth_login_with_undecodable_username_stays_default() {
+async fn auth_login_with_undecodable_username_is_refused() {
     let srv = start().await;
     let mut c = SmtpConn::connect(srv.smtp_addr).await;
     c.send("EHLO t").await;
@@ -546,13 +674,11 @@ async fn auth_login_with_undecodable_username_stays_default() {
     c.send("AUTH LOGIN").await;
     assert!(c.reply().await.starts_with("334 VXNlcm5hbWU6"));
     c.send("!!!not-b64!!!").await;
-    assert!(c.reply().await.starts_with("334 UGFzc3dvcmQ6"));
-    c.send(&base64_of("pw")).await;
-    assert!(c.reply().await.starts_with("235"));
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
 
     c.send("MAIL FROM:<f@x.io>").await;
     assert!(c.reply().await.starts_with("250"));
-    c.send("RCPT TO:<defaultlogin@x.io>").await;
+    c.send("RCPT TO:<r@x.io>").await;
     assert!(c.reply().await.starts_with("250"));
     assert!(
         c.data("Subject: login b64 fail\r\n\r\nx")
@@ -564,10 +690,11 @@ async fn auth_login_with_undecodable_username_stays_default() {
     assert_eq!(body["count"], 1);
 }
 
-/// AUTH PLAIN whose authcid is empty: `auth_plain_inbox` returns None and the
-/// mail flows to the default inbox (the `user.is_empty()` arm).
+/// AUTH PLAIN (continuation form) whose authcid is empty: refused `501
+/// 5.5.2` and nothing changed — the mail flows to the inbox the session
+/// already had (decision 0028 §2).
 #[tokio::test]
-async fn auth_plain_with_empty_authcid_stays_default() {
+async fn auth_plain_with_empty_authcid_is_refused() {
     let srv = start().await;
     let mut c = SmtpConn::connect(srv.smtp_addr).await;
     c.send("EHLO t").await;
@@ -575,7 +702,7 @@ async fn auth_plain_with_empty_authcid_stays_default() {
     c.send("AUTH PLAIN").await;
     assert!(c.reply().await.starts_with("334"));
     c.send(&base64_of("\u{0}\u{0}pw")).await;
-    assert!(c.reply().await.starts_with("235"));
+    assert_eq!(c.reply().await, "501 5.5.2 Credentials refused");
 
     c.send("MAIL FROM:<f@x.io>").await;
     assert!(c.reply().await.starts_with("250"));
@@ -623,27 +750,279 @@ async fn data_with_immediate_eof_stores_nothing() {
     assert!(fresh.reply().await.starts_with("250"));
 }
 
-/// A DATA body terminated by `.` + bare LF (no CR) is a legal terminator:
-/// RFC 5321 §2.3.8 tolerance — the `line == ".\n"` arm of the check.
+/// A `.` + bare-LF line inside DATA is payload, not a terminator (RFC 5321
+/// §2.3.8 — issue #42): only `.` CRLF ends the message, so the dot-stuffing
+/// and line-ending rules stay airtight and the SMTP-smuggling class of
+/// parser divergence has no seam. The bare-LF dot line is stored verbatim
+/// and the text after it is *not* parsed as a command.
 #[tokio::test]
-async fn data_terminated_by_bare_lf_dot_is_accepted() {
+async fn a_bare_lf_dot_line_is_payload_not_a_terminator() {
     let srv = start().await;
     let mut c = SmtpConn::connect(srv.smtp_addr).await;
     c.send("EHLO t").await;
     c.reply().await;
+    c.send("AUTH PLAIN AGxmcGF5bG9hZA==").await; // \0lfpayload\0
+    assert!(c.reply().await.starts_with("235"));
     c.send("MAIL FROM:<lf@x.io>").await;
     assert!(c.reply().await.starts_with("250"));
-    c.send("RCPT TO:<barelf@x.io>").await;
+    c.send("RCPT TO:<r@x.io>").await;
     assert!(c.reply().await.starts_with("250"));
     c.send("DATA").await;
     assert!(c.reply().await.starts_with("354"));
-    c.send_bytes(b"Subject: bare lf terminator\r\n\r\nbody\r\n.\n")
-        .await;
-    assert!(c.reply().await.starts_with("250"));
+    // The terminator is the `.` CRLF at the end; the `.` bare-LF line in
+    // the middle is payload, and `bar` after it is message body, not a
+    // command.
+    c.send_bytes(b"foo\n.\nbar\r\n.\r\n").await;
+    let reply = c.reply().await;
+    assert!(
+        reply.starts_with("250"),
+        "the CRLF dot ended the mail: {reply}"
+    );
 
+    // Exactly one mail, carrying the bare-LF dot line verbatim.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/lfpayload/count",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1, "one mail, not two, not zero: {body}");
+    let (st, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/lfpayload/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let id = list["emails"][0]["id"]
+        .as_str()
+        .expect("the mail has an id");
+    // /raw is message/rfc822, not JSON: read it as text.
+    let (st, raw) = common::http_send_text(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}/raw"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert!(
+        raw.contains(".\n"),
+        "the bare-LF dot line is part of the payload: {raw:?}"
+    );
+    assert!(
+        raw.contains("bar\r\n"),
+        "the text after it is body: {raw:?}"
+    );
+}
+
+/// The envelope is consumed at the DATA terminator, whatever the outcome
+/// (issue #42): after a completed transaction — accepted, over-cap or
+/// refused — a following `RCPT` and `DATA` answer `503 5.5.1 Error: need
+/// MAIL command`, and no empty mail is stored. The ruling in the spec is
+/// normative over its AC's one-word `need RCPT` (AC1): a DATA that cannot
+/// name a current MAIL — none at all, or one already consumed — answers
+/// `need MAIL`; `need RCPT` is for an open transaction with no recipients
+/// (AC5).
+#[tokio::test]
+async fn a_completed_transaction_leaves_nothing_for_the_next_data() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    // The session's maildrop is `consumed`; its deliveries land there.
+    c.send("AUTH PLAIN AGNvbnN1bWVkAA==").await; // \0consumed\0
+    assert!(c.reply().await.starts_with("235"));
+    c.send("MAIL FROM:<done@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<r@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(c.data("Subject: done\r\n\r\nx").await.starts_with("250"));
+
+    // The transaction is over: the envelope is gone.
+    c.send("RCPT TO:<r@x.io>").await;
+    assert_eq!(c.reply().await, "503 5.5.1 Error: need MAIL command");
+    c.send("DATA").await;
+    assert_eq!(c.reply().await, "503 5.5.1 Error: need MAIL command");
+    c.send(".").await;
+    assert!(
+        c.reply().await.starts_with("502"),
+        "a lone dot is a command, not a terminator"
+    );
+
+    // And nothing was stored for it: one mail, the completed one.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/consumed/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        body["count"], 1,
+        "no empty mail inherited the envelope: {body}"
+    );
+}
+
+/// A refused MAIL (probability-100 chaos at `mail_from`) consumes the
+/// envelope before the refusal: the pipelined DATA behind it answers `503
+/// need MAIL`, the lone `.` is answered as a command, and no empty mail is
+/// stored (issue #42).
+#[tokio::test]
+async fn a_refused_mail_leaves_no_envelope_for_data() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    // The session's maildrop is `consumed`; its deliveries land there.
+    c.send("AUTH PLAIN AGNvbnN1bWVkAA==").await; // \0consumed\0
+    assert!(c.reply().await.starts_with("235"));
+    c.send("MAIL FROM:<first@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<r@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(c.data("Subject: kept\r\n\r\nx").await.starts_with("250"));
+
+    // Refuse every MAIL FROM from here on.
+    let (st, _) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"mail_from": {"probability": 100, "error": "451 4.7.1 mail refused"}}"#),
+    )
+    .await;
+    assert_eq!(st, 200);
+    c.send("MAIL FROM:<second@x.io>").await;
+    assert_eq!(c.reply().await, "451 4.7.1 mail refused");
+    http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
+
+    // The refusal consumed the envelope: the DATA behind it has none.
+    c.send("DATA").await;
+    assert_eq!(c.reply().await, "503 5.5.1 Error: need MAIL command");
+    c.send(".").await;
+    assert!(
+        c.reply().await.starts_with("502"),
+        "a lone dot is a command"
+    );
+
+    // No empty mail inherited the refused envelope.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/consumed/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1, "exactly the completed mail: {body}");
+}
+
+/// A DATA refused by its own outcome — here over-cap `552` — consumed the
+/// envelope at the terminator: a following DATA answers `503 need MAIL`,
+/// and no empty mail is stored (issue #42).
+#[tokio::test]
+async fn a_refused_data_consumes_the_envelope() {
+    let srv = start_smtp(SmtpConfig {
+        max_message_size: 32,
+        ..Default::default()
+    })
+    .await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("AUTH PLAIN AGNvbnN1bWVkAA==").await; // \0consumed\0
+    assert!(c.reply().await.starts_with("235"));
+    c.send("MAIL FROM:<over@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<r@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    c.send_bytes(b"Subject: too big for the cap\r\n\r\nway more than thirty two bytes\r\n")
+        .await;
+    c.send(".").await;
+    assert!(c.reply().await.starts_with("552"), "over cap: refused");
+
+    // The 552 consumed the envelope at the terminator.
+    c.send("DATA").await;
+    assert_eq!(c.reply().await, "503 5.5.1 Error: need MAIL command");
+
+    // And nothing was stored: the 552 mail is not there, no empty mail either.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/consumed/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 0, "nothing from the refused DATA: {body}");
+}
+
+/// A nested MAIL is refused and the open transaction survives (RFC 5321
+/// §4.1.4 — issue #42): the client can keep adding recipients and complete
+/// the original mail.
+#[tokio::test]
+async fn a_nested_mail_is_refused_and_leaves_the_transaction_open() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    // The session's maildrop is `nested`; its deliveries land there.
+    c.send("AUTH PLAIN AG5lc3RlZAA=").await; // \0nested\0
+    assert!(c.reply().await.starts_with("235"));
+    c.send("MAIL FROM:<outer@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("MAIL FROM:<inner@x.io>").await;
+    assert_eq!(c.reply().await, "503 5.5.1 Error: nested MAIL command");
+    // The original transaction is still open.
+    c.send("RCPT TO:<r@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(
+        c.data("Subject: still open\r\n\r\nx")
+            .await
+            .starts_with("250")
+    );
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/nested/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1);
+    let (st, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/nested/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        list["emails"][0]["from"]["address"], "outer@x.io",
+        "the envelope is the outer one"
+    );
+}
+
+/// AUTH during an open transaction is refused (RFC 4954 §4 — issue #42)
+/// and the transaction survives with its inbox unchanged.
+#[tokio::test]
+async fn auth_during_a_transaction_is_refused() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<a@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("AUTH PLAIN AG90aGVyYm94A===").await;
+    assert_eq!(
+        c.reply().await,
+        "503 5.5.1 Error: MAIL transaction in progress"
+    );
+    // The transaction survived, with the inbox AUTH did not touch.
+    c.send("RCPT TO:<r@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    assert!(c.data("Subject: mid\r\n\r\nx").await.starts_with("250"));
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
-    assert_eq!(body["count"], 1, "the bare-LF-terminated mail was stored");
+    assert_eq!(body["count"], 1);
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/otherbox/count", None).await;
+    assert_eq!(st, 200, "the refused AUTH never created its inbox");
+    assert_eq!(body["count"], 0);
+}
+
+/// DATA with no current MAIL at all answers `503 5.5.1 Error: need MAIL
+/// command` — the exact line (issue #42, AC5).
+#[tokio::test]
+async fn data_without_mail_answers_need_mail() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("DATA").await;
+    assert_eq!(c.reply().await, "503 5.5.1 Error: need MAIL command");
 }
 
 /// An exactly-cap message whose final line is dot-stuffed fits: the per-line

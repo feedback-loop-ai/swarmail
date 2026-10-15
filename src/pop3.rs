@@ -2,14 +2,36 @@
 //!
 //! A `USER` names an existing swarmail inbox — the maildrop is that inbox
 //! — and `PASS` accepts any credentials, mirroring the SMTP accept-any
-//! posture (decision 0004). The session snapshots its maildrop, numbered
-//! oldest-first, at authentication: numbering stays stable while mail
-//! arrives, and new mail is visible to the next session. Every answer is
-//! read from the synchronously-queryable store (decision 0001) and `DELE`
-//! only marks; the marks are applied through `Store::delete` on `QUIT`
-//! (RFC 1939's update state) — an explicit deletion that never touches the
-//! oldest-only pruning path (decision 0003). Plaintext only: no APOP, no
-//! TLS, like the rest of swarmail's listeners.
+//! posture (decision 0004). A failing `USER` — empty argument, unknown
+//! mailbox — clears the pending name (decision 0028 §2): `PASS`
+//! afterwards answers `-ERR USER required first`, never logging into a
+//! mailbox a *previous* `USER` named. Every answer is read from the
+//! synchronously-queryable store (decision 0001) and `DELE` only marks;
+//! the marks are applied through `Store::delete_async` on `QUIT` (RFC
+//! 1939's update state) — an explicit deletion that never touches the
+//! oldest-only pruning path (decision 0003).
+//!
+//! The session snapshots its maildrop, numbered oldest-first, at
+//! authentication: numbering stays stable while mail arrives, and new mail
+//! is visible to the next session. That is a snapshot, not a lock (decision
+//! 0028 §3): listings answer from the snapshot, fetches and updates go to
+//! the store, and mail removed elsewhere (another session's committed
+//! delete, an HTTP clear) is reported `-ERR no such message` — the skew is
+//! documented, never hidden. `RSET` clears the session's own unapplied
+//! marks; it can never resurrect a delete that has committed, because a
+//! slot whose delete landed is marked `gone` on the snapshot (decision
+//! 0015 §1): the store's truth carried on the slot, answered `-ERR no such
+//! message` instead of "already deleted".
+//!
+//! An advertised octet count is the length of the bytes RETR transmits —
+//! CRLF-terminated, dot-stuffed, excluding the final `.\r\n` (RFC 1939 §11,
+//! decision 0028 §1). It is derived by running the same writer, never
+//! stored a second time: a count cannot drift from the wire.
+//!
+//! `QUIT` reports a failed commit (`-ERR storage commit failed`, decision
+//! 0014) instead of pretending, and stays in TRANSACTION so the client may
+//! retry (decision 0015 §1). Plaintext only: no APOP, no TLS, like the
+//! rest of swarmail's listeners.
 
 use crate::store::{Filter, Store};
 use std::collections::BTreeSet;
@@ -166,11 +188,17 @@ pub async fn serve(
     }
 }
 
-/// One maildrop entry, snapshotted oldest-first at authentication.
+/// One maildrop entry, snapshotted oldest-first at authentication. `size`
+/// is the wire: the octets RETR transmits for this mail (decision 0028 §1),
+/// derived by running the writer — never the stored length. `gone` marks a
+/// slot whose delete has *committed* (decision 0015 §1): the mail is no
+/// longer in the store, so the slot may serve nothing — the store's truth
+/// carried on the slot, keeping `RSET` from resurrecting a landed delete.
 #[derive(Debug)]
 struct MaildropMsg {
     id: String,
     size: u64,
+    gone: bool,
 }
 
 /// The two RFC 1939 phases. The maildrop and deletion marks live outside so
@@ -294,8 +322,14 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
         match (phase, verb.as_str()) {
             (Phase::Authorization, "USER") => {
                 if arg.is_empty() {
+                    // A failing USER leaves no pending name (decision 0028
+                    // §2): PASS afterwards answers "-ERR USER required
+                    // first", never logging into a mailbox a previous USER
+                    // named.
+                    user = None;
                     write_line(&mut write, "-ERR missing username", idle).await?;
                 } else if !inbox_exists(&store, arg) {
+                    user = None;
                     write_line(&mut write, "-ERR no such mailbox", idle).await?;
                 } else {
                     user = Some(arg.to_string());
@@ -318,7 +352,13 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                     .rev()
                     .map(|e| MaildropMsg {
                         id: e.id.clone(),
-                        size: e.size,
+                        // The advertised size is the wire: the octets RETR
+                        // would transmit for this mail (decision 0028 §1),
+                        // derived by running the writer — never `e.size`,
+                        // which is a second copy of a fact the wire already
+                        // states and could drift from it.
+                        size: wire_len(&e.raw),
+                        gone: false,
                     })
                     .collect();
                 deleted.clear();
@@ -413,8 +453,14 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                         // or POP3 in another session): not fetchable.
                         None => write_line(&mut write, "-ERR no such message", idle).await?,
                         Some(email) => {
-                            let mut out = format!("+OK {} octets\r\n", msg.size).into_bytes();
-                            write_stuffed(&mut out, &email.raw);
+                            // The count is the body's own length: the octets
+                            // this session is about to transmit (decision
+                            // 0028 §1) — the same writer that fills it, so
+                            // the advertisement cannot drift from the wire.
+                            let mut body = Vec::new();
+                            write_stuffed(&mut body, &email.raw);
+                            let mut out = format!("+OK {} octets\r\n", body.len()).into_bytes();
+                            out.extend_from_slice(&body);
                             out.extend_from_slice(b".\r\n");
                             crate::smtp::bound_io(write.write_all(&out), idle).await?;
                         }
@@ -493,23 +539,33 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                 // failed commit is the answer (decision 0014): `-ERR` with
                 // the fixed text, no sign-off — the session stays in
                 // TRANSACTION. The update is at-least-once, not atomic
-                // (decision 0015): the marks are applied one store delete at
-                // a time, so a mid-loop failure leaves the committed prefix
-                // committed — the already-deleted part of a partial batch
-                // stays deleted, its commit landed — and the failing suffix
-                // unmarked, i.e. unapplied: the maildrop snapshot and the
-                // store both still hold that mail, and a fresh session's
-                // LIST names it again. Nothing lies and every client path
+                // (decision 0015 §1): the marks are applied one store delete
+                // at a time, so a mid-loop failure leaves the *committed
+                // prefix* committed and the failing suffix marked, unapplied.
+                // Nothing reports deleted and resurrects: a number whose
+                // delete landed leaves the mark set and its slot is marked
+                // `gone` — the store's truth on the slot, so RETR answers
+                // `-ERR no such message` for mail that no longer exists and
+                // `RSET` cannot bring it back — while the suffix keeps its
+                // mark and answers `-ERR message already deleted`, its mail
+                // still on both trees. Nothing lies and every client path
                 // converges: a retry `QUIT` is idempotent over the unapplied
-                // suffix, and `RSET` unmarks.
+                // suffix, and `RSET` unmarks only what has not committed.
                 let mut commit_failed = false;
-                for num in &deleted {
+                let numbers: Vec<usize> = deleted.iter().copied().collect();
+                for num in numbers {
                     match store
                         .clone()
-                        .delete_async(maildrop[*num - 1].id.clone())
+                        .delete_async(maildrop[num - 1].id.clone())
                         .await
                     {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            // Committed: the number leaves the mark set and
+                            // the slot is marked gone — it can never be
+                            // served or resurrected again.
+                            maildrop[num - 1].gone = true;
+                            deleted.remove(&num);
+                        }
                         Err(_) => {
                             commit_failed = true;
                             break;
@@ -551,6 +607,10 @@ fn inbox_exists(store: &Store, name: &str) -> bool {
 }
 
 /// The maildrop entry for a 1-based message number, or the RFC 1939 error.
+/// A number marked `deleted` answers "message already deleted" — its mail
+/// is still in the store until QUIT. A *gone* slot (its delete committed,
+/// decision 0015 §1) answers "no such message" — the mail no longer exists
+/// to serve, whatever the marks say.
 fn resolve<'a>(
     maildrop: &'a [MaildropMsg],
     deleted: &BTreeSet<usize>,
@@ -562,15 +622,20 @@ fn resolve<'a>(
     if deleted.contains(&num) {
         return Err("message already deleted");
     }
+    if maildrop[num - 1].gone {
+        return Err("no such message");
+    }
     Ok(&maildrop[num - 1])
 }
 
-/// (message count, total octets) over the still-live maildrop entries.
+/// (message count, total octets) over the still-live maildrop entries: not
+/// marked `deleted` and not `gone` — a gone slot's mail no longer exists,
+/// so neither its count nor its octets can be reported (decision 0015 §1).
 fn counts(maildrop: &[MaildropMsg], deleted: &BTreeSet<usize>) -> (usize, u64) {
     let mut n = 0;
     let mut m = 0;
     for (i, msg) in maildrop.iter().enumerate() {
-        if deleted.contains(&(i + 1)) {
+        if deleted.contains(&(i + 1)) || msg.gone {
             continue;
         }
         n += 1;
@@ -579,10 +644,12 @@ fn counts(maildrop: &[MaildropMsg], deleted: &BTreeSet<usize>) -> (usize, u64) {
     (n, m)
 }
 
-/// The still-live 1-based maildrop numbers, oldest-first.
+/// The still-live 1-based maildrop numbers, oldest-first: not marked
+/// `deleted` and not `gone` (a gone slot serves nothing — its mail is no
+/// longer in the store to fetch).
 fn live_numbers(maildrop: &[MaildropMsg], deleted: &BTreeSet<usize>) -> Vec<usize> {
     (1..=maildrop.len())
-        .filter(|n| !deleted.contains(n))
+        .filter(|n| !deleted.contains(n) && !maildrop[n - 1].gone)
         .collect()
 }
 
@@ -630,6 +697,17 @@ async fn write_capabilities<W: tokio::io::AsyncWrite + Unpin>(
 /// normalized) and any line starting with "." gets a "." stuffed in front.
 fn write_stuffed(out: &mut Vec<u8>, raw: &[u8]) {
     write_stuffed_limited(out, raw, usize::MAX);
+}
+
+/// The wire length of a stored mail: the octets RETR transmits for it —
+/// CRLF-terminated, dot-stuffed, excluding the final `.\r\n` (RFC 1939 §11,
+/// decision 0028 §1). Derived by running the writer itself, never a
+/// mirrored walk of its rules: the count cannot drift from the wire, and
+/// no stored field ever states the length twice.
+fn wire_len(raw: &[u8]) -> u64 {
+    let mut buf = Vec::new();
+    write_stuffed(&mut buf, raw);
+    buf.len() as u64
 }
 
 /// The first `max_lines` lines of `raw`, dot-stuffed; the terminating "."
@@ -755,14 +833,17 @@ mod tests {
             MaildropMsg {
                 id: "a".into(),
                 size: 10,
+                gone: false,
             },
             MaildropMsg {
                 id: "b".into(),
                 size: 20,
+                gone: false,
             },
             MaildropMsg {
                 id: "c".into(),
                 size: 30,
+                gone: false,
             },
         ];
         let deleted: BTreeSet<usize> = [2].into_iter().collect();

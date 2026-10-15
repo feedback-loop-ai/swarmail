@@ -177,6 +177,24 @@ impl Pop3 {
         String::from_utf8(self.data_bytes().await).unwrap()
     }
 
+    /// The multi-line reply body verbatim — no dot-unstuffing, no CRLF
+    /// restoration — up to (not including) the terminating "." line: what
+    /// RETR actually transmitted, for octet-count assertions (decision
+    /// 0028 §1). A stuffed "." line arrives as "..", so a bare ".\r\n" line
+    /// can only be the terminator.
+    pub async fn raw_bytes(&mut self) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut line = Vec::new();
+            self.reader.read_until(b'\n', &mut line).await.unwrap();
+            assert!(!line.is_empty(), "connection closed mid-data");
+            if line == b".\r\n" {
+                return out;
+            }
+            out.extend_from_slice(&line);
+        }
+    }
+
     /// USER + PASS round-trip; any password is accepted (decision 0004).
     pub async fn login(&mut self, user: &str) {
         assert!(self.cmd(&format!("USER {user}")).await.starts_with("+OK"));
@@ -504,6 +522,25 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
 /// body (axum's text rejections, a no-content 202) comes here instead —
 /// reading a text response as JSON is exactly the dishonesty issue #50
 /// named, and so is silencing it back into `{}`.
+/// Like `http_send_text`, but a connection closed with no answer at all
+/// maps to status 0 instead of a parse panic. 0018 §2 leaves the
+/// client-visible outcome of a commit in flight at stop open — the socket
+/// is answered 503, or the socket dies first and the client sees EOF;
+/// callers that assert on the refusal must accept both.
+pub async fn http_send_text_allow_eof(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> (u16, String) {
+    let (status, text) = http_send_text(addr, method, path, body).await;
+    if text.is_empty() {
+        (0, text)
+    } else {
+        (status, text)
+    }
+}
+
 pub async fn http_send_text(
     addr: std::net::SocketAddr,
     method: &str,
