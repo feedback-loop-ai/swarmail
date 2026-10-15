@@ -17,5 +17,5 @@
       "journal": "../brokkr/.forge/forge.db"
     }
   ],
-  "journal": ".forge/forge.db"
+  "journal": ".brokkr/state/forge.db"
 }
