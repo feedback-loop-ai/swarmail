@@ -39,7 +39,14 @@ pub struct RunningServer {
     pub chaos: Arc<chaos::Chaos>,
     pub webhooks: Arc<webhook::Webhooks>,
     shutdown: tokio::sync::watch::Sender<bool>,
+    /// The drain one-shot (decision 0029 §5): sent only after the serve
+    /// tasks' awaited commits have resolved, releasing the dispatcher to
+    /// end its loop, sweep the ring and abort what is still in flight.
+    drained: tokio::sync::watch::Sender<bool>,
     tasks: tokio::task::JoinSet<()>,
+    /// The dispatcher's own set (decision 0029 §5): joined by `stop`
+    /// *after* `tasks` and the `drained` send, in that order.
+    dispatcher: tokio::task::JoinSet<()>,
 }
 
 impl RunningServer {
@@ -48,10 +55,21 @@ impl RunningServer {
     /// process spawned is left untracked: an SSE feed ends on the same
     /// signal, a delivery in flight is aborted and counted, and a session
     /// mid-transaction dies with its socket.
+    ///
+    /// The sequencing is decision 0029 §5's drain: `shutdown` first; the
+    /// serve tasks join (their awaited commits resolve *inside* this join,
+    /// so every tracked commit's fan-out is already in the firehose); then
+    /// `drained`; then the dispatcher joins — it has kept consuming the
+    /// post-stop mail, counting each matching fan-out aborted, and now
+    /// sweeps the ring and aborts what is left. Counted, never silently
+    /// lost; `src/store.rs` untouched.
     pub async fn stop(self) {
         let _ = self.shutdown.send(true);
         let mut tasks = self.tasks;
         while tasks.join_next().await.is_some() {}
+        let _ = self.drained.send(true);
+        let mut dispatcher = self.dispatcher;
+        while dispatcher.join_next().await.is_some() {}
     }
 }
 
@@ -85,7 +103,6 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     // SQLite call, which is what bounds shutdown to one busy wait.
     store.observe_shutdown(shutdown_rx.clone());
     let mut tasks = tokio::task::JoinSet::new();
-    webhook::spawn_dispatcher(&store, &webhooks, shutdown_rx.clone(), &mut tasks);
 
     // One degraded flag per listening surface, created where the listeners
     // are bound (decision 0027): an accept loop sets its own on a failed
@@ -95,6 +112,20 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     // is advisory truth about a socket, not a lock domain.
     let smtp_degraded = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let pop3_degraded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    // The dispatcher's own task set and the drain one-shot it waits for
+    // (decision 0029 §5): `stop` releases it with `drained` only after the
+    // serve tasks — and the commits they await — have resolved, so a commit
+    // finishing during shutdown is counted, never silently lost.
+    let (drained, drained_rx) = tokio::sync::watch::channel(false);
+    let mut dispatcher = tokio::task::JoinSet::new();
+    webhook::spawn_dispatcher(
+        &store,
+        &webhooks,
+        shutdown_rx.clone(),
+        drained_rx,
+        &mut dispatcher,
+    );
 
     // TLS is parsed before anything binds: a server that answers must not
     // answer with a broken TLS config. Both halves of the pair are required.
@@ -204,7 +235,9 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         chaos,
         webhooks,
         shutdown,
+        drained,
         tasks,
+        dispatcher,
     })
 }
 

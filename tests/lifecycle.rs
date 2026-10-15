@@ -768,3 +768,87 @@ async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
     assert_eq!(st, 503, "{body}");
     assert_eq!(body["status"], "stopping");
 }
+
+// ---------- issue #47: shutdown counting is a ledger row, not a silence ----
+
+/// A fan-out whose mail commits before the stop and whose delivery is still
+/// in flight when the drain fires is counted — `aborted`, never `delivered`,
+/// never silently lost (issue #47, decision 0029 §5). The commit is *not*
+/// pinned: the client sees the lawful `250` (guarantee 1 intact through a
+/// stop, unlike 0018's burned commit), the mail is on the data file, and the
+/// ledger is exact under both interleavings — the drain either aborts the
+/// wedged delivery (the sweep's count) or sees the fan-out post-stop (the
+/// matching count) — so no scheduling order can flake the row.
+#[tokio::test]
+async fn a_fanout_in_flight_at_the_drain_is_counted_and_never_delivered() {
+    let dir = std::env::temp_dir().join(format!("swarmail-drain-count-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("counted.db");
+    let srv = start_with(|mut c| {
+        c.data_file = Some(path.clone());
+        c
+    })
+    .await;
+    let (addr, hits, ended) = stalled_sink().await;
+    let body = serde_json::json!([
+        { "url": format!("http://{addr}/hook"), "inbox": "drain" }
+    ])
+    .to_string();
+    let (st, resp) = common::http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+    assert_eq!(st, 200, "{resp}");
+
+    // The commit resolves before the stop, so the client sees the lawful
+    // `250`; the wedged delivery is spawned and holds its slot.
+    let tail = common::smtp_send(
+        srv.smtp_addr,
+        Some("drain"),
+        "f@x.io",
+        "r@x.io",
+        "counted",
+        "x",
+    )
+    .await
+    .expect("the commit resolved before the stop");
+    assert!(tail.starts_with("250"), "the lawful 250: {tail:?}");
+    spin_until(Duration::from_secs(5), || hits.load(Ordering::Relaxed) == 1).await;
+
+    let smtp_addr = srv.smtp_addr;
+    let http_addr = srv.http_addr;
+    let webhooks = Arc::clone(&srv.webhooks);
+    let started = std::time::Instant::now();
+    tokio::time::timeout(STOP_BUDGET, srv.stop())
+        .await
+        .expect("a wedged delivery must not hold stop");
+
+    // The abort is seen from the wire: the held connection closed, and no
+    // listener answers after the stop.
+    tokio::time::timeout(Duration::from_secs(5), ended)
+        .await
+        .expect("the wedged delivery's socket must close on stop")
+        .unwrap();
+    refuses(smtp_addr).await;
+    refuses(http_addr).await;
+    assert!(
+        started.elapsed() < STOP_BUDGET,
+        "stop took {:?} with a fan-out in flight",
+        started.elapsed()
+    );
+
+    // The ledger: counted, never delivered, and not a budget drop.
+    let ledger = webhooks.snapshot();
+    assert_eq!(ledger.aborted, 1, "{ledger:?}");
+    assert_eq!(ledger.delivered, 0, "{ledger:?}");
+    assert_eq!(ledger.dropped, 0, "{ledger:?}");
+
+    // And the commit landed: the 250 was honest — the row is on the real
+    // data file after the stop.
+    let ro =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("the data file opens read-only");
+    let stored: i64 = ro
+        .query_row("SELECT COUNT(*) FROM emails", [], |row| row.get(0))
+        .expect("the emails table reads");
+    assert_eq!(stored, 1, "the commit the stop allowed is on the data file");
+    drop(ro);
+    let _ = std::fs::remove_dir_all(dir);
+}
