@@ -19,6 +19,15 @@
   section below).
 - HTTP: API at `http://localhost:8025`, this file at `/llms.txt`, OpenAPI at
   `/openapi.json`, MCP at `POST /mcp`, health at `/healthz`, Prometheus at `/metrics`.
+- Binds: all three listeners default to `127.0.0.1` (the image and the chart
+  state `0.0.0.0` explicitly). While the HTTP listener is loopback-bound,
+  requests carrying an `Origin` header are answered `403` unless the origin is
+  a loopback spelling of the bound port — a browser page from another origin
+  cannot drive the API, DNS rebinding included. No `Origin` (curl, agents, the
+  stdio bridge, every harness) passes untouched.
+- Pages are capped at 250 items on every plane: `limit`/`count` above it is
+  refused with a 400 (REST + shims) or a `-32602` error (MCP), never clamped.
+  Parse work and page copies run off the async workers on the blocking pool.
 
 ## The agent loop (clear → act → assert)
 
@@ -112,7 +121,7 @@ Same store, the two shapes existing suites already speak:
 - `GET /api/v1/messages` — Mailpit's summary envelope (`total`, `unread`,
   `count`, `messages_count`, `messages_unread_count`, `start`, `tags`,
   `messages`), newest first. `?inbox=` scopes to one swarmail inbox;
-  `?limit=`/`?start=` page.
+  `?limit=`/`?start=` page (`limit` ≤ 250, refused with a 400 above).
 - `GET /api/v1/message/{id}` — Mailpit's full message; `/plain` serves the
   extracted text part. `DELETE /api/v1/messages` deletes exactly the
   non-empty `{"ids": [...]}` named mails and replies `{"removed": n}`; any

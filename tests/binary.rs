@@ -209,6 +209,31 @@ async fn serve_answers_healthz_and_stops_on_sigint() {
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
 
+/// The bind knobs work in their env shape alone — no flags, the three
+/// `SWARMAIL_*_LISTEN` vars, the spelling the image and the chart use
+/// (decision 0030 §1). The loopback defaults now hold when nothing is set;
+/// this pins that an explicit env bind still overrides them, read back
+/// from the startup line the operator sees.
+#[tokio::test]
+async fn serve_takes_its_binds_from_the_environment() {
+    let mut cmd = Command::new(binary());
+    cmd.args(["serve"]);
+    for var in [
+        "SWARMAIL_SMTP_LISTEN",
+        "SWARMAIL_POP3_LISTEN",
+        "SWARMAIL_HTTP_LISTEN",
+    ] {
+        cmd.env(var, "127.0.0.1:0");
+    }
+    let mut serve = spawn_serve(cmd).await;
+    wait_http_up(serve.http_addr).await;
+    let (st, body) = common::http_json(serve.http_addr, "GET", "/healthz", None).await;
+    assert_eq!(st, 200, "the env-bound server answers healthz: {body}");
+    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    serve.reaped = true;
+    assert!(status.success(), "SIGINT exit: {status:?}");
+}
+
 #[tokio::test]
 async fn serve_restores_a_data_file_across_a_restart() {
     let db = std::env::temp_dir().join(format!(
@@ -469,23 +494,12 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
         "no 250 was ever observed — the leg would assert nothing"
     );
 
-    // Respawn on the same file and demand every observed id back.
+    // Respawn on the same file and demand every observed id back. The read
+    // pages like any client must (decision 0030 §3) — no harness asks for
+    // an unbounded page.
     let mut restarted = spawn_serve(serve_with_data(&db)).await;
     wait_http_up(restarted.http_addr).await;
-    let (st, list) = common::http_json(
-        restarted.http_addr,
-        "GET",
-        "/api/v1/inboxes/killbox/messages?limit=1000000",
-        None,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let restart: std::collections::HashSet<String> = list["emails"]
-        .as_array()
-        .expect("email list")
-        .iter()
-        .map(|e| e["id"].as_str().expect("id").to_string())
-        .collect();
+    let restart = common::list_all_ids(restarted.http_addr, "killbox").await;
     for id in &observed {
         assert!(
             restart.contains(id),

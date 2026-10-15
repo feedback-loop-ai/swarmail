@@ -360,38 +360,12 @@ async fn a_clear_racing_inserts_never_loses_a_250_answered_mail_on_restart() {
     );
 
     // What the store still holds is exactly what the restart must give back.
-    let (st, pre) = common::http_json(
-        srv.http_addr,
-        "GET",
-        "/api/v1/inboxes/race/messages?limit=1000000",
-        None,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let pre_ids: std::collections::HashSet<String> = pre["emails"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| e["id"].as_str().unwrap().to_string())
-        .collect();
+    let pre_ids = common::list_all_ids(srv.http_addr, "race").await;
     assert!(!pre_ids.is_empty(), "the race produced no mail to check");
 
     srv.stop().await;
     let srv = serve_data_file(&db).await;
-    let (st, post) = common::http_json(
-        srv.http_addr,
-        "GET",
-        "/api/v1/inboxes/race/messages?limit=1000000",
-        None,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let post_ids: std::collections::HashSet<String> = post["emails"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|e| e["id"].as_str().unwrap().to_string())
-        .collect();
+    let post_ids = common::list_all_ids(srv.http_addr, "race").await;
     let lost: Vec<&String> = pre_ids.difference(&post_ids).collect();
     assert!(
         lost.is_empty(),
@@ -562,21 +536,9 @@ async fn a_write_heavy_data_file_server_stays_live_and_loses_no_250_answered_mai
     );
 
     // Every observed acceptance is queryable while the server is live —
-    // a 250 means the mail is already there (decision 0001).
-    let (st, live) = common::http_json(
-        srv.http_addr,
-        "GET",
-        "/api/v1/inboxes/heavy/messages?limit=1000000",
-        None,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let live_ids: std::collections::HashSet<String> = live["emails"]
-        .as_array()
-        .expect("email list")
-        .iter()
-        .map(|e| e["id"].as_str().expect("id").to_string())
-        .collect();
+    // a 250 means the mail is already there (decision 0001). The read
+    // pages like any client (decision 0030 §3).
+    let live_ids = common::list_all_ids(srv.http_addr, "heavy").await;
     for id in &observed {
         assert!(
             live_ids.contains(id),
@@ -588,20 +550,7 @@ async fn a_write_heavy_data_file_server_stays_live_and_loses_no_250_answered_mai
     // window is exactly where a soft flush would drop rows.
     srv.stop().await;
     let srv = serve_data_file(&db).await;
-    let (st, post) = common::http_json(
-        srv.http_addr,
-        "GET",
-        "/api/v1/inboxes/heavy/messages?limit=1000000",
-        None,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let post_ids: std::collections::HashSet<String> = post["emails"]
-        .as_array()
-        .expect("email list")
-        .iter()
-        .map(|e| e["id"].as_str().expect("id").to_string())
-        .collect();
+    let post_ids = common::list_all_ids(srv.http_addr, "heavy").await;
     let lost: Vec<&String> = observed
         .iter()
         .filter(|id| !post_ids.contains(*id))

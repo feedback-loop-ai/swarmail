@@ -29,17 +29,22 @@ pub enum Command {
 
 #[derive(Args, Debug, Clone)]
 pub struct ServeArgs {
-    /// SMTP listen address.
-    #[arg(long, default_value = "0.0.0.0:1025", env = "SWARMAIL_SMTP_LISTEN")]
+    /// SMTP listen address. The default is loopback (decision 0030 §1) —
+    /// a mail mock serves its own machine; containers and services state
+    /// `0.0.0.0:1025` explicitly (the image and chart do).
+    #[arg(long, default_value = "127.0.0.1:1025", env = "SWARMAIL_SMTP_LISTEN")]
     pub smtp_listen: String,
 
     /// HTTP listen address (API, MCP, UI, MailHog/Mailpit compat shims).
-    #[arg(long, default_value = "0.0.0.0:8025", env = "SWARMAIL_HTTP_LISTEN")]
+    /// Loopback by default, which also arms the Origin guard (decision
+    /// 0030 §2).
+    #[arg(long, default_value = "127.0.0.1:8025", env = "SWARMAIL_HTTP_LISTEN")]
     pub http_listen: String,
 
     /// POP3 listen address (RFC 1939) serving the same store. A USER names
-    /// an existing swarmail inbox; the maildrop is that inbox.
-    #[arg(long, default_value = "0.0.0.0:1110", env = "SWARMAIL_POP3_LISTEN")]
+    /// an existing swarmail inbox; the maildrop is that inbox. Loopback by
+    /// default (decision 0030 §1).
+    #[arg(long, default_value = "127.0.0.1:1110", env = "SWARMAIL_POP3_LISTEN")]
     pub pop3_listen: String,
 
     /// Maximum emails kept per inbox; oldest are pruned. 0 = unlimited.

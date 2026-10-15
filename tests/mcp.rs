@@ -1938,3 +1938,145 @@ async fn set_chaos_with_unreadable_arguments_refuse_as_a_container() {
         assert!(armed.is_null(), "a refused set_chaos armed {slot}: {armed}");
     }
 }
+
+// ---------- the bounded staging (decision 0030 §3) ----------
+
+/// The page cap refuses through the MCP staging shape: `-32602` error
+/// objects naming field and range in one sentence, on all three staged
+/// parameters — and the boundary itself stages fine, so 250 is a page on
+/// every plane.
+#[tokio::test]
+async fn the_staging_refuses_over_the_cap_and_honors_the_boundary() {
+    let srv = start().await;
+    smtp_send(
+        srv.smtp_addr,
+        Some("capbox"),
+        "f@x.io",
+        "cap@x.io",
+        "within the cap",
+        "body",
+    )
+    .await
+    .unwrap();
+
+    // Search's limit.
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_search_emails", "arguments": {"inbox": "capbox", "limit": 251}}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(
+        body["error"]["message"], "limit must be at most 250",
+        "{body}"
+    );
+    // get_latest's count.
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_get_latest_email", "arguments": {"inbox": "capbox", "count": 251}}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(
+        body["error"]["message"], "count must be at most 250",
+        "{body}"
+    );
+    // The wait's count — the refusal answers before any park (0025 §5):
+    // the inbox's awaits row never appears.
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_wait_for_email", "arguments": {"inbox": "capbox", "to": "cap@x.io", "count": 251, "timeout_ms": 60000}}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(
+        body["error"]["message"], "count must be at most 250",
+        "{body}"
+    );
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    assert_eq!(
+        metric_row_value(&metrics, r#"swarmail_awaits_active{inbox="capbox"}"#),
+        None,
+        "a refused wait registers no waiter: {metrics}"
+    );
+
+    // The boundary stages fine on all three: 250 is a page (get_latest
+    // answers with the mail), and a 250-count wait is accepted — it times
+    // out as a wait, not as a refusal.
+    let r = tool(
+        srv.http_addr,
+        "swarmail_get_latest_email",
+        r#"{"inbox": "capbox", "count": 250}"#,
+    )
+    .await;
+    assert_eq!(text(&r)["emails"].as_array().unwrap().len(), 1, "{r}");
+    let r = tool(
+        srv.http_addr,
+        "swarmail_search_emails",
+        r#"{"inbox": "capbox", "limit": 250}"#,
+    )
+    .await;
+    assert_eq!(text(&r)["total"], 1, "{r}");
+    let r = tool(
+        srv.http_addr,
+        "swarmail_wait_for_email",
+        r#"{"inbox": "capbox", "to": "nobody@x.io", "count": 250, "timeout_ms": 200}"#,
+    )
+    .await;
+    let wait = text(&r);
+    assert_eq!(
+        wait["timed_out"], true,
+        "an accepted wait times out as a wait: {r}"
+    );
+    assert_eq!(wait["matched"], 0, "{r}");
+}
+
+/// The cap touches none of the count semantics it must not touch (0030
+/// §3): get_latest's `count: 0` still refuses by name (its schema's
+/// `minimum: 1`), the wait's `count: 0` still means at least one (0010) —
+/// neither is repurposed by the cap check that shares their parameter.
+#[tokio::test]
+async fn the_cap_leaves_the_count_poles_alone() {
+    let srv = start().await;
+    smtp_send(
+        srv.smtp_addr,
+        Some("poles"),
+        "f@x.io",
+        "p@x.io",
+        "pole mail",
+        "body",
+    )
+    .await
+    .unwrap();
+
+    // get_latest's zero refuses by name, as before the cap.
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_get_latest_email", "arguments": {"inbox": "poles", "count": 0}}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    assert_eq!(
+        body["error"]["message"], "count must be an integer of at least 1",
+        "{body}"
+    );
+
+    // The wait's zero still means at least one: the mail is there, so the
+    // wait answers immediately with it (a literal zero-count would match
+    // nothing).
+    let r = tool(
+        srv.http_addr,
+        "swarmail_wait_for_email",
+        r#"{"inbox": "poles", "to": "p@x.io", "count": 0, "timeout_ms": 5000}"#,
+    )
+    .await;
+    assert_eq!(text(&r)["matched"], 1, "{r}");
+}

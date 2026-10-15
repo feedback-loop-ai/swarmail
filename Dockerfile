@@ -13,6 +13,13 @@ RUN strip target/release/swarmail
 
 FROM scratch
 COPY --from=build /app/target/release/swarmail /swarmail
+# The container contract (decision 0030 §1): the binary's defaults are
+# loopback, which a container's `-p` mappings could never reach — the image
+# states its binds explicitly so the published ports are real. An operator
+# can still override each through its SWARMAIL_*_LISTEN knob.
+ENV SWARMAIL_SMTP_LISTEN=0.0.0.0:1025 \
+    SWARMAIL_POP3_LISTEN=0.0.0.0:1110 \
+    SWARMAIL_HTTP_LISTEN=0.0.0.0:8025
 EXPOSE 1025 1110 8025
 USER 65532:65532
 # `docker stop` sends this signal — the default is SIGKILL, which would

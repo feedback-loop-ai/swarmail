@@ -3,8 +3,8 @@
 mod common;
 
 use common::{
-    SmtpConn, http_bytes, http_get_text, http_head_text, http_json, http_send_text, start,
-    wait_for_metric_row,
+    SmtpConn, http_bytes, http_get_text, http_head_text, http_json, http_send_text,
+    http_send_text_with_headers, start, start_with, wait_for_metric_row,
 };
 
 /// Seed one fixture mail into `inbox` (the default extractor path).
@@ -465,8 +465,10 @@ async fn list_all_orders_desc_with_a_deterministic_tie_break() {
         .await;
         assert_eq!(st, 200);
     }
-    // The all-inbox merged view rides the compat shim (no inbox scoping).
-    let (st, list) = http_json(srv.http_addr, "GET", "/api/v1/messages?limit=500", None).await;
+    // The all-inbox merged view rides the compat shim (no inbox scoping);
+    // the page is the shared cap (decision 0030 §3) — enough for the 200
+    // seeds this property needs.
+    let (st, list) = http_json(srv.http_addr, "GET", "/api/v1/messages?limit=250", None).await;
     assert_eq!(st, 200);
     let emails = list["messages"].as_array().expect("the all-inbox list");
     assert!(emails.len() >= 200, "every seed landed: {}", emails.len());
@@ -1078,4 +1080,290 @@ async fn the_chaos_error_line_and_delay_refuse_on_the_rest_plane() {
     assert_eq!(st, 200, "{body}");
     assert_eq!(body["data"]["error"], boundary, "{body}");
     assert_eq!(body["data"]["delay_ms"], 300000, "{body}");
+}
+
+// ---------- the bounded pages + Arc responses (decision 0030) ----------
+
+/// The list's page cap is a refusal, never a clamp: over it the answer is
+/// `400` naming field and range in one sentence (decision 0025's envelope,
+/// 0030 §3's rule), and exactly the cap is a legal page — the boundary
+/// itself answers 200 with a full page.
+#[tokio::test]
+async fn the_list_refuses_over_the_cap_and_accepts_exactly_it() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/capped/messages?limit=251",
+        None,
+    )
+    .await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(
+        body,
+        serde_json::json!({ "error": "limit must be at most 250" })
+    );
+
+    // Exactly the cap is a page, not a refusal: 250 seeds, one boundary page.
+    for i in 0..250 {
+        let body = format!(r#"{{"to": "b{i}@x.io", "text": "x"}}"#);
+        let (st, body) = http_json(
+            srv.http_addr,
+            "POST",
+            "/api/v1/inboxes/boundary/seed",
+            Some(&body),
+        )
+        .await;
+        assert_eq!(st, 200, "{body}");
+    }
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/boundary/messages?limit=250",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["emails"].as_array().map(Vec::len), Some(250));
+    // The default page is unchanged: no limit, no refusal, the shared 100.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/boundary/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["emails"].as_array().map(Vec::len), Some(100));
+}
+
+/// The wait's staging refuses before it parks (0025 §5 through the REST
+/// plane): `count` and `limit` over the cap answer 400 with the sentence,
+/// register no waiter, and the exact cap is a legal wait — accepted, timed
+/// out cleanly at 200 with `matched: 0`.
+#[tokio::test]
+async fn the_wait_refuses_over_the_cap_registers_no_waiter_and_accepts_the_boundary() {
+    let srv = start().await;
+    for (field, query) in [
+        ("count", "count=251"),
+        ("limit", "limit=251"),
+        ("count", "count=251&limit=251"),
+    ] {
+        let (st, body) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/nocap/await?{query}&timeout_ms=60000"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 400, "{field}: {body}");
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": format!("{field} must be at most 250") }),
+            "{field}: {body}"
+        );
+    }
+
+    // No waiter: the refusal answered before any park — the inbox's awaits
+    // row never existed (0025 §5).
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    assert_eq!(
+        common::metric_row_value(&metrics, r#"swarmail_awaits_active{inbox="nocap"}"#),
+        None,
+        "a refused wait registers no waiter: {metrics}"
+    );
+
+    // The boundary is a legal wait: 250 accepted (a refusal would answer
+    // 400), timed out cleanly at 408 with `matched: 0` — 0010's count
+    // semantics untouched by the cap.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/boundarywait/await?count=250&limit=250&timeout_ms=200",
+        None,
+    )
+    .await;
+    assert_eq!(st, 408, "{body}");
+    assert_eq!(body["matched"], 0);
+}
+
+/// The exact-count `assert` is exempt from the page cap — its `count` is an
+/// exact expectation, not a page, and its `limit` is inert (0030 §3): both
+/// ride past the cap and answer by assertion outcome, never 400.
+#[tokio::test]
+async fn the_assert_never_refuses_on_the_page_cap() {
+    let srv = start().await;
+    seed(srv.http_addr, "assertinert", "user@example.com").await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/assertinert/assert?count=251&limit=251",
+        None,
+    )
+    .await;
+    assert_eq!(st, 409, "the assert answers by outcome, not 400: {body}");
+    assert_eq!(body["expected"], 251);
+    assert_eq!(body["matched"], 1);
+}
+
+/// Every Arc response is byte-identical to the whole-clone shape it
+/// replaced (the inline pins hold it for the types; this holds it for the
+/// wire): the await, get and seed answers carry full fields and no `raw`
+/// key — the raw bytes live only behind `/raw` (0022).
+#[tokio::test]
+async fn the_arc_responses_carry_no_raw_and_full_fields() {
+    let srv = start().await;
+    let seeded = seed(srv.http_addr, "arcwire", "arc@x.io").await;
+    assert!(
+        seeded.get("raw").is_none(),
+        "the seed response carries no raw key: {seeded}"
+    );
+
+    let id = first_id(srv.http_addr, "arcwire").await;
+    let (st, mail) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{mail}");
+    assert!(
+        mail.get("raw").is_none(),
+        "the get response carries no raw: {mail}"
+    );
+    assert_eq!(mail["subject"], "(no subject)");
+    assert_eq!(mail["to"][0]["address"], "arc@x.io");
+
+    let (st, awaited) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/arcwire/await?count=1&to=arc@x.io&timeout_ms=5000",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{awaited}");
+    assert_eq!(awaited["matched"], 1);
+    assert!(
+        awaited["emails"][0].get("raw").is_none(),
+        "the await response carries no raw: {awaited}"
+    );
+    assert_eq!(awaited["emails"][0]["id"], id);
+}
+
+// ---------- the loopback posture (decision 0030 §2) ----------
+
+/// Every loopback spelling of the bound HTTP port passes the guard — the
+/// scheme is irrelevant, the host's case is normalized, 127/8 in full —
+/// and an absent `Origin` rides through untouched (bridge, agents, curl,
+/// the test suites themselves).
+#[tokio::test]
+async fn same_origin_loopback_spellings_pass_the_guard() {
+    let srv = start().await;
+    let port = srv.http_addr.port();
+    for origin in [
+        format!("http://localhost:{port}"),
+        format!("https://LOCALHOST:{port}"),
+        format!("http://127.0.0.1:{port}"),
+        format!("http://127.255.0.9:{port}"),
+        format!("http://[::1]:{port}"),
+    ] {
+        let (st, body) = http_send_text_with_headers(
+            srv.http_addr,
+            "GET",
+            "/api/v1/inboxes",
+            &[("Origin", origin.as_str())],
+            None,
+        )
+        .await;
+        assert_eq!(st, 200, "{origin}: {body}");
+    }
+    // Absent Origin: the plane's default caller.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(st, 200, "{body}");
+}
+
+/// A non-loopback host, a wrong port, or a spelling that cannot name the
+/// bound port at all is answered `403` with the refusal sentence — on
+/// every method, `/mcp` included — and the refusal never registers as
+/// in-flight (the guard is the outer layer).
+#[tokio::test]
+async fn cross_origin_and_malformed_spellings_are_refused_before_the_router() {
+    let srv = start().await;
+    let port = srv.http_addr.port();
+    let wrong_port = port.wrapping_add(1);
+    let refusals = [
+        // Non-loopback hosts, bound-port and not.
+        format!("http://attacker.example:{port}"),
+        "http://10.0.0.9:8025".to_string(),
+        format!("http://[::2]:{port}"),
+        // Wrong port on a loopback host.
+        format!("http://localhost:{wrong_port}"),
+        format!("http://[::1]:{wrong_port}"),
+        // Malformed or port-less spellings: nothing to match the bound
+        // port against, so nothing passes.
+        "http://localhost".to_string(),
+        "http://localhost:99999".to_string(),
+        "http://[::1]:{port}"
+            .to_string()
+            .replace("http://[::1]:{", "http://[::1:{"), // unclosed bracket
+        "localhost:8025".to_string(),
+        "null".to_string(),
+        // The path is not the authority: the host behind the path refuses.
+        format!("http://attacker.example:{port}/evil"),
+    ];
+    for origin in refusals {
+        for (method, path) in [
+            ("GET", "/api/v1/inboxes"),
+            ("DELETE", "/api/v1/inboxes/guarded"),
+            ("POST", "/mcp"),
+        ] {
+            let (st, body) = http_send_text_with_headers(
+                srv.http_addr,
+                method,
+                path,
+                &[("Origin", origin.as_str())],
+                None,
+            )
+            .await;
+            assert_eq!(st, 403, "{method} {path} with Origin {origin:?}: {body}");
+            assert!(
+                body.contains("cross-origin requests are refused on the loopback plane"),
+                "{origin}: {body}"
+            );
+        }
+    }
+
+    // The refused DELETE never registered as in-flight: the guard answered
+    // before the router's counting layer saw the request.
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    assert_eq!(
+        common::metric_row_value(
+            &metrics,
+            r#"swarmail_http_requests_in_flight{inbox="guarded"}"#
+        ),
+        None,
+        "a refused request registers no in-flight row: {metrics}"
+    );
+}
+
+/// With an explicit off-loopback bind the check is inert — the operator's
+/// recorded posture (0030 §2): any `Origin` rides through, because there
+/// is no loopback plane to protect.
+#[tokio::test]
+async fn an_off_loopback_bind_leaves_the_guard_inert() {
+    let srv = start_with(|mut c| {
+        c.http_listen = "0.0.0.0:0".into();
+        c
+    })
+    .await;
+    let (st, body) = http_send_text_with_headers(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes",
+        &[("Origin", "http://attacker.example:1")],
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "the guard is inert off loopback: {body}");
 }

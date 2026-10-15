@@ -87,6 +87,37 @@ compatibility layer (MailHog/Mailpit), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies.
 
+**The binds are loopback by default, and the loopback plane refuses
+cross-origin pages.** All three listeners default to `127.0.0.1` — a mail
+mock serves the machine it runs on — and the image and the chart state
+`0.0.0.0` explicitly, because a container that trusted its defaults would
+never publish a port. While the HTTP listener is loopback-bound, requests
+carrying an `Origin` header are answered `403` unless that origin is a
+loopback spelling of the bound HTTP port (`localhost`, `127.0.0.0/8`,
+`[::1]`): the one header a browser sets honestly, so a web page from
+anywhere else cannot drive the API — including through DNS rebinding,
+which is why a Host check would not have been enough. Every method and
+every route is covered, `/mcp` and the UI included; requests without an
+`Origin` — curl, agents, the stdio bridge, every test harness — pass
+untouched, and an operator who binds `0.0.0.0` states the trust
+themselves (the guard is inert, not the posture weaker). There is no auth
+on any surface, by design: the loopback posture is the boundary, and a
+server with secrets would need auth — this one holds test mail, and its
+knobs are local (`set-chaos` included). Webhooks dial out only to
+addresses an operator explicitly configures, bounded by
+`WEBHOOK_DELIVERY_CAP` (32) so a flood of configured hooks cannot
+accumulate unbounded work; nothing ever dials an address learned from
+mail content.
+
+**The pages are bounded.** Every result page — the REST list, `await`,
+the MailHog/Mailpit shims, and every MCP search/get-latest/wait — is
+capped at **250 items** (`limit`/`count` above the cap is refused with a
+400 on REST and the shims, a `-32602` error over MCP: named, never
+clamped). `await`'s exact-count `assert` keeps its unclamped semantics.
+Parse work (RFC 5322 + MIME + link/code extraction) and every deep page
+copy run off the async workers on the blocking pool, so a 50 MiB mail
+cannot stall the accept loop or the await wakes it gates.
+
 ## The guarantees
 
 These are the frozen guarantees ([decision records](docs/decisions/README.md)
@@ -156,10 +187,12 @@ $ curl "localhost:8025/api/v1/inboxes/quickstart/await?to=ada@x.io&count=1&timeo
 parse + extraction pipeline. Per-test isolation needs no config: the AUTH
 username names the inbox.
 
-Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `1025`),
-`SWARMAIL_POP3_LISTEN` (`1110`), `SWARMAIL_HTTP_LISTEN` (`8025`),
-`SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited), `SWARMAIL_URL` (the
-MCP stdio bridge's upstream), `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
+Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `127.0.0.1:1025`),
+`SWARMAIL_POP3_LISTEN` (`127.0.0.1:1110`), `SWARMAIL_HTTP_LISTEN`
+(`127.0.0.1:8025` — the image and the chart set `0.0.0.0`, see the
+posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
+`SWARMAIL_URL` (the MCP stdio bridge's upstream),
+`SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
 `SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
 
 ## Kubernetes (Helm)
@@ -261,7 +294,7 @@ $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 |---|---|
 | `GET /api/v1/inboxes` | the live inbox list |
 | `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first; wipe the inbox |
-| `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`/`from`/`subject`/`since_ms` filters, `count` (minimum one, even `count=0`), `timeout_ms` (≤ 60000: refused with 400 above, never clamped; a stopping server answers 503 `shutting down` instead of parking) |
+| `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`/`from`/`subject`/`since_ms` filters, `count` (minimum one, even `count=0`), `limit`/`count` ≤ 250 (refused, never clamped), `timeout_ms` (≤ 60000: refused with 400 above, never clamped; a stopping server answers 503 `shutting down` instead of parking) |
 | `GET /api/v1/inboxes/{inbox}/assert` | exact-count assertion — `count=0` asserts an empty filter; never clamped — 200 or a named failure |
 | `GET /api/v1/inboxes/{inbox}/threads[/{key}]` | conversations, oldest first, stable keys |
 | `GET /api/v1/inboxes/{inbox}/feed` | SSE: one snapshot, then one event per accepted mail |

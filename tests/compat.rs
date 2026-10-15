@@ -1049,3 +1049,89 @@ async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
+
+// ---------- the bounded shim pages (decision 0030 §3) ----------
+
+/// Every shim page refuses over the cap with the REST envelope — `400` and
+/// the one sentence naming field and range — and honors the boundary
+/// itself: `250` is a page on all four surfaces, with the envelope counts
+/// still coherent (`total` full, `count` the page).
+#[tokio::test]
+async fn the_shim_pages_refuse_over_the_cap_and_honor_the_boundary() {
+    let s = start().await;
+    seed(&s).await;
+
+    // Mailpit list.
+    let (st, body) = http_json(s.http_addr, "GET", "/api/v1/messages?limit=251", None).await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(
+        body,
+        json!({ "error": "limit must be at most 250" }),
+        "{body}"
+    );
+    // Mailpit search.
+    let (st, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/search?limit=251&query=alpha",
+        None,
+    )
+    .await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(
+        body,
+        json!({ "error": "limit must be at most 250" }),
+        "{body}"
+    );
+    // MailHog v2 list.
+    let (st, body) = http_json(s.http_addr, "GET", "/api/v2/messages?limit=251", None).await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(
+        body,
+        json!({ "error": "limit must be at most 250" }),
+        "{body}"
+    );
+    // MailHog v2 search — the cap refusal rides the JSON envelope even
+    // though a bad kind stays a bare 400 (pinned above).
+    let (st, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v2/search?kind=containing&query=alpha&limit=251",
+        None,
+    )
+    .await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(
+        body,
+        json!({ "error": "limit must be at most 250" }),
+        "{body}"
+    );
+
+    // The boundary is a page on every surface, counts coherent.
+    let (st, body) = http_json(s.http_addr, "GET", "/api/v1/messages?limit=250", None).await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["total"], 4);
+    assert_eq!(body["count"], 4);
+    let (st, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/search?limit=250&query=alpha",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["total"], 2);
+    let (st, body) = http_json(s.http_addr, "GET", "/api/v2/messages?limit=250", None).await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["total"], 4);
+    assert_eq!(body["items"].as_array().map(Vec::len), Some(4));
+    let (st, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v2/search?kind=containing&query=alpha&limit=250",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["total"], 2);
+}

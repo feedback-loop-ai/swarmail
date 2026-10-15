@@ -52,13 +52,35 @@ fn config_maps_the_cli_args() {
 fn cli_parses_env_defaults_and_subcommands() {
     let cli = Cli::try_parse_from(["swarmail", "serve"]).unwrap();
     let args = serve_args_or_panic(cli);
-    assert_eq!(args.smtp_listen, "0.0.0.0:1025");
-    assert_eq!(args.http_listen, "0.0.0.0:8025");
-    assert_eq!(args.pop3_listen, "0.0.0.0:1110");
+    // The defaults are loopback (decision 0030 §1): the mail mock serves
+    // its own machine. Containers and services state their bind
+    // explicitly — the binary's env knobs and the flags below.
+    assert_eq!(args.smtp_listen, "127.0.0.1:1025");
+    assert_eq!(args.http_listen, "127.0.0.1:8025");
+    assert_eq!(args.pop3_listen, "127.0.0.1:1110");
     assert_eq!(args.max_per_inbox, 100_000);
     assert!(args.data_file.is_none());
     assert!(args.tls_cert.is_none());
     assert_eq!(args.tls_handshake_timeout_ms, 10_000);
+
+    // Every bind is still operator-tunable, in the flag's explicit shape —
+    // the container contract (`0.0.0.0`) is spelled there, not defaulted
+    // into someone's laptop.
+    let cli = Cli::try_parse_from([
+        "swarmail",
+        "serve",
+        "--smtp-listen",
+        "0.0.0.0:1025",
+        "--http-listen",
+        "0.0.0.0:8025",
+        "--pop3-listen",
+        "0.0.0.0:1110",
+    ])
+    .unwrap();
+    let args = serve_args_or_panic(cli);
+    assert_eq!(args.smtp_listen, "0.0.0.0:1025");
+    assert_eq!(args.http_listen, "0.0.0.0:8025");
+    assert_eq!(args.pop3_listen, "0.0.0.0:1110");
 
     // The handshake deadline is operator-tunable, in milliseconds.
     let cli =

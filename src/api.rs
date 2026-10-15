@@ -40,6 +40,15 @@ pub struct AppState {
     /// surfaces that cannot currently take connections.
     pub smtp_degraded: Arc<AtomicBool>,
     pub pop3_degraded: Arc<AtomicBool>,
+    /// The bound HTTP port when the HTTP listener is loopback-bound — the
+    /// Origin guard's vocabulary (decision 0030 §2). `None` when the
+    /// operator bound an explicit non-loopback address: the bind is then
+    /// the trust statement and the check is inert. A loopback bind serves
+    /// the operator's own machine, where a browser page from any other
+    /// origin must not be able to drive the API (DNS rebinding makes
+    /// Host-header checks insufficient — hence Origin, the header a
+    /// browser cannot forge).
+    pub http_origin_guard: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,7 +63,9 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-fn bad_request(msg: impl Into<String>) -> ApiError {
+/// The 400 envelope with a sentence in it (decision 0025): shared with the
+/// compat plane so every staging refusal keeps one owner per sentence.
+pub(crate) fn bad_request(msg: impl Into<String>) -> ApiError {
     ApiError(StatusCode::BAD_REQUEST, msg.into())
 }
 
@@ -84,6 +95,29 @@ pub(crate) const WAIT_TIMEOUT_REFUSAL: &str = "timeout_ms must be an integer bet
 /// constant, so the planes cannot drift. `compat`'s Mailpit shape keeps its
 /// own 50; it is a different dialect, not a second copy of this domain.
 pub(crate) const DEFAULT_LIST_LIMIT: usize = 100;
+
+/// The largest page any listing or waiting surface may return (decision
+/// 0030 §3): upstream MailHog's own cap. A caller paging without `until`
+/// could otherwise ask the server to serialize megabytes of bodies per
+/// request — the one unbounded read left on an otherwise bounded server.
+/// Above the cap is a refusal naming the field and the range, never a
+/// clamp; the wait surfaces cap `count` the same way, while `assert`'s
+/// exact `count` and inert `limit` stay exempt (an assertion's answer is a
+/// count, not a page).
+pub(crate) const MAX_PAGE_SIZE: usize = 250;
+
+/// The one cap check for every page size (decision 0030 §3): the field's
+/// name and the accepted range in one sentence — the `timeout_ms`
+/// refusal's shape (0018/0025) — owned once so no plane can drift its
+/// words. The sentence rides each plane's existing envelope: REST/compat
+/// `400` JSON, MCP `-32602`. Staging before effect: an over-cap value is
+/// refused before any scan is taken or any wait parks.
+pub(crate) fn checked_page_size(field: &str, n: usize) -> Result<usize, String> {
+    if n > MAX_PAGE_SIZE {
+        return Err(format!("{field} must be at most {MAX_PAGE_SIZE}"));
+    }
+    Ok(n)
+}
 
 /// The one cap check for every wait surface (0018 §3, made shared by
 /// decision 0025): over the cap is a refusal naming the bound, never a
@@ -235,6 +269,94 @@ impl Drop for TotalGuard {
     }
 }
 
+// ---------- the Origin guard (decision 0030 §2) ----------
+//
+// A loopback bind serves the operator's own machine. Without a guard, any
+// web page the operator browses can drive the API from JavaScript — the
+// server has no auth to refuse it, and a Host check does not help: DNS
+// rebinding serves `localhost` from an attacker's zone. `Origin` is the
+// one header a browser sets honestly (it cannot be forged by page script
+// and is present on every cross-site request), so a present `Origin` that
+// is not a loopback spelling of the bound port is refused before the
+// router. Everything that is not a browser — curl, agents, the MCP stdio
+// bridge, every test harness — sends no Origin and is untouched.
+
+/// The whole-plane Origin guard: a present `Origin` header is answered
+/// `403` unless its authority is a loopback spelling of the bound HTTP
+/// port, and only while the listener is loopback-bound (an off-loopback
+/// bind is the operator's own trust statement — the check is inert).
+/// Every method, every route: `/mcp` and the UI are as drivable as the
+/// REST surface. Origin-absent requests pass — the shape of every
+/// non-browser client.
+async fn origin_guard(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if let Some(bound) = state.http_origin_guard
+        && let Some(origin) = req.headers().get(axum::http::header::ORIGIN)
+    {
+        let allowed = origin
+            .to_str()
+            .ok()
+            .map(|o| origin_is_loopback_of(o, bound))
+            .unwrap_or(false);
+        if !allowed {
+            return ApiError(
+                StatusCode::FORBIDDEN,
+                "cross-origin requests are refused on the loopback plane".into(),
+            )
+            .into_response();
+        }
+    }
+    next.run(req).await
+}
+
+/// The authority of an `Origin`: `(host, explicit port?)`. An Origin is
+/// `scheme://authority` with no path; anything without a `scheme://`
+/// prefix is not an origin and is refused by the caller (`None`).
+fn origin_authority(origin: &str) -> Option<(&str, Option<&str>)> {
+    let (_, authority) = origin.split_once("://")?;
+    let authority = authority.split('/').next()?;
+    if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 literal: the host ends at `]`, an optional port follows.
+        let (host, tail) = rest.split_once(']')?;
+        Some((host, tail.strip_prefix(':')))
+    } else {
+        // The port is the *last* colon; a bare host has none.
+        match authority.rsplit_once(':') {
+            Some((host, port)) => Some((host, Some(port))),
+            None => Some((authority, None)),
+        }
+    }
+}
+
+/// Whether `origin` names this plane: a loopback spelling — `localhost`,
+/// any `127.0.0.0/8` address, or `[::1]` — carrying the bound port
+/// explicitly. Hosts compare case-insensitively (DNS names are
+/// case-insensitive); anything else — a named host, another port, an
+/// origin with no port, `null`, garbage — is not this plane.
+fn origin_is_loopback_of(origin: &str, bound: u16) -> bool {
+    let Some((host, port)) = origin_authority(origin) else {
+        return false;
+    };
+    // The bound port is the vocabulary: a loopback spelling of another
+    // port is a different origin. No explicit port means the scheme's
+    // default, which cannot be this bound port.
+    let Some(explicit) = port.and_then(|p| p.parse::<u16>().ok()) else {
+        return false;
+    };
+    if explicit != bound {
+        return false;
+    }
+    let host = host.to_ascii_lowercase();
+    host == "localhost"
+        || host == "::1"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// The inbox a request path scopes — `/api/v1/inboxes/<inbox>/…`, the wire
 /// segment as requested (untranslated): the labeled row a test polls is
 /// the path its own request carried.
@@ -357,6 +479,14 @@ pub fn router(state: AppState) -> Router {
         .route("/llms.txt", get(llms_txt))
         .merge(ui::router())
         .merge(compat::router())
+        // The Origin guard wraps the whole plane (decision 0030 §2): it is
+        // added after `count_in_flight` so it is the outer layer — a
+        // refused cross-origin request is answered before it registers as
+        // in-flight.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            origin_guard,
+        ))
         .layer(axum::middleware::from_fn(count_in_flight))
         .with_state(state)
 }
@@ -458,7 +588,11 @@ pub struct EmailList {
 pub struct AwaitResponse {
     pub matched: usize,
     pub total: usize,
-    pub emails: Vec<Email>,
+    /// Held as `Arc<Email>` for the same reason as [`EmailList`]: the wait's
+    /// matches are already `Arc` from the store; a deep clone would copy
+    /// bytes (`raw` is skipped, so serialization never reads them) the wire
+    /// is byte-identical without (decision 0030 §1).
+    pub emails: Vec<Arc<Email>>,
 }
 
 // ---------- handlers ----------
@@ -629,14 +763,14 @@ async fn list_messages(
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Json<EmailList>> {
     let q: ListQuery = parse_query(raw.0.as_deref().unwrap_or(""), "list")?;
+    // The page cap is the shared refusal (decision 0030 §3), answered
+    // before the scan is taken: staging before effect.
+    let limit =
+        checked_page_size("limit", q.limit.unwrap_or(DEFAULT_LIST_LIMIT)).map_err(bad_request)?;
     let all = state.store.list(&inbox, &q.filter());
     let total = all.len();
     let offset = q.offset.unwrap_or(0);
-    let emails: Vec<Arc<Email>> = all
-        .into_iter()
-        .skip(offset)
-        .take(q.limit.unwrap_or(DEFAULT_LIST_LIMIT))
-        .collect();
+    let emails: Vec<Arc<Email>> = all.into_iter().skip(offset).take(limit).collect();
     Ok(Json(EmailList { total, emails }))
 }
 
@@ -659,6 +793,15 @@ async fn await_messages(
 ) -> ApiResult<Response> {
     let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "await")?;
     let want = q.min_one_count();
+    // The page cap is the shared refusal (decision 0030 §3), answered
+    // before the wait parks: a refused await registers no waiter (0025
+    // §5). `count` is the wait's trigger and is capped like a page; the
+    // page itself is `limit`'s business. `assert`'s exact `count` and
+    // inert `limit` stay exempt — an assertion's answer is a count, not a
+    // page.
+    let want = checked_page_size("count", want).map_err(bad_request)?;
+    let page =
+        checked_page_size("limit", q.limit.unwrap_or(DEFAULT_LIST_LIMIT)).map_err(bad_request)?;
     let timeout = q.timeout()?;
     let filter = q.filter();
     // The wait races the stop watch (decision 0018): a client parked on a
@@ -686,11 +829,7 @@ async fn await_messages(
             // The page is `limit`'s business, exactly as on list: the wait
             // still triggers at `count` matches, the response carries at
             // most the limit's worth of them.
-            let emails = matches
-                .iter()
-                .take(q.limit.unwrap_or(DEFAULT_LIST_LIMIT))
-                .map(|e| (**e).clone())
-                .collect();
+            let emails = matches.iter().take(page).cloned().collect();
             Ok((
                 StatusCode::OK,
                 Json(AwaitResponse {
@@ -766,11 +905,14 @@ async fn clear_inbox(
 async fn get_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<Json<Email>> {
+) -> ApiResult<Json<Arc<Email>>> {
+    // The store already holds the mail behind an `Arc`; the response
+    // serializes it in place — a deep clone here would copy the bytes the
+    // wire is byte-identical without (`raw` is skipped, decision 0030 §1).
     state
         .store
         .get(&id)
-        .map(|e| Json((*e).clone()))
+        .map(Json)
         .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "message not found".into()))
 }
 
@@ -874,20 +1016,25 @@ pub struct SeedRequest {
 /// Inject a synthetic email without SMTP — full pipeline (parse, extract)
 /// runs. Construction is the one shared seed policy (`build_seed_email`,
 /// decision 0010); a refused fixture (a hostile envelope field) answers `400`
-/// naming the field and stores nothing.
+/// naming the field and stores nothing. The build is pure CPU with no await
+/// inside, so it is offloaded like the DATA-arm parse (decision 0030 §1) —
+/// the async worker never pays the HTML pipeline.
 async fn seed_inbox(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
     Json(seed): Json<SeedRequest>,
-) -> ApiResult<Json<Email>> {
-    let email = smtp::build_seed_email(
-        &inbox,
-        &seed.to,
-        seed.from.as_deref(),
-        seed.subject.as_deref(),
-        seed.text.as_deref(),
-        seed.html.as_deref(),
-    )
+) -> ApiResult<Json<Arc<Email>>> {
+    let email = Store::offload(move || {
+        smtp::build_seed_email(
+            &inbox,
+            &seed.to,
+            seed.from.as_deref(),
+            seed.subject.as_deref(),
+            seed.text.as_deref(),
+            seed.html.as_deref(),
+        )
+    })
+    .await
     .map_err(bad_request)?;
     // A failed commit refuses (decision 0012): 503 — the cause is usually
     // transient (a full volume, a read-only remount, SQLITE_BUSY), so retry
@@ -900,7 +1047,7 @@ async fn seed_inbox(
     // nothing too (decision 0024) — the wire does not fork on the cause;
     // the waits' `shutting down` (0018) answers only the waits.
     match state.store.clone().insert_async(email).await {
-        Ok(stored) => Ok(Json((*stored).clone())),
+        Ok(stored) => Ok(Json(stored)),
         Err(_) => Err(ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
             "storage commit failed".into(),
@@ -1043,6 +1190,81 @@ mod tests {
         assert_eq!(value["emails"][0]["id"], "p1");
     }
 
+    /// The shared page cap check (decision 0030 §3): over the cap is the
+    /// exact refusal sentence — field named, range named — never a clamp,
+    /// and the boundary itself is a legal page on every plane.
+    #[test]
+    fn checked_page_size_refuses_over_the_cap_and_honors_the_boundary() {
+        assert_eq!(
+            checked_page_size("limit", MAX_PAGE_SIZE + 1),
+            Err(format!("limit must be at most {MAX_PAGE_SIZE}"))
+        );
+        assert_eq!(
+            checked_page_size("count", usize::MAX),
+            Err(format!("count must be at most {MAX_PAGE_SIZE}"))
+        );
+        assert_eq!(checked_page_size("limit", 0), Ok(0));
+        assert_eq!(checked_page_size("count", MAX_PAGE_SIZE), Ok(MAX_PAGE_SIZE));
+    }
+
+    /// The Origin guard's vocabulary (decision 0030 §2), pinned spelling by
+    /// spelling: the loopback forms of the bound port pass, and every other
+    /// authority — another port, a named host, a non-loopback address, an
+    /// origin with no port, `null`, a schemeless string, garbage brackets —
+    /// is not this plane.
+    #[test]
+    fn origin_spellings_of_the_bound_port() {
+        let bound = 8025;
+        for good in [
+            "http://localhost:8025",
+            "https://localhost:8025",
+            "http://LOCALHOST:8025",
+            "http://127.0.0.1:8025",
+            // The whole /8 is loopback, not just .1.
+            "http://127.255.0.9:8025",
+            "http://[::1]:8025",
+        ] {
+            assert!(origin_is_loopback_of(good, bound), "{good} must pass");
+        }
+        for bad in [
+            "http://localhost:8026",             // a loopback spelling of another port
+            "http://localhost:99999",            // a port that cannot exist
+            "http://localhost",                  // no explicit port: the scheme default
+            "http://[::1]",                      // bracketed literal, no port
+            "http://[::1:8025",                  // unclosed bracket
+            "http://attacker.example:8025",      // a named host that is not loopback
+            "http://10.0.0.9:8025",              // a private-but-not-loopback host
+            "http://[::2]:8025",                 // IPv6 non-loopback
+            "null",                              // a sandboxed iframe's opaque origin
+            "attacker.example:8025",             // no scheme: not an origin at all
+            "http://attacker.example:8025/evil", // the path is not the authority
+        ] {
+            assert!(!origin_is_loopback_of(bad, bound), "{bad} must refuse");
+        }
+    }
+
+    /// The wait's page is byte-identical to the whole-clone shape it
+    /// replaced and carries no `raw` key, exactly like the listing page:
+    /// the matches come out of the store as `Arc`s and serialize in place.
+    #[test]
+    fn the_await_page_is_byte_identical_and_carries_no_raw() {
+        let mut email = crate::store::email("w1", "box", "to@x.io");
+        email.raw = b"raw source bytes".to_vec();
+        let response = AwaitResponse {
+            matched: 1,
+            total: 1,
+            emails: vec![Arc::new(email.clone())],
+        };
+        assert_eq!(
+            serde_json::to_string(&vec![email]).unwrap(),
+            serde_json::to_string(&response.emails).unwrap(),
+            "the wait's emails serialize as the Vec<Email> shape"
+        );
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["matched"], 1);
+        assert!(value["emails"][0].get("raw").is_none(), "raw is skipped");
+    }
+
     /// The shared cap check (decision 0025): the cap arm keeps the exact
     /// 0018 text the wire tests pin, and the boundary values are real
     /// durations — the poles are honored, never clamped.
@@ -1075,6 +1297,9 @@ mod tests {
             shutdown: stop,
             smtp_degraded: Arc::new(AtomicBool::new(smtp)),
             pop3_degraded: Arc::new(AtomicBool::new(pop3)),
+            // The healthz gauges are probe-only state; the probe runs
+            // headerless, so the guard is inert here.
+            http_origin_guard: None,
         }
     }
 
@@ -1176,6 +1401,9 @@ mod tests {
             shutdown: tokio::sync::watch::channel(false).1,
             smtp_degraded: smtp_degraded.clone(),
             pop3_degraded: pop3_degraded.clone(),
+            // The red-proof's probes are headerless, and the listener is
+            // loopback: the guard is live but Origin-absent requests pass.
+            http_origin_guard: http_addr.ip().is_loopback().then(|| http_addr.port()),
         };
         let api_task = tokio::spawn(serve(http_listener, state, std::future::pending()));
         // The healthy baseline first, before the misbehavior exists: the

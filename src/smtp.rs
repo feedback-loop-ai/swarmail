@@ -999,24 +999,37 @@ async fn session(
                     continue;
                 }
 
-                let email = build_email(&raw, &inbox, &rcpts, envelope.unwrap_or_default());
-                let id = email.id.clone();
-                // Whole mutation on the blocking pool, awaited before the
-                // reply: the 250 below stays *after* the commit outcome is
-                // known (decision 0001), it just no longer occupies an async
-                // worker (decision 0023). A failed commit refuses (decision
-                // 0012) with the fixed line — a transient 451 (RFC 5321
-                // §4.2.2, requested action aborted), distinct from chaos's
-                // fixed `451 4.3.0 chaos`, internals to the log and never to
-                // the peer — where the old tree acknowledged the lie.
                 // The delivery is observable from the DATA terminator until
-                // the insert resolves: its inbox's
-                // `swarmail_deliveries_in_flight` row is live exactly while
-                // 0001's seam is in motion, so a test can sequence
-                // stop/chaos against a mid-commit delivery instead of
-                // sleeping. The guard releases the row on resolve or
-                // unwind.
-                let _in_flight = crate::api::park_delivery(&email.inbox);
+                // the insert resolves — and since 0030 §1 the parse sits in
+                // that window too: the inbox's
+                // `swarmail_deliveries_in_flight` row is live while the mail
+                // is being built as well as while its commit is in motion,
+                // so a test sequencing stop/chaos against a delivery sees
+                // the whole seam the wire actually has. The guard releases
+                // the row on resolve or unwind. Parked with the session's
+                // inbox name: the Email that carries it does not exist yet.
+                let _in_flight = crate::api::park_delivery(&inbox);
+                // Whole parse and whole mutation on the blocking pool,
+                // awaited before the reply: the 250 below stays *after* the
+                // commit outcome is known (decision 0001), it just no longer
+                // occupies an async worker (decision 0023) — the parse
+                // joined the mutation there (decision 0030 §1).
+                // `build_email` is pure CPU, so the block is a move, not an
+                // await: raw, the taken recipients and the taken envelope
+                // move in; the session's `inbox` is cloned because the
+                // session lives on. A panic in the parse re-raises here,
+                // exactly as the synchronous call would (decision 0023). A
+                // failed commit refuses (decision 0012) with the fixed line
+                // — a transient 451 (RFC 5321 §4.2.2, requested action
+                // aborted), distinct from chaos's fixed `451 4.3.0 chaos`,
+                // internals to the log and never to the peer — where the old
+                // tree acknowledged the lie.
+                let email = Store::offload({
+                    let inbox = inbox.clone();
+                    move || build_email(&raw, &inbox, &rcpts, envelope.unwrap_or_default())
+                })
+                .await;
+                let id = email.id.clone();
                 match store.clone().insert_async(email).await {
                     Ok(_) => {
                         write_line(

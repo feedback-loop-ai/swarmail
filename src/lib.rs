@@ -183,6 +183,11 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         let store = store.clone();
         let chaos = chaos.clone();
         let webhooks = webhooks.clone();
+        // The Origin guard's vocabulary is the bound port, and it is live
+        // only while the bind itself is loopback (decision 0030 §2): a
+        // loopback bind serves the operator's machine, an off-loopback one
+        // is the operator's own trust statement and the check is inert.
+        let http_origin_guard = http_addr.ip().is_loopback().then(|| http_addr.port());
         let state = api::AppState {
             store,
             chaos,
@@ -191,6 +196,7 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
             shutdown: shutdown_rx.clone(),
             smtp_degraded: smtp_degraded.clone(),
             pop3_degraded: pop3_degraded.clone(),
+            http_origin_guard,
         };
         let mut shutdown_rx = shutdown_rx.clone();
         tasks.spawn(async move {
