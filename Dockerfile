@@ -15,4 +15,8 @@ FROM scratch
 COPY --from=build /app/target/release/swarmail /swarmail
 EXPOSE 1025 1110 8025
 USER 65532:65532
+# `docker stop` sends this signal — the default is SIGKILL, which would
+# skip the drain entirely. SIGTERM is the graceful path the watcher takes
+# (decision 0027).
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["/swarmail", "serve"]

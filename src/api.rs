@@ -21,7 +21,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
@@ -35,6 +35,11 @@ pub struct AppState {
     /// so an SSE client can never hold `RunningServer::stop` hostage, and
     /// it is the only state a graceful shutdown needs that the router owns.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
+    /// Per-surface accept health (decision 0027), set by each loop on a
+    /// failed accept and cleared on its next success. `/healthz` names the
+    /// surfaces that cannot currently take connections.
+    pub smtp_degraded: Arc<AtomicBool>,
+    pub pop3_degraded: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone)]
@@ -266,14 +271,44 @@ fn registry_total(registry: &Registry) -> u64 {
         .sum()
 }
 
+/// The drain deadline (decision 0027): a stop waits for in-flight HTTP
+/// work exactly this long, then returns anyway. A client that stalls
+/// mid-request — or mid-body, where the graceful flag cannot reach it —
+/// must not hold the process past its own shutdown. The value is 0018's
+/// whole fence — busy bound plus margin — because the two tails overlap:
+/// a commit already in flight when the stop fires runs to completion
+/// (0018 §2), burning up to its busy bound *inside* the drain window,
+/// and its refusal must be written to the socket before the deadline
+/// cuts it. A deadline at the margin alone raced a macOS runner's
+/// slower scheduling and closed a refused seed with no answer at all.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
+
 pub async fn serve(
     listener: TcpListener,
     state: AppState,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown)
-        .await
+    // The stop watch is cloned before the router consumes the receiver:
+    // the deadline race below and /healthz's stopping answer are two
+    // readers of the same watch, both subscribed before the stop can fire.
+    let stop_rx = state.shutdown.clone();
+    let drain = async {
+        shutdown_signal(stop_rx).await;
+        tokio::time::sleep(DRAIN_DEADLINE).await;
+    };
+    // The graceful serve is raced against stop-plus-deadline: a clean
+    // drain finishes on its own; a client parked mid-request (or mid-body)
+    // is cut off at the deadline instead of holding the process forever.
+    // The serve future is pinned so the race can poll it in place.
+    let mut serve = std::pin::pin!(
+        axum::serve(listener, router(state))
+            .with_graceful_shutdown(shutdown)
+            .into_future(),
+    );
+    tokio::select! {
+        res = &mut serve => res,
+        _ = drain => Ok(()),
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -407,11 +442,45 @@ pub struct AwaitResponse {
 
 // ---------- handlers ----------
 
-async fn healthz(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "status": "ok",
-        "uptime_seconds": state.started.elapsed().as_secs(),
-    }))
+/// The readiness contract (decision 0027), four states:
+///
+/// - `200 ok` — every listener is accepting;
+/// - `503 degraded` — a listener's accept loop is in a failed-accept
+///   backoff; the body names the surfaces, so a probe reads *which* socket
+///   is dark, not just that something is;
+/// - `503 stopping` — the stop has fired and the process is draining.
+///
+/// Stopping wins over degraded: the process is leaving either way, and a
+/// surface's acceptance state is moot once the stop has fired. Both 503
+/// bodies carry a `status` field, so a probe never has to infer state from
+/// the code alone.
+async fn healthz(State(mut state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    if *state.shutdown.borrow_and_update() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "status": "stopping" })),
+        );
+    }
+    let mut degraded: Vec<&'static str> = Vec::new();
+    if state.smtp_degraded.load(Ordering::Relaxed) {
+        degraded.push("smtp");
+    }
+    if state.pop3_degraded.load(Ordering::Relaxed) {
+        degraded.push("pop3");
+    }
+    if degraded.is_empty() {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "ok",
+                "uptime_seconds": state.started.elapsed().as_secs(),
+            })),
+        );
+    }
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({ "status": "degraded", "degraded": degraded })),
+    )
 }
 
 async fn metrics(State(state): State<AppState>) -> String {
@@ -933,6 +1002,171 @@ mod tests {
             checked_wait_timeout_ms(MAX_AWAIT_TIMEOUT_MS),
             Ok(Duration::from_millis(MAX_AWAIT_TIMEOUT_MS))
         );
+    }
+
+    /// A minimal state for the direct healthz probes: the gauges read only
+    /// the flags, the stop watch and the clock, so the cheapest instances
+    /// serve and nothing here touches a store.
+    fn gauge_state(stop: tokio::sync::watch::Receiver<bool>, smtp: bool, pop3: bool) -> AppState {
+        AppState {
+            store: Arc::new(Store::new(0)),
+            chaos: Arc::new(Chaos::default()),
+            webhooks: Arc::new(Webhooks::default()),
+            started: Instant::now(),
+            shutdown: stop,
+            smtp_degraded: Arc::new(AtomicBool::new(smtp)),
+            pop3_degraded: Arc::new(AtomicBool::new(pop3)),
+        }
+    }
+
+    /// Every listener accepting is `200 ok` with the uptime the old probe
+    /// pinned (tests/api.rs asserts the same over the wire).
+    #[tokio::test]
+    async fn healthz_is_ok_when_every_listener_accepts() {
+        let (_, rx) = tokio::sync::watch::channel(false);
+        let (code, Json(value)) = healthz(State(gauge_state(rx, false, false))).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(value["status"], "ok");
+        assert!(value["uptime_seconds"].is_u64());
+    }
+
+    /// A dark SMTP listener is named: 503, `degraded`, the surface listed.
+    #[tokio::test]
+    async fn healthz_names_a_degraded_smtp_listener() {
+        let (_, rx) = tokio::sync::watch::channel(false);
+        let (code, Json(value)) = healthz(State(gauge_state(rx, true, false))).await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(value["status"], "degraded");
+        assert_eq!(value["degraded"], serde_json::json!(["smtp"]));
+    }
+
+    /// The POP3 surface names itself the same way, and both dark listeners
+    /// are listed together in the router's fixed order.
+    #[tokio::test]
+    async fn healthz_names_the_degraded_pop3_listener_and_both_together() {
+        let (_, rx) = tokio::sync::watch::channel(false);
+        let (code, Json(value)) = healthz(State(gauge_state(rx, false, true))).await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(value["degraded"], serde_json::json!(["pop3"]));
+
+        let (_, rx) = tokio::sync::watch::channel(false);
+        let (code, Json(value)) = healthz(State(gauge_state(rx, true, true))).await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(value["degraded"], serde_json::json!(["smtp", "pop3"]));
+    }
+
+    /// Stopping wins over degraded: once the stop has fired the process is
+    /// leaving either way, and the answer is `stopping` even with every
+    /// listener dark.
+    #[tokio::test]
+    async fn healthz_reports_stopping_over_everything_else() {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        tx.send(true).expect("the stop fires");
+        let (code, Json(value)) = healthz(State(gauge_state(rx, true, true))).await;
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(value["status"], "stopping");
+        assert!(
+            value.get("degraded").is_none(),
+            "stopping names no surfaces"
+        );
+    }
+
+    /// A plain-HTTP probe against a real router: status line and body.
+    async fn http_probe(addr: std::net::SocketAddr, path: &str) -> (u16, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .await
+        .unwrap();
+        let mut buf = Vec::new();
+        c.read_to_end(&mut buf).await.unwrap();
+        let text = String::from_utf8_lossy(&buf).into_owned();
+        // `expect`, not `unwrap_or_else(panic!)`: a closure here is a
+        // function record the exact gate demands warm on every run, and
+        // its only arm is a failed probe — `expect` carries the same
+        // diagnostic with no cold body of our own.
+        let status: u16 = text
+            .split_whitespace()
+            .nth(1)
+            .expect("no status line")
+            .parse()
+            .expect("status is a number");
+        let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+        (status, body)
+    }
+
+    /// The wire red-proof (C36.2): the SMTP accept loop, driven by its own
+    /// seam into a persistent failure, degrades /healthz on the real wire —
+    /// one flag pair shared between a real `smtp::serve` and a real
+    /// `api::serve`, the probe plain HTTP against the real router. Red
+    /// before 0027: the hardcoded `ok` never named a dark listener.
+    #[tokio::test]
+    async fn a_degraded_smtp_listener_answers_503_naming_it_on_the_wire() {
+        let smtp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http_addr = http_listener.local_addr().unwrap();
+        let smtp_degraded = Arc::new(AtomicBool::new(false));
+        let pop3_degraded = Arc::new(AtomicBool::new(false));
+        let state = AppState {
+            store: Arc::new(Store::new(0)),
+            chaos: Arc::new(Chaos::default()),
+            webhooks: Arc::new(Webhooks::default()),
+            started: Instant::now(),
+            shutdown: tokio::sync::watch::channel(false).1,
+            smtp_degraded: smtp_degraded.clone(),
+            pop3_degraded: pop3_degraded.clone(),
+        };
+        let api_task = tokio::spawn(serve(http_listener, state, std::future::pending()));
+        // The healthy baseline first, before the misbehavior exists: the
+        // probe reads the hardcoded-contract `ok` off the real wire — the
+        // state the red-proof is measured against.
+        let (code, body) = http_probe(http_addr, "/healthz").await;
+        assert_eq!(code, 200, "the healthy listener answers ok: {body}");
+        let baseline: serde_json::Value =
+            serde_json::from_str(&body).expect("the healthy body is json");
+        assert_eq!(baseline["status"], "ok");
+        assert!(
+            baseline.get("degraded").is_none(),
+            "the healthy baseline names no surfaces: {baseline}"
+        );
+        let smtp_task = tokio::spawn(crate::smtp::serve(
+            smtp_listener,
+            Arc::new(Store::new(0)),
+            Arc::new(Chaos::default()),
+            crate::smtp::SmtpConfig::default(),
+            None,
+            smtp_degraded.clone(),
+            std::future::pending(),
+        ));
+        // Persistent misbehavior: far more failures than the probe can
+        // outlive — the loop stays degraded for the whole test.
+        crate::smtp::inject_accept_errors(1000);
+        // The flag is the sequencer, not a probe retry loop (0020 rule 5):
+        // once the loop has been polled into its backoff the degradation is
+        // a settled fact, so ONE probe reads it — no race to schedule
+        // around, no branch that only a lucky interleave takes.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !smtp_degraded.load(Ordering::Relaxed) {
+            assert!(
+                Instant::now() < deadline,
+                "the accept loop never flagged itself degraded"
+            );
+            tokio::task::yield_now().await;
+        }
+        let (code, body) = http_probe(http_addr, "/healthz").await;
+        assert_eq!(code, 503, "{body}");
+        assert_eq!(
+            body,
+            serde_json::json!({"status": "degraded", "degraded": ["smtp"]}).to_string()
+        );
+        // The seam is thread-local and this thread runs other tests after
+        // this one: leave it as it was found, so no later serve on this
+        // thread inherits a phantom failure.
+        crate::smtp::inject_accept_errors(0);
+        smtp_task.abort();
+        api_task.abort();
     }
 
     /// The served contract is pinned to the constants (decision 0025):
