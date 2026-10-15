@@ -20,7 +20,16 @@ fn init_tracing(to_stderr: bool) {
             .with_writer(std::io::stderr)
             .init();
     } else {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            // `serve` keeps stdout — and the binary tests (and a
+            // line-parsing supervisor) read the piped `smtp=` startup
+            // line, so the same §4 rule binds here: ANSI only when the
+            // target stream can render it. A piped capture must still
+            // parse (`parse_addrs` splits on the literal `smtp=`, which
+            // escapes would bury) however the stream is captured.
+            .with_ansi(std::io::stdout().is_terminal())
+            .init();
     }
 }
 
