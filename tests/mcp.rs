@@ -1453,6 +1453,57 @@ async fn a_wrong_typed_argument_refuses_by_name() {
     assert_eq!(body["count"], 0, "a refused clear_inbox clears nothing");
 }
 
+/// The arguments *container* is itself a supplied value (0025 §2 through
+/// 0029 §1): a present container that is not an object — an array, a
+/// scalar, an explicit null — refuses -32602 by name before any staging,
+/// so `swarmail_clear_inbox` with `"arguments": []` can never silently
+/// fall through to the schema default and clear `default`.
+#[tokio::test]
+async fn a_malformed_arguments_container_refuses_before_any_effect() {
+    let srv = start().await;
+    for container in ["[]", "42", "\"clear\"", "null"] {
+        let (st, body) = rpc(
+            srv.http_addr,
+            "tools/call",
+            &format!(r#"{{"name": "swarmail_clear_inbox", "arguments": {container}}}"#),
+        )
+        .await;
+        assert_eq!(st, 200, "{container}");
+        assert_eq!(body["error"]["code"], -32602, "{container}: {body}");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("arguments"),
+            "{container}: the refusal names the container: {message}"
+        );
+        assert!(
+            message.contains("must be"),
+            "{container}: the refusal names the domain: {message}"
+        );
+    }
+
+    // The refusal is not just words: the seeded mail survives a refused
+    // clear — the silent default would have destroyed it.
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_seed_email", "arguments": {"inbox": "default", "to": "keeper@example.com", "subject": "keeper", "text": "still here 778899"}}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    let (st, body) = rpc(
+        srv.http_addr,
+        "tools/call",
+        r#"{"name": "swarmail_clear_inbox", "arguments": []}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["error"]["code"], -32602, "{body}");
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(body["count"], 1, "a refused clear_inbox cleared nothing");
+}
+
 /// A refused wait registers no waiter (0025 §5 through the MCP plane): the
 /// staging refusal answers before `store.wait_for` — the inbox's readiness
 /// row is released — and the seeded mail is untouched for the next caller.
@@ -1843,10 +1894,12 @@ async fn set_chaos_refuses_an_unknown_argument_key_by_name() {
     );
 }
 
-/// Arguments that are not an object at all reach the `event` lookup and
-/// refuse as missing — nothing is armed on a shape the rules cannot read.
+/// Arguments that are not an object at all refuse as a malformed
+/// container (0025 §2, the review's HIGH): the shape itself is a supplied
+/// value — it can never fall through to `missing event`, and nothing is
+/// armed on a shape the rules cannot read.
 #[tokio::test]
-async fn set_chaos_with_unreadable_arguments_refuses_missing_event() {
+async fn set_chaos_with_unreadable_arguments_refuse_as_a_container() {
     let srv = start().await;
     for arguments in ["\"data\"", "7", "null"] {
         let (st, body) = rpc(
@@ -1858,8 +1911,30 @@ async fn set_chaos_with_unreadable_arguments_refuses_missing_event() {
         assert_eq!(st, 200, "{arguments}");
         assert_eq!(body["error"]["code"], -32602, "{arguments}: {body}");
         assert_eq!(
-            body["error"]["message"], "missing event",
+            body["error"]["message"], "arguments must be an object of named arguments",
             "{arguments}: {body}"
         );
+    }
+
+    // An object container without an event still reaches the event lookup:
+    // the container guard only refuses the shape, not a well-formed
+    // absence — "missing event" is the staging sentence for that. Absent
+    // arguments land on the same sentence: absence is legal shape, a
+    // missing event is the defect.
+    for call in [
+        r#"{"name": "swarmail_set_chaos", "arguments": {}}"#,
+        r#"{"name": "swarmail_set_chaos"}"#,
+    ] {
+        let (st, body) = rpc(srv.http_addr, "tools/call", call).await;
+        assert_eq!(st, 200, "{call}");
+        assert_eq!(body["error"]["code"], -32602, "{call}: {body}");
+        assert_eq!(body["error"]["message"], "missing event", "{call}: {body}");
+    }
+
+    // Nothing was armed by any refused call: every chaos slot stays null.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(st, 200, "{body}");
+    for (slot, armed) in body.as_object().expect("the chaos shape") {
+        assert!(armed.is_null(), "a refused set_chaos armed {slot}: {armed}");
     }
 }

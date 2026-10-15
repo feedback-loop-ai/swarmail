@@ -78,8 +78,11 @@ defect: the URL must parse with an http/https scheme and a host, the
 `ca_pem` must load, the `secret` must be a single-line header value ≤4096
 octets) and `GET /api/v1/webhooks` redacts the secret. Delivery is bounded
 per target — 32 in flight per normalized URL (`WEBHOOK_DELIVERY_CAP`), so
-a stalled sink cannot starve a healthy one; a refused fan-out is counted
-in `swarmail_webhook_dropped_total`, a spent retry budget in
+a stalled sink cannot starve a healthy one; the bound is per URL, so many
+distinct targets multiply the ceiling (a target-count cap is not implied),
+a refused fan-out is counted
+in `swarmail_webhook_dropped_total` (its `warn` names the refused target),
+a spent retry budget in
 `swarmail_webhook_exhausted_total` (its final refusal logged as a `warn`
 naming the target and the cause), and a shutdown's undelivered backlog in
 `swarmail_webhook_aborted_total` — counted, never silently lost.

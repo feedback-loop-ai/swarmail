@@ -926,6 +926,50 @@ async fn await_and_assert_parse_since_ms_exactly_as_list_does() {
             "{path}: the refusal names the plane: {body}"
         );
     }
+
+    // `limit` parses on await and assert exactly as on list (#38): two
+    // mails match, the await still triggers at `count` but returns at
+    // most the limit's worth, assert accepts it (its answer is a count,
+    // not a page), and a supplied wrong type refuses with the plane's
+    // shared 400 sentence — the silent-ignore class 0029 §1 closes.
+    seed(srv.http_addr, "flt", "user@example.com").await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/inboxes/flt/await?count=2&limit=1&to=user@example.com&since_ms={past}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 2, "{body}");
+    let page = body["emails"].as_array().expect("the email page");
+    assert_eq!(page.len(), 1, "the limit bounds the page: {body}");
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/flt/assert?count=2&limit=1&to=user@example.com",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 2, "{body}");
+    for (path, what) in [
+        ("await", "invalid await query"),
+        ("assert", "invalid assert query"),
+    ] {
+        let (st, body) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/flt/{path}?limit=abc"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 400, "{path}: {body}");
+        assert!(
+            body["error"].as_str().unwrap().starts_with(what),
+            "{path}: the refusal names the plane: {body}"
+        );
+    }
 }
 
 /// The chaos wire-text rules refuse on the REST plane with the shared

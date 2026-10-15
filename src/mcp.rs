@@ -206,6 +206,17 @@ fn required_id(args: &Value) -> Result<String, (i64, String)> {
 async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)> {
     let params = req.pointer("/params").unwrap_or(&Value::Null);
     let name = arg_str(params, "name")?.ok_or_else(|| (-32602, "missing tool name".to_string()))?;
+    // The arguments container is itself a supplied value (0025 §2): a
+    // present container that is not an object — an array, a scalar, an
+    // explicit null — refuses before any staging. Falling through would
+    // let `swarmail_clear_inbox` with `"arguments": []` silently clear
+    // the default inbox, the exact silent-default class the family
+    // exists to close.
+    if let Some(container) = req.pointer("/params/arguments")
+        && !container.is_object()
+    {
+        return Err(refusal("arguments", "an object of named arguments"));
+    }
     let a = args(req);
     let store = &ctx.store;
 

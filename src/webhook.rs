@@ -376,6 +376,10 @@ pub(crate) async fn dispatch_loop(
                         let used = deliveries.get(&key).map(|set| set.len()).unwrap_or(0)
                             + claimed.get(&key).copied().unwrap_or(0);
                         if used >= WEBHOOK_DELIVERY_CAP {
+                            // The refusal is named (#47 AC6.2): the count
+                            // alone cannot tell an operator *which* target
+                            // is over budget — the warn does.
+                            tracing::warn!(url = %target.url, budget = WEBHOOK_DELIVERY_CAP, "webhook target over its delivery budget, refusing until slots free");
                             webhooks.dropped.fetch_add(1, Ordering::Relaxed);
                         } else {
                             *claimed.entry(key).or_insert(0) += 1;

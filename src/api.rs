@@ -387,14 +387,17 @@ impl ListQuery {
 /// The await/assert domain, held flat (decision 0029 §1): the struct's
 /// fields *are* the advertised query parameter set — no `#[serde(flatten)]`
 /// of the list shape, so an await's domain cannot silently grow `offset`
-/// (a wait has no pages: mail arrives as it lands) or a `limit` the
-/// handler never reads.
+/// (a wait has no pages: mail arrives as it lands).
 #[derive(Debug, Deserialize)]
 pub struct AwaitQuery {
     pub to: Option<String>,
     pub from: Option<String>,
     pub subject: Option<String>,
     pub since_ms: Option<i64>,
+    /// Page size for the returned matches — the same shape `list` takes
+    /// (#38's ruled parity): a wrong type refuses with the shared 400
+    /// sentence, an omission keeps the shared default.
+    pub limit: Option<usize>,
     /// Number of matching emails to wait for (default 1).
     pub count: Option<usize>,
     /// Give up after this long; default 5000ms.
@@ -680,7 +683,14 @@ async fn await_messages(
     let total = state.store.count(&inbox, &Filter::default());
     match outcome {
         Some(WaitOutcome::Found(matches)) => {
-            let emails = matches.iter().map(|e| (**e).clone()).collect();
+            // The page is `limit`'s business, exactly as on list: the wait
+            // still triggers at `count` matches, the response carries at
+            // most the limit's worth of them.
+            let emails = matches
+                .iter()
+                .take(q.limit.unwrap_or(DEFAULT_LIST_LIMIT))
+                .map(|e| (**e).clone())
+                .collect();
             Ok((
                 StatusCode::OK,
                 Json(AwaitResponse {
@@ -715,6 +725,9 @@ async fn assert_messages(
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Response> {
     let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "assert")?;
+    // `limit` is the shared filter shape (#38): parsed and type-checked
+    // exactly as on list, inert here — an assertion's answer is a count,
+    // not a page.
     let want = q.exact_count();
     let matched = state.store.count(&inbox, &q.filter());
     if matched == want {
@@ -1256,8 +1269,8 @@ mod tests {
 
     /// The doc equals the parser (decision 0029 §1, 0025 §6 pattern): the
     /// await/assert parameter sets the document publishes are exactly the
-    /// fields `AwaitQuery` accepts — the four-name filter, `count`, and
-    /// (await only) `timeout_ms` — with no `offset`, which a wait cannot
+    /// fields `AwaitQuery` accepts — the four-name filter, `limit`, `count`,
+    /// and (await only) `timeout_ms` — with no `offset`, which a wait cannot
     /// have: mail arrives as it lands, there are no pages to skip.
     #[test]
     fn the_served_openapi_publishes_the_await_and_assert_parameters() {
@@ -1276,12 +1289,20 @@ mod tests {
         };
         assert_eq!(
             names("/api/v1/inboxes/{inbox}/await"),
-            ["count", "from", "since_ms", "subject", "timeout_ms", "to"],
+            [
+                "count",
+                "from",
+                "limit",
+                "since_ms",
+                "subject",
+                "timeout_ms",
+                "to"
+            ],
             "the await's advertised set is the handler's fields"
         );
         assert_eq!(
             names("/api/v1/inboxes/{inbox}/assert"),
-            ["count", "from", "since_ms", "subject", "to"],
+            ["count", "from", "limit", "since_ms", "subject", "to"],
             "the assert's advertised set is the handler's fields — no timeout, no offset"
         );
 
@@ -1289,10 +1310,10 @@ mod tests {
         // ahead of the handler.
         for (params, has_timeout) in [
             (
-                "to=a&from=b&subject=c&since_ms=1&count=2&timeout_ms=3",
+                "to=a&from=b&subject=c&since_ms=1&limit=7&count=2&timeout_ms=3",
                 true,
             ),
-            ("to=a&from=b&subject=c&since_ms=1&count=2", false),
+            ("to=a&from=b&subject=c&since_ms=1&limit=7&count=2", false),
         ] {
             let q: AwaitQuery = serde_urlencoded::from_str(params)
                 .expect("the parser accepts every documented parameter");
@@ -1300,9 +1321,19 @@ mod tests {
             assert_eq!(q.from.as_deref(), Some("b"), "{params}");
             assert_eq!(q.subject.as_deref(), Some("c"), "{params}");
             assert_eq!(q.since_ms, Some(1), "{params}");
+            assert_eq!(q.limit, Some(7), "{params}");
             assert_eq!(q.count, Some(2), "{params}");
             assert_eq!(q.timeout_ms.is_some(), has_timeout, "{params}");
         }
+
+        // A supplied value of the wrong type refuses with 400 — the same
+        // shared sentence `list`'s limit yields for a non-digit (#38).
+        let err = serde_urlencoded::from_str::<AwaitQuery>("limit=abc")
+            .expect_err("a string limit refuses");
+        assert!(
+            err.to_string().contains("invalid digit"),
+            "the shared parse sentence names the defect: {err}"
+        );
     }
 
     /// The labeled registry's release paths, probed in isolation (decision

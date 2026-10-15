@@ -292,7 +292,12 @@ Twelve tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`. Wire it up:
+`swarmail_set_chaos`, `swarmail_clear_chaos`. Every tool validates its supplied arguments at the
+envelope: a wrong-typed or malformed value — the `arguments` container
+included — refuses with a JSON-RPC `-32602` error naming the field and its
+domain, before any effect; an unknown tool name is `-32601`; a JSON parse
+failure is `-32700`; a notifications-shaped line (no `id`) stays silent.
+Wire it up:
 
 ```jsonc
 // .mcp.json — HTTP transport

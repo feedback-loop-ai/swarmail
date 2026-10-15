@@ -44,6 +44,7 @@
           { "name": "from", "in": "query", "schema": { "type": "string" } },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
           { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "minimum": 1 }, "description": "Page size for the returned matches — the same shape list takes (decision 0029 §1)" },
           { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1, "minimum": 1 }, "description": "Minimum one — a count of 0 still waits for at least one matching message (decision 0010)" },
           { "name": "timeout_ms", "in": "query", "schema": { "type": "integer", "default": 5000, "minimum": 0, "maximum": 60000 }, "description": "Above 60000 the request is refused with 400, never clamped (decision 0018)" }
         ],
@@ -64,6 +65,7 @@
           { "name": "from", "in": "query", "schema": { "type": "string" } },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
           { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "minimum": 1 }, "description": "Page size for the returned matches — the same shape list takes (decision 0029 §1)" },
           { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 }, "description": "Exact match count — 0 asserts the filtered inbox is empty; the count is never clamped to one" }
         ],
         "responses": { "200": { "description": "Assertion held" }, "409": { "description": "Assertion failed" } }
