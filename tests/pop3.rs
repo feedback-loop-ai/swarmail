@@ -3,7 +3,8 @@
 
 mod common;
 
-use common::{Pop3, http_json, smtp_send, start};
+use common::{Pop3, http_json, smtp_send, start, start_with};
+use std::time::Duration;
 use swarmail::RunningServer;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -887,5 +888,78 @@ async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
     srv.stop().await;
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+}
+
+// --- 0027: bounded idleness and a compiled session cap --------------------
+
+/// The compiled idle deadline (no knob, 0022 §5): a peer that goes silent
+/// after the banner is answered `-ERR idle timeout` and the channel closes
+/// (red before 0027: the read blocked for the socket's lifetime).
+#[tokio::test]
+async fn a_silent_pop3_peer_is_answered_err_then_the_channel_closes() {
+    let s = start_with(|mut c| {
+        c.smtp.idle_timeout = Duration::from_millis(150);
+        c
+    })
+    .await;
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    assert_eq!(
+        c.read_to_eof().await,
+        "-ERR idle timeout\r\n",
+        "the expiry answer, then EOF"
+    );
+}
+
+/// The compiled cap refuses honestly: the next session over the cap gets
+/// exactly `-ERR too many connections` and no greeting (red before 0027:
+/// sessions were unbounded).
+#[tokio::test]
+async fn a_full_pop3_listener_refuses_the_next_session_before_a_greeting() {
+    let s = start_with(|mut c| {
+        c.smtp.max_sessions = 1;
+        c
+    })
+    .await;
+    // Session one: live (greeting read, nothing said).
+    let mut a = Pop3::connect(s.pop3_addr).await;
+    // Session two: refused before any greeting.
+    let mut b = TcpStream::connect(s.pop3_addr).await.unwrap();
+    let mut refused = Vec::new();
+    b.read_to_end(&mut refused).await.unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&refused),
+        "-ERR too many connections\r\n"
+    );
+    // The cap is a gate, not a scar: once A quits, a fresh session speaks.
+    // The freed slot is offered again by the loop's next reap-then-accept
+    // iteration, so the probe polls until it arrives (never a sleep).
+    a.send("QUIT").await;
+    assert!(a.reply().await.starts_with("+OK"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        // One connection per attempt: the probe itself becomes the fresh
+        // session, so no second socket can race the slot it just saw open.
+        let mut probe = TcpStream::connect(s.pop3_addr).await.unwrap();
+        let mut buf = [0u8; 256];
+        let n = probe.read(&mut buf).await.unwrap_or(0);
+        let line = String::from_utf8_lossy(&buf[..n]).into_owned();
+        if line.starts_with("+OK") {
+            probe.write_all(b"CAPA\r\n").await.unwrap();
+            let n = probe.read(&mut buf).await.unwrap_or(0);
+            assert!(
+                String::from_utf8_lossy(&buf[..n]).starts_with("+OK"),
+                "the fresh session speaks: {n} bytes"
+            );
+            break;
+        }
+        assert_eq!(
+            line, "-ERR too many connections\r\n",
+            "the only honest refusal is the cap text"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the freed slot was never offered again"
+        );
     }
 }

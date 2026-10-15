@@ -22,17 +22,46 @@ async fn main() {
     match Cli::parse().command {
         Command::Serve(args) => {
             let cfg = swarmail::config::Config::from(&args);
-            // The interrupt watcher registers the SIGINT handler before the
-            // servers bind: `tokio::signal::ctrl_c()` registers on its first
-            // poll, and a signal arriving between the startup line and that
-            // first poll would kill the process at the default disposition —
-            // no graceful stop, no drain. A spawned watcher is polled at
-            // run_on's first yield, long before the line the binary tests
-            // (and an operator's terminal) read.
+            // The interrupt watcher registers both handlers before the
+            // servers bind: the signal streams register on their first
+            // poll, and a signal arriving between the startup line and
+            // that first poll would kill the process at the default
+            // disposition — no graceful stop, no drain. A spawned watcher
+            // is polled at run_on's first yield, long before the line the
+            // binary tests (and an operator's terminal) read. SIGINT and
+            // SIGTERM watch the same channel: a container's `docker stop`
+            // sends SIGTERM (STOPSIGNAL), a terminal's Ctrl-C sends SIGINT
+            // — both take the same graceful path. A second signal during
+            // the drain means the operator is not waiting: the process
+            // exits 70 instead of outliving its drain.
             let (interrupted_tx, mut interrupted_rx) = tokio::sync::watch::channel(false);
             tokio::spawn(async move {
-                tokio::signal::ctrl_c().await.expect("ctrl_c handler");
-                let _ = interrupted_tx.send(true);
+                let mut graceful = false;
+                #[cfg(unix)]
+                {
+                    use tokio::signal::unix::{SignalKind, signal};
+                    let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
+                    let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+                    loop {
+                        tokio::select! {
+                            _ = sigint.recv() => {}
+                            _ = sigterm.recv() => {}
+                        }
+                        if graceful {
+                            tracing::warn!(
+                                "second signal during the drain; exiting without waiting"
+                            );
+                            std::process::exit(70);
+                        }
+                        graceful = true;
+                        let _ = interrupted_tx.send(true);
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    tokio::signal::ctrl_c().await.expect("ctrl_c handler");
+                    let _ = interrupted_tx.send(true);
+                }
             });
             // A server that fails to come up (bad bind, broken TLS pair)
             // exits non-zero with the reason — it must not sit half-alive.

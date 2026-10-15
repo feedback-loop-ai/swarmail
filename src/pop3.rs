@@ -17,7 +17,8 @@ use std::io;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::debug;
@@ -37,10 +38,45 @@ static SESSIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static REAPED: AtomicUsize = AtomicUsize::new(0);
 
-/// Accept POP3 connections until `shutdown`, one task per session.
+// Test-only: counted, one-shot accept errors (decision 0020 rule 4, the
+// `REAPED` precedent; the SMTP sibling's seam). Thread-local because the
+// loop is polled on the injecting test's own current-thread runtime.
+#[cfg(test)]
+thread_local! {
+    static INJECTED_ACCEPT_ERRORS: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
+}
+
+/// Install `count` failing accepts for the loop driven by this test.
+#[cfg(test)]
+pub(crate) fn inject_accept_errors(count: usize) {
+    INJECTED_ACCEPT_ERRORS.with(|errors| errors.set(count));
+}
+
+/// Consume one installed accept error, if any remain.
+#[cfg(test)]
+fn take_injected_accept_error() -> bool {
+    INJECTED_ACCEPT_ERRORS.with(|errors| {
+        let left = errors.get();
+        if left == 0 {
+            false
+        } else {
+            errors.set(left - 1);
+            true
+        }
+    })
+}
+
+/// Accept POP3 connections until `shutdown`, one task per session. The
+/// accept loop retries forever with a fixed backoff (decision 0027): a
+/// transient failure sets `degraded` and pauses; a stop is raced against
+/// the pause, never stacked behind it.
 pub async fn serve(
     listener: TcpListener,
     store: Arc<Store>,
+    degraded: Arc<AtomicBool>,
+    idle_timeout: Duration,
+    max_sessions: usize,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> io::Result<()> {
     let mut shutdown = std::pin::pin!(shutdown);
@@ -58,19 +94,72 @@ pub async fn serve(
             #[cfg(test)]
             REAPED.fetch_add(1, Ordering::Relaxed);
         }
-        let (stream, peer) = tokio::select! {
-            res = listener.accept() => res?,
+        // The accept itself, raced against the stop. The seam arm (test-only)
+        // is consumed on the first poll, so the error arm below is reachable
+        // and branch-stable; in production the block is just the accept.
+        let accepted = tokio::select! {
+            res = async {
+                #[cfg(test)]
+                if take_injected_accept_error() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "injected accept error",
+                    ));
+                }
+                listener.accept().await
+            } => res,
             _ = &mut shutdown => {
                 sessions.abort_all();
                 while sessions.join_next().await.is_some() {}
                 return Ok(());
             }
         };
+        let (stream, peer) = match accepted {
+            Ok(accepted) => {
+                // A successful accept is the recovery: the listener answers
+                // again, so the surface stops claiming degraded before the
+                // next failure can.
+                degraded.store(false, Ordering::Relaxed);
+                accepted
+            }
+            Err(e) => {
+                // A transient failure is not a death sentence (decision
+                // 0027): say so once per backoff step and retry forever.
+                degraded.store(true, Ordering::Relaxed);
+                tracing::warn!(error = %e, "pop3 accept failed; retrying after the backoff");
+                tokio::select! {
+                    _ = &mut shutdown => {
+                        sessions.abort_all();
+                        while sessions.join_next().await.is_some() {}
+                        return Ok(());
+                    }
+                    _ = tokio::time::sleep(crate::smtp::ACCEPT_BACKOFF) => {}
+                }
+                continue;
+            }
+        };
+        // Bounded sessions (decision 0027): the cap is checked against the
+        // live set after the reap. A refusal is wire-honest and retryable,
+        // written under the same idle deadline before any session state
+        // exists, and the socket is closed without spawning.
+        if sessions.len() >= max_sessions {
+            let _ = crate::smtp::bound_io(
+                async {
+                    let mut stream = stream;
+                    stream.write_all(b"-ERR too many connections\r\n").await?;
+                    stream.flush().await
+                },
+                idle_timeout,
+            )
+            .await;
+            debug!(%peer, "pop3 refused: session cap reached");
+            continue;
+        }
         let session = SESSIONS.fetch_add(1, Ordering::Relaxed);
         debug!(%peer, session, "pop3 connection accepted");
         let store = store.clone();
         sessions.spawn(async move {
-            if let Err(e) = handle_conn(stream, store).await {
+            if let Err(e) = handle_conn(stream, store, idle_timeout).await {
                 debug!(session, error = %e, "pop3 connection ended");
             }
         });
@@ -162,7 +251,7 @@ async fn drain_line(reader: &mut (impl AsyncBufRead + Unpin)) -> io::Result<()> 
     }
 }
 
-async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
+async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io::Result<()> {
     let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
     let mut phase = Phase::Authorization;
@@ -173,15 +262,26 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
     // DELE marks, as 1-based maildrop numbers, applied on QUIT.
     let mut deleted: BTreeSet<usize> = BTreeSet::new();
 
-    write_line(&mut write, "+OK Swarmail POP3 server ready").await?;
+    write_line(&mut write, "+OK Swarmail POP3 server ready", idle).await?;
     loop {
-        let line = match read_line_capped(&mut reader).await? {
-            Line::Command(c) => c,
-            Line::TooLong => {
-                write_line(&mut write, "-ERR line too long").await?;
-                continue;
+        // The command read is the session's idle chokepoint: a peer that
+        // says nothing is answered honestly and the session ends — it
+        // cannot pin a task forever (0027; the shared wrapper maps the
+        // elapsed deadline to `TimedOut`).
+        let line = match crate::smtp::bound_io(read_line_capped(&mut reader), idle).await {
+            Ok(line) => match line {
+                Line::Command(c) => c,
+                Line::TooLong => {
+                    write_line(&mut write, "-ERR line too long", idle).await?;
+                    continue;
+                }
+                Line::Eof => return Ok(()),
+            },
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
+                write_line(&mut write, "-ERR idle timeout", idle).await?;
+                return Ok(());
             }
-            Line::Eof => return Ok(()),
+            Err(e) => return Err(e),
         };
         let (verb, arg) = match line.split_once(' ') {
             Some((v, a)) => (v.to_ascii_uppercase(), a.trim()),
@@ -194,22 +294,22 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
         match (phase, verb.as_str()) {
             (Phase::Authorization, "USER") => {
                 if arg.is_empty() {
-                    write_line(&mut write, "-ERR missing username").await?;
+                    write_line(&mut write, "-ERR missing username", idle).await?;
                 } else if !inbox_exists(&store, arg) {
-                    write_line(&mut write, "-ERR no such mailbox").await?;
+                    write_line(&mut write, "-ERR no such mailbox", idle).await?;
                 } else {
                     user = Some(arg.to_string());
-                    write_line(&mut write, "+OK name is a valid mailbox").await?;
+                    write_line(&mut write, "+OK name is a valid mailbox", idle).await?;
                 }
             }
             (Phase::Authorization, "PASS") => {
                 let Some(name) = user.as_ref() else {
-                    write_line(&mut write, "-ERR USER required first").await?;
+                    write_line(&mut write, "-ERR USER required first", idle).await?;
                     continue;
                 };
                 // Re-checked: the inbox may have been cleared since USER.
                 if !inbox_exists(&store, name) {
-                    write_line(&mut write, "-ERR no such mailbox").await?;
+                    write_line(&mut write, "-ERR no such mailbox", idle).await?;
                     continue;
                 }
                 maildrop = store
@@ -228,26 +328,31 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                 } else {
                     format!("+OK maildrop has {n} messages ({m} octets)")
                 };
-                write_line(&mut write, &reply).await?;
+                write_line(&mut write, &reply, idle).await?;
                 phase = Phase::Transaction;
                 user = None;
             }
-            (Phase::Authorization, "CAPA") => write_capabilities(&mut write).await?,
+            (Phase::Authorization, "CAPA") => write_capabilities(&mut write, idle).await?,
             (Phase::Authorization, "QUIT") => {
                 // AUTHORIZATION-state QUIT: no maildrop, nothing to update.
-                write_line(&mut write, "+OK Swarmail POP3 server signing off").await?;
+                write_line(&mut write, "+OK Swarmail POP3 server signing off", idle).await?;
                 return Ok(());
             }
             (Phase::Authorization, _) => {
-                write_line(&mut write, "-ERR command invalid in AUTHORIZATION state").await?;
+                write_line(
+                    &mut write,
+                    "-ERR command invalid in AUTHORIZATION state",
+                    idle,
+                )
+                .await?;
             }
 
             (Phase::Transaction, "USER" | "PASS") => {
-                write_line(&mut write, "-ERR already authenticated").await?;
+                write_line(&mut write, "-ERR already authenticated", idle).await?;
             }
             (Phase::Transaction, "STAT") => {
                 let (n, m) = counts(&maildrop, &deleted);
-                write_line(&mut write, &format!("+OK {n} {m}")).await?;
+                write_line(&mut write, &format!("+OK {n} {m}"), idle).await?;
             }
             (Phase::Transaction, "LIST") => {
                 if arg.is_empty() {
@@ -264,8 +369,10 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                         .map_err(|_| "invalid message number")
                         .and_then(|n| resolve(&maildrop, &deleted, n).map(|msg| (n, msg.size)))
                     {
-                        Ok((n, size)) => write_line(&mut write, &format!("+OK {n} {size}")).await?,
-                        Err(e) => write_line(&mut write, &format!("-ERR {e}")).await?,
+                        Ok((n, size)) => {
+                            write_line(&mut write, &format!("+OK {n} {size}"), idle).await?
+                        }
+                        Err(e) => write_line(&mut write, &format!("-ERR {e}"), idle).await?,
                     }
                 }
             }
@@ -284,8 +391,10 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                         .and_then(|n| {
                             resolve(&maildrop, &deleted, n).map(|msg| (n, msg.id.clone()))
                         }) {
-                        Ok((n, id)) => write_line(&mut write, &format!("+OK {n} {id}")).await?,
-                        Err(e) => write_line(&mut write, &format!("-ERR {e}")).await?,
+                        Ok((n, id)) => {
+                            write_line(&mut write, &format!("+OK {n} {id}"), idle).await?
+                        }
+                        Err(e) => write_line(&mut write, &format!("-ERR {e}"), idle).await?,
                     }
                 }
             }
@@ -293,21 +402,21 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                 let num = match arg.parse::<usize>() {
                     Ok(n) => n,
                     Err(_) => {
-                        write_line(&mut write, "-ERR invalid message number").await?;
+                        write_line(&mut write, "-ERR invalid message number", idle).await?;
                         continue;
                     }
                 };
                 match resolve(&maildrop, &deleted, num) {
-                    Err(e) => write_line(&mut write, &format!("-ERR {e}")).await?,
+                    Err(e) => write_line(&mut write, &format!("-ERR {e}"), idle).await?,
                     Ok(msg) => match store.get(&msg.id) {
                         // Gone from the store mid-session (cleared over HTTP
                         // or POP3 in another session): not fetchable.
-                        None => write_line(&mut write, "-ERR no such message").await?,
+                        None => write_line(&mut write, "-ERR no such message", idle).await?,
                         Some(email) => {
                             let mut out = format!("+OK {} octets\r\n", msg.size).into_bytes();
                             write_stuffed(&mut out, &email.raw);
                             out.extend_from_slice(b".\r\n");
-                            write.write_all(&out).await?;
+                            crate::smtp::bound_io(write.write_all(&out), idle).await?;
                         }
                     },
                 }
@@ -320,7 +429,7 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                 {
                     Some(n) => n,
                     None => {
-                        write_line(&mut write, "-ERR invalid message number").await?;
+                        write_line(&mut write, "-ERR invalid message number", idle).await?;
                         continue;
                     }
                 };
@@ -331,21 +440,21 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                 {
                     Some(l) => l,
                     None => {
-                        write_line(&mut write, "-ERR invalid line count").await?;
+                        write_line(&mut write, "-ERR invalid line count", idle).await?;
                         continue;
                     }
                 };
                 match resolve(&maildrop, &deleted, num) {
-                    Err(e) => write_line(&mut write, &format!("-ERR {e}")).await?,
+                    Err(e) => write_line(&mut write, &format!("-ERR {e}"), idle).await?,
                     Ok(msg) => match store.get(&msg.id) {
-                        None => write_line(&mut write, "-ERR no such message").await?,
+                        None => write_line(&mut write, "-ERR no such message", idle).await?,
                         Some(email) => {
                             let mut out = b"+OK\r\n".to_vec();
                             let body_at = find_body_start(&email.raw);
                             write_stuffed(&mut out, &email.raw[..body_at]);
                             write_stuffed_limited(&mut out, &email.raw[body_at..], lines);
                             out.extend_from_slice(b".\r\n");
-                            write.write_all(&out).await?;
+                            crate::smtp::bound_io(write.write_all(&out), idle).await?;
                         }
                     },
                 }
@@ -354,25 +463,26 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                 let num = match arg.parse::<usize>() {
                     Ok(n) => n,
                     Err(_) => {
-                        write_line(&mut write, "-ERR invalid message number").await?;
+                        write_line(&mut write, "-ERR invalid message number", idle).await?;
                         continue;
                     }
                 };
                 match resolve(&maildrop, &deleted, num) {
-                    Err(e) => write_line(&mut write, &format!("-ERR {e}")).await?,
+                    Err(e) => write_line(&mut write, &format!("-ERR {e}"), idle).await?,
                     Ok(_) => {
                         deleted.insert(num);
-                        write_line(&mut write, &format!("+OK message {num} deleted")).await?;
+                        write_line(&mut write, &format!("+OK message {num} deleted"), idle).await?;
                     }
                 }
             }
-            (Phase::Transaction, "NOOP") => write_line(&mut write, "+OK").await?,
+            (Phase::Transaction, "NOOP") => write_line(&mut write, "+OK", idle).await?,
             (Phase::Transaction, "RSET") => {
                 deleted.clear();
                 let (n, m) = counts(&maildrop, &deleted);
                 write_line(
                     &mut write,
                     &format!("+OK maildrop has {n} messages ({m} octets)"),
+                    idle,
                 )
                 .await?;
             }
@@ -420,15 +530,15 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> io::Result<()> {
                     // loop above makes idempotent over the unapplied
                     // suffix. Closing the connection would strand a client
                     // that could otherwise converge.
-                    write_line(&mut write, "-ERR storage commit failed").await?;
+                    write_line(&mut write, "-ERR storage commit failed", idle).await?;
                     continue;
                 }
-                write_line(&mut write, "+OK Swarmail POP3 server signing off").await?;
+                write_line(&mut write, "+OK Swarmail POP3 server signing off", idle).await?;
                 return Ok(());
             }
-            (Phase::Transaction, "CAPA") => write_capabilities(&mut write).await?,
+            (Phase::Transaction, "CAPA") => write_capabilities(&mut write, idle).await?,
             (Phase::Transaction, _) => {
-                write_line(&mut write, "-ERR unknown command").await?;
+                write_line(&mut write, "-ERR unknown command", idle).await?;
             }
         }
     }
@@ -476,14 +586,29 @@ fn live_numbers(maildrop: &[MaildropMsg], deleted: &BTreeSet<usize>) -> Vec<usiz
         .collect()
 }
 
-/// One reply line, CRLF-terminated.
-async fn write_line<W: tokio::io::AsyncWrite + Unpin>(w: &mut W, line: &str) -> io::Result<()> {
-    w.write_all(line.as_bytes()).await?;
-    w.write_all(b"\r\n").await
+/// One reply line, CRLF-terminated, under one idle bound (decision 0027):
+/// a peer that stops accepting replies ends the session silently through
+/// the existing `?` — a TimedOut is an ended session, not a pinned task.
+async fn write_line<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    line: &str,
+    idle: Duration,
+) -> io::Result<()> {
+    crate::smtp::bound_io(
+        async {
+            w.write_all(line.as_bytes()).await?;
+            w.write_all(b"\r\n").await
+        },
+        idle,
+    )
+    .await
 }
 
 /// RFC 2449 CAPA. Plaintext listener: no STLS; no APOP (any password works).
-async fn write_capabilities<W: tokio::io::AsyncWrite + Unpin>(w: &mut W) -> io::Result<()> {
+async fn write_capabilities<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    idle: Duration,
+) -> io::Result<()> {
     let mut out = String::from("+OK Capability list follows\r\n");
     for cap in [
         "USER",
@@ -497,7 +622,7 @@ async fn write_capabilities<W: tokio::io::AsyncWrite + Unpin>(w: &mut W) -> io::
         out.push('\n');
     }
     out.push_str(".\r\n");
-    w.write_all(out.as_bytes()).await
+    crate::smtp::bound_io(w.write_all(out.as_bytes()), idle).await
 }
 
 /// Append `raw` to `out` as RFC 1939 multi-line data: every line becomes
@@ -564,7 +689,11 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let mut client = BufReader::new(TcpStream::connect(addr).await.unwrap());
         let (server, _) = listener.accept().await.unwrap();
-        let task = tokio::spawn(handle_conn(server, Arc::new(Store::new(0))));
+        let task = tokio::spawn(handle_conn(
+            server,
+            Arc::new(Store::new(0)),
+            Duration::from_secs(60),
+        ));
 
         // Greeting, then one clean round-trip (CAPA works in both states).
         let mut line = Vec::new();
@@ -654,6 +783,109 @@ mod tests {
         assert_eq!(resolve(&maildrop, &deleted, 1).unwrap().id, "a");
     }
 
+    /// The flag a test observes flipping, spun against a real deadline —
+    /// never a sleep (decision 0020 rule 5).
+    async fn flag_becomes(flag: &AtomicBool, want: bool, what: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while flag.load(Ordering::Relaxed) != want {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the accept loop never {what}"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// One injected accept failure: the loop flags itself degraded, backs
+    /// off, and then serves a real session on the same listener — a
+    /// transient accept error is survived, not fatal (the SMTP sibling's
+    /// proof). The flag is also observed cleared: the next successful
+    /// accept is the recovery.
+    #[tokio::test]
+    async fn one_failed_accept_backs_off_then_recovers() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let degraded = Arc::new(AtomicBool::new(false));
+        let server = tokio::spawn(serve(
+            listener,
+            Arc::new(Store::new(0)),
+            degraded.clone(),
+            Duration::from_secs(60),
+            256,
+            std::future::pending(),
+        ));
+        // Flipped before the loop is first polled, so the first accept is
+        // the injected failure — the arm is branch-stable (0020 rule 1).
+        inject_accept_errors(1);
+
+        flag_becomes(&degraded, true, "flagged degraded on the failed accept").await;
+        // The same listener still speaks once the backoff has passed.
+        let mut client = BufReader::new(TcpStream::connect(addr).await.unwrap());
+        let mut line = Vec::new();
+        client.read_until(b'\n', &mut line).await.unwrap();
+        assert!(
+            line.starts_with(b"+OK"),
+            "the listener never recovered: {line:?}"
+        );
+        flag_becomes(
+            &degraded,
+            false,
+            "cleared the flag after the successful accept",
+        )
+        .await;
+        server.abort();
+    }
+
+    /// A stop arriving inside a backoff pause resolves the loop well inside
+    /// that pause — the shutdown is raced against the backoff, never
+    /// stacked behind it (the SMTP sibling's proof, on the POP3 arm). A
+    /// live session holds a slot when the stop lands, so the drain inside
+    /// the shutdown arm joins a genuinely aborted task — the shape a stop
+    /// interrupts a *busy* degraded listener, not an idle one.
+    #[tokio::test]
+    async fn a_stop_inside_a_backoff_resolves_well_inside_it() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let degraded = Arc::new(AtomicBool::new(false));
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(serve(
+            listener,
+            Arc::new(Store::new(0)),
+            degraded.clone(),
+            Duration::from_secs(60),
+            256,
+            async move {
+                let mut stop_rx = stop_rx;
+                let _ = stop_rx.changed().await;
+            },
+        ));
+        // The greeting is written by the session task, so reading it proves
+        // the session is spawned — and it stays spawned, parked on a read
+        // this test never answers.
+        let mut client = BufReader::new(TcpStream::connect(addr).await.unwrap());
+        let mut line = Vec::new();
+        client.read_until(b'\n', &mut line).await.unwrap();
+        assert!(
+            line.starts_with(b"+OK "),
+            "greeting proves the spawn: {line:?}"
+        );
+        inject_accept_errors(1);
+        // The loop is parked inside the accept (nothing wakes it) — the
+        // seam is consumed on the accept's next *poll*, so a second
+        // connection is the poke: its handshake fires the accept's waker,
+        // the poll re-checks the seam first, and the error wins before the
+        // accept is ever awaited. Branch-stable, no sleep.
+        let _poke = TcpStream::connect(addr).await.unwrap();
+        // The flag is set in the same poll that enters the backoff select,
+        // so observing it means the loop is parked there — the stop lands
+        // mid-pause, not before it.
+        flag_becomes(&degraded, true, "entered the backoff").await;
+        let _ = stop_tx.send(true);
+        let outcome = tokio::time::timeout(Duration::from_millis(500), server).await;
+        let res = outcome.expect("the stop did not resolve inside the backoff");
+        assert!(res.is_ok(), "the raced stop must exit cleanly: {res:?}");
+    }
+
     /// The accept loop reaps completed sessions: each offered connection is
     /// one loop iteration, and each iteration's harvest joins every session
     /// completed so far — so a completed entry is reaped by a later accept
@@ -667,6 +899,9 @@ mod tests {
         let server = tokio::spawn(serve(
             listener,
             Arc::new(Store::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_secs(60),
+            256,
             std::future::pending(),
         ));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

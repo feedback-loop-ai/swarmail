@@ -87,6 +87,15 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     let mut tasks = tokio::task::JoinSet::new();
     webhook::spawn_dispatcher(&store, &webhooks, shutdown_rx.clone(), &mut tasks);
 
+    // One degraded flag per listening surface, created where the listeners
+    // are bound (decision 0027): an accept loop sets its own on a failed
+    // accept and clears it on the next success, and /healthz reads the pair
+    // to answer `degraded` with the surfaces that cannot accept. Plain
+    // atomics: the loop already reorders around the failure, and the flag
+    // is advisory truth about a socket, not a lock domain.
+    let smtp_degraded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let pop3_degraded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // TLS is parsed before anything binds: a server that answers must not
     // answer with a broken TLS config. Both halves of the pair are required.
     let tls = match (&cfg.tls_cert, &cfg.tls_key) {
@@ -118,13 +127,22 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         let chaos = chaos.clone();
         let smtp_cfg = cfg.smtp.clone();
         let tls = tls;
+        let degraded = smtp_degraded.clone();
         let mut shutdown_rx = shutdown_rx.clone();
         tasks.spawn(async move {
             log_stopped(
                 "smtp",
-                smtp::serve(smtp_listener, store, chaos, smtp_cfg, tls, async move {
-                    let _ = shutdown_rx.changed().await;
-                })
+                smtp::serve(
+                    smtp_listener,
+                    store,
+                    chaos,
+                    smtp_cfg,
+                    tls,
+                    degraded,
+                    async move {
+                        let _ = shutdown_rx.changed().await;
+                    },
+                )
                 .await,
             );
         });
@@ -140,6 +158,8 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
             webhooks,
             started: std::time::Instant::now(),
             shutdown: shutdown_rx.clone(),
+            smtp_degraded: smtp_degraded.clone(),
+            pop3_degraded: pop3_degraded.clone(),
         };
         let mut shutdown_rx = shutdown_rx.clone();
         tasks.spawn(async move {
@@ -155,13 +175,22 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
 
     {
         let store = store.clone();
+        let degraded = pop3_degraded.clone();
+        let (idle_timeout, max_sessions) = (cfg.smtp.idle_timeout, cfg.smtp.max_sessions);
         let mut shutdown_rx = shutdown_rx.clone();
         tasks.spawn(async move {
             log_stopped(
                 "pop3",
-                pop3::serve(pop3_listener, store, async move {
-                    let _ = shutdown_rx.changed().await;
-                })
+                pop3::serve(
+                    pop3_listener,
+                    store,
+                    degraded,
+                    idle_timeout,
+                    max_sessions,
+                    async move {
+                        let _ = shutdown_rx.changed().await;
+                    },
+                )
                 .await,
             );
         });

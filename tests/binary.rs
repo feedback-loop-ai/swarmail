@@ -9,7 +9,7 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStdout, Command};
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_swarmail")
@@ -28,6 +28,9 @@ struct Serve {
     child: Child,
     smtp_addr: SocketAddr,
     http_addr: SocketAddr,
+    /// The reader parked just past the startup line: the signal legs
+    /// sequence on the server's own log lines, never a sleep.
+    stdout: Option<BufReader<ChildStdout>>,
     reaped: bool,
 }
 
@@ -122,7 +125,36 @@ async fn spawn_serve(cmd: Command) -> Serve {
         child,
         smtp_addr,
         http_addr,
+        stdout: Some(reader),
         reaped: false,
+    }
+}
+
+/// Read the server's own stdout until a line mentioning `needle` appears
+/// (or fail loudly): the sequencing anchor for the signal legs — the second
+/// signal must land *during* the drain, which only the server's own
+/// "shutting down" line can attest without a sleep.
+async fn wait_for_line(serve: &mut Serve, needle: &str, deadline: Duration) -> String {
+    let reader = serve.stdout.as_mut().expect("piped stdout");
+    let end = tokio::time::Instant::now() + deadline;
+    let mut transcript = String::new();
+    let mut line = String::new();
+    loop {
+        assert!(
+            tokio::time::Instant::now() < end,
+            "the server never said {needle:?}: {transcript}"
+        );
+        match tokio::time::timeout(Duration::from_millis(200), reader.read_line(&mut line)).await {
+            Ok(Ok(0)) | Err(_) => continue,
+            Ok(Ok(_)) => {
+                transcript.push_str(&line);
+                if line.contains(needle) {
+                    return std::mem::take(&mut line);
+                }
+                line.clear();
+            }
+            Ok(Err(e)) => panic!("reading the server's stdout failed: {e}"),
+        }
     }
 }
 
@@ -148,9 +180,13 @@ async fn wait_http_up(addr: std::net::SocketAddr) {
 /// exit adds spawn and teardown overhead on top of the server's own path,
 /// which a loaded runner stretches past 10s — the budget itself is proven
 /// by the API-level held-lock tests on the server's own clock.
-async fn sigint_and_wait(child: &mut Child, deadline: Duration) -> std::process::ExitStatus {
+async fn signal_and_wait(
+    child: &mut Child,
+    sig: libc::c_int,
+    deadline: Duration,
+) -> std::process::ExitStatus {
     unsafe {
-        libc::kill(child.id().expect("a live pid") as i32, libc::SIGINT);
+        libc::kill(child.id().expect("a live pid") as i32, sig);
     }
     tokio::time::timeout(deadline, async {
         loop {
@@ -161,14 +197,14 @@ async fn sigint_and_wait(child: &mut Child, deadline: Duration) -> std::process:
         }
     })
     .await
-    .expect("server did not stop on SIGINT")
+    .expect("the server did not stop on the signal")
 }
 
 #[tokio::test]
 async fn serve_answers_healthz_and_stops_on_sigint() {
     let mut serve = spawn_serve(serve_command()).await;
     wait_http_up(serve.http_addr).await;
-    let status = sigint_and_wait(&mut serve.child, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
@@ -197,7 +233,7 @@ async fn serve_restores_a_data_file_across_a_restart() {
     .await
     .expect("smtp send");
     assert!(reply.starts_with("250"), "{reply}");
-    let status = sigint_and_wait(&mut first.child, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut first.child, libc::SIGINT, Duration::from_secs(30)).await;
     first.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 
@@ -219,7 +255,7 @@ async fn serve_restores_a_data_file_across_a_restart() {
     assert_eq!(st, 200);
     assert_eq!(list["total"], 1, "mail did not survive the restart: {list}");
     assert_eq!(list["emails"][0]["subject"], "Binary persist");
-    let status = sigint_and_wait(&mut restarted.child, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     for suffix in ["", "-wal", "-shm"] {
@@ -426,7 +462,7 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
             "a mail whose 250 was observed ({id}) was lost across a hard kill"
         );
     }
-    let status = sigint_and_wait(&mut restarted.child, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     for suffix in ["", "-wal", "-shm"] {
@@ -485,7 +521,7 @@ async fn gen_cert_writes_a_pair_the_server_serves() {
     assert!(tls.reply_raw().await.starts_with("250"));
     let stored = tls.data("Subject: from the cli\r\n\r\nbody").await;
     assert!(stored.starts_with("250"), "{stored}");
-    let status = sigint_and_wait(&mut serve.child, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -520,7 +556,7 @@ async fn serve_takes_tls_from_the_environment() {
     let mut tls = common::starttls(smtp_addr, "localhost", root).await;
     tls.send("NOOP").await;
     assert!(tls.reply_raw().await.starts_with("250"));
-    let status = sigint_and_wait(&mut serve.child, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -649,7 +685,7 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
     // level. The exit wait is liveness (30s); the budget — at most one
     // busy bound plus ε — is what the API-level held-lock tests prove on
     // the server's own clock.
-    let status = sigint_and_wait(&mut serve.child, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 
@@ -682,10 +718,104 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
         assert_eq!(st, 200, "{list}");
         assert_eq!(list["total"], 0, "the refused set never landed: {list}");
     }
-    let status = sigint_and_wait(&mut restarted.child, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "restart SIGINT exit: {status:?}");
     let _ = std::fs::remove_file(&db);
     let _ = std::fs::remove_file(db.with_extension("db-wal"));
     let _ = std::fs::remove_file(db.with_extension("db-shm"));
+}
+
+/// SIGTERM is the signal a container manager actually sends (`docker stop`
+/// delivers the image's STOPSIGNAL — 0027 fixes it to SIGTERM). It must
+/// take the same graceful path as SIGINT — exit 0, no half-drained
+/// process — and everything committed before the signal must be queryable
+/// after a restart on the same data file.
+#[tokio::test]
+async fn sigterm_takes_the_graceful_path_and_the_mail_survives_a_restart() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-sigterm-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut serve = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(serve.http_addr).await;
+    let reply = common::smtp_send(
+        serve.smtp_addr,
+        Some("sigterm"),
+        "a@x.io",
+        "b@x.io",
+        "Term graceful",
+        "the body",
+    )
+    .await
+    .expect("smtp send");
+    assert!(reply.starts_with("250"), "{reply}");
+
+    let status = signal_and_wait(&mut serve.child, libc::SIGTERM, Duration::from_secs(30)).await;
+    serve.reaped = true;
+    assert!(status.success(), "SIGTERM exit: {status:?}");
+
+    // The same data file, a fresh process: the committed mail is queryable.
+    let mut again = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(again.http_addr).await;
+    let (st, list) = common::http_json(
+        again.http_addr,
+        "GET",
+        "/api/v1/inboxes/sigterm/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{list}");
+    assert_eq!(list["total"], 1, "mail did not survive SIGTERM: {list}");
+    assert_eq!(list["emails"][0]["subject"], "Term graceful");
+    let status = signal_and_wait(&mut again.child, libc::SIGINT, Duration::from_secs(30)).await;
+    again.reaped = true;
+    assert!(status.success(), "restart SIGINT exit: {status:?}");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+}
+
+/// The drain is held open by a body that never lands, so the second signal
+/// provably arrives *during* it: the sequence is anchored on the server's
+/// own `shutting down` line, never a sleep. The operator has said they are
+/// done — the process exits 70 instead of outliving its drain.
+#[tokio::test]
+async fn a_second_signal_during_the_drain_exits_70() {
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+
+    // The park: a dispatched request whose body never completes. Its 100
+    // Continue is the proof the handler is waiting on bytes (and so the
+    // drain is held), not on a guess.
+    let mut a = TcpStream::connect(serve.http_addr).await.unwrap();
+    a.write_all(
+        b"POST /api/v1/inboxes/stall/seed HTTP/1.1\r\nHost: t\r\n\
+          Expect: 100-continue\r\nContent-Type: application/json\r\n\
+          Content-Length: 10\r\n\r\n",
+    )
+    .await
+    .unwrap();
+    a.write_all(b"{\"to").await.unwrap();
+    let mut first = [0u8; 64];
+    let n = tokio::time::timeout(Duration::from_secs(10), a.read(&mut first))
+        .await
+        .expect("hyper never asked for the body")
+        .unwrap();
+    assert!(first[..n].starts_with(b"HTTP/1.1 100"), "{:?}", &first[..n]);
+
+    // First SIGTERM: the graceful drain begins, and says so on stdout.
+    unsafe {
+        libc::kill(serve.child.id().expect("a live pid") as i32, libc::SIGTERM);
+    }
+    wait_for_line(&mut serve, "shutting down", Duration::from_secs(10)).await;
+
+    // The second signal lands inside the drain: forced exit 70.
+    let status = signal_and_wait(&mut serve.child, libc::SIGTERM, Duration::from_secs(30)).await;
+    serve.reaped = true;
+    assert_eq!(status.code(), Some(70), "second SIGTERM exit: {status:?}");
 }

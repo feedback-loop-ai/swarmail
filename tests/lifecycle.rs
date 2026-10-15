@@ -9,7 +9,7 @@ use common::{SmtpConn, start, start_with, wait_for_metric_row};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 
 #[tokio::test]
@@ -626,4 +626,142 @@ async fn queued_seeds_refuse_once_the_stop_has_fired() {
     assert_eq!(stored, 0, "the refused set stored nothing");
     drop(ro);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+// --- 0027: a stalled body and a partial head cannot hold stop hostage ------
+
+/// One HTTP response off a raw socket: the status code and the JSON body,
+/// skipping any interim `100 Continue` and honoring Content-Length.
+async fn read_response(what: &str, stream: &mut tokio::net::TcpStream) -> (u16, serde_json::Value) {
+    let mut raw: Vec<u8> = Vec::new();
+    let mut buf = [0u8; 1024];
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let head_end = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no response arrived: {}",
+            String::from_utf8_lossy(&raw)
+        );
+        let n = tokio::time::timeout(Duration::from_millis(500), stream.read(&mut buf))
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "[{what}] the response stalled: {}",
+                    String::from_utf8_lossy(&raw)
+                )
+            })
+            .expect("read failed");
+        assert!(n > 0, "[{what}] closed without a full response");
+        raw.extend_from_slice(&buf[..n]);
+        if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            let head = String::from_utf8_lossy(&raw[..i]).into_owned();
+            let status: u16 = head
+                .lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .expect("a status line")
+                .parse()
+                .expect("status is a number");
+            if status == 100 {
+                // Interim: drop it and keep reading for the real answer.
+                raw.drain(..i + 4);
+                continue;
+            }
+            break i;
+        }
+    };
+    let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .expect("a status line")
+        .parse()
+        .expect("status is a number");
+    let len: usize = head
+        .lines()
+        .find_map(|l| {
+            l.split_once(':')
+                .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, v)| v.trim().parse().ok())
+        })
+        .unwrap_or(0);
+    while raw.len() < head_end + 4 + len {
+        let n = tokio::time::timeout(Duration::from_millis(500), stream.read(&mut buf))
+            .await
+            .expect("the body stalled")
+            .expect("read failed");
+        assert!(n > 0, "the connection closed mid-body");
+        raw.extend_from_slice(&buf[..n]);
+    }
+    (
+        status,
+        serde_json::from_slice(&raw[head_end + 4..head_end + 4 + len]).expect("a JSON body"),
+    )
+}
+
+/// The hardest parked pair (0027): a request stalled mid-BODY — hyper has
+/// dispatched it (its 100 Continue is on the wire) and the handler waits on
+/// bytes that never come — and a connection parked mid-HEAD. The stalled
+/// body cannot hold stop hostage: the drain deadline ends the wait (red:
+/// the graceful drain held `stop()` forever, and a healthz answered `200
+/// ok` after the stop had fired). The partial head, completed inside the
+/// drain, is answered `503 stopping` on the real wire.
+///
+/// The stalled seed is deliberately never completed: hyper aborts a body
+/// that lands after the stop (the write is reset) and will not continue a
+/// dispatched body mid-drain — the boundary refusal for a seed that
+/// completes is `queued_seeds_refuse_once_the_stop_has_fired`'s proof.
+#[tokio::test]
+async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+
+    // A: a seed whose body is half-said — the head is complete, hyper asks
+    // for the body with its 100 Continue, and the last six bytes never
+    // come. The stream is held for the whole stop: an early drop would end
+    // the park and prove nothing about the deadline.
+    let mut a = tokio::net::TcpStream::connect(addr).await.unwrap();
+    a.write_all(
+        b"POST /api/v1/inboxes/stall/seed HTTP/1.1\r\nHost: t\r\n\
+          Expect: 100-continue\r\nContent-Type: application/json\r\n\
+          Content-Length: 10\r\n\r\n",
+    )
+    .await
+    .unwrap();
+    a.write_all(b"{\"to").await.unwrap();
+
+    // B: a request parked mid-parse — a head with no terminator, written
+    // before A's continue is awaited, so B's connection task provably
+    // exists and is polled before the stop ever fires.
+    let mut b = tokio::net::TcpStream::connect(addr).await.unwrap();
+    b.write_all(b"GET /healthz HTTP/1.1\r\nHost: t\r\n")
+        .await
+        .unwrap();
+
+    // The 100 Continue is observed: A's park is real, not a guess.
+    let mut first = [0u8; 64];
+    let n = tokio::time::timeout(Duration::from_secs(10), a.read(&mut first))
+        .await
+        .expect("hyper never asked for the body")
+        .unwrap();
+    assert!(first[..n].starts_with(b"HTTP/1.1 100"), "{:?}", &first[..n]);
+
+    // Stop, and complete B's head inside the drain it opens.
+    let (stop_res, healthz) = tokio::join!(
+        async { tokio::time::timeout(STOP_BUDGET, srv.stop()).await },
+        async {
+            b.write_all(b"\r\n").await.unwrap();
+            read_response("healthz", &mut b).await
+        },
+    );
+    // stop() resolves — at the drain deadline, since the body never lands
+    // (red: the graceful drain held it forever).
+    stop_res.expect("the stalled body held stop past every budget");
+
+    // The partial head completed mid-drain: the answer is `stopping`, not
+    // the old `200 ok`.
+    let (st, body) = healthz;
+    assert_eq!(st, 503, "{body}");
+    assert_eq!(body["status"], "stopping");
 }

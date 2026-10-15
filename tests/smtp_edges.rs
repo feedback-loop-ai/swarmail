@@ -5,6 +5,7 @@ mod common;
 
 use base64::Engine as _;
 use common::{SmtpConn, http_json, smtp_send, start, start_smtp};
+use std::time::Duration;
 use swarmail::smtp::SmtpConfig;
 
 #[tokio::test]
@@ -922,4 +923,185 @@ async fn an_auth_that_goes_silent_ends_the_session_quietly() {
     assert_eq!(c.reply().await, "334 UGFzc3dvcmQ6");
     c.shutdown_write().await;
     assert!(c.read_to_end().await.is_empty());
+}
+
+// --- 0027: bounded sessions, bounded idleness, capped recipients ----------
+
+/// The idle deadline is compiled (no knob, 0022 §5): a peer that goes
+/// silent after the banner is answered the exact `421 4.4.2` text and the
+/// channel closes — a session cannot hang the accept loop forever (red
+/// before 0027: the read blocked for the socket's lifetime).
+#[tokio::test]
+async fn a_silent_peer_is_answered_421_then_the_channel_closes() {
+    let srv = start_smtp(SmtpConfig {
+        idle_timeout: Duration::from_millis(150),
+        ..Default::default()
+    })
+    .await;
+    let mut c = SmtpConn::connect_raw(srv.smtp_addr).await;
+    let greeting = c.reply().await;
+    assert!(greeting.starts_with("220"), "{greeting}");
+    // ...silence...
+    let goodbye = c.reply().await;
+    assert_eq!(
+        goodbye,
+        "421 4.4.2 idle timeout, closing transmission channel"
+    );
+    assert_eq!(
+        c.read_to_eof().await,
+        "",
+        "the channel closes right after the goodbye"
+    );
+    assert_eq!(
+        srv.store
+            .count("default", &swarmail::store::Filter::default()),
+        0,
+        "a silent peer stored nothing"
+    );
+}
+
+/// A peer that stalls mid-DATA ends silently: no reply, the socket closes,
+/// and nothing is stored — a half-said mail is not a mail (0001: the
+/// deadline is never armed across the commit, so a commit that happened is
+/// never lost; here no commit ever happens).
+#[tokio::test]
+async fn a_data_stall_ends_silently_with_nothing_stored() {
+    let srv = start_smtp(SmtpConfig {
+        idle_timeout: Duration::from_millis(150),
+        ..Default::default()
+    })
+    .await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("MAIL FROM:<a@b>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("RCPT TO:<stall@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    // One body line, then nothing: the session expires mid-mail.
+    c.send("Subject: never finished").await;
+    assert_eq!(
+        c.read_to_eof().await,
+        "",
+        "a DATA expiry answers nothing and closes the channel"
+    );
+    assert_eq!(
+        srv.store
+            .count("default", &swarmail::store::Filter::default()),
+        0,
+        "the partial mail is never stored"
+    );
+}
+
+/// The compiled session cap refuses honestly at the wire: the extra
+/// session gets the exact `421 4.7.0` text and never a greeting — refused
+/// before any session state exists (red before 0027: sessions were
+/// unbounded and the listener never said why it was drowning).
+#[tokio::test]
+async fn a_full_listener_refuses_the_next_session_before_a_greeting() {
+    let srv = start_smtp(SmtpConfig {
+        max_sessions: 1,
+        ..Default::default()
+    })
+    .await;
+    // Session one: a live session (greeting read, no QUIT).
+    let mut a = SmtpConn::connect_raw(srv.smtp_addr).await;
+    assert!(a.reply().await.starts_with("220"));
+    // Session two: refused before any greeting.
+    let mut b = SmtpConn::connect_raw(srv.smtp_addr).await;
+    assert_eq!(
+        b.reply().await,
+        "421 4.7.0 Too many connections, closing transmission channel"
+    );
+    assert_eq!(
+        b.read_to_eof().await,
+        "",
+        "the refusal is the whole conversation"
+    );
+    // The refusal is A's business, not A's death: the still-live first
+    // session completes a real delivery while the listener is at its cap —
+    // the mail is queryable the moment the 250 lands (0001, on the capped
+    // surface).
+    a.send("MAIL FROM:<capped@x.io>").await;
+    assert!(a.reply().await.starts_with("250"));
+    a.send("RCPT TO:<cap@x.io>").await;
+    assert!(a.reply().await.starts_with("250"));
+    a.send("DATA").await;
+    assert!(a.reply().await.starts_with("354"));
+    a.send("Subject: delivered at the cap").await;
+    a.send(".").await;
+    let stored = a.reply().await;
+    assert!(stored.starts_with("250"), "{stored}");
+    assert_eq!(
+        srv.store
+            .count("default", &swarmail::store::Filter::default()),
+        1,
+        "the first session delivered while the cap was full"
+    );
+    // The cap is a gate, not a scar: once A quits, a fresh session speaks.
+    a.send("QUIT").await;
+    assert!(a.reply().await.starts_with("221"));
+    // The freed slot is offered again by the loop's next reap-then-accept
+    // iteration, so the probe polls until it arrives — against a real
+    // deadline, never a sleep (decision 0020 rule 5).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut c = loop {
+        let mut attempt = SmtpConn::connect_raw(srv.smtp_addr).await;
+        let greeting = attempt.reply().await;
+        if greeting.starts_with("220") {
+            break attempt;
+        }
+        assert_eq!(
+            greeting, "421 4.7.0 Too many connections, closing transmission channel",
+            "the only honest refusal is the cap text"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the freed slot was never offered again"
+        );
+    };
+    c.send("NOOP").await;
+    assert!(c.reply().await.starts_with("250"));
+}
+
+/// The 101st recipient is refused with the exact `452 4.5.3` text — and is
+/// not appended: the delivered mail carries exactly the first hundred
+/// (red before 0027: the list grew without bound).
+#[tokio::test]
+async fn the_101st_recipient_is_refused_and_not_appended() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("MAIL FROM:<sender@x.io>").await;
+    assert!(c.reply().await.starts_with("250"));
+    for i in 0..100 {
+        c.send("RCPT TO:<r@x.io>").await;
+        assert!(c.reply().await.starts_with("250"), "recipient {i} refused");
+    }
+    c.send("RCPT TO:<over@x.io>").await;
+    assert_eq!(c.reply().await, "452 4.5.3 Too many recipients");
+    // The refusal is not fatal: the session keeps speaking.
+    c.send("NOOP").await;
+    assert!(c.reply().await.starts_with("250"));
+    // The refused one is not appended.
+    c.send("DATA").await;
+    assert!(c.reply().await.starts_with("354"));
+    c.send("Subject: rcpt cap").await;
+    c.send(".").await;
+    assert!(c.reply().await.starts_with("250"));
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let email = &body["emails"][0];
+    assert_eq!(email["subject"], "rcpt cap");
+    let tos = email["recipients"].as_array().expect("envelope recipients");
+    assert_eq!(tos.len(), 100, "exactly the accepted hundred");
+    assert!(
+        tos.iter().all(|t| t.as_str() != Some("over@x.io")),
+        "the refused recipient was appended: {tos:?}"
+    );
 }

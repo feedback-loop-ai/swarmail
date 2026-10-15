@@ -133,6 +133,11 @@ the operator can overrule with eyes open.
   one task, and the plaintext idle posture is unbounded by documented
   design. The byte reader lands in `smtp.rs`, so the hardening follow-up is
   small.
+  *(Amended by [0027](0027-living-listeners-bounded-sessions.md): the
+  plaintext idle posture is now bounded — per-I/O idle deadlines, SMTP 5
+  min / POP3 10 min, answered `421 4.4.2 idle timeout` / `-ERR idle
+  timeout` and closed; idling no longer grows a session task's heap, and a
+  hostile peer cannot outlive its own deadline.)*
 - **`SIZE=` enforcement on `MAIL FROM`.** Rejected: the declared size is the
   client's claim, not a bound; enforcement lives where the bytes are.
   *Cost:* a client may lie about `SIZE`; nothing trusts it.

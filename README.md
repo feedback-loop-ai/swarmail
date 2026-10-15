@@ -213,12 +213,39 @@ the accumulator; a protocol line over 4096 bytes — POP3's own line cap —
 is drained and answered `500 5.5.2 Line too long`, and the session
 continues.
 
+**The listener never dies on a bad accept.** A transient `accept()` error
+backs the loop off (1 s) and clears on the next success, and `/healthz`
+says so honestly: `200 {"status":"ok"}` when every listener accepts, `503
+{"status":"degraded","degraded":["smtp", ...]}` naming the surfaces that
+cannot, and `503 {"status":"stopping"}` once the stop has fired — that
+state wins over everything else. Sessions are bounded where the wire
+admits them: more than 256 concurrent SMTP or POP3 sessions is refused
+before any greeting (`421 4.7.0 Too many connections, closing transmission
+channel` / `-ERR too many connections`), a freed slot is offered to the
+next peer, more than 100 recipients on one mail is refused `452 4.5.3 Too
+many recipients` before anything is appended, and an idle session is
+answered `421 4.4.2 idle timeout, closing transmission channel` (POP3:
+`-ERR idle timeout`) and closed — SMTP 5 min, POP3 10 min, never armed
+across a commit (a mid-DATA expiry stores nothing, exactly as if the
+peer had hung up).
+
+**The stop is wired to both signals and has a documented exit vocabulary.**
+`SIGINT` and `SIGTERM` take the same path: the first starts the graceful
+drain (`shutting down` on stdout, the 5 s drain deadline raced against
+graceful serve), and a second signal during the drain is the operator's
+explicit "now" — a forced `exit(70)`, never a disposition accident. The
+exit codes are **0** graceful, **70** forced; the image declares
+`STOPSIGNAL SIGTERM` so `docker stop` rides the graceful path.
+
 **STARTTLS** is real: with `--tls-cert`/`--tls-key` (or the env pairs), EHLO
 advertises `STARTTLS`, the session upgrades with rustls/ring, and the
 session restarts per RFC 3207 §4.2 — plaintext pipelining before the
 handshake is discarded, every further command is TLS-only. A stalled
 handshake is dropped after `--tls-handshake-timeout-ms` (default 10 s); the
-plaintext session has no idle timeout and gains none. Without a cert the
+plaintext session has no idle timeout and gains none. *(Amended by
+decision 0027: the plaintext idle posture is now bounded — 5 min SMTP /
+10 min POP3, as above; the STARTTLS handshake timeout itself is
+unchanged.)* Without a cert the
 plaintext listener is byte-identical to the one without the flag.
 
 ```
@@ -528,8 +555,8 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
 | `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart, refused certs, stalled handshakes, malformed PEM refusal, gen-cert file handling |
-| `tests/lifecycle.rs` | graceful stop: serve futures return, ports release, parked awaits answer 503 inside the stop budget, an in-flight commit neither holds stop nor half-lands, queued seeds refuse once the stop has fired — at most one busy wait, never one per queued request |
-| `tests/binary.rs` | the shipped binary: SIGINT → clean exit, SIGINT with seeds queued on a held write lock exits inside the budget and stores nothing, mcp EOF → 0 |
+| `tests/lifecycle.rs` | graceful stop: serve futures return, ports release, parked awaits answer 503 inside the stop budget, an in-flight commit neither holds stop nor half-lands, queued seeds refuse once the stop has fired — at most one busy wait, never one per queued request; a stalled body and a partial head cannot hold stop hostage (the drain deadline ends the wait) and the partial head is answered `503 stopping` on the wire |
+| `tests/binary.rs` | the shipped binary: SIGINT and SIGTERM → clean exit, SIGINT with seeds queued on a held write lock exits inside the budget and stores nothing, a second signal during the drain exits 70, a mail committed before SIGTERM is queryable after restart, mcp EOF → 0 |
 | `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT |
 | `tests/compat.rs` | the shims: Mailpit + MailHog envelopes, searches, deletes, 404/400 branches |
 | `tests/persistence.rs` | restart restores exact state; a racing clear never loses 250-answered mail |
