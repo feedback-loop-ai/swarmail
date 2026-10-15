@@ -747,9 +747,12 @@ async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
         .unwrap();
     assert!(first[..n].starts_with(b"HTTP/1.1 100"), "{:?}", &first[..n]);
 
-    // Stop, and complete B's head inside the drain it opens.
+    // Stop, and complete B's head inside the drain it opens. The budget is
+    // liveness against a hang — the fence plus ε — because a never-landing
+    // body is answered exactly at the drain deadline (0027 §7): a budget at
+    // the fence itself would race the deadline it exists to observe.
     let (stop_res, healthz) = tokio::join!(
-        async { tokio::time::timeout(STOP_BUDGET, srv.stop()).await },
+        async { tokio::time::timeout(STOP_BUDGET + Duration::from_secs(5), srv.stop()).await },
         async {
             b.write_all(b"\r\n").await.unwrap();
             read_response("healthz", &mut b).await

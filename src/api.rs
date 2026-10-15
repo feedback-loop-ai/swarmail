@@ -274,10 +274,14 @@ fn registry_total(registry: &Registry) -> u64 {
 /// The drain deadline (decision 0027): a stop waits for in-flight HTTP
 /// work exactly this long, then returns anyway. A client that stalls
 /// mid-request — or mid-body, where the graceful flag cannot reach it —
-/// must not hold the process past its own shutdown. The margin is 0018's:
-/// one busy tail of this length still lands far inside any supervisor's
-/// patience.
-const DRAIN_DEADLINE: Duration = Duration::from_secs(5);
+/// must not hold the process past its own shutdown. The value is 0018's
+/// whole fence — busy bound plus margin — because the two tails overlap:
+/// a commit already in flight when the stop fires runs to completion
+/// (0018 §2), burning up to its busy bound *inside* the drain window,
+/// and its refusal must be written to the socket before the deadline
+/// cuts it. A deadline at the margin alone raced a macOS runner's
+/// slower scheduling and closed a refused seed with no answer at all.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
 
 pub async fn serve(
     listener: TcpListener,

@@ -106,17 +106,23 @@ survivable, and they land together or the retry is a spinner.
    refused-or-committed, never partial. The startup registration window (a signal before the
    watcher's first poll kills at the default disposition) is accepted: microseconds, nothing
    stored, and a container killing a half-bound server deserves the kill.
-7. **The drain deadline is 0018's margin, and it ends the wait.** `api::serve` derives both
+7. **The drain deadline is 0018's whole fence, and it ends the wait.** `api::serve` derives both
    futures from the watch `AppState` already carries (`shutdown_signal(rx)` — 0018 §1's
    primitive, resolving at once if stop already fired, so the clock starts correctly) and races
-   the graceful serve against stop + `sleep(DRAIN_DEADLINE)`; `DRAIN_DEADLINE` = **5 s** (0018
-   §2's 5 s margin, given a job). At the deadline the serve future is dropped — the drain
+   the graceful serve against stop + `sleep(DRAIN_DEADLINE)`; `DRAIN_DEADLINE` = **10 s** —
+   0018 §2's whole stop budget (busy bound 5 s + margin 5 s). *Amended from the first
+   landing's 5 s margin by evidence:* the two tails overlap, they do not stack — a commit
+   already in flight when the stop fires runs to completion (0018 §2) and burns up to its busy
+   bound *inside* the drain window, so a deadline at the margin alone can cut a lawful refusal
+   before its 503 reaches the socket; macOS CI caught exactly that, a refused seed closed with
+   no answer at all under the runner's slower scheduling. At the deadline the serve future is
+   dropped — the drain
    stops waiting. Because axum's per-connection tasks are spawned and detached with no
    per-connection handle, the deadline cannot politely close them from here; what closes the
    remaining sockets is the process exit that immediately follows in the shipped binary, and
    the runtime drop for an embedder — the 0024 §6 posture, extended to connection tasks and
-   named as the residual. Worst-case process wall = drain (≤ 5 s) + one detached blocking tail
-   (≤ 5 s, 0024 §6) = **0018's fence (10 s)**: the deadline is derived from the fence, not
+   named as the residual. Worst-case process wall = **0018's fence (10 s)**, with any detached
+   blocking tail already spent inside it; the deadline is derived from the fence, not
    invented beside it. No process-wall *assertion* is added — the fence is proven on the
    server's own clock (the stalled-body `stop()` deadline, the queued-commit refusal test)
    plus end-to-end liveness in the binary legs, per the landed `tests/binary.rs` discipline.

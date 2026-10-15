@@ -69,9 +69,10 @@ bypass (`delete_many_async`) stays refused.
    abort-on-timer, no ack that outlives the drain.
    *(Amended by [0027](0027-living-listeners-bounded-sessions.md): the
    HTTP drain gains its deadline — `api::serve` races the graceful serve
-   against a 5-second sleep, so a request that can never finish cannot
-   hold stop hostage. The deadline ends the wait, not the sockets; the
-   `abort_all` + drain posture for sessions is unchanged.)*
+   against a 10-second sleep (this fence: busy bound plus margin), so a
+   request that can never finish cannot hold stop hostage. The deadline
+   ends the wait, not the sockets; the `abort_all` + drain posture for
+   sessions is unchanged.)*
 3. **Wire bounds are refusals, never clamps.** `timeout_ms` above
    `MAX_AWAIT_TIMEOUT_MS` (60000) is refused — REST `400`, MCP `isError`,
    both naming the maximum — before any subscribe. MCP
