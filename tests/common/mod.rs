@@ -1,6 +1,7 @@
 //! Shared end-to-end helpers: real servers, real protocol, no mocks.
 #![allow(dead_code)] // compiled per test binary; not every binary uses every helper
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use swarmail::RunningServer;
@@ -345,7 +346,7 @@ pub async fn http_get_text(addr: std::net::SocketAddr, path: &str) -> (u16, Stri
     let mut stream = TcpStream::connect(addr).await.unwrap();
     stream
         .write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").as_bytes(),
+            format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
         )
         .await
         .unwrap();
@@ -491,7 +492,7 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
     let mut stream = TcpStream::connect(addr).await.unwrap();
     stream
         .write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").as_bytes(),
+            format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
         )
         .await
         .unwrap();
@@ -547,8 +548,68 @@ pub async fn http_send_text(
     path: &str,
     body: Option<&str>,
 ) -> (u16, String) {
+    http_send_text_with_headers(addr, method, path, &[], body).await
+}
+
+/// `http_send_text` with extra request headers — the Origin guard's wire
+/// legs speak raw HTTP so an attacker-spelled `Origin` rides the request
+/// exactly as a browser would send it.
+///
+/// The Host line names the addr itself (a loopback spelling of the bound
+/// port) unless `host` overrides it — the DNS-rebinding legs speak raw
+/// HTTP so a rebound `Host` rides the request exactly as a browser would
+/// send it.
+pub async fn send_with_host(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    host: &str,
+    body: Option<&str>,
+) -> (u16, String) {
     let mut stream = TcpStream::connect(addr).await.unwrap();
-    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n");
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+    if let Some(b) = body {
+        req.push_str("Content-Type: application/json\r\n");
+        req.push_str(&format!("Content-Length: {}\r\n", b.len()));
+    }
+    req.push_str("\r\n");
+    if let Some(b) = body {
+        req.push_str(b);
+    }
+    stream.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
+        .await
+        .unwrap();
+    let s = String::from_utf8_lossy(&buf);
+    let status: u16 = s
+        .lines()
+        .next()
+        .unwrap()
+        .split(' ')
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let body = s
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_string())
+        .unwrap_or_default();
+    (status, body)
+}
+
+pub async fn http_send_text_with_headers(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<&str>,
+) -> (u16, String) {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        req.push_str(&format!("{name}: {value}\r\n"));
+    }
     if let Some(b) = body {
         req.push_str(&format!(
             "Content-Type: application/json\r\nContent-Length: {}\r\n",
@@ -610,6 +671,37 @@ pub async fn http_json(
             panic!("http_json {method} {path}: status {status} body is not JSON ({err}): {body:?}")
         }
     }
+}
+
+/// Every id an inbox holds, read the way any client must: through pages of
+/// the shared cap (decision 0030 §3) — no harness asks for an unbounded
+/// page, so the paged read is what "the whole inbox" means.
+pub async fn list_all_ids(addr: std::net::SocketAddr, inbox: &str) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for page in 0.. {
+        let (st, list) = http_json(
+            addr,
+            "GET",
+            &format!(
+                "/api/v1/inboxes/{inbox}/messages?limit=250&offset={}",
+                page * 250
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(st, 200, "the paged read never refuses: {list}");
+        let emails = list["emails"].as_array().expect("email list");
+        let got = emails.len();
+        ids.extend(
+            emails
+                .iter()
+                .map(|e| e["id"].as_str().expect("id").to_string()),
+        );
+        if got < 250 {
+            return ids;
+        }
+    }
+    unreachable!("the paging loop always returns")
 }
 
 /// A rustls client that trusts exactly one root — the cert the server is
@@ -709,7 +801,7 @@ impl SseReader {
         let stream = TcpStream::connect(addr).await.unwrap();
         let (r, mut w) = stream.into_split();
         w.write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: t\r\nAccept: text/event-stream\r\n\r\n")
+            format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nAccept: text/event-stream\r\n\r\n")
                 .as_bytes(),
         )
         .await

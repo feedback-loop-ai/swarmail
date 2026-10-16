@@ -87,6 +87,53 @@ compatibility layer (MailHog/Mailpit), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies.
 
+**The binds are loopback by default, and the loopback plane refuses
+cross-origin pages and rebound hosts.** All three listeners default to
+`127.0.0.1` — a mail mock serves the machine it runs on — and the image
+and the chart state `0.0.0.0` explicitly, because a container that
+trusted its defaults would never publish a port. While the HTTP listener
+is loopback-bound, two headers are checked before the router. **Host**:
+a request whose `Host` is not a loopback spelling of the bound HTTP port
+is answered `403` — this is the DNS-rebinding defense, because a rebound
+page sends *same-origin* requests (and same-origin GET/HEADs carry no
+`Origin` at all) while its `Host` line still spells the attacker's
+hostname. **Origin**: a present `Origin` that is not a loopback spelling
+is answered `403` — the one header a browser sets honestly, so a
+cross-site drive is named and refused. Every method and every route is
+covered, `/mcp` and the UI included; requests without an `Origin` — curl,
+agents, the stdio bridge, every test harness — pass untouched (their
+`Host` is the loopback spelling they dialed), and an operator who binds
+`0.0.0.0` states the trust themselves (the guard is inert, not the
+posture weaker). There is no auth on any surface, by design: the loopback
+posture is the boundary, and a server with secrets would need auth —
+this one holds test mail, and its knobs are local (`set-chaos`
+included). Webhooks dial out only to addresses an operator explicitly
+configures — **and that is the whole boundary**: an arbitrary or
+internal address is accepted at registration and dialed from this
+process, so on a network with sensitive internal services the operator
+should spell loopback or otherwise-sanctioned targets (no allowlist, no
+auth on the registration API — the posture is the trust statement, and
+the SSRF exposure of an internal-target registration is recorded in
+decision 0030 §5 rather than papered over). The delivery budget is
+`WEBHOOK_DELIVERY_CAP` (32) **per normalized target URL** — many
+configured targets multiply the ceiling, and there is no global
+backstop across targets; nothing ever dials an address learned from
+mail content.
+
+**The pages are bounded.** Every result page — the REST list, `await`,
+the MailHog/Mailpit shims, and every MCP search/get-latest/wait — is
+capped at **250 items** (`limit`/`count` above the cap is refused with a
+400 on REST and the shims, a `-32602` error over MCP: named, never
+clamped). `await`'s exact-count `assert` keeps its unclamped semantics —
+its `limit` is parsed for parity with `list` but inert, because the
+assert answer is a count, not a page. SMTP request parsing and the REST
+list/await/compat page copies run off the async workers on the blocking
+pool, so a 50 MiB mail cannot stall the accept loop or the await wakes
+it gates; the MCP `swarmail_seed_email` seed build and the SSE
+thread-view serialization still run inline (the seed is the test
+fixture's own path, and the thread view is a per-request read render —
+neither is on the ingest path the stall guards).
+
 ## The guarantees
 
 These are the frozen guarantees ([decision records](docs/decisions/README.md)
@@ -156,10 +203,12 @@ $ curl "localhost:8025/api/v1/inboxes/quickstart/await?to=ada@x.io&count=1&timeo
 parse + extraction pipeline. Per-test isolation needs no config: the AUTH
 username names the inbox.
 
-Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `1025`),
-`SWARMAIL_POP3_LISTEN` (`1110`), `SWARMAIL_HTTP_LISTEN` (`8025`),
-`SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited), `SWARMAIL_URL` (the
-MCP stdio bridge's upstream), `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
+Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `127.0.0.1:1025`),
+`SWARMAIL_POP3_LISTEN` (`127.0.0.1:1110`), `SWARMAIL_HTTP_LISTEN`
+(`127.0.0.1:8025` — the image and the chart set `0.0.0.0`, see the
+posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
+`SWARMAIL_URL` (the MCP stdio bridge's upstream),
+`SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
 `SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
 
 ## Kubernetes (Helm)
@@ -261,7 +310,7 @@ $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 |---|---|
 | `GET /api/v1/inboxes` | the live inbox list |
 | `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first; wipe the inbox |
-| `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`/`from`/`subject`/`since_ms` filters, `count` (minimum one, even `count=0`), `timeout_ms` (≤ 60000: refused with 400 above, never clamped; a stopping server answers 503 `shutting down` instead of parking) |
+| `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`/`from`/`subject`/`since_ms` filters, `count` (minimum one, even `count=0`), `limit`/`count` ≤ 250 (refused, never clamped), `timeout_ms` (≤ 60000: refused with 400 above, never clamped; a stopping server answers 503 `shutting down` instead of parking) |
 | `GET /api/v1/inboxes/{inbox}/assert` | exact-count assertion — `count=0` asserts an empty filter; never clamped — 200 or a named failure |
 | `GET /api/v1/inboxes/{inbox}/threads[/{key}]` | conversations, oldest first, stable keys |
 | `GET /api/v1/inboxes/{inbox}/feed` | SSE: one snapshot, then one event per accepted mail |

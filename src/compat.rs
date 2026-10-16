@@ -27,6 +27,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get};
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -79,20 +80,25 @@ pub struct IdsBody {
 
 // ---------- Mailpit: summary envelope ----------
 
+/// The shared page cap through this plane's `ApiError` envelope (decision
+/// 0030 §3): the sentence stays the shared one, the status stays `400`
+/// JSON on all four pages — including MailHog's search, whose *kind/query*
+/// postures stay bare 400s.
+fn page_cap(field: &str, n: usize) -> Result<usize, ApiError> {
+    crate::api::checked_page_size(field, n).map_err(crate::api::bad_request)
+}
+
 /// GET /api/v1/messages — Mailpit's paginated summary envelope.
 pub async fn list_messages_mailpit(
     State(state): State<AppState>,
     Query(params): Query<ListParams>,
-) -> Json<Value> {
+) -> Result<Json<Value>, ApiError> {
+    // The cap is staged before the scan (decision 0030 §3).
+    let limit = page_cap("limit", params.limit.unwrap_or(50))?;
     let all = scoped(&state, &params.inbox);
     let start = params.start.unwrap_or(0);
-    let page: Vec<Arc<Email>> = all
-        .iter()
-        .skip(start)
-        .take(params.limit.unwrap_or(50))
-        .cloned()
-        .collect();
-    Json(mailpit_envelope(&all, start, &page))
+    let page: Vec<Arc<Email>> = all.iter().skip(start).take(limit).cloned().collect();
+    Ok(Json(mailpit_envelope(&all, start, &page)))
 }
 
 /// GET /api/v1/search — Mailpit's search envelope; empty query is a 400.
@@ -100,14 +106,11 @@ async fn search_mailpit(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Value>, ApiError> {
+    // The cap is staged before the scan (decision 0030 §3).
+    let limit = page_cap("limit", params.limit.unwrap_or(50))?;
     let all = run_search(&state, &params)?;
     let start = params.start.unwrap_or(0);
-    let page: Vec<Arc<Email>> = all
-        .iter()
-        .skip(start)
-        .take(params.limit.unwrap_or(50))
-        .cloned()
-        .collect();
+    let page: Vec<Arc<Email>> = all.iter().skip(start).take(limit).cloned().collect();
     Ok(Json(mailpit_envelope(&all, start, &page)))
 }
 
@@ -203,44 +206,66 @@ async fn message_download(
 async fn list_messages_hog(
     State(state): State<AppState>,
     Query(params): Query<ListParams>,
-) -> Json<Value> {
+) -> Result<Json<Value>, ApiError> {
+    // The cap is staged before the scan (decision 0030 §3).
+    let limit = page_cap("limit", params.limit.unwrap_or(50))?;
     let all = scoped(&state, &params.inbox);
     let start = params.start.unwrap_or(0);
-    let page: Vec<Arc<Email>> = all
-        .iter()
-        .skip(start)
-        .take(params.limit.unwrap_or(50))
-        .cloned()
-        .collect();
-    Json(json!({
+    let page: Vec<Arc<Email>> = all.iter().skip(start).take(limit).cloned().collect();
+    Ok(Json(json!({
         "total": all.len(),
         "count": page.len(),
         "start": start,
         "items": page.iter().map(|e| hog_message(e)).collect::<Vec<_>>(),
-    }))
+    })))
+}
+
+/// The two 400 shapes the Hog search answers: the dialect quirks (an
+/// unknown kind, an empty query, an unrunnable search) stay **bare** —
+/// upstream's byte-exact refusal, no body — while the shared page-cap
+/// refusal rides the JSON envelope like every other plane's (decision
+/// 0030 §3). A plain `Response` error leg would be an oversized `Err` —
+/// this is the same wire at four bytes.
+enum HogRejection {
+    Bare(StatusCode),
+    PageCap(ApiError),
+}
+
+impl IntoResponse for HogRejection {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Bare(code) => code.into_response(),
+            Self::PageCap(err) => err.into_response(),
+        }
+    }
 }
 
 /// GET /api/v2/search — kind ∈ {from,to,containing}; a bare 400 otherwise,
-/// exactly as upstream answers (no body, no message).
+/// exactly as upstream answers (no body, no message). The page cap is the
+/// one exception (decision 0030 §3): it rides the shared `400` JSON
+/// envelope, so its arm is `PageCap`.
 async fn search_hog(
     State(state): State<AppState>,
     Query(params): Query<SearchParams>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<Value>, HogRejection> {
+    // The cap is staged before the scan (decision 0030 §3). The bare-400
+    // quirks — an empty query — ride `run_search`'s own refusals: the
+    // map_err below is the one place a bad staging lands, so the envelope
+    // stays upstream's bare `400` with no body. The KIND is the dialect's
+    // own domain, staged here and not widened by the shared engine:
+    // upstream answers a bare 400 for anything but from|to|containing (an
+    // absent kind is upstream's `containing`), and `subject` — the
+    // swarmail engine's own kind — is not this dialect's contract (0029's
+    // advertised-domain discipline).
     match params.kind.as_deref() {
-        Some("from") | Some("to") | Some("containing") | None => {}
-        _ => return Err(StatusCode::BAD_REQUEST),
+        None | Some("from") | Some("to") | Some("containing") => {}
+        _ => return Err(HogRejection::Bare(StatusCode::BAD_REQUEST)),
     }
-    if params.query.as_deref().unwrap_or("").trim().is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    let all = run_search(&state, &params).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let limit = page_cap("limit", params.limit.unwrap_or(50)).map_err(HogRejection::PageCap)?;
+    let all =
+        run_search(&state, &params).map_err(|_| HogRejection::Bare(StatusCode::BAD_REQUEST))?;
     let start = params.start.unwrap_or(0);
-    let page: Vec<Arc<Email>> = all
-        .iter()
-        .skip(start)
-        .take(params.limit.unwrap_or(50))
-        .cloned()
-        .collect();
+    let page: Vec<Arc<Email>> = all.iter().skip(start).take(limit).cloned().collect();
     Ok(Json(json!({
         "total": all.len(),
         "count": page.len(),
@@ -354,33 +379,61 @@ fn run_search(state: &AppState, params: &SearchParams) -> Result<Vec<Arc<Email>>
         None => state.store.list_all(&filter),
     };
     if kind == "containing" {
+        // The needle keeps its call-site lowering — per request, once; the
+        // per-mail cost the issue named was the two full-size copies per
+        // candidate, and the fold below replaces exactly those (decision
+        // 0030 §4). A needle the engine refuses to compile is refused by
+        // the plane — a 400, not an unwind: the query is the client's
+        // own input, and a request that cannot be served as asked is a
+        // bad request.
         let needle = query.to_lowercase();
-        all.retain(|e| contains(e, &needle));
+        let re = search_needle(&needle).ok_or(ApiError(
+            StatusCode::BAD_REQUEST,
+            "Error: the search needle is too complex".into(),
+        ))?;
+        all.retain(|e| contains(e, &re));
     }
     Ok(all)
 }
 
+/// The case-insensitive literal fold for one search needle (decision 0030
+/// §4): the needle escaped into a `(?i)` regex — one small allocation per
+/// request replaces the per-mail lowercase and lossy-string copies the old
+/// shape paid. Escaped literals are always syntactically valid, but the
+/// engine still refuses a needle whose compiled automaton exceeds its size
+/// budget — under `(?i)` every cased character folds to a class (`k` gives
+/// `K/k/U+212A`), so a query near the URI ceiling can exhaust the budget —
+/// and the refusal is the caller's: untrusted input meets the plane's own
+/// refusal, never a panic. Public because the read-stall bench measures
+/// this exact fold, not a copy of it.
+pub fn search_needle(needle: &str) -> Option<Regex> {
+    Regex::new(&format!("(?i){}", regex::escape(needle))).ok()
+}
+
 /// Substring hit across everything extract found plus the raw source. Every
-/// candidate is collected (no short-circuit) so a miss looks like a hit.
-fn contains(email: &Email, needle: &str) -> bool {
-    let mut haystacks: Vec<String> = Vec::new();
+/// candidate is examined (the fold never short-circuits — a field later in
+/// the mail can hit when an earlier one misses) and no haystack is copied:
+/// the fields match in place, the raw source only through the lossy borrow
+/// `String::from_utf8_lossy` already is.
+pub fn contains(email: &Email, re: &Regex) -> bool {
+    let mut hit = false;
     if let Some(text) = &email.text {
-        haystacks.push(text.to_lowercase());
+        hit |= re.is_match(text);
     }
     if let Some(html) = &email.html {
-        haystacks.push(html.to_lowercase());
+        hit |= re.is_match(html);
     }
     if let Some(subject) = &email.subject {
-        haystacks.push(subject.to_lowercase());
+        hit |= re.is_match(subject);
     }
     for address in email.to.iter().chain(email.cc.iter()) {
-        haystacks.push(address.address.to_lowercase());
+        hit |= re.is_match(&address.address);
     }
     if let Some(from) = &email.from {
-        haystacks.push(from.address.to_lowercase());
+        hit |= re.is_match(&from.address);
     }
-    haystacks.push(String::from_utf8_lossy(&email.raw).to_lowercase());
-    haystacks.iter().any(|h| h.contains(needle))
+    hit |= re.is_match(&String::from_utf8_lossy(&email.raw));
+    hit
 }
 
 /// Mailpit's `mail.Address`: lowercase keys, empty name dropped.
@@ -755,22 +808,43 @@ mod tests {
     fn contains_searches_every_haystack() {
         let mut m = mail();
         m.to = vec![address(Some("To"), "to@x.io")];
-        assert!(!contains(&m, "anything"));
+        assert!(!contains(&m, &search_needle("anything").unwrap()));
 
         m.text = Some("plain text body".into());
-        // Haystacks are lowercased by the caller; the needle arrives lowercase.
-        assert!(contains(&m, "text body"));
+        // The fold is case-insensitive at the leaf: a needle hits in any
+        // case without either side being copied lowercase first.
+        assert!(contains(&m, &search_needle("text body").unwrap()));
+        assert!(contains(&m, &search_needle("TEXT BODY").unwrap()));
         m.html = Some("<i>markup</i>".into());
-        assert!(contains(&m, "<i>markup"));
+        assert!(contains(&m, &search_needle("<i>markup").unwrap()));
         m.subject = Some("A Subject".into());
-        assert!(contains(&m, "subject"));
+        assert!(contains(&m, &search_needle("subject").unwrap()));
         m.cc = vec![address(None, "carbon-copy@x.io")];
-        assert!(contains(&m, "carbon-copy"));
+        assert!(contains(&m, &search_needle("carbon-copy").unwrap()));
         m.from = Some(address(Some("F"), "from@x.io"));
-        assert!(contains(&m, "from@"));
+        assert!(contains(&m, &search_needle("from@").unwrap()));
         // Only the raw source carries this needle (the DATA footer).
-        assert!(contains(&m, "raw source"));
-        assert!(!contains(&m, "no such needle anywhere"));
+        assert!(contains(&m, &search_needle("raw source").unwrap()));
+        assert!(!contains(
+            &m,
+            &search_needle("no such needle anywhere").unwrap()
+        ));
+
+        // The needle is a literal, never a pattern: the dot in `a.b` is
+        // escaped, so it does not match across `a b` the way an
+        // unescaped `.` would, and regex garbage (`([`) is escaped into
+        // a valid literal rather than a pattern error.
+        m.text = Some("a b".into());
+        assert!(!contains(&m, &search_needle("a.b").unwrap()));
+        m.text = Some("a.b".into());
+        assert!(contains(&m, &search_needle("a.b").unwrap()));
+        assert!(!contains(&m, &search_needle("([").unwrap()));
+
+        // The engine's compiled-size budget is a real refusal for a
+        // case-folded literal: a quarter-million `k`s each become a
+        // three-way class under `(?i)` and the build yields None — the
+        // caller refuses the request instead of unwinding.
+        assert!(search_needle(&"k".repeat(250_000)).is_none());
     }
 
     #[test]

@@ -21,7 +21,7 @@
           { "name": "from", "in": "query", "schema": { "type": "string" } },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
           { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 100 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 250 } },
           { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } }
         ],
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmailList" } } } } }
@@ -44,8 +44,8 @@
           { "name": "from", "in": "query", "schema": { "type": "string" } },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
           { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "minimum": 1 }, "description": "Page size for the returned matches — the same shape list takes (decision 0029 §1)" },
-          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1, "minimum": 1 }, "description": "Minimum one — a count of 0 still waits for at least one matching message (decision 0010)" },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "minimum": 1, "maximum": 250 }, "description": "Page size for the returned matches — the same shape list takes (decision 0029 §1)" },
+          { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1, "minimum": 1, "maximum": 250 }, "description": "Minimum one — a count of 0 still waits for at least one matching message (decision 0010)" },
           { "name": "timeout_ms", "in": "query", "schema": { "type": "integer", "default": 5000, "minimum": 0, "maximum": 60000 }, "description": "Above 60000 the request is refused with 400, never clamped (decision 0018)" }
         ],
         "responses": {
@@ -65,7 +65,7 @@
           { "name": "from", "in": "query", "schema": { "type": "string" } },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
           { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "minimum": 1 }, "description": "Page size for the returned matches — the same shape list takes (decision 0029 §1)" },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "minimum": 1 }, "description": "Parsed for parity with list (decision 0029 §1) but inert: the assert answer is a count, not a page" },
           { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 }, "description": "Exact match count — 0 asserts the filtered inbox is empty; the count is never clamped to one" }
         ],
         "responses": { "200": { "description": "Assertion held" }, "409": { "description": "Assertion failed" } }
@@ -107,7 +107,7 @@
       "get": {
         "summary": "MailHog/Mailpit list shape over the whole store (Mailpit's summary envelope, newest first)",
         "description": "The Mailpit `/api/v1/messages` shape: {total, unread, count, messages_count, messages_unread_count, start, tags, messages}. No query names a mailbox: the whole store is one global mailbox, as both tools expose it. `?inbox=` scopes to a single swarmail inbox; `?limit=`/`?start=` page.",
-        "parameters": [ { "name": "inbox", "in": "query", "schema": { "type": "string" }, "description": "Scope to one swarmail inbox" }, { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } }, { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } } ],
+        "parameters": [ { "name": "inbox", "in": "query", "schema": { "type": "string" }, "description": "Scope to one swarmail inbox" }, { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 250 } }, { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } } ],
         "responses": { "200": { "description": "Mailpit MessageSummary envelope" } }
       },
       "delete": {
@@ -129,7 +129,7 @@
           { "name": "query", "in": "query", "required": true, "schema": { "type": "string" } },
           { "name": "kind", "in": "query", "schema": { "type": "string", "enum": [ "from", "to", "subject", "containing" ], "default": "containing" } },
           { "name": "inbox", "in": "query", "schema": { "type": "string" }, "description": "Scope to one swarmail inbox" },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 250 } },
           { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } }
         ],
         "responses": { "200": { "description": "Mailpit MessageSummary envelope" }, "400": { "description": "Missing query or unknown kind" } }
@@ -139,7 +139,7 @@
       "get": {
         "summary": "MailHog v2 list shape over the whole store",
         "description": "{total, count, start, items} where items are MailHog data.Message objects (Content.{Headers,Body,Size,MIME}, Raw.{From,To,Data,Helo}). `?inbox=` scopes; `?limit=`/`?start=` page.",
-        "parameters": [ { "name": "inbox", "in": "query", "schema": { "type": "string" } }, { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50 } }, { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } } ],
+        "parameters": [ { "name": "inbox", "in": "query", "schema": { "type": "string" } }, { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 250 } }, { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } } ],
         "responses": { "200": { "description": "MailHog v2 envelope" } }
       }
     },

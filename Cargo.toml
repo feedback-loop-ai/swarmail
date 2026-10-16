@@ -76,6 +76,14 @@ harness = false
 name = "writer_stall"
 harness = false
 
+# The read plane's stall bench (decision 0030): the same shape, an
+# in-memory store — the parse the DATA arm awaits, the search page, the
+# contains fold and the per-wake view, before and after their off-worker /
+# Arc moves. CPU, not commit I/O, so no data file exists to clean.
+[[bench]]
+name = "read_stall"
+harness = false
+
 [dev-dependencies]
 criterion = "0.7"
 base64 = "0.22"

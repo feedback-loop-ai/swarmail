@@ -231,8 +231,15 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
             };
             // The default limit is the one shared constant (REST and MCP
             // agree), and `total` is the full match count — the page is
-            // the limit's business, not the total's.
-            let limit = arg_usize(a, "limit")?.unwrap_or(crate::api::DEFAULT_LIST_LIMIT);
+            // the limit's business, not the total's. The page cap is the
+            // shared refusal (decision 0030 §3): staged as `-32602` before
+            // any scan is taken.
+            let limit = match arg_usize(a, "limit")? {
+                None => crate::api::DEFAULT_LIST_LIMIT,
+                Some(n) => {
+                    crate::api::checked_page_size("limit", n).map_err(|msg| (-32602, msg))?
+                }
+            };
             let all = store.list(&inbox, &filter);
             let total = all.len();
             let emails: Vec<Value> = all
@@ -257,10 +264,13 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
             // `minimum: 1`, and a silent `.max(1)` would invent a page the
             // caller did not ask for. The *wait's* `count: 0` keeps 0010's
             // at-least-one semantic — a different domain, a different rule.
+            // The page cap is the shared refusal (decision 0030 §3).
             let count = match arg_usize(a, "count")? {
                 None => 1,
                 Some(0) => return Err(refusal("count", "an integer of at least 1")),
-                Some(n) => n,
+                Some(n) => {
+                    crate::api::checked_page_size("count", n).map_err(|msg| (-32602, msg))?
+                }
             };
             let emails: Vec<Value> = store
                 .list(&inbox, &Filter::default())
@@ -303,8 +313,16 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
                 subject: arg_str(a, "subject")?,
                 since_ms: arg_i64(a, "since_ms")?,
             };
-            // `count: 0` still means at least one (decision 0010).
-            let want = arg_usize(a, "count")?.unwrap_or(1).max(1);
+            // `count: 0` still means at least one (decision 0010). The page
+            // cap is the shared refusal (decision 0030 §3), staged as
+            // `-32602` before the wait parks — a refused wait registers no
+            // waiter (0025 §5).
+            let want = match arg_usize(a, "count")? {
+                None => 1,
+                Some(n) => crate::api::checked_page_size("count", n)
+                    .map_err(|msg| (-32602, msg))?
+                    .max(1),
+            };
             // Omission takes the documented default (decision 0025); a
             // *supplied* value that does not parse is refused — never
             // silently defaulted. `null` is supplied (the key is present):
@@ -500,11 +518,11 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
           "inputSchema": { "type": "object", "properties": {
             "inbox": { "type": "string" }, "to": { "type": "string" }, "from": { "type": "string" },
             "subject": { "type": "string" }, "since_ms": { "type": "integer", "description": "Arrival time lower bound in ms since the epoch; negative values are legal" },
-            "limit": { "type": "integer", "minimum": 0, "default": 100 } } } },
+            "limit": { "type": "integer", "minimum": 0, "maximum": 250, "default": 100 } } } },
         { "name": "swarmail_get_email", "description": "Fetch one captured email in full by id.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_get_latest_email", "description": "Fetch the most recent email(s) in an inbox.",
-          "inputSchema": { "type": "object", "properties": { "inbox": { "type": "string" }, "count": { "type": "integer", "minimum": 1, "default": 1 } } } },
+          "inputSchema": { "type": "object", "properties": { "inbox": { "type": "string" }, "count": { "type": "integer", "minimum": 1, "maximum": 250, "default": 1 } } } },
         { "name": "swarmail_delete_email", "description": "Delete one captured email by id (start the next assertion clean).",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_clear_inbox", "description": "Delete all emails in one inbox — the 'clear' of the clear/act/assert loop.",
@@ -514,7 +532,7 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
           "inputSchema": { "type": "object", "properties": {
             "inbox": { "type": "string" }, "to": { "type": "string" }, "from": { "type": "string" },
             "subject": { "type": "string" }, "since_ms": { "type": "integer", "description": "Arrival time lower bound in ms since the epoch; negative values are legal" },
-            "count": { "type": "integer", "minimum": 0, "default": 1, "description": "Matched emails to wait for; 0 still means at least one" },
+            "count": { "type": "integer", "minimum": 0, "maximum": 250, "default": 1, "description": "Matched emails to wait for; 0 still means at least one" },
             "timeout_ms": { "type": "integer", "default": 5000, "minimum": 0, "maximum": 60000 } } } },
         { "name": "swarmail_extract_links", "description": "Extract all http(s) URLs from a captured email's text/HTML bodies.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
@@ -602,7 +620,24 @@ mod tests {
             "{search}"
         );
         assert_eq!(search["limit"]["minimum"], 0, "{search}");
+        // Every page-size domain publishes the shared cap (decision 0030
+        // §3) — the constant, not this file's literal.
+        assert_eq!(
+            search["limit"]["maximum"],
+            crate::api::MAX_PAGE_SIZE,
+            "{search}"
+        );
         let latest = find("swarmail_get_latest_email");
         assert_eq!(latest["count"]["minimum"], 1, "{latest}");
+        assert_eq!(
+            latest["count"]["maximum"],
+            crate::api::MAX_PAGE_SIZE,
+            "{latest}"
+        );
+        assert_eq!(
+            wait["count"]["maximum"],
+            crate::api::MAX_PAGE_SIZE,
+            "{wait}"
+        );
     }
 }

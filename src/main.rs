@@ -39,40 +39,50 @@ async fn main() {
         Command::Serve(args) => {
             init_tracing(false);
             let cfg = swarmail::config::Config::from(&args);
-            // The interrupt watcher registers both handlers before the
-            // servers bind: the signal streams register on their first
-            // poll, and a signal arriving between the startup line and
-            // that first poll would kill the process at the default
-            // disposition — no graceful stop, no drain. A spawned watcher
-            // is polled at run_on's first yield, long before the line the
-            // binary tests (and an operator's terminal) read. SIGINT and
-            // SIGTERM watch the same channel: a container's `docker stop`
-            // sends SIGTERM (STOPSIGNAL), a terminal's Ctrl-C sends SIGINT
-            // — both take the same graceful path. A second signal during
-            // the drain means the operator is not waiting: the process
-            // exits 70 instead of outliving its drain.
+            // The interrupt streams are built and polled HERE, on the main
+            // task, before any listener binds: registration is a stream's
+            // first poll, not its construction, and the fast-path binds
+            // complete without a yield — a watcher spawned and left to the
+            // scheduler can stay unpolled until after the HTTP bind, so a
+            // signal arriving once the port answers a connect (the binary
+            // tests' wait_http_up, an operator's early ctrl-C) would kill
+            // the process at the default disposition — no graceful stop,
+            // no drain. One poll of each stream pends on the signal but
+            // leaves the handler live; the spawned watcher owns the
+            // registered streams from there. SIGINT and SIGTERM watch the
+            // same channel: a container's `docker stop` sends SIGTERM
+            // (STOPSIGNAL), a terminal's Ctrl-C sends SIGINT — both take
+            // the same graceful path. A second signal during the drain
+            // means the operator is not waiting: the process exits 70
+            // instead of outliving its drain.
+            #[cfg(unix)]
+            let (mut sigint, mut sigterm) = {
+                use tokio::signal::unix::{SignalKind, signal};
+                let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
+                let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+                std::future::poll_fn(|cx| {
+                    let _ = sigint.poll_recv(cx);
+                    let _ = sigterm.poll_recv(cx);
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                (sigint, sigterm)
+            };
             let (interrupted_tx, mut interrupted_rx) = tokio::sync::watch::channel(false);
             tokio::spawn(async move {
                 let mut graceful = false;
                 #[cfg(unix)]
-                {
-                    use tokio::signal::unix::{SignalKind, signal};
-                    let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
-                    let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
-                    loop {
-                        tokio::select! {
-                            _ = sigint.recv() => {}
-                            _ = sigterm.recv() => {}
-                        }
-                        if graceful {
-                            tracing::warn!(
-                                "second signal during the drain; exiting without waiting"
-                            );
-                            std::process::exit(70);
-                        }
-                        graceful = true;
-                        let _ = interrupted_tx.send(true);
+                loop {
+                    tokio::select! {
+                        _ = sigint.recv() => {}
+                        _ = sigterm.recv() => {}
                     }
+                    if graceful {
+                        tracing::warn!("second signal during the drain; exiting without waiting");
+                        std::process::exit(70);
+                    }
+                    graceful = true;
+                    let _ = interrupted_tx.send(true);
                 }
                 #[cfg(not(unix))]
                 {

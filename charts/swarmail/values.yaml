@@ -74,7 +74,13 @@ startupProbe:
   failureThreshold: 90
 
 # Every SWARMAIL_* env knob: { "SWARMAIL_MAX_PER_INBOX": "0", ... }
-config: {}
+# The binds are stated (decision 0030 §1): the binary's defaults are now
+# loopback — right on a laptop, unreachable from a Service — so the
+# deployment states 0.0.0.0 and keeps the container contract.
+config:
+  SWARMAIL_SMTP_LISTEN: "0.0.0.0:1025"
+  SWARMAIL_POP3_LISTEN: "0.0.0.0:1110"
+  SWARMAIL_HTTP_LISTEN: "0.0.0.0:8025"
 # Raw env entries passthrough (valueFrom and friends).
 envExtra: []
 

@@ -243,3 +243,74 @@ async fn chaos_can_reject_rcpt_and_recovery_works() {
     let (_, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(body["count"], 1);
 }
+
+/// The moved parse re-proves 0001 (decision 0030 §1): a DATA at the cap —
+/// `max_message_size` shrunk for the leg, the payload sized to the byte —
+/// ends in the full `250 2.0.0 OK: stored as …`, because the parse runs to
+/// completion before the insert, and the mail is on the read plane the
+/// instant the reply lands. The accept == stored seam holds on the moved
+/// path: the parse is awaited before `Store::insert`, never rescheduled
+/// behind it.
+#[tokio::test]
+async fn a_cap_sized_data_is_stored_as_soon_as_the_250_leaves() {
+    let cap = 256 * 1024;
+    let srv = common::start_smtp(swarmail::smtp::SmtpConfig {
+        max_message_size: cap,
+        ..Default::default()
+    })
+    .await;
+
+    let mut c = common::SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("MAIL FROM:<cap@x.io>").await;
+    c.reply().await;
+    c.send("RCPT TO:<capbox@x.io>").await;
+    c.reply().await;
+
+    // The DATA payload is exactly the cap: `Subject: cap-sized\r\n` (20) +
+    // the blank line (2) + 2621 filler lines of 98 x's (100 each) + one
+    // final 20-x line (22) = 262144. `at the cap` is accepted; only over
+    // the cap is refused.
+    let mut payload = Vec::with_capacity(cap);
+    payload.extend_from_slice(b"Subject: cap-sized\r\n");
+    payload.extend_from_slice(b"\r\n");
+    let full_lines = (cap - payload.len()) / 100;
+    let rest = cap - payload.len() - full_lines * 100;
+    for _ in 0..full_lines {
+        payload.extend_from_slice(&[b'x'; 98]);
+        payload.extend_from_slice(b"\r\n");
+    }
+    payload.extend(std::iter::repeat_n(b'x', rest - 2));
+    payload.extend_from_slice(b"\r\n");
+    assert_eq!(payload.len(), cap, "the payload must be exactly the cap");
+
+    c.send("DATA").await;
+    let offered = c.reply().await;
+    assert!(offered.starts_with("354"), "DATA refused: {offered}");
+    c.send_bytes(&payload).await;
+    c.send_bytes(b".\r\n").await;
+    let reply = c.reply().await;
+    assert!(
+        reply.starts_with("250 2.0.0 OK: stored as "),
+        "a cap-sized DATA is accepted whole: {reply}"
+    );
+
+    // Queryable immediately — not eventually (0001 on the moved path).
+    let (status, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/messages",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["total"], 1, "the 250's mail is queryable at once");
+    assert_eq!(body["emails"][0]["subject"], "cap-sized");
+    // The raw source is the exact octets the cap accepted (0022).
+    let id = body["emails"][0]["id"].as_str().unwrap().to_string();
+    let (st, raw) =
+        common::http_get_text(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(st, 200);
+    assert_eq!(raw.len(), cap, "the stored raw is the full cap");
+}

@@ -19,6 +19,20 @@
   section below).
 - HTTP: API at `http://localhost:8025`, this file at `/llms.txt`, OpenAPI at
   `/openapi.json`, MCP at `POST /mcp`, health at `/healthz`, Prometheus at `/metrics`.
+- Binds: all three listeners default to `127.0.0.1` (the image and the chart
+  state `0.0.0.0` explicitly). While the HTTP listener is loopback-bound, two
+  headers are checked before the router: a `Host` that is not a loopback
+  spelling of the bound port is refused 403 — the DNS-rebinding defense, since
+  a rebound page sends same-origin requests with no `Origin` while its Host
+  still spells the attacker's name — and a present `Origin` that is not a
+  loopback spelling of the bound port is refused 403 (a browser cannot forge
+  it). No `Origin` (curl, agents, the stdio bridge, every harness) passes the
+  Origin leg untouched; every client names its Host honestly.
+- Pages are capped at 250 items on every plane: `limit`/`count` above it is
+  refused with a 400 (REST + shims) or a `-32602` error (MCP), never clamped.
+  SMTP request parsing and the REST/compat page copies run off the async
+  workers on the blocking pool; the MCP seed build and SSE thread-view
+  serialization stay inline (neither is on the ingest path).
 
 ## The agent loop (clear → act → assert)
 
@@ -112,7 +126,7 @@ Same store, the two shapes existing suites already speak:
 - `GET /api/v1/messages` — Mailpit's summary envelope (`total`, `unread`,
   `count`, `messages_count`, `messages_unread_count`, `start`, `tags`,
   `messages`), newest first. `?inbox=` scopes to one swarmail inbox;
-  `?limit=`/`?start=` page.
+  `?limit=`/`?start=` page (`limit` ≤ 250, refused with a 400 above).
 - `GET /api/v1/message/{id}` — Mailpit's full message; `/plain` serves the
   extracted text part. `DELETE /api/v1/messages` deletes exactly the
   non-empty `{"ids": [...]}` named mails and replies `{"removed": n}`; any

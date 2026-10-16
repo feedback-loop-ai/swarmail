@@ -674,7 +674,10 @@ impl Store {
     /// The explicit `match` + `resume_unwind` is deliberate: the `Err` arm
     /// is the panic-symmetry contract, and a `.await.unwrap()` here would
     /// mint an uncovered branch and lose the re-raise-in-caller shape.
-    async fn offload<T, F>(task: F) -> T
+    /// `pub(crate)` since decision 0030 §1: the SMTP DATA arm and the seed
+    /// path park their whole parse here too — same pool, same panic
+    /// symmetry, no second offload helper.
+    pub(crate) async fn offload<T, F>(task: F) -> T
     where
         T: Send + 'static,
         F: FnOnce() -> T + Send + 'static,
