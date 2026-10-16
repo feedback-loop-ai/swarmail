@@ -113,7 +113,7 @@
       "delete": {
         "summary": "Delete the named ids (Mailpit)",
         "description": "Body `{\"ids\":[...]}` — a non-empty array of message ids — deletes exactly those messages and replies `{\"removed\": n}`. Every other body (absent, empty, unparseable, wrong-typed, or an empty `ids` array) is answered `400` and deletes nothing; the cross-inbox wipe is `DELETE /api/v1/delete-all`.",
-        "responses": { "200": { "description": "{\"removed\": n}" }, "400": { "description": "No usable selector — nothing was deleted" }, "503": { "description": "`storage commit failed` — the commit refused, nothing was deleted (decision 0012); during shutdown the boundary refuses before any commit with the same text (decision 0024)" } }
+        "responses": { "200": { "description": "{\"removed\": n}" }, "400": { "description": "No usable selector — nothing was deleted" }, "503": { "description": "`storage commit failed` — the first refused commit ends the batch; ids already committed in this request stay deleted and a retry is idempotent (decision 0014's per-mutation refusal, not batch atomicity); during shutdown the boundary refuses before any commit with the same text (decision 0024)" } }
       }
     },
     "/api/v1/message/{id}": { "get": { "summary": "Mailpit's full message shape", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Mailpit Message" }, "404": { "description": "Not found" } } } },

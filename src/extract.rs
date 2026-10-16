@@ -68,7 +68,19 @@ fn decode_refs(input: &str) -> String {
 /// consumed)`, or `None` when `s` does not begin with a well-formed
 /// reference — which is the signal to copy the `&` through literally.
 fn parse_ref(s: &str) -> Option<(char, usize)> {
-    let token_end = s[1..].find(';')? + 1;
+    // The reference is bounded: the five XML names and a numeric's digits
+    // never approach forty bytes, so a terminator that is not found within
+    // the window means the '&' is literal — and the scan stays total and
+    // linear. A window-less `find(';')` re-scans to the end of the URL
+    // match for every '&': a hostile `Content-Type: text/html` body of one
+    // 50 MiB '&' run pins a blocking worker for hours, and every store
+    // mutation shares that pool (the review's security HOLD).
+    const REF_MAX: usize = 40;
+    let window = match s[1..].char_indices().nth(REF_MAX) {
+        Some((byte_index, _)) => &s[1..1 + byte_index],
+        None => &s[1..],
+    };
+    let token_end = window.find(';')? + 1;
     let token = &s[1..token_end];
     let decoded = if let Some(hex) = token
         .strip_prefix("#x")
@@ -148,6 +160,17 @@ pub fn extract_codes(text: Option<&str>, html: Option<&str>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    // The reference scan is bounded (the review's security HOLD): a match
+    // of nothing but '&'s — no ';' anywhere — decodes in bounded work per
+    // position, each '&' passing through literal, instead of rescanning
+    // to the match's end for every one of them. A half-megabyte run is
+    // instant under the window and would be minutes of memchr without it.
+    #[test]
+    fn an_ampersand_run_decodes_in_bounded_work() {
+        let src = format!("https://x.io/{}", "&".repeat(500_000));
+        assert_eq!(extract_links(None, Some(&src)), vec![src]);
+    }
+
     use super::*;
 
     #[test]
