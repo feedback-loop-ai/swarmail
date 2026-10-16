@@ -45,9 +45,10 @@ pub struct AppState {
     /// operator bound an explicit non-loopback address: the bind is then
     /// the trust statement and the check is inert. A loopback bind serves
     /// the operator's own machine, where a browser page from any other
-    /// origin must not be able to drive the API (DNS rebinding makes
-    /// Host-header checks insufficient — hence Origin, the header a
-    /// browser cannot forge).
+    /// origin must not be able to drive the API. Two honest headers close
+    /// the class: `Host` (a rebound page still spells its own hostname,
+    /// so a non-loopback Host is the rebind itself) and `Origin` (a
+    /// browser cannot forge it, so a cross-site drive is named).
     pub http_origin_guard: Option<u16>,
 }
 
@@ -269,76 +270,97 @@ impl Drop for TotalGuard {
     }
 }
 
-// ---------- the Origin guard (decision 0030 §2) ----------
+// ---------- the loopback guard (decision 0030 §2) ----------
 //
 // A loopback bind serves the operator's own machine. Without a guard, any
 // web page the operator browses can drive the API from JavaScript — the
-// server has no auth to refuse it, and a Host check does not help: DNS
-// rebinding serves `localhost` from an attacker's zone. `Origin` is the
-// one header a browser sets honestly (it cannot be forged by page script
-// and is present on every cross-site request), so a present `Origin` that
-// is not a loopback spelling of the bound port is refused before the
-// router. Everything that is not a browser — curl, agents, the MCP stdio
-// bridge, every test harness — sends no Origin and is untouched.
+// server has no auth to refuse it. Two headers close the class, each
+// honestly set:
+//
+// `Host` is the DNS-rebinding defense. A page at `attacker.example`
+// rebound to `127.0.0.1` sends *same-origin* requests — and same-origin
+// GET/HEAD requests carry no `Origin` header at all (the Fetch spec adds
+// one only for CORS-tainted requests). But the page still fetches its
+// own hostname, so the request's `Host` remains `attacker.example:8025`:
+// the rebind is visible in the Host line. While loopback-bound, a `Host`
+// that is not a loopback spelling of the bound port is refused before
+// the router.
+//
+// `Origin` is the cross-site drive defense: the one header a browser
+// sets honestly (it cannot be forged by page script and is present on
+// every cross-site request), so a present `Origin` that is not a
+// loopback spelling of the bound port is refused before the router.
+//
+// Everything that is not a browser — curl, agents, the MCP stdio bridge,
+// every test harness — sends a loopback `Host` to a loopback bind and no
+// `Origin` at all, and is untouched.
 
-/// The whole-plane Origin guard: a present `Origin` header is answered
-/// `403` unless its authority is a loopback spelling of the bound HTTP
-/// port, and only while the listener is loopback-bound (an off-loopback
-/// bind is the operator's own trust statement — the check is inert).
-/// Every method, every route: `/mcp` and the UI are as drivable as the
-/// REST surface. Origin-absent requests pass — the shape of every
-/// non-browser client.
+/// The whole-plane loopback guard: while the listener is loopback-bound
+/// (an off-loopback bind is the operator's own trust statement — the
+/// check is inert), a request is answered `403` before the router unless
+/// its `Host` authority is a loopback spelling of the bound HTTP port
+/// and any present `Origin` is one too. Every method, every route:
+/// `/mcp` and the UI are as drivable as the REST surface. A request
+/// without `Origin` passes the Origin leg — the shape of every
+/// non-browser client and of a rebound page's same-origin reads, which
+/// is why the Host leg exists.
 async fn origin_guard(
     State(state): State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if let Some(bound) = state.http_origin_guard
-        && let Some(origin) = req.headers().get(axum::http::header::ORIGIN)
-    {
-        let allowed = origin
-            .to_str()
-            .ok()
-            .map(|o| origin_is_loopback_of(o, bound))
+    if let Some(bound) = state.http_origin_guard {
+        let host_ok = req
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .map(|h| authority_is_loopback_of(h, bound))
             .unwrap_or(false);
-        if !allowed {
+        if !host_ok {
             return ApiError(
                 StatusCode::FORBIDDEN,
-                "cross-origin requests are refused on the loopback plane".into(),
+                "requests to the loopback plane must name a loopback Host".into(),
             )
             .into_response();
+        }
+        if let Some(origin) = req.headers().get(axum::http::header::ORIGIN) {
+            let allowed = origin
+                .to_str()
+                .ok()
+                .map(|o| origin_is_loopback_of(o, bound))
+                .unwrap_or(false);
+            if !allowed {
+                return ApiError(
+                    StatusCode::FORBIDDEN,
+                    "cross-origin requests are refused on the loopback plane".into(),
+                )
+                .into_response();
+            }
         }
     }
     next.run(req).await
 }
 
-/// The authority of an `Origin`: `(host, explicit port?)`. An Origin is
-/// `scheme://authority` with no path; anything without a `scheme://`
-/// prefix is not an origin and is refused by the caller (`None`).
-fn origin_authority(origin: &str) -> Option<(&str, Option<&str>)> {
-    let (_, authority) = origin.split_once("://")?;
-    let authority = authority.split('/').next()?;
-    if let Some(rest) = authority.strip_prefix('[') {
+/// Whether an `authority` (the `host[:port]` of a Host line or an
+/// Origin's tail) names this plane: a loopback spelling — `localhost`,
+/// any `127.0.0.0/8` address, or `[::1]` — carrying the bound port
+/// explicitly. Hosts compare case-insensitively (DNS names are
+/// case-insensitive); anything else — a named host, another port, no
+/// port, garbage — is not this plane.
+fn authority_is_loopback_of(authority: &str, bound: u16) -> bool {
+    let authority = authority.trim();
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
         // IPv6 literal: the host ends at `]`, an optional port follows.
-        let (host, tail) = rest.split_once(']')?;
-        Some((host, tail.strip_prefix(':')))
+        match rest.split_once(']') {
+            Some((host, tail)) => (host, tail.strip_prefix(':')),
+            None => return false,
+        }
     } else {
         // The port is the *last* colon; a bare host has none.
         match authority.rsplit_once(':') {
-            Some((host, port)) => Some((host, Some(port))),
-            None => Some((authority, None)),
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
         }
-    }
-}
-
-/// Whether `origin` names this plane: a loopback spelling — `localhost`,
-/// any `127.0.0.0/8` address, or `[::1]` — carrying the bound port
-/// explicitly. Hosts compare case-insensitively (DNS names are
-/// case-insensitive); anything else — a named host, another port, an
-/// origin with no port, `null`, garbage — is not this plane.
-fn origin_is_loopback_of(origin: &str, bound: u16) -> bool {
-    let Some((host, port)) = origin_authority(origin) else {
-        return false;
     };
     // The bound port is the vocabulary: a loopback spelling of another
     // port is a different origin. No explicit port means the scheme's
@@ -355,6 +377,19 @@ fn origin_is_loopback_of(origin: &str, bound: u16) -> bool {
         || host
             .parse::<std::net::Ipv4Addr>()
             .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Whether `origin` names this plane: its authority is a loopback
+/// spelling of the bound port (see [`authority_is_loopback_of`]).
+fn origin_is_loopback_of(origin: &str, bound: u16) -> bool {
+    let Some((_, authority)) = origin.split_once("://") else {
+        return false;
+    };
+    // The authority ends at the first `/` (an Origin carries no path, but
+    // a lenient caller may pass one); before it there is always a
+    // remainder, even when there is no slash at all.
+    let end = authority.find('/').unwrap_or(authority.len());
+    authority_is_loopback_of(&authority[..end], bound)
 }
 
 /// The inbox a request path scopes — `/api/v1/inboxes/<inbox>/…`, the wire
@@ -1356,11 +1391,13 @@ mod tests {
     }
 
     /// A plain-HTTP probe against a real router: status line and body.
+    /// The Host names the probe's own addr — a loopback spelling of the
+    /// bound port, the shape the guard admits.
     async fn http_probe(addr: std::net::SocketAddr, path: &str) -> (u16, String) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
         c.write_all(
-            format!("GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n").as_bytes(),
+            format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
         )
         .await
         .unwrap();

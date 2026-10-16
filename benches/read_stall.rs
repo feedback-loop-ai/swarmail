@@ -1,11 +1,12 @@
-//! The async-worker stall a read-heavy plane inflicts on the runtime thread,
-//! measured before and after the off-worker parse + `Arc`-page move
-//! (decision 0030).
+//! Microbenchmarks for the costs decision 0030 moved off the async
+//! workers — not an old-vs-new compatibility harness: each lens measures
+//! one shape against a baseline of the *same* code with one factor
+//! changed, so the operator can read that factor's own cost.
 //!
 //! One process, an in-memory store, a current-thread runtime — the runtime
 //! thread is the only async worker, so a parse or a page copy that runs on
-//! it is a stall every other task waits out. Size-amplified (~256 KiB)
-//! mails make the copy costs visible. Four lenses:
+//! it is a stall every other task waits out. Size-amplified (~256 KiB
+//! default) mails make the copy costs visible. Four lenses:
 //!
 //! **Large-mail parse occupancy (the await's cost)** — the DATA arm parses
 //! before it commits: the pre-0030 shape built the `Email` inline on the
@@ -15,9 +16,11 @@
 //! thread only waits. Measured with a 1 ms ticker on the same runtime,
 //! against a yield-only baseline, exactly as `writer_stall` does.
 //!
-//! **Large compat search: the page** — the pre-0030 page deep-cloned every
-//! candidate `Email` before serializing it; the `Arc` page clones handles
-//! and serde serializes in place. Both shapes over the same store snapshot.
+//! **Deep `Email` clone vs `Arc` handle clone** — the pre-0030 page
+//! deep-cloned every candidate `Email` before serializing it; the `Arc`
+//! page clones handles and serde serializes in place. Both shapes over
+//! the same store snapshot: this is the serialization-cost lens, not a
+//! search-engine comparison.
 //!
 //! **The contains fold** — the pre-0030 shape lowercased every haystack
 //! into a fresh `String` per candidate; the shipped fold builds one regex
@@ -33,8 +36,10 @@
 //!
 //! Run (release): `cargo bench --bench read_stall`
 //! Optional: `--mails N` (default 250 per page/fold lens), `--row-size
-//! BYTES` (default 262144), `--iters N` (default 40 per measured page,
-//! fold and view), `--parses N` (default 100 per parse phase).
+//! BYTES` (default 262144 — pass `--row-size 52428800` to reach the real
+//! 50 MiB DATA cap, `src/smtp.rs`'s max body), `--iters N` (default 40
+//! per measured page, fold and view), `--parses N` (default 100 per
+//! parse phase).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

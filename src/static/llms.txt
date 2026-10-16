@@ -20,14 +20,19 @@
 - HTTP: API at `http://localhost:8025`, this file at `/llms.txt`, OpenAPI at
   `/openapi.json`, MCP at `POST /mcp`, health at `/healthz`, Prometheus at `/metrics`.
 - Binds: all three listeners default to `127.0.0.1` (the image and the chart
-  state `0.0.0.0` explicitly). While the HTTP listener is loopback-bound,
-  requests carrying an `Origin` header are answered `403` unless the origin is
-  a loopback spelling of the bound port — a browser page from another origin
-  cannot drive the API, DNS rebinding included. No `Origin` (curl, agents, the
-  stdio bridge, every harness) passes untouched.
+  state `0.0.0.0` explicitly). While the HTTP listener is loopback-bound, two
+  headers are checked before the router: a `Host` that is not a loopback
+  spelling of the bound port is refused 403 — the DNS-rebinding defense, since
+  a rebound page sends same-origin requests with no `Origin` while its Host
+  still spells the attacker's name — and a present `Origin` that is not a
+  loopback spelling of the bound port is refused 403 (a browser cannot forge
+  it). No `Origin` (curl, agents, the stdio bridge, every harness) passes the
+  Origin leg untouched; every client names its Host honestly.
 - Pages are capped at 250 items on every plane: `limit`/`count` above it is
   refused with a 400 (REST + shims) or a `-32602` error (MCP), never clamped.
-  Parse work and page copies run off the async workers on the blocking pool.
+  SMTP request parsing and the REST/compat page copies run off the async
+  workers on the blocking pool; the MCP seed build and SSE thread-view
+  serialization stay inline (neither is on the ingest path).
 
 ## The agent loop (clear → act → assert)
 

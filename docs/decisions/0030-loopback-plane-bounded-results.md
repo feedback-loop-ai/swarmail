@@ -83,33 +83,53 @@ The cost is named: a bare-binary user who relied on `0.0.0.0` loses it
 silently-until-they-read, and repairs it with one env. That is the
 README:80 lie repaired in the direction the README already promised.
 
-### §2 What the HTTP surface trusts: a present `Origin` is loopback-checked when the plane is loopback-bound
+### §2 What the HTTP surface trusts: a loopback `Host` and a loopback `Origin` when the plane is loopback-bound
 
 One middleware on the whole HTTP plane (not just `/mcp` — the blind-write
 class a rebinding page can drive is every `DELETE`/`PUT`/`POST` route,
-and `/mcp` is where the MCP transport's MUST bites):
+and `/mcp` is where the MCP transport's MUST bites), checking two
+headers, in order:
 
-- A request carrying an `Origin` header is answered **`403`** unless the
-  Origin's authority is a loopback spelling (`localhost`, `127.0.0.0/8`,
-  `[::1]`) of the bound HTTP port — and only when the HTTP listener is
-  itself loopback-bound.
-- When the operator binds off-loopback explicitly, the check is **inert**:
-  the bind *is* the vocabulary, and the exposure is the operator's
-  recorded choice. No allowlist knob, no new configuration surface.
-- A request without `Origin` passes untouched — curl, agents, the stdio
-  bridge and every test suite are unaffected. The web UI is same-origin
-  loopback under the default and passes; it does not call `/mcp`
-  (`src/static/ui.js` has no `/mcp` reference).
+- **`Host` first.** A request whose `Host` authority is not a loopback
+  spelling (`localhost`, `127.0.0.0/8`, `[::1]`) of the bound HTTP port
+  is answered **`403`** with its own refusal sentence — and a request
+  with no `Host` line at all is refused likewise. This is the
+  DNS-rebinding defense, and it exists *because* the Origin leg alone
+  has a hole: a rebound page sends **same-origin** requests, and
+  same-origin `GET`/`HEAD` carry **no `Origin` header at all** (the
+  Fetch spec adds one only to CORS-tainted requests) — but the page
+  still fetches its own hostname, so the rebind is visible in the
+  `Host` line: `Host: attacker.example:8025`. The check is keyed to the
+  bind posture (a loopback spelling *of the bound port*), not a static
+  allowlist, so it serves the default bind without new vocabulary; a
+  client without a `Host` is not HTTP/1.1, and hyper maps an HTTP/2
+  `:authority` onto `HOST`, so the leg holds on both hops.
+- **`Origin` second.** A request carrying an `Origin` header is
+  answered **`403`** unless the Origin's authority is a loopback
+  spelling of the bound HTTP port: the one header a browser sets
+  honestly (it cannot be forged by page script and is present on every
+  cross-site request), so a cross-site drive is named and refused.
+- When the operator binds off-loopback explicitly, both checks are
+  **inert**: the bind *is* the vocabulary, and the exposure is the
+  operator's recorded choice. No allowlist knob, no new configuration
+  surface.
+- A request without `Origin` passes the Origin leg untouched — curl,
+  agents, the stdio bridge and every test suite are unaffected (they
+  name their `Host` honestly, which is exactly what the Host leg
+  admits). The web UI is same-origin loopback under the default and
+  passes; it does not call `/mcp` (`src/static/ui.js` has no `/mcp`
+  reference).
 
-This closes the DNS-rebinding drive: a page at `attacker.com` rebinding
-`attacker.com → 127.0.0.1` sends `Origin: http://attacker.com:8025`,
-which is not a loopback spelling, and every state-changing method it
-attempts is refused before the router. Reads were never readable by the
-page (same-origin policy), so nothing else is owed. **`Host`-header
-validation is refused**: an Origin check keyed to the bind posture closes
-the class with no new vocabulary, a static Host allowlist cannot serve
-explicit remote binds at all, and the MCP transport's requirement is
-stated over `Origin`.
+This closes the DNS-rebinding drive on both of its shapes: the page's
+*writes* (cross-origin, `Origin: http://attacker.example:8025` present
+and non-loopback — refused by the Origin leg) and its *same-origin
+reads* (no `Origin`, the attacker's `Host` — refused by the Host leg).
+The earlier draft of this section refused Host validation on the
+premise that reads were never reachable and a rebind serves
+`localhost`; that premise was wrong on both counts — same-origin reads
+carry no Origin, and the rebound page spells its own hostname, not
+`localhost` — and the Host leg is the repair, landed with the review
+that caught it.
 
 ### §3 `MAX_PAGE_SIZE = 250`: a page is refused above it, never clamped
 

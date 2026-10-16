@@ -1999,11 +1999,15 @@ async fn the_staging_refuses_over_the_cap_and_honors_the_boundary() {
         body["error"]["message"], "count must be at most 250",
         "{body}"
     );
+    // The prompt refusal is the 0025 §5 proof itself: a parked wait could
+    // not have answered. (The awaits gauge cannot - its row is removed at
+    // completion, so a scrape after the fact says nothing about whether a
+    // waiter ever registered.)
     let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
     assert_eq!(
         metric_row_value(&metrics, r#"swarmail_awaits_active{inbox="capbox"}"#),
         None,
-        "a refused wait registers no waiter: {metrics}"
+        "the released row is gone: {metrics}"
     );
 
     // The boundary stages fine on all three: 250 is a page (get_latest

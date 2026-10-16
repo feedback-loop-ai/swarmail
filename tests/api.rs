@@ -4,7 +4,7 @@ mod common;
 
 use common::{
     SmtpConn, http_bytes, http_get_text, http_head_text, http_json, http_send_text,
-    http_send_text_with_headers, start, start_with, wait_for_metric_row,
+    http_send_text_with_headers, send_with_host, start, start_with, wait_for_metric_row,
 };
 
 /// Seed one fixture mail into `inbox` (the default extractor path).
@@ -1140,7 +1140,7 @@ async fn the_list_refuses_over_the_cap_and_accepts_exactly_it() {
 /// The wait's staging refuses before it parks (0025 §5 through the REST
 /// plane): `count` and `limit` over the cap answer 400 with the sentence,
 /// register no waiter, and the exact cap is a legal wait — accepted, timed
-/// out cleanly at 200 with `matched: 0`.
+/// out cleanly at 408 with `matched: 0`.
 #[tokio::test]
 async fn the_wait_refuses_over_the_cap_registers_no_waiter_and_accepts_the_boundary() {
     let srv = start().await;
@@ -1164,13 +1164,15 @@ async fn the_wait_refuses_over_the_cap_registers_no_waiter_and_accepts_the_bound
         );
     }
 
-    // No waiter: the refusal answered before any park — the inbox's awaits
-    // row never existed (0025 §5).
+    // The prompt refusal is the 0025 §5 proof itself: a parked wait could
+    // not have answered. (The awaits gauge cannot — its row is removed at
+    // completion, so a scrape after the fact says nothing about whether a
+    // waiter ever registered.)
     let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
     assert_eq!(
         common::metric_row_value(&metrics, r#"swarmail_awaits_active{inbox="nocap"}"#),
         None,
-        "a refused wait registers no waiter: {metrics}"
+        "the released row is gone: {metrics}"
     );
 
     // The boundary is a legal wait: 250 accepted (a refusal would answer
@@ -1285,8 +1287,10 @@ async fn same_origin_loopback_spellings_pass_the_guard() {
 
 /// A non-loopback host, a wrong port, or a spelling that cannot name the
 /// bound port at all is answered `403` with the refusal sentence — on
-/// every method, `/mcp` included — and the refusal never registers as
-/// in-flight (the guard is the outer layer).
+/// every method, `/mcp` included. The metric claim is not re-asserted
+/// here: the in-flight gauge is removed at response completion, so a
+/// scrape after the fact cannot distinguish a never-registered request
+/// from a released one (the layering claim has no observable).
 #[tokio::test]
 async fn cross_origin_and_malformed_spellings_are_refused_before_the_router() {
     let srv = start().await;
@@ -1301,12 +1305,11 @@ async fn cross_origin_and_malformed_spellings_are_refused_before_the_router() {
         format!("http://localhost:{wrong_port}"),
         format!("http://[::1]:{wrong_port}"),
         // Malformed or port-less spellings: nothing to match the bound
-        // port against, so nothing passes.
+        // port against, so nothing passes. The unclosed bracket is the
+        // intended spelling, not a typo'd literal.
         "http://localhost".to_string(),
         "http://localhost:99999".to_string(),
-        "http://[::1]:{port}"
-            .to_string()
-            .replace("http://[::1]:{", "http://[::1:{"), // unclosed bracket
+        format!("http://[::1:{port}"), // unclosed bracket
         "localhost:8025".to_string(),
         "null".to_string(),
         // The path is not the authority: the host behind the path refuses.
@@ -1333,23 +1336,97 @@ async fn cross_origin_and_malformed_spellings_are_refused_before_the_router() {
             );
         }
     }
+}
 
-    // The refused DELETE never registered as in-flight: the guard answered
-    // before the router's counting layer saw the request.
-    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    assert_eq!(
-        common::metric_row_value(
-            &metrics,
-            r#"swarmail_http_requests_in_flight{inbox="guarded"}"#
+/// The DNS-rebinding leg (0030 §2): a rebound page sends *same-origin*
+/// requests — and same-origin GET/HEADs carry no `Origin` at all — but its
+/// `Host` line still spells the attacker's hostname. While loopback-bound,
+/// a `Host` that is not a loopback spelling of the bound port is refused
+/// (`403`, its own sentence), on reads and writes alike; a loopback
+/// spelling rides through; a request with no `Host` line at all has
+/// nothing to admit and is refused.
+#[tokio::test]
+async fn a_rebound_host_refuses_even_without_an_origin() {
+    let srv = start().await;
+    let port = srv.http_addr.port();
+
+    // The rebind: no Origin header, the Host still the attacker's.
+    for (method, path, body) in [
+        ("GET", "/api/v1/inboxes", None),
+        ("GET", "/api/v1/messages", None),
+        (
+            "POST",
+            "/mcp",
+            Some(r#"{"jsonrpc":"2.0","method":"tools/list","id":1}"#),
         ),
+    ] {
+        let (st, text) = send_with_host(
+            srv.http_addr,
+            method,
+            path,
+            &format!("attacker.example:{port}"),
+            body,
+        )
+        .await;
+        assert_eq!(st, 403, "{method} {path}: {text}");
+        assert!(
+            text.contains("must name a loopback Host"),
+            "{method} {path}: {text}"
+        );
+    }
+
+    // Every loopback spelling of the bound port admits the request — the
+    // exact set of Host lines a legitimate caller to this plane sends.
+    for host in [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+        format!("127.255.0.9:{port}"),
+    ] {
+        let (st, text) = send_with_host(srv.http_addr, "GET", "/api/v1/inboxes", &host, None).await;
+        assert_eq!(st, 200, "{host}: {text}");
+    }
+
+    // A loopback host on the wrong port is another plane.
+    let (st, text) = send_with_host(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes",
+        &format!("127.0.0.1:{}", port.wrapping_add(1)),
         None,
-        "a refused request registers no in-flight row: {metrics}"
-    );
+    )
+    .await;
+    assert_eq!(st, 403, "{text}");
+
+    // No Host line at all: HTTP/1.1 clients always send one; a request
+    // without it names no plane and is refused.
+    let mut stream = tokio::net::TcpStream::connect(srv.http_addr).await.unwrap();
+    use tokio::io::AsyncWriteExt;
+    stream
+        .write_all(b"GET /api/v1/inboxes HTTP/1.1\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
+        .await
+        .unwrap();
+    let s = String::from_utf8_lossy(&buf);
+    let status: u16 = s
+        .lines()
+        .next()
+        .unwrap()
+        .split(' ')
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(status, 403, "{s}");
+    assert!(s.contains("must name a loopback Host"), "{s}");
 }
 
 /// With an explicit off-loopback bind the check is inert — the operator's
-/// recorded posture (0030 §2): any `Origin` rides through, because there
-/// is no loopback plane to protect.
+/// recorded posture (0030 §2): any `Origin` rides through and so does any
+/// `Host`, because there is no loopback plane to protect.
 #[tokio::test]
 async fn an_off_loopback_bind_leaves_the_guard_inert() {
     let srv = start_with(|mut c| {
@@ -1366,4 +1443,13 @@ async fn an_off_loopback_bind_leaves_the_guard_inert() {
     )
     .await;
     assert_eq!(st, 200, "the guard is inert off loopback: {body}");
+    let (st, body) = send_with_host(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes",
+        "attacker.example:1",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "the Host leg is inert off loopback: {body}");
 }

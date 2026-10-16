@@ -249,9 +249,18 @@ async fn search_hog(
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Value>, HogRejection> {
     // The cap is staged before the scan (decision 0030 §3). The bare-400
-    // quirks — an unknown kind, an empty query — ride `run_search`'s own
-    // refusals: the map_err below is the one place a bad staging lands, so
-    // the envelope stays upstream's bare `400` with no body.
+    // quirks — an empty query — ride `run_search`'s own refusals: the
+    // map_err below is the one place a bad staging lands, so the envelope
+    // stays upstream's bare `400` with no body. The KIND is the dialect's
+    // own domain, staged here and not widened by the shared engine:
+    // upstream answers a bare 400 for anything but from|to|containing (an
+    // absent kind is upstream's `containing`), and `subject` — the
+    // swarmail engine's own kind — is not this dialect's contract (0029's
+    // advertised-domain discipline).
+    match params.kind.as_deref() {
+        None | Some("from") | Some("to") | Some("containing") => {}
+        _ => return Err(HogRejection::Bare(StatusCode::BAD_REQUEST)),
+    }
     let limit = page_cap("limit", params.limit.unwrap_or(50)).map_err(HogRejection::PageCap)?;
     let all =
         run_search(&state, &params).map_err(|_| HogRejection::Bare(StatusCode::BAD_REQUEST))?;

@@ -42,10 +42,10 @@ async fn http_raw(
 ) -> (u16, Vec<(String, String)>, Vec<u8>) {
     let payload = match body {
         Some((ctype, text)) => format!(
-            "{method} {path} HTTP/1.1\r\nHost: t\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
+            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{text}",
             text.len()
         ),
-        None => format!("{method} {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n"),
+        None => format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"),
     };
     let mut stream = TcpStream::connect(addr).await.unwrap();
     stream.write_all(payload.as_bytes()).await.unwrap();
@@ -529,8 +529,11 @@ async fn mailhog_v2_lists_and_searches_with_upstream_shapes() {
     assert_eq!(body["items"][0]["ID"], b2.as_str());
 
     // Upstream answers a bare 400 — no body, no message — for a bad kind or
-    // an empty query.
-    for query in ["kind=bogus&query=x", "kind=to"] {
+    // an empty query. `subject` is the swarmail engine's own kind and is
+    // not this dialect's contract: the v2 plane keeps upstream's bare 400
+    // for it (the domain is staged in search_hog, not widened by the
+    // shared engine).
+    for query in ["kind=bogus&query=x", "kind=to", "kind=subject&query=x"] {
         let (status, headers, body) =
             http_raw(s.http_addr, "GET", &format!("/api/v2/search?{query}"), None).await;
         assert_eq!(status, 400, "{query}");

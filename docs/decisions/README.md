@@ -36,6 +36,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0027](0027-living-listeners-bounded-sessions.md) | Living listeners and bounded sessions: the accept loops survive, health tells the truth, shutdown arrives on time (amends 0018/0022) | **proposed** (awaiting operator) | (Close issues #36, #37) |
 | [0028](0028-wire-octets-auth-refusals-and-the-maildrop-snapshot.md) | Wire-honest POP3 octets, AUTH refusals that change nothing, and the snapshot-not-lock maildrop (amends 0004) | **proposed** (awaiting operator) | (Close issues #42, #43, #44, #45) |
 | [0029](0029-supplied-values-are-validated-wherever-they-reach-a-wire.md) | Supplied values are validated wherever they reach a wire (filed as 0031) | accepted (operator, 2026-10-15) | (Close issues #46, #40, #38, #41, #47 — closed by #62) |
+| [0030](0030-loopback-plane-bounded-results.md) | A loopback Host and a loopback Origin; 250 everywhere; the parse leaves the async workers | **proposed** (awaiting operator) | (Implements #49, #48) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

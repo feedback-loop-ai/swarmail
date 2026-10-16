@@ -723,9 +723,12 @@ async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
     // the park and prove nothing about the deadline.
     let mut a = tokio::net::TcpStream::connect(addr).await.unwrap();
     a.write_all(
-        b"POST /api/v1/inboxes/stall/seed HTTP/1.1\r\nHost: t\r\n\
-          Expect: 100-continue\r\nContent-Type: application/json\r\n\
-          Content-Length: 10\r\n\r\n",
+        format!(
+            "POST /api/v1/inboxes/stall/seed HTTP/1.1\r\nHost: {addr}\r\n\
+             Expect: 100-continue\r\nContent-Type: application/json\r\n\
+             Content-Length: 10\r\n\r\n"
+        )
+        .as_bytes(),
     )
     .await
     .unwrap();
@@ -735,7 +738,7 @@ async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
     // before A's continue is awaited, so B's connection task provably
     // exists and is polled before the stop ever fires.
     let mut b = tokio::net::TcpStream::connect(addr).await.unwrap();
-    b.write_all(b"GET /healthz HTTP/1.1\r\nHost: t\r\n")
+    b.write_all(format!("GET /healthz HTTP/1.1\r\nHost: {addr}\r\n").as_bytes())
         .await
         .unwrap();
 

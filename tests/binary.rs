@@ -853,9 +853,13 @@ async fn a_second_signal_during_the_drain_exits_70() {
     // drain is held), not on a guess.
     let mut a = TcpStream::connect(serve.http_addr).await.unwrap();
     a.write_all(
-        b"POST /api/v1/inboxes/stall/seed HTTP/1.1\r\nHost: t\r\n\
-          Expect: 100-continue\r\nContent-Type: application/json\r\n\
-          Content-Length: 10\r\n\r\n",
+        format!(
+            "POST /api/v1/inboxes/stall/seed HTTP/1.1\r\nHost: {}\r\n\
+             Expect: 100-continue\r\nContent-Type: application/json\r\n\
+             Content-Length: 10\r\n\r\n",
+            serve.http_addr
+        )
+        .as_bytes(),
     )
     .await
     .unwrap();

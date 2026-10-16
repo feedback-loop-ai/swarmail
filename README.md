@@ -88,35 +88,51 @@ compatibility layer (MailHog/Mailpit), one observability story
 zero frontend dependencies.
 
 **The binds are loopback by default, and the loopback plane refuses
-cross-origin pages.** All three listeners default to `127.0.0.1` — a mail
-mock serves the machine it runs on — and the image and the chart state
-`0.0.0.0` explicitly, because a container that trusted its defaults would
-never publish a port. While the HTTP listener is loopback-bound, requests
-carrying an `Origin` header are answered `403` unless that origin is a
-loopback spelling of the bound HTTP port (`localhost`, `127.0.0.0/8`,
-`[::1]`): the one header a browser sets honestly, so a web page from
-anywhere else cannot drive the API — including through DNS rebinding,
-which is why a Host check would not have been enough. Every method and
-every route is covered, `/mcp` and the UI included; requests without an
-`Origin` — curl, agents, the stdio bridge, every test harness — pass
-untouched, and an operator who binds `0.0.0.0` states the trust
-themselves (the guard is inert, not the posture weaker). There is no auth
-on any surface, by design: the loopback posture is the boundary, and a
-server with secrets would need auth — this one holds test mail, and its
-knobs are local (`set-chaos` included). Webhooks dial out only to
-addresses an operator explicitly configures, bounded by
-`WEBHOOK_DELIVERY_CAP` (32) so a flood of configured hooks cannot
-accumulate unbounded work; nothing ever dials an address learned from
+cross-origin pages and rebound hosts.** All three listeners default to
+`127.0.0.1` — a mail mock serves the machine it runs on — and the image
+and the chart state `0.0.0.0` explicitly, because a container that
+trusted its defaults would never publish a port. While the HTTP listener
+is loopback-bound, two headers are checked before the router. **Host**:
+a request whose `Host` is not a loopback spelling of the bound HTTP port
+is answered `403` — this is the DNS-rebinding defense, because a rebound
+page sends *same-origin* requests (and same-origin GET/HEADs carry no
+`Origin` at all) while its `Host` line still spells the attacker's
+hostname. **Origin**: a present `Origin` that is not a loopback spelling
+is answered `403` — the one header a browser sets honestly, so a
+cross-site drive is named and refused. Every method and every route is
+covered, `/mcp` and the UI included; requests without an `Origin` — curl,
+agents, the stdio bridge, every test harness — pass untouched (their
+`Host` is the loopback spelling they dialed), and an operator who binds
+`0.0.0.0` states the trust themselves (the guard is inert, not the
+posture weaker). There is no auth on any surface, by design: the loopback
+posture is the boundary, and a server with secrets would need auth —
+this one holds test mail, and its knobs are local (`set-chaos`
+included). Webhooks dial out only to addresses an operator explicitly
+configures — **and that is the whole boundary**: an arbitrary or
+internal address is accepted at registration and dialed from this
+process, so on a network with sensitive internal services the operator
+should spell loopback or otherwise-sanctioned targets (no allowlist, no
+auth on the registration API — the posture is the trust statement, and
+the SSRF exposure of an internal-target registration is recorded in
+decision 0030 §5 rather than papered over). The delivery budget is
+`WEBHOOK_DELIVERY_CAP` (32) **per normalized target URL** — many
+configured targets multiply the ceiling, and there is no global
+backstop across targets; nothing ever dials an address learned from
 mail content.
 
 **The pages are bounded.** Every result page — the REST list, `await`,
 the MailHog/Mailpit shims, and every MCP search/get-latest/wait — is
 capped at **250 items** (`limit`/`count` above the cap is refused with a
 400 on REST and the shims, a `-32602` error over MCP: named, never
-clamped). `await`'s exact-count `assert` keeps its unclamped semantics.
-Parse work (RFC 5322 + MIME + link/code extraction) and every deep page
-copy run off the async workers on the blocking pool, so a 50 MiB mail
-cannot stall the accept loop or the await wakes it gates.
+clamped). `await`'s exact-count `assert` keeps its unclamped semantics —
+its `limit` is parsed for parity with `list` but inert, because the
+assert answer is a count, not a page. SMTP request parsing and the REST
+list/await/compat page copies run off the async workers on the blocking
+pool, so a 50 MiB mail cannot stall the accept loop or the await wakes
+it gates; the MCP `swarmail_seed_email` seed build and the SSE
+thread-view serialization still run inline (the seed is the test
+fixture's own path, and the thread view is a per-request read render —
+neither is on the ingest path the stall guards).
 
 ## The guarantees
 
