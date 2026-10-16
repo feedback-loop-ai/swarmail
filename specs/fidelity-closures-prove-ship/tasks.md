@@ -15,7 +15,7 @@ paths only in parent-declared `src/<module>/<name>_tests.rs` harnesses.
   --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace --locked`, `brokkr compile --bundle
   bundles/self` — and record the outputs.
-  **Proved by:** all four exit 0; the suite reports 468 tests
+  **Proved by:** all four exit 0; the suite reports 469 tests
   (spec.md AC-G.1).
 
 - [ ] 2. Run the license gate and the coverage gate, in that order, and

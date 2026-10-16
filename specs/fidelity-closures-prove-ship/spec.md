@@ -14,6 +14,13 @@
   gates were re-run at commit time. The implement attempt died mid-verify
   on an environment failure (the coverage gate's instrumented build filled
   /tmp's tmpfs); the commit carries the seat's content, not a re-run of it.
+  **The tree the remaining phases prove is `e245fae`** — the review-hold
+  repair ("Bound the entity-reference scan and tell the batch-delete
+  truth"): a named forty-character window inside `parse_ref` and a 503
+  description stating 0014's per-mutation refusal; the suite is 469 tests
+  there. The record-honesty pass
+  ([specs/fidelity-record-honesty/](../fidelity-record-honesty/spec.md))
+  re-grounds this contract at that tree and adds red lines 12–14.
 - **Design of record:** [specs/fidelity-closures/spec.md](../fidelity-closures/spec.md)
   (committed at `2cfe08c`, amended at `24df038`) with its
   [plan](../fidelity-closures/plan.md) and [tasks](../fidelity-closures/tasks.md).
@@ -194,7 +201,7 @@ the coverage gate's `TMPDIR` rule is absolute (AC-G.2).
 - **AC-G.1** `cargo fmt --all -- --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace --locked` and
-  `brokkr compile --bundle bundles/self` all exit 0; the suite is 468
+  `brokkr compile --bundle bundles/self` all exit 0; the suite is 469
   tests. *Proof:* the commands themselves.
 - **AC-G.2** `TMPDIR=/home/valentin/scratch/cov-tmp bash
   scripts/coverage-gate.sh` reports exact 100/100/100 — lines, branches
@@ -221,7 +228,10 @@ the coverage gate's `TMPDIR` rule is absolute (AC-G.2).
 - **AC-39.2** The decoder is total and never grows its input: unknown
   names, malformed numerics, surrogates and > U+10FFFF stay literal.
   *Proof:* `src/extract.rs::decode_refs_is_total_and_never_grows`,
-  `::numeric_refs_decode_and_unknown_names_stay_literal`.
+  `::numeric_refs_decode_and_unknown_names_stay_literal`,
+  `::an_ampersand_run_decodes_in_bounded_work` — the bounded-work pin the
+  review-hold repair added at `e245fae`: a 500,000-`&` URL asserting exact
+  output, under which a quadratic rescan hangs the suite.
 - **AC-39.3** `links` and `codes` keep first-occurrence document order
   while deduplicating. *Proof:* `src/extract.rs::links_keep_document_order`,
   `::codes_keep_document_order`.
