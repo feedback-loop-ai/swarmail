@@ -12,8 +12,9 @@ confirmation (zero edits expected), 4 is its defect path, 5 is verify,
   is empty; `docs/decisions/0030-loopback-plane-bounded-results.md`
   carries `- **Status:** proposed` (line 3), its index row in
   `docs/decisions/README.md`, and the §2 provenance paragraph
-  (0030:127-132). The re-entry's own framing copy
-  (`specs/protected-reentry/framing-10b.md`) is committed
+  (0030:127-132). The re-entry's own framing copies
+  (`specs/protected-reentry/framing-10b.md` and
+  `framing-10b-successor.md`) are committed
   (validation-family precedent), so `scripts/design-check.sh` reads
   `designed` with no findings under a working git env.
 - [ ] 2. Confirm the landed shape is the ruled shape at minimum size —
@@ -63,7 +64,12 @@ confirmation (zero edits expected), 4 is its defect path, 5 is verify,
   0001's disk leg), the third panel's record sentences (a `250` is true
   when written — retention is the operator's cap; a poisoned boundary
   dies loudly, never quietly retries; arm crash surfaces before the
-  wire answers), and the no-re-litigation rule for the pre-repair
+  wire answers — read for new signals, listeners and spawns the way
+  0001 is read), the fourth panel's items (the corrected webhook
+  delivery sentence; the serialized-boundary-as-throughput-ceiling
+  sentence; the priced 400-arm wire residual — review's to take as a
+  finding, the ~8-line `tests/compat.rs` test pre-priced beside it),
+  and the no-re-litigation rule for the pre-repair
   findings. **Proof:** each review member's verdict
   names the weighting it applied; a re-opened pre-repair finding without
   a new observable is refused by the weighting itself.
@@ -76,7 +82,10 @@ confirmation (zero edits expected), 4 is its defect path, 5 is verify,
 - [ ] 8. Audit the re-entry's own delta at ship. **Proof:**
   `git diff a4ff22c HEAD --stat` names only this contract's spec
   artifacts (6f9a4bf and the synthesis commits) and defect-driven
-  repairs, each with its named pin in the same commit;
+  repairs, each with its named pin in the same commit (to date:
+  `81409d4`'s signal reorder pinned by
+  `serve_answers_healthz_and_stops_on_sigint`; `95d2823`'s refusal
+  pinned at `src/compat.rs:847`);
   `git diff a4ff22c HEAD --
   Cargo.toml` is empty unless a defect demanded a dependency (a decision
   document, not an edit); `docs/decisions/` still ends at 0030 (no

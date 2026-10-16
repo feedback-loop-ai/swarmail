@@ -35,11 +35,11 @@ machinery; each phase consumes the last one's verdict:
 - **ship** — the operator's: PR, both duplicate CI runs green, squash.
   Nothing in this plan touches `agents/`, `adapters/`, `bundles/`.
 
-## Constitution check — the frozen guarantees, re-verified in code at a4ff22c
+## Constitution check — the frozen guarantees, re-verified in code, most recently at HEAD `95d2823`
 
 - **0001 (accept == stored):** the DATA terminator consumes the envelope
   before any outcome (`src/smtp.rs:968-976`) and the 250 is written only
-  after the commit outcome is known (`:1013-1016`); `Store::insert` stays
+  after the commit outcome is known (`:1033-1050`); `Store::insert` stays
   synchronous; the offloaded parse runs *before* the mutation boundary
   and no commit path gained a branch. The `451 4.3.0 storage commit
   failed` arm (`:1045`) is the commit-failure arm (0012), not a
@@ -72,9 +72,10 @@ machinery; each phase consumes the last one's verdict:
 ## Project structure
 
 No new files under `src/` and no new production path. The spec dir gains
-one committed artifact — the intake framing copy `framing-10b.md`,
-riding the synthesis commit per the validation-family precedent (the
-design-check probe counts untracked files in the spec dir). The only
+two committed artifacts — the intake framing copies `framing-10b.md` and
+`framing-10b-successor.md`, each riding its synthesis commit per the
+validation-family precedent (the design-check probe counts untracked
+files in the spec dir). The only
 production files this run may touch, each only through its defect path,
 and each with the pin that proves it:
 
@@ -124,7 +125,15 @@ plus `cargo test --lib` for the awaits-gauge inline pins.
    `250` is true when written — how long it stays true is the
    operator's cap; a poisoned boundary dies loudly, never quietly
    retries; and the lazy-registration rule — arm every
-   crash/termination surface before the wire starts answering.
+   crash/termination surface before the wire starts answering — read
+   for new signals, listeners and spawns the way 0001 is read. Plus
+   the fourth panel's items (spec.md § Adopted at the fourth panel):
+   the corrected webhook delivery sentence (retried within the budget;
+   losses counted; never replayed across a restart), the
+   serialized-boundary-as-throughput-ceiling sentence, and the priced
+   400-arm wire residual — review's to take as a finding, the ~8-line
+   `tests/compat.rs` test pre-priced beside it
+   (`GET /api/v1/search?query=` + 250 000 `k`s → `400`).
 2. The 451/parse-arm distinction (`smtp.rs:1045` is 0012's
    commit-failure arm; the parse-panic residual is 0030 §6's, trigger
    named).
@@ -154,13 +163,15 @@ plus `cargo test --lib` for the awaits-gauge inline pins.
    committed-spec probe swallows git errors (`git status --porcelain ...
    2>/dev/null`), so a broken git env reads as "no uncommitted changes"
    (run 9b's recorded finding; still present at HEAD); and the same
-   probe counts uncommitted files in the spec dir, which tripped twice
-   on the intake framing copy — untracked at the first synthesis,
-   modified at the second (the intake's own update reflecting
-   `81409d4`). *Mitigation:* run under a working git env
-   (`GIT_CONFIG_KEY_0` exported — this session needed it again) and
-   commit the framing copy per the validation-family precedent (the
-   second update rides this synthesis commit); the env-vacuity finding
+   probe counts uncommitted files in the spec dir, which tripped three
+   times on the intake framing copies — untracked at the first
+   synthesis, modified at the second (the intake's own update
+   reflecting `81409d4`), and untracked again as the successor copy
+   (`framing-10b-successor.md`) at this one. *Mitigation:* run under a
+   working git env (`GIT_CONFIG_KEY_0` exported — needed a fourth time
+   this session) and commit each framing copy per the
+   validation-family precedent (the successor copy rides this
+   synthesis commit); the env-vacuity finding
    stays an operator note (`.brokkr/state/run10b-operator-edits.md`),
    never a mid-judgment edit to the checker that judges the phase. A
    design seat does not edit its own judge.

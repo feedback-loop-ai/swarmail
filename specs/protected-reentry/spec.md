@@ -13,10 +13,13 @@
   already rewritten in place at a4ff22c with its provenance paragraph, and
   the re-entry's corrections ride 0030's acceptance pass, not a fork.
 - **Base:** `a4ff22c` (the operator's repair, atop f9cde28 ← 7550de3 ←
-  66a45bb), with this spec trio committed at `6f9a4bf` on top of it —
-  the re-entry design this run confirms. Every line cited below was
-  re-verified against the tree at HEAD; nothing here is taken from the
-  positions' prose.
+  66a45bb), with this spec trio committed at `6f9a4bf` and its record
+  carried through the synthesis commits (`b2c95f3`, `c190493`) — the
+  re-entry design this run confirms — and the tree re-verified at HEAD
+  `95d2823`, where the two defect-driven repairs (`81409d4`'s signal
+  reorder, `95d2823`'s search-needle refusal) sit atop a4ff22c. Every
+  line cited below was re-verified against that tree in this session;
+  nothing here is taken from the positions' prose.
 - **Predecessor spec:**
   [off-worker-parses-loopback-posture](../off-worker-parses-loopback-posture/spec.md)
   (committed at 7550de3, unchanged since) — the ruled shape. This is its
@@ -222,6 +225,104 @@ re-litigation of the pre-repair tree or the SIGINT diagnosis, no new
 bench, seam, model route or gate, and the two declined renames (AC5.4)
 stay declined.
 
+### Adopted at the fourth panel (the positions written at `95d2823`)
+
+The design re-entered once more after run 10d's review closed the hold
+and the operator landed its residual (`95d2823`: `search_needle` refuses
+an uncompilable needle with a 400 instead of unwinding, the
+Origin-guard comment states the true layer order, 0030 §2 drops the
+false h2/`:authority` claim). Both seats re-verified the artifact
+contract at that HEAD and passed; neither proposes a change — the
+re-entry still needs a review, not a redesign. The third repair is
+audited as a **signature, not a machine**: one signature (`Regex` →
+`Option<Regex>`, `src/compat.rs:409`), one caller mapping
+(`ok_or(ApiError(..))`, `:390`), one inline pin (`:847`), one bench
+line — no new file, seam, knob, observable, error vocabulary or
+dependency; the engine's own compiled-size budget is the bound, rightly
+not re-invented (no `SWARMAIL_REGEX_BUDGET`, no needle-length cap, no
+needle cache, no `Result` alias — each a second rule where the regex
+crate already enforces the truer one: the cost is the compiled
+automaton, and only the engine measures that). The re-entry's delta is
+still exactly the ruled artifacts plus three named, pinned repairs.
+
+Four items are adopted here — ruled, not averaged — and none becomes
+code, a knob, a counter or a new test:
+
+1. **The 400 arm is executed but unasserted on the wire: named, priced,
+   and handed to review — not adopted as a design addition.** The
+   refusal is pinned at its unit (`src/compat.rs:847`: an uncompilable
+   250 000-character needle yields `None`), but its *translation* —
+   400, not unwind — has no wire test: no test sends an uncompilable
+   needle (the largest `repeat(` fixture in `tests/` is 20 000 bytes,
+   in POP3), and llvm-cov emits no branch region for the `ok_or` arm,
+   so the exact gate cannot see it — a future edit restoring
+   `.expect()` would pass every gate silently. The price is already
+   computed: **one ~8-line wire test in `tests/compat.rs`**
+   (`GET /api/v1/search?query=` + 250 000 `k`s → `400`), real protocol
+   against a real server (0020 rule 3), no new file or seam.
+   **Ruling:** the design phase does not add it. The framing prices
+   this run per edit and hands new findings to review; the residual is
+   run 10d review's own record and its diagnosis is closed, so a
+   design-demanded pin would be the design phase inventing the demand —
+   a quarter-megabyte URI fixture in every suite, purchased by nobody's
+   finding. If review names it a finding, the priced test lands beside
+   it through AC4.3's channel — full gates, nothing more. **The
+   loser's cost:** until then the arm stays unasserted and
+   regression-invisible to the gate; that risk is accepted for this
+   run, witnessed by this sentence, and one review finding away from
+   repair.
+2. **The record's webhook summary is corrected against the code: retries
+   exist, so "at-most-once" is false as written** (the third panel's
+   sentence above; corrected here — code wins). `deliver` runs four
+   attempts with exponential backoff (`src/webhook.rs:497-499`), so a
+   POST whose success response is lost can deliver twice. The honest
+   sentence (the fourth panel's, adopted): *webhooks are at-least-once
+   within the attempt budget — a lost success-response can duplicate —
+   with every loss counted (`exhausted`, `dropped`, `aborted`) and
+   never replayed across a restart; deliveries are not part of
+   accept == stored; the store is the truth, the webhook a
+   notification.* **The loser's cost:** the imprecise summary teaches
+   both wrong mental models at once — it hides the duplicate window
+   and hides the counted-loss channels a tester would otherwise watch.
+   The correction folds into 0030 at the operator's acceptance pass
+   with the other record sentences.
+3. **The serialized boundary is the throughput ceiling, and the tree
+   does not batch** (the fourth residual sentence, new to the record).
+   A thousand parallel sessions accept at commit speed, not at core
+   count — the price of the one ordered mutation boundary (0014) for
+   0001, and the correct price: every alternative (batching,
+   per-inbox writers, an async gap) reorders or exposes pre-commit
+   state, and both are guarantee-killers. Sentence only; folds at
+   acceptance.
+4. **The lazy-registration rule reads like a guarantee in review's
+   inputs.** The `81409d4` rule (§ Adopted at the third panel, item 3)
+   gains its reading instruction: review reads for un-armed death
+   surfaces — a new signal, listener or spawn that registers lazily on
+   first poll — the way it reads for 0001. Carried into AC4.1 and the
+   plan's weighting; no new mechanism.
+
+Procedural, resolved the house's way a third time:
+`specs/protected-reentry/framing-10b-successor.md` — this run's
+successor intake framing, written after `c190493` — is untracked, and
+the design-check probe counts untracked paths in the spec dir
+(`scripts/design-check.sh:94`). It rides this synthesis commit per the
+validation-family precedent (adopted item 3's own shape); the checker
+is untouched — a design seat does not edit its own judge (plan risk 3).
+The `GIT_CONFIG_KEY_0` env break recurred a fourth time (operator note
+§2) and did not bite: every probe in this synthesis ran under a working
+env.
+
+Re-refused a fourth time, and one nit declined: no guard hardening, no
+confirmation-test twin, no spec v2, no `0031`, no new bench or
+re-benchmark (`read_stall.rs`'s delta is the signature change; numbers
+are report, never an assertion — 0023), no new seam, `coverage(off)`,
+model route or gate; `ok_or` stays `ok_or` — the eager short-string
+allocation is dwarfed by the fold's own regex build a line below, and
+an `ok_or_else` closure is vocabulary, not clarity; the two declined
+renames stay declined (`95d2823` opened neither file). Zero production
+lines and zero tests remain the design phase's count, fourth attempt
+running.
+
 ## The re-entry's ledger — the four sentences the guard's own surface carries
 
 The Host leg is new production surface; from this re-entry it gets the
@@ -330,6 +431,11 @@ None of these four becomes code, a knob or a counter:
    harnesses (the repair restoring behavior, not changing it).
 5. No new test asserts what an existing pin already proves; a red pin is
    reported as a defect, never papered with a sibling.
+6. `cargo test --lib` — the search-needle pin (`src/compat.rs:847`)
+   holds: an uncompilable 250 000-character needle yields `None` (the
+   `95d2823` repair's own pin), and the call site answers `400`
+   (`:390`). The unit refusal is asserted; the wire translation of it
+   is AC4.1's named residual, review's to take as a finding.
 
 ### AC3 — the gates are green at the reviewed HEAD, and the wire stays honest
 
@@ -348,8 +454,14 @@ None of these four becomes code, a knob or a counter:
    ledger, the tenant-boundary scoping, the bound-port invariant
    sentence, the 451/parse-arm distinction, the at-least-once
    duplicate-on-retry window and the pragma-as-disk-leg sentence (§
-   Adopted at the re-entry panel), and the no-re-litigation rule for
-   the pre-repair findings.
+   Adopted at the re-entry panel), the no-re-litigation rule for
+   the pre-repair findings, and the fourth panel's items (§ Adopted at
+   the fourth panel): the corrected webhook delivery sentence (retried
+   within the budget; losses counted; never replayed across a restart),
+   the serialized-boundary-as-throughput-ceiling sentence, the
+   death-surface rule read the way 0001 is read, and the priced
+   400-arm wire residual — review's to take as a finding, the ~8-line
+   `tests/compat.rs` test pre-priced beside it.
 2. Every claim review endorses is one the wire can observe (the
    awaits-gauge discipline): any landing-note sentence about the loopback
    default scopes it to network-reachable clients and leaves
@@ -364,8 +476,11 @@ None of these four becomes code, a knob or a counter:
 
 1. At ship, `git diff a4ff22c HEAD --stat` names only this contract's
    own spec artifacts (the design commit `6f9a4bf` and the synthesis
-   commits — `b2c95f3` and this one) and defect-driven repairs, each
-   with its named pin in the same commit — no production line outside a
+   commits — `b2c95f3`, `c190493`, and this one) and defect-driven
+   repairs, each with its named pin in the same commit (to date:
+   `81409d4`'s signal reorder pinned by
+   `serve_answers_healthz_and_stops_on_sigint`; `95d2823`'s refusal
+   pinned at `src/compat.rs:847`) — no production line outside a
    defect's fix.
 2. `git diff a4ff22c HEAD -- Cargo.toml` is empty unless a defect
    demanded a new dependency — which would be a decision document, not an
