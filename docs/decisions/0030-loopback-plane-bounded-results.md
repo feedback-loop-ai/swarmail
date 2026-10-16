@@ -1,6 +1,10 @@
 # 0030 — The unauthenticated plane defaults to loopback, and result sizes are bounded
 
-- **Status:** proposed (awaiting operator)
+- **Status:** accepted (operator, 2026-10-16 — proposed by the run-10
+  family's design panel; the tree implements it, run
+  `brokkr-state-run10b-feature-txt-d6fc470d`'s review panel passed the
+  repaired tree with no security residual, and it landed as #66, squash
+  `8a47b50`)
 - **Date:** 2026-10-16
 - **Supersedes:** none
 - **Records:** the network posture of the unauthenticated control plane
