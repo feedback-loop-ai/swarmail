@@ -1,6 +1,6 @@
 # 0008 — The Kubernetes deployment contract
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
 - **Date:** 2026-10-10
 - **Supersedes:** none
 

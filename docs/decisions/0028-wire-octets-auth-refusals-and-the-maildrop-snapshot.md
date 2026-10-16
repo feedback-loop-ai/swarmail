@@ -1,6 +1,7 @@
 # 0028 — Wire-honest POP3 octets, AUTH refusals that change nothing, and the snapshot-not-lock maildrop
 
-- **Status:** proposed (awaiting operator — acceptance is the operator's;
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
+  Original draft status: proposed (awaiting operator — acceptance is the operator's;
   the batch ships together with this decision)
 - **Date:** 2026-10-15
 - **Amends:** [0004](0004-per-test-inboxes-via-smtp-auth.md) (accepted) §1

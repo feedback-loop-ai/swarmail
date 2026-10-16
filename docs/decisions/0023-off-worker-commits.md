@@ -1,6 +1,6 @@
 # 0023 — Commits run off the async workers: the disk leg is ordering, not thread identity
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
 - **Date:** 2026-10-11
 - **Supersedes:** none
 - **Provenance:** originally filed as `0010-off-worker-commits`;

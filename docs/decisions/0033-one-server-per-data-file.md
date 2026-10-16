@@ -1,6 +1,6 @@
 # 0033 — One server per data file: the data file refuses a second process
 
-- **Status:** proposed (awaiting operator)
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
 - **Date:** 2026-10-16
 - **Files:** `src/persist.rs` (`open` gains the sidecar lock and the named
   refusal), `src/persist.rs` (the refusal's inline test),

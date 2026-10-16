@@ -1,6 +1,6 @@
 # 0032 — An emptied inbox is gone: one rule across delete, clear and restore
 
-- **Status:** proposed (awaiting operator)
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
 - **Date:** 2026-10-16
 - **Files:** `src/store.rs` (the `delete` apply arm), `src/pop3.rs`
   (`inbox_exists` follows the listing automatically), `tests/persistence.rs`,

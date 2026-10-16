@@ -1,6 +1,6 @@
 # 0027 — Living listeners and bounded sessions: the accept loop survives, the health surface tells the truth, and shutdown arrives on time
 
-- **Status:** proposed (awaiting operator)
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
 - **Date:** 2026-10-15
 - **Supersedes:** none
 - **Amends:** [0022](0022-bounded-data-raw-bytes.md) — the plaintext idle posture ("the

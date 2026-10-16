@@ -1,6 +1,6 @@
 # 0020 — Concurrency regression tests and the exact coverage gate: the harness moves, the bar does not
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
 - **Date:** 2026-10-12
 - **Supersedes:** none
 - **Provenance:** originally filed as `0011-concurrency-tests-and-the-coverage-gate`;
