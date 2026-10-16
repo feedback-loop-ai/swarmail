@@ -156,6 +156,72 @@ No decision document is drafted: the guarantee (0001) is unchanged —
 these sentences record its one-directional shape and its disk leg, they
 weaken nothing.
 
+### Adopted at the third panel (the positions written at `81409d4`)
+
+The design phase re-entered once more after the second operator repair
+(`81409d4`, the signal-death fix). Both seats re-verified the artifact
+contract at that HEAD and passed; neither proposes a change — the
+re-entry still needs a review, not a redesign. One genuine conflict
+remained for the synthesis to rule, and the losing side's cost is named:
+
+| Conflict | Ruling | The loser's cost |
+|---|---|---|
+| Robustness: the record must carry two new sentences plus the rule the signal repair earned, and they must ride with the re-entry into review vs. simplicity: the only commit the design phase leaves behind is the framing copy ride | **Record them here — the `b2c95f3` shape, applied to the third panel.** Record sentences live in this contract, the one citable carrier the review weighting and the acceptance pass read; the intake framing copy rides the same commit. Two of robustness's four sentences (the duplicate-on-retry window and the pragma as 0001's disk leg, § Adopted at the re-entry panel items 1–2) are already carried — nothing new is owed for them | The re-entry's delta grows by the record lines themselves: one more synthesis commit, a dozen lines in a file no gate measures (`specs/` is outside the coverage report). What simplicity actually protects — zero new `src/` lines, no new observable, knob, test twin, dependency or decision — is untouched; the "zero commits" accounting gains exactly the synthesis commit AC5.1 already anticipates |
+
+The third panel's record items, adopted as sentences and nothing else —
+no code, no knob, no counter, no new test:
+
+1. **A `250` is true when written; how long it stays true is the
+   operator's cap** (the 250-then-pruned window — new on the record, and
+   not a violation). `insert` applies and releases the boundary before
+   the `250` is written, so a racing capped insert can evict the
+   just-accepted mail before the client has finished reading its own
+   reply. 0001 promises queryable at the boundary, not a retention SLA;
+   0003 makes eviction deterministic (oldest-only) and counted
+   (`emails_dropped`). The design refuses to "fix" this by widening the
+   cap or by blocking the reply on not-yet-evictable — either invents
+   accept-path semantics. The sentence belongs wherever the cap is
+   documented (0003's ruling, the operator docs); it folds at the
+   operator's acceptance pass like the other record sentences.
+2. **A poisoned boundary dies loudly, never quietly retries.** The
+   mutation lock's `.expect("store mutation lock poisoned")` is 0012 §7's
+   fail-stop (as amended by 0015 §3: restart is the recovery) — this
+   restates the posture rather than amending it: a boundary that has
+   violated its own invariant must not pretend the store is healthy and
+   keep answering recoverable `451`s. Confirmed: no *reachable* path
+   poisons it — the `expect`s are stated invariants; a reachable one
+   rules as a new finding, never a smuggled repair.
+3. **Arm every crash/termination surface before the wire starts
+   answering** — the rule the `81409d4` repair earned. The signal
+   streams register on their *first poll*, and the fast-path binds
+   completed without a yield, so a spawned watcher could stay unpolled
+   until after the HTTP bind; a signal landing once the port answered a
+   connect killed the process at the default disposition. The repair
+   constructs and polls the streams on the main task before `run_on` —
+   a reorder, not a machine: one file, net +10 lines, `std::future::poll_fn`,
+   zero dependencies, zero new tests (the existing pin
+   `serve_answers_healthz_and_stops_on_sigint`, `tests/binary.rs:204`,
+   is the exact repro, and the five signal legs — `tests/binary.rs:207`,
+   `:232`, `:263`, `:285`, `:509` — execute the registration lines on
+   every workspace run, which is how the exact 100/100/100 gate holds
+   with no new measured line). It is the same ordering discipline as
+   commit-before-`250`: the state that must exist before the first
+   observable act is made to exist, structurally. Any future listener,
+   handler or stream that registers lazily on first poll reopens the
+   class; the answer is the same reordering, never a sleep.
+
+Everything else the third panel raised is already on the record or is
+re-refused: the accepted losses (at-most-once webhooks, no global
+backstop, a dribbling peer holding one session slot, no NotAfter
+warning) are 0027/0029/0030 §6's landed postures; the dispatcher cannot
+hold the store hostage (owned payloads built after the budget check,
+per-sink `WEBHOOK_DELIVERY_CAP = 32`, the stop check first in the `Mail`
+arm) is confirmed, not changed; and the refusal list stands — no guard
+hardening, no confirmation-test twins, no spec v2, no `0031`, no
+re-litigation of the pre-repair tree or the SIGINT diagnosis, no new
+bench, seam, model route or gate, and the two declined renames (AC5.4)
+stay declined.
+
 ## The re-entry's ledger — the four sentences the guard's own surface carries
 
 The Host leg is new production surface; from this re-entry it gets the
@@ -297,9 +363,10 @@ None of these four becomes code, a knob or a counter:
 ### AC5 — the re-entry's own delta is zero unless a defect demands otherwise
 
 1. At ship, `git diff a4ff22c HEAD --stat` names only this contract's
-   own spec artifacts (the design commit `6f9a4bf` and this synthesis
-   commit) and defect-driven repairs, each with its named pin in the
-   same commit — no production line outside a defect's fix.
+   own spec artifacts (the design commit `6f9a4bf` and the synthesis
+   commits — `b2c95f3` and this one) and defect-driven repairs, each
+   with its named pin in the same commit — no production line outside a
+   defect's fix.
 2. `git diff a4ff22c HEAD -- Cargo.toml` is empty unless a defect
    demanded a new dependency — which would be a decision document, not an
    edit. `docs/decisions/` still ends at 0030 (no fork of the record).

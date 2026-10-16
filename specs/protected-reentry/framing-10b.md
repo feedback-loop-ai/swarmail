@@ -3,8 +3,10 @@
 ## Goal (one sentence)
 
 Re-run the protected phases — implement (confirmation) → verify → review →
-ship — on the repaired tree at `a4ff22c`, with the re-entry design already
-committed at `6f9a4bf` (`specs/protected-reentry/`): confirm the committed
+ship — on the repaired tree at `81409d4` (HEAD: the `a4ff22c` security
+repair plus the `81409d4` signal-death repair), with the re-entry design
+committed at `6f9a4bf` and synthesized at `b2c95f3`
+(`specs/protected-reentry/`): confirm the committed
 spec artifact set still holds (including 0030's amended §2) and put the
 never-reviewed security repair before a fresh review panel, without
 re-arguing the ruled shape and without touching the code unless a defect
@@ -15,11 +17,12 @@ is found (any edit re-runs the full gate set).
 - **Intake and design confirm, not re-argue.** The ruled spec
   (`specs/off-worker-parses-loopback-posture/`, committed at `7550de3`)
   and the re-entry contract (`specs/protected-reentry/`, committed at
-  `6f9a4bf` — this run's HEAD) stand; decision 0030 is `proposed` and
-  indexed. This framing's confirmation checks are recorded below; nothing
-  is re-opened.
+  `6f9a4bf`, synthesized into its final shape at `b2c95f3`) stand;
+  decision 0030 is `proposed` and indexed; HEAD is `81409d4`. This
+  framing's confirmation checks are recorded below; nothing is re-opened.
 - **Implement is a confirmation seat.** The work exists
-  (f9cde28 → a4ff22c). Implement confirms tree == spec == repair and
+  (f9cde28 → a4ff22c, plus the `81409d4` signal repair). Implement
+  confirms tree == spec == repair and
   touches nothing unless a defect is found — the smallest local fix
   beside its wire pin, then the full gate set.
 - **Verify, review, ship run as usual.** Verify is hermetic (network
@@ -34,7 +37,18 @@ is found (any edit re-runs the full gate set).
 ## Intake's confirmation of the artifact contract (checked this session)
 
 - `specs/protected-reentry/` carries `spec.md`, `plan.md`, `tasks.md`
-  (design commit `6f9a4bf`, HEAD).
+  (design commit `6f9a4bf`, synthesized at `b2c95f3` — whose message
+  records the two sharpenings and rides this framing copy); HEAD is
+  `81409d4` and the tree is clean.
+- The signal-death repair is on the tree: `src/main.rs` constructs and
+  polls both interrupt streams on the main task **before** `run_on`
+  (`81409d4`) — registration happens at first poll and the fast-path
+  binds complete without a yield, so a spawned watcher can no longer
+  stay unpolled past the HTTP bind. `git diff a4ff22c HEAD --stat`
+  names exactly `specs/protected-reentry/` and `src/main.rs`.
+- The two-leg guard is in the tree: `authority_is_loopback_of`
+  (`src/api.rs:350`) serves both the Host leg (refused before the
+  router, every method and route) and the Origin leg (`src/api.rs:317`).
 - `docs/decisions/0030-loopback-plane-bounded-results.md` line 3 reads
   `- **Status:** proposed`; the index row exists
   (`docs/decisions/README.md:39`); §2 derives the Host leg from the
@@ -70,8 +84,10 @@ is found (any edit re-runs the full gate set).
    `an_off_loopback_bind_leaves_the_guard_inert`) go green;
    `cargo test --test compat` pins `kind=subject` as a bare 400;
    `cargo test --lib` holds the awaits-gauge observable-row pins;
-   `cargo test --test config_cli` pins the three loopback defaults. A
-   red pin is a defect, never papered with a sibling twin.
+   `cargo test --test config_cli` pins the three loopback defaults; and
+   `cargo test --test binary serve_answers_healthz_and_stops_on_sigint`
+   goes green at HEAD — the `81409d4` repair's own pin. A red pin is a
+   defect, never papered with a sibling twin.
 3. **All house gates are green at HEAD**, including the exact coverage
    gate (100/100/100, missed == 0 — the floor may rise, never fall):
    commands below.
@@ -79,10 +95,13 @@ is found (any edit re-runs the full gate set).
    line parses in any capture — ANSI only when the target stream can
    render it (0029 §4; do not regress the ANSI guard) — in serve and mcp
    both.
-5. **The re-entry's own delta is zero unless a defect demands it.**
-   `git diff a4ff22c HEAD --stat` names only defect-driven repairs, each
-   with its named pin in the same commit; `docs/decisions/` still ends
-   at 0030; no new bench, seam, `coverage(off)` or hardening knob.
+5. **The re-entry's delta is exactly the ruled artifacts plus the named
+   repairs.** `git diff a4ff22c HEAD --stat` names only
+   `specs/protected-reentry/` (the design synthesis, `b2c95f3`) and
+   `src/main.rs` (the signal repair, `81409d4`); any further delta is a
+   defect-driven repair with its named pin in the same commit;
+   `docs/decisions/` still ends at 0030; no new bench, seam,
+   `coverage(off)` or hardening knob.
 6. **Review rules on HEAD with the carried weighting.** The four-sentence
    guard ledger, the tenant-boundary scoping, the bound-port invariant
    and the 451/parse-arm distinction are review inputs; the run-10
@@ -104,12 +123,16 @@ cargo deny check licenses
 
 Verify seat additionally: network denied; the piped serve startup line
 must parse in any capture (0029 §4 — do not regress the ANSI guard);
-SIGBUS → disk-backed `TMPDIR`. Known one-off: a predecessor run stopped
-once on `tests/binary.rs::serve_answers_healthz_and_stops_on_sigint`
-(real-process SIGINT, `tests/binary.rs:204`) which passes on immediate
-rerun with the tree byte-identical — if it fails again, record the exit
-status verbatim (the earlier failure truncated it); if it passes, move on
-and do not re-litigate it.
+SIGBUS → disk-backed `TMPDIR`. The SIGINT test
+`tests/binary.rs::serve_answers_healthz_and_stops_on_sigint` (real
+process, `tests/binary.rs:204`) is **diagnosed and repaired at
+`81409d4`**: the streams register on their FIRST POLL and the
+fast-path binds complete without a yield, so a spawned watcher could
+stay unpolled until after the HTTP bind — a signal landing once the
+port answered a connect killed the process at the default disposition
+(`ExitStatus(unix_wait_status(2))`, a signal death). Verify confirms
+the pin green at HEAD and does not re-litigate the diagnosis; if it
+still fails, record the exit status verbatim and treat it as a defect.
 
 ## Blocked check
 

@@ -60,7 +60,10 @@ confirmation (zero edits expected), 4 is its defect path, 5 is verify,
   ledger, the bound-port invariant sentence, the tenant-boundary
   scoping, the 451/parse-arm distinction, the two 0001-durability
   sentences (the commit→250 duplicate window; the WAL/FULL pragma as
-  0001's disk leg), and the no-re-litigation rule for the pre-repair
+  0001's disk leg), the third panel's record sentences (a `250` is true
+  when written — retention is the operator's cap; a poisoned boundary
+  dies loudly, never quietly retries; arm crash surfaces before the
+  wire answers), and the no-re-litigation rule for the pre-repair
   findings. **Proof:** each review member's verdict
   names the weighting it applied; a re-opened pre-repair finding without
   a new observable is refused by the weighting itself.
@@ -72,7 +75,7 @@ confirmation (zero edits expected), 4 is its defect path, 5 is verify,
   into vagueness.
 - [ ] 8. Audit the re-entry's own delta at ship. **Proof:**
   `git diff a4ff22c HEAD --stat` names only this contract's spec
-  artifacts (6f9a4bf and the synthesis commit) and defect-driven
+  artifacts (6f9a4bf and the synthesis commits) and defect-driven
   repairs, each with its named pin in the same commit;
   `git diff a4ff22c HEAD --
   Cargo.toml` is empty unless a defect demanded a dependency (a decision

@@ -119,7 +119,12 @@ plus `cargo test --lib` for the awaits-gauge inline pins.
    0001-durability sentences (spec.md § Adopted at the re-entry panel):
    the commit→250 window costs a duplicate on retry and dedup is the
    sender's; the WAL/FULL pragma is 0001's disk leg and any
-   `persist.rs` edit re-derives it or is refused.
+   `persist.rs` edit re-derives it or is refused. Plus the third
+   panel's record sentences (spec.md § Adopted at the third panel): a
+   `250` is true when written — how long it stays true is the
+   operator's cap; a poisoned boundary dies loudly, never quietly
+   retries; and the lazy-registration rule — arm every
+   crash/termination surface before the wire starts answering.
 2. The 451/parse-arm distinction (`smtp.rs:1045` is 0012's
    commit-failure arm; the parse-panic residual is 0030 §6's, trigger
    named).
@@ -149,14 +154,16 @@ plus `cargo test --lib` for the awaits-gauge inline pins.
    committed-spec probe swallows git errors (`git status --porcelain ...
    2>/dev/null`), so a broken git env reads as "no uncommitted changes"
    (run 9b's recorded finding; still present at HEAD); and the same
-   probe counts *untracked* files in the spec dir, which tripped once
-   on the intake framing copy. *Mitigation:* run under a working git
-   env (`GIT_CONFIG_KEY_0` exported — this session needed it again) and
-   commit the framing copy per the validation-family precedent (done in
-   the synthesis commit); the env-vacuity finding stays an operator
-   note (`.brokkr/state/run10b-operator-edits.md`), never a
-   mid-judgment edit to the checker that judges the phase. A design
-   seat does not edit its own judge.
+   probe counts uncommitted files in the spec dir, which tripped twice
+   on the intake framing copy — untracked at the first synthesis,
+   modified at the second (the intake's own update reflecting
+   `81409d4`). *Mitigation:* run under a working git env
+   (`GIT_CONFIG_KEY_0` exported — this session needed it again) and
+   commit the framing copy per the validation-family precedent (the
+   second update rides this synthesis commit); the env-vacuity finding
+   stays an operator note (`.brokkr/state/run10b-operator-edits.md`),
+   never a mid-judgment edit to the checker that judges the phase. A
+   design seat does not edit its own judge.
 4. **Review re-litigates the pre-repair tree** — the cheapest way to
    look rigorous while burning a gate set on settled findings.
    *Mitigation:* weighting item 3; the review inputs cite the repair
