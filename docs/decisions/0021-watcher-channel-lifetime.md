@@ -1,6 +1,6 @@
 # 0021 — Watcher channel lifetime: a wake ring released with its inbox's mail
 
-- **Status:** proposed (awaiting operator acceptance)
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
 - **Date:** 2026-10-11
 - **Supersedes:** none
 - **Provenance:** originally filed as `0010-watcher-channel-lifetime`;

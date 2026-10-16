@@ -1,6 +1,6 @@
 # 0031 — The stored record is sender-honest: no body synthesis, and display-time rendering is not extraction
 
-- **Status:** proposed (awaiting operator)
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
 - **Date:** 2026-10-16
 - **Amends:** [0005](0005-extraction-at-ingest.md) (accepted) — §Ruling's
   "nothing re-parses or regexes raw HTML at query time" gains one scoped

@@ -1,6 +1,6 @@
 # 0022 — The DATA path is bounded and byte-honest; `/raw` serves the stored bytes
 
-- **Status:** proposed (awaiting operator)
+- **Status:** accepted (operator, 2026-10-16 — "accept all")
 - **Date:** 2026-10-12
 - **Supersedes:** none (strengthens the wire behavior of 0001 and 0005; touches neither's ruling)
 - **Provenance:** originally filed as `0011-bounded-data-raw-bytes`;

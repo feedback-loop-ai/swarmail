@@ -1,9 +1,9 @@
 # 0011 — The shim DELETE contract: an explicit selector or a 400
 
-- **Status:** proposed (awaiting operator) — drafted at epic #13 wave-7
+- **Status:** accepted (operator, 2026-10-16 — "accept all") — drafted at epic #13 wave-7
   design (issues #9, #15, #17; run
   `epic-13-wave-7-three-contract-li-710b205d`). The change ships together
-  with this document; acceptance is the operator's.
+  with this document; the operator accepted both.
 - **Date:** 2026-10-12
 - **Supersedes:** none. Amends the *practice* under decision 0004, not
   0004 itself — 0004's sentence "clear_all … is the only cross-inbox
