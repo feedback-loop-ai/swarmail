@@ -28,7 +28,7 @@ use crate::extract::{extract_codes, extract_links};
 use crate::model::{Email, EmailAddress};
 use crate::store::Store;
 use chrono::Utc;
-use mail_parser::{Addr, Address, HeaderValue, MessageParser};
+use mail_parser::{Addr, Address, HeaderValue, MessageParser, PartType};
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -1209,6 +1209,27 @@ pub fn build_seed_email(
     ))
 }
 
+/// The first *text/plain* body part, verbatim — the sender's own text, with
+/// no synthesis (decision 0031 §1). A body part of any other type yields
+/// `None` even though the parser lists it: in a text-only
+/// multipart/alternative the text part is pushed into `html_body` as a
+/// fallback, so the part-type decides, not the list.
+fn sender_text_part(message: &mail_parser::Message<'_>) -> Option<String> {
+    match &message.text_part(0)?.body {
+        PartType::Text(text) => Some(text.to_string()),
+        _ => None,
+    }
+}
+
+/// The first *text/html* body part, verbatim — the sender's own html, with
+/// no synthesis (decision 0031 §1).
+fn sender_html_part(message: &mail_parser::Message<'_>) -> Option<String> {
+    match &message.html_part(0)?.body {
+        PartType::Html(html) => Some(html.to_string()),
+        _ => None,
+    }
+}
+
 pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope: String) -> Email {
     let now = Utc::now();
     let parsed = MessageParser::default().parse(raw);
@@ -1246,14 +1267,19 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
         .as_ref()
         .and_then(|m| m.subject())
         .map(|s| s.to_string());
-    let text = parsed
-        .as_ref()
-        .and_then(|m| m.body_text(0))
-        .map(|s| s.to_string());
-    let html = parsed
-        .as_ref()
-        .and_then(|m| m.body_html(0))
-        .map(|s| s.to_string());
+    // The stored record holds only what the sender sent (decision 0031 §1):
+    // a text/plain body part stores `text`, a text/html body part stores
+    // `html`, and a mail with neither — or with some other body shape —
+    // stores neither. mail-parser's `body_text`/`body_html` *synthesize*:
+    // with one variant present they also hand back the other, converted in
+    // the wrong direction (`body_text` on an html part converts html→text,
+    // `body_html` on a text part converts text→html), which would store a
+    // body the sender never sent. The part-type match below is the honest
+    // accessor — in a multipart/alternative missing one variant, the parser
+    // pushes the present part into both body lists, so list membership is
+    // not part-type membership.
+    let text = parsed.as_ref().and_then(sender_text_part);
+    let html = parsed.as_ref().and_then(sender_html_part);
 
     let links = extract_links(text.as_deref(), html.as_deref());
     let codes = extract_codes(text.as_deref(), html.as_deref());
@@ -1317,7 +1343,52 @@ mod tests {
     use super::*;
     use crate::store::Filter;
 
-    /// An `AsyncRead` that yields its bytes one per poll — the harshest
+    /// The stored bodies are exactly what the sender sent (decision 0031
+    /// §1): a text part stores `text` and no `html`, an html part stores
+    /// `html` and no `text`, an alternative with both stores both, and a
+    /// bodyless mail stores neither. The parser's own synthesizing
+    /// accessors would hand back a converted body in each single-variant
+    /// case — the bug issue #39 names.
+    #[test]
+    fn bodies_hold_only_what_the_sender_sent() {
+        let text_mail = build_email(
+            b"From: s@x.io\r\nSubject: t\r\n\r\nplain body\r\n",
+            "in",
+            &["r@x.io".to_string()],
+            "s@x.io".into(),
+        );
+        assert_eq!(text_mail.text.as_deref(), Some("plain body\r\n"));
+        assert!(text_mail.html.is_none(), "no html synthesized from text");
+
+        let html_mail = build_email(
+            b"From: s@x.io\r\nSubject: h\r\nMIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n<p>rich body</p>\r\n",
+            "in",
+            &["r@x.io".to_string()],
+            "s@x.io".into(),
+        );
+        assert!(html_mail.html.is_some());
+        assert!(html_mail.text.is_none(), "no text synthesized from html");
+
+        let both = build_email(
+            b"From: s@x.io\r\nSubject: b\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"BB\"\r\n\r\n--BB\r\nContent-Type: text/plain\r\n\r\nplain\r\n--BB\r\nContent-Type: text/html\r\n\r\n<p>rich</p>\r\n--BB--\r\n",
+            "in",
+            &["r@x.io".to_string()],
+            "s@x.io".into(),
+        );
+        assert_eq!(both.text.as_deref(), Some("plain"));
+        assert!(both.html.as_deref().unwrap().contains("rich"));
+
+        let bodyless = build_email(
+            b"From: s@x.io\r\nSubject: n\r\n",
+            "in",
+            &["r@x.io".to_string()],
+            "s@x.io".into(),
+        );
+        assert!(bodyless.text.is_none());
+        assert!(bodyless.html.is_none());
+    }
+
+    /// An AsyncRead that yields its bytes one per poll — the harshest
     /// chunking a peer can produce, so every buffer boundary is a chunk
     /// boundary and every line straddles reads.
     struct Bytewise {

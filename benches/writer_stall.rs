@@ -123,7 +123,7 @@ fn main() {
             );
             store
                 .insert(email)
-                .expect("stall-bench warmup: a memory-only store has no commit to fail");
+                .expect("stall-bench warmup: the bench injects no storage failures, so its own data-file commits hold");
         }
 
         // Pre-parse every measured mail: the loops below must be the
@@ -167,7 +167,7 @@ fn main() {
             let at = Instant::now();
             store
                 .insert(email)
-                .expect("sync insert leg: a memory-only store has no commit to fail");
+                .expect("sync insert leg: the bench injects no storage failures, so its own data-file commits hold");
             sync_occupancy.push(at.elapsed());
             tokio::task::yield_now().await;
         }
@@ -187,7 +187,7 @@ fn main() {
                 .clone()
                 .insert_async(email)
                 .await
-                .expect("offloaded insert leg: a memory-only store has no commit to fail");
+                .expect("offloaded insert leg: the bench injects no storage failures, so its own data-file commits hold");
         }
         let off_elapsed = started.elapsed();
         done.store(true, Ordering::Relaxed);

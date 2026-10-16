@@ -300,7 +300,8 @@ async fn seed_email_and_set_clear_chaos() {
 #[tokio::test]
 async fn seed_with_html_stores_html_and_extracts_at_ingest() {
     let srv = start().await;
-    let html_arg = "<a href='https://q.io?a=1&b=2'>go</a> 555555";
+    // Block structure keeps the code a standalone token for the renderer.
+    let html_arg = "<p><a href='https://q.io?a=1&b=2'>go</a></p><p>code 555555</p>";
     let r = tool(
         srv.http_addr,
         "swarmail_seed_email",
@@ -345,7 +346,7 @@ async fn seed_with_html_stores_html_and_extracts_at_ingest() {
 #[tokio::test]
 async fn seed_with_both_bodies_stores_html_and_drops_text_over_mcp() {
     let srv = start().await;
-    let html_arg = "<a href='https://m.io'>go</a> 334455";
+    let html_arg = "<p><a href='https://m.io'>go</a></p><p>code 334455</p>";
     let r = tool(
         srv.http_addr,
         "swarmail_seed_email",
@@ -378,10 +379,9 @@ async fn seed_with_both_bodies_stores_html_and_drops_text_over_mcp() {
         "html preserved verbatim: {}",
         email["html"]
     );
-    assert_ne!(
-        email["text"].as_str().unwrap(),
-        "PLAIN https://dropped.io 998877",
-        "the plain body must not be the stored text: {}",
+    assert!(
+        email["text"].is_null(),
+        "html supersedes text: nothing is synthesized (decision 0031 §1): {}",
         email["text"]
     );
 
@@ -411,7 +411,7 @@ async fn the_same_fixture_agrees_across_rest_and_mcp() {
     let fixtures = [
         (
             "parityhtml",
-            r#"{"to": "p@x.io", "subject": "parity", "html": "<a href='https://p.io'>go</a> 778899"}"#,
+            r#"{"to": "p@x.io", "subject": "parity", "html": "<p><a href='https://p.io'>go</a></p><p>code 778899</p>"}"#,
         ),
         (
             "paritytext",

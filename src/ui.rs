@@ -9,8 +9,10 @@
 use crate::api::AppState;
 use axum::Router;
 use axum::extract::{Path, State};
-use axum::response::Html;
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 
 /// The browser half of the live views, embedded at compile time. It contains
 /// no mail data — only wiring — and no `</script>` sequence, so it can be
@@ -39,10 +41,20 @@ fn esc(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// The one security policy for the shell (issue #56). Inline script and
+/// style stay (the script is embedded, the style is a constant above);
+/// `connect-src 'self'` keeps the SSE `EventSource` working; `default-src
+/// 'none'` refuses every other load — and the mail-body preview is a
+/// sandboxed `srcdoc` iframe that inherits this policy container, so a
+/// hostile mail rendered in it cannot beacon the codes it holds to an
+/// attacker URL. One string, one choke point: this template is the one
+/// every UI route flows through.
+const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:";
+
 fn page(title: &str, body: String) -> Html<String> {
     let title = esc(title);
     Html(format!(
-        r#"<!doctype html><html><head><meta charset="utf-8"><title>{title} · Swarmail</title>{STYLE}</head>
+        r#"<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title>{STYLE}</head>
 <body><div class="wrap"><h1>📮 Swarmail</h1><div class="muted">the fastest AI-native mail mock · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div>{body}</div></body></html>"#
     ))
 }
@@ -69,9 +81,13 @@ pub fn router() -> Router<AppState> {
 async fn index(State(state): State<AppState>) -> Html<String> {
     let mut rows = String::new();
     for (name, count) in state.store.inboxes() {
-        let name = esc(&name);
+        // The href is percent-encoded (a `#` or `?` in an inbox name would
+        // otherwise be read as a fragment or query, and `a#b` would link to
+        // `a`); the visible text stays escaped HTML.
+        let href = utf8_percent_encode(&name, NON_ALPHANUMERIC);
+        let label = esc(&name);
         rows.push_str(&format!(
-            r#"<div class="card"><a href="/ui/inbox/{name}"><b>{name}</b></a> <span class="pill">{count} emails</span></div>"#
+            r#"<div class="card"><a href="/ui/inbox/{href}"><b>{label}</b></a> <span class="pill">{count} emails</span></div>"#
         ));
     }
     if rows.is_empty() {
@@ -101,12 +117,18 @@ async fn thread_view(Path((inbox, key)): Path<(String, String)>) -> Html<String>
     )
 }
 
-async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> Html<String> {
+async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(email) = state.store.get(&id) else {
-        return page(
-            "not found",
-            r#"<div class="card">Message not found (pruned or cleared).</div>"#.into(),
-        );
+        // The card body stays for humans; the status stops lying (issue
+        // #56): a missing message answers 404, not a 200 card.
+        return (
+            StatusCode::NOT_FOUND,
+            page(
+                "not found",
+                r#"<div class="card">Message not found (pruned or cleared).</div>"#.into(),
+            ),
+        )
+            .into_response();
     };
     // The html preview renders in a sandboxed iframe (no scripts), its
     // markup escaped into the srcdoc attribute.
@@ -140,15 +162,20 @@ async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> 
         .map(|a| esc(&a.address))
         .unwrap_or_default();
     let to: Vec<String> = email.to.iter().map(|a| esc(&a.address)).collect();
-    let subject = esc(email.subject.as_deref().unwrap_or("(no subject)"));
+    // The subject is escaped exactly once (issue #56): `page` escapes the
+    // title; the `<h2>` below takes the escaped form. Passing the escaped
+    // string through both would render `A &amp;amp; B` for `A & B`.
+    let subject = email.subject.as_deref().unwrap_or("(no subject)");
     page(
-        &subject,
+        subject,
         format!(
-            r#"<h2>{subject}</h2>
+            r#"<h2>{}</h2>
 <div class="card"><b>From:</b> {from} &nbsp; <b>To:</b> {} &nbsp; <b>At:</b> {}</div>
 <h2>codes</h2><div>{codes}</div><h2>links</h2>{links}<h2>html</h2>{html_body}<h2>text</h2>{text_block}"#,
+            esc(subject),
             to.join(", "),
             esc(&email.received_at),
         ),
     )
+    .into_response()
 }

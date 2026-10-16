@@ -207,6 +207,124 @@ async fn deletes_and_clears_survive_a_restart() {
     clean_up(&db);
 }
 
+/// One rule on every path (decision 0032, issue #54): an inbox whose mail
+/// is gone does not exist — a `delete` that empties it and a `clear` both
+/// remove its entry, live and after a reopen, so the listing never carries
+/// an empty shell. The next insert re-mints (0004): no tombstone.
+#[tokio::test]
+async fn an_emptied_inbox_is_absent_from_the_listing_live_and_after_a_reopen() {
+    let db = data_file("emptied-listing");
+    clean_up(&db);
+
+    let srv = serve_data_file(&db).await;
+    let gone = send(&srv, "emptied", "one").await;
+    // `kept` is the inbox that must survive the emptied one's removal.
+    let kept_id = send(&srv, "kept", "two").await;
+
+    // Deleting the only "emptied" mail empties — and removes — the inbox.
+    let (st, _) = common::http_json(
+        srv.http_addr,
+        "DELETE",
+        &format!("/api/v1/messages/{gone}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    // LIVE: the listing carries only the inbox that still holds mail, and
+    // the gauge agrees — no empty entry counts.
+    let names = |inboxes: &serde_json::Value| -> Vec<String> {
+        inboxes
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (st, inboxes) = common::http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(names(&inboxes), vec!["kept".to_string()], "live listing");
+    let (_, metrics) = common::http_get_text(srv.http_addr, "/metrics").await;
+    assert!(metrics.contains("swarmail_inboxes 1"), "{metrics}");
+    // The removal touched nothing else: the other inbox's mail still lives.
+    let (st, _) = common::http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{kept_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "the surviving mail is untouched");
+    // The per-inbox read routes keep their shape for an absent inbox (an
+    // empty list, not a 404): only the *listing* stops naming it.
+    let (st, list) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/emptied/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(list["total"], 0);
+
+    // `clear` follows the same rule — the emptied "kept" goes away too.
+    let (st, _) = common::http_json(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/inboxes/kept/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (_, inboxes) = common::http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert!(
+        inboxes.as_array().unwrap().is_empty(),
+        "the cleared inbox is out of the live listing: {inboxes}"
+    );
+    srv.stop().await;
+
+    // REOPEN: restore mints entries only for inboxes with rows, so the
+    // listing matches the live one — parity, not a restart-only shape.
+    let srv = serve_data_file(&db).await;
+    let (st, inboxes) = common::http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(st, 200);
+    assert!(
+        inboxes.as_array().unwrap().is_empty(),
+        "no empty inbox is restored: {inboxes}"
+    );
+    for name in ["emptied", "kept"] {
+        let (st, list) = common::http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/{name}/messages"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 200);
+        assert_eq!(list["total"], 0, "{name} is gone, not an empty shell");
+    }
+    let (_, metrics) = common::http_get_text(srv.http_addr, "/metrics").await;
+    assert!(metrics.contains("swarmail_inboxes 0"), "{metrics}");
+
+    // No tombstone: a fresh insert re-mints the inbox.
+    let back = send(&srv, "emptied", "again").await;
+    let (st, inboxes) = common::http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(names(&inboxes), vec!["emptied".to_string()]);
+    let (st, list) = common::http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/emptied/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(list["total"], 1);
+    assert_eq!(list["emails"][0]["id"], back.as_str());
+
+    srv.stop().await;
+    clean_up(&db);
+}
+
 /// A long-lived pipelined SMTP sender: one TCP connection (nodelay), each
 /// mail is a single batched write — the server advertises PIPELINING — and
 /// the four replies read back. This keeps ingest in the thousands of mails

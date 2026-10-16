@@ -32,7 +32,10 @@ static CLOSED_PROBE: AtomicU64 = AtomicU64::new(0);
 /// Query filter for list/count/await endpoints.
 #[derive(Debug, Clone, Default)]
 pub struct Filter {
-    /// Substring match against any recipient (to/cc) address, case-insensitive.
+    /// Substring match against any recipient (to/cc/envelope) address,
+    /// case-insensitive. The envelope's RCPT TO list is part of the answer
+    /// (issue #55): a search for a *delivered* recipient must not answer
+    /// zero just because no header row carries the address.
     pub to: Option<String>,
     /// Substring match against the from address, case-insensitive.
     pub from: Option<String>,
@@ -49,8 +52,10 @@ impl Filter {
             let hit = email
                 .to
                 .iter()
-                .chain(email.cc.iter())
-                .any(|a| a.address.to_lowercase().contains(&to));
+                .map(|a| &a.address)
+                .chain(email.cc.iter().map(|a| &a.address))
+                .chain(email.recipients.iter())
+                .any(|a| a.to_lowercase().contains(&to));
             if !hit {
                 return false;
             }
@@ -155,8 +160,8 @@ pub struct Store {
     persist: Option<persist::Persist>,
     /// The shutdown observer (decision 0024): `Some` once the server wired
     /// this store to the runtime's stop watch. The mutation boundary reads
-    /// it at the commit chokepoint; the read is `borrow_and_update()` —
-    /// synchronous and lock-free, so no await ever enters the boundary
+    /// it at the commit chokepoint; the read is `borrow()` — synchronous
+    /// and lock-free, so no await ever enters the boundary
     /// (0014 §1). A store never wired (every unit test, every embedding)
     /// keeps today's behavior exactly: the flag is the boundary's policy
     /// input, not a constructor concern, so `Store::new`'s 46+ call sites
@@ -582,9 +587,9 @@ impl Store {
         // (an id the store handed out is present by construction); when a
         // caller deletes a suffix it invented, it pays for the honesty.
         self.record("delete", |persist| persist.record_delete(id))?;
-        // APPLY, only on Ok: index removal, deque retain and the watcher
-        // release are one unit — the index and the deque can never
-        // disagree.
+        // APPLY, only on Ok: index removal, deque retain, watcher release
+        // and the emptied-entry removal are one unit — the index and the
+        // deque can never disagree.
         let removed = self.index.remove(id);
         if let Some((_, email)) = &removed {
             // Every indexed mail was inserted with its inbox list present
@@ -595,11 +600,23 @@ impl Store {
                 .get_mut(&email.inbox)
                 .expect("indexed mail always has its inbox list");
             list.retain(|e| e.id != id);
-            // An emptied inbox's mail is gone, so its watcher channel is
-            // released with it (decision 0021). Disjoint maps: the inboxes
-            // guard is held, the watchers map is a separate shard set.
-            if list.is_empty() {
+            // One rule on every path (decision 0032): an inbox whose mail is
+            // gone does not exist. `clear`/`clear_all` remove the entry via
+            // `drain_inbox`, a restart drops it (`restore` rebuilds entries
+            // only for inboxes with rows) — so a delete that empties the
+            // list removes it here too, releasing the watcher channel with
+            // it (decision 0021) exactly as the drains do. No tombstone:
+            // the next insert re-mints the entry (0004), and POP3's `USER`
+            // refuses the maildrop like any it never saw.
+            let emptied = list.is_empty();
+            drop(list);
+            if emptied {
                 self.watchers.remove(&email.inbox);
+                // The deque guard is dropped first: `get_mut` holds this
+                // shard's write lock, and a nested `remove` on the same map
+                // — same shard or not — would deadlock against it (the
+                // DashMap reentrancy rule `drain_inbox` is ordered by too).
+                self.inboxes.remove(&email.inbox);
             }
         }
         Ok(removed.is_some())
@@ -1091,6 +1108,69 @@ mod tests {
             "the sweep released the held channel"
         );
     }
+
+    /// One rule on every path (decision 0032, issue #54): a `delete` that
+    /// empties an inbox removes its entry — the listing `inboxes()` serves
+    /// (and POP3's `inbox_exists` follows) — releasing the watcher channel
+    /// with it, exactly as `clear` does via `drain_inbox`. The live store
+    /// and a reopen of the same data file agree: no empty entry is
+    /// restored, and a later insert re-mints the inbox.
+    #[test]
+    fn a_delete_that_empties_an_inbox_removes_the_entry_live_and_after_reopen() {
+        let path = {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            std::env::temp_dir().join(format!(
+                "swarmail-emptied-inbox-{}-{nanos}.db",
+                std::process::id()
+            ))
+        };
+        {
+            let store = Store::open(0, &path).unwrap();
+            let mut rx = store.subscribe("gone");
+            let _ = store.insert(email("e1", "gone", "a@x.io"));
+            let _ = store.insert(email("other", "kept", "a@x.io"));
+            // Drain the buffered pushes so the release below is observable.
+            let _ = rx.try_recv();
+            let _ = store.delete("e1");
+            assert!(
+                matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Closed)),
+                "the emptied inbox's channel is released with the entry"
+            );
+            assert_eq!(
+                store.watcher_count(),
+                0,
+                "no watcher channels survive the emptied inbox"
+            );
+            assert_eq!(
+                store
+                    .inboxes()
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["kept"],
+                "the emptied inbox is out of the listing"
+            );
+            // The next insert re-mints the inbox (0004): no tombstone.
+            let _ = store.insert(email("e2", "gone", "a@x.io"));
+            assert!(store.inboxes().iter().any(|(n, _)| n == "gone"));
+        }
+        {
+            let store = Store::open(0, &path).unwrap();
+            let listing = store.inboxes();
+            let names = listing.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>();
+            assert_eq!(
+                names,
+                vec!["gone", "kept"],
+                "restore rebuilds entries only for inboxes with rows"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
 }
 
 #[cfg(test)]
@@ -1313,6 +1393,40 @@ mod filter_tests {
             ..Default::default()
         };
         assert_eq!(store.count("box", &f), 0);
+    }
+
+    /// The `to` leg answers for every recipient the mail was actually
+    /// delivered to (issue #55): the envelope's RCPT TO list and the cc
+    /// header join the header `to` rows, case-insensitively. A search for a
+    /// *delivered* recipient must not answer zero just because no header
+    /// row carries the address.
+    #[test]
+    fn the_to_filter_matches_header_cc_and_envelope_recipients() {
+        let store = Store::new(0);
+        // RCPT TO:<bcc@x.io> with header `To: a@x.io` — envelope-only.
+        let mut bcc = email("b1", "box", "a@x.io");
+        bcc.recipients = vec!["bcc@x.io".into()];
+        let _ = store.insert(bcc);
+        // A cc header row, absent from the `to` list.
+        let mut cc = email("c1", "box", "a@x.io");
+        cc.cc = vec![crate::model::EmailAddress {
+            name: None,
+            address: "carbon@x.io".into(),
+        }];
+        let _ = store.insert(cc);
+
+        let f = |to: &str| Filter {
+            to: Some(to.into()),
+            ..Default::default()
+        };
+        // The header `to` leg (pre-existing), the cc leg and the envelope
+        // leg each answer their mail; a non-recipient answers none.
+        assert_eq!(store.count("box", &f("a@x.io")), 2);
+        assert_eq!(store.count("box", &f("carbon@x.io")), 1);
+        assert_eq!(store.count("box", &f("bcc@x.io")), 1);
+        assert_eq!(store.count("box", &f("nobody@x.io")), 0);
+        // Case-insensitive, as the header row always was.
+        assert_eq!(store.count("box", &f("BCC@X.IO")), 1);
     }
 
     #[test]

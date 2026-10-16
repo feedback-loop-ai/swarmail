@@ -320,13 +320,53 @@ async fn seed_with_html_runs_the_extraction_pipeline() {
         "POST",
         "/api/v1/inboxes/html/seed",
         Some(
-            r#"{"to": "h@x.io", "subject": "hi", "html": "<a href='https://q.io?a=1&b=2'>go</a> 555555"}"#,
+            // The code sits in its own paragraph — a visible text node the
+            // renderer keeps standalone — and the href's `&amp;` is the
+            // sender's `&`: decoded per URL at ingest (issue #39).
+            r#"{"to": "h@x.io", "subject": "hi", "html": "<p><a href='https://q.io?a=1&amp;b=2'>go</a></p><p>Your code is 555555.</p>"}"#,
         ),
     )
     .await;
     assert_eq!(st, 200);
     assert!(body["html"].as_str().unwrap().contains("https://q.io"));
+    assert_eq!(
+        body["links"][0], "https://q.io?a=1&b=2",
+        "href entities decoded"
+    );
     assert_eq!(body["codes"][0], "555555");
+}
+
+/// The same decode over real SMTP: an `&amp;` and a `&#38;` inside an href
+/// are the sender's `&` (issue #39), decoded per URL at ingest — the seed
+/// route and the SMTP parse path run the same extraction.
+#[tokio::test]
+async fn smtp_html_hrefs_decode_character_references() {
+    let srv = start().await;
+    let mut conn = SmtpConn::connect(srv.smtp_addr).await;
+    conn.send("EHLO swarmail-extract-test").await;
+    conn.reply_multi().await;
+    let plain = "\u{0}amp\u{0}whatever";
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, plain);
+    conn.send(&format!("AUTH PLAIN {b64}")).await;
+    assert!(conn.reply().await.starts_with("235"));
+    conn.send("MAIL FROM:<sender@x.io>").await;
+    assert!(conn.reply().await.starts_with("250"));
+    conn.send("RCPT TO:<amp@x.io>").await;
+    assert!(conn.reply().await.starts_with("250"));
+    let data = "From: sender@x.io\r\nTo: amp@x.io\r\nSubject: refs\r\n\
+                Content-Type: text/html\r\n\r\n\
+                <p><a href='https://q.io?a=1&amp;b=2'>named</a></p>\
+                <p><a href='https://r.io?x=1&#38;y=2'>numeric</a></p>\r\n";
+    let reply = conn.data(data).await;
+    assert!(reply.starts_with("250"), "DATA refused: {reply}");
+
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/amp/messages", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        body["emails"][0]["links"],
+        serde_json::json!(["https://q.io?a=1&b=2", "https://r.io?x=1&y=2"]),
+        "both reference forms decode to the sender's &"
+    );
 }
 
 #[tokio::test]

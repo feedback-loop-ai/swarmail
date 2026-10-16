@@ -27,9 +27,11 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get};
+use mail_parser::decoders::html::html_to_text;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub fn router() -> Router<AppState> {
@@ -37,6 +39,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/messages/{id}/plain", get(message_plain_plural))
         .route("/api/v1/messages/{id}/download", get(message_download))
         .route("/api/v1/delete-all", delete(delete_all))
+        .route("/api/v1/message/latest", get(message_latest))
         .route("/api/v1/message/{id}", get(message_mailpit))
         .route("/api/v1/message/{id}/plain", get(message_plain))
         .route("/api/v1/message/{id}/raw", get(message_raw))
@@ -71,10 +74,13 @@ pub struct SearchParams {
 
 /// Mailpit's delete body: `{"ids": [...]}` — a non-empty list of message
 /// ids is the only selector `DELETE /api/v1/messages` accepts (decision
-/// 0011); anything else is a `400`.
+/// 0011); anything else is a `400`. The alias also accepts the documented
+/// `IDs` spelling (issue #55): upstream Mailpit's Go decoder matches field
+/// names case-insensitively, so Mailpit's own clients send either case.
+/// The rule — a non-empty selector — is untouched; only the spelling.
 #[derive(Debug, Default, Deserialize)]
 pub struct IdsBody {
-    #[serde(default)]
+    #[serde(default, alias = "IDs")]
     pub ids: Vec<String>,
 }
 
@@ -88,17 +94,34 @@ fn page_cap(field: &str, n: usize) -> Result<usize, ApiError> {
     crate::api::checked_page_size(field, n).map_err(crate::api::bad_request)
 }
 
+/// This dialect's own default page: upstream MailHog's `getStartLimit`
+/// default (and Mailpit's) — the shared 100 is the native planes', and
+/// the two dialects must not drift into each other.
+const DEFAULT_PAGE_LIMIT: usize = 50;
+
+/// The page limit, with `0` meaning "unset" (issue #55): upstream answers
+/// the default page for `limit=0`, never an empty one — an empty page
+/// makes a client's "assert nothing arrived" pass vacuously. The 0030 §3
+/// cap still refuses anything above it; a malformed value is README-listed
+/// (axum's own rejection shape).
+fn page_limit(requested: Option<usize>) -> Result<usize, ApiError> {
+    match requested {
+        Some(0) | None => page_cap("limit", DEFAULT_PAGE_LIMIT),
+        Some(n) => page_cap("limit", n),
+    }
+}
+
 /// GET /api/v1/messages — Mailpit's paginated summary envelope.
 pub async fn list_messages_mailpit(
     State(state): State<AppState>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<Value>, ApiError> {
     // The cap is staged before the scan (decision 0030 §3).
-    let limit = page_cap("limit", params.limit.unwrap_or(50))?;
+    let limit = page_limit(params.limit)?;
     let all = scoped(&state, &params.inbox);
     let start = params.start.unwrap_or(0);
     let page: Vec<Arc<Email>> = all.iter().skip(start).take(limit).cloned().collect();
-    Ok(Json(mailpit_envelope(&all, start, &page)))
+    Ok(Json(mailpit_envelope(all.len(), all.len(), start, &page)))
 }
 
 /// GET /api/v1/search — Mailpit's search envelope; empty query is a 400.
@@ -107,25 +130,62 @@ async fn search_mailpit(
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Value>, ApiError> {
     // The cap is staged before the scan (decision 0030 §3).
-    let limit = page_cap("limit", params.limit.unwrap_or(50))?;
+    let limit = page_limit(params.limit)?;
+    // Mailpit's prefix grammar (`to:…`, `from:…`, quoted phrases) is its
+    // own parser — not implemented here. The one prefix the issue names is
+    // refused by name (0025's discipline): a silently empty result is the
+    // plausible-wrong answer, and `?kind=` is the honest route. The rest
+    // of the grammar is README-listed as a known difference.
+    if params
+        .query
+        .as_deref()
+        .is_some_and(|q| q.to_lowercase().starts_with("to:"))
+    {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "unsupported search prefix \"to:\" — Mailpit's prefix grammar is not implemented; use ?kind=to".into(),
+        ));
+    }
     let all = run_search(&state, &params)?;
+    // Mailpit's search envelope reports `total`/`unread` for the whole
+    // mailbox — the unfiltered scope (issue #55) — while the match count
+    // rides `messages_count`. Nothing is ever unread, so `unread` is the
+    // mailbox's own size.
+    let mailbox = scoped(&state, &params.inbox).len();
     let start = params.start.unwrap_or(0);
     let page: Vec<Arc<Email>> = all.iter().skip(start).take(limit).cloned().collect();
-    Ok(Json(mailpit_envelope(&all, start, &page)))
+    Ok(Json(mailpit_envelope(mailbox, all.len(), start, &page)))
 }
 
-fn mailpit_envelope(all: &[Arc<Email>], start: usize, page: &[Arc<Email>]) -> Value {
+/// Mailpit's summary envelope. `mailbox` is the unfiltered scope's count —
+/// upstream fills `total`/`unread` from `storage.StatsGet()`, which knows
+/// the mailbox, not the page. `matches` is the row count this request
+/// matched: the list endpoint reports it as the mailbox's own size, the
+/// search endpoint as the query's hit count (`messages_count`).
+fn mailpit_envelope(mailbox: usize, matches: usize, start: usize, page: &[Arc<Email>]) -> Value {
     json!({
-        "total": all.len(),
+        "total": mailbox,
         // Nothing in swarmail is ever unread — there is no read state.
-        "unread": all.len(),
+        "unread": mailbox,
         "count": page.len(),
-        "messages_count": all.len(),
-        "messages_unread_count": all.len(),
+        "messages_count": matches,
+        "messages_unread_count": matches,
         "start": start,
         "tags": [],
         "messages": page.iter().map(|e| mailpit_summary(e)).collect::<Vec<_>>(),
     })
+}
+
+/// GET /api/v1/message/latest — the newest stored mail in Mailpit's
+/// message shape (issue #55): the route Mailpit's UI lands on before an
+/// id is chosen. 404 only when the store is empty — the honest refusal;
+/// there is no id to fabricate. The newest-first ordering is the store's
+/// own (the same one every listing uses).
+async fn message_latest(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let all = state.store.list_all(&Filter::default());
+    all.first()
+        .map(|email| Json(mailpit_message(email)))
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "message not found".into()))
 }
 
 /// GET /api/v1/message/{id} — Mailpit's full message shape.
@@ -208,7 +268,7 @@ async fn list_messages_hog(
     Query(params): Query<ListParams>,
 ) -> Result<Json<Value>, ApiError> {
     // The cap is staged before the scan (decision 0030 §3).
-    let limit = page_cap("limit", params.limit.unwrap_or(50))?;
+    let limit = page_limit(params.limit)?;
     let all = scoped(&state, &params.inbox);
     let start = params.start.unwrap_or(0);
     let page: Vec<Arc<Email>> = all.iter().skip(start).take(limit).cloned().collect();
@@ -253,15 +313,17 @@ async fn search_hog(
     // map_err below is the one place a bad staging lands, so the envelope
     // stays upstream's bare `400` with no body. The KIND is the dialect's
     // own domain, staged here and not widened by the shared engine:
-    // upstream answers a bare 400 for anything but from|to|containing (an
-    // absent kind is upstream's `containing`), and `subject` — the
-    // swarmail engine's own kind — is not this dialect's contract (0029's
+    // upstream answers a bare 400 for anything but from|to|containing —
+    // including an *absent* kind, whose `""` fails the same whitelist
+    // (MailHog-Server `api/v2.go`, `search()`: `kind != "from" && kind !=
+    // "to" && kind != "containing"` → 400) — and `subject`, the swarmail
+    // engine's own kind, is not this dialect's contract (0029's
     // advertised-domain discipline).
     match params.kind.as_deref() {
-        None | Some("from") | Some("to") | Some("containing") => {}
+        Some("from") | Some("to") | Some("containing") => {}
         _ => return Err(HogRejection::Bare(StatusCode::BAD_REQUEST)),
     }
-    let limit = page_cap("limit", params.limit.unwrap_or(50)).map_err(HogRejection::PageCap)?;
+    let limit = page_limit(params.limit).map_err(HogRejection::PageCap)?;
     let all =
         run_search(&state, &params).map_err(|_| HogRejection::Bare(StatusCode::BAD_REQUEST))?;
     let start = params.start.unwrap_or(0);
@@ -447,6 +509,33 @@ fn mailpit_address(address: Option<&EmailAddress>) -> Value {
     }
 }
 
+/// Mailpit's `Bcc`: the envelope-only recipients (issue #55) — RCPT TO
+/// addresses that appear in neither the To nor the Cc header. Upstream
+/// stores the envelope alongside the headers and fills `Bcc` from it; a
+/// swarmail envelope recipient with no header row is exactly upstream's
+/// Bcc. The comparison is case-insensitive on the address; the order is
+/// the envelope's own; an RCPT TO carries no display name, so the entries
+/// hold only the address.
+fn bcc_only(email: &Email) -> Vec<Value> {
+    let visible: HashSet<String> = email
+        .to
+        .iter()
+        .chain(email.cc.iter())
+        .map(|a| a.address.to_lowercase())
+        .collect();
+    email
+        .recipients
+        .iter()
+        .filter(|r| !visible.contains(&r.to_lowercase()))
+        .map(|r| {
+            mailpit_address(Some(&EmailAddress {
+                name: None,
+                address: r.clone(),
+            }))
+        })
+        .collect()
+}
+
 /// The `Created`/`Date`-style timestamp: swarmail stamps receive time.
 fn date_of(email: &Email) -> String {
     email.received_at.clone()
@@ -454,11 +543,23 @@ fn date_of(email: &Email) -> String {
 
 /// Up to 200 characters of the body, whitespace-collapsed, `...`-suffixed
 /// when truncated — Mailpit's snippet, without the HTML stripping (swarmail
-/// extracts the text part at ingest, so prefer it).
+/// prefers the text part the sender actually sent).
 fn snippet(email: &Email) -> String {
-    // Ingest always populates `text` for html mail, so the snippet never
-    // needs an html fallback.
-    let mut text = email.text.clone().unwrap_or_default();
+    // The stored record is sender-honest (decision 0031 §1): when the sender
+    // sent only an html part there is no `text`, so the snippet renders that
+    // html at display time. That is one of exactly two sanctioned renderings
+    // (decision 0031 §3) — a view for a person reading the list, not a body
+    // to store or extract from: no links or codes are derived here, and
+    // nothing is written back. The render is bounded by the stored body's
+    // own cap (0022).
+    let mut text = match &email.text {
+        Some(text) => text.clone(),
+        None => email
+            .html
+            .as_ref()
+            .map(|h| html_to_text(h))
+            .unwrap_or_default(),
+    };
     text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.chars().count() > 200 {
         let cut: String = text.chars().take(200).collect();
@@ -498,7 +599,7 @@ fn mailpit_summary(email: &Email) -> Value {
                 .collect::<Vec<_>>()
         ),
     );
-    m.insert("Bcc".into(), json!([]));
+    m.insert("Bcc".into(), json!(bcc_only(email)));
     m.insert("ReplyTo".into(), json!([]));
     m.insert(
         "Subject".into(),
@@ -544,7 +645,7 @@ fn mailpit_message(email: &Email) -> Value {
                 .collect::<Vec<_>>()
         ),
     );
-    m.insert("Bcc".into(), json!([]));
+    m.insert("Bcc".into(), json!(bcc_only(email)));
     m.insert("ReplyTo".into(), json!([]));
     // Swarmail records only the header From; Mailpit's Return-Path is the
     // envelope sender, so the closest truthful value is that same address.
@@ -575,12 +676,15 @@ fn mailpit_message(email: &Email) -> Value {
 
 /// MailHog's `Path`: an address split at its domain.
 fn hog_path(address: Option<&EmailAddress>) -> Value {
-    let (mailbox, domain) = match address {
-        None => (String::new(), String::new()),
-        Some(a) => match a.address.rsplit_once('@') {
-            Some((mailbox, domain)) => (mailbox.to_string(), domain.to_string()),
-            None => (a.address.clone(), String::new()),
-        },
+    hog_path_str(address.map(|a| a.address.as_str()).unwrap_or_default())
+}
+
+/// The same split for a bare envelope string — MailHog fills `To` from the
+/// RCPT TO list (issue #55), which carries addresses without display names.
+fn hog_path_str(address: &str) -> Value {
+    let (mailbox, domain) = match address.rsplit_once('@') {
+        Some((mailbox, domain)) => (mailbox.to_string(), domain.to_string()),
+        None => (address.to_string(), String::new()),
     };
     json!({ "Relays": Value::Null, "Mailbox": mailbox, "Domain": domain, "Params": "" })
 }
@@ -637,13 +741,16 @@ fn hog_mime(email: &Email) -> Value {
     }
 }
 
-/// MailHog's data.Message — the v1 list item and v2 search item.
+/// MailHog's data.Message — the v1 list item and v2 search item. `To` and
+/// `Raw.To` hold the *envelope* recipients (issue #55): upstream MailHog
+/// fills them from the RCPT TO list, while the header rows stay in
+/// `Content.Headers`.
 fn hog_message(email: &Email) -> Value {
     let mime = hog_mime(email);
     json!({
         "ID": email.id,
         "From": hog_path(email.from.as_ref()),
-        "To": email.to.iter().map(|a| hog_path(Some(a))).collect::<Vec<_>>(),
+        "To": email.recipients.iter().map(|r| hog_path_str(r)).collect::<Vec<_>>(),
         "Content": {
             "Headers": hog_headers(email),
             // The body as a client displays it: the text part, else the HTML.
@@ -655,7 +762,7 @@ fn hog_message(email: &Email) -> Value {
         "MIME": mime,
         "Raw": {
             "From": email.from.as_ref().map(|a| a.address.clone()).unwrap_or_default(),
-            "To": email.to.iter().map(|a| a.address.clone()).collect::<Vec<_>>(),
+            "To": email.recipients.clone(),
             "Data": String::from_utf8_lossy(&email.raw),
             // Swarmail does not record the EHLO name.
             "Helo": "",
@@ -681,9 +788,19 @@ fn joined(list: &[EmailAddress]) -> String {
 
 /// The text body as text/plain, falling back to the HTML for html-only mail.
 fn plain_response(email: &Email) -> Response {
-    // Ingest always populates `text` for html mail (mailparse extracts the
-    // text view at ingest), so the plain shim never needs an html fallback.
-    let body = email.text.clone().unwrap_or_default();
+    // The stored record is sender-honest (decision 0031 §1): the shim serves
+    // the text part when the sender sent one, and for html-only mail renders
+    // the html at display time — the second sanctioned rendering (decision
+    // 0031 §3), derived at request time from the stored body (bounded by
+    // 0022), never written back and never fed to extraction.
+    let body = match &email.text {
+        Some(text) => text.clone(),
+        None => email
+            .html
+            .as_ref()
+            .map(|h| html_to_text(h))
+            .unwrap_or_default(),
+    };
     ([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
 }
 
@@ -799,8 +916,12 @@ mod tests {
         m.text = Some("a\n b\t  c".into());
         assert_eq!(snippet(&m), "a b c");
 
-        // Ingest always populates `text` for html mail, so an absent text
-        // part means there was no body at all: the snippet is empty.
+        // Sender-honest storage (decision 0031 §1): an html-only mail has no
+        // `text`, so the snippet renders it (decision 0031 §3) — and a mail
+        // with neither body still has an empty snippet.
+        let mut m = mail();
+        m.html = Some("<p>the rendered body</p>".into());
+        assert_eq!(snippet(&m), "the rendered body");
         assert_eq!(snippet(&mail()), "");
     }
 

@@ -206,7 +206,11 @@ async fn mailpit_search_supports_each_kind_and_scopes() {
     )
     .await;
 
-    // Containing: found in the extracted text part.
+    // Upstream fills Mailpit's `total`/`unread` from the mailbox stats
+    // (`storage.StatsGet()`), not from the result page (issue #55): the
+    // store here is five mails (three alpha, two beta), so even a
+    // one-hit search reports total/unread five. The match count rides
+    // `messages_count`/`messages_unread_count`.
     let (status, body) = http_json(
         s.http_addr,
         "GET",
@@ -215,7 +219,14 @@ async fn mailpit_search_supports_each_kind_and_scopes() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(body["total"], 1);
+    assert_eq!(body["total"], 5, "total is the mailbox, not the page");
+    assert_eq!(body["unread"], 5);
+    assert_eq!(
+        body["messages_count"], 1,
+        "the match count rides messages_count"
+    );
+    assert_eq!(body["messages_unread_count"], 1);
+    assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
     assert_eq!(body["messages"][0]["Subject"], "Alpha new");
 
     // Containing: found in a recipient address.
@@ -227,13 +238,15 @@ async fn mailpit_search_supports_each_kind_and_scopes() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(body["total"], 1);
+    assert_eq!(body["total"], 5);
+    assert_eq!(body["messages_count"], 1);
     assert_eq!(body["messages"][0]["ID"], cc_id.as_str());
 
     // kind=to / kind=from / kind=subject ride the store filter: substring
     // matching against the extracted addresses and subject, scoped here to
-    // the alpha inbox.
-    async fn total_of(addr: SocketAddr, query: &str) -> (u16, Value) {
+    // the alpha inbox — whose mailbox total is three, reported even for
+    // queries that match nothing (issue #55).
+    async fn totals_of(addr: SocketAddr, query: &str) -> (u16, Value, Value) {
         let (status, body) = http_json(
             addr,
             "GET",
@@ -241,9 +254,13 @@ async fn mailpit_search_supports_each_kind_and_scopes() {
             None,
         )
         .await;
-        (status, body["total"].clone())
+        (
+            status,
+            body["total"].clone(),
+            body["messages_count"].clone(),
+        )
     }
-    for (query, expected, what) in [
+    for (query, matches, what) in [
         ("kind=to&query=rcpt", 3, "every alpha recipient matches"),
         ("kind=to&query=nobody", 0, "no such recipient"),
         ("kind=from&query=sender", 3, "every alpha sender matches"),
@@ -255,16 +272,18 @@ async fn mailpit_search_supports_each_kind_and_scopes() {
             "subject match is case-insensitive",
         ),
     ] {
-        let (status, total) = total_of(s.http_addr, query).await;
+        let (status, total, messages_count) = totals_of(s.http_addr, query).await;
         assert_eq!(status, 200, "{what}");
-        assert_eq!(total, expected, "{what} ({query})");
+        assert_eq!(total, 3, "total is the alpha mailbox ({query})");
+        assert_eq!(messages_count, matches, "{what} ({query})");
     }
 
     // A kind-less Mailpit search defaults to containing.
     let (status, body) =
         http_json(s.http_addr, "GET", "/api/v1/search?query=alpha+one", None).await;
     assert_eq!(status, 200);
-    assert_eq!(body["total"], 1);
+    assert_eq!(body["total"], 5);
+    assert_eq!(body["messages_count"], 1);
     assert_eq!(body["messages"][0]["Subject"], "Alpha old");
 
     // kind=subject is not a MailHog kind — Mailpit accepts it, the v2 shape
@@ -522,11 +541,16 @@ async fn mailhog_v2_lists_and_searches_with_upstream_shapes() {
     assert_eq!(status, 200);
     assert_eq!(body["total"], 2);
 
-    // A kind-less v2 search defaults to containing too.
-    let (status, body) = http_json(s.http_addr, "GET", "/api/v2/search?query=beta+two", None).await;
-    assert_eq!(status, 200);
-    assert_eq!(body["total"], 1);
-    assert_eq!(body["items"][0]["ID"], b2.as_str());
+    // Upstream's search() whitelist rejects an absent kind exactly like an
+    // unknown one (issue #55): there is no default on this plane — MailHog's
+    // api/v2.go answers 400 unless the kind is present and one of
+    // from/to/containing. The v1 Mailpit plane keeps its default (pinned in
+    // mailpit_search_supports_each_kind_and_scopes).
+    let (status, headers, body) =
+        http_raw(s.http_addr, "GET", "/api/v2/search?query=beta+two", None).await;
+    assert_eq!(status, 400, "an absent kind is a bare 400, not a default");
+    assert!(body.is_empty(), "an absent kind must be a bare 400");
+    assert!(header_value(&headers, "content-length").is_some());
 
     // Upstream answers a bare 400 — no body, no message — for a bad kind or
     // an empty query. `subject` is the swarmail engine's own kind and is
@@ -1123,7 +1147,10 @@ async fn the_shim_pages_refuse_over_the_cap_and_honor_the_boundary() {
     )
     .await;
     assert_eq!(st, 200, "{body}");
-    assert_eq!(body["total"], 2);
+    // Mailpit's search total is the mailbox (issue #55): the whole store
+    // here is four mails; the two "alpha" hits ride messages_count.
+    assert_eq!(body["total"], 4);
+    assert_eq!(body["messages_count"], 2);
     let (st, body) = http_json(s.http_addr, "GET", "/api/v2/messages?limit=250", None).await;
     assert_eq!(st, 200, "{body}");
     assert_eq!(body["total"], 4);
@@ -1137,4 +1164,230 @@ async fn the_shim_pages_refuse_over_the_cap_and_honor_the_boundary() {
     .await;
     assert_eq!(st, 200, "{body}");
     assert_eq!(body["total"], 2);
+}
+
+/// The `IDs` spelling is the same selector (issue #55): upstream Mailpit's
+/// Go decoder matches field names case-insensitively, so its own clients
+/// send either case. The rule — a non-empty selector — is untouched, so the
+/// alias deletes exactly the named mails and a wrong-typed `IDs` still
+/// refuses with 0011's sentence.
+#[tokio::test]
+async fn the_ids_alias_deletes_and_a_wrong_typed_one_still_refuses() {
+    let s = start().await;
+    let (a1, a2, _, _) = seed(&s).await;
+
+    // The alias, capital: exactly the named mail goes.
+    let payload = json!({"IDs": [a1]}).to_string();
+    let (status, _, raw) = http_raw(
+        s.http_addr,
+        "DELETE",
+        "/api/v1/messages",
+        Some(("application/json", &payload)),
+    )
+    .await;
+    assert_eq!(status, 200, "{:?}", String::from_utf8_lossy(&raw));
+    let removed: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(removed, json!({"removed": 1}));
+    let (status, _) = http_json(s.http_addr, "GET", &format!("/api/v1/messages/{a1}"), None).await;
+    assert_eq!(status, 404, "the aliased delete must have removed it");
+    let (status, _) = http_json(s.http_addr, "GET", &format!("/api/v1/messages/{a2}"), None).await;
+    assert_eq!(status, 200, "nothing else was touched");
+
+    // A wrong-typed `IDs` is still a refusal: the alias changes the
+    // spelling, never the rule.
+    for body in [
+        Some(("application/json", r#"{"IDs": "alpha one"}"#)),
+        Some(("application/json", r#"{"IDs": []}"#)),
+    ] {
+        let (status, _, raw) = http_raw(s.http_addr, "DELETE", "/api/v1/messages", body).await;
+        assert_eq!(status, 400, "{body:?} must refuse");
+        let refused: Value = serde_json::from_slice(&raw).unwrap();
+        assert!(
+            refused["error"].as_str().unwrap().contains("ids"),
+            "the 400 names the contract: {refused}"
+        );
+    }
+    assert_eq!(
+        inbox_counts(&s).await,
+        (1, 2),
+        "the refusals deleted nothing"
+    );
+}
+
+/// The envelope's RCPT TO is part of the answer (issue #55): a mail
+/// delivered to `bcc@x.io` with header `To: a@x.io` is searchable by kind=to,
+/// surfaces the envelope in MailHog's `To`/`Raw.To`, becomes Mailpit's `Bcc`
+/// (envelope-only), and the header rows stay in `Content.Headers`.
+#[tokio::test]
+async fn an_envelope_only_recipient_surfaces_in_every_compat_shape() {
+    let s = start().await;
+    let mut conn = SmtpConn::connect(s.smtp_addr).await;
+    conn.send("EHLO swarmail-bcc-test").await;
+    conn.reply_multi().await;
+    let plain = "\u{0}gamma\u{0}whatever";
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, plain);
+    conn.send(&format!("AUTH PLAIN {b64}")).await;
+    assert!(conn.reply().await.starts_with("235"));
+    conn.send("MAIL FROM:<sender@x.io>").await;
+    assert!(conn.reply().await.starts_with("250"));
+    // The envelope names a recipient no header row carries.
+    conn.send("RCPT TO:<bcc@x.io>").await;
+    assert!(conn.reply().await.starts_with("250"));
+    let data = "From: sender@x.io\r\nTo: a@x.io\r\nSubject: bcc leg\r\n\r\nthe body\r\n";
+    let reply = conn.data(data).await;
+    assert!(reply.starts_with("250"), "DATA refused: {reply}");
+    let id = reply
+        .split_whitespace()
+        .last()
+        .unwrap()
+        .trim_end_matches('.')
+        .to_string();
+
+    // kind=to answers for the delivered recipient.
+    let (status, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v2/search?kind=to&query=bcc@x.io",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    // The fixture delivers exactly one mail to a fresh server, so the
+    // count is exact (0010's discipline): a dropped or duplicated mail
+    // must declare itself, never hide behind "at least one".
+    assert_eq!(
+        body["total"].as_u64().unwrap(),
+        1,
+        "exactly the delivered mail is searchable: {body}"
+    );
+    assert_eq!(
+        body["items"].as_array().map(Vec::len),
+        Some(1),
+        "exactly one item is returned: {body}"
+    );
+    assert_eq!(body["items"][0]["ID"], id.as_str());
+
+    // MailHog's `To`/`Raw.To` hold the envelope; the header row stays in
+    // Content.Headers.
+    let hog = &body["items"][0];
+    assert_eq!(hog["To"][0]["Mailbox"], "bcc");
+    assert_eq!(hog["To"][0]["Domain"], "x.io");
+    assert_eq!(hog["Raw"]["To"], json!(["bcc@x.io"]));
+    assert_eq!(hog["Content"]["Headers"]["To"], json!(["a@x.io"]));
+
+    // Mailpit's `Bcc` is exactly the envelope-only recipient, and `To`
+    // keeps the header row.
+    let (status, body) =
+        http_json(s.http_addr, "GET", &format!("/api/v1/message/{id}"), None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["Bcc"], json!([{ "address": "bcc@x.io" }]));
+    assert_eq!(body["To"], json!([{ "address": "a@x.io" }]));
+    assert_eq!(body["Cc"], json!([]));
+}
+
+/// `limit=0` pages the default (never an empty one) on all four compat
+/// surfaces (issue #55): upstream answers its default page for an unset
+/// limit, and `0` — MailHog's `getStartLimit` treats it as unset — is the
+/// same. Fifty-one mails in one inbox prove the default is exactly the
+/// dialect's 50, not merely non-empty. The 0030 §3 cap above 250 is pinned
+/// in the_shim_pages_refuse_over_the_cap_and_honor_the_boundary.
+#[tokio::test]
+async fn a_zero_limit_pages_the_default_on_every_compat_surface() {
+    let s = start().await;
+    for n in 0..51 {
+        smtp_send(
+            s.smtp_addr,
+            Some("zero"),
+            "sender@x.io",
+            "rcpt@x.io",
+            "zmail",
+            &format!("zbody {n}"),
+        )
+        .await
+        .unwrap();
+    }
+
+    // Mailpit list: a 51-mail mailbox pages 50 under the default.
+    let (st, body) = http_json(s.http_addr, "GET", "/api/v1/messages?limit=0", None).await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["total"], 51);
+    assert_eq!(
+        body["count"], 50,
+        "limit=0 pages the default, not an empty page"
+    );
+    // Mailpit search.
+    let (st, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/search?kind=subject&query=zmail&limit=0",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["messages_count"], 51);
+    assert_eq!(body["count"], 50);
+    // MailHog v2 list.
+    let (st, body) = http_json(s.http_addr, "GET", "/api/v2/messages?limit=0", None).await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["total"], 51);
+    assert_eq!(body["count"], 50);
+    // MailHog v2 search.
+    let (st, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v2/search?kind=containing&query=zbody&limit=0",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["total"], 51);
+    assert_eq!(body["count"], 50);
+}
+
+/// `GET /api/v1/message/latest` is Mailpit's newest-mail route (issue #55):
+/// the full message shape over the newest stored mail, and a 404 only when
+/// the store is empty — never a fabricated id.
+#[tokio::test]
+async fn the_latest_route_serves_the_newest_mail_and_404s_an_empty_store() {
+    let s = start().await;
+    // The empty store refuses first: no id exists to serve.
+    let (status, body) = http_json(s.http_addr, "GET", "/api/v1/message/latest", None).await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(body["error"], "message not found");
+
+    let (a1, a2, b1, b2) = seed(&s).await;
+    let (status, body) = http_json(s.http_addr, "GET", "/api/v1/message/latest", None).await;
+    assert_eq!(status, 200, "{body}");
+    // Mailpit's full message shape, and the newest mail of the whole store.
+    assert_eq!(body["ID"], b2.as_str());
+    for field in ["Text", "HTML", "Subject", "From", "ReturnPath", "Date"] {
+        assert!(body.get(field).is_some(), "the shape carries {field}");
+    }
+    for stale in [&a1, &a2, &b1] {
+        assert_ne!(body["ID"], stale.as_str());
+    }
+}
+
+/// Mailpit's search `total`/`unread` are mailbox stats, not the result
+/// page's size (issue #55) — pinned against both scopes in
+/// mailpit_search_supports_each_kind_and_scopes; this leg pins the
+/// `to:`-prefix refusal (issue #55/0025): a named 400, never a silently
+/// empty result a client would read as "nothing arrived".
+#[tokio::test]
+async fn a_to_prefixed_query_is_refused_by_name() {
+    let s = start().await;
+    seed(&s).await;
+    let (status, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/search?query=to:rcpt@x.io",
+        None,
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        body["error"],
+        "unsupported search prefix \"to:\" — Mailpit's prefix grammar is not implemented; use ?kind=to",
+        "the refusal names the prefix and the honest route: {body}"
+    );
 }

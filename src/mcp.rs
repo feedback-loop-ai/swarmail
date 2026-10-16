@@ -415,8 +415,10 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
             let links = email.links.clone();
             let codes = email.codes.clone();
             // A failed commit refuses (decision 0012): an `isError` result
-            // with the fixed text — the same vocabulary as a refused fixture —
-            // while the refused mail stays queryable in memory.
+            // with the fixed text — the same vocabulary as a refused
+            // fixture. The refusal leaves no trace (decision 0014 §3): the
+            // mail never entered memory, so it is queryable through no
+            // surface.
             match store.clone().insert_async(email).await {
                 Ok(_) => Ok(text_result(
                     json!({ "id": id, "links": links, "codes": codes }),

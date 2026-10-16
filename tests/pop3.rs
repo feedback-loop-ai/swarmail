@@ -743,10 +743,11 @@ async fn pass_rechecks_the_mailbox_before_snapshotting() {
 }
 
 #[tokio::test]
-async fn an_emptied_maildrop_is_reported_as_empty() {
+async fn an_emptied_maildrop_is_refused_like_a_never_seen_one() {
     let s = start().await;
     let id = deliver(&s, "emptied", "One", "first").await;
-    // Deleting the only mail leaves the inbox in place, now empty.
+    // Deleting the only mail removes the inbox itself (decision 0032,
+    // issue #54): no empty shell survives the delete.
     let (status, _) = http_json(
         s.http_addr,
         "DELETE",
@@ -756,16 +757,118 @@ async fn an_emptied_maildrop_is_reported_as_empty() {
     .await;
     assert_eq!(status, 200);
 
+    // The maildrop is gone, so USER refuses it — and the refusal is byte
+    // for byte the one a never-minted name gets, in the same session.
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    let vanished = c.cmd("USER emptied").await;
+    assert_eq!(
+        vanished,
+        c.cmd("USER never-minted").await,
+        "a vanished maildrop answers exactly like a never-seen one"
+    );
+    assert_eq!(vanished, "-ERR no such mailbox");
+    // Without a valid USER the transaction phase stays unreachable.
+    assert_eq!(c.cmd("PASS ignored").await, "-ERR USER required first");
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+
+    // No tombstone: the next delivery re-mints the maildrop (0004).
+    deliver(&s, "emptied", "Back", "again").await;
     let mut c = Pop3::connect(s.pop3_addr).await;
     c.login("emptied").await;
-    assert_eq!(c.cmd("PASS ignored").await, "-ERR already authenticated");
-    assert_eq!(c.cmd("STAT").await, "+OK 0 0");
-    assert_eq!(c.cmd("LIST").await, "+OK 0 messages (0 octets)");
-    assert_eq!(c.data().await, "");
-    assert_eq!(c.cmd("UIDL").await, "+OK");
-    assert_eq!(c.data().await, "");
-    assert_eq!(c.cmd("LIST 1").await, "-ERR no such message");
+    assert!(c.cmd("STAT").await.starts_with("+OK 1 "));
     assert!(c.cmd("QUIT").await.starts_with("+OK"));
+}
+
+/// A maildrop can vanish between USER and PASS: another client's delete
+/// removed the inbox — with it, the only mail — before the handshake
+/// finished. PASS re-checks and refuses, with the same words USER would
+/// answer now that the name names nothing (issue #54's one rule).
+#[tokio::test]
+async fn a_maildrop_vanished_between_user_and_pass_is_refused_at_pass() {
+    let s = start().await;
+    let id = deliver(&s, "vanish", "One", "first").await;
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    assert_eq!(c.cmd("USER vanish").await, "+OK name is a valid mailbox");
+    // The inbox goes away mid-handshake (decision 0032: the emptied entry
+    // is removed, not emptied in place).
+    let (status, _) = http_json(
+        s.http_addr,
+        "DELETE",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(c.cmd("PASS ignored").await, "-ERR no such mailbox");
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+}
+
+/// The refusal holds on a reopened store too (issue #54): an emptied
+/// maildrop leaves no row, so restore mints no entry and POP3 refuses the
+/// name across the restart — while a name that still holds mail is served.
+#[tokio::test]
+async fn a_vanished_maildrop_is_refused_after_a_reopen_too() {
+    let db = std::env::temp_dir().join(format!(
+        "swarmail-e2e-pop3-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
+
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let gone = deliver(&srv, "gone", "One", "first").await;
+    let kept = deliver(&srv, "kept", "Two", "second").await;
+    // Deleting the only "gone" mail empties — and removes — that inbox.
+    let (status, _) = http_json(
+        srv.http_addr,
+        "DELETE",
+        &format!("/api/v1/messages/{gone}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (status, _) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{kept}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "the other inbox is untouched");
+    srv.stop().await;
+
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let mut c = Pop3::connect(srv.pop3_addr).await;
+    let vanished = c.cmd("USER gone").await;
+    assert_eq!(
+        vanished,
+        c.cmd("USER never-minted").await,
+        "a reopened store refuses the emptied maildrop like a never-seen one"
+    );
+    assert_eq!(vanished, "-ERR no such mailbox");
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+    // The surviving inbox is still served after the restart.
+    let mut c = Pop3::connect(srv.pop3_addr).await;
+    c.login("kept").await;
+    assert!(c.cmd("STAT").await.starts_with("+OK 1 "));
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
+    }
 }
 
 #[tokio::test]
