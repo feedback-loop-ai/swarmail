@@ -69,9 +69,16 @@ function paint(threads) {
   }
 }
 
+// The newest frame wins: the SSE listener bumps the token, and a `load()`
+// response that resolves after one abandons its paint instead of painting
+// over newer mail. A client-side token is the whole race.
+let paintSeq = 0;
+
 async function load() {
+  const seen = paintSeq;
   const response = await fetch(threadKey ? api('threads/' + encodeURIComponent(threadKey)) : api('threads'));
   const body = await response.json();
+  if (seen !== paintSeq) return;
   if (!response.ok) {
     view.replaceChildren(el('div', 'card muted', body.error || 'not found'));
     return;
@@ -85,6 +92,7 @@ load();
 // page never polls and never needs a manual refresh.
 const feed = new EventSource(api('feed'));
 feed.addEventListener('threads', (event) => {
+  paintSeq++;
   const threads = JSON.parse(event.data);
   paint(threadKey ? threads.filter((thread) => thread.key === threadKey) : threads);
 });

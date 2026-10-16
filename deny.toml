@@ -1,22 +1,30 @@
 # License compliance for the dependency tree — the control decision 0006
 # claims. cargo-deny checks every crate in Cargo.lock against this
 # allowlist; anything outside it fails CI. Permissive only, in the spirit
-# of the dual license: openness that imposes nothing.
+# of the dual license: openness that imposes nothing. The list mirrors the
+# house rules' named allowances; anything beyond them is a genuine,
+# commented need recorded for the operator (see the run-11 operator notes).
 [licenses]
 allow = [
   "MIT",
   "Apache-2.0",
-  "Apache-2.0 WITH LLVM-exception",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "ISC",
+  # Named by the house rules, though nothing in the tree is Zlib today —
+  # the allowance stays so a Zlib dependency does not need a widen.
   "Zlib",
   "Unicode-3.0",
-  "CC0-1.0",
+  # Data under CC BY 4.0 (the house rules name it for data): code remains
+  # dual-licensed, but a crate may ship its tables under CC BY 4.0 — e.g.
+  # a Unicode data bundle — and that is permissive enough to allow.
+  "CC-BY-4.0",
   # webpki-roots — Mozilla's root CA bundle shipped as data; CDLA-Permissive-2.0
   # is the permissive flavor of the data license family (no copyleft, no
   # field-of-use restriction) and the only license under which rustls
-  # distributes the offline trust store.
+  # distributes the offline trust store. The house rules do not name it:
+  # the tree's rustls-tls leg genuinely needs it, so the allowance is
+  # recorded in the run's operator notes rather than silently widened.
   "CDLA-Permissive-2.0",
 ]
 

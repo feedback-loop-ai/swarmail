@@ -300,6 +300,15 @@ BLOB today.
   alias, not an upstream route). The two resolved items (staged kind
   domain, page caps) are not re-litigated.
 
+  **Addendum (implement seat, 2026-10-16).** The feature file's account
+  of the staged kind domain said "an absent kind is upstream's
+  `containing` default". Upstream answers a bare 400 for a missing kind
+  too — MailHog-Server `api/v2.go`, `search()`: the whitelist
+  `kind != "from" && kind != "to" && kind != "containing"` rejects the
+  empty string before the query is read (the v1 API has no search
+  route). Amended: `search_hog` requires `kind` present and one of
+  from|to|containing; `kind=subject`'s bare 400 is unchanged.
+
 ### #56 — threads + web UI — `src/threads.rs`, `src/ui.rs`, `src/static/ui.js`
 
 - **D1 — normalization: markers and Unicode case.** `strip_marker` gains

@@ -96,12 +96,14 @@ async fn main() {
                 Ok(server) => {
                     tracing::info!(
                         smtp = %server.smtp_addr,
+                        pop3 = %server.pop3_addr,
                         http = %server.http_addr,
-                        "Swarmail is up — SMTP on :{}, API/UI on http://{}",
+                        "Swarmail is up — SMTP on :{}, POP3 on :{}, API/UI on http://{}",
                         server.smtp_addr.port(),
+                        server.pop3_addr.port(),
                         server.http_addr
                     );
-                    // Serve until interrupted, then stop both servers gracefully.
+                    // Serve until interrupted, then stop the servers gracefully.
                     let _ = interrupted_rx.changed().await;
                     tracing::info!("shutting down");
                     server.stop().await;

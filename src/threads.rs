@@ -100,15 +100,22 @@ pub fn normalize_subject(subject: Option<&str>) -> Option<String> {
 }
 
 /// One leading reply/forward marker, ASCII case-insensitive: `Re:`, `Fw:`,
-/// `Fwd:` (a bare word or `Re[2]:` is left alone).
+/// `Fwd:`, `Aw:` — tolerating whitespace between the word and the colon
+/// (`RE : Plan`, a mailer convention). A bare word or a numbered `Re[2]:`
+/// is left alone: anything non-whitespace between word and colon ends the
+/// marker.
 fn strip_marker(subject: &str) -> Option<&str> {
     let bytes = subject.as_bytes();
     let word_end = bytes.iter().position(|b| !b.is_ascii_alphabetic())?;
-    if bytes[word_end] != b':' {
+    let colon = bytes[word_end..]
+        .iter()
+        .position(|b| *b == b':')
+        .map(|i| word_end + i)?;
+    if !bytes[word_end..colon].iter().all(u8::is_ascii_whitespace) {
         return None;
     }
     match subject[..word_end].to_ascii_lowercase().as_str() {
-        "re" | "fw" | "fwd" => Some(subject[word_end + 1..].trim_start()),
+        "re" | "fw" | "fwd" | "aw" => Some(subject[colon + 1..].trim_start()),
         _ => None,
     }
 }
@@ -155,8 +162,12 @@ impl Components {
 }
 
 /// The node an email itself hangs from: its own message id when it has one,
-/// else its In-Reply-To, else its first reference, else its (case-folded)
-/// normalized subject, else the mail's own id (a thread of exactly one).
+/// else its In-Reply-To, else its first reference, else its
+/// (Unicode-lowercased) normalized subject, else the mail's own id (a
+/// thread of exactly one). The fold is `str::to_lowercase()` — one-thread
+/// grouping across scripts (`Über`/`über`); the named residual is that
+/// lowercase mapping is not full case folding, so `ß` and `ss` do not
+/// merge (no ICU, no folding crate).
 fn thread_node(email: &Email) -> String {
     if let Some(id) = &email.message_id {
         return format!("id:{id}");
@@ -168,7 +179,7 @@ fn thread_node(email: &Email) -> String {
         return format!("id:{first}");
     }
     if let Some(subject) = normalize_subject(email.subject.as_deref()) {
-        return format!("subject:{}", subject.to_ascii_lowercase());
+        return format!("subject:{}", subject.to_lowercase());
     }
     format!("mail:{}", email.id)
 }
@@ -344,6 +355,36 @@ mod tests {
         );
         // A bare word with no colon is not a marker.
         assert_eq!(normalize_subject(Some("Rewrite")), Some("Rewrite".into()));
+    }
+
+    #[test]
+    fn the_aw_marker_and_a_padded_colon_strip() {
+        // The German convention `Aw:` and a whitespace-padded `RE :` are
+        // markers too; the numbered variant and a foreign word are not.
+        assert_eq!(normalize_subject(Some("AW: Plan")), Some("Plan".into()));
+        assert_eq!(normalize_subject(Some("RE : Plan")), Some("Plan".into()));
+        assert_eq!(normalize_subject(Some("aw :\tX")), Some("X".into()));
+        assert_eq!(
+            normalize_subject(Some("Aw[2]: Plan")),
+            Some("Aw[2]: Plan".into())
+        );
+        assert_eq!(
+            normalize_subject(Some("Auto: Plan")),
+            Some("Auto: Plan".into())
+        );
+    }
+
+    #[test]
+    fn the_subject_fallback_folds_unicode_case() {
+        // `Über`/`über` land in one thread. The doc comment names the
+        // residual: lowercase mapping is not full folding, so `ß` vs `ss`
+        // do not merge.
+        let threads = group(vec![
+            mail("u1", Some("Über Plan"), 100),
+            mail("u2", Some("aw: über plan"), 200),
+        ]);
+        assert_eq!(threads.len(), 1, "Unicode case folds: {threads:?}");
+        assert_eq!(ids_of(&threads[0]), ["u1", "u2"]);
     }
 
     #[test]

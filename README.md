@@ -207,9 +207,13 @@ Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `127.0.0.1:1025`),
 `SWARMAIL_POP3_LISTEN` (`127.0.0.1:1110`), `SWARMAIL_HTTP_LISTEN`
 (`127.0.0.1:8025` — the image and the chart set `0.0.0.0`, see the
 posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
-`SWARMAIL_URL` (the MCP stdio bridge's upstream),
+`SWARMAIL_URL` (the MCP stdio bridge's upstream, default
+`http://127.0.0.1:8025`),
 `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
 `SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
+Logging: `RUST_LOG` (env-filter syntax — `serve` logs to stdout, every
+other subcommand to stderr so its stdout stays protocol-clean; default
+`swarmail=info,tower_http=off`).
 
 ## Kubernetes (Helm)
 
@@ -381,29 +385,43 @@ test suites actually hit, answered from one store:
 | Endpoint | Behavior |
 |---|---|
 | `GET /api/v1/messages` | Mailpit's summary envelope, newest first; `?inbox=` scopes, `?limit=`/`?start=` page |
-| `GET /api/v1/message/{id}` | Mailpit's full message shape (`Text`, `HTML`, `ReturnPath`, …) |
+| `GET /api/v1/message/{id}` | Mailpit's full message shape (`Text`, `HTML`, `ReturnPath`, …); `GET /api/v1/message/latest` is the same shape over the newest stored mail (404 only when the store is empty) |
 | `GET /api/v1/message/{id}/plain`, `GET /api/v1/messages/{id}/plain` | the extracted text part as `text/plain; charset=utf-8` |
 | `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete — the named ids and nothing else; every other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that deletes nothing |
 | `DELETE /api/v1/delete-all` | MailHog's wipe alias |
 | `GET /api/v1/search` | Mailpit search: `kind=from\|to\|subject\|containing`, `?query=` required |
 | `GET /api/v2/messages` | MailHog v2 `{total, count, start, items}` with `data.Message` shapes |
-| `GET /api/v2/search` | MailHog search: `kind=from\|to\|containing`; a bare `400` on an unknown kind |
+| `GET /api/v2/search` | MailHog search: `kind=from\|to\|containing` present and one of the three, as upstream requires; a bare `400` on an unknown kind, an absent kind or an empty query; `?limit=`/`?start=` page |
 | `GET /api/v1/messages/{id}/download`, `GET /api/v1/message/{id}/raw` | the RFC 5322 source as `message/rfc822` |
 
 **Deliberate omissions** — swarmail has no counterpart and a shim would
 lie: attachments and inline images (the fields exist, the arrays are
 empty), read/unread state, tags (always `[]`), the send API (mail arrives
 by SMTP), Mailpit's `mime/part` routes, and the `to:`-style query prefixes
-(swarmail takes `kind=`). swarmail's own single-message route is
+(a Mailpit search whose query carries a `to:` prefix answers a named
+`400` — the prefix grammar is not implemented; swarmail takes `kind=`).
+swarmail's own single-message route is
 `/api/v1/messages/{id}`; the Mailpit-style singular `/api/v1/message/{id}`
 is the shim.
+
+**Known differences** — the shapes are close but not byte-identical, and
+the divergence is the honest part: a malformed `limit=`/`start=` answers
+axum's plain-text `400` (not Mailpit's JSON error envelope — matching it
+means a custom query extractor for one status-code shape);
+`/api/v1/delete-all` is swarmail's alias, not an upstream route name; and
+the Mailpit search envelope carries `messages_count`/`messages_unread_count`
+where upstream Mailpit spells the latter `messages_unread` — the count
+semantics match (mailbox `total`/`unread`, match-scoped `messages_*`), the
+field name is swarmail's.
 
 ### Threads and the live UI
 
 `GET /api/v1/inboxes/{inbox}/threads` groups the inbox into conversations —
 References/In-Reply-To/Message-ID chains when they resolve, the normalized
-subject (Re:/Fwd: stripped, case-folded) as the fallback for the *chain-less*
-mails only: a reply threads by its References even when the parent id was
+subject (leading reply/forward markers stripped — `Re:`/`Fw:`/`Fwd:`/`Aw:`,
+numbered `Re[2]:`, whitespace before the colon tolerated — and the
+remainder Unicode-lowercased) as the fallback for the *chain-less* mails
+only: a reply threads by its References even when the parent id was
 never published, because absence does not authorize a subject merge. Each
 conversation carries a
 stable `key`: the hash of the conversation's *first* mail's anchor (its
@@ -621,7 +639,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 
 | Suite | What it proves |
 |---|---|
-| `tests/smoke.rs` | startup, round trip, per-test inboxes |
+| `tests/p2.rs` | the P2 end-to-end: MCP JSON-RPC, the seed API's parse+extraction pipeline, webhook delivery with secret and retry targets |
 | `tests/smtp_edges.rs` | every protocol verb, refusal, AUTH form, DATA limit, dot-unstuffing, group addresses, chaos on connect/MAIL FROM/RCPT/DATA |
 | `tests/rate.rs` | the 5k losslessness guarantee + burst |
 | `tests/burst.rs` | 1000 mails / 50 conns exact-count, per-inbox isolation, cap eviction, chaos rejection + recovery |

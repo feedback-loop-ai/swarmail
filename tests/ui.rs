@@ -591,9 +591,121 @@ async fn message_view_renders_text_html_and_missing() {
     );
     assert!(page.contains("sandbox"), "preview iframe must be sandboxed");
 
+    // A missing message is a status 404 (issue #56) — never a 200 card a
+    // client would treat as a rendered message.
     let (st, page) = http_get_text(srv.http_addr, "/ui/message/does-not-exist").await;
-    assert_eq!(st, 200);
+    assert_eq!(st, 404, "a missing message must 404, not render a card");
     assert!(page.contains("not found"), "{page}");
+}
+
+/// A title containing `&` is escaped exactly once — in the `<title>` tab and
+/// the `<h2>` alike (issue #56). A double escape (`&amp;amp;`) would show the
+/// entity itself instead of the ampersand.
+#[tokio::test]
+async fn an_ampersand_title_is_escaped_exactly_once() {
+    let srv = start().await;
+    seed(
+        srv.http_addr,
+        "esc",
+        r#"{"to": "u@x.io", "subject": "A & B", "text": "body"}"#,
+    )
+    .await;
+    let (_, list) =
+        common::http_json(srv.http_addr, "GET", "/api/v1/inboxes/esc/messages", None).await;
+    let id = list["emails"][0]["id"].as_str().unwrap();
+    let (st, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+    assert_eq!(st, 200);
+    assert!(
+        page.contains("<title>A &amp; B · Swarmail</title>"),
+        "{page}"
+    );
+    assert!(page.contains("<h2>A &amp; B</h2>"), "{page}");
+    assert!(
+        !page.contains("&amp;amp;"),
+        "the ampersand must not be escaped twice: {page}"
+    );
+}
+
+/// A non-URL-safe inbox name is percent-encoded in the href but shown
+/// unharmed as the link's visible text (issue #56).
+#[tokio::test]
+async fn a_hash_inbox_name_is_url_encoded_in_the_href() {
+    let srv = start().await;
+    // Seed into `a#b` — the request path itself is percent-encoded.
+    let (st, _) = common::http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/a%23b/seed",
+        Some(r#"{"to": "u@x.io", "subject": "hashy", "text": "body"}"#),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (st, index) = http_get_text(srv.http_addr, "/").await;
+    assert_eq!(st, 200);
+    assert!(
+        index.contains(r#"href="/ui/inbox/a%23b""#),
+        "the href is URL-encoded: {index}"
+    );
+    assert!(
+        index.contains(">a#b<"),
+        "the visible text is unharmed: {index}"
+    );
+    // The encoded href serves the same inbox back (round-trip).
+    let (st, shell) = http_get_text(srv.http_addr, "/ui/inbox/a%23b").await;
+    assert_eq!(st, 200);
+    assert!(shell.contains(r#"data-inbox="a#b""#), "{shell}");
+}
+
+/// The served shell carries a CSP (issue #56): inline script/style stay
+/// working (the page inlines both), same-origin SSE keeps connecting, and
+/// remote loads — including anything a mail body might name — are blocked.
+#[tokio::test]
+async fn the_shell_ships_a_content_security_policy() {
+    let srv = start().await;
+    let (st, page) = http_get_text(srv.http_addr, "/ui/inbox/anywhere").await;
+    assert_eq!(st, 200);
+    let needle = r#"<meta http-equiv="Content-Security-Policy" content=""#;
+    let at = page
+        .find(needle)
+        .unwrap_or_else(|| panic!("no CSP meta in the shell: {page}"));
+    let rest = &page[at + needle.len()..];
+    let end = rest.find('"').expect("CSP meta unterminated");
+    let csp = &rest[..end];
+    for directive in [
+        "default-src 'none'",
+        "script-src 'unsafe-inline'",
+        "style-src 'unsafe-inline'",
+        "connect-src 'self'",
+        "img-src 'self' data:",
+    ] {
+        assert!(
+            csp.contains(directive),
+            "CSP must carry {directive:?}: {csp}"
+        );
+    }
+    // And the live view stays live: the shell's own script is still there
+    // under the policy.
+    the_executable_script(&page);
+}
+
+/// A stale `load()` response cannot paint over a newer SSE frame (issue
+/// #56): the served script guards every paint with a token that the SSE
+/// handler invalidates. A browser-engine interleaving test is not demanded —
+/// the guard is asserted in the served asset itself.
+#[tokio::test]
+async fn the_live_shell_guards_paints_with_a_token() {
+    let srv = start().await;
+    let (st, page) = http_get_text(srv.http_addr, "/ui/inbox/anywhere").await;
+    assert_eq!(st, 200);
+    let script = the_executable_script(&page);
+    assert!(
+        script.contains("paintSeq"),
+        "the paint token must guard the paints: {script}"
+    );
+    assert!(
+        script.contains("paintSeq++"),
+        "the SSE handler must invalidate in-flight loads: {script}"
+    );
 }
 
 #[tokio::test]

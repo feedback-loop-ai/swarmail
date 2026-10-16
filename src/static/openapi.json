@@ -113,10 +113,11 @@
       "delete": {
         "summary": "Delete the named ids (Mailpit)",
         "description": "Body `{\"ids\":[...]}` — a non-empty array of message ids — deletes exactly those messages and replies `{\"removed\": n}`. Every other body (absent, empty, unparseable, wrong-typed, or an empty `ids` array) is answered `400` and deletes nothing; the cross-inbox wipe is `DELETE /api/v1/delete-all`.",
-        "responses": { "200": { "description": "{\"removed\": n}" }, "400": { "description": "No usable selector — nothing was deleted" } }
+        "responses": { "200": { "description": "{\"removed\": n}" }, "400": { "description": "No usable selector — nothing was deleted" }, "503": { "description": "`storage commit failed` — the commit refused, nothing was deleted (decision 0012); during shutdown the boundary refuses before any commit with the same text (decision 0024)" } }
       }
     },
     "/api/v1/message/{id}": { "get": { "summary": "Mailpit's full message shape", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Mailpit Message" }, "404": { "description": "Not found" } } } },
+    "/api/v1/message/latest": { "get": { "summary": "Mailpit's full message shape for the newest stored mail (issue #55)", "description": "The same shape as `GET /api/v1/message/{id}`, over the newest mail in the store (insertion order). `404` only when the store is empty.", "responses": { "200": { "description": "Mailpit Message" }, "404": { "description": "Not found — the store is empty" } } } },
     "/api/v1/message/{id}/plain": { "get": { "summary": "The extracted text part as text/plain (Mailpit + MailHog)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "text/plain; charset=utf-8" }, "404": { "description": "Not found" } } } },
     "/api/v1/message/{id}/raw": { "get": { "summary": "The full RFC 5322 source (MailHog's raw shape)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "message/rfc822" }, "404": { "description": "Not found" } } } },
     "/api/v1/message/{id}/headers": { "get": { "summary": "The synthesized header map (MailHog's Content.Headers)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Header name to array of values, including Received and Return-Path stamps" }, "404": { "description": "Not found" } } } },
@@ -146,11 +147,11 @@
     "/api/v2/search": {
       "get": {
         "summary": "MailHog v2 search",
-        "parameters": [ { "name": "query", "in": "query", "required": true, "schema": { "type": "string" } }, { "name": "kind", "in": "query", "schema": { "type": "string", "enum": [ "from", "to", "containing" ], "default": "containing" } }, { "name": "inbox", "in": "query", "schema": { "type": "string" } } ],
-        "responses": { "200": { "description": "MailHog v2 envelope" }, "400": { "description": "Bare 400 (no body) for an unknown kind or empty query, as upstream answers" } }
+        "parameters": [ { "name": "query", "in": "query", "required": true, "schema": { "type": "string" } }, { "name": "kind", "in": "query", "schema": { "type": "string", "enum": [ "from", "to", "containing" ] } }, { "name": "inbox", "in": "query", "schema": { "type": "string" } }, { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 250 } }, { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } } ],
+        "responses": { "200": { "description": "MailHog v2 envelope" }, "400": { "description": "Bare 400 (no body) for an unknown kind, an absent kind, or an empty query, as upstream answers" } }
       }
     },
-    "/api/v1/delete-all": { "delete": { "summary": "MailHog's wipe alias", "responses": { "200": { "description": "{\"removed\": n}" } } } },
+    "/api/v1/delete-all": { "delete": { "summary": "MailHog's wipe alias", "responses": { "200": { "description": "{\"removed\": n}" }, "503": { "description": "`storage commit failed` — the commit refused, nothing was deleted (decision 0012); during shutdown the boundary refuses before any commit with the same text (decision 0024)" } } } },
     "/api/v1/messages/{id}": {
       "get": { "summary": "Get one email in full (bodies, links, codes)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Email" } } } }, "404": { "description": "Not found" } } },
       "delete": { "summary": "Delete one email", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Deleted" }, "404": { "description": "Not found" } } }

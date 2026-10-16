@@ -128,15 +128,19 @@ Same store, the two shapes existing suites already speak:
   `messages`), newest first. `?inbox=` scopes to one swarmail inbox;
   `?limit=`/`?start=` page (`limit` ≤ 250, refused with a 400 above).
 - `GET /api/v1/message/{id}` — Mailpit's full message; `/plain` serves the
-  extracted text part. `DELETE /api/v1/messages` deletes exactly the
+  extracted text part. `GET /api/v1/message/latest` is the same shape over
+  the newest stored mail (404 only when the store is empty).
+  `DELETE /api/v1/messages` deletes exactly the
   non-empty `{"ids": [...]}` named mails and replies `{"removed": n}`; any
   other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that
   deletes nothing — `DELETE /api/v1/delete-all` is the only cross-inbox wipe.
 - `GET /api/v2/messages` — MailHog's `{total, count, start, items}` with
   `data.Message` shapes (`Content.{Headers,Body,Size,MIME}`,
   `Raw.{From,To,Data,Helo}`). `GET /api/v2/search` takes
-  `kind=from|to|containing` and answers a bare 400 on an unknown kind or an
-  empty query. `GET /api/v1/search` is the Mailpit flavor
+  `kind=from|to|containing` (present and one of the three, as upstream
+  requires) and answers a bare 400 on an unknown kind, an absent kind or
+  an empty query; `?limit=`/`?start=` page. `GET /api/v1/search` is the
+  Mailpit flavor
   (`kind=from|to|subject|containing`, JSON `400`).
 - `GET /api/v1/messages/{id}/download` and `GET /api/v1/message/{id}/raw`
   serve the full RFC 5322 source as `message/rfc822`

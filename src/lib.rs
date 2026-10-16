@@ -91,9 +91,10 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     // spawns immediately after it — subscribing to the firehose before TLS
     // is parsed and before any listener binds (decision 0002, one layer
     // down): a mail accepted at startup can never miss its webhook. No
-    // cleanup is added to the error legs below: on a failure the store
-    // sender and this watch sender both drop, the firehose closes, and the
-    // dispatcher self-resolves.
+    // cleanup is added to the error legs below: on a failure the watch
+    // sender drops with the rest of the startup frame, and the dropped
+    // `dispatcher` task set aborts its task outright — no mail was ever
+    // accepted on an unbound listener, so there is nothing left to drain.
     let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
     // The store reads the same watch (decision 0024): wired here, once,
     // before the dispatcher spawns and before any listener binds — no

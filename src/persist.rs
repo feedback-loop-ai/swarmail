@@ -49,6 +49,11 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
     raw BLOB NOT NULL
 );
 CREATE INDEX IF NOT EXISTS emails_inbox ON emails(inbox);
+-- The restore's sort key (issue #54): without it `load()` sorts every raw
+-- BLOB through a temp b-tree on every open. An index on (seq) is (seq,
+-- rowid) — SQLite's implicit rowid column — so `ORDER BY seq, rowid` is
+-- answered straight from the index, and the tie-break is the write order.
+CREATE INDEX IF NOT EXISTS emails_seq ON emails(seq);
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -87,9 +92,15 @@ impl Persist {
         conn.execute_batch("PRAGMA synchronous = FULL;")?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
-        let next_seq = conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM emails", [], |row| {
-            row.get(0)
-        })?;
+        // Seed one *past* the stored maximum (issue #54): `record_insert`
+        // consumes the value before incrementing, so seeding `MAX(seq)`
+        // itself would reuse the last row's seq on the first insert after
+        // every reopen. A failed commit may still consume a sequence — the
+        // gap is honest, a duplicate is not.
+        let next_seq =
+            conn.query_row("SELECT COALESCE(MAX(seq), 0) + 1 FROM emails", [], |row| {
+                row.get(0)
+            })?;
         Ok(Self {
             state: Mutex::new(State { conn, next_seq }),
         })
@@ -98,9 +109,12 @@ impl Persist {
     /// Every stored email in insertion order, plus the lifetime counters.
     pub fn load(&self) -> rusqlite::Result<(Vec<Email>, u64, u64)> {
         let state = self.state.lock().expect("persist state poisoned");
-        let mut stmt = state
-            .conn
-            .prepare(&format!("SELECT {COLUMNS} FROM emails ORDER BY seq"))?;
+        let mut stmt = state.conn.prepare(&format!(
+            // `seq, rowid`: the index answers it, and rows that share a seq
+            // (a legacy file written before the seed fix) come back in write
+            // order instead of SQLite's arbitrary tie-break (issue #54).
+            "SELECT {COLUMNS} FROM emails ORDER BY seq, rowid"
+        ))?;
         let emails = stmt
             .query_map([], row_to_email)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -465,7 +479,7 @@ mod tests {
             persist
                 .record_insert(&email("c", "other", "a@x.io"), &[], 3, 0)
                 .unwrap();
-        } // dropped: the next open must seed its sequence from MAX(seq)
+        } // dropped: the next open must seed its sequence one past MAX(seq)
         let persist = Persist::open(&path).unwrap();
         persist
             .record_insert(&email("d", "box", "a@x.io"), &[], 4, 0)
@@ -474,6 +488,118 @@ mod tests {
         let ids: Vec<&str> = emails.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, vec!["a", "b", "c", "d"]);
         assert_eq!((inserted, dropped), (4, 0));
+    }
+
+    /// The seq column read straight out of the mirror, bypassing `load()`'s
+    /// mapping — the observable for issue #54's duplicate-sequence bug.
+    fn stored_seqs(path: &Path) -> Vec<i64> {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        let seqs = conn
+            .prepare("SELECT seq FROM emails ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<i64>>>()
+            .unwrap();
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        seqs
+    }
+
+    /// Seeding one past `MAX(seq)` (issue #54): `record_insert` consumes the
+    /// seeded value, so seeding `MAX(seq)` itself made the first insert after
+    /// *every* reopen reuse the last row's seq. Three opens, three inserts —
+    /// strictly increasing seq values, in write order.
+    #[test]
+    fn the_first_insert_after_a_reopen_never_reuses_a_seq() {
+        let path = db_path("seq-seed");
+        {
+            let persist = Persist::open(&path).unwrap();
+            persist
+                .record_insert(&email("a", "box", "a@x.io"), &[], 1, 0)
+                .unwrap();
+        }
+        let persist = Persist::open(&path).unwrap();
+        persist
+            .record_insert(&email("b", "box", "a@x.io"), &[], 2, 0)
+            .unwrap();
+        drop(persist);
+        let persist = Persist::open(&path).unwrap();
+        persist
+            .record_insert(&email("c", "box", "a@x.io"), &[], 3, 0)
+            .unwrap();
+        drop(persist);
+        let seqs = stored_seqs(&path);
+        let mut sorted = seqs.clone();
+        sorted.sort_unstable();
+        assert_eq!(seqs, sorted, "write order is seq order: {seqs:?}");
+        let distinct = seqs.iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(distinct.len(), seqs.len(), "no duplicate seq: {seqs:?}");
+    }
+
+    /// A file written before the seed fix can carry duplicate seq values;
+    /// the restore must not depend on SQLite's tie-break (issue #54): rows
+    /// with equal seq come back in write order — the (seq, rowid) index
+    /// order — not whichever order a temp sort happens to emit.
+    #[test]
+    fn a_legacy_duplicate_seq_restores_in_write_order() {
+        let path = db_path("dup-seq");
+        {
+            // The first release's shape, but with two rows sharing a seq.
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE emails (id TEXT PRIMARY KEY, inbox TEXT NOT NULL, \
+                 seq INTEGER NOT NULL, from_json TEXT NOT NULL, to_json TEXT NOT NULL, \
+                 cc_json TEXT NOT NULL, recipients_json TEXT NOT NULL, subject TEXT, \
+                 received_at TEXT NOT NULL, received_ms INTEGER NOT NULL, size INTEGER NOT NULL, \
+                 text TEXT, html TEXT, links_json TEXT NOT NULL, codes_json TEXT NOT NULL, \
+                 raw BLOB NOT NULL);
+                 INSERT INTO emails VALUES ('first', 'box', 1, 'null', '[]', '[]', '[]', 'Hi', \
+                 't', 1, 1, NULL, NULL, '[]', '[]', x'00');
+                 INSERT INTO emails VALUES ('tied-a', 'box', 2, 'null', '[]', '[]', '[]', 'Hi', \
+                 't', 2, 2, NULL, NULL, '[]', '[]', x'00');
+                 INSERT INTO emails VALUES ('tied-b', 'box', 2, 'null', '[]', '[]', '[]', 'Hi', \
+                 't', 3, 3, NULL, NULL, '[]', '[]', x'00');",
+            )
+            .unwrap();
+        }
+        let persist = Persist::open(&path).unwrap();
+        let (emails, _, _) = persist.load().unwrap();
+        let ids: Vec<&str> = emails.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["first", "tied-a", "tied-b"],
+            "equal seq values keep write order: {ids:?}"
+        );
+    }
+
+    /// The restore scan is answered by the seq index, not a temp b-tree over
+    /// every raw BLOB (issue #54): the plan names `emails_seq` and sorts
+    /// nothing.
+    #[test]
+    fn the_restore_scan_reads_the_seq_index() {
+        let persist = Persist::open(&db_path("plan")).unwrap();
+        persist
+            .record_insert(&email("a", "box", "a@x.io"), &[], 1, 0)
+            .unwrap();
+        let state = persist.state.lock().unwrap();
+        let plan: String = state
+            .conn
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT id FROM emails ORDER BY seq, rowid",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(
+            plan.contains("USING INDEX emails_seq"),
+            "the seq index serves the restore scan: {plan}"
+        );
+        assert!(
+            !plan.to_lowercase().contains("temp b-tree"),
+            "no temp sort over the blobs: {plan}"
+        );
     }
 
     #[test]

@@ -30,8 +30,8 @@
 //!
 //! `QUIT` reports a failed commit (`-ERR storage commit failed`, decision
 //! 0014) instead of pretending, and stays in TRANSACTION so the client may
-//! retry (decision 0015 §1). Plaintext only: no APOP, no TLS, like the
-//! rest of swarmail's listeners.
+//! retry (decision 0015 §1). Plaintext only: no APOP, no STLS — SMTP is
+//! the one swarmail listener with STARTTLS.
 
 use crate::store::{Filter, Store};
 use std::collections::BTreeSet;
@@ -362,12 +362,11 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                     })
                     .collect();
                 deleted.clear();
+                // The maildrop cannot be empty here: the re-check above
+                // guarantees the inbox still holds rows (0032 — an entry
+                // exists only with its mail), so the count is honest.
                 let (n, m) = counts(&maildrop, &deleted);
-                let reply = if n == 0 {
-                    "+OK maildrop empty".to_string()
-                } else {
-                    format!("+OK maildrop has {n} messages ({m} octets)")
-                };
+                let reply = format!("+OK maildrop has {n} messages ({m} octets)");
                 write_line(&mut write, &reply, idle).await?;
                 phase = Phase::Transaction;
                 user = None;
@@ -693,8 +692,9 @@ async fn write_capabilities<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 /// Append `raw` to `out` as RFC 1939 multi-line data: every line becomes
-/// CRLF-terminated (bare LF, bare CR and a missing final newline are
-/// normalized) and any line starting with "." gets a "." stuffed in front.
+/// CRLF-terminated (a bare LF and a missing final newline are normalized;
+/// a bare CR mid-line passes through — it is not a line ending) and any
+/// line starting with "." gets a "." stuffed in front.
 fn write_stuffed(out: &mut Vec<u8>, raw: &[u8]) {
     write_stuffed_limited(out, raw, usize::MAX);
 }

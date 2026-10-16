@@ -1605,6 +1605,7 @@ dependencies = [
  "futures-util",
  "libc",
  "mail-parser",
+ "percent-encoding",
  "rand 0.9.5",
  "rcgen",
  "regex",
