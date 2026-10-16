@@ -45,7 +45,15 @@ machinery; each phase consumes the last one's verdict:
   failed` arm (`:1045`) is the commit-failure arm (0012), not a
   parse-panic arm — the parse-panic residual is 0030 §6's, by 0023 §5's
   panic symmetry (the session task unwinds; the peer sees the socket
-  close).
+  close). Two panel sentences ride this bullet (spec § Adopted at the
+  re-entry panel): a crash between the commit and the 250 stores the
+  mail and answers nothing — the peer's retry duplicates and dedup is
+  the sender's (message-id) job, because `250 ⇒ queryable` is
+  one-directional by design; and the tree's absence of `fsync` is
+  correct only because `src/persist.rs:86-87` pins
+  `journal_mode = WAL` with `synchronous = FULL` — accept==stored is
+  only as durable as that pragma, and anyone touching `persist.rs`
+  re-derives 0001's disk leg or refuses the edit.
 - **0002 (await subscribes before it checks):** `wait_for` registers its
   watcher before it scans; the `post_subscribe_gate` seam keeps the
   subscribe→scan window interleavable under test, including the `Closed`
@@ -63,8 +71,12 @@ machinery; each phase consumes the last one's verdict:
 
 ## Project structure
 
-No new files. The only files this run may touch, each only through its
-defect path, and each with the pin that proves it:
+No new files under `src/` and no new production path. The spec dir gains
+one committed artifact — the intake framing copy `framing-10b.md`,
+riding the synthesis commit per the validation-family precedent (the
+design-check probe counts untracked files in the spec dir). The only
+production files this run may touch, each only through its defect path,
+and each with the pin that proves it:
 
 | File | Defect it could owe | Proving pin |
 |---|---|---|
@@ -103,7 +115,11 @@ plus `cargo test --lib` for the awaits-gauge inline pins.
    spellings refuse closed; the guard is keyed to the actually-bound
    port and any future bind change must carry that fact through; the
    loopback default is a network boundary, not a tenant boundary; the
-   Origin parse's leniency cannot widen and why.
+   Origin parse's leniency cannot widen and why. Plus the two adopted
+   0001-durability sentences (spec.md § Adopted at the re-entry panel):
+   the commit→250 window costs a duplicate on retry and dedup is the
+   sender's; the WAL/FULL pragma is 0001's disk leg and any
+   `persist.rs` edit re-derives it or is refused.
 2. The 451/parse-arm distinction (`smtp.rs:1045` is 0012's
    commit-failure arm; the parse-panic residual is 0030 §6's, trigger
    named).
@@ -129,15 +145,18 @@ plus `cargo test --lib` for the awaits-gauge inline pins.
    gates; a cosmetic rename burns the budget for zero observable.
    *Mitigation:* the two declined renames are recorded in the spec
    (AC5.4) and re-declined here; edits are defect-driven only.
-3. **The design-check verdict is env-dependent** — the committed-spec
-   probe swallows git errors (`git status --porcelain ... 2>/dev/null`),
-   so a broken git env reads as "no uncommitted changes" (run 9b's
-   recorded finding; still present at HEAD). *Mitigation:* run under a
-   working git env (`GIT_CONFIG_KEY_0` exported — this session needed it
-   again); the finding stays an operator note
-   (`.brokkr/state/run10b-operator-edits.md`), never a mid-judgment edit
-   to the checker that judges the phase. A design seat does not edit its
-   own judge.
+3. **The design-check verdict is env- and artifact-dependent** — the
+   committed-spec probe swallows git errors (`git status --porcelain ...
+   2>/dev/null`), so a broken git env reads as "no uncommitted changes"
+   (run 9b's recorded finding; still present at HEAD); and the same
+   probe counts *untracked* files in the spec dir, which tripped once
+   on the intake framing copy. *Mitigation:* run under a working git
+   env (`GIT_CONFIG_KEY_0` exported — this session needed it again) and
+   commit the framing copy per the validation-family precedent (done in
+   the synthesis commit); the env-vacuity finding stays an operator
+   note (`.brokkr/state/run10b-operator-edits.md`), never a
+   mid-judgment edit to the checker that judges the phase. A design
+   seat does not edit its own judge.
 4. **Review re-litigates the pre-repair tree** — the cheapest way to
    look rigorous while burning a gate set on settled findings.
    *Mitigation:* weighting item 3; the review inputs cite the repair

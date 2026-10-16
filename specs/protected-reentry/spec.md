@@ -12,9 +12,11 @@
   — the ruling under review. This spec amends nothing in it: §2 was
   already rewritten in place at a4ff22c with its provenance paragraph, and
   the re-entry's corrections ride 0030's acceptance pass, not a fork.
-- **Base:** `a4ff22c` (HEAD — the operator's repair, atop f9cde28 ←
-  7550de3 ← 66a45bb). Every line cited below was re-verified against this
-  tree in this session; nothing here is taken from the positions' prose.
+- **Base:** `a4ff22c` (the operator's repair, atop f9cde28 ← 7550de3 ←
+  66a45bb), with this spec trio committed at `6f9a4bf` on top of it —
+  the re-entry design this run confirms. Every line cited below was
+  re-verified against the tree at HEAD; nothing here is taken from the
+  positions' prose.
 - **Predecessor spec:**
   [off-worker-parses-loopback-posture](../off-worker-parses-loopback-posture/spec.md)
   (committed at 7550de3, unchanged since) — the ruled shape. This is its
@@ -71,8 +73,10 @@ artifact, no re-litigated finding.
 
 ## The positions, ruled
 
-Both positions independently confirm the artifact contract at a4ff22c —
-the specs committed and unchanged, 0030 proposed and amended in place,
+Both positions independently confirm the artifact contract — re-executed
+at `6f9a4bf` (the design commit), one commit past the a4ff22c they first
+verified — the specs committed and unchanged, 0030 proposed and amended
+in place,
 `persist.rs` at zero diff, `store.rs` at the one-word change, zero new
 `src/` files (the family's only added file is `benches/read_stall.rs`),
 zero new dependencies (the `Cargo.toml` diff is the `[[bench]]` block),
@@ -108,6 +112,49 @@ ruled here, not averaged:
   trigger named (an evidenced panic path becomes the 451 arm's own
   decision). Review weights that distinction; conflating them misstates
   which failures get a wire reply.
+
+### Adopted at the re-entry panel (the positions written at `6f9a4bf`)
+
+Both seats re-verified the contract at the design commit and passed.
+Three items from their re-entry positions are adopted here — ruled, not
+averaged — and none becomes code, a knob or a counter:
+
+1. **The commit→250 window costs a duplicate on retry** (robustness,
+   sharpening 1). The 250 is written only after `insert_async` resolves
+   (`src/smtp.rs:1033-1050`), so a crash *after* the commit but
+   *before* the 250 stores the mail and answers nothing: the peer sees
+   a dead connection and retries — into a duplicate. The guarantee that
+   makes `250` mean something is one-directional by design (`250 ⇒
+   queryable`, never `stored ⇒ 250 seen`); dedup is the *sender's* job
+   (message-id), the duplicate lands in the same inbox, and for a test
+   realm that is the correct loss. At-least-once means exactly this. No
+   server-side dedup and no idempotency arm — machinery purchased by no
+   acceptance line.
+2. **Durability is delegated, at its strongest setting** (robustness,
+   sharpening 2). There is no `fsync`/`sync_all` anywhere in `src/`,
+   and that is correct *because* `src/persist.rs:86-87` pins
+   `PRAGMA journal_mode = WAL` and `PRAGMA synchronous = FULL`: the
+   fsync happens inside every commit, under SQLite's journal. The
+   sentence that must survive any persist edit: **accept==stored is
+   only as durable as that pragma; anyone touching `persist.rs`
+   re-derives 0001's disk leg or refuses the edit.**
+3. **The intake framing copy rides the chief's commit** (simplicity §4,
+   procedural). `specs/protected-reentry/framing-10b.md` was placed
+   after the design commit and left untracked; the design-check probe
+   (`scripts/design-check.sh:94`) counts untracked files in the spec
+   dir and would read `fail` on it. The validation-family precedent —
+   `specs/validation-family/` carries committed `framing.md` and
+   `framing-9b.md` — answers it: the copy is committed in this
+   synthesis commit and the checker is not edited (a design seat does
+   not edit its own judge; plan risk 3). A run record, not a design
+   artifact: the "no new artifact" rule is untouched.
+
+Both sharpenings fold into 0030 at the operator's acceptance pass
+(0028's precedent), riding the same channel as the ledger's leniency
+and bound-port sentences; until then they are review weighting (AC4).
+No decision document is drafted: the guarantee (0001) is unchanged —
+these sentences record its one-directional shape and its disk leg, they
+weaken nothing.
 
 ## The re-entry's ledger — the four sentences the guard's own surface carries
 
@@ -162,12 +209,15 @@ None of these four becomes code, a knob or a counter:
 - **Review judges HEAD** weighted against the ruled spec, the amended
   0030, and this contract: the four-sentence ledger above as the guard
   surface's checklist; the tenant-boundary scoping applied to every new
-  claim; the 451/parse-arm distinction; **no re-litigation** of the
-  pre-repair findings (Origin-only guard, wide kind domain, false
+  claim; the 451/parse-arm distinction; the two 0001-durability
+  sentences (§ Adopted at the re-entry panel); **no re-litigation** of
+  the pre-repair findings (Origin-only guard, wide kind domain, false
   `maximum`, gauge "never existed" claims); new findings rule as always.
 - **No new decision, no new spec for the family.** `docs/decisions/`
   ends at 0030; the re-entry's corrections fold at its acceptance. The
-  only committed artifact of this run's design phase is this spec trio.
+  only committed artifacts of this run's design phase are this spec
+  trio and the intake framing copy that rides it (§ Adopted, item 3 —
+  a run record, per the validation-family precedent).
 - **Ship as usual:** landing is the operator's (PR, both duplicate CI
   runs green, squash). Seats sign false in this env (pinentry
   unreachable); the commit records it, as a4ff22c and c5f2a1f did.
@@ -230,8 +280,10 @@ None of these four becomes code, a knob or a counter:
 
 1. Each review member's inputs cite the weighting: the four-sentence
    ledger, the tenant-boundary scoping, the bound-port invariant
-   sentence, the 451/parse-arm distinction, and the no-re-litigation
-   rule for the pre-repair findings.
+   sentence, the 451/parse-arm distinction, the at-least-once
+   duplicate-on-retry window and the pragma-as-disk-leg sentence (§
+   Adopted at the re-entry panel), and the no-re-litigation rule for
+   the pre-repair findings.
 2. Every claim review endorses is one the wire can observe (the
    awaits-gauge discipline): any landing-note sentence about the loopback
    default scopes it to network-reachable clients and leaves
@@ -244,8 +296,10 @@ None of these four becomes code, a knob or a counter:
 
 ### AC5 — the re-entry's own delta is zero unless a defect demands otherwise
 
-1. At ship, `git diff a4ff22c HEAD --stat` names only defect-driven
-   repairs, each with its named pin in the same commit.
+1. At ship, `git diff a4ff22c HEAD --stat` names only this contract's
+   own spec artifacts (the design commit `6f9a4bf` and this synthesis
+   commit) and defect-driven repairs, each with its named pin in the
+   same commit — no production line outside a defect's fix.
 2. `git diff a4ff22c HEAD -- Cargo.toml` is empty unless a defect
    demanded a new dependency — which would be a decision document, not an
    edit. `docs/decisions/` still ends at 0030 (no fork of the record).

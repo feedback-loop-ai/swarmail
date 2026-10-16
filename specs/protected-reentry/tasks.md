@@ -12,7 +12,10 @@ confirmation (zero edits expected), 4 is its defect path, 5 is verify,
   is empty; `docs/decisions/0030-loopback-plane-bounded-results.md`
   carries `- **Status:** proposed` (line 3), its index row in
   `docs/decisions/README.md`, and the §2 provenance paragraph
-  (0030:127-132).
+  (0030:127-132). The re-entry's own framing copy
+  (`specs/protected-reentry/framing-10b.md`) is committed
+  (validation-family precedent), so `scripts/design-check.sh` reads
+  `designed` with no findings under a working git env.
 - [ ] 2. Confirm the landed shape is the ruled shape at minimum size —
   the boundary pins held through the whole family including the repair.
   **Proof:** `git diff 66a45bb HEAD -- src/persist.rs` is empty;
@@ -55,8 +58,10 @@ confirmation (zero edits expected), 4 is its defect path, 5 is verify,
 - [ ] 6. Review judges the tree at HEAD weighted against the ruled spec,
   the amended 0030, and the spec's weighting section — the four-sentence
   ledger, the bound-port invariant sentence, the tenant-boundary
-  scoping, the 451/parse-arm distinction, and the no-re-litigation rule
-  for the pre-repair findings. **Proof:** each review member's verdict
+  scoping, the 451/parse-arm distinction, the two 0001-durability
+  sentences (the commit→250 duplicate window; the WAL/FULL pragma as
+  0001's disk leg), and the no-re-litigation rule for the pre-repair
+  findings. **Proof:** each review member's verdict
   names the weighting it applied; a re-opened pre-repair finding without
   a new observable is refused by the weighting itself.
 - [ ] 7. Hold every claim review endorses to what the wire can observe
@@ -66,8 +71,10 @@ confirmation (zero edits expected), 4 is its defect path, 5 is verify,
   pattern); any claim without a proving pin is dropped, not reworded
   into vagueness.
 - [ ] 8. Audit the re-entry's own delta at ship. **Proof:**
-  `git diff a4ff22c HEAD --stat` names only defect-driven repairs, each
-  with its named pin in the same commit; `git diff a4ff22c HEAD --
+  `git diff a4ff22c HEAD --stat` names only this contract's spec
+  artifacts (6f9a4bf and the synthesis commit) and defect-driven
+  repairs, each with its named pin in the same commit;
+  `git diff a4ff22c HEAD --
   Cargo.toml` is empty unless a defect demanded a dependency (a decision
   document, not an edit); `docs/decisions/` still ends at 0030 (no
   `0031`); no new bench, seam, `coverage(off)` or confirmation-test twin
