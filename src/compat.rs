@@ -382,9 +382,15 @@ fn run_search(state: &AppState, params: &SearchParams) -> Result<Vec<Arc<Email>>
         // The needle keeps its call-site lowering — per request, once; the
         // per-mail cost the issue named was the two full-size copies per
         // candidate, and the fold below replaces exactly those (decision
-        // 0030 §4).
+        // 0030 §4). A needle the engine refuses to compile is refused by
+        // the plane — a 400, not an unwind: the query is the client's
+        // own input, and a request that cannot be served as asked is a
+        // bad request.
         let needle = query.to_lowercase();
-        let re = search_needle(&needle);
+        let re = search_needle(&needle).ok_or(ApiError(
+            StatusCode::BAD_REQUEST,
+            "Error: the search needle is too complex".into(),
+        ))?;
         all.retain(|e| contains(e, &re));
     }
     Ok(all)
@@ -393,12 +399,15 @@ fn run_search(state: &AppState, params: &SearchParams) -> Result<Vec<Arc<Email>>
 /// The case-insensitive literal fold for one search needle (decision 0030
 /// §4): the needle escaped into a `(?i)` regex — one small allocation per
 /// request replaces the per-mail lowercase and lossy-string copies the old
-/// shape paid. Escaped literals are always valid, so construction cannot
-/// fail (and `garbage needles total` pins the hostile spellings). Public
-/// because the read-stall bench measures this exact fold, not a copy of it.
-pub fn search_needle(needle: &str) -> Regex {
-    Regex::new(&format!("(?i){}", regex::escape(needle)))
-        .expect("an escaped needle is always a valid regex")
+/// shape paid. Escaped literals are always syntactically valid, but the
+/// engine still refuses a needle whose compiled automaton exceeds its size
+/// budget — under `(?i)` every cased character folds to a class (`k` gives
+/// `K/k/U+212A`), so a query near the URI ceiling can exhaust the budget —
+/// and the refusal is the caller's: untrusted input meets the plane's own
+/// refusal, never a panic. Public because the read-stall bench measures
+/// this exact fold, not a copy of it.
+pub fn search_needle(needle: &str) -> Option<Regex> {
+    Regex::new(&format!("(?i){}", regex::escape(needle))).ok()
 }
 
 /// Substring hit across everything extract found plus the raw source. Every
@@ -799,33 +808,43 @@ mod tests {
     fn contains_searches_every_haystack() {
         let mut m = mail();
         m.to = vec![address(Some("To"), "to@x.io")];
-        assert!(!contains(&m, &search_needle("anything")));
+        assert!(!contains(&m, &search_needle("anything").unwrap()));
 
         m.text = Some("plain text body".into());
         // The fold is case-insensitive at the leaf: a needle hits in any
         // case without either side being copied lowercase first.
-        assert!(contains(&m, &search_needle("text body")));
-        assert!(contains(&m, &search_needle("TEXT BODY")));
+        assert!(contains(&m, &search_needle("text body").unwrap()));
+        assert!(contains(&m, &search_needle("TEXT BODY").unwrap()));
         m.html = Some("<i>markup</i>".into());
-        assert!(contains(&m, &search_needle("<i>markup")));
+        assert!(contains(&m, &search_needle("<i>markup").unwrap()));
         m.subject = Some("A Subject".into());
-        assert!(contains(&m, &search_needle("subject")));
+        assert!(contains(&m, &search_needle("subject").unwrap()));
         m.cc = vec![address(None, "carbon-copy@x.io")];
-        assert!(contains(&m, &search_needle("carbon-copy")));
+        assert!(contains(&m, &search_needle("carbon-copy").unwrap()));
         m.from = Some(address(Some("F"), "from@x.io"));
-        assert!(contains(&m, &search_needle("from@")));
+        assert!(contains(&m, &search_needle("from@").unwrap()));
         // Only the raw source carries this needle (the DATA footer).
-        assert!(contains(&m, &search_needle("raw source")));
-        assert!(!contains(&m, &search_needle("no such needle anywhere")));
+        assert!(contains(&m, &search_needle("raw source").unwrap()));
+        assert!(!contains(
+            &m,
+            &search_needle("no such needle anywhere").unwrap()
+        ));
 
         // The needle is a literal, never a pattern: the dot in `a.b` is
         // escaped, so it does not match across `a b` the way an
-        // unescaped `.` would, and regex garbage (`([`) is not a panic.
+        // unescaped `.` would, and regex garbage (`([`) is escaped into
+        // a valid literal rather than a pattern error.
         m.text = Some("a b".into());
-        assert!(!contains(&m, &search_needle("a.b")));
+        assert!(!contains(&m, &search_needle("a.b").unwrap()));
         m.text = Some("a.b".into());
-        assert!(contains(&m, &search_needle("a.b")));
-        assert!(!contains(&m, &search_needle("([")));
+        assert!(contains(&m, &search_needle("a.b").unwrap()));
+        assert!(!contains(&m, &search_needle("([").unwrap()));
+
+        // The engine's compiled-size budget is a real refusal for a
+        // case-folded literal: a quarter-million `k`s each become a
+        // three-way class under `(?i)` and the build yields None — the
+        // caller refuses the request instead of unwinding.
+        assert!(search_needle(&"k".repeat(250_000)).is_none());
     }
 
     #[test]

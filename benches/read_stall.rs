@@ -277,7 +277,7 @@ fn main() {
             lowercase_folds.push(at.elapsed());
         }
         let (l_p50, l_p99, l_max) = percentiles(lowercase_folds);
-        let re = search_needle(needle);
+        let re = search_needle(needle).unwrap();
         let mut regex_folds = Vec::with_capacity(iters);
         for _ in 0..iters {
             let at = Instant::now();

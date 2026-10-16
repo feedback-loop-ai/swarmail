@@ -514,10 +514,13 @@ pub fn router(state: AppState) -> Router {
         .route("/llms.txt", get(llms_txt))
         .merge(ui::router())
         .merge(compat::router())
-        // The Origin guard wraps the whole plane (decision 0030 §2): it is
-        // added after `count_in_flight` so it is the outer layer — a
-        // refused cross-origin request is answered before it registers as
-        // in-flight.
+        // The Origin guard wraps the whole plane (decision 0030 §2). The
+        // layers are applied innermost-first: this `.layer()` is
+        // textually before `count_in_flight`'s, so the gauge is the
+        // outer layer and a guard-refused 403 does register in the
+        // in-flight count for the instant of its own answer — the ruled
+        // criterion is that the guard acts before the router, which
+        // holds either way.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             origin_guard,

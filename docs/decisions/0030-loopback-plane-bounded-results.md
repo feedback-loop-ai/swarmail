@@ -102,8 +102,12 @@ headers, in order:
   `Host` line: `Host: attacker.example:8025`. The check is keyed to the
   bind posture (a loopback spelling *of the bound port*), not a static
   allowlist, so it serves the default bind without new vocabulary; a
-  client without a `Host` is not HTTP/1.1, and hyper maps an HTTP/2
-  `:authority` onto `HOST`, so the leg holds on both hops.
+  client without a `Host` is not HTTP/1.1 and is refused. The tree's
+  axum runs HTTP/1.1 only (no `h2` in the lock), so there is no second
+  protocol hop to hold, and an earlier draft's claim that hyper
+  synthesizes `HOST` from an HTTP/2 `:authority` was false — the leg
+  does not need it: a request that arrives without a `Host` is
+  answered **`403`** (the check fails closed).
 - **`Origin` second.** A request carrying an `Origin` header is
   answered **`403`** unless the Origin's authority is a loopback
   spelling of the bound HTTP port: the one header a browser sets
