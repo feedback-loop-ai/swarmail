@@ -99,8 +99,9 @@ rather than a tree edit the phase machine has no seat to land.
    (std, 1.89+) refuses exactly the second *server* and touches none of
    it. **Cost of ruling 0033 instead of landing it now:** until the
    operator accepts, a second server on one data file diverges
-   semantically (resurrection on restart, per-process seq, prune plans
-   from partial views) while SQLite serializes the bytes — the decision
+   semantically (deleted-or-pruned rows resurrected from a peer's stale
+   memory on restart, per-process seq, prune plans from partial views —
+   the hazards 0015 §4 names) while SQLite serializes the bytes — the decision
    states this honestly, and no artifact claims a refusal the tree does
    not make. **Cost of refusing robustness's "refuse now" outright:**
    the failure mode stays unnamed in the record, which is how it

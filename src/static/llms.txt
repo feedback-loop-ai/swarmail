@@ -105,7 +105,8 @@ naming the target and the cause), and a shutdown's undelivered backlog in
 
 - `GET /api/v1/inboxes/{inbox}/threads` — the inbox grouped into conversations:
   References/In-Reply-To/Message-ID chains first, the normalized subject
-  (Re:/Fwd: stripped, case-folded) as the fallback; each thread lists its mails
+  (Re:/Fwd: stripped, Unicode-lowercased — full case folding is a
+  recorded limitation) as the fallback; each thread lists its mails
   oldest first and has a stable `key` for
   `/api/v1/inboxes/{inbox}/threads/{key}` — the hash of the conversation's
   first mail's anchor, so replies (even one with a smaller message-id) never
@@ -128,10 +129,13 @@ Same store, the two shapes existing suites already speak:
   `messages`), newest first. `?inbox=` scopes to one swarmail inbox;
   `?limit=`/`?start=` page (`limit` ≤ 250, refused with a 400 above).
 - `GET /api/v1/message/{id}` — Mailpit's full message; `/plain` serves the
-  extracted text part. `GET /api/v1/message/latest` is the same shape over
-  the newest stored mail (404 only when the store is empty).
+  text part as text/plain, rendering html at request time for html-only
+  mail. `GET /api/v1/message/latest` is the same shape over the newest
+  stored mail, newest by receive time then id (404 only when the store
+  is empty).
   `DELETE /api/v1/messages` deletes exactly the
-  non-empty `{"ids": [...]}` named mails and replies `{"removed": n}`; any
+  non-empty `{"ids": [...]}` named mails (the `IDs` spelling accepted
+  alike) and replies `{"removed": n}`; any
   other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that
   deletes nothing — `DELETE /api/v1/delete-all` is the only cross-inbox wipe.
 - `GET /api/v2/messages` — MailHog's `{total, count, start, items}` with

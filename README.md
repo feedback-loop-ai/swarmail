@@ -386,8 +386,8 @@ test suites actually hit, answered from one store:
 |---|---|
 | `GET /api/v1/messages` | Mailpit's summary envelope, newest first; `?inbox=` scopes, `?limit=`/`?start=` page |
 | `GET /api/v1/message/{id}` | Mailpit's full message shape (`Text`, `HTML`, `ReturnPath`, …); `GET /api/v1/message/latest` is the same shape over the newest stored mail (404 only when the store is empty) |
-| `GET /api/v1/message/{id}/plain`, `GET /api/v1/messages/{id}/plain` | the extracted text part as `text/plain; charset=utf-8` |
-| `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete — the named ids and nothing else; every other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that deletes nothing |
+| `GET /api/v1/message/{id}/plain`, `GET /api/v1/messages/{id}/plain` | the text part as `text/plain; charset=utf-8` — html-only mail is rendered to text at request time |
+| `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete (`IDs` accepted alike) — the named ids and nothing else; every other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that deletes nothing |
 | `DELETE /api/v1/delete-all` | MailHog's wipe alias |
 | `GET /api/v1/search` | Mailpit search: `kind=from\|to\|subject\|containing`, `?query=` required |
 | `GET /api/v2/messages` | MailHog v2 `{total, count, start, items}` with `data.Message` shapes |

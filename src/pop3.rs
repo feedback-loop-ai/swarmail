@@ -362,9 +362,11 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                     })
                     .collect();
                 deleted.clear();
-                // The maildrop cannot be empty here: the re-check above
-                // guarantees the inbox still holds rows (0032 — an entry
-                // exists only with its mail), so the count is honest.
+                // The re-check above narrows the race but is not atomic
+                // with this read (0014: mutation-only boundary — 0028's
+                // snapshot posture, 0032's entry-lifetime rule notwithstanding):
+                // a concurrent delete/clear can empty the inbox between
+                // the two reads, and a zero count is then the honest answer.
                 let (n, m) = counts(&maildrop, &deleted);
                 let reply = format!("+OK maildrop has {n} messages ({m} octets)");
                 write_line(&mut write, &reply, idle).await?;

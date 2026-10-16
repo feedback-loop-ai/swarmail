@@ -30,15 +30,18 @@ takes a second `Connection` happily (`src/persist.rs:88`). SQLite's
 *bytes*, so nothing corrupts and no commit is lost. What breaks is the
 *semantic*:
 
-- two live servers each hold a partial view; mail either one deletes is
-  **resurrected on the other's restart** (the file is the truth, the
-  memory is the view);
+- two live servers each hold a partial view; the file is the truth and
+  the memory is the view, so a restart **corrects** that server's
+  stale view (its `record_delete`/`record_insert` rows and the peer's
+  commits are all in the shared database) — the standing hazard is a
+  *live* peer serving rows the file no longer holds, and counters/seq
+  that only reconcile at restart;
 - `next_seq` collides across processes — restore stays deterministic
   (`(seq, rowid)`, #54), but "monotonic, no duplicates" becomes true only
   per-process;
 - each process's prune plan reads its own memory: a cap eviction on
-  server A leaves the evicted rows in B's memory, and B's next restart
-  restores them.
+  server A leaves the evicted rows in B's memory until B's next restart
+  corrects it — a stale live view, not a resurrection.
 
 For a test sink this is a misconfiguration, not a hostile input — but the
 tree's own refusal posture is that **misconfiguration fails loudly at the
