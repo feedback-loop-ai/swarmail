@@ -210,8 +210,10 @@ and the repaired tree. Each names its proof. All commands run at the
 repository root with `.brokkr/state/env.sh` sourced.
 
 - **AC-1 (the count).** `cargo test --workspace --locked` reports
-  **469 passed, 0 failed** (one ignored: `tests/rate.rs`'s opt-in
-  throughput smoke). *Proof:* the suite run this session at `e245fae`;
+  **470 passed, 0 failed** (one ignored: `tests/rate.rs`'s opt-in
+  throughput smoke). *Proof:* the suite run at the current base `791f83d`
+  (the receipt pass re-recorded it there; this pass's own verification at
+  `e245fae` reported 469 — the html-leg pin moved the count);
   re-recorded by verify under the contract's AC-G.1 / task 1 as amended.
 - **AC-2 (the pin).** `cargo test --lib extract
   an_ampersand_run_decodes_in_bounded_work` passes, and the test asserts

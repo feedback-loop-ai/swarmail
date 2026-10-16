@@ -14,13 +14,21 @@
   gates were re-run at commit time. The implement attempt died mid-verify
   on an environment failure (the coverage gate's instrumented build filled
   /tmp's tmpfs); the commit carries the seat's content, not a re-run of it.
-  **The tree the remaining phases prove is `e245fae`** — the review-hold
+  **The tree the remaining phases proved was `e245fae`** — the review-hold
   repair ("Bound the entity-reference scan and tell the batch-delete
   truth"): a named forty-character window inside `parse_ref` and a 503
-  description stating 0014's per-mutation refusal; the suite is 469 tests
+  description stating 0014's per-mutation refusal; the suite was 469 tests
   there. The record-honesty pass
   ([specs/fidelity-record-honesty/](../fidelity-record-honesty/spec.md))
-  re-grounds this contract at that tree and adds red lines 12–14.
+  re-grounded this contract at that tree and added red lines 12–14.
+  **The tree the remaining phases now prove is `791f83d`** — the
+  five-residual repair ("Prove the html leg against realistic mail and
+  align four record sentences"): one inline-adjacent
+  renderer-narrowing pin plus four record-sentence alignments; the suite
+  is 470 tests there. The prove-ship receipt
+  ([specs/fidelity-prove-ship-receipt/](../fidelity-prove-ship-receipt/spec.md))
+  re-grounds this contract at `791f83d`, carries the amendment set, and
+  adds red lines 15–16.
 - **Design of record:** [specs/fidelity-closures/spec.md](../fidelity-closures/spec.md)
   (committed at `2cfe08c`, amended at `24df038`) with its
   [plan](../fidelity-closures/plan.md) and [tasks](../fidelity-closures/tasks.md).
@@ -201,7 +209,7 @@ the coverage gate's `TMPDIR` rule is absolute (AC-G.2).
 - **AC-G.1** `cargo fmt --all -- --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace --locked` and
-  `brokkr compile --bundle bundles/self` all exit 0; the suite is 469
+  `brokkr compile --bundle bundles/self` all exit 0; the suite is 470
   tests. *Proof:* the commands themselves.
 - **AC-G.2** `TMPDIR=/home/valentin/scratch/cov-tmp bash
   scripts/coverage-gate.sh` reports exact 100/100/100 — lines, branches
@@ -236,12 +244,20 @@ the coverage gate's `TMPDIR` rule is absolute (AC-G.2).
   while deduplicating. *Proof:* `src/extract.rs::links_keep_document_order`,
   `::codes_keep_document_order`.
 - **AC-39.4** Codes come from rendered text only — `<style>` blocks and
-  attribute values yield nothing. *Proof:*
-  `src/extract.rs::codes_ignore_style_script_and_attributes`,
-  `::codes_render_from_visible_html_text`.
+  attribute values yield nothing; the renderer's recorded narrowings are
+  pinned (`inline_adjacent_codes_behave_as_the_renderer_renders`):
+  `<b>`/`<span>` text extracts with its source whitespace, and a code the
+  renderer glues across an `</a>` close is refused, never invented.
+  *Proof:* `src/extract.rs::codes_ignore_style_script_and_attributes`,
+  `::codes_render_from_visible_html_text`,
+  `::inline_adjacent_codes_behave_as_the_renderer_renders`.
 - **AC-39.5** The record is sender-honest: a text-only mail answers
-  `html: null` and an html-only mail `text: null` across REST, MCP,
-  Mailpit and MailHog; `raw` holds the sender's bytes; the two 0031 §3
+  `html: null` and an html-only mail `text: null` on the native REST and
+  MCP planes — the honest wires (0031 §2); on the Mailpit and MailHog
+  compat shapes an absent part is an **empty string**, not a null
+  (`Text`/`HTML` map through `unwrap_or_default()` at `src/compat.rs:669–670`;
+  MailHog's `Body` is one string, text-else-html, at `:757`); `raw` holds
+  the sender's bytes; the two 0031 §3
   display fallbacks still serve a text view for html-only mail and derive
   no links or codes from it. *Proof:*
   `src/smtp.rs::bodies_hold_only_what_the_sender_sent`,

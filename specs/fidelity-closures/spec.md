@@ -421,15 +421,25 @@ every new branch is reachable on the green path by a direct request).
   not the alphabetically first; in multipart/alternative the variant
   occurring first wins. *Proof:* `src/extract.rs` units.
 - **AC-39.4** A mail whose only digit runs sit in a `<style>` block or an
-  attribute value yields no codes. *Proof:* `src/extract.rs` unit (and
-  the live `&amp;` leg's `codes` field in `tests/api.rs`).
+  attribute value yields no codes. *Proof:* `src/extract.rs` units (and
+  the live `&amp;` leg's `codes` field in `tests/api.rs`), including
+  `src/extract.rs::inline_adjacent_codes_behave_as_the_renderer_renders` —
+  the renderer's narrowings pinned: a code the renderer glues into a word
+  is refused, never invented.
 - **AC-39.5** Malformed references degrade: an unknown named ref or an
   out-of-range/surrogate numeric ref stays literal; the decoder never
   grows its input and never panics. *Proof:* `src/extract.rs` units.
 - **AC-39.6** A text-only mail stores `html: null`; an html-only mail
-  stores `text: null` — on REST, MCP, Mailpit and MailHog surfaces alike;
-  `raw` still holds the sender's bytes. *Proof:* `tests/api.rs` + the
-  `build_email` units in `src/smtp.rs`.
+  stores `text: null` — on the native REST and MCP planes, which keep the
+  null (0031 §2); on the Mailpit and MailHog compat shapes an absent part
+  is an **empty string** (`Text`/`HTML` map through `unwrap_or_default()`
+  at `src/compat.rs:669–670`; MailHog's `Body` is one string,
+  text-else-html, at `:757`), so a client there cannot distinguish "no
+  part" from "empty part"; `raw` still holds the sender's bytes.
+  *Proof:* `tests/api.rs` + the `build_email` units in `src/smtp.rs`
+  (native planes); the compat mapping is recorded by 0031 §2, as
+  amended — deliberately untested, a Go-shape change-detector would only
+  pin it.
 - **AC-39.7** For html-only mail, Mailpit's snippet and the plain shim
   still return a text view (the display fallback), and no links/codes are
   derived from that rendering. *Proof:* `tests/compat.rs`.
