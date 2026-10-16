@@ -475,7 +475,8 @@ every new branch is reachable on the green path by a direct request).
   wrong-typed selector still 400s with 0011's named sentence. *Proof:*
   `tests/compat.rs`.
 - **AC-55.2** With `RCPT TO:<bcc@x.io>` and header `To: a@x.io`:
-  `GET /api/v2/search?kind=to&query=bcc@x.io` returns `total >= 1`;
+  `GET /api/v2/search?kind=to&query=bcc@x.io` returns `total == 1` (and
+  `items.len() == 1`);
   MailHog `To`/`Raw.To` surface `bcc@x.io`; Mailpit `Bcc` lists
   `bcc@x.io` (envelope-only). Header to/cc stay in `Content.Headers`.
   *Proof:* `tests/compat.rs` real-SMTP leg.

@@ -706,6 +706,13 @@ async fn the_live_shell_guards_paints_with_a_token() {
         script.contains("paintSeq++"),
         "the SSE handler must invalidate in-flight loads: {script}"
     );
+    // The guard clause itself, not just its identifiers: without the
+    // early return the token is counted but never consulted, and a stale
+    // `load()` paints over newer mail again.
+    assert!(
+        script.contains("seen !== paintSeq"),
+        "every paint must be gated by the token comparison: {script}"
+    );
 }
 
 #[tokio::test]

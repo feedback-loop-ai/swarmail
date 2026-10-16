@@ -138,8 +138,12 @@ rather than a tree edit the phase machine has no seat to land.
    total `(seq, rowid)` restore, one emptied-inbox rule on every path
    (0032), honest seq gaps; #55 — the `IDs` alias is spelling-only,
    envelope + header union is the one recipient source, named `400`s;
-   #56 — thread keys fold at ingest with the fixed precedence, the UI
-   orders by `received_ms DESC, id`; #57 — no doc sentence promises what
+   #56 — thread keys derive per view request (0018 §5) with the fixed
+   precedence (References/In-Reply-To/Message-ID chains first; the
+   normalized subject — `Re:`/`Fw:`/`Fwd:`/`Aw:` stripped,
+   Unicode-lowercased; full case folding a recorded limitation — as the
+   fallback for the chain-less mails), the UI orders by
+   `received_ms DESC, id`; #57 — no doc sentence promises what
    the code refuses to do, including the two this pass binds (single
    server per file [0033, unlanded], cert expiry client-visible).
 
@@ -163,23 +167,32 @@ endorsed by this pass):
   silently.
 - **A cap race under burst.** The eviction plan is computed from a peek
   inside the boundary and applied in the same transaction; an over-cap
-  new inbox refuses whole; `pop_front` oldest-only in commit order.
-  *Lost:* an over-cap restored inbox is served until its first insert
-  (0003's letter), and a cap-sized burst to a fresh inbox answers `552`
-  for the tail — retryable, never queued-into-vapor.
+  insert *accepts and evicts oldest* — the store never refuses on count
+  (`pop_front` in commit order, the multi-evict catch-up loop; proven by
+  `insert_prunes_oldest_beyond_cap`, src/store.rs:864). *Lost:* an
+  over-cap restored inbox is served until its first insert (0003's
+  letter), and a burst sees its oldest mail vanish under a slow waiter —
+  the waiter's timeout is honest (`Timeout { matched }`), the cap means
+  "the newest N survive".
 - **Chaos mid-pipeline.** Chaos fires after DATA completes, envelope
   consumed; delays are bounded by `MAX_DELAY_MS` with probabilities at
   the poles exact; a chaos-dropped mail is indistinguishable from an
   unwritten one. *Lost:* chaos is wire-only — it cannot observe or
   perturb the commit itself, so the gate proves refusals, not commit
   interleavings.
-- **Hostile DATA.** A 4096-line DATA is refused whole with the line
-  drained unbuffered (`552`); extraction is linear by construction (the
-  40-byte window, single bounded scans, decode on the match only) and
-  codes come from rendered text only — a code the renderer glues across
-  an `</a>` close is refused, never invented. *Lost:* one linear parse
-  on the shared blocking pool delays other mutations briefly; it cannot
-  starve them (the pool's other workers and the mutation boundary hold).
+- **Hostile DATA.** DATA is bounded by the message-byte allowance
+  (`cfg.max_message_size`): a line over the remaining allowance is
+  drained unbuffered and the whole mail is refused `552 5.3.4 Message
+  too big` at the terminator, nothing stored (src/smtp.rs, the DATA
+  arm). `MAX_COMMAND_LINE = 4096` is the *command-line* byte cap (SMTP
+  and POP3 alike), answered `500 5.5.2 Line too long` with the line
+  drained unbuffered — it never gates DATA. Extraction is linear by
+  construction (the 40-byte window, single bounded scans, decode on the
+  match only) and codes come from rendered text only — a code the
+  renderer glues across an `</a>` close is refused, never invented.
+  *Lost:* one linear parse on the shared blocking pool delays other
+  mutations briefly; it cannot starve them (the pool's other workers
+  and the mutation boundary hold).
 - **A cert under test.** Certs are minted fresh per boot; a supplied
   pair is parsed before bind (structure only — red line 16); the CA
   client cap is an LRU of 32 for attacker-chosen roots. *Lost:* expiry
