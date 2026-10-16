@@ -131,7 +131,11 @@ pub fn extract_links(text: Option<&str>, html: Option<&str>) -> Vec<String> {
 /// Extract likely verification/OTP codes: standalone 4–10 digit numbers.
 /// Text body first (most reliable); falls back to the HTML body — rendered
 /// to text first (decision 0031 §3), so codes come from rendered text
-/// nodes only. Digits inside `<style>` blocks, `<script>`s, comments or
+/// nodes only. The renderer is narrow in one recorded way: inline elements
+/// carry no separators of their own (`<a>go</a> 555555` renders
+/// "go555555"), so a code the renderer glues into a word is refused rather
+/// than invented — a real verification mail keeps the code in its own text
+/// or a block element. Digits inside `<style>` blocks, `<script>`s, comments or
 /// attribute values yield nothing: a stylesheet color is not a code, and
 /// an attribute is not displayed to the person the code is for.
 pub fn extract_codes(text: Option<&str>, html: Option<&str>) -> Vec<String> {
@@ -160,6 +164,28 @@ pub fn extract_codes(text: Option<&str>, html: Option<&str>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    // The html leg is proven against realistic mail, not fixtures shaped
+    // to flatter the renderer (the review's tests MEDIUM). Inline elements
+    // are recorded narrowings: `<b>`/`<span>` render with their source
+    // whitespace and the code stays a standalone token, but mail_parser's
+    // html_to_text glues the text after an `</a>` close — `<a>go</a>
+    // 555555` renders "go555555" — and a code the renderer glues into a
+    // word is honestly refused: not a standalone token. The plain-text
+    // leg remains the reliable leg for codes.
+    #[test]
+    fn inline_adjacent_codes_behave_as_the_renderer_renders() {
+        assert_eq!(
+            extract_codes(None, Some("See <b>555555</b> soon")),
+            vec!["555555"]
+        );
+        assert_eq!(
+            extract_codes(None, Some("<p>hello</p><span>555555</span>")),
+            vec!["555555"]
+        );
+        assert!(extract_codes(None, Some("<a href=\"https://x.io\">go</a> 555555")).is_empty());
+        assert!(extract_codes(None, Some("x<i>555555</i>y")).is_empty());
+    }
+
     // The reference scan is bounded (the review's security HOLD): a match
     // of nothing but '&'s — no ';' anywhere — decodes in bounded work per
     // position, each '&' passing through literal, instead of rescanning

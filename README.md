@@ -419,7 +419,8 @@ field name is swarmail's.
 `GET /api/v1/inboxes/{inbox}/threads` groups the inbox into conversations —
 References/In-Reply-To/Message-ID chains when they resolve, the normalized
 subject (leading reply/forward markers stripped — `Re:`/`Fw:`/`Fwd:`/`Aw:`,
-numbered `Re[2]:`, whitespace before the colon tolerated — and the
+whitespace before the colon tolerated; a numbered `Re[2]:` is *not* a
+marker and stays in the fallback key — and the
 remainder Unicode-lowercased) as the fallback for the *chain-less* mails
 only: a reply threads by its References even when the parent id was
 never published, because absence does not authorize a subject merge. Each

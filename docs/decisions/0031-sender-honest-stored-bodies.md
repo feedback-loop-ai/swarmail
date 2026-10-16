@@ -48,8 +48,12 @@ surface by 0005's own consequence clause; the extractor's inputs must be
 the sender's, or its output is fiction with a straight face.
 
 **Costs accepted, named.** An html-only mail reports `text: null` (MCP,
-REST, Mailpit `Text`) and a text-only mail reports `html: null` — that is
-the feature, not a regression. A needle matching *decoded* text (`a&b`
+REST) and a text-only mail reports `html: null` — that is the feature,
+not a regression. Mailpit's shape has no null in it: its `Text`/`HTML`
+are empty strings for the absent part (compat maps
+`unwrap_or_default`), so a client cannot distinguish "no part" from
+"empty part" on those two fields — the native and MCP planes keep the
+null and are the honest wires. A needle matching *decoded* text (`a&b`
 against source `a&amp;b`) hits only via the raw source's encoded form or
 not at all. Tests that asserted the synthesis are updated in the same
 commit. Seq of consequences, not a hidden bill.
