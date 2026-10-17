@@ -1,0 +1,19 @@
+# Tasks — load-shape-token-stream
+
+Ordered. Each task names the test that proves it. Red-first: the arms are
+proven at the base (`bcc7510`) before the repair lands. Env for every gate
+step: `export PATH="$HOME/.cargo/bin:$PATH"`; coverage gate with
+`TMPDIR=/home/valentin/scratch/cov-tmp`. Nothing here closes a GitHub issue
+or pushes.
+
+- [ ] T1 — Record the red evidence at the base: extract the verbatim walk from `scripts/coverage-gate.sh` (cut at the `# --- instrumented build location` marker, the `base-lib.sh` pattern in `target/coverage/panel-chief-12c/`) and run the six-arm battery — the five refuse shapes (stacked `#[path]`, split `include!`, split `#`/`[path]`, split opener, backslash-newline-continued target) must **pass** the walk at `bcc7510` (each launders a harness-named file), and the keep shape (stacked `#[path = "store/ordinary.rs"]` with a declared harness file) must pass. *Test:* the battery output shows all five shapes `PASS => LAUNDERS` and the keep shape green; save it under `.brokkr/state/` (gitignored) as the landing note's proof.
+
+- [ ] T2 — Land the scan move in `check_harness_declarations` per the plan's reference body: insert the token-stream pass (`rs_tokens "$parent"` + the two occurrence loops with the closed-form rule and fail-closed `END`), delete the old line-anchored `#[path]` block (base :345–371), keep the line-preserved `include!` arm and the dead disjunct (:385) untouched, and extend the function's header comment with the run-12c paragraph. *Test:* `bash -n scripts/coverage-gate.sh` is clean and `TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh selftest` is green with the **existing** arms unchanged.
+
+- [ ] T3 — Add the five refuse arms (`co-stacked-path`, `co-split-include`, `co-hash-split`, `co-split-open`, `co-continuation-target`) as a new `5i` block after the `5h` arms, each a fresh fixture tree carrying a *declared* harness-named file plus the laundering shape in a second parent. *Test:* with the base walk each arm fails (`expect_refuse` gets success — per T1's battery); after T2 each arm refuses; `TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh selftest` reports `selftest pass — every refusal arm refuses, every pass arm passes`.
+
+- [ ] T4 — Add the keep arm `co-stacked-clean`: one tree with `src/store/ordinary.rs`, `src/store/persist_tests.rs`, and a `src/lib.rs` that both declares `persist_tests` under `#[cfg(test)]` and carries the stacked `#[path = "store/ordinary.rs"]` load. *Test:* green at the base (T1's battery) and green after T2 — red at neither; a draft without the declared harness file is rejected as vacuous.
+
+- [ ] T5 — Run the full house gate battery at the repair commit: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `brokkr compile --bundle bundles/self`, `TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh` (selftest green, exact 100/100/100, miss == 0), `cargo deny check licenses`. *Test:* all six exit 0; the gate's summary line shows the exact floor with no misses; `git diff --stat` shows exactly one changed tracked file, `scripts/coverage-gate.sh` (spec AC-6).
+
+- [ ] T6 — Write the landing notes and hand over: record the red-first proof (T1), the passing probe outcomes (persistent string state, macro delimiters, escape spellings, `include`-named directory target) and the two accepted loud over-refusal species; land the batch on the run's landing branch with a commit message naming the residual class and citing #101/#102 (unsigned, per the tree's current practice — disclose it); review/push/merge stay with the operator; no issue is closed by this seat. *Test:* the landing note exists under `.brokkr/state/` citing the spec (`specs/load-shape-token-stream/spec.md`); `git log` shows the repair commit touching only `scripts/coverage-gate.sh`; `git status` shows no new tracked files beyond the spec.
