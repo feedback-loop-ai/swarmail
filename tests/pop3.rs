@@ -276,8 +276,11 @@ async fn sizes_match_what_retr_transmits() {
     let mails: Vec<Vec<u8>> = vec![
         // Plain CRLF: the wire is exactly the stored payload.
         raw_of("sender@x.io", "sizes", "crlf", "body"),
-        // Bare-LF lines: RETR terminates them CRLF — two octets more.
-        b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: barelf\r\n\r\nline1\nline2\n".to_vec(),
+        // Bare-LF lines: RETR terminates them CRLF — two octets more. The
+        // wire still owes the terminator its preceding CRLF (decision 0034):
+        // the delivery ends with an empty CRLF line, stored as part of the
+        // payload, and the bare-LF lines themselves are never normalized.
+        b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: barelf\r\n\r\nline1\nline2\n\r\n".to_vec(),
         // Mixed: one bare-LF line, one CRLF line.
         b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: mixed\r\n\r\na\nb\r\n".to_vec(),
         // Dot-stuffed: each leading-dot line gains one octet on the wire.

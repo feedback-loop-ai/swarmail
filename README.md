@@ -266,6 +266,33 @@ the accumulator; a protocol line over 4096 bytes — POP3's own line cap —
 is drained and answered `500 5.5.2 Line too long`, and the session
 continues.
 
+**The session boundaries are exact**
+([0034](docs/decisions/0034-data-terminator-boundary.md), *proposed*).
+DATA ends only on CRLF `.` CRLF — a `.` CRLF line behind a bare-LF line is
+payload, stored with its dot, and so is a `.` bare-LF line; a terminator
+straight after the `354` is the empty message. An over-cap message drains
+to that real boundary before its one `552`. A sender whose lines end in bare
+LF only must still close with a CRLF-ended line before the dot, or the
+session idles out with nothing stored. MAIL needs `FROM:<path>` and RCPT
+needs `TO:<path>` — keyword case-insensitive, whitespace after the colon
+allowed, angle brackets required; a bracketless, inverted or glued-on path
+is `501`, `MAIL FROM:<>` is the null sender and `RCPT TO:<>` is refused.
+Paths are otherwise opaque: local names (`<alice>`) and UTF-8 addresses are
+kept, no `@` or DNS check is made. MAIL accepts `SIZE=<digits>` (a
+declaration above the cap, however many digits, is `552` at MAIL; the real
+bytes are still counted at DATA), `BODY=7BIT|8BITMIME` and bare `SMTPUTF8`;
+a malformed or repeated one is `501`, any other MAIL parameter is `555`, and
+RCPT takes no parameters (`555`). Refused MAIL and RCPT commands leave the
+open transaction exactly as it was — they are checked before chaos rolls —
+and HELO/EHLO reset the transaction like RSET (HELO answers one line). PLAIN
+must be exactly `authzid NUL authcid NUL password`; only the authcid names
+the inbox, the authzid is ignored and any password — empty included — is
+accepted. One AUTH succeeds per session (`503` after that, even as
+`default`), surviving RSET and greetings; only a successful STARTTLS starts
+afresh, clearing identity and envelope. A bare `AUTH` or surplus tokens is
+`501`, an unknown mechanism `504`. Deliberately lenient: MAIL before any
+greeting is accepted, and so are greetings with no hostname.
+
 **The listener never dies on a bad accept.** A transient `accept()` error
 backs the loop off (1 s) and clears on the next success, and `/healthz`
 says so honestly: `200 {"status":"ok"}` when every listener accepts, `503
@@ -641,7 +668,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | Suite | What it proves |
 |---|---|
 | `tests/p2.rs` | the P2 end-to-end: MCP JSON-RPC, the seed API's parse+extraction pipeline, webhook delivery with secret and retry targets |
-| `tests/smtp_edges.rs` | every protocol verb, refusal, AUTH form, DATA limit, dot-unstuffing, group addresses, chaos on connect/MAIL FROM/RCPT/DATA |
+| `tests/smtp_edges.rs` | every protocol verb, refusal, AUTH form, DATA limit, dot-unstuffing, group addresses, chaos on connect/MAIL FROM/RCPT/DATA; the 0034 boundaries — mixed terminators, path and parameter matrices, greeting resets, validation before chaos, strict PLAIN and one AUTH per session |
 | `tests/rate.rs` | the 5k losslessness guarantee + burst |
 | `tests/burst.rs` | 1000 mails / 50 conns exact-count, per-inbox isolation, cap eviction, chaos rejection + recovery |
 | `tests/api.rs` | every REST route, happy + error branches |
@@ -650,7 +677,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
-| `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart, refused certs, stalled handshakes, malformed PEM refusal, gen-cert file handling |
+| `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart (identity and envelope reset), refused certs, stalled handshakes, malformed PEM refusal, gen-cert file handling |
 | `tests/lifecycle.rs` | graceful stop: serve futures return, ports release, parked awaits answer 503 inside the stop budget, an in-flight commit neither holds stop nor half-lands, queued seeds refuse once the stop has fired — at most one busy wait, never one per queued request; a stalled body and a partial head cannot hold stop hostage (the drain deadline ends the wait) and the partial head is answered `503 stopping` on the wire |
 | `tests/binary.rs` | the shipped binary: SIGINT and SIGTERM → clean exit, SIGINT with seeds queued on a held write lock exits inside the budget and stores nothing, a second signal during the drain exits 70, a mail committed before SIGTERM is queryable after restart, mcp EOF → 0 |
 | `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT |

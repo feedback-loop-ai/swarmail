@@ -755,7 +755,7 @@ async fn bare_tool_calls_hit_every_default_and_clear_all() {
 
 /// Rich header shapes: display names ride both To and From, a From header
 /// with a display name but no address falls back to the envelope sender,
-/// and a single-token AUTH PLAIN names the inbox with no NULs at all.
+/// and a single-token AUTH PLAIN with no NULs at all names no inbox.
 #[tokio::test]
 async fn header_names_and_single_token_plain_auth() {
     let srv = start().await;
@@ -812,15 +812,16 @@ async fn header_names_and_single_token_plain_auth() {
     assert_eq!(noaddr["from"]["name"], "Fiona", "{noaddr}");
     assert_eq!(noaddr["from"]["address"], "env2@x.io", "{noaddr}");
 
-    // A single-token AUTH PLAIN (no NUL separators): the token itself names
-    // the inbox (`parts.get(1).or_else(|| parts.first())`).
+    // A single-token AUTH PLAIN (no NUL separators) names nothing: PLAIN is
+    // exactly three fields (decision 0034 §5), so it is refused and the
+    // delivery after it routes to `default`, never to the bare token.
     let mut c3 = SmtpConn::connect(srv.smtp_addr).await;
     c3.send("EHLO t").await;
     c3.reply().await;
     c3.send("AUTH PLAIN").await;
     assert!(c3.reply().await.starts_with("334"));
     c3.send(&base64_of("solobox")).await;
-    assert!(c3.reply().await.starts_with("235"));
+    assert_eq!(c3.reply().await, "501 5.5.2 Credentials refused");
     c3.send("MAIL FROM:<f@x.io>").await;
     assert!(c3.reply().await.starts_with("250"));
     c3.send("RCPT TO:<solo@x.io>").await;
@@ -832,7 +833,22 @@ async fn header_names_and_single_token_plain_auth() {
     );
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/solobox/count", None).await;
     assert_eq!(st, 200);
-    assert_eq!(body["count"], 1);
+    assert_eq!(body["count"], 0);
+    let (_, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/default/messages",
+        None,
+    )
+    .await;
+    assert!(
+        list["emails"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["subject"] == "solo auth"),
+        "{list}"
+    );
 }
 
 /// Contract #1's MCP seed leg (decision 0012 §3, amended by 0014): with a
