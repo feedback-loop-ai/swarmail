@@ -37,7 +37,7 @@ the red-proof battery at verbatim `bcc7510` showing all five shapes laundering
   deterministic shell fixtures (no sleeps, no timing, no chaos); no
   `coverage(off)` is introduced; the walk still runs through
   `check_harness_declarations` unchanged in its declaration semantics. 0020
-  is not accepted or amended here — it stays *proposed* for the operator.
+  is accepted (2026-10-16, 5671e0c) and binds; nothing here amends it.
 - **The gate's own contract intact:** floor still refuses anything but 100;
   the selftest stays fail-closed; a scan failure refuses loudly ("could not
   scan $parent") rather than passing.

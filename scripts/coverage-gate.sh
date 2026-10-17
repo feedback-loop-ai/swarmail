@@ -165,6 +165,17 @@ strip_rust_comments() {
   ' "$1"
 }
 
+rs_boundary_tokens() {
+  # The comment-stripped file with every whitespace run replaced by a single
+  # non-identifier byte (0x01) — a token stream that PRESERVES token
+  # boundaries. Deleting whitespace outright (rs_tokens) merges `return
+  # include` + a newline + `!(...)` into `returninclude!(`, and an
+  # identifier-boundary guard then sees no `include` token at all (the run
+  # 12c reviewer HIGH). The load-shape scan reads this stream; the
+  # coverage(off) match keeps the collapsed rs_tokens.
+  strip_rust_comments "$1" | tr -s '[:space:]' '\001'
+}
+
 rs_tokens() {
   # The comment-stripped file with all whitespace removed — the token stream
   # the coverage(off) match runs over. `#[coverage(/**/off)]` and
@@ -347,38 +358,55 @@ check_harness_declarations() {
     for parent in "${parents[@]}"; do
       [ -f "$parent" ] || continue
       rc=0
-      # Load-shape scan over the whitespace-collapsed token stream: every
-      # #[path] and every include! in the parent, wherever it sits and
-      # however its tokens are laid out, is checked here. An argument that
-      # is not a plain string literal, an escape-carrying target, and a
-      # harness-named target each refuse, fail-closed, naming the parent.
-      detail="$(rs_tokens "$parent" | awk -v harness="$harness" -v parent="$parent" '
+      # Load-shape scan over the boundary-preserving token stream: every
+      # effective path attribute and every include! in the parent, wherever
+      # it sits and however its tokens are laid out, is checked here. The
+      # path arm matches an identifier-boundary `path` followed by `=` and a
+      # string — `#[path = ...]`, `#[r#path = ...]` and
+      # `#[cfg_attr(all(), path = ...)]` all load a file in production and
+      # all carry that token shape (the run 12c reviewer HIGH on the
+      # `#[`-anchored scan); a path whose tokens are split across lines is
+      # visible for the same reason. Whitespace must NOT be deleted: `return
+      # include` + newline + `!(...)` collapses to `returninclude!(` in a
+      # deleted stream and the identifier-boundary guard would see no
+      # `include` token (the reviewer HIGH on token boundaries) — the
+      # boundary stream keeps them distinct. An argument that is not a plain
+      # string literal, an escape-carrying target, and a harness-named
+      # target each refuse, fail-closed, naming the parent.
+      detail="$(rs_boundary_tokens "$parent" | awk -v harness="$harness" -v parent="$parent" '
         {
           rest = $0;
-          while (match(rest, /#\[[[:space:]]*path[[:space:]]*=/)) {
-            rest = substr(rest, RSTART + RLENGTH);
-            if (rest !~ /^"/) {
-              print harness ": a #[path] whose target is not a plain string literal cannot be resolved by this walk in " parent " — spell the path literally";
-              scan_bad = 1; continue;
+          # An effective path attribute is `path = "..."` closed by `]` —
+          # that closing bracket is what separates it from an ordinary
+          # assignment (`let path = expr;`, `let path = "literal";`), which
+          # must keep passing. A `path = "` candidate whose target carries a
+          # string escape refuses: the escape could spell the reserved name
+          # and the walk does not decode it.
+          while (match(rest, /(^|[^A-Za-z0-9_])path[\001]*=[\001]*"/)) {
+            after = RSTART + RLENGTH;
+            q = index(substr(rest, after), "\"");
+            if (q == 0) { rest = substr(rest, after); continue; }
+            target = substr(rest, after, q - 1);
+            tail = substr(rest, after + q);
+            if ((tail !~ /^[\001]*\]/) && (tail !~ /^[\001]*\)[\001]*\]/)) {
+              # Not attribute-shaped: an ordinary assignment keeps passing.
+              rest = substr(rest, after + q - 1);
+              continue;
             }
-            rest = substr(rest, 2);
-            q = index(rest, "\"");
-            if (q == 0) { scan_bad = 1; break; }
-            target = substr(rest, 1, q - 1);
             if (target ~ /\\/) {
-              print harness ": a #[path] target with a string escape cannot be resolved by this walk in " parent " — spell the path literally";
+              print harness ": a path target with a string escape cannot be resolved by this walk in " parent " — spell the path literally";
               scan_bad = 1;
             } else {
               nseg = split(target, seg, "/"); base = seg[nseg];
               if (base ~ /(^|[_-])tests\.rs$/) {
-                print harness ": harness-named file loaded via #[path = \"" target "\"] in " parent;
+                print harness ": harness-named file loaded via a path attribute ("" target "") in " parent;
                 scan_bad = 1;
               }
             }
-            rest = substr(rest, q);
+            rest = substr(rest, after + q - 1);
           }
           rest = $0;
-          while (match(rest, /(^|[^A-Za-z0-9_])include[[:space:]]*![[:space:]]*[({[]/)) {
+          while (match(rest, /(^|[^A-Za-z0-9_])include[\001]*![\001]*[({[]/)) {
             rest = substr(rest, RSTART + RLENGTH);
             if (rest !~ /^"/) {
               print harness ": an include! that is not a plain string literal cannot be resolved by this walk in " parent " — load the file with #[path] or a literal include!";
@@ -816,6 +844,28 @@ selftest() {
   printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
   printf '#[cfg(test)]\nmod persist_tests;\n#[path = "store/persist_\\x74ests.rs"]\npub mod alias;\n' > "$fx/src/lib.rs"
   expect_refuse 'an escape-carrying #[path] target refuses (reviewer residual)' check_harness_declarations "$fx/src"
+
+  # 5j. The run 12c reviewer residuals on the scan's input model: an
+  #     effective path attribute in a wrapper (cfg_attr, raw-identifier
+  #     name) and a token boundary a whitespace-DELETING stream destroys.
+  #     Each fixture carries the declared harness so the check is
+  #     non-vacuous, and each is red at fec409f.
+  fx="$root/co-cfg-attr-path"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/alias.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[cfg_attr(not(test), path = "store/persist_tests.rs")]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a cfg_attr-wrapped path attribute to a harness-named file refuses (reviewer residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-raw-attr-path"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/alias.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[r#path = "store/persist_tests.rs"]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a raw-identifier path attribute to a harness-named file refuses (reviewer residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-split-include"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\npub fn caller() {\n    return include\n        !("store/persist_tests.rs");\n}\n' > "$fx/src/lib.rs"
+  expect_refuse 'an include whose tokens a whitespace-deleting stream merges refuses (reviewer residual)' check_harness_declarations "$fx/src"
 
   # 5i. The run 12c design-sequence residuals: a load-shape whose tokens the
   #     line-based walk cannot resolve launders the reserved name. Each arm
