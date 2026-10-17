@@ -154,11 +154,13 @@ strip_rust_comments() {
       }
       # Line structure is preserved: exactly one newline per input line.
       print "";
-      # A plain string cannot span lines; a raw string can — any shash,
-      # including zero hashes. Comments span lines and depth persists. An
-      # unterminated plain string ends at the newline so it cannot swallow
-      # the rest of the file.
-      if (instr && shash == 0 && !sraw) instr = 0;
+      # String state persists across newlines for every literal kind: an
+      # ordinary Rust string legally spans lines, and resetting its state
+      # at the newline let a `/*` on the next line open a comment that
+      # erased live code (the reviewer HIGH). An unterminated ordinary
+      # string cannot occur in a tree that compiled, so persistence cannot
+      # swallow live code of any input the gate actually sees; raw strings
+      # and comments already persisted.
     }
   ' "$1"
 }
@@ -351,14 +353,23 @@ check_harness_declarations() {
             q = index(rest, "\"");
             if (q > 0) {
               target = substr(rest, 1, q - 1);
-              nseg = split(target, seg, "/"); base = seg[nseg];
-              if (base ~ /(^|[_-])tests\.rs$/) {
-                print harness ": harness-named file loaded via #[path = \"" target "\"] in " parent;
+              # A backslash in the target is a string escape this walk does
+              # not decode — `\x74` spells `t` and `persist_\x74ests.rs`
+              # would dodge the literal comparison (the reviewer HIGH), so
+              # an escape-carrying target refuses, fail-closed.
+              if (target ~ /\\/) {
+                print harness ": a #[path] target with a string escape cannot be resolved by this walk in " parent " — spell the path literally";
                 scan_bad = 1;
+              } else {
+                nseg = split(target, seg, "/"); base = seg[nseg];
+                if (base ~ /(^|[_-])tests\.rs$/) {
+                  print harness ": harness-named file loaded via #[path = \"" target "\"] in " parent;
+                  scan_bad = 1;
+                }
               }
             }
           }
-          if ($0 ~ /include![[:space:]]*\(/) {
+          if ($0 ~ /(^|[^A-Za-z0-9_])include[[:space:]]*![[:space:]]*[({[]/) {
             # An include! whose argument is not a plain string literal
             # cannot be resolved by this walk (concat!, env!, any macro
             # spelling): while a harness-named file exists under src/ it
@@ -367,19 +378,28 @@ check_harness_declarations() {
             # `include!(concat!(...))` laundered a harness-named file past
             # the literal-only arm). A literal argument is checked against
             # the harness-name regex as before.
-            if ($0 !~ /include![[:space:]]*\([[:space:]]*"/) {
+            # Every macro delimiter and spacing is recognized —
+            # `include! { ... }`, `include![ ... ]`, `include ! ( ... )`
+            # load a file exactly like `include!( ... )` (the reviewer
+            # HIGH on the parenthesis-only walk).
+            if (($0 !~ /(^|[^A-Za-z0-9_])include[[:space:]]*![[:space:]]*[({[]/) || ($0 !~ /(^|[^A-Za-z0-9_])include[[:space:]]*![[:space:]]*[({[][[:space:]]*"/)) {
               print harness ": an include! that is not a plain string literal cannot be resolved by this walk in " parent " — load the file with #[path] or a literal include!";
               scan_bad = 1;
             } else {
               rest = $0;
-              sub(/^.*include![[:space:]]*\([[:space:]]*"/, "", rest);
+              sub(/^.*include[[:space:]]*![[:space:]]*[({[][[:space:]]*"/, "", rest);
               q = index(rest, "\"");
               if (q > 0) {
                 target = substr(rest, 1, q - 1);
+                if (target ~ /\\/) {
+                  print harness ": an include! target with a string escape cannot be resolved by this walk in " parent " — spell the path literally";
+                  scan_bad = 1;
+                } else {
                 nseg = split(target, seg, "/"); base = seg[nseg];
                 if (base ~ /(^|[_-])tests\.rs$/) {
                   print harness ": harness-named file included via include! in " parent;
                   scan_bad = 1;
+                }
                 }
               }
             }
@@ -718,6 +738,34 @@ selftest() {
   printf 'pub fn ordinary() {}\n' > "$fx/src/store/ordinary.rs"
   printf '#[cfg(test)]\nmod persist_tests;\ninclude!("store/ordinary.rs");\n' > "$fx/src/lib.rs"
   expect_pass 'a literal include! of a non-harness file passes' check_harness_declarations "$fx/src"
+
+  # 5h. The run 12c reviewer residuals, each its own arm: an ordinary
+  #     string that spans lines must not let the next line open a comment
+  #     that erases the forbidden attribute; every include! macro
+  #     delimiter and spacing launders exactly like the parenthesis
+  #     spelling; and a string escape in a target (\x74 spells t) dodges
+  #     the literal comparison, so an escape-carrying target refuses.
+  fx="$root/co-multiline-string"; mkdir -p "$fx/src/store"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/store/ordinary.rs"
+  printf 'const S: &str = "start\n/*";\n#[coverage(off)]\npub fn hidden() {}\nconst T: &str = "*/";\n' > "$fx/src/lib.rs"
+  expect_refuse 'a multiline string must not let the next line open an erasing comment (reviewer residual)' check_no_coverage_off "$fx/src"
+
+  for spelling in 'include! { "store/persist_tests.rs" }' 'include!["store/persist_tests.rs"]' 'include ! ( "store/persist_tests.rs" )'; do
+    fx="$root/co-inc-spelling"; mkdir -p "$fx/src/store"
+    printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+    printf '#[cfg(test)]\nmod persist_tests;\n%s;\n' "$spelling" > "$fx/src/lib.rs"
+    expect_refuse 'a harness-named include! in an alternate macro spelling refuses (reviewer residual)' check_harness_declarations "$fx/src"
+  done
+
+  fx="$root/co-escape-target"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\ninclude!("store/persist_\\x74ests.rs");\n' > "$fx/src/lib.rs"
+  expect_refuse 'an escape-carrying include! target refuses (reviewer residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-escape-path"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[path = "store/persist_\\x74ests.rs"]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'an escape-carrying #[path] target refuses (reviewer residual)' check_harness_declarations "$fx/src"
 
   # 6. Canonical counting: DA hits, BRDA taken (the '-' record counts and can
   #    never be covered), and the file + start-line function identity across

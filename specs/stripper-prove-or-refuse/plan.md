@@ -117,11 +117,13 @@ Replace the body of `strip_rust_comments` (the awk program, :80–155) with:
       }
       # Line structure is preserved: exactly one newline per input line.
       print "";
-      # A plain string cannot span lines; a raw string can — any shash,
-      # including zero hashes. Comments span lines and depth persists. An
-      # unterminated plain string ends at the newline so it cannot swallow
-      # the rest of the file.
-      if (instr && shash == 0 && !sraw) instr = 0;
+      # String state persists across newlines for every literal kind: an
+      # ordinary Rust string legally spans lines, and resetting its state
+      # at the newline let a `/*` on the next line open a comment that
+      # erased live code (the run 12c reviewer HIGH). An unterminated
+      # ordinary string cannot occur in a tree that compiled, so
+      # persistence cannot swallow live code of any input the gate sees;
+      # raw strings and comments already persisted.
     }
 ```
 

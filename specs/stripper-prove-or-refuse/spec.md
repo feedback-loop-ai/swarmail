@@ -41,8 +41,11 @@ static check that shares the stripper:
   string `r"…"` shares its state (`instr=1, shash=0`) with plain strings, so a
   multi-line `r"…"` containing `/*` force-closes at the newline (:152) and
   erases what follows: `static S: &str = r"say\n/* hi";` erases a following
-  `fn hidden() {}`. Raw strings legally span lines; plain strings cannot —
-  the state has no flag distinguishing them.
+  `fn hidden() {}`. Raw strings legally span lines; at the time the state
+  reset at the newline for plain strings, and the state had no flag
+  distinguishing them. (The run 12c review then disproved the deeper
+  premise: an *ordinary* Rust string legally spans lines too, so the
+  force-close itself was wrong — see the amendment below.)
 - **R3 (MEDIUM):** `pending` grows one concat per normal-state character
   (:145) while its comment claims it is "capped" (:126–127) — and the *emission*
   accumulator `out = out c` (:115/:139/:144/:145) is equally quadratic, which
@@ -181,6 +184,15 @@ backslash branch is guarded with `!sraw`) and **span lines** (the :152
 force-close becomes `if (instr && shash == 0 && !sraw) instr = 0`). The
 closer check for `shash > 0` counts the run forward from the quote, exactly,
 uncapped. This kills R4 and the escape-shaped over-emission in one stroke.
+
+**2a. (Amended by the run 12c review, HIGH) Ordinary strings persist across
+newlines too.** The force-close at newline for plain strings was deleted
+outright: an ordinary Rust string legally spans lines, and resetting its
+state let a `/*` on the next line open a comment that erased live code.
+An unterminated ordinary string cannot occur in a tree that compiled
+(rustc refuses it), so persistence cannot swallow live code of any input
+the gate actually sees; string state now persists for every literal kind
+for the whole file, comments persist by depth as before.
 
 **3. Emission streams; nothing accumulates per character.** `out` and
 `pending` are deleted. The scanner emits each kept span directly
