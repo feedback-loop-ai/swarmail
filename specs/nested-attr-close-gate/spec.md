@@ -2,6 +2,7 @@
 
 | | |
 |---|---|
+| **Status** | **superseded** (run 12f) — the source recognizer for declaration bypasses did not converge across runs 12–12e: a source scanner cannot prove the absence of an attribute or load that macros, `cfg_attr` chains and `include!` can produce. Run 12g replaces it with checks by effect; this spec is kept as the record. |
 | **Run** | 12d — chief synthesis seat (`brokkr-state-run12d-feature-txt-15e129ff`) |
 | **Feature slug** | `nested-attr-close-gate` |
 | **Issues** | #101, #102 (the gate-and-tests batch this run verifies and ships) |

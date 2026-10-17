@@ -2,6 +2,7 @@
 
 | | |
 |---|---|
+| **Status** | **superseded** (run 12f) — the source recognizer for declaration bypasses did not converge across runs 12–12e: a source scanner cannot prove the absence of an attribute or load that macros, `cfg_attr` chains and `include!` can produce. Run 12g replaces it with checks by effect; this spec is kept as the record. |
 | **Run** | 12c — chief synthesis seat |
 | **Feature slug** | `load-shape-token-stream` |
 | **Issues** | #101, #102 (bodies: `.brokkr/state/run12-feature.txt` — absent; numbers known from the feature text and commit history) |
