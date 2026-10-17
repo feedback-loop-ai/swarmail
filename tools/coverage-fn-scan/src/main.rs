@@ -617,6 +617,38 @@ fn following_fn_name(rest: &[proc_macro2::TokenTree]) -> String {
     }
 }
 
+/// The index of the minted impl's body when the item starting at `start` (just
+/// past an `#[automatically_derived]`) is an `impl`: further attributes are
+/// skipped, then `impl` or `unsafe impl`, then the first brace group before the
+/// item ends. Anything else — the attribute on a fn, a struct, or nothing at the
+/// end of a stream — carves nothing, so the following tokens are walked as
+/// ordinary code; the search never leaves the slice.
+fn derived_impl_body(tokens: &[proc_macro2::TokenTree], start: usize) -> Option<usize> {
+    use proc_macro2::{Delimiter, TokenTree};
+    let mut index = start;
+    while let (Some(TokenTree::Punct(hash)), Some(TokenTree::Group(group))) =
+        (tokens.get(index), tokens.get(index + 1))
+    {
+        if hash.as_char() != '#' || group.delimiter() != Delimiter::Bracket {
+            break;
+        }
+        index += 2;
+    }
+    if matches!(tokens.get(index), Some(TokenTree::Ident(ident)) if ident == "unsafe") {
+        index += 1;
+    }
+    if !matches!(tokens.get(index), Some(TokenTree::Ident(ident)) if ident == "impl") {
+        return None;
+    }
+    tokens[index..]
+        .iter()
+        .take_while(|token| !matches!(token, TokenTree::Punct(p) if p.as_char() == ';'))
+        .position(|token| {
+            matches!(token, TokenTree::Group(group) if group.delimiter() == Delimiter::Brace)
+        })
+        .map(|position| index + position)
+}
+
 fn scan_tokens(tokens: &[proc_macro2::TokenTree], derived: bool, scan: &mut Scan) {
     let mut index = 0;
     while index < tokens.len() {
@@ -655,17 +687,12 @@ fn scan_tokens(tokens: &[proc_macro2::TokenTree], derived: bool, scan: &mut Scan
                     continue;
                 }
                 if is_automatically_derived(attr) {
-                    // The minted impl's body: the first brace group after the
-                    // attribute. Everything carved stays carved only inside it
-                    // — a later item in the same stream is checked on its own.
-                    if let Some(offset) = (index + 2..).find(|&i| {
-                        matches!(
-                            tokens.get(i),
-                            Some(proc_macro2::TokenTree::Group(group))
-                                if group.delimiter() == proc_macro2::Delimiter::Brace
-                        )
-                    }) {
-                        if let Some(proc_macro2::TokenTree::Group(body)) = tokens.get(offset) {
+                    if let Some(offset) = derived_impl_body(tokens, attr_index + 1) {
+                        // The header between the attribute and the body is an
+                        // ordinary item's: an exclusion stacked after the
+                        // derive attribute is still the author's, not minted.
+                        scan_tokens(&tokens[attr_index + 1..offset], derived, scan);
+                        if let proc_macro2::TokenTree::Group(body) = &tokens[offset] {
                             let inner: Vec<_> = body.stream().into_iter().collect();
                             scan_tokens(&inner, true, scan);
                         }

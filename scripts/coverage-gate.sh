@@ -598,7 +598,7 @@ selftest() {
   local fxb="$root/fx-bypass" fxg="$root/fx-green" fxt="$root/fx-bypass-target" fxgt="$root/fx-green-target"
   mkdir -p "$fxb/src" "$fxg/src"
   printf '[package]\nname = "fxbypass"\nversion = "0.1.0"\nedition = "2021"\n' >"$fxb/Cargo.toml"
-  printf '%b' "#![feature(coverage_attribute)]\n#![allow(dead_code)]\\npub fn visible() -> i32 { 42 }\\n#[coverage(off)]\\nfn direct_hidden() {}\\nmacro_rules! hide {\\n    (\$n:ident) => { #[coverage(off)] fn \$n() {} };\\n}\\nhide!(macro_hidden);\\n#[cfg_attr(all(), coverage(/**/ off ))]\\nfn attr_hidden() {}\\n#[cfg_attr(coverage, coverage( off ))]\\nfn cfg_gated_hidden() {}\\npub fn inner_hidden() { #![coverage( off )] }\\ninclude!(\"inc_tests.rs\");\\ninclude!(\"macros_tests.rs\");\\n#[path = \"path_tests.rs\"]\\npub mod path_loaded;\\n#[cfg(not(test))]\\npub(crate) mod cfg_tests;\\n/* #[cfg(test)] */\\nmod guard_tests;\\npub mod\\n    split_tests;\\n/* #[cfg(test)] mod split_tests; */\\n#[cfg(test)]\\nmod t { #[test] fn calls_visible() { assert_eq!(super::visible(), 42); } }\\n" >"$fxb/src/lib.rs"
+  printf '%b' "#![feature(coverage_attribute)]\n#![allow(dead_code)]\\npub fn visible() -> i32 { 42 }\\n#[coverage(off)]\\nfn direct_hidden() {}\\nmacro_rules! hide {\\n    (\$n:ident) => { #[coverage(off)] fn \$n() {} };\\n}\\nhide!(macro_hidden);\\n#[cfg_attr(all(), coverage(/**/ off ))]\\nfn attr_hidden() {}\\n#[cfg_attr(coverage, coverage( off ))]\\nfn cfg_gated_hidden() {}\\npub fn inner_hidden() { #![coverage( off )] }\\n#[automatically_derived]\\n#[coverage(/**/ off )]\\nfn derived_shadow_hidden() {}\\nmod tail { #[automatically_derived] pub struct Tail; }\\ninclude!(\"inc_tests.rs\");\\ninclude!(\"macros_tests.rs\");\\n#[path = \"path_tests.rs\"]\\npub mod path_loaded;\\n#[cfg(not(test))]\\npub(crate) mod cfg_tests;\\n/* #[cfg(test)] */\\nmod guard_tests;\\npub mod\\n    split_tests;\\n/* #[cfg(test)] mod split_tests; */\\n#[cfg(test)]\\nmod t { #[test] fn calls_visible() { assert_eq!(super::visible(), 42); } }\\n" >"$fxb/src/lib.rs"
   for shape in inc path cfg guard split; do printf 'pub fn %s_hidden() {}\n' "$shape" >"$fxb/src/${shape}_tests.rs"; done
   printf 'macro_rules! unused_gen { () => {}; }\npub const HANDLER: u8 = 7;\n' >"$fxb/src/macros_tests.rs"
   printf '[package]\nname = "fxgreen"\nversion = "0.1.0"\nedition = "2021"\n' >"$fxg/Cargo.toml"
@@ -619,7 +619,7 @@ selftest() {
   for arm in 'src/inc_tests.rs:#101 D' 'src/path_tests.rs:#101 A' 'src/cfg_tests.rs:#101 B' 'src/guard_tests.rs:#101 C' 'src/split_tests.rs:#101 G' 'src/macros_tests.rs:the macro/const inventory'; do
     expect_refuse_naming "stage 1 refuses the ${arm#*:} harness load" "${arm%%:*}" check_report_covers_production_files "$root/bypass.info" "$root/bypass-prod.txt" "$fxb"
   done
-  for arm in 'direct_hidden:direct' 'macro_hidden:macro-emitted' 'attr_hidden:cfg_attr-resolved' 'cfg_gated_hidden:coverage-cfg-gated'; do
+  for arm in 'direct_hidden:direct' 'macro_hidden:macro-emitted' 'attr_hidden:cfg_attr-resolved' 'cfg_gated_hidden:coverage-cfg-gated' 'derived_shadow_hidden:derive-shadowed'; do
     expect_refuse_naming "stage 2 refuses the ${arm#*:} exclusion" "${arm%%:*}" check_no_coverage_exclusions "$root/bypass-exp.rs"
   done
   expect_refuse 'the inner-attribute exclusion refuses (the fn name is not adjacent to an inner attr)' check_no_coverage_exclusions "$root/bypass-exp.rs"

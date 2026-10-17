@@ -132,15 +132,20 @@ This decision amends only 0020's leak-check sentence, as stated above. Its
 limits of the checks, named so review can face them; none of them is a
 license to exclude.
 
-1. A forged `#[automatically_derived]` impl inside a macro body can launder
-   a comment-split exclusion past both the grep and the expansion scan —
-   closing it is derive-provenance analysis (the lexer reborn); it requires
-   deliberate laundering by someone who has read the gate.
+1. A forged `#[automatically_derived]` impl — written directly in `src/` or
+   inside a macro body — can launder a comment-split exclusion on a function
+   *inside its body* past both the grep and the expansion scan; closing it is
+   derive-provenance analysis (the lexer reborn); it requires deliberate
+   laundering by someone who has read the gate. An exclusion stacked on the
+   impl header, or a derive attribute on anything but an `impl`, carves
+   nothing and refuses.
 2. A future non-attribute exclusion mechanism evades the expansion scan —
    and every source-side check ever proposed; the leak check and review
    face it then.
-3. The token walk treats the first brace group after an
-   `#[automatically_derived]` attribute as the minted impl's body; an item
+3. The token walk treats the first brace group of the `impl` item after an
+   `#[automatically_derived]` attribute as the minted impl's body (the
+   header before it is walked as ordinary code, and the search stops at the
+   item's end); an item
    whose self type carried a const-generic block (`impl X for Arr<{1}>`)
    would carve the wrong group and refuse loudly — fail-closed, named, and
    rarer than the mechanism it guards against. A dump whose delimiters do
