@@ -433,6 +433,30 @@ check_harness_declarations() {
             }
             rest = substr(rest, q);
           }
+          # The closed-form backstop: the reserved basename inside ANY
+          # string literal refuses, whatever wrapper carries it. A nested
+          # cfg_attr with a trailing comma closes with `,)`-shaped tokens no
+          # tail recognizer enumerates (the reviewer HIGH on the close
+          # recognizer), and a raw string literal (r"..." / r#"..."#) never
+          # opens the quote-anchored candidates (the reviewer HIGH on raw
+          # path literals) — but a production load of a harness-named file
+          # cannot happen without the file name appearing as a string.
+          # Escape-spelled names are refused by the two arms above; a string
+          # that is not a load refuses here too — loud, and the reservation
+          # is the point (decision 0020 ruling 3).
+          rest = $0;
+          while ((q1 = index(rest, "\"")) > 0) {
+            tail = substr(rest, q1 + 1);
+            q2 = index(tail, "\"");
+            if (q2 == 0) break;
+            lit = substr(tail, 1, q2 - 1);
+            nseg = split(lit, seg, "/"); base = seg[nseg];
+            if (base ~ /(^|[_-])tests\.rs$/) {
+              print harness ": the reserved name appears in a string literal (\"" lit "\") in " parent " — harness-named files load only through a test-gated declaration";
+              scan_bad = 1;
+            }
+            rest = substr(tail, q2 + 1);
+          }
         }
         END { if (scan_bad) exit 1 }
       ')" || rc=$?
@@ -871,6 +895,30 @@ selftest() {
   printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
   printf '#[cfg(test)]\nmod persist_tests;\npub fn caller() {\n    return include\n        !("store/persist_tests.rs");\n}\n' > "$fx/src/lib.rs"
   expect_refuse 'an include whose tokens a whitespace-deleting stream merges refuses (reviewer residual)' check_harness_declarations "$fx/src"
+
+  # 5k. The run 12d reviewer residuals on the close recognizer: no wrapper
+  #     enumeration can close the reservation — a nested cfg_attr with a
+  #     trailing comma, and raw-string literals in either spelling, all
+  #     load the reserved name in production. The string-content backstop
+  #     refuses each without caring about the wrapper's shape; each is red
+  #     at f29554a by the reviewer's own probes.
+  fx="$root/co-nested-comma"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/alias.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[cfg_attr(all(), cfg_attr(all(), path = "store/persist_tests.rs",))]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a nested cfg_attr with a trailing comma refuses (reviewer residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-raw-str-path"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/alias.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[cfg_attr(all(), path = r"store/persist_tests.rs")]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a raw-string path literal refuses (reviewer residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-raw-hash-path"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/alias.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[path = r#"store/persist_tests.rs"#]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a raw-hash-string path literal refuses (reviewer residual)' check_harness_declarations "$fx/src"
 
   # 5i. The run 12c design-sequence residuals: a load-shape whose tokens the
   #     line-based walk cannot resolve launders the reserved name. Each arm
