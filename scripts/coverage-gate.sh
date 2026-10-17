@@ -376,19 +376,24 @@ check_harness_declarations() {
       detail="$(rs_boundary_tokens "$parent" | awk -v harness="$harness" -v parent="$parent" '
         {
           rest = $0;
-          # An effective path attribute is `path = "..."` closed by `]` —
-          # that closing bracket is what separates it from an ordinary
-          # assignment (`let path = expr;`, `let path = "literal";`), which
-          # must keep passing. A `path = "` candidate whose target carries a
-          # string escape refuses: the escape could spell the reserved name
-          # and the walk does not decode it.
+          # An effective path attribute is `path = "..."` closed by `]` — the
+          # close being ANY run of `)` and 0x01 separators before the bracket,
+          # so a `cfg_attr` wrapper at ANY nesting depth is recognized (a
+          # doubly-nested close `))]` matched neither of the two previous
+          # disjuncts and laundered). The class allows zero closers, so the
+          # bare-`]` case is subsumed, not lost; an assignment (`let path =
+          # expr;`, `let path = dir.path().join("persist.db");`) whose
+          # post-quote tail is not such a run keeps passing. A `path = "`
+          # candidate whose target carries a string escape refuses: the
+          # escape could spell the reserved name and the walk does not
+          # decode it.
           while (match(rest, /(^|[^A-Za-z0-9_])path[\001]*=[\001]*"/)) {
             after = RSTART + RLENGTH;
             q = index(substr(rest, after), "\"");
             if (q == 0) { rest = substr(rest, after); continue; }
             target = substr(rest, after, q - 1);
             tail = substr(rest, after + q);
-            if ((tail !~ /^[\001]*\]/) && (tail !~ /^[\001]*\)[\001]*\]/)) {
+            if (tail !~ /^[\001)]*\]/) {
               # Not attribute-shaped: an ordinary assignment keeps passing.
               rest = substr(rest, after + q - 1);
               continue;
@@ -883,7 +888,7 @@ selftest() {
   printf '#[cfg(test)]\nmod persist_tests;\n#[allow(dead_code)] #[path = "store/ordinary.rs"] pub mod alias;\n' > "$fx/src/lib.rs"
   expect_pass 'a stacked #[path] to a non-harness file passes (keep direction)' check_harness_declarations "$fx/src"
 
-  fx="$root/co-split-include"; mkdir -p "$fx/src/store"
+  fx="$root/co-inc-line-split"; mkdir -p "$fx/src/store"
   printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
   printf '#[cfg(test)]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
   printf 'pub fn x() {}\ninclude\n!("store/persist_tests.rs");\n' > "$fx/src/lib.rs"
@@ -906,6 +911,33 @@ selftest() {
   printf '#[cfg(test)]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
   printf 'pub fn x() {}\n#[path = "store/persist_\\\ntests.rs"] pub mod alias;\n' > "$fx/src/lib.rs"
   expect_refuse 'a backslash-newline-continued #[path] target refuses (design residual)' check_harness_declarations "$fx/src"
+
+  # 5k. The run 12d residual: a cfg_attr nested inside a cfg_attr closes
+  #     with `))]` — the two-disjunct close test matched neither disjunct,
+  #     so the shape fell through as an ordinary assignment and the reserved
+  #     name laundered (red at 05ed2b8; rustc honors the nesting, so the
+  #     shape is real). The close test accepts any run of `)` and
+  #     separators before `]`, so nesting at any depth is recognized and
+  #     the escape rule reaches the newly recognized shapes. Each fixture
+  #     carries the declared harness so the check is non-vacuous.
+  fx="$root/co-nested-attr-harness"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/alias.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[cfg_attr(all(), cfg_attr(all(), path = "store/persist_tests.rs"))]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a doubly-nested cfg_attr path attribute to a harness-named file refuses (run 12d residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-nested-attr-escape"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/alias.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[cfg_attr(all(), cfg_attr(all(), path = "store/persist_\\x74ests.rs"))]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a doubly-nested cfg_attr path attribute with an escape-carrying target refuses (run 12d residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-nested-attr-clean"; mkdir -p "$fx/src/store"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/store/ordinary.rs"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/alias.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[cfg_attr(all(), cfg_attr(all(), path = "store/ordinary.rs"))]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_pass 'a doubly-nested cfg_attr path attribute to a non-harness file passes (keep direction)' check_harness_declarations "$fx/src"
 
   # 6. Canonical counting: DA hits, BRDA taken (the '-' record counts and can
   #    never be covered), and the file + start-line function identity across
