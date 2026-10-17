@@ -1,4 +1,5 @@
 /target
+/tools/coverage-fn-scan/target
 /dist
 *.db
 *.sqlite
