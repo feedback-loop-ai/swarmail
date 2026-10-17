@@ -81,24 +81,28 @@ strip_rust_comments() {
   # One shared comment-stripping pass over a Rust file (issue #101): line
   # comments and nesting-aware block comments become nothing, line
   # structure preserved (the declaration walk reads lines; a newline is
-  # always emitted). String literals, raw strings, char literals and
-  # lifetimes ARE modelled — a char-level scanner, because a delimiter
-  # inside a literal must start no comment: `const OPEN: &str = "/*";`
-  # followed by a hidden `#[coverage(off)]` must not erase the code after
-  # it from the checked stream (the review's HIGH on the naive stripper,
-  # which over-passed exactly that shape). Undecidable cases err toward
-  # emitting — an over-refusal is loud and names the file; an over-pass
-  # is the one direction this function may not take.
+  # always emitted). Strings, raw strings, char literals and lifetimes are
+  # modelled by a char-level scanner whose raw-open decision is a proof,
+  # not a guess (run 12b, issues #101/#102): the raw prefix is the closed
+  # set r/br/cr, bounded before the whole prefix at an identifier boundary,
+  # and the # run is counted exactly — no cap, no sliding window, no
+  # undecidable residue to resolve toward erasure. Emission is streamed (no
+  # per-line accumulator): a hostile multi-megabyte line costs linear work,
+  # not quadratic. The one tolerated divergence is over-emission — a
+  # comment stays visible, which is loud and bound by the SF: cross-check;
+  # erasing live code is the one direction this function may not take.
   awk '
     function isident(ch) { return ch ~ /[A-Za-z0-9_]/ }
+    function emit(s)      { printf "%s", s }
     {
-      line = $0; out = ""; n = length(line); i = 1; pending = "";
+      line = $0; n = length(line); i = 1;
+      p1 = ""; p2 = ""; p3 = ""; run = 0;
       while (i <= n) {
         c = substr(line, i, 1); c2 = substr(line, i, 2);
         if (depth > 0) {
           # Comment interior: emitted as nothing.
-          if (c2 == "*/") { depth--; i += 2; pending = "" }
-          else if (c2 == "/*") { depth++; i += 2; pending = "" }
+          if (c2 == "*/") { depth--; i += 2; p1 = p2 = p3 = ""; run = 0 }
+          else if (c2 == "/*") { depth++; i += 2; p1 = p2 = p3 = ""; run = 0 }
           else i++;
         } else if (instr) {
           if (shash > 0) {
@@ -106,50 +110,55 @@ strip_rust_comments() {
             if (c == "\"") {
               j = i + 1; cnt = 0;
               while (substr(line, j, 1) == "#") { cnt++; j++ }
-              if (cnt == shash) { instr = 0; out = out substr(line, i, j - i); i = j; pending = ""; continue }
+              if (cnt == shash) { instr = 0; emit(substr(line, i, j - i)); i = j; p1 = p2 = p3 = ""; run = 0; continue }
             }
-            out = out c; i++;
+            emit(c); i++;
           } else {
-            if (c == "\\") { out = out substr(line, i, 2); i += 2; continue }
+            # A raw string has no escapes; a plain string does.
+            if (!sraw && c == "\\") { emit(substr(line, i, 2)); i += 2; continue }
             if (c == "\"") { instr = 0 }
-            out = out c; i++; pending = "";
+            emit(c); i++; p1 = p2 = p3 = ""; run = 0;
           }
         } else if (inchar) {
-          if (c == "\\") { out = out substr(line, i, 2); i += 2; continue }
+          if (c == "\\") { emit(substr(line, i, 2)); i += 2; continue }
           if (c == "\047") { inchar = 0 }
-          out = out c; i++;
+          emit(c); i++;
         } else {
-          if (c2 == "/*") { depth++; i += 2; pending = ""; continue }
+          if (c2 == "/*") { depth++; i += 2; p1 = p2 = p3 = ""; run = 0; continue }
           if (c2 == "//") { break }
           if (c == "\"") {
-            # Raw-string opener: r#*" or br#*" with the r at an identifier
-            # boundary. `pending` holds the normal-state chars before the
-            # quote (capped), so the look-back is source-true even across a
-            # comment that ended earlier on this line. Cap the # run at 8;
-            # longer runs are no spelling this scanner meets, and a missed
-            # raw string only ends early — loud, never an over-pass.
-            k = 0;
-            while (k < 8 && substr(pending, length(pending) - k, 1) == "#") k++;
-            head = substr(pending, length(pending) - k, 1);
-            before = substr(pending, length(pending) - k - 1, 1);
-            before2 = substr(pending, length(pending) - k - 2, 1);
-            if (head == "r" && !isident(before) && (before != "b" || !isident(before2) || before2 == "")) { instr = 1; shash = k }
-            else if (head == "r" && before == "b" && !isident(before2)) { instr = 1; shash = k }
-            else { instr = 1; shash = 0 }
-            out = out c; i++; pending = "";
+            # Raw-string opener proof at the quote: the # run ending here is
+            # `run` and the character before it is p1 — the raw prefix is the
+            # closed set r, br, cr, each at an identifier boundary (the
+            # character before the whole prefix is no identifier char). The
+            # lookback is exact for any run length, so the decision is a
+            # proof, not a guess: there is no unresolved case to resolve
+            # toward erasure. The only tolerated divergence is over-emission
+            # (a comment stays visible — loud, and the SF: cross-check still
+            # binds); erasing live code is the one direction this function
+            # may not take.
+            if (p1 == "r" && ((!isident(p2) && p2 != "b" && p2 != "c") || ((p2 == "b" || p2 == "c") && !isident(p3)))) { instr = 1; shash = run; sraw = 1 }
+            else { instr = 1; shash = 0; sraw = 0 }
+            emit(c); i++; p1 = p2 = p3 = ""; run = 0;
           } else if (c == "\047") {
             ch1 = substr(line, i + 1, 1); ch2 = substr(line, i + 2, 1);
             if (ch1 == "\\" || ch2 == "\047") { inchar = 1 }
             # else a lifetime: emit the quote and move on.
-            out = out c; i++; pending = "";
-          } else { out = out c; pending = pending c; i++ }
+            emit(c); i++; p1 = p2 = p3 = ""; run = 0;
+          } else {
+            emit(c); i++;
+            if (c == "#") { run++ }
+            else { p3 = p2; p2 = p1; p1 = c; run = 0 }
+          }
         }
       }
-      print out;
-      # A plain string cannot span lines; a raw string can. Comments span
-      # lines and depth persists. An unterminated plain string ends at the
-      # newline so it cannot swallow the rest of the file.
-      if (instr && shash == 0) instr = 0;
+      # Line structure is preserved: exactly one newline per input line.
+      print "";
+      # A plain string cannot span lines; a raw string can — any shash,
+      # including zero hashes. Comments span lines and depth persists. An
+      # unterminated plain string ends at the newline so it cannot swallow
+      # the rest of the file.
+      if (instr && shash == 0 && !sraw) instr = 0;
     }
   ' "$1"
 }
@@ -349,16 +358,29 @@ check_harness_declarations() {
               }
             }
           }
-          if ($0 ~ /include![[:space:]]*\([[:space:]]*"/) {
-            rest = $0;
-            sub(/^.*include![[:space:]]*\([[:space:]]*"/, "", rest);
-            q = index(rest, "\"");
-            if (q > 0) {
-              target = substr(rest, 1, q - 1);
-              nseg = split(target, seg, "/"); base = seg[nseg];
-              if (base ~ /(^|[_-])tests\.rs$/) {
-                print harness ": harness-named file included via include! in " parent;
-                scan_bad = 1;
+          if ($0 ~ /include![[:space:]]*\(/) {
+            # An include! whose argument is not a plain string literal
+            # cannot be resolved by this walk (concat!, env!, any macro
+            # spelling): while a harness-named file exists under src/ it
+            # cannot be proven innocent of loading one, so it refuses,
+            # fail-closed, naming the parent (run 12b residual —
+            # `include!(concat!(...))` laundered a harness-named file past
+            # the literal-only arm). A literal argument is checked against
+            # the harness-name regex as before.
+            if ($0 !~ /include![[:space:]]*\([[:space:]]*"/) {
+              print harness ": an include! that is not a plain string literal cannot be resolved by this walk in " parent " — load the file with #[path] or a literal include!";
+              scan_bad = 1;
+            } else {
+              rest = $0;
+              sub(/^.*include![[:space:]]*\([[:space:]]*"/, "", rest);
+              q = index(rest, "\"");
+              if (q > 0) {
+                target = substr(rest, 1, q - 1);
+                nseg = split(target, seg, "/"); base = seg[nseg];
+                if (base ~ /(^|[_-])tests\.rs$/) {
+                  print harness ": harness-named file included via include! in " parent;
+                  scan_bad = 1;
+                }
               }
             }
           }
@@ -636,6 +658,66 @@ selftest() {
 
   printf '#[cfg(test)]\nmod r#persist_tests;\n' > "$fx/src/store/mod.rs"
   expect_pass 'a guarded r# declaration passes' check_harness_declarations "$fx/src"
+
+  # 5b. The stripper's erasure shapes (run 12b, issues #101/#102). Each
+  #     fixture hides a forbidden #[coverage(off)] item behind a shape that
+  #     erased live code from the shared token stream at the base stripper;
+  #     the attribute must stay visible to check_no_coverage_off, which then
+  #     refuses. An erased attribute would let the file pass — the base
+  #     stripper's red on these arms is recorded in the run's landing notes.
+  fx="$root/co-raw-cr"; mkdir -p "$fx/src"
+  printf 'static S: &str = cr#"abc\n/* "#;\n#[coverage(off)]\npub fn hidden() {}\n' > "$fx/src/lib.rs"
+  expect_refuse 'a cr#" raw string keeps the forbidden attribute visible (R1)' check_no_coverage_off "$fx/src"
+
+  fx="$root/co-raw-9hash"; mkdir -p "$fx/src"
+  printf 'const S: &str = r#########"x"/*"y"#########;\n#[coverage(off)]\nmod hidden {}\n' > "$fx/src/lib.rs"
+  expect_refuse 'a 9-hash raw string keeps the forbidden attribute visible (R2)' check_no_coverage_off "$fx/src"
+
+  fx="$root/co-raw-col0"; mkdir -p "$fx/src"
+  printf 'static S: &str =\nr#"say "/*" hi"#;\n#[coverage(off)]\nfn hidden() {}\n' > "$fx/src/lib.rs"
+  expect_refuse 'a column-0 raw string keeps the forbidden attribute visible (I)' check_no_coverage_off "$fx/src"
+
+  fx="$root/co-raw-multiline"; mkdir -p "$fx/src"
+  printf 'static S: &str = r"say\n/* hi";\n#[coverage(off)]\nfn hidden() {}\n' > "$fx/src/lib.rs"
+  expect_refuse 'a multi-line r"…" raw string keeps the forbidden attribute visible (R4)' check_no_coverage_off "$fx/src"
+
+  #     The keep direction: shapes that must pass through the stripper
+  #     verbatim — the raw string is emitted, the code after it survives.
+  fx="$root/raw-col0-keep"; mkdir -p "$fx/src"
+  printf 'static S: &str =\nr#"say "/*" hi"#;\nfn visible() {}\n' > "$fx/src/keep.rs"
+  expect_eq 'a column-0 raw string is emitted verbatim (I, keep direction)' "$(strip_rust_comments "$fx/src/keep.rs")" "$(cat "$fx/src/keep.rs")"
+
+  fx="$root/raw-8hash-keep"; mkdir -p "$fx/src"
+  printf 'const S: &str = r########"x"/*"y"########;\n#[coverage(off)]\nmod hidden {}\n' > "$fx/src/keep.rs"
+  expect_eq 'the 8-hash boundary is emitted verbatim (keep direction)' "$(strip_rust_comments "$fx/src/keep.rs")" "$(cat "$fx/src/keep.rs")"
+  expect_refuse 'the 8-hash boundary keeps the forbidden attribute visible' check_no_coverage_off "$fx/src"
+
+  fx="$root/raw-outr-keep"; mkdir -p "$fx/src"
+  printf 'static S: &str = outer"/*"x";\n#[coverage(off)]\nfn hot() {}\n' > "$fx/src/keep.rs"
+  expect_eq 'an identifier ending in r is a plain string, emitted verbatim (keep direction)' "$(strip_rust_comments "$fx/src/keep.rs")" "$(cat "$fx/src/keep.rs")"
+  expect_refuse 'the plain-string control keeps the forbidden attribute visible' check_no_coverage_off "$fx/src"
+
+  # 5c. The run 12b residual on the declaration walk: an include! whose
+  #     argument is not a plain string literal (concat!, env!, any macro
+  #     spelling) cannot be resolved, and while a harness-named file exists
+  #     under src/ it cannot be proven innocent of loading one — it refuses,
+  #     fail-closed. At the base gate both laundering shapes below PASSED
+  #     the walk (recorded red in the landing notes); a literal include! of
+  #     an ordinary file must keep passing.
+  fx="$root/co-inc-env"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\ninclude!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/store/persist_tests.rs"));\npub fn production() { hidden_production(); }\n' > "$fx/src/lib.rs"
+  expect_refuse 'an unresolved include! (concat! + env!) refuses (laundering residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-inc-lit"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\ninclude!(concat!("src/store/", "persist_tests.rs"));\npub fn production() { hidden_production(); }\n' > "$fx/src/lib.rs"
+  expect_refuse 'an all-literal concat! include! of a harness-named file refuses' check_harness_declarations "$fx/src"
+
+  fx="$root/co-inc-plain"; mkdir -p "$fx/src/store"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/store/ordinary.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\ninclude!("store/ordinary.rs");\n' > "$fx/src/lib.rs"
+  expect_pass 'a literal include! of a non-harness file passes' check_harness_declarations "$fx/src"
 
   # 6. Canonical counting: DA hits, BRDA taken (the '-' record counts and can
   #    never be covered), and the file + start-line function identity across
