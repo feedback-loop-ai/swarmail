@@ -941,11 +941,14 @@ impl SseReader {
 }
 
 /// The plaintext half of a STARTTLS session: greeting read, EHLO sent (with
-/// the STARTTLS extension advertised), STARTTLS written in the same segment
-/// as `pipelined` (which the server must then discard, RFC 3207 §4.2), the
-/// "220 Ready" reply read — and the raw socket returned for the handshake.
+/// the STARTTLS extension advertised), each `before` command sent with its
+/// reply checked against the expected prefix, STARTTLS written in the same
+/// segment as `pipelined` (which the server must then discard, RFC 3207
+/// §4.2), the "220 Ready" reply read — and the raw socket returned for the
+/// handshake.
 async fn plaintext_starttls_phase(
     addr: std::net::SocketAddr,
+    before: &[(&str, &str)],
     pipelined: &[&str],
 ) -> (TcpStream, String, String) {
     let stream = TcpStream::connect(addr).await.unwrap();
@@ -968,6 +971,13 @@ async fn plaintext_starttls_phase(
     }
     let ehlo = ehlo.join("\n");
     assert!(ehlo.contains("250-STARTTLS"), "no STARTTLS offer: {ehlo}");
+
+    for (cmd, want) in before {
+        w.write_all(format!("{cmd}\r\n").as_bytes()).await.unwrap();
+        line.clear();
+        reader.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with(want), "{cmd} before STARTTLS: {line}");
+    }
 
     let mut burst = String::from("STARTTLS\r\n");
     for extra in pipelined {
@@ -1003,7 +1013,29 @@ pub async fn starttls_discarding_pipelined(
     root: CertificateDer<'static>,
     pipelined: &[&str],
 ) -> TlsSmtp {
-    let (tcp, _, _) = plaintext_starttls_phase(addr, pipelined).await;
+    starttls_upgrading(addr, server_name, root, &[], pipelined).await
+}
+
+/// [`starttls`] after a plaintext epoch of its own: each `before` command is
+/// spoken (and its reply prefix checked) before STARTTLS, so a test can
+/// prove what the upgrade forgets.
+pub async fn starttls_after(
+    addr: std::net::SocketAddr,
+    server_name: &str,
+    root: CertificateDer<'static>,
+    before: &[(&str, &str)],
+) -> TlsSmtp {
+    starttls_upgrading(addr, server_name, root, before, &[]).await
+}
+
+async fn starttls_upgrading(
+    addr: std::net::SocketAddr,
+    server_name: &str,
+    root: CertificateDer<'static>,
+    before: &[(&str, &str)],
+    pipelined: &[&str],
+) -> TlsSmtp {
+    let (tcp, _, _) = plaintext_starttls_phase(addr, before, pipelined).await;
     let tls = tls_connector(root)
         .connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp)
         .await
@@ -1018,7 +1050,7 @@ pub async fn starttls_discarding_pipelined(
 /// and then nothing. The handshake is stalled by hand; the caller holds
 /// the socket open to wait out the server's handshake deadline.
 pub async fn stalled_starttls(addr: std::net::SocketAddr) -> TcpStream {
-    let (tcp, _, _) = plaintext_starttls_phase(addr, &[]).await;
+    let (tcp, _, _) = plaintext_starttls_phase(addr, &[], &[]).await;
     tcp
 }
 
@@ -1029,7 +1061,7 @@ pub async fn assert_starttls_handshake_fails(
     server_name: &str,
     root: CertificateDer<'static>,
 ) {
-    let (tcp, _, _) = plaintext_starttls_phase(addr, &[]).await;
+    let (tcp, _, _) = plaintext_starttls_phase(addr, &[], &[]).await;
     let res = tls_connector(root)
         .connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp)
         .await;

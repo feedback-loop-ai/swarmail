@@ -40,6 +40,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0031](0031-sender-honest-stored-bodies.md) | The stored record is sender-honest: no body synthesis, and display-time rendering is not extraction (amends 0005) | **accepted** (operator, 2026-10-16 — "accept all"; issues #39, #54, #55, #56, #57 — landed by #68, `f39813d`) | (Issues #39, #54, #55, #56, #57) |
 | [0032](0032-emptied-inboxes-are-removed.md) | An emptied inbox is gone: one rule across delete, clear and restore | **accepted** (operator, 2026-10-16 — "accept all"; issue #54 — landed by #68, `f39813d`) | (Issue #54) |
 | [0033](0033-one-server-per-data-file.md) | One server per data file: the single-writer posture and the named two-servers hazards | **accepted** (operator, 2026-10-16 — "accept all"; the single-writer lock is in the tree; run 11 receipt) | (Run 11 receipt) |
+| [0034](0034-data-terminator-boundary.md) | Complete DATA boundaries and deliberate SMTP session transitions (amends 0022's SIZE alternative; strengthens 0028) | proposed — awaiting the operator | (Run 13: issues #73, #81, #82) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

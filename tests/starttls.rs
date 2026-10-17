@@ -15,7 +15,7 @@ mod common;
 
 use common::{
     SmtpConn, assert_starttls_handshake_fails, http_json, stalled_starttls, start, start_with,
-    starttls, starttls_discarding_pipelined,
+    starttls, starttls_after, starttls_discarding_pipelined,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -181,6 +181,74 @@ async fn plaintext_pipelined_behind_starttls_is_discarded() {
     .await;
     assert_eq!(code, 200);
     assert_eq!(body["emails"][0]["subject"], "fresh");
+}
+
+/// A successful STARTTLS begins a new epoch (RFC 3207 §4.2, decision 0034
+/// §5, AC11): the plaintext AUTH and the open envelope are both forgotten,
+/// so the TLS side needs a fresh MAIL, may — and must — authenticate again,
+/// and routes to the identity it chose there. One success per epoch holds on
+/// the TLS side too.
+#[tokio::test]
+async fn starttls_resets_identity_and_envelope_for_a_fresh_epoch() {
+    let (server, root, _dir) = start_tls("epoch").await;
+    let b64 = |raw: &str| base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw);
+    let plain_auth = format!("AUTH PLAIN {}", b64("\u{0}plainbox\u{0}pw"));
+    let mut tls = starttls_after(
+        server.smtp_addr,
+        "localhost",
+        root,
+        &[
+            (plain_auth.as_str(), "235"),
+            ("MAIL FROM:<pre@x.io>", "250"),
+            ("RCPT TO:<pre@y.io>", "250"),
+        ],
+    )
+    .await;
+
+    tls.send("DATA").await;
+    assert_eq!(
+        tls.reply_raw().await,
+        "503 5.5.1 Error: need MAIL command",
+        "the plaintext envelope did not survive the upgrade"
+    );
+    tls.send(&format!("AUTH PLAIN {}", b64("\u{0}tlsepoch\u{0}pw")))
+        .await;
+    assert_eq!(tls.reply_raw().await, "235 2.7.0 Accepted");
+    tls.send(&format!("AUTH PLAIN {}", b64("\u{0}other\u{0}pw")))
+        .await;
+    assert_eq!(
+        tls.reply_raw().await,
+        "503 5.5.1 Error: already authenticated"
+    );
+    tls.send("MAIL FROM:<post@x.io>").await;
+    assert!(tls.reply_raw().await.starts_with("250"));
+    tls.send("RCPT TO:<post@y.io>").await;
+    assert!(tls.reply_raw().await.starts_with("250"));
+    let stored = tls.data("Subject: epoch\r\n\r\nbody").await;
+    assert!(stored.starts_with("250"), "{stored}");
+
+    let (code, body) = http_json(
+        server.http_addr,
+        "GET",
+        "/api/v1/inboxes/tlsepoch/messages",
+        None,
+    )
+    .await;
+    assert_eq!(code, 200);
+    let emails = body["emails"].as_array().unwrap();
+    assert_eq!(emails.len(), 1, "{body}");
+    assert_eq!(emails[0]["from"]["address"], "post@x.io");
+    assert_eq!(emails[0]["recipients"], serde_json::json!(["post@y.io"]));
+    for stale in ["plainbox", "other"] {
+        let (_, count) = http_json(
+            server.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/{stale}/count"),
+            None,
+        )
+        .await;
+        assert_eq!(count["count"], 0, "{stale}");
+    }
 }
 
 /// STARTTLS takes no parameters (RFC 3207 §4): 501, and the offer stays open.

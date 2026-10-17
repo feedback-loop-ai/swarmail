@@ -14,14 +14,17 @@
 //! (no read timeout at all) is untouched.
 //!
 //! AUTH PLAIN and AUTH LOGIN assign the session's inbox only on success: a
-//! credential that names nothing — undecodable base64, an empty decoded
-//! username, a `*` cancel, a non-UTF-8 one — is refused `501 5.5.2` and
-//! changes nothing (decision 0028 §2, amending 0004's accept-any posture;
-//! `535` is reserved for the day credentials are checked). The transaction
-//! state machine is RFC 5321's: the envelope is consumed at the DATA
-//! terminator — and by a refused MAIL — so no outcome and no abort inherits
-//! it; out-of-sequence commands are refused `503 5.5.1` (§4.1.4); and DATA
-//! ends on `.` CRLF only (§2.3.8) — a bare-LF `.` line is payload.
+//! credential that names nothing — undecodable base64, a PLAIN that is not
+//! exactly three fields, an empty decoded username, a `*` cancel, a
+//! non-UTF-8 one — is refused `501 5.5.2` and changes nothing (decision 0028
+//! §2, amending 0004's accept-any posture; `535` is reserved for the day
+//! credentials are checked), and one success per TLS epoch is all a session
+//! gets (decision 0034 §5). The transaction state machine is RFC 5321's: the
+//! envelope is consumed at the DATA terminator, reset by RSET, HELO, EHLO
+//! and STARTTLS, and left untouched by every refused MAIL or RCPT;
+//! out-of-sequence commands are refused `503 5.5.1` (§4.1.4); and DATA ends
+//! on CRLF `.` CRLF only (§2.3.8, decision 0034 §1) — a bare-LF `.` line,
+//! or a `.` CRLF line behind a bare LF, is payload.
 
 use crate::chaos::{Chaos, ChaosEvent};
 use crate::extract::{extract_codes, extract_links};
@@ -384,12 +387,82 @@ impl Conn {
     }
 }
 
-/// Extract the bare address from "MAIL FROM:<a@b> SIZE=1" style arguments.
-fn arg_address(arg: &str) -> String {
-    match (arg.find('<'), arg.find('>')) {
-        (Some(a), Some(b)) if b > a => arg[a + 1..b].to_string(),
-        _ => arg.split(':').nth(1).unwrap_or(arg).trim().to_string(),
+/// The refusals of envelope syntax and parameters (decision 0034 §3–§4).
+const MAIL_PATH_SYNTAX: &str = "501 5.5.4 Syntax: MAIL FROM:<address>";
+const RCPT_PATH_SYNTAX: &str = "501 5.5.4 Syntax: RCPT TO:<address>";
+const MAIL_PARAM_INVALID: &str = "501 5.5.4 Invalid MAIL parameter";
+const MAIL_SIZE_TOO_BIG: &str = "552 5.3.4 Declared SIZE exceeds the message size limit";
+const MAIL_PARAM_UNKNOWN: &str = "555 5.5.4 Unsupported MAIL parameter";
+const RCPT_PARAM_UNKNOWN: &str = "555 5.5.4 RCPT parameters not supported";
+
+/// One open transaction: the MAIL sender (empty for the null reverse-path)
+/// and the recipients accepted so far. `None` in the session means no MAIL
+/// — a sender-less envelope holding recipients cannot be represented.
+struct Envelope {
+    from: String,
+    rcpts: Vec<String>,
+}
+
+/// Split a MAIL/RCPT argument into its bracketed path and the parameter
+/// suffix: `keyword` (`FROM:` or `TO:`) case-insensitively, optional
+/// whitespace, then `<path>` with no further angle bracket inside, then
+/// nothing or whitespace before any parameters. Anything else — a missing
+/// or wrong keyword, a bracketless or inverted path, a suffix glued to the
+/// `>` — is `None`, the 501. The path itself stays opaque: local names and
+/// UTF-8 are kept, no `@` or mailbox grammar is demanded.
+fn envelope_path<'a>(arg: &'a str, keyword: &str) -> Option<(&'a str, &'a str)> {
+    let head = arg.get(..keyword.len())?;
+    if !head.eq_ignore_ascii_case(keyword) {
+        return None;
     }
+    let rest = arg[keyword.len()..].trim_start_matches([' ', '\t']);
+    let rest = rest.strip_prefix('<')?;
+    let close = rest.find('>')?;
+    let (path, tail) = (&rest[..close], &rest[close + 1..]);
+    let separated = tail.is_empty() || tail.starts_with([' ', '\t']);
+    if path.contains('<') || !separated {
+        return None;
+    }
+    Some((path, tail))
+}
+
+/// Validate MAIL's parameters left to right, the first error winning:
+/// `SIZE=<digits>` within `cap` (an all-digit value too large to represent
+/// is over any cap: 552), `BODY=7BIT|8BITMIME`, bare `SMTPUTF8` — names and
+/// keywords case-insensitive. A malformed or repeated recognized parameter
+/// is 501, an unknown one 555. An accepted SIZE is only a declaration: the
+/// DATA loop still counts the real bytes.
+fn mail_params(params: &str, cap: usize) -> Result<(), &'static str> {
+    let (mut size, mut body, mut smtputf8) = (false, false, false);
+    for param in params.split_whitespace() {
+        let (name, value) = match param.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (param, None),
+        };
+        let name = name.to_ascii_uppercase();
+        let seen = match name.as_str() {
+            "SIZE" => &mut size,
+            "BODY" => &mut body,
+            "SMTPUTF8" => &mut smtputf8,
+            _ => return Err(MAIL_PARAM_UNKNOWN),
+        };
+        if std::mem::replace(seen, true) {
+            return Err(MAIL_PARAM_INVALID);
+        }
+        match (name.as_str(), value) {
+            ("SIZE", Some(v)) if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) => {
+                // All digits: a failed parse is overflow, over any cap.
+                if !v.parse::<usize>().is_ok_and(|declared| declared <= cap) {
+                    return Err(MAIL_SIZE_TOO_BIG);
+                }
+            }
+            ("BODY", Some(v))
+                if v.eq_ignore_ascii_case("7BIT") || v.eq_ignore_ascii_case("8BITMIME") => {}
+            ("SMTPUTF8", None) => {}
+            _ => return Err(MAIL_PARAM_INVALID),
+        }
+    }
+    Ok(())
 }
 
 /// What the session does when the client says `STARTTLS`.
@@ -439,7 +512,11 @@ enum Line {
     /// UTF-8 validation. DATA is octets (8BITMIME); nothing here re-encodes.
     Command(Vec<u8>),
     /// Over the caller's cap: the tail was drained, the stream is in sync.
-    TooLong,
+    /// `crlf` is the drained line's real ending — its LF preceded by CR —
+    /// because DATA's terminator is only a terminator after a CRLF-ended
+    /// line (decision 0034 §1), discarded lines included. Command and AUTH
+    /// callers ignore it.
+    TooLong { crlf: bool },
     /// EOF before any byte, or a final line with no terminator — not a line
     /// the session can act on (the pop3 sibling's posture).
     Eof,
@@ -468,7 +545,10 @@ async fn read_line_capped(
                 bytes.extend_from_slice(&available[..=i]);
                 reader.consume(i + 1);
                 if bytes.len() > cap {
-                    return Ok(Line::TooLong);
+                    // The whole line is buffered: its ending is read off it
+                    // before it is discarded.
+                    let crlf = bytes.ends_with(b"\r\n");
+                    return Ok(Line::TooLong { crlf });
                 }
                 return Ok(Line::Command(bytes));
             }
@@ -478,9 +558,11 @@ async fn read_line_capped(
                 reader.consume(len);
                 if bytes.len() > cap {
                     // Already over the cap and still no newline: stop
-                    // buffering, drain the rest of the line, refuse it.
-                    drain_line(reader).await?;
-                    return Ok(Line::TooLong);
+                    // buffering, drain the rest of the line, refuse it. The
+                    // last buffered byte seeds the drain — a CR here and the
+                    // LF as the drain's first byte is still a CRLF.
+                    let crlf = drain_line(reader, bytes.last() == Some(&b'\r')).await?;
+                    return Ok(Line::TooLong { crlf });
                 }
             }
         }
@@ -490,19 +572,31 @@ async fn read_line_capped(
 /// Consume the rest of an over-long line — up to and including its newline —
 /// without buffering it, so the byte stream stays in sync and the next line
 /// is read whole. A peer that never sends the newline just idles; its
-/// connection ends whenever it goes away.
-async fn drain_line(reader: &mut (impl tokio::io::AsyncBufRead + Unpin)) -> io::Result<()> {
+/// connection ends whenever it goes away. Answers whether the newline was
+/// preceded by CR: `prev_cr` is the byte before the drain began, carried
+/// across chunks so a CR/LF split over a read boundary is still a CRLF. EOF
+/// before the newline is no CRLF — none is invented.
+async fn drain_line(
+    reader: &mut (impl tokio::io::AsyncBufRead + Unpin),
+    mut prev_cr: bool,
+) -> io::Result<bool> {
     loop {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         match available.iter().position(|&b| b == b'\n') {
             Some(i) => {
+                let crlf = if i == 0 {
+                    prev_cr
+                } else {
+                    available[i - 1] == b'\r'
+                };
                 reader.consume(i + 1);
-                return Ok(());
+                return Ok(crlf);
             }
             None => {
+                prev_cr = available.last() == Some(&b'\r');
                 let len = available.len();
                 reader.consume(len);
             }
@@ -531,7 +625,7 @@ async fn read_command_line(reader: &mut BufReader<Conn>, idle: Duration) -> io::
         Line::Command(bytes) => Ok(CmdLine::Line(
             String::from_utf8(bytes).map_err(io::Error::other)?,
         )),
-        Line::TooLong => {
+        Line::TooLong { .. } => {
             write_line(reader.get_mut(), "500 5.5.2 Line too long", idle).await?;
             Ok(CmdLine::Refused)
         }
@@ -555,9 +649,11 @@ async fn session(
     )
     .await?;
 
-    let mut mail_from: Option<String> = None;
-    let mut rcpts: Vec<String> = Vec::new();
-    let mut inbox = "default".to_string();
+    // The open transaction, if any (decision 0034 §3), and the identity a
+    // successful AUTH chose — `None` routes to `default`, `Some` records the
+    // success itself, `Some("default")` included (§5).
+    let mut envelope: Option<Envelope> = None;
+    let mut identity: Option<String> = None;
 
     loop {
         let cmd_line = match read_command_line(reader, cfg.idle_timeout).await {
@@ -591,7 +687,21 @@ async fn session(
         };
 
         match verb.as_str() {
-            "HELO" | "EHLO" => {
+            // A greeting resets the transaction exactly like RSET and keeps
+            // the AUTH identity (decision 0034 §3). Bare greetings are
+            // accepted, and so is MAIL before any greeting — the sink's
+            // named leniencies (§6).
+            "HELO" => {
+                envelope = None;
+                write_line(
+                    reader.get_mut(),
+                    &format!("250 {}", cfg.hostname),
+                    cfg.idle_timeout,
+                )
+                .await?;
+            }
+            "EHLO" => {
+                envelope = None;
                 let mut resp = format!("250-{}\r\n", cfg.hostname);
                 resp.push_str("250-PIPELINING\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250-SIZE ");
                 resp.push_str(&cfg.max_message_size.to_string());
@@ -669,9 +779,8 @@ async fn session(
                         // RFC 3207 §4.2: everything the client said before
                         // the handshake is forgotten — fresh envelope, fresh
                         // auth, and the buffer went with it.
-                        mail_from = None;
-                        rcpts.clear();
-                        inbox = "default".to_string();
+                        envelope = None;
+                        identity = None;
                         TlsOffer::Active
                     }
                 };
@@ -689,7 +798,7 @@ async fn session(
                 // RFC 4954 §4: AUTH is not permitted during a mail
                 // transaction. The transaction survives the refusal — the
                 // client may finish it or RSET first.
-                if mail_from.is_some() {
+                if envelope.is_some() {
                     write_line(
                         reader.get_mut(),
                         "503 5.5.1 Error: MAIL transaction in progress",
@@ -698,10 +807,34 @@ async fn session(
                     .await?;
                     continue;
                 }
+                // One successful AUTH per TLS epoch (decision 0034 §5): a
+                // second is refused before any decoding or prompt, so the
+                // identity cannot be switched mid-session — `default`
+                // counts. Only STARTTLS starts a new epoch.
+                if identity.is_some() {
+                    write_line(
+                        reader.get_mut(),
+                        "503 5.5.1 Error: already authenticated",
+                        cfg.idle_timeout,
+                    )
+                    .await?;
+                    continue;
+                }
+                // A mechanism and at most one initial response: nothing
+                // missing, nothing ignored.
                 let mut parts = arg.split_whitespace();
-                let mechanism = parts.next().unwrap_or("").to_ascii_uppercase();
-                let b64 = parts.next().map(|s| s.to_string());
-                match mechanism.as_str() {
+                let (Some(mechanism), b64, None) = (parts.next(), parts.next(), parts.next())
+                else {
+                    write_line(
+                        reader.get_mut(),
+                        "501 5.5.4 Syntax: AUTH mechanism [initial-response]",
+                        cfg.idle_timeout,
+                    )
+                    .await?;
+                    continue;
+                };
+                let b64 = b64.map(str::to_string);
+                match mechanism.to_ascii_uppercase().as_str() {
                     "PLAIN" => {
                         let b64 = match b64 {
                             Some(b) => Some(b),
@@ -721,14 +854,15 @@ async fn session(
                         };
                         match auth_plain_inbox(b64.as_deref()) {
                             // The credential named an inbox: the session's
-                            // inbox is assigned.
-                            Some(inbox_name) => inbox = inbox_name,
-                            // It named nothing — undecodable base64, an
-                            // empty authcid, the `*` cancel, a non-UTF-8
-                            // one — so the refusal (decision 0028 §2)
-                            // changes nothing: the previous inbox (or
-                            // `default`) stays and a later delivery flows
-                            // there.
+                            // identity is assigned.
+                            Some(inbox_name) => identity = Some(inbox_name),
+                            // It named nothing — undecodable base64, not
+                            // exactly three fields, an empty authcid, the
+                            // `*` cancel, a non-UTF-8 one — so the refusal
+                            // (decisions 0028 §2, 0034 §5) changes nothing:
+                            // the session stays unauthenticated, a later
+                            // delivery flows to `default`, and a retry may
+                            // still succeed.
                             None => {
                                 write_line(
                                     reader.get_mut(),
@@ -795,7 +929,7 @@ async fn session(
                             continue;
                         }
                         // Accept-any: the password is consumed, never checked.
-                        inbox = user;
+                        identity = Some(user);
                         write_line(reader.get_mut(), "235 2.7.0 Accepted", cfg.idle_timeout)
                             .await?;
                     }
@@ -809,28 +943,16 @@ async fn session(
                     }
                 }
             }
+            // MAIL and RCPT check state, then syntax, then parameters (and
+            // RCPT's ceiling), and only then roll chaos (decision 0034 §3):
+            // every refusal leaves the open transaction exactly as it was,
+            // and an injected failure only ever hits a command that would
+            // otherwise have been accepted.
             "MAIL" => {
-                if let Some(rule) = chaos.check(ChaosEvent::MailFrom) {
-                    tokio::time::sleep(std::time::Duration::from_millis(rule.delay_ms)).await;
-                    // A refused MAIL attempt ends the transaction it
-                    // interrupted (RFC 5321 §4.1.4: a new MAIL begins one):
-                    // the envelope is consumed here, before the refusal — no
-                    // outcome path runs cleanup, and a pipelined DATA after
-                    // the refused MAIL has no envelope to inherit.
-                    mail_from = None;
-                    rcpts.clear();
-                    write_line(
-                        reader.get_mut(),
-                        rule.error.as_deref().unwrap_or("451 4.3.0 chaos"),
-                        cfg.idle_timeout,
-                    )
-                    .await?;
-                    continue;
-                }
                 // A transaction is open: a nested MAIL is refused and the
                 // open transaction survives (RFC 5321 §4.1.4) — state
                 // unchanged, so the client can keep adding recipients.
-                if mail_from.is_some() {
+                if envelope.is_some() {
                     write_line(
                         reader.get_mut(),
                         "503 5.5.1 Error: nested MAIL command",
@@ -839,11 +961,69 @@ async fn session(
                     .await?;
                     continue;
                 }
-                mail_from = Some(arg_address(&arg));
-                rcpts.clear();
+                let Some((from, params)) = envelope_path(&arg, "FROM:") else {
+                    write_line(reader.get_mut(), MAIL_PATH_SYNTAX, cfg.idle_timeout).await?;
+                    continue;
+                };
+                if let Err(refusal) = mail_params(params, cfg.max_message_size) {
+                    write_line(reader.get_mut(), refusal, cfg.idle_timeout).await?;
+                    continue;
+                }
+                if let Some(rule) = chaos.check(ChaosEvent::MailFrom) {
+                    tokio::time::sleep(std::time::Duration::from_millis(rule.delay_ms)).await;
+                    write_line(
+                        reader.get_mut(),
+                        rule.error.as_deref().unwrap_or("451 4.3.0 chaos"),
+                        cfg.idle_timeout,
+                    )
+                    .await?;
+                    continue;
+                }
+                envelope = Some(Envelope {
+                    from: from.to_string(),
+                    rcpts: Vec::new(),
+                });
                 write_line(reader.get_mut(), "250 2.1.0 OK", cfg.idle_timeout).await?;
             }
             "RCPT" => {
+                let Some(open) = envelope.as_mut() else {
+                    write_line(
+                        reader.get_mut(),
+                        "503 5.5.1 Error: need MAIL command",
+                        cfg.idle_timeout,
+                    )
+                    .await?;
+                    continue;
+                };
+                // Only MAIL may name the null path: a recipient is never
+                // `<>`.
+                let to = match envelope_path(&arg, "TO:") {
+                    Some((to, params)) if !to.is_empty() => {
+                        if !params.trim().is_empty() {
+                            write_line(reader.get_mut(), RCPT_PARAM_UNKNOWN, cfg.idle_timeout)
+                                .await?;
+                            continue;
+                        }
+                        to
+                    }
+                    _ => {
+                        write_line(reader.get_mut(), RCPT_PATH_SYNTAX, cfg.idle_timeout).await?;
+                        continue;
+                    }
+                };
+                // The recipient ceiling (decision 0027): the 101st RCPT is
+                // refused before it is appended, so the transaction never
+                // grows past it — an over-long list is answered `452 4.5.3`,
+                // the transient shape a real sender can retry smaller.
+                if open.rcpts.len() >= MAX_RCPTS {
+                    write_line(
+                        reader.get_mut(),
+                        "452 4.5.3 Too many recipients",
+                        cfg.idle_timeout,
+                    )
+                    .await?;
+                    continue;
+                }
                 if let Some(rule) = chaos.check(ChaosEvent::Rcpt) {
                     tokio::time::sleep(std::time::Duration::from_millis(rule.delay_ms)).await;
                     write_line(
@@ -854,29 +1034,7 @@ async fn session(
                     .await?;
                     continue;
                 }
-                if mail_from.is_none() {
-                    write_line(
-                        reader.get_mut(),
-                        "503 5.5.1 Error: need MAIL command",
-                        cfg.idle_timeout,
-                    )
-                    .await?;
-                    continue;
-                }
-                // The recipient ceiling (decision 0027): the 101st RCPT is
-                // refused before it is appended, so the transaction never
-                // grows past it — an over-long list is answered `452 4.5.3`,
-                // the transient shape a real sender can retry smaller.
-                if rcpts.len() >= MAX_RCPTS {
-                    write_line(
-                        reader.get_mut(),
-                        "452 4.5.3 Too many recipients",
-                        cfg.idle_timeout,
-                    )
-                    .await?;
-                    continue;
-                }
-                rcpts.push(arg_address(&arg));
+                open.rcpts.push(to.to_string());
                 write_line(reader.get_mut(), "250 2.1.5 OK", cfg.idle_timeout).await?;
             }
             "DATA" => {
@@ -887,24 +1045,35 @@ async fn session(
                 // is for an open transaction with no recipients yet, which
                 // the client can still satisfy, so it leaves the transaction
                 // open.
-                if mail_from.is_none() {
-                    write_line(
-                        reader.get_mut(),
-                        "503 5.5.1 Error: need MAIL command",
-                        cfg.idle_timeout,
-                    )
-                    .await?;
-                    continue;
-                }
-                if rcpts.is_empty() {
-                    write_line(
-                        reader.get_mut(),
-                        "503 5.5.1 Error: need RCPT command",
-                        cfg.idle_timeout,
-                    )
-                    .await?;
-                    continue;
-                }
+                //
+                // Past both checks the envelope is taken here, once: every
+                // exit from the read loop below other than the real
+                // terminator ends the session, so this is the consumption
+                // at the terminator — every outcome arm (552, chaos, 250,
+                // 451) runs against a taken transaction and none leaves
+                // recipients bleeding into the next mail.
+                let Envelope { from, rcpts } = match envelope.take() {
+                    None => {
+                        write_line(
+                            reader.get_mut(),
+                            "503 5.5.1 Error: need MAIL command",
+                            cfg.idle_timeout,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    Some(open) if open.rcpts.is_empty() => {
+                        envelope = Some(open);
+                        write_line(
+                            reader.get_mut(),
+                            "503 5.5.1 Error: need RCPT command",
+                            cfg.idle_timeout,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    Some(open) => open,
+                };
                 write_line(
                     reader.get_mut(),
                     "354 End data with <CR><LF>.<CR><LF>",
@@ -914,6 +1083,13 @@ async fn session(
 
                 let mut raw: Vec<u8> = Vec::with_capacity(4096);
                 let mut over_limit = false;
+                // Whether the previous wire line ended in CRLF — true right
+                // after the 354, so an immediate `.` CRLF is the empty
+                // message. A `.` CRLF line ends DATA only behind a CRLF
+                // (decision 0034 §1); behind a bare LF it is payload. Read
+                // off the wire bytes before unstuffing, discarded over-cap
+                // lines included — never off what `raw` could hold.
+                let mut prev_crlf = true;
                 loop {
                     // The per-line allowance: one byte more than the message
                     // may still accept, because a leading `..` unstuffs one
@@ -921,8 +1097,9 @@ async fn session(
                     // is dot-stuffed fits — and floored at 3 so the
                     // terminator, `.` CRLF, is always recognizable at the cap
                     // and while draining. No other terminator is recognized
-                    // (RFC 5321 §2.3.8): a `.` + bare-LF line is payload,
-                    // passed verbatim by the `..`-only unstuffing — the
+                    // (RFC 5321 §2.3.8): a `.` + bare-LF line, and a `.`
+                    // CRLF line behind a bare LF, are payload, passed
+                    // verbatim by the `..`-only unstuffing — the
                     // SMTP-smuggling class never opens here.
                     let allowance = cfg
                         .max_message_size
@@ -941,18 +1118,21 @@ async fn session(
                             Ok(Line::Command(bytes)) => bytes,
                             // A line the allowance refuses belongs to an over-cap
                             // message: it was drained unbuffered, the flag sticks
-                            // and the stream is in sync for the terminator.
-                            Ok(Line::TooLong) => {
+                            // and the stream is in sync for the terminator — its
+                            // real ending decides whether the next `.` CRLF is one.
+                            Ok(Line::TooLong { crlf }) => {
                                 over_limit = true;
+                                prev_crlf = crlf;
                                 continue;
                             }
                             Ok(Line::Eof) => return Ok(()), // peer vanished mid-DATA; nothing to store
                             Err(e) if e.kind() == io::ErrorKind::TimedOut => return Ok(()),
                             Err(e) => return Err(e),
                         };
-                    if bytes == b".\r\n" {
+                    if prev_crlf && bytes == b".\r\n" {
                         break;
                     }
+                    prev_crlf = bytes.ends_with(b"\r\n");
                     // Dot-unstuffing: RFC 5321 §4.5.2
                     let payload: &[u8] = if bytes.starts_with(b"..") {
                         &bytes[1..]
@@ -965,15 +1145,6 @@ async fn session(
                         raw.extend_from_slice(payload);
                     }
                 }
-                // The envelope is consumed at the terminator, before any
-                // outcome: every arm below (over-cap, chaos, insert) and
-                // every mid-DATA abort runs against a taken transaction, so
-                // a refused or vanished DATA leaves nothing for the next
-                // command to inherit — no outcome path and no abort path
-                // runs cleanup, and no outcome (250, 552, 451) or chaos
-                // failure leaves recipients bleeding into the next mail.
-                let envelope = mail_from.take();
-                let rcpts = std::mem::take(&mut rcpts);
                 if over_limit {
                     write_line(
                         reader.get_mut(),
@@ -1008,15 +1179,17 @@ async fn session(
                 // the whole seam the wire actually has. The guard releases
                 // the row on resolve or unwind. Parked with the session's
                 // inbox name: the Email that carries it does not exist yet.
-                let _in_flight = crate::api::park_delivery(&inbox);
+                // An unauthenticated session routes to `default`.
+                let inbox = identity.as_deref().unwrap_or("default");
+                let _in_flight = crate::api::park_delivery(inbox);
                 // Whole parse and whole mutation on the blocking pool,
                 // awaited before the reply: the 250 below stays *after* the
                 // commit outcome is known (decision 0001), it just no longer
                 // occupies an async worker (decision 0023) — the parse
                 // joined the mutation there (decision 0030 §1).
                 // `build_email` is pure CPU, so the block is a move, not an
-                // await: raw, the taken recipients and the taken envelope
-                // move in; the session's `inbox` is cloned because the
+                // await: raw, the taken recipients and the taken sender
+                // move in; the session's inbox is copied because the
                 // session lives on. A panic in the parse re-raises here,
                 // exactly as the synchronous call would (decision 0023). A
                 // failed commit refuses (decision 0012) with the fixed line
@@ -1025,8 +1198,8 @@ async fn session(
                 // internals to the log and never to the peer — where the old
                 // tree acknowledged the lie.
                 let email = Store::offload({
-                    let inbox = inbox.clone();
-                    move || build_email(&raw, &inbox, &rcpts, envelope.unwrap_or_default())
+                    let inbox = inbox.to_string();
+                    move || build_email(&raw, &inbox, &rcpts, from)
                 })
                 .await;
                 let id = email.id.clone();
@@ -1050,8 +1223,7 @@ async fn session(
                 }
             }
             "RSET" => {
-                mail_from = None;
-                rcpts.clear();
+                envelope = None;
                 write_line(reader.get_mut(), "250 2.0.0 OK", cfg.idle_timeout).await?;
             }
             "NOOP" => write_line(reader.get_mut(), "250 2.0.0 OK", cfg.idle_timeout).await?,
@@ -1080,15 +1252,21 @@ async fn session(
 }
 
 /// The inbox a PLAIN credential names, or `None` when it names nothing:
-/// undecodable base64, no authcid, an empty-after-trim authcid, or a
-/// non-UTF-8 one. `None` is the `501 5.5.2` refusal (decision 0028 §2) —
-/// the session's inbox is assigned only on success, never minted from a
-/// replacement character.
+/// undecodable base64, anything but exactly three NUL-separated fields, an
+/// empty-after-trim authcid, or a non-UTF-8 one. `None` is the `501 5.5.2`
+/// refusal (decisions 0028 §2, 0034 §5) — the session's inbox is assigned
+/// only on success, never minted from a replacement character, and never
+/// from a password that a short credential shifted into the authcid's seat.
 fn auth_plain_inbox(b64: Option<&str>) -> Option<String> {
     let decoded = b64_decode(b64?)?;
-    // PLAIN: authzid NUL authcid NUL passwd — the authcid names the inbox.
-    let parts: Vec<&[u8]> = decoded.split(|b| *b == 0).collect();
-    let user = parts.get(1).or_else(|| parts.first())?;
+    // PLAIN: authzid NUL authcid NUL passwd — the authcid names the inbox;
+    // the authzid is ignored and the password accepted unchecked.
+    let mut fields = decoded.split(|b| *b == 0);
+    let (Some(_authzid), Some(user), Some(_password), None) =
+        (fields.next(), fields.next(), fields.next(), fields.next())
+    else {
+        return None;
+    };
     let user = String::from_utf8(user.to_vec()).ok()?;
     let user = user.trim();
     if user.is_empty() {
@@ -1443,9 +1621,111 @@ mod tests {
     async fn an_over_long_line_is_refused_and_the_next_line_read_whole() {
         let mut reader = BufReader::new(Bytewise::new(b"0123456789ABCDEF\r\nnext\r\n"));
         let line = read_line_capped(&mut reader, 8).await.unwrap();
-        assert_eq!(line, Line::TooLong);
+        // Bytewise: the CR is the last byte of one drain chunk and the LF
+        // the whole next one — still a CRLF.
+        assert_eq!(line, Line::TooLong { crlf: true });
         let line = read_line_capped(&mut reader, 8).await.unwrap();
         assert_eq!(line, Line::Command(b"next\r\n".to_vec()));
+
+        let mut reader = BufReader::new(Bytewise::new(b"0123456789ABCDEF\nnext\r\n"));
+        let line = read_line_capped(&mut reader, 8).await.unwrap();
+        assert_eq!(line, Line::TooLong { crlf: false });
+        let line = read_line_capped(&mut reader, 8).await.unwrap();
+        assert_eq!(line, Line::Command(b"next\r\n".to_vec()));
+    }
+
+    /// An AsyncRead that yields exactly the chunks it was given, one per
+    /// poll — the controlled read boundaries `Bytewise` cannot express: a
+    /// whole over-cap line in one buffer, or a CR/LF split at a chosen byte.
+    struct Chunks(std::collections::VecDeque<Vec<u8>>);
+
+    impl Chunks {
+        fn new(chunks: &[&[u8]]) -> Self {
+            Self(chunks.iter().map(|c| c.to_vec()).collect())
+        }
+    }
+
+    impl AsyncRead for Chunks {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            if let Some(chunk) = self.get_mut().0.pop_front() {
+                buf.put_slice(&chunk);
+            }
+            Poll::Ready(Ok(())) // nothing left: EOF
+        }
+    }
+
+    /// The over-cap line's real ending, chunked as `chunks` under cap 8,
+    /// and the line read after it — so every case also proves the stream
+    /// stayed in sync.
+    async fn too_long_then(chunks: &[&[u8]]) -> (Line, Line) {
+        let mut reader = BufReader::new(Chunks::new(chunks));
+        let first = read_line_capped(&mut reader, 8).await.unwrap();
+        let next = read_line_capped(&mut reader, 8).await.unwrap();
+        (first, next)
+    }
+
+    /// Every over-cap exit reports the discarded line's true ending
+    /// (decision 0034 §1): the whole-buffer exit reads it off the buffered
+    /// line, the drain exit off the bytes it consumes — with the CR before
+    /// the LF found in the same chunk, at the drain's entry, or at the end
+    /// of an earlier drain chunk. Never guessed either way.
+    #[tokio::test]
+    async fn an_over_cap_line_reports_its_real_ending_on_every_exit() {
+        let next = || Line::Command(b"next\r\n".to_vec());
+        let crlf = || Line::TooLong { crlf: true };
+        let lf = || Line::TooLong { crlf: false };
+
+        // Whole line in one buffer, over the cap on arrival.
+        assert_eq!(
+            too_long_then(&[b"0123456789\r\nnext\r\n"]).await,
+            (crlf(), next())
+        );
+        assert_eq!(
+            too_long_then(&[b"0123456789\nnext\r\n"]).await,
+            (lf(), next())
+        );
+
+        // Drained: CR and LF in the same later chunk, or LF alone there.
+        assert_eq!(
+            too_long_then(&[b"0123456789", b"AB\r\nnext\r\n"]).await,
+            (crlf(), next())
+        );
+        assert_eq!(
+            too_long_then(&[b"0123456789", b"AB\nnext\r\n"]).await,
+            (lf(), next())
+        );
+
+        // The CR is the last buffered byte when the drain begins and the LF
+        // the drain's first byte: the seed carries it.
+        assert_eq!(
+            too_long_then(&[b"012345678\r", b"\nnext\r\n"]).await,
+            (crlf(), next())
+        );
+        // The CR ends one drain chunk, the LF opens the next.
+        assert_eq!(
+            too_long_then(&[b"0123456789", b"AB\r", b"\nnext\r\n"]).await,
+            (crlf(), next())
+        );
+        // The drain's first byte is an LF behind no CR.
+        assert_eq!(
+            too_long_then(&[b"0123456789", b"\nnext\r\n"]).await,
+            (lf(), next())
+        );
+        // A CR earlier in a drain chunk is not the byte before the LF.
+        assert_eq!(
+            too_long_then(&[b"0123456789", b"\rAB", b"\nnext\r\n"]).await,
+            (lf(), next())
+        );
+
+        // EOF inside the drain, right after a CR: no LF, no CRLF invented.
+        assert_eq!(
+            too_long_then(&[b"0123456789", b"AB\r"]).await,
+            (lf(), Line::Eof)
+        );
     }
 
     /// EOF before any byte, or a final line with no terminator: neither is a
@@ -1466,9 +1746,116 @@ mod tests {
         let mut reader = BufReader::new(Bytewise::new(b"0123456789ABCDEF"));
         assert_eq!(
             read_line_capped(&mut reader, 8).await.unwrap(),
-            Line::TooLong
+            Line::TooLong { crlf: false }
         );
         assert_eq!(read_line_capped(&mut reader, 8).await.unwrap(), Line::Eof);
+    }
+
+    /// The MAIL/RCPT path framing (decision 0034 §3): keyword
+    /// case-insensitive, optional whitespace after the colon, a bracketed
+    /// path kept opaque, and nothing or whitespace before any parameters.
+    #[test]
+    fn envelope_paths_are_framed_strictly_and_kept_opaque() {
+        fn from(arg: &str) -> Option<(&str, &str)> {
+            envelope_path(arg, "FROM:")
+        }
+        assert_eq!(from("FROM:<a@b>"), Some(("a@b", "")));
+        assert_eq!(from("from: <a@b>"), Some(("a@b", "")));
+        assert_eq!(from("From:\t<>"), Some(("", "")));
+        assert_eq!(from("FROM:<alice> SIZE=1"), Some(("alice", " SIZE=1")));
+        assert_eq!(from("FROM:<a@b>\tBODY=7BIT"), Some(("a@b", "\tBODY=7BIT")));
+        assert_eq!(
+            envelope_path("TO:<j\u{f6}rg@x.io>", "TO:"),
+            Some(("j\u{f6}rg@x.io", ""))
+        );
+        assert_eq!(envelope_path("to:<r@x.io> ", "TO:"), Some(("r@x.io", " ")));
+
+        // Nothing; shorter than the keyword; the wrong keyword; no colon;
+        // bracketless; inverted; unclosed; a second `<` inside; a stray `>`
+        // glued on; a suffix glued to the bracket; text before the bracket;
+        // a keyword length that is not even a char boundary.
+        for refused in [
+            "",
+            "FR",
+            "TO:<a@b>",
+            "FROM <a@b>",
+            "FROM:a@b",
+            "FROM:>a@b<",
+            "FROM:<a@b",
+            "FROM:<<a@b>>",
+            "FROM:<a@b>>",
+            "FROM:<a@b>SIZE=1",
+            "FROM:x<a@b>",
+            "\u{e9}\u{e9}\u{e9}<a@b>",
+        ] {
+            assert_eq!(from(refused), None, "{refused:?}");
+        }
+    }
+
+    /// MAIL parameters, left to right, first error wins (decision 0034 §4).
+    #[test]
+    fn mail_parameters_follow_the_table() {
+        let cap = 64;
+        for accepted in [
+            "",
+            " ",
+            " SIZE=0",
+            " SIZE=64",
+            " size=000064",
+            " SIZE=1 BODY=7BIT SMTPUTF8",
+            " BODY=8bitmime",
+            " smtputf8",
+        ] {
+            assert_eq!(mail_params(accepted, cap), Ok(()), "{accepted:?}");
+        }
+        for (params, refusal) in [
+            (" SIZE=65", MAIL_SIZE_TOO_BIG),
+            (" SIZE=99999999999999999999999999", MAIL_SIZE_TOO_BIG),
+            (" SIZE", MAIL_PARAM_INVALID),
+            (" SIZE=", MAIL_PARAM_INVALID),
+            (" SIZE=12k", MAIL_PARAM_INVALID),
+            (" SIZE=+12", MAIL_PARAM_INVALID),
+            (" SIZE=-1", MAIL_PARAM_INVALID),
+            (" BODY", MAIL_PARAM_INVALID),
+            (" BODY=BINARYMIME", MAIL_PARAM_INVALID),
+            (" SMTPUTF8=yes", MAIL_PARAM_INVALID),
+            (" SIZE=1 SIZE=1", MAIL_PARAM_INVALID),
+            (" BODY=7BIT body=7bit", MAIL_PARAM_INVALID),
+            (" SMTPUTF8 SMTPUTF8", MAIL_PARAM_INVALID),
+            (" RET=FULL", MAIL_PARAM_UNKNOWN),
+            (" =1", MAIL_PARAM_UNKNOWN),
+            // Left to right: the first error wins, whichever it is.
+            (" RET=FULL SIZE=x", MAIL_PARAM_UNKNOWN),
+            (" SIZE=x RET=FULL", MAIL_PARAM_INVALID),
+            (" SIZE=65 RET=FULL", MAIL_SIZE_TOO_BIG),
+            // A duplicate is refused before its value is weighed.
+            (" SIZE=1 SIZE=65", MAIL_PARAM_INVALID),
+        ] {
+            assert_eq!(mail_params(params, cap), Err(refusal), "{params:?}");
+        }
+    }
+
+    /// PLAIN is exactly `authzid NUL authcid NUL password`: the authcid and
+    /// only the authcid names the inbox — never a password shifted into its
+    /// seat by a short credential (decision 0034 §5).
+    #[test]
+    fn plain_requires_exactly_three_fields() {
+        use base64::Engine;
+        let plain = |raw: &[u8]| {
+            auth_plain_inbox(Some(&base64::engine::general_purpose::STANDARD.encode(raw)))
+        };
+        assert_eq!(plain(b"\0box\0pw"), Some("box".to_string()));
+        assert_eq!(plain(b"admin\0box\0"), Some("box".to_string()));
+        assert_eq!(plain(b"\0 box \0pw"), Some("box".to_string()));
+        assert_eq!(plain(b""), None);
+        assert_eq!(plain(b"secret"), None);
+        assert_eq!(plain(b"box\0secret"), None);
+        assert_eq!(plain(b"\0secret"), None);
+        assert_eq!(plain(b"\0box\0pw\0more"), None);
+        assert_eq!(plain(b"\0\0pw"), None);
+        assert_eq!(plain(b"\0\xff\0pw"), None);
+        assert_eq!(auth_plain_inbox(Some("!!!")), None);
+        assert_eq!(auth_plain_inbox(None), None);
     }
 
     /// A transport that has already handed out its socket reads as EOF and
