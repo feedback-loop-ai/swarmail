@@ -20,19 +20,27 @@
 #      knob: the contract is exact 100/100/100. The floor may rise, never
 #      fall; COVERAGE_FLOOR is accepted only at its final value, 100, and
 #      any other value is refused.
-#   3. Hardening: every run exports a unique CARGO_LLVM_COV_TARGET_DIR, so
-#      no stale instrumented executable or profile from an earlier source
-#      graph can join the merge; the full lcov report, the run log and a
-#      machine-readable summary are preserved in a per-run evidence
-#      directory target/coverage/run.XXXXXX — deliberately NOT removed by
-#      the EXIT trap (which cleans only the instrumented build tree), so a
-#      refusal leaves burn-down evidence and consecutive runs never
-#      overwrite each other; test-harness source (tests.rs, *_tests.rs,
-#      tests/) leaking into the production report refuses; production
-#      source parked under src/**/{tests,examples,benches}/ refuses (it is
-#      excluded from the report by construction, so the denominator would
-#      shrink silently); and any coverage(off) attribute exclusion in src/
-#      refuses — production code cannot shrink the denominator.
+#   3. Hardening: the instrumented build resolves under target/coverage/
+#      (gitignored, disk-backed) by default — never under $TMPDIR, whose
+#      tmpfs quota turned a disk-full build into a mid-build LLVM IO
+#      failure (issue #101) — and an explicit CARGO_LLVM_COV_TARGET_DIR is
+#      honoured verbatim; the EXIT trap removes only a directory the gate
+#      itself created. A free-space preflight refuses before the build,
+#      naming the path, the filesystem and the escape variable. The full
+#      lcov report, the run log and a machine-readable summary are
+#      preserved in a per-run evidence directory target/coverage/run.XXXXXX
+#      — deliberately NOT removed by the EXIT trap (which cleans only the
+#      instrumented build tree), so a refusal leaves burn-down evidence and
+#      consecutive runs never overwrite each other; test-harness source
+#      (tests.rs, *_tests.rs, tests/) leaking into the production report
+#      refuses; production source parked under src/**/{tests,examples,
+#      benches}/ refuses (it is excluded from the report by construction,
+#      so the denominator would shrink silently); any coverage(off)
+#      attribute exclusion in src/ refuses — matched token-wise, after
+#      comment stripping — and every non-harness src/*.rs file must appear
+#      in the report as an SF: record: a file absent from the report was
+#      never measured, and that absence is the check that ends the arms
+#      race a cleverer regex cannot win (issue #101).
 #   4. The measurement is nightly: cargo +<nightly> llvm-cov --workspace
 #      --locked --branch, where <nightly> is an installed toolchain that
 #      actually carries llvm-tools. An unqualified `+nightly` is refused by
@@ -41,10 +49,11 @@
 #      silent toolchain drift everywhere else. Without a nightly there are
 #      no BRDA records and the branch dimension would not exist.
 #   5. `coverage-gate.sh selftest` is part of the contract: it rebuilds
-#      every refusal arm of every check against mktemp fixtures and must
-#      pass before the gate's verdict can be trusted. It is fail-closed —
-#      an arm that passes when it must refuse, or fails when it must pass,
-#      exits non-zero.
+#      every refusal arm of every check against fixture trees under
+#      target/coverage/selftest.XXXXXX (removed by the trap) and must pass
+#      before the gate's verdict can be trusted. It is fail-closed — an arm
+#      that passes when it must refuse, or fails when it must pass, exits
+#      non-zero.
 set -euo pipefail
 
 # Exact 100/100/100 has no percentage knob. COVERAGE_FLOOR survives only as a
@@ -68,19 +77,74 @@ refuse() {
 # rebuild every refusal arm against a fixture tree. They run before any
 # toolchain work: a refusal must not need a nightly build to be heard.
 
+strip_rust_comments() {
+  # One shared comment-stripping pass over a Rust file (issue #101): line
+  # comments and nesting-aware block comments become nothing, line
+  # structure preserved (the declaration walk reads lines). String literals
+  # are not modelled: a delimiter inside a literal can only ever over-refuse
+  # — loudly, naming the file — never over-pass, and no src/ literal carries
+  # one. The failure direction is refuse, never a silent mis-count.
+  awk '
+    {
+      line = $0; out = "";
+      while (length(line) > 0) {
+        if (depth > 0) {
+          open = index(line, "/*"); closer = index(line, "*/");
+          if (open > 0 && (closer == 0 || open < closer)) {
+            depth++; line = substr(line, open + 2);
+          } else if (closer > 0) {
+            depth--; line = substr(line, closer + 2);
+          } else {
+            line = "";
+          }
+        } else {
+          open = index(line, "/*"); slash = index(line, "//");
+          if (open > 0 && (slash == 0 || open < slash)) {
+            out = out substr(line, 1, open - 1);
+            depth++; line = substr(line, open + 2);
+          } else if (slash > 0) {
+            out = out substr(line, 1, slash - 1); line = "";
+          } else {
+            out = out line; line = "";
+          }
+        }
+      }
+      print out;
+    }
+  ' "$1"
+}
+
+rs_tokens() {
+  # The comment-stripped file with all whitespace removed — the token stream
+  # the coverage(off) match runs over. `#[coverage(/**/off)]` and
+  # `#[coverage( off )]` collapse to `#[coverage(off)]` like the plain
+  # spelling (issue #101, fixture E).
+  strip_rust_comments "$1" | tr -d '[:space:]'
+}
+
 check_no_coverage_off() {
   # Attribute-based source exclusions are forbidden everywhere under src/ so
-  # production code cannot silently shrink the denominator (house-rules). A
-  # plain recursive grep: the check must run, not guess — a scan failure
-  # refuses, and no VCS plumbing (git config workarounds, index state)
-  # belongs inside a contract check.
-  local hits status=0
-  hits="$(grep -R -n --include='*.rs' 'coverage(off)' "$1")" || status=$?
-  if [ "$status" -gt 1 ]; then
-    refuse "coverage refusal: the coverage(off) check could not run (grep exit $status)"
+  # production code cannot silently shrink the denominator (house-rules).
+  # The match is token-wise (issue #101): every .rs file is comment-stripped
+  # and whitespace-collapsed before the comparison, so a comment hidden
+  # inside the attribute's arguments and whitespace-padded spellings refuse
+  # like the plain one. A scan failure refuses — the check must run, not
+  # guess — and no VCS plumbing belongs inside a contract check.
+  local dir="$1" found="" file
+  if ! [ -d "$dir" ]; then
+    refuse "coverage refusal: the coverage(off) check could not run — $dir is not a directory"
   fi
-  if [ -n "$hits" ]; then
-    printf '%s\n' "$hits" >&2
+  while IFS= read -r -d '' file; do
+    local stream
+    if ! stream="$(rs_tokens "$file")"; then
+      refuse "coverage refusal: the coverage(off) check could not read $file"
+    fi
+    if [ "${stream#*coverage(off)}" != "$stream" ]; then
+      printf '%s\n' "$file" >&2
+      found=1
+    fi
+  done < <(find "$dir" -type f -name '*.rs' -print0)
+  if [ -n "$found" ]; then
     refuse 'coverage refusal: attribute-based source exclusions are forbidden'
   fi
 }
@@ -116,6 +180,56 @@ check_no_harness_leak() {
   fi
 }
 
+check_report_covers_src() {
+  # The check that ends the arms race (issue #101): every non-harness .rs
+  # file under src/ must appear as an SF: record in the report. A laundering
+  # shape that evades the declaration walk — a #[path] into a harness-named
+  # file from a parent that is never read, an include!, a spelling the line
+  # regexes have not met yet — leaves the harness-named file absent from the
+  # report, and absence refuses. (Harness-named files are excluded here by
+  # construction: they are dropped from the report by cargo-llvm-cov and
+  # their declarations are the declaration walk's business.) The comparison
+  # is a full-suffix match on the report's path — `/<src dir name>/<relative
+  # path>$` — so a sibling name cannot satisfy it by substring.
+  #
+  # One absence is legitimate: a definition-only file — structs, enums,
+  # consts, derive-generated impls — carries no `fn` item once comments are
+  # stripped, so llvm-cov emits no SF record for it (there is no function to
+  # report) and it contributes zero lines, branches and functions to every
+  # denominator. Nothing is hidden, the floor is untouched. Anything that
+  # could execute carries a `fn` item in its comment-stripped source and
+  # stays a refusal — the file is named, so the first `fn` added to a
+  # definition-only file fails loudly here, at the gate, not silently in
+  # review. The probe is word-boundary'd over the comment-stripped text
+  # (whitespace preserved — `pub fn` must read as two tokens), and strings
+  # are not modelled: a literal "fn" can only over-refuse, loudly, never
+  # over-pass — the same direction as the strip itself.
+  local report="$1" src="$2" base missing="" rel
+  base="$(basename "$src")"
+  while IFS= read -r -d '' file; do
+    rel="${file#"$src"/}"
+    if ! awk -v want="/${base}/${rel}" '
+      /^SF:/ {
+        path = substr($0, 5);
+        if (length(path) >= length(want) &&
+            substr(path, length(path) - length(want) + 1) == want) { found = 1; exit }
+      }
+      END { exit found ? 0 : 1 }
+    ' "$report"; then
+      if strip_rust_comments "$file" | grep -qE '(^|[^A-Za-z0-9_])fn([^A-Za-z0-9_]|$)'; then
+        missing="${missing}  ${rel}
+"
+      else
+        printf 'coverage note: %s measures nothing (no fn item in its source) — legitimately absent from the report\n' "$rel"
+      fi
+    fi
+  done < <(find "$src" -type f -name '*.rs' ! -name 'tests.rs' ! -name '*_tests.rs' ! -name '*-tests.rs' -print0)
+  if [ -n "$missing" ]; then
+    printf 'coverage refusal: production source absent from the report (never measured):\n%s' "$missing" >&2
+    exit 1
+  fi
+}
+
 check_harness_declarations() {
   # Decision 0020 (docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md):
   # harness names are reserved under src/. A file named tests.rs / *_tests.rs
@@ -127,14 +241,25 @@ check_harness_declarations() {
   # harness-named file under src/ must therefore be declared by its parent
   # module under #[cfg(test)] — EVERY declaration of it, in EVERY declaring
   # parent (a first-match break would let one guarded declaration launder an
-  # unguarded one), and no declaration may carry #[path = "..."], which
-  # would move the reserved name somewhere the ignore regex cannot see. The
-  # guard is the literal attribute `#[cfg(test)]` on its own line in the
-  # attribute stack directly above the declaration (blank and comment lines
-  # may intervene). Anything else refuses, fail-closed, the same species as
-  # the coverage(off) grep: a false positive is loud and names the file; the
-  # failure direction is refuse, never silently mis-count. This is a
-  # refusal, not a recount — no counting stage is added and none may be.
+  # unguarded one).
+  #
+  # Hardened (issue #101, fixtures A–G): the parent is comment-stripped
+  # first (a guard inside a block comment is no guard); a declaration is any
+  # `mod <stem>;` in any visibility (`pub`, `pub(...)`) including the `r#`
+  # spelling; any `#[path = "..."]` whose target is harness-named refuses
+  # wherever it sits in the parent (it loads the reserved name through a
+  # module the walk does not see); an `include!` of a harness-named file
+  # refuses likewise; a `#[path]`-carrying declaration of `<stem>` does not
+  # count as a declaration of the file (it loads somewhere else — the file
+  # is then uncompiled, and the no-declaration refusal fires); and a
+  # non-`test` cfg on the declaration's attribute stack refuses by name.
+  # The guard is the literal attribute `#[cfg(test)]` on its own line in the
+  # attribute stack directly above the declaration (blank lines may
+  # intervene; comments are already gone). Anything else refuses,
+  # fail-closed, the same species as the coverage(off) check: a false
+  # positive is loud and names the file; the failure direction is refuse,
+  # never silently mis-count. This is a refusal, not a recount — no counting
+  # stage is added and none may be.
   local src="$1" harness_refusals=""
   while IFS= read -r harness; do
     local stem dir; stem="$(basename "$harness" .rs)"; dir="$(dirname "$harness")"
@@ -152,44 +277,75 @@ check_harness_declarations() {
     for parent in "${parents[@]}"; do
       [ -f "$parent" ] || continue
       rc=0
-      detail="$(awk -v stem="$stem" -v harness="$harness" -v parent="$parent" '
+      detail="$(strip_rust_comments "$parent" | awk -v stem="$stem" -v harness="$harness" -v parent="$parent" '
         BEGIN {
           escaped = stem;
           gsub(/[^A-Za-z0-9_]/, "\\\\&", escaped);
+          decl = "^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?mod[[:space:]]+(r#)?" escaped "[[:space:]]*;";
         }
         {
           lines[NR] = $0;
-          if ($0 ~ "^[[:space:]]*mod[[:space:]]+" escaped "[[:space:]]*;") mods[++nmods] = NR;
+          # Any #[path] anywhere in the parent whose target is harness-named
+          # launders the reserved name (fixture A); so does an include! of
+          # one (fixture D). The scan is whole-file, not stack-only.
+          if ($0 ~ /^[[:space:]]*#\[[[:space:]]*path[[:space:]]*=/) {
+            rest = $0;
+            sub(/^[[:space:]]*#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"/, "", rest);
+            q = index(rest, "\"");
+            if (q > 0) {
+              target = substr(rest, 1, q - 1);
+              nseg = split(target, seg, "/"); base = seg[nseg];
+              if (base ~ /(^|[_-])tests\.rs$/) {
+                print harness ": harness-named file loaded via #[path = \"" target "\"] in " parent;
+                scan_bad = 1;
+              }
+            }
+          }
+          if ($0 ~ /include![[:space:]]*\([[:space:]]*"/) {
+            rest = $0;
+            sub(/^.*include![[:space:]]*\([[:space:]]*"/, "", rest);
+            q = index(rest, "\"");
+            if (q > 0) {
+              target = substr(rest, 1, q - 1);
+              nseg = split(target, seg, "/"); base = seg[nseg];
+              if (base ~ /(^|[_-])tests\.rs$/) {
+                print harness ": harness-named file included via include! in " parent;
+                scan_bad = 1;
+              }
+            }
+          }
+          if ($0 !~ decl) next;
+          # Walk the attribute stack above the declaration: blank lines may
+          # intervene; the first non-attribute line ends the stack. Comments
+          # are already stripped, so a commented-out guard is no guard.
+          guarded = 0; path_decl = 0; badcfg = "";
+          for (i = NR - 1; i >= 1; i--) {
+            t = lines[i];
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", t);
+            if (t == "") continue;
+            if (t !~ /^#/) break;
+            if (t ~ /^#\[[[:space:]]*path[[:space:]]*=/) { path_decl = 1; }
+            else if (t == "#[cfg(test)]") { guarded = 1; }
+            else if (t ~ /^#\[[[:space:]]*cfg/) { badcfg = t; }
+          }
+          if (path_decl) next;  # loads a different file — not a declaration of this one
+          if (badcfg != "") {
+            print harness ": declared under a non-test cfg (" badcfg ") in " parent;
+            scan_bad = 1; next;
+          }
+          nmods++; mods[nmods] = NR; guards[nmods] = guarded;
         }
         END {
-          bad = 0;
+          if (scan_bad) exit 1;
           if (nmods == 0) exit 3;  # this parent does not declare the harness
           for (k = 1; k <= nmods; k++) {
-            m = mods[k]; guarded = 0;
-            # Walk the attribute stack above the declaration: blank and
-            # comment lines may intervene; an attribute line must be the
-            # literal guard, and a #[path = "..."] is a refusal in itself.
-            for (i = m - 1; i >= 1; i--) {
-              t = lines[i];
-              gsub(/^[[:space:]]+|[[:space:]]+$/, "", t);
-              if (t == "" || t ~ /^\/\// || t ~ /^\/\*/ || t ~ /^\*/ ) continue;
-              if (t ~ /^#/) {
-                if (t ~ /^#\[[[:space:]]*path[[:space:]]*=/) {
-                  print harness ": declared via #[path] in " parent; bad = 1;
-                } else if (t == "#[cfg(test)]") {
-                  guarded = 1;
-                }
-                continue;
-              }
-              break;
-            }
-            if (!guarded) {
+            if (!guards[k]) {
               print harness ": declared without #[cfg(test)] in " parent; bad = 1;
             }
           }
           exit bad ? 1 : 0;
         }
-      ' "$parent")" || rc=$?
+      ')" || rc=$?
       if [ "$rc" -eq 3 ]; then continue; fi
       any_decl=1
       if [ "$rc" -ne 0 ]; then
@@ -208,6 +364,55 @@ check_harness_declarations() {
   if [ -n "$harness_refusals" ]; then
     printf '%s' "$harness_refusals" >&2
     refuse 'coverage refusal: harness-named file(s) under src/ must be declared by their parent module under #[cfg(test)] (decision 0020: docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md)'
+  fi
+}
+
+# --- instrumented build location ---------------------------------------------
+
+# The instrumented build reserves ≈ 4 GiB (a full workspace build with
+# instrumentation plus the profile data); the floor adds slack for the
+# report, the merge and the evidence directory: 6 GiB, stated once.
+MIN_BUILD_FREE_KIB=$((6 * 1024 * 1024))
+
+check_free_space() {
+  # $1: the directory whose filesystem must hold the instrumented build.
+  # $2: the minimum free KiB. One df, fail-closed: the refusal names the
+  # path, the filesystem and the escape variable — "the instrumented run
+  # failed" (a mid-build LLVM IO failure, hours in) is exactly the refusal
+  # this preflight exists to prevent (issue #101).
+  local dir="$1" min_kib="$2" df_line avail_kib fs mount
+  if ! df_line="$(df -Pk "$dir" 2>/dev/null)"; then
+    refuse "coverage refusal: the free-space preflight could not stat $dir — the instrumented build reserves ${min_kib} KiB; point CARGO_LLVM_COV_TARGET_DIR at a writable path with room"
+  fi
+  avail_kib="$(printf '%s\n' "$df_line" | awk 'NR == 2 { print $4 }')"
+  fs="$(printf '%s\n' "$df_line" | awk 'NR == 2 { print $1 }')"
+  mount="$(printf '%s\n' "$df_line" | awk 'NR == 2 { print $6 }')"
+  if [ -z "$avail_kib" ] || (( avail_kib < min_kib )); then
+    printf 'coverage refusal: %s has %s KiB free on filesystem %s (mounted at %s); the instrumented build reserves %s KiB — free space there, or point CARGO_LLVM_COV_TARGET_DIR at a larger filesystem\n' \
+      "$dir" "${avail_kib:-?}" "${fs:-?}" "${mount:-?}" "$min_kib" >&2
+    exit 1
+  fi
+}
+
+resolve_build_dir() {
+  # The instrumented build directory, two arms (issue #101):
+  #   explicit — CARGO_LLVM_COV_TARGET_DIR is honoured verbatim: the caller
+  #     owns the directory and its cleanup, and the gate exports the value
+  #     it was given, unmodified;
+  #   default  — a fresh mktemp directory under the gitignored, disk-backed
+  #     target/coverage/, never $TMPDIR: an instrumented build is ≈ 4 GiB
+  #     and a tmpfs quota failure surfaces as a mid-build LLVM IO error, not
+  #     a refusal.
+  # Sets RESOLVED_BUILD_DIR and BUILD_DIR_OWNED (1 only when the gate
+  # created the directory — only an owned directory is trap-removed).
+  if [ -n "${CARGO_LLVM_COV_TARGET_DIR:-}" ]; then
+    BUILD_DIR_OWNED=0
+    mkdir -p "$CARGO_LLVM_COV_TARGET_DIR"
+    RESOLVED_BUILD_DIR="$CARGO_LLVM_COV_TARGET_DIR"
+  else
+    BUILD_DIR_OWNED=1
+    mkdir -p target/coverage
+    RESOLVED_BUILD_DIR="$(mktemp -d target/coverage/build.XXXXXX)"
   fi
 }
 
@@ -268,8 +473,7 @@ count_dimensions() {
 # --- selftest ---------------------------------------------------------------
 
 selftest() {
-  local root
-  root="$(mktemp -d "${TMPDIR:-/tmp}/swarmail-coverage-selftest.XXXXXX")"
+  local root="$1"
   local failures=0
 
   expect_pass() {
@@ -290,18 +494,33 @@ selftest() {
       failures=$((failures + 1))
     fi
   }
+  expect_eq() {
+    local label="$1" got="$2" want="$3"
+    if [ "$got" != "$want" ]; then
+      printf 'coverage gate: selftest failure — %s: got "%s", want "%s"\n' "$label" "$got" "$want" >&2
+      failures=$((failures + 1))
+    fi
+  }
 
   # 1. The floor has no percentage knob: anything but 100 refuses before any
   #    toolchain work (a re-entry with a bad floor refuses at the top).
   expect_refuse 'COVERAGE_FLOOR=99 is refused' env COVERAGE_FLOOR=99 bash "$0" selftest
 
-  # 2. coverage(off): the attribute refuses; clean source passes.
+  # 2. coverage(off): the attribute refuses — plain, comment-hidden and
+  #    whitespace-padded spellings alike (issue #101, fixture E); clean
+  #    source passes.
   local fx="$root/co-off"; mkdir -p "$fx/src"
   printf '#[coverage(off)]\nfn hot() {}\n' > "$fx/src/lib.rs"
   expect_refuse 'coverage(off) in src is refused' check_no_coverage_off "$fx/src"
   fx="$root/co-clean"; mkdir -p "$fx/src"
   printf 'fn hot() {}\n' > "$fx/src/lib.rs"
   expect_pass 'clean src passes the coverage(off) check' check_no_coverage_off "$fx/src"
+  fx="$root/co-token-comment"; mkdir -p "$fx/src"
+  printf '#[coverage(/**/off)]\nfn hot() {}\n' > "$fx/src/lib.rs"
+  expect_refuse 'a comment-hidden coverage(off) is refused (fixture E)' check_no_coverage_off "$fx/src"
+  fx="$root/co-token-space"; mkdir -p "$fx/src"
+  printf '#[coverage( off )]\nfn hot() {}\n' > "$fx/src/lib.rs"
+  expect_refuse 'a whitespace-padded coverage(off) is refused (fixture E)' check_no_coverage_off "$fx/src"
 
   # 3. Harness source inside the report refuses; a production-only report
   #    passes.
@@ -318,8 +537,8 @@ selftest() {
   printf 'fn prod() {}\n' > "$fx/src/prod.rs"
   expect_pass 'production source on a measured path passes' check_no_hidden_harness_dirs "$fx/src"
 
-  # 5. Harness declarations (decision 0020). Each arm is a fresh fixture
-  #    tree; the failure direction is refuse.
+  # 5. Harness declarations (decision 0020, hardened by #101). Each arm is a
+  #    fresh fixture tree; the failure direction is refuse.
   fx="$root/decl"; mkdir -p "$fx/src/store"
   printf 'fn persisted() {}\n' > "$fx/src/store/persist_tests.rs"
 
@@ -336,7 +555,7 @@ selftest() {
   expect_refuse 'a same-line attribute is not a stack guard' check_harness_declarations "$fx/src"
 
   printf '#[cfg(test)]\n#[path = "elsewhere.rs"]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
-  expect_refuse 'a #[path] harness declaration is refused' check_harness_declarations "$fx/src"
+  expect_refuse 'a #[path]-carrying declaration does not declare the harness file' check_harness_declarations "$fx/src"
 
   printf 'fn persisted() {}\n' > "$fx/src/store/persist_tests.rs"
   printf 'fn other() {}\n' > "$fx/src/store.rs"
@@ -347,6 +566,28 @@ selftest() {
   printf 'fn other() {}\n' > "$fx/src/store.rs"
   rm "$fx/src/store/mod.rs"
   expect_refuse 'a harness file with no declaration at all is refused' check_harness_declarations "$fx/src"
+
+  # 5a. The #101 bypass fixtures, each of which passed the old line regexes.
+  printf '#[cfg(test)]\nmod persist_tests;\n#[path = "store/persist_tests.rs"]\npub mod helpers;\n' > "$fx/src/store/mod.rs"
+  expect_refuse 'a harness-named #[path] target anywhere in the parent is refused (fixture A)' check_harness_declarations "$fx/src"
+
+  printf '#[cfg(test)]\nmod persist_tests;\n#[cfg(not(test))]\npub(crate) mod persist_tests;\n' > "$fx/src/store/mod.rs"
+  expect_refuse 'a non-test cfg on the declaration refuses (fixture B)' check_harness_declarations "$fx/src"
+
+  printf '/*\n#[cfg(test)]\n*/\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
+  expect_refuse 'a guard inside a block comment is no guard (fixture C)' check_harness_declarations "$fx/src"
+
+  printf '#[cfg(test)]\nmod persist_tests;\ninclude!("store/persist_tests.rs");\n' > "$fx/src/store/mod.rs"
+  expect_refuse 'an include! of a harness-named file refuses (fixture D)' check_harness_declarations "$fx/src"
+
+  printf 'pub mod\npersist_tests;\n/*\n#[cfg(test)]\nmod persist_tests;\n*/\n' > "$fx/src/store/mod.rs"
+  expect_refuse 'a split visibility spelling with a commented guard refuses (fixture G)' check_harness_declarations "$fx/src"
+
+  printf '#[cfg(test)]\npub mod persist_tests;\n' > "$fx/src/store/mod.rs"
+  expect_pass 'a guarded pub declaration passes' check_harness_declarations "$fx/src"
+
+  printf '#[cfg(test)]\nmod r#persist_tests;\n' > "$fx/src/store/mod.rs"
+  expect_pass 'a guarded r# declaration passes' check_harness_declarations "$fx/src"
 
   # 6. Canonical counting: DA hits, BRDA taken (the '-' record counts and can
   #    never be covered), and the file + start-line function identity across
@@ -367,10 +608,52 @@ selftest() {
   } > "$root/synth.info"
   local got
   got="$(count_dimensions "$root/synth.info")"
-  if [ "$got" != "3 2 2 1 3 2" ]; then
-    printf 'coverage gate: selftest failure — counting: got "%s", expected "3 2 2 1 3 2"\n' "$got" >&2
-    failures=$((failures + 1))
-  fi
+  expect_eq 'canonical counting' "$got" '3 2 2 1 3 2'
+
+  # 7. Build-dir resolution (issue #101): the explicit value verbatim, the
+  #    default under the disk-backed target/coverage/ — never $TMPDIR.
+  local resolved
+  resolved="$(CARGO_LLVM_COV_TARGET_DIR="$root/explicit" resolve_build_dir; printf '%s' "$RESOLVED_BUILD_DIR")"
+  expect_eq 'an explicit CARGO_LLVM_COV_TARGET_DIR is honoured verbatim' "$resolved" "$root/explicit"
+  expect_eq 'the explicit build dir is created' "$( [ -d "$root/explicit" ] && echo yes || echo no )" yes
+  resolved="$(unset CARGO_LLVM_COV_TARGET_DIR; resolve_build_dir; printf '%s' "$RESOLVED_BUILD_DIR")"
+  case "$resolved" in
+    target/coverage/build.*)
+      expect_eq 'the default build dir is created' "$( [ -d "$resolved" ] && echo yes || echo no )" yes
+      rm -rf "$resolved"
+      ;;
+    *) expect_eq 'the default build dir resolves under target/coverage/' "$resolved" 'target/coverage/build.XXXXXX' ;;
+  esac
+
+  # 8. The free-space preflight: an absurd floor refuses naming the path,
+  #    the filesystem and the escape variable; a real one passes.
+  expect_refuse 'a preflight floor larger than the filesystem refuses' check_free_space "$root" 999999999999
+  expect_pass 'a preflight floor of 1 KiB passes' check_free_space "$root" 1
+
+  # 9. Report completeness (issue #101): every non-harness src file must
+  #    appear as an SF: record — absence refuses.
+  fx="$root/sfcov"; mkdir -p "$fx/src"
+  printf 'fn a() {}\n' > "$fx/src/a.rs"
+  printf 'fn b() {}\n' > "$fx/src/b.rs"
+  printf 'SF:/repo/src/a.rs\nDA:1,1\nend_of_record\n' > "$root/partial.info"
+  expect_refuse 'a src file absent from the report refuses' check_report_covers_src "$root/partial.info" "$fx/src"
+  printf 'SF:/repo/src/a.rs\nDA:1,1\nend_of_record\nSF:/repo/src/b.rs\nDA:1,0\nend_of_record\n' > "$root/full.info"
+  expect_pass 'a complete report passes the SF cross-check' check_report_covers_src "$root/full.info" "$fx/src"
+
+  # 9b. A definition-only file cannot measure: no `fn` in its comment-
+  #     stripped token stream, so llvm-cov emits no SF record and it adds
+  #     zero to every denominator — its absence passes. A file that could
+  #     execute (or a `fn` hidden only in a comment) keeps the strict
+  #     direction: the first real `fn` added to such a file refuses loudly.
+  fx="$root/defonly"; mkdir -p "$fx/src"
+  printf 'fn a() {}\n' > "$fx/src/a.rs"
+  printf '//! Core data model.\n\n/// A captured email.\n#[derive(Debug, Clone)]\npub struct Email {\n    pub id: String,\n}\n' > "$fx/src/model.rs"
+  printf 'SF:/repo/src/a.rs\nDA:1,1\nend_of_record\n' > "$root/defonly.info"
+  expect_pass 'a definition-only src file is legitimately absent from the report' check_report_covers_src "$root/defonly.info" "$fx/src"
+  printf '//! Core data model.\n// fn hidden_in_a_comment() {}\npub struct Email {\n    pub id: String,\n}\n' > "$fx/src/model.rs"
+  expect_pass 'a fn inside a comment does not make a file measurable' check_report_covers_src "$root/defonly.info" "$fx/src"
+  printf '//! Core data model.\n\n/// A captured email.\npub struct Email {\n    pub id: String,\n}\n\npub fn touch() {}\n' > "$fx/src/model.rs"
+  expect_refuse 'a fn-bearing src file absent from the report refuses' check_report_covers_src "$root/defonly.info" "$fx/src"
 
   if [ "$failures" -ne 0 ]; then
     printf 'coverage gate: selftest failed with %s arm(s)\n' "$failures" >&2
@@ -380,7 +663,13 @@ selftest() {
 }
 
 case "${1:-}" in
-  selftest) selftest; exit 0 ;;
+  selftest)
+    mkdir -p target/coverage
+    selftest_root="$(mktemp -d target/coverage/selftest.XXXXXX)"
+    trap 'rm -rf "$selftest_root"' EXIT
+    selftest "$selftest_root"
+    exit 0
+    ;;
   '') : ;;
   *) refuse "coverage gate: unknown argument '$1' (no argument runs the gate; 'selftest' runs the refusal-arm fixtures)" ;;
 esac
@@ -394,6 +683,19 @@ command -v jq >/dev/null 2>&1 || {
 check_no_coverage_off src
 check_no_hidden_harness_dirs src
 check_harness_declarations src
+
+# The instrumented build directory is resolved, owned and preflighted before
+# any toolchain work: the disk-full refusal must not need a nightly build to
+# be heard (issue #101).
+resolve_build_dir
+forge_target_dir="$RESOLVED_BUILD_DIR"
+if [ "$BUILD_DIR_OWNED" -eq 1 ]; then
+  # The EXIT trap cleans only a directory the gate itself created; a caller's
+  # explicit CARGO_LLVM_COV_TARGET_DIR is the caller's to keep.
+  trap 'rm -rf "$forge_target_dir"' EXIT
+fi
+check_free_space "$forge_target_dir" "$MIN_BUILD_FREE_KIB"
+export CARGO_LLVM_COV_TARGET_DIR="$forge_target_dir"
 
 # Resolve the measurement toolchain: the `nightly` channel alias when it
 # carries llvm-tools — exactly what CI's rust-toolchain@nightly resolves to —
@@ -423,9 +725,6 @@ if ! cargo +"$coverage_toolchain" llvm-cov --version >/dev/null 2>&1; then
   refuse "coverage refusal: cargo +$coverage_toolchain llvm-cov is unavailable — cargo-llvm-cov must be installed (cargo install cargo-llvm-cov)"
 fi
 
-forge_coverage_dir="$(mktemp -d "${TMPDIR:-/tmp}/swarmail-coverage.XXXXXX")"
-trap 'rm -rf "$forge_coverage_dir"' EXIT
-
 # Per-run evidence: a fresh directory per invocation, preserved after the run
 # (the EXIT trap cleans only the instrumented build tree). Consecutive runs
 # never overwrite each other's reports, and a refusal leaves burn-down
@@ -435,10 +734,6 @@ run_dir="$(mktemp -d target/coverage/run.XXXXXX)"
 
 # A unique target directory is stronger than cleaning shared coverage state:
 # no stale instrumented executable can participate in this candidate's merge.
-export CARGO_LLVM_COV_TARGET_DIR="$forge_coverage_dir/target"
-
-# A report is candidate-bound only when no instrumented executable or profile
-# from an earlier source graph can participate in the merge.
 cargo +"$coverage_toolchain" llvm-cov clean --workspace >/dev/null 2>&1
 
 if ! cargo +"$coverage_toolchain" llvm-cov \
@@ -453,6 +748,7 @@ if ! cargo +"$coverage_toolchain" llvm-cov \
 fi
 
 check_no_harness_leak "$run_dir/lcov.info"
+check_report_covers_src "$run_dir/lcov.info" src
 
 read -r line_count line_covered branch_count branch_covered function_count function_covered < <(
   count_dimensions "$run_dir/lcov.info"

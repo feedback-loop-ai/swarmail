@@ -64,6 +64,15 @@ fn decode_refs(input: &str) -> String {
     out
 }
 
+/// Test-only scan counters (issue #102): the ampersand test observes the
+/// reference scan's shape — one call per '&' and at most the window's
+/// bytes per call. `#[cfg(test)]`, so production carries no counter
+/// traffic.
+#[cfg(test)]
+static REF_SCANS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+static REF_SCAN_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// One character reference at the start of `s`: `(decoded char, bytes
 /// consumed)`, or `None` when `s` does not begin with a well-formed
 /// reference — which is the signal to copy the `&` through literally.
@@ -76,10 +85,14 @@ fn parse_ref(s: &str) -> Option<(char, usize)> {
     // 50 MiB '&' run pins a blocking worker for hours, and every store
     // mutation shares that pool (the review's security HOLD).
     const REF_MAX: usize = 40;
+    #[cfg(test)]
+    REF_SCANS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let window = match s[1..].char_indices().nth(REF_MAX) {
         Some((byte_index, _)) => &s[1..1 + byte_index],
         None => &s[1..],
     };
+    #[cfg(test)]
+    REF_SCAN_BYTES.fetch_add(window.len() as u64, std::sync::atomic::Ordering::Relaxed);
     let token_end = window.find(';')? + 1;
     let token = &s[1..token_end];
     let decoded = if let Some(hex) = token
@@ -189,12 +202,29 @@ mod tests {
     // The reference scan is bounded (the review's security HOLD): a match
     // of nothing but '&'s — no ';' anywhere — decodes in bounded work per
     // position, each '&' passing through literal, instead of rescanning
-    // to the match's end for every one of them. A half-megabyte run is
-    // instant under the window and would be minutes of memchr without it.
+    // to the match's end for every one of them. The scan counters make the
+    // bound observable: one call per '&' and at most a window's bytes per
+    // call. Remove the 40-character window and the same input rescans ~4
+    // orders of magnitude more bytes and this assert goes red. The slack
+    // covers parallel inline tests' parse_ref calls landing inside this
+    // delta (issue #102).
     #[test]
     fn an_ampersand_run_decodes_in_bounded_work() {
+        // Mirrors `parse_ref`'s REF_MAX (40 chars): the per-call scan
+        // ceiling. Keep the two in step.
+        const REF_WINDOW_MAX: u64 = 40;
+        const REF_SLACK: u64 = REF_WINDOW_MAX * 1024;
         let src = format!("https://x.io/{}", "&".repeat(500_000));
-        assert_eq!(extract_links(None, Some(&src)), vec![src]);
+        let calls0 = REF_SCANS.load(std::sync::atomic::Ordering::Relaxed);
+        let bytes0 = REF_SCAN_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(extract_links(None, Some(&src)), vec![src.clone()]);
+        let calls = REF_SCANS.load(std::sync::atomic::Ordering::Relaxed) - calls0;
+        let bytes = REF_SCAN_BYTES.load(std::sync::atomic::Ordering::Relaxed) - bytes0;
+        assert!(calls >= 500_000, "one call per '&': {calls}");
+        assert!(
+            bytes <= calls * REF_WINDOW_MAX + REF_SLACK,
+            "the reference scan is unbounded: {calls} calls scanned {bytes} bytes"
+        );
     }
 
     use super::*;

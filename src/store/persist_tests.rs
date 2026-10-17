@@ -2,20 +2,21 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-fn db_path(tag: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "swarmail-store-{tag}-{}-{nanos}.db",
-        std::process::id()
-    ))
+/// A unique scratch directory per test, owned by a drop guard (issue #101):
+/// the database lives *inside* it, so the `-wal`/`-shm` sidecars die with
+/// the directory by construction and cleanup survives a panic — the old
+/// pid+nanos file under `std::env::temp_dir()` leaked on a failing test.
+/// The guard must be held for the test's whole life; parallel tests never
+/// collide because tempfile's name is.
+fn db_path(tag: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::TempDir::with_prefix(format!("swarmail-store-{tag}-")).unwrap();
+    let path = dir.path().join("persist.db");
+    (dir, path)
 }
 
 #[test]
 fn a_reopened_store_restores_mail_order_and_counters() {
-    let path = db_path("restore");
+    let (_guard, path) = db_path("restore");
     {
         let store = Store::open(3, &path).unwrap();
         for id in ["1", "2", "3"] {
@@ -42,7 +43,7 @@ fn a_reopened_store_restores_mail_order_and_counters() {
 
 #[test]
 fn cap_pruning_is_mirrored_to_the_data_file() {
-    let path = db_path("cap");
+    let (_guard, path) = db_path("cap");
     {
         let store = Store::open(2, &path).unwrap();
         for id in ["1", "2", "3"] {
@@ -66,7 +67,7 @@ fn cap_pruning_is_mirrored_to_the_data_file() {
 
 #[test]
 fn clear_and_clear_all_are_mirrored_to_the_data_file() {
-    let path = db_path("clear");
+    let (_guard, path) = db_path("clear");
     {
         let store = Store::open(0, &path).unwrap();
         let _ = store.insert(email("c1", "box-a", "a@x.io"));
@@ -92,7 +93,7 @@ fn clear_and_clear_all_are_mirrored_to_the_data_file() {
 /// memory and disk preserved, so a retry after repair is all a client owes.
 #[test]
 fn a_failing_data_file_refuses_with_zero_trace() {
-    let path = db_path("failing");
+    let (_guard, path) = db_path("failing");
     let store = Store::open(1, &path).unwrap();
     // One committed mail first: the cap's incumbent, and the eviction bait.
     store.insert(email("committed", "box", "a@x.io")).unwrap();
@@ -184,7 +185,10 @@ fn a_failing_data_file_refuses_with_zero_trace() {
 
 #[test]
 fn open_refuses_an_unusable_data_file() {
-    assert!(Store::open(0, &db_path("nope").join("missing-dir").join("x.db")).is_err());
+    // The drop guard owns the scratch dir; the db path's parent directory
+    // inside it is missing, so the open refuses.
+    let (guard, _path) = db_path("nope");
+    assert!(Store::open(0, &guard.path().join("missing-dir").join("x.db")).is_err());
 }
 
 /// Bounded wait until the pre-mirror gate reports it has been entered.
@@ -199,16 +203,13 @@ async fn await_gate_entered(entered: &AtomicBool) {
     }
 }
 
-/// One temp data-file path per test; parallel tests never share one.
-fn pin_db_path(tag: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "swarmail-pin-{tag}-{}-{nanos}.db",
-        std::process::id()
-    ))
+/// One temp data-file path per test, under a drop guard; parallel tests
+/// never share one (issue #101: the guard is returned beside the path and
+/// must be held for the test's whole life).
+fn pin_db_path(tag: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::TempDir::with_prefix(format!("swarmail-pin-{tag}-")).unwrap();
+    let path = dir.path().join("pin.db");
+    (dir, path)
 }
 
 /// The panic-symmetry pin: a mutation that panics inside the mirror path
@@ -255,7 +256,7 @@ impl Drop for GateRelease {
 
 #[tokio::test]
 async fn the_awaited_mutation_does_not_resolve_while_its_commit_is_in_flight() {
-    let path = pin_db_path("ordering");
+    let (_guard, path) = pin_db_path("ordering");
     let store = Arc::new(Store::open(0, &path).unwrap());
     store.insert(email("committed", "box", "a@x.io")).unwrap();
     store.persist.as_ref().unwrap().fail_writes();

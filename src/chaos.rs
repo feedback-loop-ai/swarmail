@@ -389,35 +389,69 @@ mod tests {
 
     /// Two concurrent arms of *different* events both survive (decision
     /// 0029 §3): the whole match happens inside one write-lock scope, so
-    /// neither arm's write can erase the other's. A barrier join — no
-    /// sleeps, no polling.
+    /// neither arm's write can erase the other's. Each round holds the
+    /// write lock across the arms' spawn and rendezvous, then releases it
+    /// and joins. The channel is a zero-capacity rendezvous: an arm's
+    /// `send` cannot complete until the main thread's `recv` does, so the
+    /// main paces the arms one handshake at a time — by the release, every
+    /// arm has run past its send and parked inside `set_event`'s first
+    /// lock acquisition. A buffered channel cannot do this: its sends
+    /// complete before the arm is even scheduled, and the release then
+    /// fires before any arm has reached the lock, leaving the arms to
+    /// serialize naturally — a reintroduced read-clone + separate write
+    /// (a lost update) went undetected for 28 of 50 runs that way. The
+    /// single-round shape still leaves a last-handshake race (an arm
+    /// between its `send` and its lock attempt escapes the parked epoch),
+    /// so the round runs sixteen times on a fresh `Chaos` each: the
+    /// mutant must win every round, and one overlapped pair of read-clones
+    /// — the last writer's stale snapshot — fails the assert (166/200
+    /// single-round reds became 200/200; issue #102). The probabilities
+    /// sit at the poles, where the fire / no-fire branch (decision 0025)
+    /// is stable by construction.
     #[test]
     fn two_concurrent_set_event_arms_both_survive() {
-        let chaos = std::sync::Arc::new(Chaos::default());
         let rule = |p: u8| ChaosRule {
             probability: p,
             error: None,
             delay_ms: 0,
         };
-        let handles: Vec<_> = [
-            (ChaosEvent::Connect, 10u8),
-            (ChaosEvent::MailFrom, 20),
-            (ChaosEvent::Rcpt, 30),
-            (ChaosEvent::Data, 40),
-        ]
-        .into_iter()
-        .map(|(event, p)| {
-            let chaos = std::sync::Arc::clone(&chaos);
-            std::thread::spawn(move || chaos.set_event(event, rule(p)))
-        })
-        .collect();
-        for handle in handles {
-            handle.join().expect("the arm does not panic");
+        for _ in 0..16 {
+            let chaos = std::sync::Arc::new(Chaos::default());
+            // Held across spawn, rendezvous and join — a rendezvous
+            // channel, no sleeps, no polling: the arms cannot complete a
+            // single lock scope until the release, so the mutant's
+            // separate write always lands on a stale snapshot.
+            let held = chaos.config.write().unwrap();
+            let (tx, rx) = std::sync::mpsc::sync_channel(0);
+            let handles: Vec<_> = [
+                (ChaosEvent::Connect, 100u8),
+                (ChaosEvent::MailFrom, 0),
+                (ChaosEvent::Rcpt, 100),
+                (ChaosEvent::Data, 0),
+            ]
+            .into_iter()
+            .map(|(event, p)| {
+                let chaos = std::sync::Arc::clone(&chaos);
+                let tx = tx.clone();
+                std::thread::spawn(move || {
+                    tx.send(()).expect("the test still listens");
+                    chaos.set_event(event, rule(p))
+                })
+            })
+            .collect();
+            drop(tx);
+            for _ in &handles {
+                rx.recv().expect("every arm announces itself");
+            }
+            drop(held);
+            for handle in handles {
+                handle.join().expect("the arm does not panic");
+            }
+            let config = chaos.current();
+            assert_eq!(config.connect, Some(rule(100)), "{config:?}");
+            assert_eq!(config.mail_from, Some(rule(0)), "{config:?}");
+            assert_eq!(config.rcpt, Some(rule(100)), "{config:?}");
+            assert_eq!(config.data, Some(rule(0)), "{config:?}");
         }
-        let config = chaos.current();
-        assert_eq!(config.connect, Some(rule(10)), "{config:?}");
-        assert_eq!(config.mail_from, Some(rule(20)), "{config:?}");
-        assert_eq!(config.rcpt, Some(rule(30)), "{config:?}");
-        assert_eq!(config.data, Some(rule(40)), "{config:?}");
     }
 }

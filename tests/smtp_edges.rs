@@ -1484,3 +1484,65 @@ async fn the_101st_recipient_is_refused_and_not_appended() {
         "the refused recipient was appended: {tos:?}"
     );
 }
+
+/// A session that walks to `DATA` and then goes mute fails `smtp_send`
+/// within the helper deadline, the panic naming the step (issue #102):
+/// the helper's reads are bounded, so a wedged peer cannot hang the suite
+/// on a read that will never end. The peer is a real socket, deliberately
+/// mute before the 354 — the misbehavior is the fixture, the client under
+/// test is the real helper (0004: real protocol, no mocks).
+#[tokio::test]
+async fn a_peer_that_never_sends_the_data_reply_fails_smtp_send_within_a_bound() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        // The pre-DATA script in one write: the client's line reader
+        // consumes it through its buffer, step by step, so no read/write
+        // choreography is needed and coalescing cannot misalign it. The
+        // script ends at RCPT's 250 — the DATA reply never comes.
+        sock.write_all(
+            b"220 mute peer\r\n\
+              250-mute\r\n\
+              250 OK\r\n\
+              250 OK\r\n\
+              250 OK\r\n",
+        )
+        .await
+        .unwrap();
+        // Then drain and never answer: the DATA command and the body land,
+        // no reply follows either of them.
+        let mut buf = [0u8; 4096];
+        loop {
+            match sock.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    });
+
+    let started = std::time::Instant::now();
+    let task = tokio::spawn(smtp_send(addr, None, "f@x.io", "r@x.io", "wedged", "body"));
+    // One helper deadline of slack over the bound itself: the helper must
+    // fail on its own, well inside this wait — a hang fails on timeout.
+    let join = tokio::time::timeout(Duration::from_secs(15), task)
+        .await
+        .expect("smtp_send must fail within the bound, not hang");
+    let payload = join
+        .expect_err("smtp_send must panic at the muted step, not return")
+        .into_panic();
+    let message = payload
+        .downcast_ref::<String>()
+        .expect("the panic is a formatted String");
+    assert!(
+        message.contains("the DATA reply"),
+        "the step is named: {message}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "the failure stayed inside the bound: {:?}",
+        started.elapsed()
+    );
+}

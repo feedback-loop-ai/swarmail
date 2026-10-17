@@ -174,6 +174,16 @@ type Registry = std::sync::Mutex<std::collections::BTreeMap<String, u64>>;
 /// parks, and so never counts.
 static AWAITS: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
 
+/// Waits ever registered per inbox — a cumulative counter (issue #102):
+/// one increment at the single [`park_await`] site, never released. A
+/// refusal that subscribed before validating (the 0025 §5 violation)
+/// leaves a permanent +1 here, which the refusal triples read as a
+/// non-zero delta; the released gauge cannot show it, its row is gone
+/// either way. Rendered through the same per-inbox row machinery. The
+/// contract, in so many words: per-process values, deltas within one
+/// process — never compared across binaries or restarts.
+static AWAITS_REGISTERED: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// HTTP requests currently inside the router, per inbox path — raised by
 /// [`count_in_flight`] for any request scoped to an inbox route. The
 /// router's total lives beside it in [`HTTP_REQUESTS_IN_FLIGHT`].
@@ -238,7 +248,11 @@ impl Drop for UnitGuard {
 /// Register a parked wait (REST `await` or MCP `wait_for_email`) for
 /// `/metrics` observation, under its inbox. The returned guard releases
 /// the row when the wait resolves — by answer, by stop, or by unwind.
+/// The cumulative registration is counted first, at this single site
+/// (issue #102): a wait that parked stays registered forever, so a
+/// refusal's zero delta proves the wait never subscribed.
 pub(crate) fn park_await(inbox: &str) -> UnitGuard {
+    raise(&AWAITS_REGISTERED, inbox);
     UnitGuard::take(&AWAITS, inbox)
 }
 
@@ -414,12 +428,14 @@ pub fn http_requests_in_flight() -> u64 {
 }
 
 /// One readiness registry's rows: the total and, sorted by inbox, one
-/// labeled sample per inbox with a live unit.
-fn registry_rows(registry: &'static Registry, name: &str, total: u64) -> String {
+/// labeled sample per inbox with a live unit. `kind` names the family's
+/// Prometheus type — the gauges are live units, the registered waits are a
+/// cumulative counter.
+fn registry_rows(registry: &'static Registry, name: &str, kind: &str, total: u64) -> String {
     let units = registry
         .lock()
         .expect("a readiness registry mutex cannot poison");
-    let mut out = format!("# TYPE {name} gauge\n{name} {total}\n");
+    let mut out = format!("# TYPE {name} {kind}\n{name} {total}\n");
     for (inbox, count) in units.iter() {
         out.push_str(&format!("{name}{{inbox={inbox:?}}} {count}\n"));
     }
@@ -759,16 +775,27 @@ async fn metrics(State(state): State<AppState>) -> String {
     out.push_str(&registry_rows(
         &AWAITS,
         "swarmail_awaits_active",
+        "gauge",
         awaits_total,
+    ));
+    // The waits ever registered, per inbox (issue #102): the refusal side
+    // of 0025 §5, observable — a refused call leaves the delta at zero.
+    out.push_str(&registry_rows(
+        &AWAITS_REGISTERED,
+        "swarmail_awaits_registered_total",
+        "counter",
+        registry_total(&AWAITS_REGISTERED),
     ));
     out.push_str(&registry_rows(
         &REQUESTS,
         "swarmail_http_requests_in_flight",
+        "gauge",
         http_requests_in_flight(),
     ));
     out.push_str(&registry_rows(
         &DELIVERIES,
         "swarmail_deliveries_in_flight",
+        "gauge",
         deliveries_in_flight(),
     ));
     out
@@ -1620,14 +1647,14 @@ mod tests {
             1,
             "one live unit remains after the inner release"
         );
-        let rendered = registry_rows(&AWAITS, "swarmail_awaits_active", 1);
+        let rendered = registry_rows(&AWAITS, "swarmail_awaits_active", "gauge", 1);
         assert!(
             rendered.contains("swarmail_awaits_active{inbox=\"cov-inner\"} 1"),
             "the label survives an inner release: {rendered}"
         );
         drop(outer);
         assert_eq!(awaits_active(), 0, "the last release empties the gauge");
-        let rendered = registry_rows(&AWAITS, "swarmail_awaits_active", 0);
+        let rendered = registry_rows(&AWAITS, "swarmail_awaits_active", "gauge", 0);
         assert!(
             !rendered.contains("cov-inner"),
             "no row for a quiescent inbox: {rendered}"

@@ -218,9 +218,15 @@ enum Line {
 
 /// The next command line, capped. Reads through the buffer so an over-long
 /// line neither blocks nor accumulates: the tail is drained and reported.
+/// The cap is the loop's own guard — entered while the accumulation is
+/// within the cap, left the moment it is past it — so both sides of the
+/// check are taken by any over-cap line: an `if`-and-`break` inside the
+/// read loop instead leaves the check's false arm (and its block's closing
+/// line) at a zero count under llvm-cov's merged async mapping, which the
+/// exact gate refuses (issue #101).
 async fn read_line_capped(reader: &mut (impl AsyncBufRead + Unpin)) -> io::Result<Line> {
     let mut bytes: Vec<u8> = Vec::new();
-    loop {
+    while bytes.len() <= MAX_COMMAND_LINE {
         let available = reader.fill_buf().await?;
         if available.is_empty() {
             // EOF: a partial line has no terminator, so it is not a command.
@@ -242,17 +248,16 @@ async fn read_line_capped(reader: &mut (impl AsyncBufRead + Unpin)) -> io::Resul
                 bytes.extend_from_slice(available);
                 let len = available.len();
                 reader.consume(len);
-                if bytes.len() > MAX_COMMAND_LINE {
-                    // Already over the cap with no end in sight: stop
-                    // buffering, drain the rest of the line, and leave the
-                    // loop to refuse it below.
-                    drain_line(reader).await?;
-                    break;
-                }
             }
         }
     }
-    // The only way out of the loop is a cap blown mid-line, already drained.
+    // The guard is the only exit: a cap blown mid-line. Drain the rest of
+    // the line, then refuse it below. The drain lives outside the loop —
+    // an `await` in a conditional block inside it misattributes its region
+    // under the merged mapping (the statements report hits while the
+    // block's closing line reads zero), which the exact gate refuses
+    // (issue #101).
+    drain_line(reader).await?;
     Ok(Line::TooLong)
 }
 

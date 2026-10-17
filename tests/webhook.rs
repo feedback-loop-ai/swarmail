@@ -35,6 +35,12 @@ use tokio::sync::watch;
 /// hermetic red of the cap test, where an EMFILE accept under the sandbox's
 /// fd pressure ended a sink after a single connection and every retry was
 /// refused.
+///
+/// The budget tests bind their sinks for this lifetime too — it outlives
+/// any budget a loop could spend (a mutant fifth attempt fires at
+/// ~+8.5 s) — and then never wait on it: the test ends long before the
+/// lifetime does, and the budget itself is observed by signal (issue
+/// #102), not by the sink's clock.
 const SINK_LIFETIME: Duration = Duration::from_secs(25);
 
 /// Pause before re-arming a failed accept. EMFILE is transient — on Linux
@@ -42,14 +48,19 @@ const SINK_LIFETIME: Duration = Duration::from_secs(25);
 /// serves it instead of losing it.
 const ACCEPT_RETRY: Duration = Duration::from_millis(10);
 
-/// The observation window the budget tests give their sinks: it must
-/// outlive the dispatcher's entire four-attempt budget (100+400+1600ms
-/// backoff ≈ 2.1 s, plus POST_TIMEOUT) so the count the channel resolves
-/// with is the count of *every attempt that will ever be made* — a fifth
-/// attempt, if the dispatcher ever made one, lands inside it and is seen.
-/// A window shorter than the budget would close on a sink that can still
-/// be hit, and the "no more than four" assertion would be a guess again.
-const BUDGET_WINDOW: Duration = Duration::from_secs(3);
+/// The live hit counter every sink reports beside its channels: the number
+/// of connections accepted so far, readable at any moment. The budget tests
+/// read it only *after* the server's own `swarmail_webhook_exhausted_total`
+/// row has risen over its pre-mail baseline (issue #102) — by then the
+/// dispatcher has spent its whole budget and made its final await, so the
+/// counter is final and a mutant fifth attempt is *seen* rather than
+/// landing after some window has closed.
+type Hits = Arc<AtomicUsize>;
+
+/// A sink's hits, read once the exhaustion signal has fired.
+fn hits(hits: &Hits) -> usize {
+    hits.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The first *completed* exchange claims the capture channel; every later
 /// exchange only gets a reply. A connection that dies mid-request captures
@@ -69,6 +80,11 @@ type Capture<T> = std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::S
 /// it claims to cover, and a fifth attempt would be unobservable. Awaiting
 /// `rx_count` is the readiness signal for "the window has closed on
 /// everything that will ever arrive".
+///
+/// The returned [`Hits`] counter is the same count, live: incremented at
+/// accept, readable before the window closes (issue #102). Reading it is
+/// sound after a monotonic counter on `/metrics` has signalled that the
+/// dispatcher is done — never instead of one.
 async fn http_sink(
     status: u16,
     window: Duration,
@@ -76,15 +92,17 @@ async fn http_sink(
     std::net::SocketAddr,
     tokio::sync::oneshot::Receiver<String>,
     tokio::sync::oneshot::Receiver<usize>,
+    Hits,
 ) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx_head, rx_head) = tokio::sync::oneshot::channel();
     let (tx_count, rx_count) = tokio::sync::oneshot::channel();
+    let hits: Hits = Arc::new(AtomicUsize::new(0));
     let reply = format!("HTTP/1.1 {status} TEST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     let capture: Capture<String> = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_head)));
+    let sink_hits = hits.clone();
     tokio::spawn(async move {
-        let mut hits = 0usize;
         let deadline = std::time::Instant::now() + window;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -93,7 +111,7 @@ async fn http_sink(
             }
             match tokio::time::timeout(left, listener.accept()).await {
                 Ok(Ok((stream, _))) => {
-                    hits += 1;
+                    sink_hits.fetch_add(1, Ordering::Relaxed);
                     let capture = capture.clone();
                     let reply = reply.clone();
                     tokio::spawn(async move {
@@ -131,9 +149,9 @@ async fn http_sink(
         }
         // The window closed: report what the sink actually saw — the count
         // is observed, never echoed from a hope.
-        let _ = tx_count.send(hits);
+        let _ = tx_count.send(sink_hits.load(Ordering::Relaxed));
     });
-    (addr, rx_head, rx_count)
+    (addr, rx_head, rx_count, hits)
 }
 
 /// What the TLS sink saw: the request head and the negotiated TLS version.
@@ -158,20 +176,20 @@ async fn tls_sink(
     cert_der: Vec<u8>,
     key_der: Vec<u8>,
     window: Duration,
-) -> (SocketAddr, Receiver<Captured>, Receiver<usize>) {
+) -> (SocketAddr, Receiver<Captured>, Receiver<usize>, Hits) {
     tls_sink_cfg(reply, cert_der, key_der, window, 0).await
 }
 
 /// [`tls_sink`] with the first `drop_first` accepted connections dropped
 /// unanswered — a deterministic attempt failure below the HTTP layer, for the
-/// retry proof.
+/// retry proof. The [`Hits`] counter is live, as on every sink.
 async fn tls_sink_cfg(
     reply: &'static [u8],
     cert_der: Vec<u8>,
     key_der: Vec<u8>,
     window: Duration,
     drop_first: usize,
-) -> (SocketAddr, Receiver<Captured>, Receiver<usize>) {
+) -> (SocketAddr, Receiver<Captured>, Receiver<usize>, Hits) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let key = tokio_rustls::rustls::pki_types::PrivateKeyDer::Pkcs8(
@@ -189,9 +207,10 @@ async fn tls_sink_cfg(
     let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
     let (tx_req, rx_req) = tokio::sync::oneshot::channel();
     let (tx_count, rx_count) = tokio::sync::oneshot::channel();
+    let hits: Hits = Arc::new(AtomicUsize::new(0));
     let capture: Capture<Captured> = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_req)));
+    let sink_hits = hits.clone();
     tokio::spawn(async move {
-        let mut hits = 0usize;
         let deadline = std::time::Instant::now() + window;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -200,8 +219,7 @@ async fn tls_sink_cfg(
             }
             match tokio::time::timeout(left, listener.accept()).await {
                 Ok(Ok((stream, _))) => {
-                    hits += 1;
-                    let ordinal = hits;
+                    let ordinal = sink_hits.fetch_add(1, Ordering::Relaxed) + 1;
                     let acceptor = acceptor.clone();
                     let capture = capture.clone();
                     tokio::spawn(async move {
@@ -246,9 +264,9 @@ async fn tls_sink_cfg(
             }
         }
         // The window closed: the count is observed, never echoed.
-        let _ = tx_count.send(hits);
+        let _ = tx_count.send(sink_hits.load(Ordering::Relaxed));
     });
-    (addr, rx_req, rx_count)
+    (addr, rx_req, rx_count, hits)
 }
 
 /// The Content-Length of a request head already fully buffered, if any.
@@ -270,17 +288,19 @@ fn content_length(buf: &[u8]) -> Option<usize> {
 /// with `status` and an absolute `Location` header pointing wherever it
 /// likes, for the sink's whole `window`, and reports the first completed
 /// request (head and body) the moment it arrives plus the final observed
-/// hit count (resolved only at window close, issue #51). Each connection is
+/// hit count (resolved only at window close, issue #51), with the same live
+/// [`Hits`] counter as every other sink. Each connection is
 /// served in its own task; an accept error is retried, never silently fatal.
 async fn redirect_sink(
     status: u16,
     location: String,
     window: Duration,
-) -> (SocketAddr, Receiver<String>, Receiver<usize>) {
+) -> (SocketAddr, Receiver<String>, Receiver<usize>, Hits) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx_first, rx_first) = tokio::sync::oneshot::channel();
     let (tx_count, rx_count) = tokio::sync::oneshot::channel();
+    let hits: Hits = Arc::new(AtomicUsize::new(0));
     let reason = match status {
         301 => "Moved Permanently",
         302 => "Found",
@@ -292,8 +312,8 @@ async fn redirect_sink(
         "HTTP/1.1 {status} {reason}\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     );
     let capture: Capture<String> = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_first)));
+    let sink_hits = hits.clone();
     tokio::spawn(async move {
-        let mut hits = 0usize;
         let deadline = std::time::Instant::now() + window;
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -302,7 +322,7 @@ async fn redirect_sink(
             }
             match tokio::time::timeout(left, listener.accept()).await {
                 Ok(Ok((stream, _))) => {
-                    hits += 1;
+                    sink_hits.fetch_add(1, Ordering::Relaxed);
                     let capture = capture.clone();
                     let reply = reply.clone();
                     tokio::spawn(async move {
@@ -337,9 +357,9 @@ async fn redirect_sink(
             }
         }
         // The window closed: the count is observed, never echoed.
-        let _ = tx_count.send(hits);
+        let _ = tx_count.send(sink_hits.load(Ordering::Relaxed));
     });
-    (addr, rx_first, rx_count)
+    (addr, rx_first, rx_count, hits)
 }
 
 /// The redirect destination: records the head of every request that arrives
@@ -393,7 +413,7 @@ fn mint_cert() -> (String, Vec<u8>, Vec<u8>) {
 #[tokio::test]
 async fn delivered_to_a_pathless_target_with_secret() {
     let srv = start().await;
-    let (addr, rx, _) = http_sink(204, SINK_LIFETIME).await;
+    let (addr, rx, _, _hits) = http_sink(204, SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}", "secret": "topsecret"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
@@ -421,10 +441,10 @@ async fn failing_target_is_retried_four_times_not_more() {
     let srv = start().await;
     // The sink refuses everything: the dispatcher must try exactly the
     // four-attempt budget (deliver's 0..4) and then drop with a warning.
-    // The window outlives the budget: the count resolves only at close, so
-    // `seen` is the number of *every* attempt that will ever be made — a
-    // fifth attempt would red this.
-    let (addr, _, rx_count) = http_sink(500, BUDGET_WINDOW).await;
+    // The window outlives any budget the loop could ever spend — a mutant
+    // fifth attempt fires at ~+8.5 s — and the test never waits on it:
+    // the budget is observed by signal below.
+    let (addr, _, _count, sink_hits) = http_sink(500, SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}/hooks", "inbox": "retrybox"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
@@ -434,6 +454,10 @@ async fn failing_target_is_retried_four_times_not_more() {
     smtp_send(srv.smtp_addr, None, "f@x.io", "other@x.io", "filtered", "x")
         .await
         .unwrap();
+
+    // The exhaustion baseline is taken before the mail that will exhaust
+    // its budget: only a NEW exhaustion satisfies the poll below (issue #51).
+    let exhausted_base = metric_now(srv.http_addr, "swarmail_webhook_exhausted_total").await;
     smtp_send(
         srv.smtp_addr,
         Some("retrybox"),
@@ -445,13 +469,20 @@ async fn failing_target_is_retried_four_times_not_more() {
     .await
     .unwrap();
 
-    // No sleep: the count channel resolves at window close (the window
-    // outlives the whole 2.1 s budget), and the resolved count is the
-    // observed total — not a hope echoed back at the `expect`-th hit.
-    let seen = tokio::time::timeout(BUDGET_WINDOW + Duration::from_secs(10), rx_count)
-        .await
-        .expect("the sink window never closed")
-        .unwrap();
+    // Budget by signal, never by clock (issue #102): the hit count is read
+    // only after the server's own rendered row says the budget is spent.
+    // The dispatcher's counters increment after its last await, so this
+    // poll resolves strictly after every connection the dispatcher will
+    // ever make — a fifth attempt is *seen* by the sink, not lost past a
+    // closing window.
+    wait_for_metric_from(
+        srv.http_addr,
+        "swarmail_webhook_exhausted_total",
+        exhausted_base,
+        1,
+    )
+    .await;
+    let seen = hits(&sink_hits);
     assert_eq!(seen, 4, "expected the 4-attempt retry budget, no more");
 }
 
@@ -459,7 +490,7 @@ async fn failing_target_is_retried_four_times_not_more() {
 async fn https_target_is_delivered_over_tls() {
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
-    let (addr, rx, _) = tls_sink(
+    let (addr, rx, _, _hits) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,
@@ -512,27 +543,35 @@ async fn untrusted_certificate_fails_the_handshake_and_is_retried() {
     // attempt dies in the handshake, and the dispatcher must make exactly
     // the four-attempt budget of connections.
     let untrusted = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
-    let (addr, _, rx_count) = tls_sink(
+    // The window outlives any budget the loop could spend; the count is
+    // observed by signal below, never by the sink's clock (issue #102).
+    let (addr, _, _count, sink_hits) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         untrusted.cert.der().to_vec(),
         untrusted.key_pair.serialize_der(),
-        BUDGET_WINDOW,
+        SINK_LIFETIME,
     )
     .await;
     let targets = format!(r#"[{{"url": "https://127.0.0.1:{}/hook"}}]"#, addr.port());
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
 
+    // Baseline before the mail; only a NEW exhaustion resolves the poll.
+    let exhausted_base = metric_now(srv.http_addr, "swarmail_webhook_exhausted_total").await;
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "distrusted", "x")
         .await
         .unwrap();
 
-    // The window outlives the whole budget; the count resolves at close
-    // with everything the sink saw — a fifth handshake attempt would red.
-    let seen = tokio::time::timeout(BUDGET_WINDOW + Duration::from_secs(10), rx_count)
-        .await
-        .expect("the sink window never closed")
-        .unwrap();
+    // The budget is spent when the server's own row says so (issue #102);
+    // the read after it sees every handshake attempt, a fifth included.
+    wait_for_metric_from(
+        srv.http_addr,
+        "swarmail_webhook_exhausted_total",
+        exhausted_base,
+        1,
+    )
+    .await;
+    let seen = hits(&sink_hits);
     assert_eq!(seen, 4, "expected 4 handshake attempts, no more");
 }
 
@@ -544,11 +583,12 @@ async fn non_2xx_over_tls_is_retried_four_times_not_more() {
     // non-2xx received over an established TLS session must cost exactly the
     // same four-attempt budget as a non-2xx over plain http — TLS may not
     // change the failure semantics, only the transport.
-    let (addr, _, rx_count) = tls_sink(
+    // The window outlives any budget the loop could spend (issue #102).
+    let (addr, _, _count, sink_hits) = tls_sink(
         b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,
-        BUDGET_WINDOW,
+        SINK_LIFETIME,
     )
     .await;
     let targets = serde_json::json!([{
@@ -559,15 +599,21 @@ async fn non_2xx_over_tls_is_retried_four_times_not_more() {
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
 
+    // Baseline before the mail; only a NEW exhaustion resolves the poll.
+    let exhausted_base = metric_now(srv.http_addr, "swarmail_webhook_exhausted_total").await;
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "servererror", "x")
         .await
         .unwrap();
 
-    // The window outlives the whole budget; the count resolves at close.
-    let seen = tokio::time::timeout(BUDGET_WINDOW + Duration::from_secs(10), rx_count)
-        .await
-        .expect("the sink window never closed")
-        .unwrap();
+    // The budget is spent when the server's own row says so (issue #102).
+    wait_for_metric_from(
+        srv.http_addr,
+        "swarmail_webhook_exhausted_total",
+        exhausted_base,
+        1,
+    )
+    .await;
+    let seen = hits(&sink_hits);
     assert_eq!(seen, 4, "expected 4 attempts over TLS, no more");
 }
 
@@ -626,12 +672,15 @@ async fn redirect_302_never_leaks_the_secret_to_the_destination() {
     // ever race past the listener that would catch it.
     let (tx_stop, rx_stop) = watch::channel(false);
     let (dest, rx_leaked) = destination_sink(rx_stop).await;
-    let (addr, rx_first, rx_count) =
-        redirect_sink(302, format!("http://{dest}/stolen"), BUDGET_WINDOW).await;
+    // The window outlives any budget the loop could spend (issue #102).
+    let (addr, rx_first, _count, sink_hits) =
+        redirect_sink(302, format!("http://{dest}/stolen"), SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}/hook", "secret": "topsecret"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
 
+    // Baseline before the mail; only a NEW exhaustion resolves the poll.
+    let exhausted_base = metric_now(srv.http_addr, "swarmail_webhook_exhausted_total").await;
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "redirected", "x")
         .await
         .unwrap();
@@ -657,15 +706,20 @@ async fn redirect_302_never_leaks_the_secret_to_the_destination() {
     assert!(head.contains("\"event\":\"received\""), "{head}");
 
     // A redirect-following client would land on the destination within
-    // microseconds of the 302, and again on every retry: the sink's window
-    // outlives the whole budget, so its close is the proof point that every
-    // attempt has been served — no sleep is guessing at it. The window
-    // close is also the final beat: nothing can arrive after a budget
-    // already exhausted (the count below is the evidence).
-    let seen = tokio::time::timeout(BUDGET_WINDOW + Duration::from_secs(10), rx_count)
-        .await
-        .expect("the redirect sink never finished serving the budget")
-        .unwrap();
+    // microseconds of the 302, and again on every retry — the destination
+    // is asked only after the budget is spent (below), so nothing it could
+    // have received is still in flight. Budget by signal, never by clock
+    // (issue #102): the exhaustion row is the proof point that every
+    // attempt has been served, and the hit count read after it sees a
+    // mutant fifth attempt too.
+    wait_for_metric_from(
+        srv.http_addr,
+        "swarmail_webhook_exhausted_total",
+        exhausted_base,
+        1,
+    )
+    .await;
+    let seen = hits(&sink_hits);
     tx_stop.send(true).unwrap();
     let leaked = tokio::time::timeout(Duration::from_secs(5), rx_leaked)
         .await
@@ -695,12 +749,15 @@ async fn redirect_307_never_leaks_the_secret_or_body_to_the_destination() {
     let srv = start().await;
     let (tx_stop, rx_stop) = watch::channel(false);
     let (dest, rx_leaked) = destination_sink(rx_stop).await;
-    let (addr, rx_first, rx_count) =
-        redirect_sink(307, format!("http://{dest}/stolen"), BUDGET_WINDOW).await;
+    // The window outlives any budget the loop could spend (issue #102).
+    let (addr, rx_first, _count, sink_hits) =
+        redirect_sink(307, format!("http://{dest}/stolen"), SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}/hook", "secret": "topsecret"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
 
+    // Baseline before the mail; only a NEW exhaustion resolves the poll.
+    let exhausted_base = metric_now(srv.http_addr, "swarmail_webhook_exhausted_total").await;
     smtp_send(
         srv.smtp_addr,
         None,
@@ -728,13 +785,17 @@ async fn redirect_307_never_leaks_the_secret_or_body_to_the_destination() {
     );
     assert!(head.contains("\"event\":\"received\""), "{head}");
 
-    // The window closes after the whole budget: the count is the observed
-    // total, and its close — not a sleep — is the final beat before the
-    // destination is asked what it saw.
-    let seen = tokio::time::timeout(BUDGET_WINDOW + Duration::from_secs(10), rx_count)
-        .await
-        .expect("the redirect sink never finished serving the budget")
-        .unwrap();
+    // Budget by signal, never by clock (issue #102): the count is read
+    // after the exhaustion row has risen, so it is the final total — and
+    // the final beat before the destination is asked what it saw.
+    wait_for_metric_from(
+        srv.http_addr,
+        "swarmail_webhook_exhausted_total",
+        exhausted_base,
+        1,
+    )
+    .await;
+    let seen = hits(&sink_hits);
     tx_stop.send(true).unwrap();
     let leaked = tokio::time::timeout(Duration::from_secs(5), rx_leaked)
         .await
@@ -786,7 +847,7 @@ async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
     let mut sinks = Vec::new();
     for _ in 0..count {
         let (ca_pem, leaf, leaf_key) = mint_cert();
-        let (addr, rx, _) = tls_sink(
+        let (addr, rx, _, _hits) = tls_sink(
             b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
             leaf,
             leaf_key,
@@ -874,7 +935,7 @@ async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
 async fn a_dropped_first_attempt_is_retried_and_still_delivered_over_tls() {
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
-    let (addr, rx, _) = tls_sink_cfg(
+    let (addr, rx, _, _hits) = tls_sink_cfg(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,
@@ -919,11 +980,13 @@ async fn a_dropped_first_attempt_is_retried_and_still_delivered_over_tls() {
 async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
-    let (addr, rx, count) = tls_sink(
+    // The window outlives everything the two passes could spend; the count
+    // is read by signal below (issue #102).
+    let (addr, rx, _count, sink_hits) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,
-        BUDGET_WINDOW,
+        SINK_LIFETIME,
     )
     .await;
 
@@ -935,6 +998,9 @@ async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
 
+    // The delivered baseline is taken before either mail exists: only NEW
+    // deliveries resolve the poll below (issue #51).
+    let delivered_base = metric_now(srv.http_addr, "swarmail_webhook_delivered_total").await;
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "first pass", "x")
         .await
         .unwrap();
@@ -942,10 +1008,9 @@ async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
         .await
         .unwrap();
 
-    // The first delivery is captured over TLS; the sink's window closes
-    // after any delivery's whole budget could have run, so its resolved
-    // count is everything the sink saw — the second pass through the cached
-    // client is in it, and a third connection would red.
+    // The first delivery is captured over TLS; the second pass is *in* the
+    // count read after the server's own row says both deliveries happened —
+    // a third connection would red (issue #102).
     let captured = tokio::time::timeout(Duration::from_secs(5), rx)
         .await
         .expect("the first delivery timed out")
@@ -955,11 +1020,15 @@ async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
         "not negotiated over TLS: {:?}",
         captured
     );
-    let hits = tokio::time::timeout(BUDGET_WINDOW + Duration::from_secs(10), count)
-        .await
-        .expect("the sink window never closed")
-        .unwrap();
-    assert_eq!(hits, 2, "both passes must reach the sink over TLS");
+    wait_for_metric_from(
+        srv.http_addr,
+        "swarmail_webhook_delivered_total",
+        delivered_base,
+        2,
+    )
+    .await;
+    let hits_seen = hits(&sink_hits);
+    assert_eq!(hits_seen, 2, "both passes must reach the sink over TLS");
 }
 
 /// A `ca_pem` whose base64 does not decode: the PUT refuses with 400,
@@ -970,15 +1039,16 @@ async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
 async fn garbage_ca_pem_is_refused_at_put_and_nothing_is_applied() {
     let srv = start().await;
     // The sink exists only to prove the refused target never dialed: the
-    // window closes after the whole backoff budget, and the resolved count
-    // is the sink's *observed* total (issue #51's can-fire leg) — zero
-    // means no dial was ever made.
+    // GET below is the structural proof that nothing was applied, so no
+    // delivery can ever be armed for the mail and no connection can ever
+    // be made — the zero is read after the mail is stored, with no window
+    // to race (issue #102).
     let pair = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
-    let (addr, _rx_req, rx_count) = tls_sink(
+    let (addr, _rx_req, _count, sink_hits) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         pair.cert.der().to_vec(),
         pair.key_pair.serialize_der(),
-        BUDGET_WINDOW,
+        SINK_LIFETIME,
     )
     .await;
     let broken = "-----BEGIN CERTIFICATE-----\n!!!not base64!!!\n-----END CERTIFICATE-----";
@@ -1007,11 +1077,10 @@ async fn garbage_ca_pem_is_refused_at_put_and_nothing_is_applied() {
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "garbage ca", "x")
         .await
         .unwrap();
-    let seen = tokio::time::timeout(BUDGET_WINDOW + Duration::from_secs(10), rx_count)
-        .await
-        .expect("the sink window never closed")
-        .unwrap();
-    assert_eq!(seen, 0, "the sink never saw a connection: {seen} arrived");
+    // Nothing applied (the GET above was empty) ⇒ no delivery exists to
+    // arm ⇒ the sink can never be dialed: the zero is structural, not a
+    // wait-for-nothing (issue #102).
+    assert_eq!(hits(&sink_hits), 0, "the sink never saw a connection");
 
     // The server still serves (the failure was contained to the PUT).
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
@@ -1030,12 +1099,13 @@ async fn garbage_ca_pem_is_refused_at_put_and_nothing_is_applied() {
 /// hoped-for number, and both are visible here.
 #[tokio::test]
 async fn a_window_closing_before_any_attempt_observes_zero() {
-    let (_, _, rx) = http_sink(204, Duration::ZERO).await;
+    let (_, _, rx, _) = http_sink(204, Duration::ZERO).await;
     assert_eq!(rx.await.unwrap(), 0, "a closed window saw nothing");
-    let (_, _, rx) = redirect_sink(302, "http://127.0.0.1:1/nowhere".into(), Duration::ZERO).await;
+    let (_, _, rx, _) =
+        redirect_sink(302, "http://127.0.0.1:1/nowhere".into(), Duration::ZERO).await;
     assert_eq!(rx.await.unwrap(), 0, "a closed window saw nothing");
     let (ca_pem, leaf, leaf_key) = mint_cert();
-    let (_, _, rx) = tls_sink_cfg(
+    let (_, _, rx, _) = tls_sink_cfg(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,

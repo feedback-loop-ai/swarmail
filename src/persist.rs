@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn load_surfaces_a_corrupt_row_type() {
-        let path = db_path("corrupt-row");
+        let (_guard, path) = db_path("corrupt-row");
         let persist = Persist::open(&path).unwrap();
         persist
             .record_insert(&email("c1", "corrupt", "r@x.io"), &[], 1, 0)
@@ -348,21 +348,19 @@ mod tests {
             err.to_string().contains("Invalid column type"),
             "the type mismatch is the failure: {err}"
         );
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
-    /// A unique data-file path per test; parallel tests must not collide.
-    fn db_path(tag: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "swarmail-persist-{tag}-{}-{nanos}.db",
-            std::process::id()
-        ))
+    /// A unique scratch directory per test, owned by a drop guard (issue
+    /// #101): the database lives *inside* it, so the `-wal`/`-shm` sidecars
+    /// die with the directory by construction and cleanup survives a panic
+    /// — the old pid+nanos file under `std::env::temp_dir()` leaked on a
+    /// failing test and litters a tmpfs. The guard is returned beside the
+    /// path and must be held (bound, even as `_guard`) for the test's whole
+    /// life; parallel tests never collide because tempfile's name is.
+    fn db_path(tag: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::TempDir::with_prefix(format!("swarmail-persist-{tag}-")).unwrap();
+        let path = dir.path().join("persist.db");
+        (dir, path)
     }
 
     fn full_email(id: &str, inbox: &str) -> Email {
@@ -393,13 +391,15 @@ mod tests {
 
     #[test]
     fn load_of_a_fresh_file_is_empty_with_zero_counters() {
-        let persist = Persist::open(&db_path("empty")).unwrap();
+        let (_guard, path) = db_path("empty");
+        let persist = Persist::open(&path).unwrap();
         assert_eq!(persist.load().unwrap(), (Vec::new(), 0, 0));
     }
 
     #[test]
     fn record_insert_round_trips_every_field() {
-        let persist = Persist::open(&db_path("roundtrip")).unwrap();
+        let (_guard, path) = db_path("roundtrip");
+        let persist = Persist::open(&path).unwrap();
         let sent = full_email("rt1", "box");
         persist.record_insert(&sent, &[], 1, 0).unwrap();
         let (mut emails, inserted, dropped) = persist.load().unwrap();
@@ -410,7 +410,8 @@ mod tests {
 
     #[test]
     fn thread_headers_round_trip_in_both_directions() {
-        let persist = Persist::open(&db_path("thread-headers")).unwrap();
+        let (_guard, path) = db_path("thread-headers");
+        let persist = Persist::open(&path).unwrap();
         persist
             .record_insert(&full_email("with-ids", "box"), &[], 1, 0)
             .unwrap();
@@ -430,7 +431,7 @@ mod tests {
 
     #[test]
     fn a_pre_thread_data_file_migrates_and_keeps_its_mail() {
-        let path = db_path("legacy");
+        let (_guard, path) = db_path("legacy");
         {
             // The first release's shape: no thread columns at all, one mail
             // already committed.
@@ -468,7 +469,7 @@ mod tests {
 
     #[test]
     fn insertion_order_and_counters_survive_a_reopen() {
-        let path = db_path("order");
+        let (_guard, path) = db_path("order");
         {
             let persist = Persist::open(&path).unwrap();
             for id in ["a", "b"] {
@@ -494,17 +495,12 @@ mod tests {
     /// mapping — the observable for issue #54's duplicate-sequence bug.
     fn stored_seqs(path: &Path) -> Vec<i64> {
         let conn = rusqlite::Connection::open(path).unwrap();
-        let seqs = conn
-            .prepare("SELECT seq FROM emails ORDER BY rowid")
+        conn.prepare("SELECT seq FROM emails ORDER BY rowid")
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
             .collect::<rusqlite::Result<Vec<i64>>>()
-            .unwrap();
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
-        seqs
+            .unwrap()
     }
 
     /// Seeding one past `MAX(seq)` (issue #54): `record_insert` consumes the
@@ -513,7 +509,7 @@ mod tests {
     /// strictly increasing seq values, in write order.
     #[test]
     fn the_first_insert_after_a_reopen_never_reuses_a_seq() {
-        let path = db_path("seq-seed");
+        let (_guard, path) = db_path("seq-seed");
         {
             let persist = Persist::open(&path).unwrap();
             persist
@@ -544,7 +540,7 @@ mod tests {
     /// order — not whichever order a temp sort happens to emit.
     #[test]
     fn a_legacy_duplicate_seq_restores_in_write_order() {
-        let path = db_path("dup-seq");
+        let (_guard, path) = db_path("dup-seq");
         {
             // The first release's shape, but with two rows sharing a seq.
             let conn = rusqlite::Connection::open(&path).unwrap();
@@ -579,7 +575,8 @@ mod tests {
     /// nothing.
     #[test]
     fn the_restore_scan_reads_the_seq_index() {
-        let persist = Persist::open(&db_path("plan")).unwrap();
+        let (_guard, path) = db_path("plan");
+        let persist = Persist::open(&path).unwrap();
         persist
             .record_insert(&email("a", "box", "a@x.io"), &[], 1, 0)
             .unwrap();
@@ -604,7 +601,8 @@ mod tests {
 
     #[test]
     fn record_insert_deletes_the_pruned_rows() {
-        let persist = Persist::open(&db_path("prune")).unwrap();
+        let (_guard, path) = db_path("prune");
+        let persist = Persist::open(&path).unwrap();
         persist
             .record_insert(&email("old", "box", "a@x.io"), &[], 1, 0)
             .unwrap();
@@ -622,7 +620,8 @@ mod tests {
 
     #[test]
     fn record_delete_clears_exactly_one_row() {
-        let persist = Persist::open(&db_path("delete")).unwrap();
+        let (_guard, path) = db_path("delete");
+        let persist = Persist::open(&path).unwrap();
         persist
             .record_insert(&email("d1", "box", "a@x.io"), &[], 1, 0)
             .unwrap();
@@ -639,7 +638,8 @@ mod tests {
 
     #[test]
     fn record_deletes_clears_exactly_the_named_ids() {
-        let persist = Persist::open(&db_path("clear-ids")).unwrap();
+        let (_guard, path) = db_path("clear-ids");
+        let persist = Persist::open(&path).unwrap();
         persist
             .record_insert(&email("c1", "box", "a@x.io"), &[], 1, 0)
             .unwrap();
@@ -661,7 +661,8 @@ mod tests {
 
     #[test]
     fn record_deletes_on_an_empty_slice_commits_a_noop() {
-        let persist = Persist::open(&db_path("clear-empty")).unwrap();
+        let (_guard, path) = db_path("clear-empty");
+        let persist = Persist::open(&path).unwrap();
         persist
             .record_insert(&email("kept", "box", "a@x.io"), &[], 1, 0)
             .unwrap();
@@ -672,7 +673,8 @@ mod tests {
 
     #[test]
     fn writes_fail_loudly_when_the_file_cannot_be_written() {
-        let persist = Persist::open(&db_path("readonly")).unwrap();
+        let (_guard, path) = db_path("readonly");
+        let persist = Persist::open(&path).unwrap();
         persist.fail_writes();
         assert!(
             persist
@@ -688,7 +690,7 @@ mod tests {
         // A path whose directory does not exist.
         assert!(Persist::open(&std::env::temp_dir().join("no-such-dir/swarmail/x.db")).is_err());
         // A path that exists but is not a SQLite database.
-        let garbage = db_path("garbage");
+        let (_garbage_guard, garbage) = db_path("garbage");
         std::fs::write(&garbage, b"definitely not sqlite").unwrap();
         assert!(Persist::open(&garbage).is_err());
     }
@@ -719,24 +721,22 @@ mod tests {
     /// the dependency's default.
     #[test]
     fn the_opened_connection_keeps_the_dependency_busy_default() {
-        let path = db_path("busy-default");
+        let (_guard, path) = db_path("busy-default");
         let persist = Persist::open(&path).unwrap();
         let state = persist.state.lock().expect("persist state poisoned");
         assert_dependency_busy_default(&state.conn);
         drop(state);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     /// The can-fire leg: an override on the opened connection trips the
     /// tripwire — the instrument can fire, so its green result means
-    /// something. The unlink precedes the call because the tripwire panics:
-    /// a statement after it would be a line the report can never cover.
+    /// something. The assertion is the last statement: the panic unwinds
+    /// through the drop guard, which is exactly the panic-safe cleanup the
+    /// guard exists to provide (issue #101).
     #[test]
     #[should_panic(expected = "the busy bound moved")]
     fn the_busy_default_tripwire_fires_when_the_bound_is_overridden() {
-        let path = db_path("tripwire");
+        let (_guard, path) = db_path("tripwire");
         let persist = Persist::open(&path).unwrap();
         {
             let state = persist.state.lock().expect("persist state poisoned");
@@ -745,9 +745,6 @@ mod tests {
                 .execute_batch("PRAGMA busy_timeout = 30000")
                 .expect("the override applies on a live connection");
         }
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
         assert_dependency_busy_default(&persist.state.lock().expect("persist state poisoned").conn);
     }
 }
