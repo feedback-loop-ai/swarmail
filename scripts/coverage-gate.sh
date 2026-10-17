@@ -80,36 +80,76 @@ refuse() {
 strip_rust_comments() {
   # One shared comment-stripping pass over a Rust file (issue #101): line
   # comments and nesting-aware block comments become nothing, line
-  # structure preserved (the declaration walk reads lines). String literals
-  # are not modelled: a delimiter inside a literal can only ever over-refuse
-  # — loudly, naming the file — never over-pass, and no src/ literal carries
-  # one. The failure direction is refuse, never a silent mis-count.
+  # structure preserved (the declaration walk reads lines; a newline is
+  # always emitted). String literals, raw strings, char literals and
+  # lifetimes ARE modelled — a char-level scanner, because a delimiter
+  # inside a literal must start no comment: `const OPEN: &str = "/*";`
+  # followed by a hidden `#[coverage(off)]` must not erase the code after
+  # it from the checked stream (the review's HIGH on the naive stripper,
+  # which over-passed exactly that shape). Undecidable cases err toward
+  # emitting — an over-refusal is loud and names the file; an over-pass
+  # is the one direction this function may not take.
   awk '
+    function isident(ch) { return ch ~ /[A-Za-z0-9_]/ }
     {
-      line = $0; out = "";
-      while (length(line) > 0) {
+      line = $0; out = ""; n = length(line); i = 1; pending = "";
+      while (i <= n) {
+        c = substr(line, i, 1); c2 = substr(line, i, 2);
         if (depth > 0) {
-          open = index(line, "/*"); closer = index(line, "*/");
-          if (open > 0 && (closer == 0 || open < closer)) {
-            depth++; line = substr(line, open + 2);
-          } else if (closer > 0) {
-            depth--; line = substr(line, closer + 2);
+          # Comment interior: emitted as nothing.
+          if (c2 == "*/") { depth--; i += 2; pending = "" }
+          else if (c2 == "/*") { depth++; i += 2; pending = "" }
+          else i++;
+        } else if (instr) {
+          if (shash > 0) {
+            # A raw string ends at `"` followed by exactly shash `#`s.
+            if (c == "\"") {
+              j = i + 1; cnt = 0;
+              while (substr(line, j, 1) == "#") { cnt++; j++ }
+              if (cnt == shash) { instr = 0; out = out substr(line, i, j - i); i = j; pending = ""; continue }
+            }
+            out = out c; i++;
           } else {
-            line = "";
+            if (c == "\\") { out = out substr(line, i, 2); i += 2; continue }
+            if (c == "\"") { instr = 0 }
+            out = out c; i++; pending = "";
           }
+        } else if (inchar) {
+          if (c == "\\") { out = out substr(line, i, 2); i += 2; continue }
+          if (c == "\047") { inchar = 0 }
+          out = out c; i++;
         } else {
-          open = index(line, "/*"); slash = index(line, "//");
-          if (open > 0 && (slash == 0 || open < slash)) {
-            out = out substr(line, 1, open - 1);
-            depth++; line = substr(line, open + 2);
-          } else if (slash > 0) {
-            out = out substr(line, 1, slash - 1); line = "";
-          } else {
-            out = out line; line = "";
-          }
+          if (c2 == "/*") { depth++; i += 2; pending = ""; continue }
+          if (c2 == "//") { break }
+          if (c == "\"") {
+            # Raw-string opener: r#*" or br#*" with the r at an identifier
+            # boundary. `pending` holds the normal-state chars before the
+            # quote (capped), so the look-back is source-true even across a
+            # comment that ended earlier on this line. Cap the # run at 8;
+            # longer runs are no spelling this scanner meets, and a missed
+            # raw string only ends early — loud, never an over-pass.
+            k = 0;
+            while (k < 8 && substr(pending, length(pending) - k, 1) == "#") k++;
+            head = substr(pending, length(pending) - k, 1);
+            before = substr(pending, length(pending) - k - 1, 1);
+            before2 = substr(pending, length(pending) - k - 2, 1);
+            if (head == "r" && !isident(before) && (before != "b" || !isident(before2) || before2 == "")) { instr = 1; shash = k }
+            else if (head == "r" && before == "b" && !isident(before2)) { instr = 1; shash = k }
+            else { instr = 1; shash = 0 }
+            out = out c; i++; pending = "";
+          } else if (c == "\047") {
+            ch1 = substr(line, i + 1, 1); ch2 = substr(line, i + 2, 1);
+            if (ch1 == "\\" || ch2 == "\047") { inchar = 1 }
+            # else a lifetime: emit the quote and move on.
+            out = out c; i++; pending = "";
+          } else { out = out c; pending = pending c; i++ }
         }
       }
       print out;
+      # A plain string cannot span lines; a raw string can. Comments span
+      # lines and depth persists. An unterminated plain string ends at the
+      # newline so it cannot swallow the rest of the file.
+      if (instr && shash == 0) instr = 0;
     }
   ' "$1"
 }
@@ -263,15 +303,23 @@ check_harness_declarations() {
   local src="$1" harness_refusals=""
   while IFS= read -r harness; do
     local stem dir; stem="$(basename "$harness" .rs)"; dir="$(dirname "$harness")"
-    local parents=()
-    if [ "$dir" = "$src" ]; then
-      # A top-level harness file is declared by the crate root.
-      parents=("$src/lib.rs" "$src/main.rs")
-    else
-      # src/store/persist_tests.rs is declared by src/store.rs (or the
-      # conventional src/store/mod.rs fallback).
-      parents=("$dir.rs" "$dir/mod.rs")
-    fi
+    # Every .rs file under src/ is a candidate declaring parent (the
+    # review's HIGH on the conventional-parents-only walk: a second module
+    # can `#[path = "store/persist_tests.rs"] pub mod production_alias;`
+    # the harness through a parent the walk never read). The per-parent
+    # scan below refuses any #[path]/include! that names a harness file
+    # wherever it sits, and exits 3 for a candidate that does not declare
+    # the harness at all — so widening the candidate set costs only scan
+    # time and closes the bypass; the conventional parents are kept first
+    # so refusals name them first.
+    local parents=() cand
+    if [ -f "$src/lib.rs" ]; then parents+=("$src/lib.rs"); fi
+    if [ -f "$src/main.rs" ]; then parents+=("$src/main.rs"); fi
+    if [ "$dir" != "$src" ] && [ -f "$dir.rs" ]; then parents+=("$dir.rs"); fi
+    if [ "$dir" != "$src" ] && [ -f "$dir/mod.rs" ]; then parents+=("$dir/mod.rs"); fi
+    while IFS= read -r -d '' cand; do
+      parents+=("$cand")
+    done < <(find "$src" -type f -name '*.rs' ! -name 'tests.rs' ! -name '*_tests.rs' ! -name '*-tests.rs' -print0 | sort -z)
     local any_decl=0 any_bad=0 details=""
     local parent rc detail
     for parent in "${parents[@]}"; do
