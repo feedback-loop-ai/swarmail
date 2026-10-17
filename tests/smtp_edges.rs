@@ -1525,9 +1525,11 @@ async fn a_peer_that_never_sends_the_data_reply_fails_smtp_send_within_a_bound()
 
     let started = std::time::Instant::now();
     let task = tokio::spawn(smtp_send(addr, None, "f@x.io", "r@x.io", "wedged", "body"));
-    // One helper deadline of slack over the bound itself: the helper must
-    // fail on its own, well inside this wait — a hang fails on timeout.
-    let join = tokio::time::timeout(Duration::from_secs(15), task)
+    // The helper's own bound is HELPER_DEADLINE (the muted DATA reply
+    // times out there), so the outer wait is that deadline plus slack: the
+    // helper must fail on its own, well inside this wait — a hang fails on
+    // timeout.
+    let join = tokio::time::timeout(common::HELPER_DEADLINE + Duration::from_secs(5), task)
         .await
         .expect("smtp_send must fail within the bound, not hang");
     let payload = join
@@ -1541,7 +1543,7 @@ async fn a_peer_that_never_sends_the_data_reply_fails_smtp_send_within_a_bound()
         "the step is named: {message}"
     );
     assert!(
-        started.elapsed() < Duration::from_secs(15),
+        started.elapsed() < common::HELPER_DEADLINE + Duration::from_secs(5),
         "the failure stayed inside the bound: {:?}",
         started.elapsed()
     );

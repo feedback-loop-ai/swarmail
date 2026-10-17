@@ -252,8 +252,47 @@ impl Drop for UnitGuard {
 /// (issue #102): a wait that parked stays registered forever, so a
 /// refusal's zero delta proves the wait never subscribed.
 pub(crate) fn park_await(inbox: &str) -> UnitGuard {
-    raise(&AWAITS_REGISTERED, inbox);
+    raise_cumulative(&AWAITS_REGISTERED, inbox);
     UnitGuard::take(&AWAITS, inbox)
+}
+
+/// The cumulative registry is capped (the landed review's LOW residual on
+/// #107): a client on the unauthenticated plane can otherwise grow one
+/// BTreeMap row per distinct awaited name, forever — rows are never
+/// released (a parked wait stays registered by design, the refusal side of
+/// 0025 §5) and /metrics renders every row. Past [`AWAIT_REGISTRY_CAP`] a
+/// new name's count folds into the reserved [`AWAIT_REGISTRY_OVERFLOW`]
+/// row: the total stays exact, the per-name attribution is best-effort,
+/// and a refusal triple for a name beyond the cap reads the total row.
+/// Legit deployments name far fewer inboxes than the cap.
+const AWAIT_REGISTRY_CAP: usize = 4096;
+
+/// The reserved overflow row's label — not a valid inbox name, so it can
+/// never collide with a real one.
+const AWAIT_REGISTRY_OVERFLOW: &str = "_uncounted";
+
+fn raise_cumulative(registry: &Registry, inbox: &str) {
+    raise_cumulative_with_cap(registry, inbox, AWAIT_REGISTRY_CAP);
+}
+
+/// The capped insert, parameterized so the cap behavior is observable by a
+/// unit test on a local registry without touching the process-global one.
+fn raise_cumulative_with_cap(registry: &Registry, inbox: &str, cap: usize) {
+    let mut units = registry
+        .lock()
+        .expect("a readiness registry mutex cannot poison");
+    let at_cap = units.len() >= cap;
+    match units.get_mut(inbox) {
+        Some(count) => *count += 1,
+        None if at_cap => {
+            *units
+                .entry(AWAIT_REGISTRY_OVERFLOW.to_string())
+                .or_insert(0) += 1;
+        }
+        None => {
+            units.insert(inbox.to_string(), 1);
+        }
+    }
 }
 
 /// Count one delivery between its DATA terminator and its insert
@@ -1197,6 +1236,39 @@ async fn llms_txt() -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::{AWAIT_REGISTRY_CAP, AWAIT_REGISTRY_OVERFLOW, Registry, raise_cumulative_with_cap};
+
+    /// The cap folds a new name past the limit into the reserved overflow
+    /// row, keeps counting known names, and still inserts the reserved name
+    /// itself (the landed review's LOW residual on #107, closed by
+    /// construction). Driven on a local registry: the process-global one
+    /// stays untouched for the other tests.
+    #[test]
+    fn the_cumulative_registry_folds_past_its_cap() {
+        let registry: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        for name in ["a", "b", "c"] {
+            raise_cumulative_with_cap(&registry, name, 3);
+        }
+        raise_cumulative_with_cap(&registry, "d", 3);
+        raise_cumulative_with_cap(&registry, "_uncounted", 3);
+        raise_cumulative_with_cap(&registry, "a", 3);
+        let units = registry.lock().expect("test registry cannot poison");
+        assert_eq!(units.get("a"), Some(&2), "a known name keeps counting");
+        assert_eq!(units.get("d"), None, "a fresh name past the cap folds");
+        assert_eq!(
+            units.get(AWAIT_REGISTRY_OVERFLOW),
+            Some(&2),
+            "the folds land in the reserved row"
+        );
+        assert_eq!(units.len(), 4, "the map is bounded by the cap plus one");
+    }
+
+    /// The production cap is the documented constant.
+    #[test]
+    fn the_production_cap_is_4096() {
+        assert_eq!(AWAIT_REGISTRY_CAP, 4096);
+    }
+
     use super::*;
 
     /// The stop watch's two arms, probed in isolation (decision 0020): an

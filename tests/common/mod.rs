@@ -510,7 +510,7 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
 /// The deadline every helper read runs under (issue #102): a peer that
 /// accepts and never replies fails the helper within the bound, its panic
 /// naming the step, instead of hanging the whole suite.
-pub const HELPER_DEADLINE: Duration = Duration::from_secs(10);
+pub const HELPER_DEADLINE: Duration = Duration::from_secs(30);
 
 /// One named read deadline for a helper's line read (issue #102): a wedged
 /// peer fails the test in seconds, naming the step, instead of hanging the
@@ -528,7 +528,12 @@ pub(crate) async fn read_line_named<R: tokio::io::AsyncBufRead + Unpin>(
     }
 }
 
-/// One named read deadline for a helper's read-to-EOF. Read errors stay
+/// One named read deadline for a helper's read-to-EOF. It guards a peer
+/// that never answers at all, not a timing pin: a blocked commit answers
+/// within the server's own 5 s busy bound (persist.rs pins it) plus
+/// scheduling, so the deadline clears a loaded CI runner by a wide margin
+/// — 10 s lost to runner load on macos three runs running (the landed
+/// #107 batch's blocked-commit family). Read errors stay
 /// tolerated where the EOF itself is the answer; the deadline is only for
 /// a peer that never answers at all.
 pub(crate) async fn read_to_end_named<R: tokio::io::AsyncRead + Unpin>(
