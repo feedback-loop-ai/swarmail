@@ -1490,25 +1490,14 @@ async fn a_full_listener_refuses_the_next_session_before_a_greeting() {
     // The cap is a gate, not a scar: once A quits, a fresh session speaks.
     a.send("QUIT").await;
     assert!(a.reply().await.starts_with("221"));
-    // The freed slot is offered again by the loop's next reap-then-accept
-    // iteration, so the probe polls until it arrives — against a real
-    // deadline, never a sleep (decision 0020 rule 5).
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let mut c = loop {
-        let mut attempt = SmtpConn::connect_raw(srv.smtp_addr).await;
-        let greeting = attempt.reply().await;
-        if greeting.starts_with("220") {
-            break attempt;
-        }
-        assert_eq!(
-            greeting, "421 4.7.0 Too many connections, closing transmission channel",
-            "the only honest refusal is the cap text"
-        );
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the freed slot was never offered again"
-        );
-    };
+    assert_eq!(a.read_to_eof().await, "", "the session ended");
+    // The freed slot is reaped at admission (decision 0036 §1), so the very
+    // next peer, offered once, is greeted — no retry through a refusal. A
+    // smoke check: the deterministic proof that the completion is observed
+    // as a task, not merely as EOF, is inline in src/smtp.rs.
+    let mut c = SmtpConn::connect_raw(srv.smtp_addr).await;
+    let greeting = c.reply().await;
+    assert!(greeting.starts_with("220"), "{greeting}");
     c.send("NOOP").await;
     assert!(c.reply().await.starts_with("250"));
 }

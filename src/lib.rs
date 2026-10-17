@@ -214,7 +214,9 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
     {
         let store = store.clone();
         let degraded = pop3_degraded.clone();
-        let (idle_timeout, max_sessions) = (cfg.smtp.idle_timeout, cfg.smtp.max_sessions);
+        // POP3's own idle bound (decision 0036 §4); the session cap stays
+        // shared with SMTP's, as wired since 0027.
+        let (idle_timeout, max_sessions) = (cfg.pop3_idle_timeout, cfg.smtp.max_sessions);
         let mut shutdown_rx = shutdown_rx.clone();
         tasks.spawn(async move {
             log_stopped(

@@ -1328,19 +1328,56 @@ async fn rset_never_resurrects_a_committed_delete() {
 
 /// The compiled idle deadline (no knob, 0022 §5): a peer that goes silent
 /// after the banner is answered `-ERR idle timeout` and the channel closes
-/// (red before 0027: the read blocked for the socket's lifetime).
+/// (red before 0027: the read blocked for the socket's lifetime). Only
+/// POP3's own field is shortened, through `run_on` (decision 0036 §4):
+/// an SMTP session opened first still answers after the POP3 expiry (red
+/// on the shared-field wiring, where POP3 waited out SMTP's five minutes
+/// and the helper deadline fired instead).
 #[tokio::test]
 async fn a_silent_pop3_peer_is_answered_err_then_the_channel_closes() {
     let s = start_with(|mut c| {
-        c.smtp.idle_timeout = Duration::from_millis(150);
+        c.pop3_idle_timeout = Duration::from_millis(150);
         c
     })
     .await;
+    let mut smtp = SmtpConn::connect_raw(s.smtp_addr).await;
+    assert!(smtp.reply().await.starts_with("220"));
     let mut c = Pop3::connect(s.pop3_addr).await;
     assert_eq!(
         c.read_to_eof().await,
         "-ERR idle timeout\r\n",
         "the expiry answer, then EOF"
+    );
+    smtp.send("NOOP").await;
+    assert_eq!(
+        smtp.reply().await,
+        "250 2.0.0 OK",
+        "SMTP keeps its own bound"
+    );
+}
+
+/// The reciprocal wiring (decision 0036 §4): shortening SMTP's idle bound
+/// leaves POP3 on its own — a POP3 session opened first still answers
+/// after a silent SMTP peer has been told `421 4.4.2` and closed (red on
+/// the shared-field wiring, which expired the POP3 session too).
+#[tokio::test]
+async fn a_short_smtp_idle_bound_leaves_pop3_sessions_alone() {
+    let s = start_with(|mut c| {
+        c.smtp.idle_timeout = Duration::from_millis(150);
+        c
+    })
+    .await;
+    let mut pop = Pop3::connect(s.pop3_addr).await;
+    let mut smtp = SmtpConn::connect_raw(s.smtp_addr).await;
+    assert!(smtp.reply().await.starts_with("220"));
+    assert_eq!(
+        smtp.reply().await,
+        "421 4.4.2 idle timeout, closing transmission channel"
+    );
+    assert_eq!(smtp.read_to_eof().await, "", "the SMTP channel closed");
+    assert!(
+        pop.cmd("CAPA").await.starts_with("+OK"),
+        "POP3 keeps its own bound"
     );
 }
 
@@ -1365,34 +1402,17 @@ async fn a_full_pop3_listener_refuses_the_next_session_before_a_greeting() {
         "-ERR too many connections\r\n"
     );
     // The cap is a gate, not a scar: once A quits, a fresh session speaks.
-    // The freed slot is offered again by the loop's next reap-then-accept
-    // iteration, so the probe polls until it arrives (never a sleep).
+    // The freed slot is reaped at admission (decision 0036 §1), so the very
+    // next peer, offered once, is greeted — no retry through a refusal. A
+    // smoke check: the deterministic proof that the completion is observed
+    // as a task, not merely as EOF, is inline in src/pop3.rs.
     a.send("QUIT").await;
     assert!(a.reply().await.starts_with("+OK"));
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        // One connection per attempt: the probe itself becomes the fresh
-        // session, so no second socket can race the slot it just saw open.
-        let mut probe = TcpStream::connect(s.pop3_addr).await.unwrap();
-        let mut buf = [0u8; 256];
-        let n = probe.read(&mut buf).await.unwrap_or(0);
-        let line = String::from_utf8_lossy(&buf[..n]).into_owned();
-        if line.starts_with("+OK") {
-            probe.write_all(b"CAPA\r\n").await.unwrap();
-            let n = probe.read(&mut buf).await.unwrap_or(0);
-            assert!(
-                String::from_utf8_lossy(&buf[..n]).starts_with("+OK"),
-                "the fresh session speaks: {n} bytes"
-            );
-            break;
-        }
-        assert_eq!(
-            line, "-ERR too many connections\r\n",
-            "the only honest refusal is the cap text"
-        );
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the freed slot was never offered again"
-        );
-    }
+    assert_eq!(a.read_to_eof().await, "", "the session ended");
+    let mut fresh = Pop3::connect(s.pop3_addr).await;
+    fresh.send("CAPA").await;
+    assert!(
+        fresh.reply().await.starts_with("+OK"),
+        "the fresh session speaks"
+    );
 }

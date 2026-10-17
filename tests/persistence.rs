@@ -569,6 +569,7 @@ async fn a_broken_data_file_refuses_to_serve() {
         tls_cert: None,
         tls_key: None,
         smtp: Default::default(),
+        pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
     };
     let err = match swarmail::run_on(&cfg).await {
         Ok(_) => panic!("a broken data file must refuse to serve"),

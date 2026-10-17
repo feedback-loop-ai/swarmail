@@ -117,6 +117,52 @@ fn cli_parses_env_defaults_and_subcommands() {
     assert_eq!(args.out, std::path::Path::new("/tmp/certs"));
 }
 
+/// Independent idle defaults (decision 0036 §4), pinned by equality, never
+/// by waiting them out: SMTP's five minutes ride `SmtpConfig::default`,
+/// POP3's ten minutes are its own `Config` field from the CLI conversion
+/// (red on the shared wiring, where POP3 had no value of its own).
+#[test]
+fn the_idle_defaults_are_independent_per_protocol() {
+    assert_eq!(
+        swarmail::smtp::SmtpConfig::default().idle_timeout,
+        Duration::from_secs(300)
+    );
+    assert_eq!(
+        swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        Duration::from_secs(600)
+    );
+    let args = serve_args_or_panic(Cli::try_parse_from(["swarmail", "serve"]).unwrap());
+    let cfg = Config::from(&args);
+    assert_eq!(cfg.smtp.idle_timeout, Duration::from_secs(300));
+    assert_eq!(cfg.pop3_idle_timeout, Duration::from_secs(600));
+
+    // Overriding one protocol's bound leaves the other's untouched.
+    let mut pop3_short = cfg.clone();
+    pop3_short.pop3_idle_timeout = Duration::from_millis(150);
+    assert_eq!(pop3_short.smtp.idle_timeout, Duration::from_secs(300));
+    let mut smtp_short = cfg;
+    smtp_short.smtp.idle_timeout = Duration::from_millis(150);
+    assert_eq!(smtp_short.pop3_idle_timeout, Duration::from_secs(600));
+}
+
+/// The rendered `serve --help` tells the truth about idleness (decision
+/// 0036 §4): both compiled defaults, and no claim that plaintext has no
+/// timeout (red on the pre-0027 text). Whitespace is normalized so the
+/// assertion reads the words, not clap's layout.
+#[test]
+fn serve_help_names_both_idle_defaults() {
+    let err = Cli::try_parse_from(["swarmail", "serve", "--help"]).unwrap_err();
+    assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+    let help = err.render().to_string();
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        help.contains("5 minutes on SMTP, 10 minutes on POP3"),
+        "{help}"
+    );
+    assert!(!help.contains("has no timeout"), "{help}");
+    assert!(!help.contains("idle-timeout"), "no idle knob is exposed");
+}
+
 #[test]
 fn tls_flags_map_into_the_config() {
     let cli = Cli::try_parse_from([
