@@ -304,6 +304,17 @@ check_harness_declarations() {
   # count as a declaration of the file (it loads somewhere else — the file
   # is then uncompiled, and the no-declaration refusal fires); and a
   # non-`test` cfg on the declaration's attribute stack refuses by name.
+  # Further hardened (run 12c): the #[path]/include! load-shape scan runs
+  # over the whitespace-collapsed token stream (rs_tokens), not the
+  # line-preserved stream, because every load-shape whose tokens are split
+  # across lines — a stacked `#[allow(...)] #[path = ...]`, `include` at
+  # end of line, a `#` on one line and `[path = ...]` on the next, a
+  # `#[path =` whose string opens on a later line, a target continued with
+  # a backslash-newline — is invisible to a line-based scan and launders
+  # the reserved name (all probed red at the reviewed base). In the token
+  # stream every occurrence is contiguous and is checked; an argument that
+  # is not a plain `"..."` literal cannot be resolved by this walk and
+  # refuses, fail-closed, the include! arm's established closed-form rule.
   # The guard is the literal attribute `#[cfg(test)]` on its own line in the
   # attribute stack directly above the declaration (blank lines may
   # intervene; comments are already gone). Anything else refuses,
@@ -336,6 +347,70 @@ check_harness_declarations() {
     for parent in "${parents[@]}"; do
       [ -f "$parent" ] || continue
       rc=0
+      # Load-shape scan over the whitespace-collapsed token stream: every
+      # #[path] and every include! in the parent, wherever it sits and
+      # however its tokens are laid out, is checked here. An argument that
+      # is not a plain string literal, an escape-carrying target, and a
+      # harness-named target each refuse, fail-closed, naming the parent.
+      detail="$(rs_tokens "$parent" | awk -v harness="$harness" -v parent="$parent" '
+        {
+          rest = $0;
+          while (match(rest, /#\[[[:space:]]*path[[:space:]]*=/)) {
+            rest = substr(rest, RSTART + RLENGTH);
+            if (rest !~ /^"/) {
+              print harness ": a #[path] whose target is not a plain string literal cannot be resolved by this walk in " parent " — spell the path literally";
+              scan_bad = 1; continue;
+            }
+            rest = substr(rest, 2);
+            q = index(rest, "\"");
+            if (q == 0) { scan_bad = 1; break; }
+            target = substr(rest, 1, q - 1);
+            if (target ~ /\\/) {
+              print harness ": a #[path] target with a string escape cannot be resolved by this walk in " parent " — spell the path literally";
+              scan_bad = 1;
+            } else {
+              nseg = split(target, seg, "/"); base = seg[nseg];
+              if (base ~ /(^|[_-])tests\.rs$/) {
+                print harness ": harness-named file loaded via #[path = \"" target "\"] in " parent;
+                scan_bad = 1;
+              }
+            }
+            rest = substr(rest, q);
+          }
+          rest = $0;
+          while (match(rest, /(^|[^A-Za-z0-9_])include[[:space:]]*![[:space:]]*[({[]/)) {
+            rest = substr(rest, RSTART + RLENGTH);
+            if (rest !~ /^"/) {
+              print harness ": an include! that is not a plain string literal cannot be resolved by this walk in " parent " — load the file with #[path] or a literal include!";
+              scan_bad = 1; continue;
+            }
+            rest = substr(rest, 2);
+            q = index(rest, "\"");
+            if (q == 0) { scan_bad = 1; break; }
+            target = substr(rest, 1, q - 1);
+            if (target ~ /\\/) {
+              print harness ": an include! target with a string escape cannot be resolved by this walk in " parent " — spell the path literally";
+              scan_bad = 1;
+            } else {
+              nseg = split(target, seg, "/"); base = seg[nseg];
+              if (base ~ /(^|[_-])tests\.rs$/) {
+                print harness ": harness-named file included via include! in " parent;
+                scan_bad = 1;
+              }
+            }
+            rest = substr(rest, q);
+          }
+        }
+        END { if (scan_bad) exit 1 }
+      ')" || rc=$?
+      if [ "$rc" -eq 1 ]; then
+        any_bad=1
+        details="${details}${detail}
+"
+      elif [ "$rc" -ne 0 ]; then
+        refuse "coverage refusal: the harness declaration walk could not scan $parent"
+      fi
+      rc=0
       detail="$(strip_rust_comments "$parent" | awk -v stem="$stem" -v harness="$harness" -v parent="$parent" '
         BEGIN {
           escaped = stem;
@@ -344,31 +419,6 @@ check_harness_declarations() {
         }
         {
           lines[NR] = $0;
-          # Any #[path] anywhere in the parent whose target is harness-named
-          # launders the reserved name (fixture A); so does an include! of
-          # one (fixture D). The scan is whole-file, not stack-only.
-          if ($0 ~ /^[[:space:]]*#\[[[:space:]]*path[[:space:]]*=/) {
-            rest = $0;
-            sub(/^[[:space:]]*#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"/, "", rest);
-            q = index(rest, "\"");
-            if (q > 0) {
-              target = substr(rest, 1, q - 1);
-              # A backslash in the target is a string escape this walk does
-              # not decode — `\x74` spells `t` and `persist_\x74ests.rs`
-              # would dodge the literal comparison (the reviewer HIGH), so
-              # an escape-carrying target refuses, fail-closed.
-              if (target ~ /\\/) {
-                print harness ": a #[path] target with a string escape cannot be resolved by this walk in " parent " — spell the path literally";
-                scan_bad = 1;
-              } else {
-                nseg = split(target, seg, "/"); base = seg[nseg];
-                if (base ~ /(^|[_-])tests\.rs$/) {
-                  print harness ": harness-named file loaded via #[path = \"" target "\"] in " parent;
-                  scan_bad = 1;
-                }
-              }
-            }
-          }
           if ($0 ~ /(^|[^A-Za-z0-9_])include[[:space:]]*![[:space:]]*[({[]/) {
             # An include! whose argument is not a plain string literal
             # cannot be resolved by this walk (concat!, env!, any macro
@@ -766,6 +816,46 @@ selftest() {
   printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
   printf '#[cfg(test)]\nmod persist_tests;\n#[path = "store/persist_\\x74ests.rs"]\npub mod alias;\n' > "$fx/src/lib.rs"
   expect_refuse 'an escape-carrying #[path] target refuses (reviewer residual)' check_harness_declarations "$fx/src"
+
+  # 5i. The run 12c design-sequence residuals: a load-shape whose tokens the
+  #     line-based walk cannot resolve launders the reserved name. Each arm
+  #     is red at the reviewed base (bcc7510) — the shape passed the walk —
+  #     and refuses once the load-shape scan runs over the token stream.
+  fx="$root/co-stacked-path"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
+  printf '#[allow(dead_code)] #[path = "store/persist_tests.rs"] pub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a stacked #[path] attribute hides the harness-named target (design residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-stacked-clean"; mkdir -p "$fx/src/store"
+  printf 'pub fn ordinary() {}\n' > "$fx/src/store/ordinary.rs"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n#[allow(dead_code)] #[path = "store/ordinary.rs"] pub mod alias;\n' > "$fx/src/lib.rs"
+  expect_pass 'a stacked #[path] to a non-harness file passes (keep direction)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-split-include"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
+  printf 'pub fn x() {}\ninclude\n!("store/persist_tests.rs");\n' > "$fx/src/lib.rs"
+  expect_refuse 'an include! with its tokens split across lines refuses (design residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-hash-split"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
+  printf 'pub fn x() {}\n#\n[path = "store/persist_tests.rs"]\npub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a # and [path] split across lines refuses (design residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-split-open"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
+  printf 'pub fn x() {}\n#[path =\n"store/persist_tests.rs"] pub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a #[path] whose string opens on a later line refuses (design residual)' check_harness_declarations "$fx/src"
+
+  fx="$root/co-continuation-target"; mkdir -p "$fx/src/store"
+  printf 'pub fn hidden_production() {}\n' > "$fx/src/store/persist_tests.rs"
+  printf '#[cfg(test)]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
+  printf 'pub fn x() {}\n#[path = "store/persist_\\\ntests.rs"] pub mod alias;\n' > "$fx/src/lib.rs"
+  expect_refuse 'a backslash-newline-continued #[path] target refuses (design residual)' check_harness_declarations "$fx/src"
 
   # 6. Canonical counting: DA hits, BRDA taken (the '-' record counts and can
   #    never be covered), and the file + start-line function identity across
