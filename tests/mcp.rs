@@ -1037,6 +1037,22 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
     let srv = start().await;
     let addr = srv.http_addr;
 
+    // The registration is cumulative and counts exactly once per wait
+    // (issue #102): each arm reads its inbox's
+    // `swarmail_awaits_registered_total` row before and after, and the
+    // wait's delta is exactly one. A deleted or never-raised counter
+    // leaves the delta at zero — a missing row reads as 0 — so this pins
+    // the family's existence on /metrics, not just its refusal deltas.
+    let registered = |text: &str| {
+        common::metric_row_value(
+            text,
+            r#"swarmail_awaits_registered_total{inbox="observed"}"#,
+        )
+        .unwrap_or(0)
+    };
+    let (_, metrics) = common::http_get_text(addr, "/metrics").await;
+    let registered_before = registered(&metrics);
+
     // Found arm: the mail arrives mid-wait; total counts it.
     let request = tokio::spawn(tool(
         addr,
@@ -1063,18 +1079,26 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
         .unwrap();
     assert_eq!(text(&result)["matched"], 1);
     assert_eq!(text(&result)["total"], 1, "{result}");
-
-    // Timeout arm: a non-matching mail lands mid-wait; total counts it.
-    let result = text(
-        &tool(
-            srv.http_addr,
-            "swarmail_wait_for_email",
-            r#"{"inbox": "observed408", "to": "nobody@x.io", "count": 9, "timeout_ms": 1500}"#,
-        )
-        .await,
+    let (_, metrics) = common::http_get_text(addr, "/metrics").await;
+    assert_eq!(
+        registered(&metrics),
+        registered_before + 1,
+        "the wait registers exactly once: {metrics}"
     );
-    assert_eq!(result["timed_out"], true, "{result}");
-    assert_eq!(result["total"], 0);
+
+    // Timeout arm: a non-matching mail lands mid-wait; total counts it
+    // while `matched` stays honest about the filter. The wait is spawned
+    // and observed parked *before* the mail is sent — mirroring the REST
+    // twin — so the mail genuinely lands mid-wait and the post-wait total
+    // is counted after the wait (issue #102). The bound is well past
+    // poll+send+commit, so the mail cannot outrun the wait on a loaded
+    // runner; the outer deadline still fails fast if the wait wedges.
+    let request = tokio::spawn(tool(
+        addr,
+        "swarmail_wait_for_email",
+        r#"{"inbox": "observed408", "to": "nobody@x.io", "count": 9, "timeout_ms": 5000}"#,
+    ));
+    wait_for_metric_row(addr, r#"swarmail_awaits_active{inbox="observed408"}"#, 1).await;
     smtp_send(
         srv.smtp_addr,
         Some("observed408"),
@@ -1086,18 +1110,27 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
     .await
     .unwrap();
     let result = text(
-        &tool(
-            srv.http_addr,
-            "swarmail_wait_for_email",
-            r#"{"inbox": "observed408", "to": "nobody@x.io", "count": 9, "timeout_ms": 1500}"#,
-        )
-        .await,
+        &tokio::time::timeout(std::time::Duration::from_secs(10), request)
+            .await
+            .expect("the wait must time out on its own bound")
+            .unwrap(),
     );
     assert_eq!(result["timed_out"], true, "{result}");
     assert_eq!(result["matched"], 0);
     assert_eq!(
         result["total"], 1,
         "total is counted after the wait: {result}"
+    );
+    // The second wait registered exactly once more, under its own inbox.
+    let (_, metrics) = common::http_get_text(addr, "/metrics").await;
+    let registered_408 = common::metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="observed408"}"#,
+    )
+    .unwrap_or(0);
+    assert_eq!(
+        registered_408, 1,
+        "one registration for the 408 arm: {metrics}"
     );
 }
 
@@ -1521,6 +1554,16 @@ async fn the_wait_registers_no_waiter_when_staging_refuses() {
     .await
     .unwrap();
 
+    // The cumulative registration is the observable (issue #102): the
+    // delta across the refused call must stay zero — a wait that
+    // subscribed before validating would leave a permanent +1, which the
+    // released gauge cannot show.
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    let registered_before = metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="nowaiter"}"#,
+    )
+    .unwrap_or(0);
     let (st, body) = rpc(
         srv.http_addr,
         "tools/call",
@@ -1530,6 +1573,17 @@ async fn the_wait_registers_no_waiter_when_staging_refuses() {
     assert_eq!(st, 200, "{body}");
     assert_eq!(body["error"]["code"], -32602, "{body}");
     assert_eq!(body["error"]["message"], "to must be a string", "{body}");
+
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    let registered_after = metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="nowaiter"}"#,
+    )
+    .unwrap_or(0);
+    assert_eq!(
+        registered_after, registered_before,
+        "a refused wait registers no waiter: {metrics}"
+    );
 
     // No waiter: the inbox's awaits row is gone the moment the refusal
     // answered — a registered park would still hold the row at 1.
@@ -1985,8 +2039,17 @@ async fn the_staging_refuses_over_the_cap_and_honors_the_boundary() {
         body["error"]["message"], "count must be at most 250",
         "{body}"
     );
-    // The wait's count — the refusal answers before any park (0025 §5):
-    // the inbox's awaits row never appears.
+    // The wait's count — the refusal answers before any park (0025 §5).
+    // The cumulative registration is the observable (issue #102): the
+    // delta across the refused call must stay zero — a wait that
+    // subscribed before validating would leave a permanent +1, which the
+    // released gauge cannot show.
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    let registered_before = metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="capbox"}"#,
+    )
+    .unwrap_or(0);
     let (st, body) = rpc(
         srv.http_addr,
         "tools/call",
@@ -1998,6 +2061,16 @@ async fn the_staging_refuses_over_the_cap_and_honors_the_boundary() {
     assert_eq!(
         body["error"]["message"], "count must be at most 250",
         "{body}"
+    );
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    let registered_after = metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="capbox"}"#,
+    )
+    .unwrap_or(0);
+    assert_eq!(
+        registered_after, registered_before,
+        "a refused wait registers no waiter: {metrics}"
     );
     // The prompt refusal is the 0025 §5 proof itself: a parked wait could
     // not have answered. (The awaits gauge cannot - its row is removed at

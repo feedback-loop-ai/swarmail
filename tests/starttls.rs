@@ -28,7 +28,7 @@ use tokio_rustls::rustls::pki_types::CertificateDer;
 
 /// A server serving STARTTLS from a real PEM pair on disk, plus the cert
 /// the client must trust (the served one) and the scratch dir.
-async fn start_tls(name: &str) -> (RunningServer, CertificateDer<'static>, PathBuf) {
+async fn start_tls(name: &str) -> (RunningServer, CertificateDer<'static>, tempfile::TempDir) {
     start_tls_cfg(name, SmtpConfig::default()).await
 }
 
@@ -37,17 +37,14 @@ async fn start_tls(name: &str) -> (RunningServer, CertificateDer<'static>, PathB
 async fn start_tls_cfg(
     name: &str,
     smtp: SmtpConfig,
-) -> (RunningServer, CertificateDer<'static>, PathBuf) {
+) -> (RunningServer, CertificateDer<'static>, tempfile::TempDir) {
     let pair = TlsConfig::generate_self_signed("localhost").unwrap();
-    let dir = std::env::temp_dir().join(format!(
-        "swarmail-starttls-{name}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let (cert, key) = pair.write_to_dir(&dir).unwrap();
+    // The pair's scratch dir is a drop guard (issue #101): removed on every
+    // path out, panic or pass — a green suite leaves no `swarmail-*` litter
+    // in `$TMPDIR`. The guard rides the tuple so it outlives the server.
+    let dir = tempfile::TempDir::with_prefix(format!("swarmail-starttls-{name}-")).unwrap();
+    let dir_path = dir.path().to_path_buf();
+    let (cert, key) = pair.write_to_dir(&dir_path).unwrap();
     let server = start_with(|mut c| {
         c.tls_cert = Some(cert.clone());
         c.tls_key = Some(key.clone());
@@ -307,21 +304,17 @@ async fn a_stalled_starttls_handshake_is_dropped_within_the_deadline() {
 /// all — the TLS check runs before anything binds.
 #[tokio::test]
 async fn a_broken_tls_pair_refuses_to_serve() {
-    let dir = std::env::temp_dir().join(format!(
-        "swarmail-starttls-broken-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    // The scratch dir is a drop guard (issue #101): removed on every path
+    // out, panic or pass.
+    let dir = tempfile::TempDir::with_prefix("swarmail-starttls-broken-").unwrap();
+    let dir_path = dir.path().to_path_buf();
     let (cert, key) = TlsConfig::generate_self_signed("localhost")
         .unwrap()
-        .write_to_dir(&dir)
+        .write_to_dir(&dir_path)
         .unwrap();
 
     // Malformed PEM content.
-    let bad = dir.join("bad.pem");
+    let bad = dir_path.join("bad.pem");
     std::fs::write(&bad, "this is not pem").unwrap();
     let mut cfg = base_cfg();
     cfg.tls_cert = Some(bad.clone());
@@ -358,22 +351,18 @@ async fn a_broken_tls_pair_refuses_to_serve() {
 #[test]
 fn gen_cert_over_an_existing_key_stays_owner_only() {
     let pair = swarmail::tls::TlsConfig::generate_self_signed("localhost").unwrap();
-    let dir = std::env::temp_dir().join(format!(
-        "swarmail-overwrite-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let (cert, key) = pair.write_to_dir(&dir).unwrap();
+    // A drop guard, not a best-effort remove (issue #101): the dir is gone
+    // on every path out, panic or pass.
+    let dir = tempfile::TempDir::with_prefix("swarmail-overwrite-").unwrap();
+    let dir_path = dir.path().to_path_buf();
+    let (cert, key) = pair.write_to_dir(&dir_path).unwrap();
     // Simulate an older, wider key: open the door before the second write.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o666)).unwrap();
     }
-    let (cert2, key2) = pair.write_to_dir(&dir).unwrap();
+    let (cert2, key2) = pair.write_to_dir(&dir_path).unwrap();
     assert_eq!(cert, cert2);
     assert_eq!(key, key2);
     #[cfg(unix)]
@@ -382,7 +371,6 @@ fn gen_cert_over_an_existing_key_stays_owner_only() {
         let mode = std::fs::metadata(&key2).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the widened key is re-tightened: {mode:o}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A directory sitting at the key path: metadata succeeds but `is_file` is
@@ -390,22 +378,15 @@ fn gen_cert_over_an_existing_key_stays_owner_only() {
 #[test]
 fn gen_cert_refuses_when_the_key_path_is_a_directory() {
     let pair = swarmail::tls::TlsConfig::generate_self_signed("localhost").unwrap();
-    let dir = std::env::temp_dir().join(format!(
-        "swarmail-dirpath-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(dir.join("key.pem")).unwrap();
-    let err = pair.write_to_dir(&dir).unwrap_err();
+    // A drop guard, not a best-effort remove (issue #101).
+    let dir = tempfile::TempDir::with_prefix("swarmail-dirpath-").unwrap();
+    std::fs::create_dir_all(dir.path().join("key.pem")).unwrap();
+    let err = pair.write_to_dir(dir.path()).unwrap_err();
     assert!(
         err.to_string().to_lowercase().contains("directory")
             || err.kind() == std::io::ErrorKind::IsADirectory,
         "expected a directory error, got: {err}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A dangling symlink at the key path: metadata fails (the Err arm of the
@@ -416,23 +397,15 @@ fn gen_cert_refuses_when_the_key_path_is_a_directory() {
 fn gen_cert_writes_through_a_dangling_symlink_key() {
     use std::os::unix::fs::PermissionsExt;
     let pair = swarmail::tls::TlsConfig::generate_self_signed("localhost").unwrap();
-    let dir = std::env::temp_dir().join(format!(
-        "swarmail-symlink-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::os::unix::fs::symlink(dir.join("nowhere"), dir.join("key.pem")).unwrap();
-    let (_, key) = pair.write_to_dir(&dir).unwrap();
+    // A drop guard, not a best-effort remove (issue #101).
+    let dir = tempfile::TempDir::with_prefix("swarmail-symlink-").unwrap();
+    std::os::unix::fs::symlink(dir.path().join("nowhere"), dir.path().join("key.pem")).unwrap();
+    let (_, key) = pair.write_to_dir(dir.path()).unwrap();
     let mode = std::fs::metadata(&key).unwrap().permissions().mode() & 0o777;
     assert_eq!(
         mode, 0o600,
         "the key through the dangling symlink: {mode:o}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A domain rcgen cannot turn into a SAN refuses the mint with the mapped

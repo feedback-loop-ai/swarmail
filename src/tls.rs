@@ -137,16 +137,15 @@ fn write_private_key(path: &Path, pem: &str) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    /// A unique scratch dir per test: pid + test name.
-    fn scratch(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "swarmail-tls-{}-{}-{name}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
+    /// A unique scratch dir per test, owned by a drop guard (issue #101):
+    /// the pair's files live *inside* a `tempfile::TempDir` and die with it
+    /// by construction — cleanup survives a panic, and the old pid+nanos
+    /// spelling under `std::env::temp_dir()` is gone. The guard is returned
+    /// beside the path and must be held for the test's whole life.
+    fn scratch(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::TempDir::with_prefix(format!("swarmail-tls-{name}-")).unwrap();
+        let path = dir.path().join("pair");
+        (dir, path)
     }
 
     #[test]
@@ -197,7 +196,7 @@ mod tests {
 
     #[test]
     fn from_files_reads_the_pair_and_names_the_missing_side() {
-        let dir = scratch("from-files");
+        let (_guard, dir) = scratch("from-files");
         let (cert, key) = TlsConfig::generate_self_signed("localhost")
             .unwrap()
             .write_to_dir(&dir)
@@ -214,13 +213,13 @@ mod tests {
     #[test]
     fn write_to_dir_creates_the_dir_and_refuses_a_file_in_its_place() {
         let tls = TlsConfig::generate_self_signed("localhost").unwrap();
-        let dir = scratch("write");
+        let (_write_guard, dir) = scratch("write");
         let (cert, key) = tls.write_to_dir(&dir).unwrap();
         assert_eq!(std::fs::read_to_string(&cert).unwrap(), tls.cert_pem);
         assert_eq!(std::fs::read_to_string(&key).unwrap(), tls.key_pem);
 
         // A directory path that is actually a file must fail, not clobber.
-        let file = scratch("not-a-dir");
+        let (_file_guard, file) = scratch("not-a-dir");
         std::fs::write(&file, "occupied").unwrap();
         assert!(tls.write_to_dir(&file).is_err());
     }
@@ -232,7 +231,8 @@ mod tests {
     fn the_generated_key_is_owner_only_and_the_cert_stays_readable() {
         use std::os::unix::fs::PermissionsExt;
         let tls = TlsConfig::generate_self_signed("localhost").unwrap();
-        let (cert, key) = tls.write_to_dir(&scratch("key-mode")).unwrap();
+        let (_mode_guard, dir) = scratch("key-mode");
+        let (cert, key) = tls.write_to_dir(&dir).unwrap();
 
         let mode = std::fs::metadata(&key).unwrap().permissions().mode();
         assert_eq!(
@@ -251,7 +251,7 @@ mod tests {
     fn a_stale_wider_key_file_is_tightened_on_rewrite() {
         use std::os::unix::fs::PermissionsExt;
         let tls = TlsConfig::generate_self_signed("localhost").unwrap();
-        let dir = scratch("tighten");
+        let (_guard, dir) = scratch("tighten");
         std::fs::create_dir_all(&dir).unwrap();
         let stale = dir.join("key.pem");
         std::fs::write(&stale, "an older run's key, written wide").unwrap();

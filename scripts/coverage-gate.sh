@@ -20,19 +20,26 @@
 #      knob: the contract is exact 100/100/100. The floor may rise, never
 #      fall; COVERAGE_FLOOR is accepted only at its final value, 100, and
 #      any other value is refused.
-#   3. Hardening: every run exports a unique CARGO_LLVM_COV_TARGET_DIR, so
-#      no stale instrumented executable or profile from an earlier source
-#      graph can join the merge; the full lcov report, the run log and a
-#      machine-readable summary are preserved in a per-run evidence
-#      directory target/coverage/run.XXXXXX — deliberately NOT removed by
-#      the EXIT trap (which cleans only the instrumented build tree), so a
-#      refusal leaves burn-down evidence and consecutive runs never
-#      overwrite each other; test-harness source (tests.rs, *_tests.rs,
-#      tests/) leaking into the production report refuses; production
-#      source parked under src/**/{tests,examples,benches}/ refuses (it is
-#      excluded from the report by construction, so the denominator would
-#      shrink silently); and any coverage(off) attribute exclusion in src/
-#      refuses — production code cannot shrink the denominator.
+#   3. Hardening: the instrumented build resolves to a fresh, unique
+#      directory under target/coverage/ (gitignored, disk-backed) by
+#      default — never under $TMPDIR, whose tmpfs quota turned a disk-full
+#      build into a mid-build LLVM IO failure (issue #101) — so no stale
+#      instrumented executable or profile from an earlier source graph can
+#      join the merge; an explicit CARGO_LLVM_COV_TARGET_DIR is honoured
+#      verbatim, and the EXIT trap removes only a directory the gate itself
+#      created. A free-space preflight refuses before the build, naming the
+#      path, the filesystem and the escape variable. The full lcov report,
+#      the run log and a machine-readable summary are preserved in a
+#      per-run evidence directory target/coverage/run.XXXXXX — deliberately
+#      NOT removed by the EXIT trap (which cleans only the instrumented
+#      build tree), so a refusal leaves burn-down evidence and consecutive
+#      runs never overwrite each other; test-harness source (tests.rs,
+#      *_tests.rs, tests/) leaking into the production report refuses;
+#      production source parked under src/**/{tests,examples,benches}/
+#      refuses (it is excluded from the report by construction, so the
+#      denominator would shrink silently); and any coverage(off) attribute
+#      exclusion in src/ refuses — production code cannot shrink the
+#      denominator.
 #   4. The measurement is nightly: cargo +<nightly> llvm-cov --workspace
 #      --locked --branch, where <nightly> is an installed toolchain that
 #      actually carries llvm-tools. An unqualified `+nightly` is refused by
@@ -41,7 +48,8 @@
 #      silent toolchain drift everywhere else. Without a nightly there are
 #      no BRDA records and the branch dimension would not exist.
 #   5. `coverage-gate.sh selftest` is part of the contract: it rebuilds
-#      every refusal arm of every check against mktemp fixtures and must
+#      every refusal arm of every check against fixture trees under
+#      target/coverage/selftest.XXXXXX (removed by the EXIT trap) and must
 #      pass before the gate's verdict can be trusted. It is fail-closed —
 #      an arm that passes when it must refuse, or fails when it must pass,
 #      exits non-zero.
@@ -211,6 +219,58 @@ check_harness_declarations() {
   fi
 }
 
+# --- instrumented build location ---------------------------------------------
+
+# The instrumented build reserves ≈ 4 GiB (a full workspace build with
+# instrumentation plus the profile data); the floor adds slack for the
+# report, the merge and the evidence directory: 6 GiB, stated once.
+MIN_BUILD_FREE_KIB=$((6 * 1024 * 1024))
+
+check_free_space() {
+  # $1: the directory whose filesystem must hold the instrumented build.
+  # $2: the minimum free KiB. One df, fail-closed: the refusal names the
+  # path, the filesystem and the escape variable — "the instrumented run
+  # failed" (a mid-build LLVM IO failure, hours in) is exactly the refusal
+  # this preflight exists to prevent (issue #101).
+  local dir="$1" min_kib="$2" df_line avail_kib fs mount
+  if ! df_line="$(df -Pk "$dir" 2>/dev/null)"; then
+    refuse "coverage refusal: the free-space preflight could not stat $dir — the instrumented build reserves ${min_kib} KiB; point CARGO_LLVM_COV_TARGET_DIR at a writable path with room"
+  fi
+  avail_kib="$(printf '%s\n' "$df_line" | awk 'NR == 2 { print $4 }')"
+  fs="$(printf '%s\n' "$df_line" | awk 'NR == 2 { print $1 }')"
+  mount="$(printf '%s\n' "$df_line" | awk 'NR == 2 { print $6 }')"
+  case "$avail_kib" in
+    ''|*[!0-9]*)
+      refuse "coverage refusal: the free-space preflight could not read the free space of $dir (filesystem ${fs:-?}) — the instrumented build reserves ${min_kib} KiB; point CARGO_LLVM_COV_TARGET_DIR at a writable path with room"
+      ;;
+  esac
+  if (( avail_kib < min_kib )); then
+    refuse "coverage refusal: $dir has $avail_kib KiB free on filesystem $fs (mounted at $mount); the instrumented build reserves $min_kib KiB — free space there, or point CARGO_LLVM_COV_TARGET_DIR at a larger filesystem"
+  fi
+}
+
+resolve_build_dir() {
+  # The instrumented build directory, two arms (issue #101):
+  #   explicit — CARGO_LLVM_COV_TARGET_DIR is honoured verbatim: the caller
+  #     owns the directory and its cleanup, and the gate exports the value
+  #     it was given, unmodified;
+  #   default  — a fresh mktemp directory under the gitignored, disk-backed
+  #     target/coverage/, never $TMPDIR: an instrumented build is ≈ 4 GiB
+  #     and a tmpfs quota failure surfaces as a mid-build LLVM IO error, not
+  #     a refusal.
+  # Sets RESOLVED_BUILD_DIR and BUILD_DIR_OWNED (1 only when the gate
+  # created the directory — only an owned directory is trap-removed).
+  if [ -n "${CARGO_LLVM_COV_TARGET_DIR:-}" ]; then
+    BUILD_DIR_OWNED=0
+    mkdir -p "$CARGO_LLVM_COV_TARGET_DIR"
+    RESOLVED_BUILD_DIR="$CARGO_LLVM_COV_TARGET_DIR"
+  else
+    BUILD_DIR_OWNED=1
+    mkdir -p target/coverage
+    RESOLVED_BUILD_DIR="$(mktemp -d "$PWD/target/coverage/build.XXXXXX")"
+  fi
+}
+
 # --- canonical counting -----------------------------------------------------
 
 count_dimensions() {
@@ -268,8 +328,9 @@ count_dimensions() {
 # --- selftest ---------------------------------------------------------------
 
 selftest() {
-  local root
-  root="$(mktemp -d "${TMPDIR:-/tmp}/swarmail-coverage-selftest.XXXXXX")"
+  # $1: the fixture root — created and trap-removed by the caller, under the
+  # disk-backed target/coverage/, never $TMPDIR (issue #101).
+  local root="$1"
   local failures=0
 
   expect_pass() {
@@ -287,6 +348,27 @@ selftest() {
     out="$("$@" 2>&1)" || status=$?
     if [ "$status" -eq 0 ]; then
       printf 'coverage gate: selftest failure — %s: expected refusal, got success:\n%s\n' "$label" "$out" >&2
+      failures=$((failures + 1))
+    fi
+  }
+  expect_refuse_naming() {
+    # A refusal whose message must name $2 — the preflight's refusal is only
+    # useful when it says where, and what the escape is.
+    local label="$1" needle="$2"; shift 2
+    local out status=0
+    out="$("$@" 2>&1)" || status=$?
+    if [ "$status" -eq 0 ]; then
+      printf 'coverage gate: selftest failure — %s: expected refusal, got success:\n%s\n' "$label" "$out" >&2
+      failures=$((failures + 1))
+    elif [[ "$out" != *"$needle"* ]]; then
+      printf 'coverage gate: selftest failure — %s: the refusal does not name "%s":\n%s\n' "$label" "$needle" "$out" >&2
+      failures=$((failures + 1))
+    fi
+  }
+  expect_eq() {
+    local label="$1" got="$2" want="$3"
+    if [ "$got" != "$want" ]; then
+      printf 'coverage gate: selftest failure — %s: got "%s", want "%s"\n' "$label" "$got" "$want" >&2
       failures=$((failures + 1))
     fi
   }
@@ -367,10 +449,38 @@ selftest() {
   } > "$root/synth.info"
   local got
   got="$(count_dimensions "$root/synth.info")"
-  if [ "$got" != "3 2 2 1 3 2" ]; then
-    printf 'coverage gate: selftest failure — counting: got "%s", expected "3 2 2 1 3 2"\n' "$got" >&2
-    failures=$((failures + 1))
-  fi
+  expect_eq 'canonical counting' "$got" '3 2 2 1 3 2'
+
+  # 7. Build-dir resolution (issue #101): an explicit CARGO_LLVM_COV_TARGET_DIR
+  #    verbatim and not owned (the trap never removes the caller's
+  #    directory); the default a fresh, owned directory under the
+  #    disk-backed target/coverage/ — never $TMPDIR.
+  local resolved
+  resolved="$(CARGO_LLVM_COV_TARGET_DIR="$root/explicit" resolve_build_dir; printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
+  expect_eq 'an explicit CARGO_LLVM_COV_TARGET_DIR is honoured verbatim and not owned' "$resolved" "0 $root/explicit"
+  expect_eq 'the explicit build dir is created' "$( [ -d "$root/explicit" ] && echo yes || echo no )" yes
+  mkdir -p "$root/tmpdir"
+  resolved="$(unset CARGO_LLVM_COV_TARGET_DIR; TMPDIR="$root/tmpdir" resolve_build_dir; printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
+  case "$resolved" in
+    "1 $PWD/target/coverage/build."*)
+      resolved="${resolved#1 }"
+      expect_eq 'the default build dir is created' "$( [ -d "$resolved" ] && echo yes || echo no )" yes
+      rm -rf "$resolved"
+      ;;
+    *) expect_eq 'the default build dir is owned and under target/coverage/, never TMPDIR' "$resolved" "1 $PWD/target/coverage/build.XXXXXX" ;;
+  esac
+
+  # 8. The free-space preflight refuses before the build: a floor larger
+  #    than the filesystem refuses naming the path, the filesystem and the
+  #    escape variable; an unstatable path refuses naming the escape; a
+  #    floor the filesystem holds passes.
+  local fsname
+  fsname="$(df -Pk "$root" | awk 'NR == 2 { print $1 }')"
+  expect_refuse_naming 'a short filesystem refusal names the path' "$root has" check_free_space "$root" 999999999999
+  expect_refuse_naming 'a short filesystem refusal names the filesystem' "filesystem $fsname" check_free_space "$root" 999999999999
+  expect_refuse_naming 'a short filesystem refusal names the escape variable' 'CARGO_LLVM_COV_TARGET_DIR' check_free_space "$root" 999999999999
+  expect_refuse_naming 'an unstatable path refuses naming the escape variable' 'CARGO_LLVM_COV_TARGET_DIR' check_free_space "$root/absent/dir" 1
+  expect_pass 'a preflight floor of 1 KiB passes' check_free_space "$root" 1
 
   if [ "$failures" -ne 0 ]; then
     printf 'coverage gate: selftest failed with %s arm(s)\n' "$failures" >&2
@@ -380,7 +490,13 @@ selftest() {
 }
 
 case "${1:-}" in
-  selftest) selftest; exit 0 ;;
+  selftest)
+    mkdir -p target/coverage
+    selftest_root="$(mktemp -d "$PWD/target/coverage/selftest.XXXXXX")"
+    trap 'rm -rf "$selftest_root"' EXIT
+    selftest "$selftest_root"
+    exit 0
+    ;;
   '') : ;;
   *) refuse "coverage gate: unknown argument '$1' (no argument runs the gate; 'selftest' runs the refusal-arm fixtures)" ;;
 esac
@@ -394,6 +510,21 @@ command -v jq >/dev/null 2>&1 || {
 check_no_coverage_off src
 check_no_hidden_harness_dirs src
 check_harness_declarations src
+
+# The instrumented build directory is resolved, owned and preflighted before
+# any toolchain work: the disk-full refusal must not need a nightly build to
+# be heard (issue #101).
+resolve_build_dir
+forge_target_dir="$RESOLVED_BUILD_DIR"
+if [ "$BUILD_DIR_OWNED" -eq 1 ]; then
+  # The EXIT trap cleans only a directory the gate itself created; a caller's
+  # explicit CARGO_LLVM_COV_TARGET_DIR is the caller's to keep.
+  trap 'rm -rf "$forge_target_dir"' EXIT
+fi
+check_free_space "$forge_target_dir" "$MIN_BUILD_FREE_KIB"
+# A unique target directory is stronger than cleaning shared coverage state:
+# no stale instrumented executable can participate in this candidate's merge.
+export CARGO_LLVM_COV_TARGET_DIR="$forge_target_dir"
 
 # Resolve the measurement toolchain: the `nightly` channel alias when it
 # carries llvm-tools — exactly what CI's rust-toolchain@nightly resolves to —
@@ -423,19 +554,12 @@ if ! cargo +"$coverage_toolchain" llvm-cov --version >/dev/null 2>&1; then
   refuse "coverage refusal: cargo +$coverage_toolchain llvm-cov is unavailable — cargo-llvm-cov must be installed (cargo install cargo-llvm-cov)"
 fi
 
-forge_coverage_dir="$(mktemp -d "${TMPDIR:-/tmp}/swarmail-coverage.XXXXXX")"
-trap 'rm -rf "$forge_coverage_dir"' EXIT
-
 # Per-run evidence: a fresh directory per invocation, preserved after the run
 # (the EXIT trap cleans only the instrumented build tree). Consecutive runs
 # never overwrite each other's reports, and a refusal leaves burn-down
 # evidence behind.
 mkdir -p target/coverage
 run_dir="$(mktemp -d target/coverage/run.XXXXXX)"
-
-# A unique target directory is stronger than cleaning shared coverage state:
-# no stale instrumented executable can participate in this candidate's merge.
-export CARGO_LLVM_COV_TARGET_DIR="$forge_coverage_dir/target"
 
 # A report is candidate-bound only when no instrumented executable or profile
 # from an earlier source graph can participate in the merge.

@@ -44,12 +44,34 @@ fn dedup(values: Vec<String>) -> Vec<String> {
 /// decodes of what the sender wrote — the store keeps them; the display
 /// plane owns their presentation.
 fn decode_refs(input: &str) -> String {
+    let mut stats = RefScanStats::default();
+    decode_refs_scanned(input, &mut stats)
+}
+
+/// The reference scan's shape for one `decode_refs` call (issue #102, the
+/// review's MEDIUM): one scan per '&' and at most the window's byte length
+/// per scan, observed through the value `decode_refs_scanned` fills — not
+/// through process-global counters, which decision 0020 §1 forbids without
+/// a seam. Production constructs the value and drops it: two integer adds
+/// on the ingest path's existing parse, no shared mutable state. The
+/// fields are read only by the bounded-work tests.
+#[derive(Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct RefScanStats {
+    /// Well-formed or not, each '&' costs exactly one bounded scan.
+    scans: u64,
+    /// Bytes that scan actually examined: the window is up to `REF_MAX`
+    /// *characters*, so up to 4 * `REF_MAX` bytes on a multibyte body.
+    bytes: u64,
+}
+
+fn decode_refs_scanned(input: &str, stats: &mut RefScanStats) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(index) = rest.find('&') {
         out.push_str(&rest[..index]);
         rest = &rest[index..];
-        match parse_ref(rest) {
+        match parse_ref(rest, stats) {
             Some((decoded, len)) => {
                 out.push(decoded);
                 rest = &rest[len..];
@@ -64,10 +86,17 @@ fn decode_refs(input: &str) -> String {
     out
 }
 
+#[cfg(test)]
+fn decode_refs_with_stats(input: &str) -> (String, RefScanStats) {
+    let mut stats = RefScanStats::default();
+    let out = decode_refs_scanned(input, &mut stats);
+    (out, stats)
+}
+
 /// One character reference at the start of `s`: `(decoded char, bytes
 /// consumed)`, or `None` when `s` does not begin with a well-formed
 /// reference — which is the signal to copy the `&` through literally.
-fn parse_ref(s: &str) -> Option<(char, usize)> {
+fn parse_ref(s: &str, stats: &mut RefScanStats) -> Option<(char, usize)> {
     // The reference is bounded: the five XML names and a numeric's digits
     // never approach forty bytes, so a terminator that is not found within
     // the window means the '&' is literal — and the scan stays total and
@@ -76,10 +105,12 @@ fn parse_ref(s: &str) -> Option<(char, usize)> {
     // 50 MiB '&' run pins a blocking worker for hours, and every store
     // mutation shares that pool (the review's security HOLD).
     const REF_MAX: usize = 40;
+    stats.scans += 1;
     let window = match s[1..].char_indices().nth(REF_MAX) {
         Some((byte_index, _)) => &s[1..1 + byte_index],
         None => &s[1..],
     };
+    stats.bytes += window.len() as u64;
     let token_end = window.find(';')? + 1;
     let token = &s[1..token_end];
     let decoded = if let Some(hex) = token
@@ -189,12 +220,38 @@ mod tests {
     // The reference scan is bounded (the review's security HOLD): a match
     // of nothing but '&'s — no ';' anywhere — decodes in bounded work per
     // position, each '&' passing through literal, instead of rescanning
-    // to the match's end for every one of them. A half-megabyte run is
-    // instant under the window and would be minutes of memchr without it.
+    // to the match's end for every one of them. The bound is observed
+    // through `decode_refs_with_stats`'s returned value — exact counts,
+    // no slack, no process-global state (decision 0020 §1; issue #102):
+    // 500_000 '&'s cost 500_000 scans; scan i (1-based) sees the
+    // min(40, 500_000 - i) one-byte characters after it, so the total is
+    // 499_960 * 40 + (39 + 38 + ... + 0) = 19_999_180 bytes. Remove the
+    // 40-character window and the same input rescans ~4 orders of
+    // magnitude more bytes and this assert goes red.
     #[test]
     fn an_ampersand_run_decodes_in_bounded_work() {
-        let src = format!("https://x.io/{}", "&".repeat(500_000));
-        assert_eq!(extract_links(None, Some(&src)), vec![src]);
+        let src = "&".repeat(500_000);
+        let (out, stats) = decode_refs_with_stats(&src);
+        assert_eq!(out, src);
+        assert_eq!(stats.scans, 500_000, "one scan per '&'");
+        assert_eq!(stats.bytes, 19_999_180, "each scan sees at most the window");
+    }
+
+    // The window bounds *characters*, not bytes: interleaving each '&'
+    // with one two-byte character, scan i (1-based) has 1 + 2*(500_000-i)
+    // characters after it (the remainder ends on the two-byte char), so a
+    // full window is 40 characters = 20 two-byte + 20 one-byte = 60 bytes,
+    // and the tail — j two-byte and j one-byte characters plus one
+    // trailing two-byte — contributes 3j + 2 for j = 19..=0:
+    // 499_980 * 60 + (3 * 190 + 40) = 29_999_410 — the exact observation
+    // the slack-based counter probe could not make (issue #102).
+    #[test]
+    fn the_reference_window_counts_characters_not_bytes() {
+        let src = "&\u{e9}".repeat(500_000);
+        let (out, stats) = decode_refs_with_stats(&src);
+        assert_eq!(out, src);
+        assert_eq!(stats.scans, 500_000);
+        assert_eq!(stats.bytes, 29_999_410);
     }
 
     use super::*;

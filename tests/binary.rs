@@ -27,6 +27,7 @@ fn binary() -> &'static str {
 struct Serve {
     child: Child,
     smtp_addr: SocketAddr,
+    pop3_addr: SocketAddr,
     http_addr: SocketAddr,
     /// The reader parked just past the startup line: the signal legs
     /// sequence on the server's own log lines, never a sleep.
@@ -47,12 +48,14 @@ impl Drop for Serve {
 }
 
 /// The startup line carries the bound addrs as tracing fields
-/// (`... smtp=127.0.0.1:45678 http=127.0.0.1:45679`); the prose in the
-/// message body would be a format contract too fragile to parse.
-fn parse_addrs(line: &str) -> Option<(SocketAddr, SocketAddr)> {
+/// (`... smtp=127.0.0.1:45678 pop3=127.0.0.1:45679 http=127.0.0.1:45680`);
+/// the prose in the message body would be a format contract too fragile to
+/// parse.
+fn parse_addrs(line: &str) -> Option<(SocketAddr, SocketAddr, SocketAddr)> {
     let smtp = line.split("smtp=").nth(1)?.split_whitespace().next()?;
+    let pop3 = line.split("pop3=").nth(1)?.split_whitespace().next()?;
     let http = line.split("http=").nth(1)?.split_whitespace().next()?;
-    Some((smtp.parse().ok()?, http.parse().ok()?))
+    Some((smtp.parse().ok()?, pop3.parse().ok()?, http.parse().ok()?))
 }
 
 /// A `serve` command on OS-assigned ports.
@@ -119,11 +122,12 @@ async fn spawn_serve(cmd: Command) -> Serve {
         }
         transcript.push_str(&line);
     };
-    let (smtp_addr, http_addr) =
+    let (smtp_addr, pop3_addr, http_addr) =
         addrs.unwrap_or_else(|| panic!("the server exited before it was up:\n{transcript}"));
     Serve {
         child,
         smtp_addr,
+        pop3_addr,
         http_addr,
         stdout: Some(reader),
         reaped: false,
@@ -209,24 +213,54 @@ async fn serve_answers_healthz_and_stops_on_sigint() {
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
 
+/// A concrete free loopback port: bound, then released. The caller names
+/// it in env; between the release and the server's bind nothing else in
+/// this process wants it (the three ports are distinct), so the server
+/// gets the port the env named — wide windows by construction, not a
+/// `:0` the reader would take on faith (issue #102, 0030 §1).
+fn a_free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("a free port binds")
+        .local_addr()
+        .expect("the bound addr is local")
+        .port()
+}
+
 /// The bind knobs work in their env shape alone — no flags, the three
 /// `SWARMAIL_*_LISTEN` vars, the spelling the image and the chart use
-/// (decision 0030 §1). The loopback defaults now hold when nothing is set;
-/// this pins that an explicit env bind still overrides them, read back
-/// from the startup line the operator sees.
+/// (decision 0030 §1), each naming a concrete free port. The startup line
+/// the operator sees must carry exactly those ports: an ignored `env =`
+/// wiring would bind the loopback defaults instead and go red here, where
+/// the old `127.0.0.1:0` shape read back whatever was printed and could
+/// not tell an honoured env from an ignored one.
 #[tokio::test]
 async fn serve_takes_its_binds_from_the_environment() {
+    let (smtp_port, pop3_port, http_port) = (a_free_port(), a_free_port(), a_free_port());
     let mut cmd = Command::new(binary());
     cmd.args(["serve"]);
-    for var in [
-        "SWARMAIL_SMTP_LISTEN",
-        "SWARMAIL_POP3_LISTEN",
-        "SWARMAIL_HTTP_LISTEN",
-    ] {
-        cmd.env(var, "127.0.0.1:0");
-    }
+    cmd.env("SWARMAIL_SMTP_LISTEN", format!("127.0.0.1:{smtp_port}"));
+    cmd.env("SWARMAIL_POP3_LISTEN", format!("127.0.0.1:{pop3_port}"));
+    cmd.env("SWARMAIL_HTTP_LISTEN", format!("127.0.0.1:{http_port}"));
     let mut serve = spawn_serve(cmd).await;
     wait_http_up(serve.http_addr).await;
+    assert_eq!(
+        serve.smtp_addr.port(),
+        smtp_port,
+        "the env's smtp bind is honoured: {}",
+        serve.smtp_addr
+    );
+    assert_eq!(
+        serve.pop3_addr.port(),
+        pop3_port,
+        "the env's pop3 bind is honoured: {}",
+        serve.pop3_addr
+    );
+    assert_eq!(
+        serve.http_addr.port(),
+        http_port,
+        "the env's http bind is honoured: {}",
+        serve.http_addr
+    );
     let (st, body) = common::http_json(serve.http_addr, "GET", "/healthz", None).await;
     assert_eq!(st, 200, "the env-bound server answers healthz: {body}");
     let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
@@ -297,7 +331,12 @@ async fn mcp_bridge_exits_zero_at_eof_without_touching_the_network() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn swarmail mcp");
-    let status = child.wait().await.unwrap();
+    // A bridge that ignores its stdin must not hang the test forever: the
+    // wait is bounded, naming the step (issue #102).
+    let status = tokio::time::timeout(common::HELPER_DEADLINE, child.wait())
+        .await
+        .expect("the mcp bridge never exited")
+        .unwrap();
     assert!(status.success(), "mcp EOF exit: {status:?}");
 }
 
@@ -322,7 +361,10 @@ async fn mcp_subcommand_keeps_stdout_protocol_only() {
         .write_all(request)
         .await
         .expect("feed the bridge");
-    let out = child.wait_with_output().await.expect("mcp child");
+    let out = tokio::time::timeout(common::HELPER_DEADLINE, child.wait_with_output())
+        .await
+        .expect("the mcp bridge never answered")
+        .expect("mcp child");
     assert!(out.status.success(), "mcp exit: {out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let reply: serde_json::Value =
@@ -933,4 +975,54 @@ async fn an_exhausted_delivery_names_its_target_and_cause_in_stdout() {
     let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
+}
+
+// ---------- the fallible EOF helper (issue #102, 0018 §2) ----------
+
+/// A peer that accepts and closes with nothing written back is "no answer":
+/// the helper maps it to `(0, "")`, exactly the client-visible half of 0018
+/// §2's open outcome. On a real socket, not a mock (0004).
+#[tokio::test]
+async fn the_eof_helper_reads_an_accept_and_close_as_no_answer() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        // One read of the request head, then close with nothing written.
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+        drop(stream);
+    });
+    let (status, body) =
+        common::http_send_text_allow_eof(addr, "POST", "/api/v1/inboxes/eof/seed", Some("{}"))
+            .await;
+    assert_eq!(
+        (status, body.as_str()),
+        (0, ""),
+        "an accept-and-close is no answer"
+    );
+}
+
+/// A 503 with an empty body is a real answer: its status rides through
+/// untouched. The old helper rewrote it to 0 because the body was empty —
+/// the exact corruption 0018 §2's outcome table forbids.
+#[tokio::test]
+async fn the_eof_helper_never_rewrites_a_real_status() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 4096];
+        let _ = stream.read(&mut buf).await;
+        stream
+            .write_all(
+                b"HTTP/1.1 503 Storage Refused\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+    });
+    let (status, body) =
+        common::http_send_text_allow_eof(addr, "POST", "/api/v1/inboxes/eof/seed", Some("{}"))
+            .await;
+    assert_eq!((status, body.as_str()), (503, ""), "the status stays 503");
 }

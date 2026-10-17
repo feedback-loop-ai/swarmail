@@ -97,6 +97,14 @@ libc = "0.2"
 # line back. Already a main dependency — this only makes the features
 # visible to the test/bench targets; no new crate enters the tree.
 tokio = { version = "1", features = ["rt", "time", "process"] }
+# Panic-safe scratch cleanup at the persist/tls fixture helpers (issue #101):
+# TempDir drop guards held for the test's whole life, so `-wal`/`-shm`
+# sidecars and the tls pair die with the directory by construction and
+# cleanup survives a panic — the exact job a dev-dependency already does
+# better than hand-rolled measured code. Dev-only: zero runtime surface.
+# MIT OR Apache-2.0; its tree (fastrand, rustix) is permissive and already
+# allowlisted.
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

@@ -700,11 +700,13 @@ async fn await_total_is_counted_after_the_wait_in_both_arms() {
     assert_eq!(body["total"], 1, "total is counted after the wait: {body}");
 
     // 408 arm: a non-matching mail lands mid-wait; total counts it while
-    // `matched` stays honest about the filter.
+    // `matched` stays honest about the filter. The bound is well past
+    // poll+send+commit, so the mail cannot outrun the wait on a loaded
+    // runner (issue #102); the outer deadline still fails fast.
     let request = tokio::spawn(http_json(
         addr,
         "GET",
-        "/api/v1/inboxes/observed408/await?count=1&to=nobody@x.io&timeout_ms=1500",
+        "/api/v1/inboxes/observed408/await?count=1&to=nobody@x.io&timeout_ms=5000",
         None,
     ));
     // The wait parks, observed under its own inbox — the unrelated mail
@@ -1184,6 +1186,16 @@ async fn the_list_refuses_over_the_cap_and_accepts_exactly_it() {
 #[tokio::test]
 async fn the_wait_refuses_over_the_cap_registers_no_waiter_and_accepts_the_boundary() {
     let srv = start().await;
+    // The cumulative registration is the observable (issue #102): the
+    // delta across the refused calls must stay zero — a wait that
+    // subscribed before validating would leave a permanent +1, which the
+    // released gauge cannot show (its row is gone either way).
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    let registered_before = common::metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="nocap"}"#,
+    )
+    .unwrap_or(0);
     for (field, query) in [
         ("count", "count=251"),
         ("limit", "limit=251"),
@@ -1203,6 +1215,16 @@ async fn the_wait_refuses_over_the_cap_registers_no_waiter_and_accepts_the_bound
             "{field}: {body}"
         );
     }
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    let registered_after = common::metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="nocap"}"#,
+    )
+    .unwrap_or(0);
+    assert_eq!(
+        registered_after, registered_before,
+        "a refused wait registers no waiter: {metrics}"
+    );
 
     // The prompt refusal is the 0025 §5 proof itself: a parked wait could
     // not have answered. (The awaits gauge cannot — its row is removed at

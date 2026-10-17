@@ -695,24 +695,37 @@ async fn a_line_past_the_buffer_capacity_is_refused_and_the_stream_stays_in_sync
     read.read_to_end(&mut tail).await.unwrap();
     assert!(tail.is_empty());
 
-    // Fed in pieces that are each below the cap, the accumulation keeps
-    // looping until the cap is blown — the refusal is still one drained
-    // error, and the terminator that arrives late still ends the drain.
+    // The same over-cap line over the real wire, written in ONE coalesced
+    // pass — sizes and byte order, no pacing (issue #102; the ruled shape:
+    // a server-side seam cannot exist in a wire test, a pacing helper is
+    // the sleep renamed). The fragment is larger than
+    // max(MAX_COMMAND_LINE, BufReader's 8 KiB) with the terminator as the
+    // last bytes of the stream: no server fill before the terminator can
+    // contain '\n' (a fill is at most 8 KiB and the newline sits beyond
+    // the run), so the accumulation walks to the mid-line cap and the
+    // drain runs to the terminator under any TCP coalescing — on every
+    // run, deterministically. Exactly one refusal, no partial reply, no
+    // echo of the line; the next command is read whole afterwards.
     let stream = TcpStream::connect(s.pop3_addr).await.unwrap();
     let (read, mut write) = stream.into_split();
     let mut read = tokio::io::BufReader::new(read);
     let mut greeting = Vec::new();
     read.read_until(b'\n', &mut greeting).await.unwrap();
     assert_eq!(greeting, b"+OK Swarmail POP3 server ready\r\n");
-    write.write_all(b"USER ").await.unwrap();
-    for _ in 0..3 {
-        write.write_all("d".repeat(2000).as_bytes()).await.unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    write.write_all(b"\r\n").await.unwrap();
     let mut line = Vec::new();
-    read.read_until(b'\n', &mut line).await.unwrap();
-    assert_eq!(line, b"-ERR line too long\r\n");
+    line.extend_from_slice(b"USER ");
+    line.extend_from_slice(&"d".repeat(20_000).into_bytes());
+    line.extend_from_slice(b"\r\n");
+    write.write_all(&line).await.unwrap();
+    let mut reply = Vec::new();
+    read.read_until(b'\n', &mut reply).await.unwrap();
+    assert_eq!(reply, b"-ERR line too long\r\n");
+    // The drained line left the stream in sync: the next command is
+    // answered as itself, not as the over-long line's tail.
+    write.write_all(b"QUIT\r\n").await.unwrap();
+    let mut reply = Vec::new();
+    read.read_until(b'\n', &mut reply).await.unwrap();
+    assert_eq!(reply, b"+OK Swarmail POP3 server signing off\r\n");
 }
 
 #[tokio::test]

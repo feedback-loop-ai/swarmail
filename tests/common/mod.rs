@@ -42,11 +42,10 @@ pub async fn smtp_send(
     let stream = TcpStream::connect(addr).await.unwrap();
     let (r, mut w) = stream.into_split();
     let mut reader = BufReader::new(r);
-    let mut line = String::new();
+    let mut line;
 
     // read greeting
-    line.clear();
-    reader.read_line(&mut line).await.unwrap();
+    line = read_line_named(&mut reader, "the SMTP greeting").await;
     if !line.starts_with("220") {
         return Err(line.trim_end().to_string());
     }
@@ -54,8 +53,7 @@ pub async fn smtp_send(
     // EHLO (read multi-line reply)
     w.write_all(b"EHLO swarmail-test\r\n").await.unwrap();
     loop {
-        line.clear();
-        reader.read_line(&mut line).await.unwrap();
+        line = read_line_named(&mut reader, "the EHLO reply").await;
         if !line.starts_with("250-") {
             break;
         }
@@ -68,8 +66,7 @@ pub async fn smtp_send(
         w.write_all(format!("AUTH PLAIN {b64}\r\n").as_bytes())
             .await
             .unwrap();
-        line.clear();
-        reader.read_line(&mut line).await.unwrap();
+        line = read_line_named(&mut reader, "the AUTH PLAIN reply").await;
         if !line.starts_with("235") {
             return Err(line.trim_end().to_string());
         }
@@ -77,24 +74,21 @@ pub async fn smtp_send(
 
     for cmd in [format!("MAIL FROM:<{from}>"), format!("RCPT TO:<{to}>")] {
         w.write_all(format!("{cmd}\r\n").as_bytes()).await.unwrap();
-        line.clear();
-        reader.read_line(&mut line).await.unwrap();
+        line = read_line_named(&mut reader, "the envelope reply").await;
         if !line.starts_with("250") {
             return Err(line.trim_end().to_string());
         }
     }
 
     w.write_all(b"DATA\r\n").await.unwrap();
-    line.clear();
-    reader.read_line(&mut line).await.unwrap();
+    line = read_line_named(&mut reader, "the DATA reply").await;
     if !line.starts_with("354") {
         return Err(line.trim_end().to_string());
     }
 
     let message = format!("From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{body}\r\n.\r\n");
     w.write_all(message.as_bytes()).await.unwrap();
-    line.clear();
-    reader.read_line(&mut line).await.unwrap();
+    line = read_line_named(&mut reader, "the accepted reply").await;
     if !line.starts_with("250") {
         return Err(line.trim_end().to_string());
     }
@@ -137,9 +131,10 @@ impl Pop3 {
 
     /// Read one reply line, trimmed of its CRLF.
     pub async fn reply(&mut self) -> String {
-        let mut line = String::new();
-        self.reader.read_line(&mut line).await.unwrap();
-        line.trim_end().to_string()
+        read_line_named(&mut self.reader, "the POP3 reply")
+            .await
+            .trim_end()
+            .to_string()
     }
 
     /// Send a command and read its single-line reply.
@@ -266,10 +261,8 @@ impl SmtpConn {
 
     /// Read one reply line (final line of multi-line replies).
     pub async fn reply(&mut self) -> String {
-        let mut line = String::new();
         loop {
-            line.clear();
-            self.reader.read_line(&mut line).await.unwrap();
+            let line = read_line_named(&mut self.reader, "the SMTP reply").await;
             let cont = line.starts_with("250-");
             if !cont {
                 return line.trim_end().to_string();
@@ -334,10 +327,7 @@ impl SmtpConn {
 
     /// Read the server's side to EOF (after `shutdown_write`), if it closes.
     pub async fn read_to_end(&mut self) -> Vec<u8> {
-        use tokio::io::AsyncReadExt;
-        let mut buf = Vec::new();
-        let _ = self.reader.read_to_end(&mut buf).await;
-        buf
+        read_to_end_named(&mut self.reader, "the SMTP session").await
     }
 }
 
@@ -350,10 +340,7 @@ pub async fn http_get_text(addr: std::net::SocketAddr, path: &str) -> (u16, Stri
         )
         .await
         .unwrap();
-    let mut buf = Vec::new();
-    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
-        .await
-        .unwrap();
+    let buf = read_to_end_named(&mut stream, "the HTTP response").await;
     let s = String::from_utf8_lossy(&buf);
     let status: u16 = s
         .lines()
@@ -496,10 +483,7 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
         )
         .await
         .unwrap();
-    let mut buf = Vec::new();
-    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
-        .await
-        .unwrap();
+    let buf = read_to_end_named(&mut stream, "the HTTP response").await;
     let split = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -523,23 +507,111 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
 /// body (axum's text rejections, a no-content 202) comes here instead —
 /// reading a text response as JSON is exactly the dishonesty issue #50
 /// named, and so is silencing it back into `{}`.
-/// Like `http_send_text`, but a connection closed with no answer at all
-/// maps to status 0 instead of a parse panic. 0018 §2 leaves the
-/// client-visible outcome of a commit in flight at stop open — the socket
-/// is answered 503, or the socket dies first and the client sees EOF;
-/// callers that assert on the refusal must accept both.
+/// The deadline every helper read runs under (issue #102): a peer that
+/// accepts and never replies fails the helper within the bound, its panic
+/// naming the step, instead of hanging the whole suite.
+pub const HELPER_DEADLINE: Duration = Duration::from_secs(10);
+
+/// One named read deadline for a helper's line read (issue #102): a wedged
+/// peer fails the test in seconds, naming the step, instead of hanging the
+/// CI slot. A timeout bounds *failure*; it opens no validity window — 0020
+/// rule 5's "real deadline", at the drain-deadline fence's scale (0027 §7).
+pub(crate) async fn read_line_named<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    step: &'static str,
+) -> String {
+    let mut line = String::new();
+    match tokio::time::timeout(HELPER_DEADLINE, reader.read_line(&mut line)).await {
+        Ok(Ok(_)) => line,
+        Ok(Err(e)) => panic!("{step}: the read failed: {e}"),
+        Err(_) => panic!("{step}: no reply within {HELPER_DEADLINE:?}"),
+    }
+}
+
+/// One named read deadline for a helper's read-to-EOF. Read errors stay
+/// tolerated where the EOF itself is the answer; the deadline is only for
+/// a peer that never answers at all.
+pub(crate) async fn read_to_end_named<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    step: &'static str,
+) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    match tokio::time::timeout(HELPER_DEADLINE, reader.read_to_end(&mut buf)).await {
+        Ok(Ok(_)) | Ok(Err(_)) => buf,
+        Err(_) => panic!("{step}: no EOF within {HELPER_DEADLINE:?}"),
+    }
+}
+
+/// Like `http_send_text`, but fallible at the connection level: a peer
+/// that answers nothing — zero bytes (accepted and closed) or a reset —
+/// maps to `(0, "")` (issue #102). It performs its own `read_to_end`
+/// (about ten duplicated lines beat a mode-flag parameter on
+/// `http_send_text`) so the no-answer case can be told apart from the
+/// empty-body case: a real status is **never** rewritten — a 503 with an
+/// empty body stays 503 (0018 §2's outcome table). Proven on real
+/// sockets, not mocks (0004).
 pub async fn http_send_text_allow_eof(
     addr: std::net::SocketAddr,
     method: &str,
     path: &str,
     body: Option<&str>,
 ) -> (u16, String) {
-    let (status, text) = http_send_text(addr, method, path, body).await;
-    if text.is_empty() {
-        (0, text)
-    } else {
-        (status, text)
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    if let Some(b) = body {
+        req.push_str(&format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            b.len()
+        ));
     }
+    req.push_str("\r\n");
+    if let Some(b) = body {
+        req.push_str(b);
+    }
+    match stream.write_all(req.as_bytes()).await {
+        Ok(()) => {}
+        // A reset before the request is even out: no answer will come.
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return (0, String::new()),
+        Err(e) => panic!("http_send_text_allow_eof: write to {addr} failed: {e}"),
+    }
+    let mut buf = Vec::new();
+    match tokio::time::timeout(
+        HELPER_DEADLINE,
+        tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        // Reset mid-exchange: the peer died before a complete answer.
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionReset => return (0, String::new()),
+        Ok(Err(e)) => panic!("http_send_text_allow_eof: read from {addr} failed: {e}"),
+        Err(_) => panic!(
+            "http_send_text_allow_eof: {addr} never finished answering within {HELPER_DEADLINE:?}"
+        ),
+    }
+    if buf.is_empty() {
+        // Accepted and closed with no answer at all.
+        return (0, String::new());
+    }
+    let s = String::from_utf8_lossy(&buf);
+    let status: u16 = s
+        .lines()
+        .next()
+        .unwrap()
+        .split(' ')
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    // split_once, not split: a body may itself contain \r\n\r\n. An empty
+    // body keeps the status it rode in on.
+    let body = s
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("")
+        .to_string();
+    (status, body)
 }
 
 pub async fn http_send_text(
@@ -577,10 +649,7 @@ pub async fn send_with_host(
         req.push_str(b);
     }
     stream.write_all(req.as_bytes()).await.unwrap();
-    let mut buf = Vec::new();
-    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
-        .await
-        .unwrap();
+    let buf = read_to_end_named(&mut stream, "the HTTP response").await;
     let s = String::from_utf8_lossy(&buf);
     let status: u16 = s
         .lines()
@@ -621,10 +690,7 @@ pub async fn http_send_text_with_headers(
         req.push_str(b);
     }
     stream.write_all(req.as_bytes()).await.unwrap();
-    let mut buf = Vec::new();
-    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buf)
-        .await
-        .unwrap();
+    let buf = read_to_end_named(&mut stream, "the HTTP response").await;
     let s = String::from_utf8_lossy(&buf);
     let status: u16 = s
         .lines()
