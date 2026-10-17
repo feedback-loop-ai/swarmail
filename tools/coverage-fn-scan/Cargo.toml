@@ -1,0 +1,19 @@
+[package]
+name = "coverage-fn-scan"
+version = "0.1.0"
+edition = "2021"
+description = "The exact coverage gate's parser: dep-info harvest and canonical-expansion attribute scan (decision 0035)."
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Its own workspace: the helper is a tool outside the measured crate (the
+# xtask pattern) — the measured manifest and lock gain nothing from it. syn
+# 2.0.119 and its proc-macro2/unicode-ident tree are already in the measured
+# Cargo.lock and cached in the realm's cargo home, so the hermetic
+# `cargo build --offline --locked` needs no network, and
+# `cargo deny check licenses` already vets the same versions.
+[dependencies]
+syn = { version = "2.0.119", features = ["full"] }
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+
+[workspace]

@@ -34,12 +34,15 @@
 #      NOT removed by the EXIT trap (which cleans only the instrumented
 #      build tree), so a refusal leaves burn-down evidence and consecutive
 #      runs never overwrite each other; test-harness source (tests.rs,
-#      *_tests.rs, tests/) leaking into the production report refuses;
-#      production source parked under src/**/{tests,examples,benches}/
+#      *_tests.rs, tests/) measured into the production report refuses —
+#      unless the file is in the production build's own file set (decision
+#      0035: the refusal is by membership; the build's dep-info is the file
+#      set); production source parked under src/**/{tests,examples,benches}/
 #      refuses (it is excluded from the report by construction, so the
-#      denominator would shrink silently); and any coverage(off) attribute
-#      exclusion in src/ refuses — production code cannot shrink the
-#      denominator.
+#      denominator would shrink silently); a coverage(off) exclusion that
+#      survives the compiler's canonical expansion refuses (decision 0035);
+#      and any literal coverage(off) spelling in src/ refuses pre-build —
+#      production code cannot shrink the denominator.
 #   4. The measurement is nightly: cargo +<nightly> llvm-cov --workspace
 #      --locked --branch, where <nightly> is an installed toolchain that
 #      actually carries llvm-tools. An unqualified `+nightly` is refused by
@@ -110,17 +113,25 @@ check_no_hidden_harness_dirs() {
 check_no_harness_leak() {
   # Test harnesses live in cargo-llvm-cov's conventional `tests.rs`,
   # `*_tests.rs`, and `tests/` paths. (Inline #[cfg(test)] modules inside src/
-  # are the realm's unit-test shape: they are part of the report and enforced,
-  # not harness source.) A report carrying one means the measurement counted
-  # a harness as production source.
-  if awk '
+  # are the realm's unit-test shape: part of the report and enforced, not
+  # harness source.) A harness-named SF record refuses — unless its file is IN
+  # the production build's file set: measured-as-production is the desired end
+  # state, a test harness measured as production is the original disease
+  # (decision 0035's amendment of 0020 §3 — membership, never presence).
+  local prod="$2" root="$3/"
+  if awk -v prod="$prod" -v root="$root" '
+    FILENAME == prod { set[$0] = 1; next }
     /^SF:/ {
-      path = substr($0, 5);
-      if (path ~ /(^|\/)(tests\.rs|[^\/]+_tests\.rs|tests\/)/) { print path > "/dev/stderr"; found = 1; exit }
+      path = substr($0, 4);
+      if (path ~ /(^|\/)(tests\.rs|[^\/]+_tests\.rs|tests\/)/) {
+        rel = path;
+        if (index(path, root) == 1) rel = substr(path, length(root) + 1);
+        if (!(rel in set)) { print path > "/dev/stderr"; found = 1; exit }
+      }
     }
     END { exit found ? 1 : 0 }
-  ' "$1"; then :; else
-    refuse 'coverage refusal: test harness source leaked into the production report (record above)'
+  ' "$prod" "$1"; then :; else
+    refuse 'coverage refusal: test harness source measured as production while absent from the production build file set (record above; decision 0035: docs/decisions/0035-coverage-gate-refuses-by-effect.md)'
   fi
 }
 
@@ -217,6 +228,59 @@ check_harness_declarations() {
     printf '%s' "$harness_refusals" >&2
     refuse 'coverage refusal: harness-named file(s) under src/ must be declared by their parent module under #[cfg(test)] (decision 0020: docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md)'
   fi
+}
+
+# --- the by-effect refusals (decision 0035) ----------------------------------
+#
+# Queries over artifacts the gate's own run already produced — the build's
+# dep-info and the compiler's canonical expansion. Nothing here reads Rust
+# source text: extraction at ingest, queries over the extracted record.
+
+FN_SCAN_BIN=""
+
+ensure_fn_scan() {
+  # Build the parser helper once into the shared gitignored target dir; its
+  # absence refuses — the gate never parses Rust with bash.
+  [ -n "$FN_SCAN_BIN" ] && return 0
+  cargo build --manifest-path tools/coverage-fn-scan/Cargo.toml \
+    --target-dir target/coverage/fn-scan-target --offline --locked >/dev/null 2>&1 || {
+    refuse 'coverage refusal: the coverage-fn-scan helper could not be built (cargo build --manifest-path tools/coverage-fn-scan/Cargo.toml --offline --locked)'
+  }
+  FN_SCAN_BIN="$PWD/target/coverage/fn-scan-target/debug/coverage-fn-scan"
+}
+
+validate_report() {
+  # Absence checks need a living report: a missing, empty or SF-less export
+  # refuses before any check consumes it (a truncated merge would vacuously
+  # pass the leak check, which fires only on records present).
+  if [ ! -s "$1" ] || ! grep -q '^SF:' "$1"; then
+    refuse "coverage refusal: the report $1 is missing, empty or carries no SF: records — every by-effect check reads the report this run produced, and an absent one refuses before any check consumes it"
+  fi
+}
+
+check_report_covers_production_files() {
+  # $1: report, $2: production set (sorted, workspace-relative), $3: root. A
+  # harness-name exclusion may only drop files NOT in the production build's
+  # file set: every fn-bearing file the build testifies to must have an SF:
+  # record — measured or refused, never silently absent (decision 0035).
+  local sfset="$1.sfset" missing
+  LC_ALL=C awk -v root="$3/" '/^SF:/ { p = substr($0, 4); if (index(p, root) == 1) p = substr(p, length(root) + 1); print p }' "$1" | LC_ALL=C sort >"$sfset"
+  missing="$(LC_ALL=C comm -23 "$2" "$sfset")" || refuse "coverage refusal: the production file set and the report's SF records could not be joined"
+  if [ -n "$missing" ]; then
+    printf '%s\n' "$missing" >&2
+    refuse 'coverage refusal: production file(s) the build compiled are absent from the report (records above) — a harness-name exclusion may only drop files outside the production build file set (decision 0035: docs/decisions/0035-coverage-gate-refuses-by-effect.md)'
+  fi
+}
+
+check_no_coverage_exclusions() {
+  # $@: canonical expansion dumps. An exclusion that survives the compiler's
+  # own output is a function compiled but uninstrumented; the helper's token
+  # walk carves only #[automatically_derived] impl bodies (decision 0035).
+  local expansion
+  for expansion in "$@"; do
+    [ -s "$expansion" ] || refuse "coverage refusal: the expansion $expansion is missing or empty — the expansion must resolve the same cfg set as the instrumented build"
+    "$FN_SCAN_BIN" attrs "$expansion" || refuse "coverage refusal: a coverage exclusion survived into the canonical expansion (refusal above; decision 0035: docs/decisions/0035-coverage-gate-refuses-by-effect.md)"
+  done
 }
 
 # --- instrumented build location ---------------------------------------------
@@ -325,6 +389,38 @@ count_dimensions() {
   ' "$1"
 }
 
+# Resolve the measurement toolchain: the `nightly` channel alias when it
+# carries llvm-tools — exactly what CI's rust-toolchain@nightly resolves to —
+# else an installed dated nightly that does. Nothing is auto-installed: a
+# hermetic seat cannot install toolchains, and the gate's verdict must come
+# from what is on disk. Sets coverage_toolchain; shared with the selftest's
+# real-build arms, which must build with the same nightly the gate measures.
+probe_llvm_tools() {
+  rustup component list --installed --toolchain "$1" 2>/dev/null | grep -q '^llvm-tools'
+}
+
+resolve_coverage_toolchain() {
+  coverage_toolchain=""
+  if probe_llvm_tools nightly; then
+    coverage_toolchain="nightly"
+  else
+    while IFS= read -r tc; do
+      tc="${tc%% *}"
+      case "$tc" in nightly-*) ;; *) continue ;; esac
+      if probe_llvm_tools "$tc"; then
+        coverage_toolchain="$tc"
+        break
+      fi
+    done < <(rustup toolchain list 2>/dev/null)
+  fi
+  if [ -z "$coverage_toolchain" ]; then
+    refuse 'coverage refusal: no installed nightly toolchain carries llvm-tools — install one with rustup toolchain install nightly --component llvm-tools-preview; the gate never auto-installs'
+  fi
+  if ! cargo +"$coverage_toolchain" llvm-cov --version >/dev/null 2>&1; then
+    refuse "coverage refusal: cargo +$coverage_toolchain llvm-cov is unavailable — cargo-llvm-cov must be installed (cargo install cargo-llvm-cov)"
+  fi
+}
+
 # --- selftest ---------------------------------------------------------------
 
 selftest() {
@@ -385,12 +481,14 @@ selftest() {
   printf 'fn hot() {}\n' > "$fx/src/lib.rs"
   expect_pass 'clean src passes the coverage(off) check' check_no_coverage_off "$fx/src"
 
-  # 3. Harness source inside the report refuses; a production-only report
-  #    passes.
+  # 3. Harness source inside the report refuses — by membership (decision
+  #    0035): the fake /repo paths are outside every production set, so the
+  #    refusal fires; a production-only report passes.
+  : > "$root/empty-set.txt"
   printf 'SF:/repo/src/tests/leaked.rs\nDA:1,1\nend_of_record\n' > "$root/leak.info"
-  expect_refuse 'harness source in the report is refused' check_no_harness_leak "$root/leak.info"
+  expect_refuse 'harness source in the report is refused' check_no_harness_leak "$root/leak.info" "$root/empty-set.txt" "$PWD"
   printf 'SF:/repo/src/api.rs\nDA:1,1\nend_of_record\n' > "$root/clean.info"
-  expect_pass 'a production-only report passes the leak check' check_no_harness_leak "$root/clean.info"
+  expect_pass 'a production-only report passes the leak check' check_no_harness_leak "$root/clean.info" "$root/empty-set.txt" "$PWD"
 
   # 4. Production source parked in a harness directory refuses.
   fx="$root/hidden"; mkdir -p "$fx/src/tests"
@@ -482,6 +580,76 @@ selftest() {
   expect_refuse_naming 'an unstatable path refuses naming the escape variable' 'CARGO_LLVM_COV_TARGET_DIR' check_free_space "$root/absent/dir" 1
   expect_pass 'a preflight floor of 1 KiB passes' check_free_space "$root" 1
 
+  # 9. The by-effect refusals (decision 0035), proven from REAL cargo builds —
+  #    never from text fixtures. The bypass fixture carries every harness-named
+  #    load shape of #101's A, B, C, D, G and every exclusion spelling of E; its
+  #    green twin is the same minus the bypasses, plus a declarations-only file,
+  #    a derive(PartialEq, Eq) struct and a const fn — one green fixture proves
+  #    the fn probe, the carve-out and const-fn instrumentation at once.
+  fx_cmd() { # $1: dir, $2: log name, $3: label, $4: stdout file, rest: command.
+    local dir="$1" log="$2" label="$3" out="$4"; shift 4
+    (cd "$dir" && "$@") >"$out" 2>"$root/$log" || {
+      printf 'coverage gate: selftest failure — %s: the real build failed:\n' "$label" >&2
+      tail -n 30 "$root/$log" >&2
+      exit 1
+    }
+  }
+  resolve_coverage_toolchain; ensure_fn_scan
+  local fxb="$root/fx-bypass" fxg="$root/fx-green" fxt="$root/fx-bypass-target" fxgt="$root/fx-green-target"
+  mkdir -p "$fxb/src" "$fxg/src"
+  printf '[package]\nname = "fxbypass"\nversion = "0.1.0"\nedition = "2021"\n' >"$fxb/Cargo.toml"
+  printf '%b' "#![feature(coverage_attribute)]\n#![allow(dead_code)]\\npub fn visible() -> i32 { 42 }\\n#[coverage(off)]\\nfn direct_hidden() {}\\nmacro_rules! hide {\\n    (\$n:ident) => { #[coverage(off)] fn \$n() {} };\\n}\\nhide!(macro_hidden);\\n#[cfg_attr(all(), coverage(/**/ off ))]\\nfn attr_hidden() {}\\n#[cfg_attr(coverage, coverage( off ))]\\nfn cfg_gated_hidden() {}\\npub fn inner_hidden() { #![coverage( off )] }\\ninclude!(\"inc_tests.rs\");\\ninclude!(\"macros_tests.rs\");\\n#[path = \"path_tests.rs\"]\\npub mod path_loaded;\\n#[cfg(not(test))]\\npub(crate) mod cfg_tests;\\n/* #[cfg(test)] */\\nmod guard_tests;\\npub mod\\n    split_tests;\\n/* #[cfg(test)] mod split_tests; */\\n#[cfg(test)]\\nmod t { #[test] fn calls_visible() { assert_eq!(super::visible(), 42); } }\\n" >"$fxb/src/lib.rs"
+  for shape in inc path cfg guard split; do printf 'pub fn %s_hidden() {}\n' "$shape" >"$fxb/src/${shape}_tests.rs"; done
+  printf 'macro_rules! unused_gen { () => {}; }\npub const HANDLER: u8 = 7;\n' >"$fxb/src/macros_tests.rs"
+  printf '[package]\nname = "fxgreen"\nversion = "0.1.0"\nedition = "2021"\n' >"$fxg/Cargo.toml"
+  printf '%b' "pub fn visible() -> i32 { 42 }\\npub const fn meaning() -> i32 { 42 }\\n#[derive(Debug, PartialEq, Eq)]\\npub struct Compared { pub a: u8, pub b: u8 }\\nconst _: &str = include_str!(\"data.txt\");\\n#[cfg(test)]\\nmod t {\\n    #[test]\\n    fn proves() {\\n        assert_eq!(super::visible(), 42);\\n        assert_eq!(super::meaning(), 42);\\n        assert_eq!(super::Compared { a: 1, b: 2 }, super::Compared { a: 1, b: 2 });\\n    }\\n}\\n" >"$fxg/src/lib.rs"
+  printf '//! Declarations only — nothing any dimension could count.\npub struct Bare { pub x: u8 }\n' >"$fxg/src/model.rs"
+  printf 'hello swarmail\n' >"$fxg/src/data.txt"
+  for fx in "$fxb" "$fxg"; do (cd "$fx" && cargo +"$coverage_toolchain" generate-lockfile --offline >/dev/null 2>&1); done
+  for fx in "fxbypass $fxb $fxt bypass" "fxgreen $fxg $fxgt green"; do
+    set -- $fx
+    fx_cmd "$2" "$4-cov.log" "the $1 report" "$root/$4-cov.out" env CARGO_LLVM_COV_TARGET_DIR="$3" cargo +"$coverage_toolchain" llvm-cov --lcov --offline --locked --output-path "$root/$4.info"
+    # A lib-only fixture's instrumented run builds no rlib (no bin consumes
+    # one), so the harvest reads a plain cargo build's dep-info of the same
+    # source graph — a real cargo depfile either way.
+    fx_cmd "$2" "$4-lib.log" "the $1 lib build" "$root/$4-lib.out" cargo +"$coverage_toolchain" build --lib --offline --locked --target-dir "$3"
+    fx_cmd "$root" "$4-harvest.log" "the $1 harvest" "$root/$4-prod.txt" "$FN_SCAN_BIN" files --workspace "$2" --build-dir "$3" --package "$1" --capture "$root/$4-depinfo"
+    fx_cmd "$2" "$4-exp.log" "the $1 expansion" "$root/$4-exp.rs" cargo +"$coverage_toolchain" rustc --lib --offline --locked --target-dir "$3" -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
+  done
+  for arm in 'src/inc_tests.rs:#101 D' 'src/path_tests.rs:#101 A' 'src/cfg_tests.rs:#101 B' 'src/guard_tests.rs:#101 C' 'src/split_tests.rs:#101 G' 'src/macros_tests.rs:the macro/const inventory'; do
+    expect_refuse_naming "stage 1 refuses the ${arm#*:} harness load" "${arm%%:*}" check_report_covers_production_files "$root/bypass.info" "$root/bypass-prod.txt" "$fxb"
+  done
+  for arm in 'direct_hidden:direct' 'macro_hidden:macro-emitted' 'attr_hidden:cfg_attr-resolved' 'cfg_gated_hidden:coverage-cfg-gated'; do
+    expect_refuse_naming "stage 2 refuses the ${arm#*:} exclusion" "${arm%%:*}" check_no_coverage_exclusions "$root/bypass-exp.rs"
+  done
+  expect_refuse 'the inner-attribute exclusion refuses (the fn name is not adjacent to an inner attr)' check_no_coverage_exclusions "$root/bypass-exp.rs"
+  expect_pass 'stage 1 passes the green twin (declarations-only file, asset, derive, const fn)' check_report_covers_production_files "$root/green.info" "$root/green-prod.txt" "$fxg"
+  expect_pass 'stage 2 passes the green twin (the minted exclusion carved, the const fn silent)' check_no_coverage_exclusions "$root/green-exp.rs"
+
+  # 10. Fast arms: validate-before-consume, the leak check's membership axis,
+  #     a hostile dep-info entry, a dep-info-less dir, an empty expansion.
+  : >"$root/empty.info"
+  expect_refuse_naming 'an empty report refuses naming the artifact' "$root/empty.info" validate_report "$root/empty.info"
+  printf 'DA:1,1\nend_of_record\n' >"$root/sfless.info"
+  expect_refuse_naming 'an SF-less report refuses naming the artifact' 'no SF:' validate_report "$root/sfless.info"
+  expect_pass 'a real report passes validation' validate_report "$root/bypass.info"
+  printf 'SF:%s/src/inc_tests.rs\nDA:1,1\nend_of_record\n' "$fxb" >"$root/measured.info"
+  printf 'src/inc_tests.rs\n' >"$root/prod-set.txt"
+  expect_pass 'a harness-named SF record inside the production set passes' \
+    check_no_harness_leak "$root/measured.info" "$root/prod-set.txt" "$fxb"
+  printf 'SF:%s/src/leaked_tests.rs\nDA:1,1\nend_of_record\n' "$fxb" >"$root/unmeasured.info"
+  expect_refuse 'a harness-named SF record outside the production set refuses' \
+    check_no_harness_leak "$root/unmeasured.info" "$root/prod-set.txt" "$fxb"
+  mkdir -p "$root/hostile" "$root/empty-target"
+  sed 's|src/lib\.rs|src/vanished.rs|g' "$root/bypass-depinfo/"*.d >"$root/hostile/lib.d"
+  expect_refuse_naming 'a hostile dep-info entry refuses naming it' 'src/vanished.rs' \
+    "$FN_SCAN_BIN" files --workspace "$fxb" --build-dir "$root/hostile" --package fxbypass
+  expect_refuse_naming 'a harvest over a dep-info-less dir refuses naming the path' 'empty-target' \
+    "$FN_SCAN_BIN" files --workspace "$fxb" --build-dir "$root/empty-target" --package fxbypass
+  : >"$root/empty-exp.rs"
+  expect_refuse_naming 'an empty expansion refuses naming the artifact' "$root/empty-exp.rs" \
+    check_no_coverage_exclusions "$root/empty-exp.rs"
+
   if [ "$failures" -ne 0 ]; then
     printf 'coverage gate: selftest failed with %s arm(s)\n' "$failures" >&2
     exit 1
@@ -526,33 +694,7 @@ check_free_space "$forge_target_dir" "$MIN_BUILD_FREE_KIB"
 # no stale instrumented executable can participate in this candidate's merge.
 export CARGO_LLVM_COV_TARGET_DIR="$forge_target_dir"
 
-# Resolve the measurement toolchain: the `nightly` channel alias when it
-# carries llvm-tools — exactly what CI's rust-toolchain@nightly resolves to —
-# else an installed dated nightly that does. Nothing is auto-installed: a
-# hermetic seat cannot install toolchains, and the gate's verdict must come
-# from what is on disk.
-probe_llvm_tools() {
-  rustup component list --installed --toolchain "$1" 2>/dev/null | grep -q '^llvm-tools'
-}
-coverage_toolchain=""
-if probe_llvm_tools nightly; then
-  coverage_toolchain="nightly"
-else
-  while IFS= read -r tc; do
-    tc="${tc%% *}"
-    case "$tc" in nightly-*) ;; *) continue ;; esac
-    if probe_llvm_tools "$tc"; then
-      coverage_toolchain="$tc"
-      break
-    fi
-  done < <(rustup toolchain list 2>/dev/null)
-fi
-if [ -z "$coverage_toolchain" ]; then
-  refuse 'coverage refusal: no installed nightly toolchain carries llvm-tools — install one with rustup toolchain install nightly --component llvm-tools-preview; the gate never auto-installs'
-fi
-if ! cargo +"$coverage_toolchain" llvm-cov --version >/dev/null 2>&1; then
-  refuse "coverage refusal: cargo +$coverage_toolchain llvm-cov is unavailable — cargo-llvm-cov must be installed (cargo install cargo-llvm-cov)"
-fi
+resolve_coverage_toolchain
 
 # Per-run evidence: a fresh directory per invocation, preserved after the run
 # (the EXIT trap cleans only the instrumented build tree). Consecutive runs
@@ -576,7 +718,54 @@ if ! cargo +"$coverage_toolchain" llvm-cov \
   refuse "coverage refusal: the instrumented run failed — its log is preserved at $run_dir/run.log"
 fi
 
-check_no_harness_leak "$run_dir/lcov.info"
+# Validate before consume: every new check is an absence check, so a truncated
+# export refuses before any of them reads it (decision 0035's ordering).
+validate_report "$run_dir/lcov.info"
+
+# The production units' file set, harvested and captured from the gate's own
+# instrumented build dir (decision 0035: extraction at ingest). Captured
+# BEFORE the expansion pass, so its dep-info can never clobber the evidence; a
+# missing dep-info refuses, naming the path and the shared-directory contract
+# — the same window the staleness sentence governs.
+ensure_fn_scan
+unit_json="$(cargo metadata --no-deps --format-version 1 --offline --locked 2>/dev/null)" ||
+  refuse 'coverage refusal: cargo metadata could not be read — the harvest needs the workspace units'
+
+mapfile -t bin_args < <(jq -r '.packages[0].targets[] | select(.kind | index("bin")) | "--bin-root=" + .src_path' <<<"$unit_json")
+if ! "$FN_SCAN_BIN" files --workspace "$PWD" --build-dir "$forge_target_dir" \
+  --package "$(jq -r '.packages[0].name' <<<"$unit_json")" "${bin_args[@]}" \
+  --capture "$run_dir/dep-info" >"$run_dir/production-files.txt" 2>"$run_dir/harvest.log"; then
+  tail -n 20 "$run_dir/harvest.log" >&2 || true
+  refuse "coverage refusal: the production file harvest failed — its log is preserved at $run_dir/harvest.log (a missing dep-info names the path and the shared-directory contract)"
+fi
+
+# The canonical expansion of both production units, into the preserved run
+# dir, with the measurement's toolchain and target dir: a cfg mismatch refuses
+# loudly (an empty dump is the loudest mismatch there is).
+expand_unit() {
+  # The cfg set matches the measurement's: cargo-llvm-cov enables cfg(coverage)
+  # and cfg(coverage_nightly) for the instrumented build (its own run log says
+  # so), and an expansion without them cannot see a
+  # `#[cfg_attr(coverage, coverage(off))]` — the attribute resolves to nothing
+  # and the exclusion sails past the scan. The review's HIGH on the cfg set.
+  cargo +"$coverage_toolchain" rustc $1 --locked --offline \
+    --target-dir "$forge_target_dir" -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly >"$2" 2>"$2.log" || {
+    tail -n 20 "$2.log" >&2 || true
+    refuse "coverage refusal: the expansion of the $1 unit failed — its log is preserved at $2.log"
+  }
+  [ -s "$2" ] || refuse "coverage refusal: the expansion $2 is empty — the expansion must resolve the same cfg set as the instrumented build"
+}
+expansion_files=("$run_dir/expanded-lib.rs")
+expand_unit --lib "$run_dir/expanded-lib.rs"
+mapfile -t bin_names < <(jq -r '.packages[0].targets[] | select(.kind | index("bin")) | .name' <<<"$unit_json")
+for bin_name in "${bin_names[@]}"; do
+  expansion_files+=("$run_dir/expanded-bin-$bin_name.rs")
+  expand_unit "--bin $bin_name" "$run_dir/expanded-bin-$bin_name.rs"
+done
+
+check_no_harness_leak "$run_dir/lcov.info" "$run_dir/production-files.txt" "$PWD"
+check_report_covers_production_files "$run_dir/lcov.info" "$run_dir/production-files.txt" "$PWD"
+check_no_coverage_exclusions "${expansion_files[@]}"
 
 read -r line_count line_covered branch_count branch_covered function_count function_covered < <(
   count_dimensions "$run_dir/lcov.info"
