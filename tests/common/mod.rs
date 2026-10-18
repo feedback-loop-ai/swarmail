@@ -130,6 +130,12 @@ impl Pop3 {
             .unwrap();
     }
 
+    /// Write raw bytes with no line ending added — a bare-LF command, or
+    /// one that is not UTF-8.
+    pub async fn send_bytes(&mut self, bytes: &[u8]) {
+        self.writer.write_all(bytes).await.unwrap();
+    }
+
     /// Read one reply line, trimmed of its CRLF.
     pub async fn reply(&mut self) -> String {
         read_line_named(&mut self.reader, "the POP3 reply")

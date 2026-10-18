@@ -121,3 +121,12 @@ availability and memory exposure are disclosed, not counted as repaired.
 
 This record proposes the posture; it does not assert implementation,
 operator acceptance, a successful commit, or delivery completion.
+
+## Pointer — 2026-10-18 (proposed 0046)
+
+[0046](0046-smtp-pop3-edges.md) §§7–8, also **proposed**, updates §§4/5 here (issue #131).
+POP3's 600 s bound applies to each socket write of a reply, and a write that moves bytes
+starts a fresh window, so there is no whole-reply deadline. A reader whose socket accepts
+some bytes of each next write within its window keeps its slot and its reply buffer
+indefinitely, with no minimum rate. Command reads and the cap's refusal keep their
+whole-operation bounds.

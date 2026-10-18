@@ -153,3 +153,12 @@ documented skew instead of an unbounded lock.
 - Both this decision and the batch remain `proposed` until the operator
   accepts; until then the tree is judged against this text only by this
   run's own review.
+
+## Pointer — 2026-10-18 (proposed 0046)
+
+[0046](0046-smtp-pop3-edges.md) §4, which is **proposed**, would amend §2 (issue #128):
+the AUTH username and the POP3 `USER` argument are no longer trimmed. After strict
+decoding both pass the shared `model::validate_inbox` rule, which refuses a blank name and
+any Unicode control character and keeps every other name verbatim, padding included. A
+refusal still answers `501 5.5.2` or `-ERR` and changes nothing. Nothing above is
+rewritten by this pointer.

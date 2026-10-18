@@ -2061,3 +2061,256 @@ async fn auth_succeeds_once_per_session() {
     deliver(&mut c, "f@x.io", "r@x.io").await;
     assert_eq!(count(srv.http_addr, "lbox").await, 1);
 }
+
+// --- 0046: paths that only look like addresses, control-bearing names -----
+
+/// The two path refusals, as the wire answers them.
+const MAIL_PATH_SYNTAX: &str = "501 5.5.4 Syntax: MAIL FROM:<address>";
+const RCPT_PATH_SYNTAX: &str = "501 5.5.4 Syntax: RCPT TO:<address>";
+
+/// The stored envelopes of `inbox`, oldest first, as (envelope sender,
+/// recipients) — read over real HTTP right after the 250s.
+async fn envelopes(http: std::net::SocketAddr, inbox: &str) -> Vec<(String, serde_json::Value)> {
+    let path = format!("/api/v1/inboxes/{inbox}/messages");
+    let (st, body) = http_json(http, "GET", &path, None).await;
+    assert_eq!(st, 200, "{body}");
+    let mut out: Vec<(String, serde_json::Value)> = body["emails"]
+        .as_array()
+        .expect("a message list")
+        .iter()
+        .map(|m| {
+            (
+                m["envelope_from"].as_str().expect("a sender").to_string(),
+                m["recipients"].clone(),
+            )
+        })
+        .collect();
+    out.reverse();
+    out
+}
+
+/// A path that is blank after Unicode trimming, or carries any control
+/// character, is refused `501` on MAIL and on RCPT (issue #127, decision
+/// 0046 §3) and changes nothing: a refused first MAIL opens no
+/// transaction, a refused RCPT keeps the sender and the recipients so far,
+/// and a nested MAIL is still `503` whatever its path. The delivery that
+/// follows carries its envelope byte-exact — padding in an accepted path is
+/// kept, never trimmed — and the literal `<>` stays the null sender while
+/// `RCPT TO:<>` refuses. Red before: `< >`, `<\t>` and the rest answered
+/// `250` and were stored as recipients.
+#[tokio::test]
+async fn smtp_blank_control_paths_preserve_envelope() {
+    const NESTED: &str = "503 5.5.1 Error: nested MAIL command";
+    let hollow = [
+        "< >",
+        "<  >",
+        "<\t>",
+        "<\u{3000}>",
+        "<a\u{1}b@x.io>",
+        "<a\rb@x.io>",
+        "<del\u{7f}@x.io>",
+        "<c1\u{85}@x.io>",
+    ];
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    auth_as(&mut c, "hollow").await;
+    for path in hollow {
+        c.send(&format!("MAIL FROM:{path}")).await;
+        assert_eq!(c.reply().await, MAIL_PATH_SYNTAX, "{path:?}");
+        c.send("RCPT TO:<r@x.io>").await;
+        assert_eq!(
+            c.reply().await,
+            "503 5.5.1 Error: need MAIL command",
+            "no transaction opened by {path:?}"
+        );
+    }
+    c.send("MAIL FROM:<keep@x.io>").await;
+    assert_eq!(c.reply().await, "250 2.1.0 OK");
+    c.send("RCPT TO:<first@x.io>").await;
+    assert_eq!(c.reply().await, "250 2.1.5 OK");
+    for path in hollow {
+        c.send(&format!("RCPT TO:{path}")).await;
+        assert_eq!(c.reply().await, RCPT_PATH_SYNTAX, "{path:?}");
+        c.send(&format!("MAIL FROM:{path}")).await;
+        assert_eq!(c.reply().await, NESTED, "state wins over {path:?}");
+    }
+    c.send("RCPT TO:< second@x.io>").await;
+    assert_eq!(c.reply().await, "250 2.1.5 OK");
+    assert!(c.data("Subject: kept\r\n\r\nx").await.starts_with("250 "));
+
+    c.send("MAIL FROM:<>").await;
+    assert_eq!(c.reply().await, "250 2.1.0 OK");
+    c.send("RCPT TO:<>").await;
+    assert_eq!(c.reply().await, RCPT_PATH_SYNTAX);
+    c.send("RCPT TO:<bounce@x.io>").await;
+    assert_eq!(c.reply().await, "250 2.1.5 OK");
+    assert!(c.data("Subject: bounce\r\n\r\nx").await.starts_with("250 "));
+
+    assert_eq!(
+        envelopes(srv.http_addr, "hollow").await,
+        vec![
+            (
+                "keep@x.io".to_string(),
+                serde_json::json!(["first@x.io", " second@x.io"])
+            ),
+            (String::new(), serde_json::json!(["bounce@x.io"])),
+        ]
+    );
+}
+
+/// A hollow path is refused before chaos rolls (issue #127, decision 0046
+/// §3, decision 0034 §3): with `mail_from` and then `rcpt` armed at 100%,
+/// every blank or control-bearing path still answers its `501`, never the
+/// injected line, while a well-formed command in the same armed state does
+/// draw the injection — so the rule was live when the refusal won. Neither
+/// refusal moves the transaction: no envelope opens under the armed MAIL,
+/// and the armed RCPT refusals leave the sender and first recipient that
+/// the delivery then stores byte-exact. Red before: `< >` and the rest
+/// reached the roll and answered the injected line.
+#[tokio::test]
+async fn hollow_paths_refuse_before_armed_chaos() {
+    let hollow = [
+        "< >",
+        "<\t>",
+        "<\u{3000}>",
+        "<a\u{1}b@x.io>",
+        "<del\u{7f}@x.io>",
+    ];
+    let srv = start().await;
+    let http = srv.http_addr;
+    let arm = |body: &'static str| async move {
+        let (st, _) = http_json(http, "PUT", "/api/v1/chaos", Some(body)).await;
+        assert_eq!(st, 200);
+    };
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    auth_as(&mut c, "armed").await;
+
+    arm(r#"{"mail_from": {"probability": 100, "error": "450 armed"}}"#).await;
+    for path in hollow {
+        c.send(&format!("MAIL FROM:{path}")).await;
+        assert_eq!(c.reply().await, MAIL_PATH_SYNTAX, "{path:?}");
+    }
+    c.send("MAIL FROM:<live@x.io>").await;
+    assert_eq!(c.reply().await, "450 armed", "the MAIL rule was live");
+    c.send("RCPT TO:<r@x.io>").await;
+    assert_eq!(c.reply().await, "503 5.5.1 Error: need MAIL command");
+    http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
+
+    c.send("MAIL FROM:<keep@x.io>").await;
+    assert_eq!(c.reply().await, "250 2.1.0 OK");
+    c.send("RCPT TO:<first@x.io>").await;
+    assert_eq!(c.reply().await, "250 2.1.5 OK");
+    arm(r#"{"rcpt": {"probability": 100, "error": "450 armed"}}"#).await;
+    for path in hollow {
+        c.send(&format!("RCPT TO:{path}")).await;
+        assert_eq!(c.reply().await, RCPT_PATH_SYNTAX, "{path:?}");
+    }
+    c.send("RCPT TO:<live@x.io>").await;
+    assert_eq!(c.reply().await, "450 armed", "the RCPT rule was live");
+    http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
+    assert!(c.data("Subject: armed\r\n\r\nx").await.starts_with("250 "));
+
+    assert_eq!(
+        envelopes(srv.http_addr, "armed").await,
+        vec![("keep@x.io".to_string(), serde_json::json!(["first@x.io"]))]
+    );
+}
+
+/// The two optional RFC 5321 forms the sink does not parse, pinned as the
+/// README names them (issue #127, decision 0046 §3): a quoted local part
+/// that holds `>` ends at its first `>` and is refused, while an ordinary
+/// quoted local part is kept as opaque path text; a source route is not
+/// stripped — the whole route is stored as the address.
+#[tokio::test]
+async fn quoted_angle_brackets_refuse_and_source_routes_stay_literal() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    auth_as(&mut c, "grammar").await;
+    c.send("MAIL FROM:<\"a>b\"@x.io>").await;
+    assert_eq!(c.reply().await, MAIL_PATH_SYNTAX);
+    c.send("MAIL FROM:<\"quoted local\"@x.io>").await;
+    assert_eq!(c.reply().await, "250 2.1.0 OK");
+    c.send("RCPT TO:<\"a>b\"@x.io>").await;
+    assert_eq!(c.reply().await, RCPT_PATH_SYNTAX);
+    c.send("RCPT TO:<@hop1,@hop2:bob@y.io>").await;
+    assert_eq!(c.reply().await, "250 2.1.5 OK");
+    assert!(
+        c.data("Subject: grammar\r\n\r\nx")
+            .await
+            .starts_with("250 ")
+    );
+    assert_eq!(
+        envelopes(srv.http_addr, "grammar").await,
+        vec![(
+            "\"quoted local\"@x.io".to_string(),
+            serde_json::json!(["@hop1,@hop2:bob@y.io"])
+        )]
+    );
+}
+
+/// A decoded AUTH username carrying NUL or any other control character —
+/// or blank after Unicode trimming — is refused `501 5.5.2` on PLAIN and
+/// LOGIN, initial-response and prompted alike (issue #128, decision 0046
+/// §4): no inbox is created or selected, the refusal is the fixed line and
+/// never echoes the credential, and the session keeps its identity — still
+/// unnamed, so its delivery lands in `default`. Red before: LOGIN with the
+/// PLAIN-shaped `\0user\0s3cretpw` answered `235` and minted an inbox whose
+/// name held the password. A well-formed padded UTF-8 name still routes,
+/// verbatim.
+#[tokio::test]
+async fn auth_control_names_refuse_without_identity_change() {
+    const REFUSED: &str = "501 5.5.2 Credentials refused";
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+
+    c.send(&format!("AUTH LOGIN {}", base64_of("\0user\0s3cretpw")))
+        .await;
+    assert_eq!(c.reply().await, REFUSED);
+    c.send("AUTH LOGIN").await;
+    assert_eq!(c.reply().await, "334 VXNlcm5hbWU6");
+    c.send(&base64_of("\0user\0s3cretpw")).await;
+    assert_eq!(c.reply().await, REFUSED);
+    for user in [
+        "a\u{1}b",
+        "a\tb",
+        "a\rb",
+        "del\u{7f}",
+        "c1\u{85}",
+        "  ",
+        "\u{3000}",
+    ] {
+        c.send(&format!(
+            "AUTH PLAIN {}",
+            base64_of(&format!("\0{user}\0pw"))
+        ))
+        .await;
+        assert_eq!(c.reply().await, REFUSED, "PLAIN {user:?}");
+        c.send(&format!("AUTH LOGIN {}", base64_of(user))).await;
+        assert_eq!(c.reply().await, REFUSED, "LOGIN {user:?}");
+    }
+    c.send("AUTH PLAIN").await;
+    assert!(c.reply().await.starts_with("334"));
+    c.send(&base64_of("\0x\u{b}y\0pw")).await;
+    assert_eq!(c.reply().await, REFUSED);
+    deliver(&mut c, "f@x.io", "r@x.io").await;
+
+    // A padded UTF-8 name is a name: the LOGIN initial response routes to
+    // it exactly, padding kept.
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send(&format!("AUTH LOGIN {}", base64_of(" j\u{f6}rg ")))
+        .await;
+    assert_eq!(c.reply().await, "334 UGFzc3dvcmQ6");
+    c.send(&base64_of("pw")).await;
+    assert_eq!(c.reply().await, "235 2.7.0 Accepted");
+    deliver(&mut c, "f@x.io", "r@x.io").await;
+
+    let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(
+        inboxes,
+        serde_json::json!([
+            {"name": " j\u{f6}rg ", "count": 1},
+            {"name": "default", "count": 1},
+        ]),
+        "no control-bearing inbox exists, and no password is listed"
+    );
+}

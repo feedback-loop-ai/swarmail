@@ -159,6 +159,13 @@ impl WebhookTarget {
     /// [`parse_ca_pem`]), one owner, both arms warm.
     pub fn validate(&self) -> Result<(), String> {
         parse_target_url(&self.url)?;
+        // A supplied inbox filter names an inbox by the one rule every
+        // other plane admits with (decision 0046 §6): blank or
+        // control-bearing refuses, padding is matched verbatim. An absent
+        // filter is still every inbox.
+        if let Some(inbox) = &self.inbox {
+            crate::model::validate_inbox(inbox).map_err(String::from)?;
+        }
         if let Some(pem) = &self.ca_pem {
             parse_ca_pem(pem)?;
         }
@@ -1798,6 +1805,22 @@ mod validation_tests {
             ..legal.clone()
         };
         assert_eq!(ftp.validate().unwrap_err(), UNSUPPORTED_SCHEME);
+
+        // A supplied inbox filter answers to the one name rule (issue
+        // #128): padding is kept, blank and control-bearing names refuse.
+        let filter = |inbox: &str| WebhookTarget {
+            inbox: Some(inbox.into()),
+            ..legal.clone()
+        };
+        assert_eq!(filter(" pad ").validate(), Ok(()));
+        assert_eq!(
+            filter("  ").validate().unwrap_err(),
+            crate::model::BLANK_INBOX_REFUSAL
+        );
+        assert_eq!(
+            filter("a\0b").validate().unwrap_err(),
+            crate::model::CONTROL_INBOX_REFUSAL
+        );
 
         // A string with no PEM section at all: the parse is the refusal, not
         // the client build (which has its own arm in delivery_tests).

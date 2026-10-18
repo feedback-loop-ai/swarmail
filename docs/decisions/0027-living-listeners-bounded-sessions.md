@@ -238,3 +238,11 @@ nothing here claims it. Issues #77–#80.
   complete lines keep arriving, and POP3 complete-command trickles can hold its slots the
   same way. Silence and zero windows remain bounded; no availability guarantee against a
   deliberately slow client follows from the cap or the idle bounds.
+
+## Pointer — 2026-10-18 (proposed 0046)
+
+[0046](0046-smtp-pop3-edges.md), which is **proposed**, would amend §4 (issues #121,
+#131): a failed SMTP session drops its transport with no graceful close, and a session
+that ended well gets one more idle window for its close; a POP3 reply write is bounded per
+successful socket write, each write that moves bytes renewing the window, instead of one
+deadline over the whole reply. Nothing above is rewritten by this pointer.

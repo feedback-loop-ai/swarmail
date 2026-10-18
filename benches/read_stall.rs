@@ -45,6 +45,14 @@
 //! (issue #83) — N measured one-command-at-a-time transactions against
 //! the real listener; `cargo bench --profile dev --bench read_stall --
 //! --smtp-roundtrips 100` is the debug profile the reproduction used.
+//!
+//! Separate mode: `--pipeline-groups N` runs only the pipelined lens (issue
+//! #126) — N measured groups of each shape, every group one client write
+//! and its whole reply set read back: SMTP `MAIL`+`RCPT`+`RCPT`+`DATA`,
+//! SMTP body+`.`+`NOOP`+`NOOP`, and POP3 `NOOP`+`STAT`+`NOOP`+`RSET`.
+//! Without `TCP_NODELAY` every reply after a group's first waits for the
+//! client's delayed ACK, ~40 ms a group; `cargo bench --profile dev --bench
+//! read_stall -- --pipeline-groups 40` is the reproduction's profile.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -202,6 +210,127 @@ async fn smtp_roundtrips(transactions: usize) {
     srv.stop().await;
 }
 
+/// One pipelined group: every command in one write, then `replies` complete
+/// replies read back (an SMTP continuation line — fourth octet `-` — is
+/// not a reply of its own). The elapsed time is the group's completion.
+async fn group(
+    conn: &mut tokio::io::BufReader<tokio::net::TcpStream>,
+    out: &[u8],
+    replies: &[&str],
+) -> Duration {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let at = Instant::now();
+    conn.get_mut()
+        .write_all(out)
+        .await
+        .expect("pipelined write");
+    for want in replies {
+        loop {
+            let mut line = String::new();
+            conn.read_line(&mut line).await.expect("pipelined read");
+            if line.as_bytes().get(3) != Some(&b'-') {
+                assert!(line.starts_with(want), "expected {want}, got {line:?}");
+                break;
+            }
+        }
+    }
+    at.elapsed()
+}
+
+/// **The pipelined lens (issue #126)** — real loopback against the real
+/// SMTP and POP3 listeners: ten warm-up groups, then `groups` measured
+/// groups of each shape. Recorded, never asserted: the 5 ms criterion is
+/// the operator's to read from the numbers.
+async fn pipeline_groups(groups: usize) {
+    use tokio::io::AsyncBufReadExt;
+    let cfg = swarmail::config::Config {
+        smtp_listen: "127.0.0.1:0".into(),
+        http_listen: "127.0.0.1:0".into(),
+        pop3_listen: "127.0.0.1:0".into(),
+        max_per_inbox: 0,
+        data_file: None,
+        tls_cert: None,
+        tls_key: None,
+        smtp: Default::default(),
+        pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+    };
+    let srv = swarmail::run_on(&cfg).await.expect("bench server");
+    let connect = |addr| async move {
+        let stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("bench connect");
+        let mut conn = tokio::io::BufReader::new(stream);
+        let mut greeting = String::new();
+        conn.read_line(&mut greeting).await.expect("greeting");
+        conn
+    };
+
+    let mut smtp = connect(srv.smtp_addr).await;
+    group(&mut smtp, b"EHLO bench\r\n", &["250"]).await;
+    let mut envelope = Vec::new();
+    let mut body = Vec::new();
+    for i in 0..groups + 10 {
+        let took = group(
+            &mut smtp,
+            b"MAIL FROM:<bench@x.io>\r\nRCPT TO:<a@x.io>\r\nRCPT TO:<b@x.io>\r\nDATA\r\n",
+            &["250", "250", "250", "354"],
+        )
+        .await;
+        if i >= 10 {
+            envelope.push(took);
+        }
+        let took = group(
+            &mut smtp,
+            b"Subject: bench\r\n\r\nbody\r\n.\r\nNOOP\r\nNOOP\r\n",
+            &["250", "250", "250"],
+        )
+        .await;
+        if i >= 10 {
+            body.push(took);
+        }
+    }
+
+    // Every mail above went to `default`: that is the POP3 maildrop.
+    let mut pop3 = connect(srv.pop3_addr).await;
+    group(&mut pop3, b"USER default\r\nPASS x\r\n", &["+OK", "+OK"]).await;
+    let mut pop = Vec::new();
+    for i in 0..groups + 10 {
+        let took = group(
+            &mut pop3,
+            b"NOOP\r\nSTAT\r\nNOOP\r\nRSET\r\n",
+            &["+OK", "+OK", "+OK", "+OK"],
+        )
+        .await;
+        if i >= 10 {
+            pop.push(took);
+        }
+    }
+
+    println!(
+        "pipeline-groups: profile {}, {groups} measured groups per shape after 10 warm-up",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+    );
+    for (name, set) in [
+        ("SMTP MAIL+RCPT+RCPT+DATA", envelope),
+        ("SMTP body+NOOP+NOOP", body),
+        ("POP3 NOOP+STAT+NOOP+RSET", pop),
+    ] {
+        let n = set.len();
+        let (p50, p99, max) = percentiles(set);
+        println!(
+            "  {name:<26} n={n} median {:.3} ms  p99 {:.3} ms  max {:.3} ms",
+            ms(p50),
+            ms(p99),
+            ms(max)
+        );
+    }
+    srv.stop().await;
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mails = int_arg(&args, "--mails").unwrap_or(250);
@@ -216,6 +345,10 @@ fn main() {
     runtime.block_on(async move {
         if let Some(transactions) = int_arg(&args, "--smtp-roundtrips") {
             smtp_roundtrips(transactions).await;
+            return;
+        }
+        if let Some(groups) = int_arg(&args, "--pipeline-groups") {
+            pipeline_groups(groups).await;
             return;
         }
         let store = Arc::new(Store::new(0));

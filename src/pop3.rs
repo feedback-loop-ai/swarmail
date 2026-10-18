@@ -2,7 +2,11 @@
 //!
 //! A `USER` names an existing swarmail inbox — the maildrop is that inbox
 //! — and `PASS` accepts any credentials, mirroring the SMTP accept-any
-//! posture (decision 0004). A failing `USER` — empty argument, unknown
+//! posture (decision 0004). The name is everything after `USER` and its one
+//! space, verbatim — padding included, only the line's own CRLF removed —
+//! under the one inbox-name rule every plane shares (decision 0046 §§4–5); a
+//! command that is not UTF-8 ends the session undispatched. A failing
+//! `USER` — empty argument, a blank or control-bearing name, unknown
 //! mailbox — clears the pending name (decision 0028 §2): `PASS`
 //! afterwards answers `-ERR USER required first`, never logging into a
 //! mailbox a *previous* `USER` named. Every answer is read from the
@@ -55,11 +59,17 @@ use tracing::debug;
 /// grow server memory with an unterminated line.
 const MAX_COMMAND_LINE: usize = 4096;
 
-/// POP3's single-I/O idle bound (RFC 1939 §3's ten-minute autologout
-/// floor): no one command read and no one reply write may wait longer for
-/// progress. Independent of SMTP's five minutes (decision 0036 §4); it is
-/// a per-operation bound, never a session lease — a peer that completes a
-/// command inside each window keeps its slot (0036 §5).
+/// POP3's idle bound (RFC 1939 §3's ten-minute autologout floor): no one
+/// command read may take longer to complete, and no one socket write of a
+/// reply may wait longer to accept bytes — every write that moves bytes
+/// starts a fresh window, so a reply has no whole-reply deadline and a
+/// reader whose socket accepts some bytes of each next write within its
+/// window gets a 50 MiB RETR in full (decision 0046
+/// §§7–8, issue #131). Independent of SMTP's five minutes (decision 0036 §4); it
+/// is never a session lease — a peer that completes a command, or keeps
+/// accepting reply bytes, inside each window keeps its slot (0036 §5), and
+/// its reply buffer with it. The cap's refusal stays one whole bounded
+/// write.
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Total POP3 sessions served, for the debug log correlation id.
@@ -114,6 +124,44 @@ thread_local! {
         const { core::cell::RefCell::new(Vec::new()) };
     static SPAWNED: core::cell::RefCell<Vec<tokio::task::AbortHandle>> =
         const { core::cell::RefCell::new(Vec::new()) };
+}
+
+// Test-only (decision 0020 rule 4, the SMTP sibling's seams): counted,
+// one-shot `TCP_NODELAY` refusals, and the option each admitted socket
+// carries once set, read back off the accepted socket (issue #126).
+#[cfg(test)]
+thread_local! {
+    static INJECTED_NODELAY_ERRORS: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
+    static NODELAY_SEEN: core::cell::RefCell<Vec<bool>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Consume one installed `TCP_NODELAY` refusal, if any remain.
+#[cfg(test)]
+fn take_injected_nodelay_error() -> bool {
+    INJECTED_NODELAY_ERRORS.with(|errors| {
+        let left = errors.get();
+        if left == 0 {
+            false
+        } else {
+            errors.set(left - 1);
+            true
+        }
+    })
+}
+
+/// `TCP_NODELAY` on one accepted POP3 socket (issue #126); the test build
+/// can install a refusal and records the option the socket really carries.
+fn set_nodelay(stream: &TcpStream) -> io::Result<()> {
+    #[cfg(test)]
+    if take_injected_nodelay_error() {
+        return Err(io::Error::other("injected TCP_NODELAY error"));
+    }
+    stream.set_nodelay(true)?;
+    #[cfg(test)]
+    NODELAY_SEEN.with(|seen| seen.borrow_mut().push(stream.nodelay().unwrap()));
+    Ok(())
 }
 
 /// Accept POP3 connections until `shutdown`, one task per session. The
@@ -194,6 +242,14 @@ pub async fn serve(
                 continue;
             }
         };
+        // Every reply leaves at once (issue #126, decision 0046 §2): with
+        // Nagle on, each reply behind the first in a pipelined group waits
+        // for the peer's delayed ACK. Set before the cap's refusal and the
+        // greeting; a socket that refuses the option is dropped alone.
+        if let Err(e) = set_nodelay(&stream) {
+            debug!(%peer, error = %e, "pop3 connection dropped: TCP_NODELAY refused");
+            continue;
+        }
         // The one reap, at admission (decision 0036 §1): `try_join_next`
         // never parks and never touches a session still running, so every
         // completion ready by now — including those that finished while
@@ -285,9 +341,16 @@ async fn read_line_capped(reader: &mut (impl AsyncBufRead + Unpin)) -> io::Resul
                 if bytes.len() > MAX_COMMAND_LINE {
                     return Ok(Line::TooLong);
                 }
-                let line = String::from_utf8_lossy(&bytes)
-                    .trim_end_matches('\r')
-                    .to_string();
+                // Exactly the delimiter goes — the LF above and one CR
+                // before it — and the rest is strict UTF-8 (decision 0046
+                // §5): an extra CR is data a USER name refuses, and invalid
+                // bytes end the session undispatched instead of selecting
+                // an inbox through a U+FFFD replacement (issue #128).
+                if bytes.last() == Some(&b'\r') {
+                    bytes.pop();
+                }
+                let line = String::from_utf8(bytes)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 return Ok(Line::Command(line));
             }
             None => {
@@ -362,28 +425,33 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
             }
             Err(e) => return Err(e),
         };
-        let (verb, arg) = match line.split_once(' ') {
-            Some((v, a)) => (v.to_ascii_uppercase(), a.trim()),
+        // `raw` is everything after the first space, untouched: USER names
+        // an inbox by the one verbatim rule (decision 0046 §5), so a padded
+        // name is the padded inbox. Every other verb reads its trimmed
+        // `arg`, as it always has.
+        let (verb, raw) = match line.split_once(' ') {
+            Some((v, a)) => (v.to_ascii_uppercase(), a),
             None => (line.trim().to_ascii_uppercase(), ""),
         };
+        let arg = raw.trim();
 
         // The state machine: a two-phase gate. The maildrop exists only in
         // the transaction phase; there, every command is answered from the
         // snapshot so numbering is stable mid-session.
         match (phase, verb.as_str()) {
             (Phase::Authorization, "USER") => {
-                if arg.is_empty() {
-                    // A failing USER leaves no pending name (decision 0028
-                    // §2): PASS afterwards answers "-ERR USER required
-                    // first", never logging into a mailbox a previous USER
-                    // named.
-                    user = None;
+                // A failing USER leaves no pending name (decision 0028 §2):
+                // PASS afterwards answers "-ERR USER required first", never
+                // logging into a mailbox a previous USER named.
+                user = None;
+                if raw.is_empty() {
                     write_line(&mut write, "-ERR missing username", idle).await?;
-                } else if !store.has_inbox(arg) {
-                    user = None;
+                } else if let Err(refusal) = crate::model::validate_inbox(raw) {
+                    write_line(&mut write, &format!("-ERR {refusal}"), idle).await?;
+                } else if !store.has_inbox(raw) {
                     write_line(&mut write, "-ERR no such mailbox", idle).await?;
                 } else {
-                    user = Some(arg.to_string());
+                    user = Some(raw.to_string());
                     write_line(&mut write, "+OK name is a valid mailbox", idle).await?;
                 }
             }
@@ -447,10 +515,10 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                         out.push_str(&format!("{} {}\r\n", num, maildrop[num - 1].size));
                     }
                     out.push_str(".\r\n");
-                    // One complete-buffer write under the idle bound (issue
-                    // #71, decision 0027): a peer that stops reading ends
-                    // the session silently through `?` and frees its slot.
-                    crate::smtp::bound_io(write.write_all(out.as_bytes()), idle).await?;
+                    // Through the progress writer (issue #71, decision 0046
+                    // §7): a peer that stops reading ends the session
+                    // silently through `?` and frees its slot.
+                    write_reply(&mut write, out.as_bytes(), idle).await?;
                 } else {
                     match arg
                         .parse::<usize>()
@@ -472,7 +540,7 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                     }
                     out.push_str(".\r\n");
                     // Bounded like LIST (issue #71).
-                    crate::smtp::bound_io(write.write_all(out.as_bytes()), idle).await?;
+                    write_reply(&mut write, out.as_bytes(), idle).await?;
                 } else {
                     match arg
                         .parse::<usize>()
@@ -512,7 +580,7 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                             let mut out = format!("+OK {} octets\r\n", msg.size).into_bytes();
                             write_stuffed(&mut out, &email.raw);
                             out.extend_from_slice(b".\r\n");
-                            crate::smtp::bound_io(write.write_all(&out), idle).await?;
+                            write_reply(&mut write, &out, idle).await?;
                         }
                     },
                 }
@@ -550,7 +618,7 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                             write_stuffed(&mut out, &email.raw[..body_at]);
                             write_stuffed_limited(&mut out, &email.raw[body_at..], lines);
                             out.extend_from_slice(b".\r\n");
-                            crate::smtp::bound_io(write.write_all(&out), idle).await?;
+                            write_reply(&mut write, &out, idle).await?;
                         }
                     },
                 }
@@ -724,12 +792,72 @@ fn live_numbers(maildrop: &[MaildropMsg], deleted: &BTreeSet<usize>) -> Vec<usiz
         .collect()
 }
 
-/// One reply line, CRLF-terminated, under one idle bound (decision 0027):
-/// a peer that stops accepting replies ends the session silently through
-/// the existing `?` — a TimedOut is an ended session, not a pinned task.
-/// Text and CRLF go out in one `write_all` (issue #83): a separate 2-byte
-/// CRLF write waits on Nagle and the peer's delayed ACK, about 40 ms a
-/// reply. One application write — not a promise of one syscall or segment.
+/// Test-only: one socket write the progress writer made — when it was
+/// entered, when it returned and how many bytes the socket took.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WriteSeen {
+    pub(crate) entered: std::time::Instant,
+    pub(crate) done: std::time::Instant,
+    pub(crate) moved: usize,
+}
+
+// Test-only observer (decision 0020 rule 4, issue #131): every reply the
+// progress writer sent on this thread, as the real socket writes it took.
+// It records and never shapes — each byte still goes through the transport
+// — so a test can see a reply span windows at the server, not infer it
+// from how long its own reader took.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static REPLY_WRITES: core::cell::RefCell<Vec<Vec<WriteSeen>>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// One whole reply, bounded by progress (issue #131, decision 0046 §7):
+/// each write of what remains gets its own idle window, and every write
+/// that moves bytes earns the next one — so a reader whose socket accepts
+/// some bytes of each next write within its window receives a RETR of any
+/// size in full, while one that takes nothing
+/// for a whole window is cut off silently through the caller's `?` (a
+/// TimedOut is an ended session, not a pinned task). Progress is bytes the
+/// local socket accepted, not bytes the peer's application consumed, and
+/// there is no total-duration or minimum-rate bound. A write of zero bytes
+/// is `WriteZero`. A reply that fits the socket is still one application
+/// write (issue #83).
+async fn write_reply<W: tokio::io::AsyncWrite + Unpin>(
+    w: &mut W,
+    mut out: &[u8],
+    idle: Duration,
+) -> io::Result<()> {
+    #[cfg(test)]
+    REPLY_WRITES.with(|replies| replies.borrow_mut().push(Vec::new()));
+    while !out.is_empty() {
+        #[cfg(test)]
+        let entered = std::time::Instant::now();
+        let n = crate::smtp::bound_io(w.write(out), idle).await?;
+        if n == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        #[cfg(test)]
+        REPLY_WRITES.with(|replies| {
+            let seen = WriteSeen {
+                entered,
+                done: std::time::Instant::now(),
+                moved: n,
+            };
+            replies.borrow_mut().last_mut().unwrap().push(seen);
+        });
+        out = &out[n..];
+    }
+    Ok(())
+}
+
+/// One reply line, CRLF-terminated, through the progress writer: a peer
+/// that stops accepting replies ends the session silently through the
+/// existing `?`. Text and CRLF are offered together (issue #83): a separate
+/// 2-byte CRLF write waits on Nagle and the peer's delayed ACK, about 40 ms
+/// a reply. One application write — not a promise of one syscall or
+/// segment.
 async fn write_line<W: tokio::io::AsyncWrite + Unpin>(
     w: &mut W,
     line: &str,
@@ -738,7 +866,7 @@ async fn write_line<W: tokio::io::AsyncWrite + Unpin>(
     let mut out = Vec::with_capacity(line.len() + 2);
     out.extend_from_slice(line.as_bytes());
     out.extend_from_slice(b"\r\n");
-    crate::smtp::bound_io(w.write_all(&out), idle).await
+    write_reply(w, &out, idle).await
 }
 
 /// RFC 2449 CAPA. Plaintext listener: no STLS; no APOP (any password works).
@@ -759,7 +887,7 @@ async fn write_capabilities<W: tokio::io::AsyncWrite + Unpin>(
         out.push('\n');
     }
     out.push_str(".\r\n");
-    crate::smtp::bound_io(w.write_all(out.as_bytes()), idle).await
+    write_reply(w, out.as_bytes(), idle).await
 }
 
 /// Append `raw` to `out` as RFC 1939 multi-line data: every line becomes
@@ -1322,6 +1450,84 @@ mod tests {
     async fn a_stalled_uidl_reply_frees_the_slot() {
         a_stalled_reply_frees_the_slot("UIDL").await;
     }
+
+    /// The progress writer refuses a writer that takes nothing (issue
+    /// #131, decision 0046 §7): a 4-byte sink takes the reply's first four
+    /// bytes on the first write, the offset advances, and the next write's
+    /// zero is `WriteZero` — never a silent spin.
+    #[tokio::test]
+    async fn the_progress_writer_advances_partial_writes_and_refuses_zero() {
+        let mut room = [0u8; 4];
+        let mut sink = std::io::Cursor::new(&mut room[..]);
+        let err = write_reply(&mut sink, b"+OK hello\r\n", Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+        assert_eq!(&room, b"+OK ");
+    }
+
+    /// The progress writer's other endings, on a real in-process pipe
+    /// (issue #131, decision 0046 §7): an empty reply makes no write; a
+    /// pipe with room for four bytes takes exactly four — the partial write
+    /// the observer records — and the next write, with nobody reading, is
+    /// cut off at the idle deadline as `TimedOut`; once the far end is gone
+    /// the write's own error comes back unchanged.
+    #[tokio::test]
+    async fn the_progress_writer_ends_on_expiry_and_error() {
+        use tokio::io::AsyncReadExt;
+
+        let idle = Duration::from_millis(50);
+        let (mut near, mut far) = tokio::io::duplex(4);
+        REPLY_WRITES.with(|replies| replies.borrow_mut().clear());
+        write_reply(&mut near, b"", idle).await.unwrap();
+        let expired = write_reply(&mut near, b"+OK hello\r\n", idle)
+            .await
+            .unwrap_err();
+        assert_eq!(expired.kind(), io::ErrorKind::TimedOut);
+        let moved: Vec<Vec<usize>> = REPLY_WRITES.with(|replies| {
+            replies
+                .borrow()
+                .iter()
+                .map(|reply| reply.iter().map(|write| write.moved).collect())
+                .collect()
+        });
+        assert_eq!(moved, vec![vec![], vec![4]]);
+        let mut taken = [0u8; 4];
+        far.read_exact(&mut taken).await.unwrap();
+        assert_eq!(&taken, b"+OK ");
+        drop(far);
+        let broken = write_reply(&mut near, b"x", idle).await.unwrap_err();
+        assert_eq!(broken.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    /// Every accepted POP3 socket carries `TCP_NODELAY` before its greeting
+    /// (issue #126, AC3), read back off the accepted socket; an installed
+    /// refusal drops exactly that socket and the next peer is served.
+    #[tokio::test]
+    async fn pop3_accepted_socket_nodelay() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        NODELAY_SEEN.with(|seen| seen.borrow_mut().clear());
+        let server = tokio::spawn(serve(
+            listener,
+            Arc::new(Store::new(0)),
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_secs(60),
+            256,
+            std::future::pending(),
+        ));
+        INJECTED_NODELAY_ERRORS.with(|errors| errors.set(1));
+
+        let mut dropped = TcpStream::connect(addr).await.unwrap();
+        let mut wire = Vec::new();
+        dropped.read_to_end(&mut wire).await.unwrap();
+        assert!(wire.is_empty(), "no byte before the drop: {wire:?}");
+        let _served = greeted(addr).await;
+        assert_eq!(NODELAY_SEEN.with(|seen| seen.borrow().clone()), vec![true]);
+        server.abort();
+    }
 }
 
 #[cfg(test)]
@@ -1330,3 +1536,10 @@ mod tests {
 // snapshot gate an inline snapshot would hold forever on the sole worker —
 // runs only while the bug is present, so it is unwritable inline.
 mod maildrop_tests;
+
+#[cfg(test)]
+// The RETR progress proof lives in src/pop3/progress_tests.rs (decision
+// 0020 rule 2): its diagnostics — a reply that fit one window, a write that
+// never waited on backpressure, a reader cut off mid-message — run only
+// while the schedule betrays or the whole-reply bound is back.
+mod progress_tests;
