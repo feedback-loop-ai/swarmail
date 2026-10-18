@@ -242,8 +242,13 @@ ensure_fn_scan() {
   # Build the parser helper once into the shared gitignored target dir; its
   # absence refuses — the gate never parses Rust with bash.
   [ -n "$FN_SCAN_BIN" ] && return 0
+  # A cached machine builds offline; a fresh one bootstraps its registry
+  # with the same pinned lockfile (a helper build is tooling bootstrap,
+  # not the measured measurement — the workspace itself stays --offline).
   cargo build --manifest-path tools/coverage-fn-scan/Cargo.toml \
-    --target-dir target/coverage/fn-scan-target --offline --locked >/dev/null 2>&1 || {
+    --target-dir target/coverage/fn-scan-target --offline --locked >/dev/null 2>&1 ||
+    cargo build --manifest-path tools/coverage-fn-scan/Cargo.toml \
+      --target-dir target/coverage/fn-scan-target --locked >/dev/null 2>&1 || {
     refuse 'coverage refusal: the coverage-fn-scan helper could not be built (cargo build --manifest-path tools/coverage-fn-scan/Cargo.toml --offline --locked)'
   }
   FN_SCAN_BIN="$PWD/target/coverage/fn-scan-target/debug/coverage-fn-scan"
