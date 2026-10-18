@@ -867,7 +867,7 @@ async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
             .unwrap()
             .as_nanos()
     ));
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
     let srv = start_with(|mut c| {
@@ -927,7 +927,7 @@ async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
         "the refused seed must not reach the restart copy"
     );
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
@@ -947,7 +947,7 @@ async fn a_blocked_delete_refuses_the_mcp_delete_tools_with_error_results() {
             .unwrap()
             .as_nanos()
     ));
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
     let srv = start_with(|mut c| {
@@ -1013,7 +1013,7 @@ async fn a_blocked_delete_refuses_the_mcp_delete_tools_with_error_results() {
     );
     assert_eq!(list["emails"][0]["subject"], "doomed");
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }

@@ -14,11 +14,19 @@
 //! async handler, the store's awaited wrappers (`insert_async` and friends)
 //! run the whole commit on tokio's blocking pool, so the wait on the disk
 //! never occupies an async worker (decision 0023) — it parks a task instead.
+//!
+//! **One server per data file** — a second process opening the same file
+//! refuses at startup (a `<data-file>.lock` advisory lock held for the
+//! process's lifetime). The lock is taken before SQLite touches the file
+//! and is owned by [`Persist`], so the kernel releases it when the last
+//! owner drops or the process dies; the sidecar itself is never unlinked
+//! and carries no content (decision 0033 §§2–4, proposed 0042).
 
 use crate::model::Email;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
-use std::path::Path;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Every column of a mail row, in the order both statements use it.
@@ -92,11 +100,100 @@ struct State {
 /// The write-through mirror. Cheap to clone-free share: `&self` is enough.
 pub struct Persist {
     state: Mutex<State>,
+    /// The held `<data-file>.lock` (decision 0033 §2). Declared after
+    /// `state` so the connection closes before ownership is released.
+    _lock: File,
+}
+
+/// Why a data file could not be opened (decision 0042 §2): another
+/// server owns it, its sidecar lock is unusable, or SQLite refused it.
+#[derive(Debug)]
+pub enum OpenError {
+    /// Another `Persist` — this process or another — holds the data file.
+    InUse(PathBuf),
+    /// The sidecar lock file could not be opened or locked.
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// SQLite refused to open, migrate or restore the data file.
+    Sqlite(rusqlite::Error),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InUse(path) => write!(
+                f,
+                "the data file is already in use by another server: {}",
+                path.display()
+            ),
+            Self::Io { path, source } => write!(f, "{}: {source}", path.display()),
+            Self::Sqlite(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InUse(_) => None,
+            Self::Io { source, .. } => Some(source),
+            Self::Sqlite(e) => Some(e),
+        }
+    }
+}
+
+impl From<rusqlite::Error> for OpenError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Sqlite(e)
+    }
+}
+
+/// The sidecar beside `path`: `.lock` appended to the whole OS path, so
+/// `mail.db` and `mail.sqlite` never share one (no extension replacement).
+fn lock_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
+/// Only contention is `InUse`; any other lock failure (an unsupported
+/// filesystem) refuses startup with its cause — never a silent unlocked run.
+fn lock_error(path: &Path, sidecar: PathBuf, err: TryLockError) -> OpenError {
+    match err {
+        TryLockError::WouldBlock => OpenError::InUse(path.to_path_buf()),
+        TryLockError::Error(source) => OpenError::Io {
+            path: sidecar,
+            source,
+        },
+    }
+}
+
+/// Take the data file's exclusive sidecar lock: one nonblocking attempt,
+/// no truncation, no retry, no unlink.
+fn acquire(path: &Path) -> Result<File, OpenError> {
+    let sidecar = lock_path(path);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&sidecar)
+        .map_err(|source| OpenError::Io {
+            path: sidecar.clone(),
+            source,
+        })?;
+    file.try_lock().map_err(|e| lock_error(path, sidecar, e))?;
+    Ok(file)
 }
 
 impl Persist {
-    /// Open (creating if needed) the data file and its schema.
-    pub fn open(path: &Path) -> rusqlite::Result<Self> {
+    /// Open (creating if needed) the data file and its schema — after
+    /// taking its sidecar lock, so a refused second server never touches
+    /// the database (decision 0033 §2).
+    pub fn open(path: &Path) -> Result<Self, OpenError> {
+        let lock = acquire(path)?;
         let conn = Connection::open(path)?;
         // WAL keeps per-mail commits cheap; FULL makes a commit mean "on
         // disk" — a `250` stays the truth even across a hard kill.
@@ -115,6 +212,7 @@ impl Persist {
             })?;
         Ok(Self {
             state: Mutex::new(State { conn, next_seq }),
+            _lock: lock,
         })
     }
 
@@ -470,7 +568,9 @@ mod tests {
             .unwrap();
         let (emails, _, _) = persist.load().unwrap();
         assert_eq!(emails.len(), 2);
-        // Reopening the already-migrated file is a no-op.
+        // Reopening the already-migrated file is a no-op — once its one
+        // owner has dropped (decision 0033: one server per data file).
+        drop(persist);
         assert!(Persist::open(&path).unwrap().load().is_ok());
     }
 
@@ -770,6 +870,162 @@ mod tests {
         let (_garbage_guard, garbage) = db_path("garbage");
         std::fs::write(&garbage, b"definitely not sqlite").unwrap();
         assert!(Persist::open(&garbage).is_err());
+    }
+
+    /// The named refusal (decision 0033 §3): a held data file refuses a
+    /// second `Persist` — flock is per open file description, so the
+    /// same process proves it with no second process and no sleep. The
+    /// lock is advisory: a raw SQLite connection beside the owner still
+    /// works (the 0001 proof family's vandal and mirror reads). Dropping
+    /// the owner frees the file for an immediate reopen, sidecar intact.
+    #[test]
+    fn a_second_open_of_a_held_data_file_refuses_by_name() {
+        let (_guard, path) = db_path("in-use");
+        let first = Persist::open(&path).unwrap();
+        let raw = Connection::open(&path).unwrap();
+        let rows: i64 = raw
+            .query_row("SELECT COUNT(*) FROM emails", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "a raw connection reads beside the owner");
+
+        let err = Persist::open(&path)
+            .err()
+            .expect("a held data file refuses a second owner");
+        assert_eq!(format!("{err:?}"), format!("InUse({path:?})"));
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "the data file is already in use by another server: {}",
+                path.display()
+            )
+        );
+        assert!(
+            std::error::Error::source(&err).is_none(),
+            "contention has no cause"
+        );
+
+        drop(first);
+        let again = Persist::open(&path).expect("a dropped owner frees it");
+        assert!(lock_path(&path).is_file(), "the sidecar is never unlinked");
+        drop(again);
+        drop(raw);
+    }
+
+    /// Lock before database (decision 0042 §1): with the sidecar held and
+    /// no database yet, the refused open never creates the database — a
+    /// refused server cannot run schema or migration work on the file.
+    #[test]
+    fn the_lock_is_taken_before_the_database_is_touched() {
+        let (_guard, path) = db_path("lock-first");
+        let holder = File::create(lock_path(&path)).unwrap();
+        holder.try_lock().unwrap();
+        let err = Persist::open(&path)
+            .err()
+            .expect("a held sidecar refuses the open");
+        assert_eq!(format!("{err:?}"), format!("InUse({path:?})"));
+        assert!(!path.exists(), "the refused open created no database");
+        drop(holder);
+        drop(Persist::open(&path).expect("the released sidecar admits"));
+        assert!(path.is_file());
+    }
+
+    /// The sidecar is the literal `.lock` suffix on the whole path, so
+    /// `mail.db` and `mail.sqlite` are owned at once (an extension
+    /// replacement would collide them on `mail.lock`); an existing
+    /// unlocked sidecar is reused without truncation and survives drop.
+    #[test]
+    fn the_sidecar_is_a_literal_suffix_never_truncated_or_removed() {
+        let dir = tempfile::TempDir::with_prefix("swarmail-persist-suffix-").unwrap();
+        let db = dir.path().join("mail.db");
+        let sqlite = dir.path().join("mail.sqlite");
+        let db_lock = dir.path().join("mail.db.lock");
+        std::fs::write(&db_lock, b"sentinel").unwrap();
+        let a = Persist::open(&db).unwrap();
+        let b = Persist::open(&sqlite).expect("distinct sidecars");
+        assert!(dir.path().join("mail.sqlite.lock").is_file());
+        assert!(!dir.path().join("mail.lock").exists());
+        drop(a);
+        drop(b);
+        assert_eq!(
+            std::fs::read(&db_lock).unwrap(),
+            b"sentinel",
+            "the sidecar is opened without truncation and never unlinked"
+        );
+    }
+
+    /// An unusable sidecar (a directory where the lock file belongs) is an
+    /// I/O refusal naming the sidecar and keeping its cause — never
+    /// misreported as contention, and never a silent unlocked open.
+    #[test]
+    fn an_unusable_sidecar_is_an_io_refusal_not_in_use() {
+        let (_guard, path) = db_path("sidecar-dir");
+        let sidecar = lock_path(&path);
+        std::fs::create_dir(&sidecar).unwrap();
+        let err = Persist::open(&path)
+            .err()
+            .expect("an unusable sidecar refuses the open");
+        let debug = format!("{err:?}");
+        assert!(
+            debug.starts_with(&format!("Io {{ path: {sidecar:?}, source: ")),
+            "{debug}"
+        );
+        let cause = std::error::Error::source(&err)
+            .expect("the I/O cause is kept")
+            .to_string();
+        assert_eq!(err.to_string(), format!("{}: {cause}", sidecar.display()));
+        assert!(!path.exists(), "the refused open created no database");
+    }
+
+    /// Both lock-error classes, explicitly (decision 0042 §Proof): only
+    /// `WouldBlock` is contention; a lock syscall failure keeps the
+    /// sidecar path and its cause. A real filesystem without lock support
+    /// is not fabricated — this pins the classification alone.
+    #[test]
+    fn lock_errors_classify_contention_apart_from_failure() {
+        let data = Path::new("/srv/mail.db");
+        let sidecar = PathBuf::from("/srv/mail.db.lock");
+        let in_use = lock_error(data, sidecar.clone(), TryLockError::WouldBlock);
+        assert_eq!(format!("{in_use:?}"), r#"InUse("/srv/mail.db")"#);
+        let failed = lock_error(
+            data,
+            sidecar,
+            TryLockError::Error(std::io::Error::other("locking unsupported")),
+        );
+        assert!(
+            format!("{failed:?}").starts_with(r#"Io { path: "/srv/mail.db.lock", source: "#),
+            "{failed:?}"
+        );
+        assert_eq!(failed.to_string(), "/srv/mail.db.lock: locking unsupported");
+        assert_eq!(
+            std::error::Error::source(&failed)
+                .expect("the lock failure is the cause")
+                .to_string(),
+            "locking unsupported"
+        );
+    }
+
+    /// A malformed database is a SQLite refusal with its cause, and the
+    /// failed open releases the sidecar at once — the lock never outlives
+    /// a server that did not start.
+    #[test]
+    fn a_failed_sqlite_open_is_named_and_releases_the_lock() {
+        let (_guard, garbage) = db_path("garbage-release");
+        std::fs::write(&garbage, b"definitely not sqlite").unwrap();
+        let err = Persist::open(&garbage)
+            .err()
+            .expect("a malformed database refuses the open");
+        assert!(format!("{err:?}").starts_with("Sqlite("), "{err:?}");
+        assert!(err.to_string().contains("not a database"), "{err}");
+        assert_eq!(
+            std::error::Error::source(&err)
+                .expect("the SQLite cause is kept")
+                .to_string(),
+            err.to_string()
+        );
+        let probe = File::open(lock_path(&garbage)).unwrap();
+        probe
+            .try_lock()
+            .expect("the failed open released the sidecar");
     }
 
     /// The busy bound is a fact of the dependency, not of this crate:

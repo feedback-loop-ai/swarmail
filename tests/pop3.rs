@@ -892,7 +892,7 @@ async fn a_vanished_maildrop_is_refused_after_a_reopen_too() {
             .unwrap()
             .as_nanos()
     ));
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 
@@ -942,7 +942,7 @@ async fn a_vanished_maildrop_is_refused_after_a_reopen_too() {
     assert!(c.cmd("STAT").await.starts_with("+OK 1 "));
     assert!(c.cmd("QUIT").await.starts_with("+OK"));
 
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
@@ -967,7 +967,7 @@ async fn pop3_deletions_survive_a_restart_with_a_data_file() {
             .unwrap()
             .as_nanos()
     ));
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 
@@ -1024,7 +1024,7 @@ async fn pop3_deletions_survive_a_restart_with_a_data_file() {
     .await;
     assert_eq!(here, 200);
 
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
@@ -1045,7 +1045,7 @@ async fn a_failed_quit_answers_err_and_keeps_the_marks() {
             .unwrap()
             .as_nanos()
     ));
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
     let srv = common::start_with(|mut c| {
@@ -1122,7 +1122,7 @@ async fn a_failed_quit_answers_err_and_keeps_the_marks() {
         "the retried QUIT must stay deleted across a restart: {count}"
     );
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
@@ -1151,7 +1151,7 @@ async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
             .unwrap()
             .as_nanos()
     ));
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
     let srv = common::start_with(|mut c| {
@@ -1237,19 +1237,28 @@ async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
     .await;
     assert_eq!(st, 200, "an unmarked mail is untouched: {st}");
 
-    let reopened = swarmail::store::Store::open(0, &db).expect("the same data file reopens");
-    assert!(
-        reopened.get(&prefix).is_none(),
+    // The live server owns the data file (decision 0033: a second store
+    // refuses), so the disk copy is read through a raw connection, which
+    // the advisory lock admits by design.
+    let disk = rusqlite::Connection::open(&db).expect("the data file opens raw");
+    let rows = |id: &str| -> i64 {
+        disk.query_row("SELECT COUNT(*) FROM emails WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .expect("the row count reads")
+    };
+    assert_eq!(
+        rows(&prefix),
+        0,
         "the prefix must be committed on disk, not just absent from memory"
     );
-    assert!(
-        reopened.get(&refused).is_some(),
+    assert_eq!(
+        rows(&refused),
+        1,
         "the refused mail must still have its row"
     );
-    assert!(
-        reopened.get(&kept).is_some(),
-        "the bystander must still have its row"
-    );
+    assert_eq!(rows(&kept), 1, "the bystander must still have its row");
+    drop(disk);
 
     // Recovery: the trigger is gone; the retry in the same session applies
     // the remaining mark — idempotent over the committed prefix — and signs
@@ -1300,7 +1309,7 @@ async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
         assert_eq!(st, want, "{why}: {st}");
     }
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
@@ -1322,7 +1331,7 @@ async fn rset_never_resurrects_a_committed_delete() {
             .unwrap()
             .as_nanos()
     ));
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
     let srv = common::start_with(|mut c| {
@@ -1379,7 +1388,7 @@ async fn rset_never_resurrects_a_committed_delete() {
     assert_eq!(st, 200, "RSET must not delete the refused mail: {st}");
     trigger.remove();
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }

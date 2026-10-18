@@ -21,9 +21,9 @@ fn data_file(tag: &str) -> PathBuf {
     ))
 }
 
-/// Best-effort cleanup of the data file and its WAL sidecars.
+/// Best-effort cleanup of the data file, its WAL sidecars and its lock.
 fn clean_up(db: &std::path::Path) {
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
