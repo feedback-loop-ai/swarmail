@@ -56,14 +56,15 @@ jobs:
       - run: cargo test --workspace --locked
       # The portless bridge's real port-80 exchange (issue #133, proposed
       # 0047 §4) is ignored by default — binding 127.0.0.1:80 is privileged —
-      # and run here explicitly once each OS lowers its reserved-port floor.
-      # macOS lets any user bind 80 only on the wildcard address, not on
-      # 127.0.0.1, so it needs its own sysctl too.
+      # and run here explicitly: Linux lowers the unprivileged port floor
+      # first; macOS has no such knob for 127.0.0.1, so it runs the test as
+      # root (the job's last step, so root-owned build output is harmless).
       - if: runner.os == 'Linux'
-        run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
+        run: |
+          sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
+          cargo test --locked --test binary -- --ignored portless_bridge_pings_port_eighty
       - if: runner.os == 'macOS'
-        run: sudo sysctl -w net.inet.ip.portrange.reservedhigh=0
-      - run: cargo test --locked --test binary -- --ignored portless_bridge_pings_port_eighty
+        run: sudo -E env "PATH=$PATH" "HOME=$HOME" cargo test --locked --test binary -- --ignored portless_bridge_pings_port_eighty
 
   # Exact 100% of lines, branches and functions, on every push and PR — not
   # just main. The gate never auto-installs a toolchain and refuses without

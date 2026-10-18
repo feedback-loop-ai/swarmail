@@ -1942,8 +1942,8 @@ const SERVE_ON_EIGHTY: [&str; 7] = [
 /// because binding 127.0.0.1:80 is privileged (and unprivileged user
 /// namespaces are refused on hosts that restrict them); CI runs it
 /// explicitly, after lowering `net.ipv4.ip_unprivileged_port_start` on
-/// Linux and `net.inet.ip.portrange.reservedhigh` on macOS (which frees 80
-/// only on the wildcard address). Where 80 cannot be bound it fails
+/// Linux and as root on macOS (which frees 80 to users only on the wildcard
+/// address). Where 80 cannot be bound it fails
 /// loudly at the server's startup.
 #[tokio::test]
 #[ignore = "needs a host that lets this user bind 127.0.0.1:80; CI runs it explicitly"]
