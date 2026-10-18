@@ -1,0 +1,283 @@
+# Implementation plan — delivery gates
+
+Implements [spec.md](spec.md) and proposed
+[0050](../../docs/decisions/0050-delivery-gates.md).
+
+## Technical context
+
+Single Rust application crate; real SMTP/POP3/HTTP integration suites;
+Bash gates on a mawk host; cargo-llvm-cov and the installed coverage nightly;
+standalone syn/proc-macro2 scanner; brokkr 0.12.0 at the SHA recorded in
+`bundles/self/tooling.json`. Network-denied verify installs nothing.
+The plan template is absent from `.specify/templates/`; this plan supplies
+the required technical context, constitution check, structure, research,
+data model, contracts and quickstart directly.
+
+## Constitution check
+
+0007 and 0009 require pinned exec proof and a deterministic design check.
+0050 refines refusals and the 0035/0045 proposals without accepting them or
+rewriting historical decisions. Preserve all spec non-goals and guarantees.
+Inline measured tests remain the default; an owner harness needs a concrete
+cold diagnostic path under 0020, not merely private seam access. All seams
+are `#[cfg(test)]`, installed by tests, instance-local where possible. Real
+protocols, deterministic ordering, no sleep-as-sync and no weakened coverage.
+
+Only spec.md, plan.md, tasks.md and 0050 belong to the chief's design commit.
+All code and documentation-index edits below belong to implementation.
+
+## Research and implementation checkpoints
+
+1. Confirm the pin's sequence exec grammar, result aggregation, failure
+   counting and actual directory remount using a minimal real dispatch.
+   Inspect the pinned executable's supported identity and policy interfaces.
+   Do not guess a version-output format. If no evaluation CLI exists, run
+   a small fixture linked to `brokkr_core` at the recorded SHA using already
+   available tooling outside the production dependency graph. No shell/jq
+   policy clone counts as proof. A sandbox refusal is an explicit unrun
+   obligation for verify, not grounds for a silent engine upgrade.
+2. Trace every local executable read by coverage, publish proof, design and
+   prerequisites, including the guard invoked by its own proof. Inventory
+   transitive helpers and lockfiles before relocation. Verify what dispatch
+   mounts, including the tooling record; do not infer visibility from bundle
+   manifest inclusion alone. Keep required resources beneath the dispatched
+   script directory or the engine's existing supported pinned-resource path.
+3. Check current compiler expansion differences on the real crate before
+   freezing the differential. Compare raw canonical outputs by default.
+   Do not strip function bodies, cfg-gated items or debug-only logic to make
+   the comparison green. Any demonstrably nonsemantic normalization needs
+   a narrow documented rule and red/green fixtures; unresolved legitimate
+   differences block the claim rather than broaden a carve-out.
+4. Confirm runtime test seams at their owners. The existing awaits metric
+   proves a parked await, not a healthz head's dispatch; those are distinct
+   obligations. Existing CLI has no idle flags, and existing binary tests
+   already parse bound addresses. Use these facts instead of adding knobs.
+
+## Project structure and touched files
+
+| Paths | Implementation responsibility |
+|---|---|
+| `scripts/coverage-gate.sh`, `tools/coverage-fn-scan/{Cargo.toml,Cargo.lock,src/main.rs}` | First repair package inventory, expansions, scanner diagnostics and compiler fixtures; then relocate full implementations. |
+| `bundles/self/scripts/coverage-gate.sh`, `bundles/self/scripts/coverage-fn-scan/` | Canonical gate/selftest and scanner with pinned source/manifests/lock, built into candidate scratch output. No committed build artifacts. |
+| `scripts/publish-guard.sh`, `scripts/publish-guard-test.sh`, pinned counterparts | Canonical guard plus real-local-server proof; candidate release inputs stay candidate inputs. Preserve republish refusal and both publication forms. |
+| `scripts/design-check.sh`, `.specify/scripts/bash/check-prerequisites.sh`, missing `common.sh`, pinned counterparts | Public shims where required; one canonical validator, prerequisites and minimal common support. No missing-source success. |
+| `bundles/self/scripts/verify-seat.sh`, wrapper templates/integrity helper | Direct pinned calls, candidate-root plumbing, tooling identity, integrity failure accumulation, atomic result writing. |
+| `bundles/self/{bundle.json,policy.json,tooling.json}` | Final exec check, fail-closed policy destinations, pin identity/resource plumbing. No source-pin upgrade assumed. |
+| `bundles/self/scripts/delivery-proof-test.sh`, `scripts/delivery-proof-test.sh`, `.github/workflows/ci.yml` | One focused pinned delivery regression harness, optional thin public dispatcher, executed by verify and CI; actual dispatch/evaluator fixtures with bounded subprocesses. Avoid recursive verify-selftest invocation. |
+| `tests/lifecycle.rs`, `tests/common/mod.rs`, `src/api.rs` and a declared owner harness if needed | Synchronized handler 503, separate stalled-body fence proof and named read deadlines; minimal installed test-only ordering seam. |
+| `tests/{binary,config_cli,store_contract_docs,listener_contract_docs}.rs`, `src/config.rs` | Port-0 and occupied-port cases, actual configuration wiring proofs, code-linked docs/status checks and narrowly corrected help. |
+| `src/pop3.rs`, `src/pop3/alloc_tests.rs`, test allocator support if needed; `src/webhook.rs` | RETR/sizing allocation instrumentation and actual post_json request observation; thread-local scoped counters and cold-path harness declaration. |
+| `src/extract.rs`, remaining scratch-fixture owners in `src/` and `tests/` | Decode-window negative control, retained exact-count pins, tempfile guards and unwind probes. |
+| `docs/house-rules.md`, `docs/decisions/README.md`, directly affected charters | Accurate proof ownership, structural-vs-by-effect wording, proposed 0050 index and evidence references. No broad #142/#144 sweep or accepted-body rewrite. |
+
+## Implementation approach
+
+### 1. Repair coverage before pinning it (#140)
+
+Use full locked offline Cargo metadata for package/resolve facts. Canonicalize
+the root manifest and require a unique match; pass explicit package and
+target selectors throughout. Refuse additional application workspace members
+and unharvested local normal/build dependency closure, including target-specific
+production paths. Dev-only/tooling packages are not silently treated as
+production; prove the standalone scanner's separate workspace. Missing or
+unclassifiable metadata refuses. Do not filter paths by directory names.
+
+Capture dep-info before expansion, retaining existing fn-bearing/SF checks.
+For each root lib/bin compare measured expansion with no-coverage expansion
+at the measured profile, and with no-coverage expansion under the release
+profile. Use the same installed compiler, explicit flags and separate dump
+names. Scan measured production output and actual `cfg(test)` library
+expansion with the current token walker. Verify the test expansion contains
+the offending fixture; `--profile test` alone must not be assumed to enable
+`cfg(test)`. Keep exact count arithmetic and existing carve-outs intact.
+
+Add real-build v1/v2/v3/v3b/v5b/v6 arms to selftest with clean controls and
+named expected refusal reasons. Isolate the inner-exclusion fixture; use
+token lookahead past visibility/modifiers for a useful function diagnostic,
+not a general item parser. Remove the inner walker in a disposable copy to
+prove that specific arm turns red. Update the charter's factual sentence.
+
+### 2. Make execution transitively pinned (#123)
+
+Move the repaired proof chain under the bundle. Resolve proof resources
+relative to the dispatched script; accept/derive candidate root separately.
+Refactor old `cd` assumptions so release manifests and source remain candidate
+inputs. Public scripts contain only fixed dispatch logic and argument
+forwarding. Delete duplicate full implementations, including the old scanner
+crate; keep any necessary compatibility entry point tiny and integrity-checked.
+Build the scanner offline/locked from pinned manifests into candidate
+`target/coverage/` scratch space; do not trust an arbitrary cached executable.
+
+Pin wrapper expectations and the tooling record in the resources available
+to the seat. Verify checks the actual launched brokkr identity against that
+record before using its compiler. A source SHA must be established through
+the recorded engine's trusted identity mechanism or an independently bound
+binary digest; unknown identity refuses rather than comparing only version.
+Do not add an ungrounded binary checksum or let a candidate value supply it.
+
+Record wrapper integrity failure without executing the wrapper. For the
+combined tampered-wrapper/uncovered-candidate proof, continue the canonical
+coverage invocation under the existing seat deadline, retain both diagnostics
+and return failure regardless of subsequent results. This narrow continuation
+is unconditional for that failure class, not a test bypass switch. Other
+missing critical pinned resources fail closed immediately. Write JSON using
+existing JSON-capable tooling to a sibling temporary file then rename; errors
+cannot reuse a stale successful result.
+
+Actual verify-path fixtures need complete prerequisites and isolated candidate
+workspaces, so earlier gates cannot accidentally preempt the intended proof.
+If a delivery harness is itself a verify gate, invoke a low-level seat for
+fixtures without recursively invoking the same harness; the separation is
+fixed in pinned code, never a candidate-controlled skip flag. Assert coverage
+diagnostics and result shape, not only nonzero exit. Exercise a clean control,
+wrapper/helper substitutions, old pinned resources versus candidate edits,
+bundle-digest changes and mismatched brokkr identity.
+
+### 3. Wire design validation (#124)
+
+Add the final exec check using the grammar proved in checkpoint 1. Remove
+the drafted-to-implement route and add an explicit drafted hard stop. Retain
+the retry and second-failure hard-stop rules with proved counter semantics.
+If the engine requires a separate validation phase, carry failure accounting
+across it explicitly and prove exactly one chief retry; do not leave both
+routes active.
+
+Use NUL-delimited Git plumbing on HEAD's committed change paths to derive
+one kebab-case slug. Validate committed blobs and matching worktree files;
+include declared decisions in trackedness and cleanliness checks. No `.git`
+directory assumption; `git rev-parse` works with linked-worktree gitfiles.
+Explicit `Decision: NNNN` declarations require exactly one proposed record
+and a relative spec link. Historical authority links do not declare a new
+decision. Restrict declared records to `docs/decisions/` and refuse ambiguous
+matches, missing files or invalid status. Pass the selected feature path to
+the pinned prerequisite checker rather than rediscovering it from branch
+name or mtime. Return only the engine's exact result/inputs/notes schema.
+
+Use temporary Git fixture repositories for malformed and clean designs.
+Run actual exec dispatch with prompt/result files, plus real engine transition
+proofs. Test dirty declared decisions as well as dirty spec files; test two
+slugs, zero slugs, unrelated HEAD commits and linked worktrees.
+
+### 4. Require residual safety facts (#125)
+
+Add both supported predicates to REVIEW-RESIDUAL-OK. Keep the existing
+specific hard-stop ordering, then add REVIEW-RESIDUAL-UNKNOWN after the allow.
+Do not default, coerce, normalize case or infer security from severity.
+Enumerate supported levels from the pinned evaluator rather than assuming
+there are four safe combinations. Exercise every type/value row specified
+in AC8, actual clean-review routes and security-hold. Capture compiler stdout
+and stderr; no warning filter. Missing evaluator access leaves this task open.
+
+### 5. Restore tests that distinguish broken behavior (#143)
+
+Keep the public stalled-body deadline/liveness test. For the mandatory
+healthz stopping reply, establish handler entry and stop observation with
+an installed test-only owner seam if public observations cannot prove that
+order. Assert status and body unconditionally over real HTTP. Put cold
+diagnostics in the owner harness; do not expose a production test API or
+claim a parked await proves a different handler. Use the server's own fence
+clock with a small named allowance solely to observe expiry.
+
+Audit all helper reads, including byte/read-until/EOF paths. Use existing
+deadline helpers and add only missing forms. Run silent local peers in
+bounded subprocesses to capture named panics; an outer watchdog distinguishes
+the test's expected timeout from a removed deadline.
+
+Tie documentation numbers to public constants/defaults or owner tests;
+avoid exporting new runtime APIs solely for string comparisons. Parse
+supported status spellings from decision headers and compare index/file
+values in both directions using fixture copies for acceptance mutations.
+Exercise independent idle overrides through running servers or owner config
+wiring, because copying and assigning struct fields proves nothing and no
+idle CLI flags exist. Correct and pin only relevant Host/Origin help text.
+For binds, use child-owned port 0 and ready-line addresses for successful
+connections; hold occupied listeners throughout separate env-refusal cases
+for each protocol, so ignoring an env value still fails.
+
+Use a scoped thread-local, nonallocating test counter around real RETR
+construction and sizing, excluding setup and other runtime threads. Pin
+allocation counts/bytes tightly enough to catch a second message-sized buffer
+and even one allocation per sized mail; include wire-content correctness.
+Install only one test allocator if one is needed, forwarding transparently
+when disarmed; use a Drop guard to disarm after panics. Observe webhook body
+sharing after `post_json` constructs the actual request, before send, so its
+caller cannot hide a copy. Keep runtime work on the observed thread or move
+the counter scope with the actual operation.
+
+Convert scratch ownership to existing tempfile guards; prove unwind cleanup
+with child tests and before/after inventories in the real temp root. Never
+delete unrelated artifacts. For decode, try a valid numeric reference with
+leading zeros and semicolon beyond the 40-character window, including a
+boundary-valid control. If output is unchanged by the exact mutant, instrument
+the real search traversal rather than a disconnected accounting counter.
+Preserve batch 4's ASCII numeric checks and full entity-table fidelity.
+
+## Data model and contracts
+
+No database or mail model change. Proof identity is the tuple of pinned
+bundle digest, established brokkr identity, candidate commit and selected
+spec path. Logs additionally name fixture/mutant and command exit/result.
+Logs under `.brokkr/state/` are evidence, never inputs authorizing passage.
+
+Public gate commands and argument forwarding remain compatible. Seat results
+contain exactly `result`, `inputs`, `notes`; chief uses `drafted`, design
+check uses `designed|fail`, verify uses `pass|fail`. Atomic output does not
+turn missing output into success. Residual fields remain typed engine inputs;
+the policy changes admission, not their schema. New decisions remain proposed
+and only explicit declarations are structural design obligations.
+
+## Quickstart and validation
+
+Work from fetched current main on `epic120-delivery-constitution`; never
+reset existing operator work. In a writable Git environment, commit exactly
+the chief's four files, GPG-signed, subject:
+`Specify delivery gate proofs (#123, #124, #125, #140, #143)`.
+Implementation commits map each issue to decisive test names and receipts.
+Never push, open a PR, merge or close issues from this run.
+
+For implementation completion, run `cargo fmt --all` before checks, then
+`cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked -- -D warnings`,
+`cargo test --workspace --locked`, `bash scripts/coverage-gate.sh`,
+`bash scripts/coverage-gate.sh selftest`, `bash scripts/publish-guard-test.sh`
+and `cargo deny check licenses`. Run the new delivery proof harness, the
+fail-closed native-tls absence check, and pinned
+`brokkr compile --bundle bundles/self` in verify. No TMPDIR override, installs
+or warning suppression. Retain required CI-only jobs from house rules.
+Run the named negative controls in disposable candidates, restore them and
+finish with all gates on the final tree. Logs of blocked/unrun commands must
+remain distinct from passed proofs; a baseline compile warning is not the
+post-repair warning-free result.
+
+## Risks
+
+- **Pinned resources unavailable after dispatch.** Confirm actual remounts
+  before relocation, then exercise nested helper and tooling reads in the
+  real seat. Keep candidate paths separate and missing resources fatal.
+- **Compiler comparison false refusals or cost.** Keep the measured profile,
+  use explicit units/configurations, preserve dumps and clean twins. No
+  semantic stripping. Expect extra expansion/release work; optimize only
+  after correctness and retain the existing seat deadline.
+- **Metadata graph accidentally excludes production.** Traverse Cargo
+  resolution facts, handle target-specific edges and external local paths,
+  refuse unsupported cases and prove standalone tooling separately.
+- **Self-certifying fixtures.** Invoke real entry points and evaluator, check
+  named failures and restored green twins, and prevent recursion through a
+  fixed runner structure. Never count early unrelated refusal as the target
+  proof or relabel static inspection as executed evidence.
+- **Strict HEAD identity complicates resumes.** Require a fresh chief commit
+  containing the single design; do not guess from branch history or mtime.
+- **Shutdown tests assert an impossible window.** Honor accepted 0027's
+  handler condition with an owner seam and keep independent liveness proof.
+  Never alter wire shutdown semantics merely to force the desired result.
+- **Allocation/timing tests see unrelated work.** Scoped thread-local
+  counters, fixture setup outside measurements, real operation observation,
+  named bounded reads and deterministic seams prevent false positives.
+- **Test-only code evades exact coverage.** Inline is default; cold-path
+  harnesses are declared beside owners and must execute all production
+  branches. No coverage exclusions or floor changes.
+- **Sandbox or signing prevents delivery.** Preserve draft artifacts and
+  report the exact failed operation; never fabricate a commit or use unsigned
+  fallback. Brokkr refusal is deferred to its authorized verify seat; cargo
+  refusal follows the commission's patch-and-stop rule. No completion claim
+  while any required execution or commit remains outstanding.
