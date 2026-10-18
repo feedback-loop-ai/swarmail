@@ -412,6 +412,22 @@ Wire it up:
 `SWARMAIL_URL` (default `http://127.0.0.1:8025`). The HTTP surface is
 Streamable JSON-RPC at `POST /mcp`.
 
+The bridge answers each line as `POST /mcp` would (proposed decision
+[0039](docs/decisions/0039-stdio-concurrency.md)). A batch with requests
+gets one array line; a notification, or a batch of notifications only,
+gets nothing. Up to 16 lines are in flight at once, so a wait never holds
+up the seed that satisfies it. Replies arrive as they complete, so order
+holds only within a batch. A client that needs two mutations in order
+should await the first reply. A line that is not UTF-8 or not JSON gets a
+local `-32700` with a null id and never reaches the server. If the server
+cannot be reached, each request id gets a `-32000` error, and a rejected
+batch gets one null-id error. The outcome of such a request is unknown,
+and nothing is retried. At EOF the bridge waits for every request in
+flight to finish, then exits 0. It exits 1 if stdin fails (after waiting)
+or if stdout fails (immediately). Known gaps: no length cap on a single
+input line; a stalled stdout reader stalls the bridge; sixteen parked
+waits delay a seventeenth line.
+
 ### POP3 — the same store, RFC 1939
 
 `:1110` — USER, PASS, STAT, LIST, UIDL, RETR, DELE, NOOP, RSET, TOP, CAPA,

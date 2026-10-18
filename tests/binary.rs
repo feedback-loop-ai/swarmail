@@ -1026,3 +1026,238 @@ async fn the_eof_helper_never_rewrites_a_real_status() {
             .await;
     assert_eq!((status, body.as_str()), (503, ""), "the status stays 503");
 }
+
+// ---------- the stdio bridge against the real server (decision 0039) ----------
+
+/// A `swarmail mcp` child bridged to a real `serve`, fed and read line by
+/// line. stderr is discarded so its pipe can never fill; the child dies
+/// with the test.
+struct McpChild {
+    child: Child,
+    stdin: Option<tokio::process::ChildStdin>,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl McpChild {
+    fn spawn(serve: &Serve) -> McpChild {
+        let mut child = Command::new(binary())
+            .args(["mcp", "--url", &format!("http://{}", serve.http_addr)])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn swarmail mcp");
+        let stdin = child.stdin.take();
+        let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+        McpChild {
+            child,
+            stdin,
+            stdout,
+        }
+    }
+
+    async fn send(&mut self, bytes: &[u8]) {
+        let stdin = self.stdin.as_mut().expect("stdin is open");
+        stdin.write_all(bytes).await.expect("feed the bridge");
+        stdin.flush().await.expect("feed the bridge");
+    }
+
+    /// The next reply line, bounded by the helper deadline.
+    async fn reply(&mut self) -> serde_json::Value {
+        let mut line = String::new();
+        tokio::time::timeout(common::HELPER_DEADLINE, self.stdout.read_line(&mut line))
+            .await
+            .expect("the bridge never replied")
+            .expect("read the bridge's stdout");
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("{line:?} is not JSON: {e}"))
+    }
+
+    /// Close stdin; every remaining stdout line (each must parse on its
+    /// own) and the exit status.
+    async fn finish(mut self) -> (std::process::ExitStatus, Vec<serde_json::Value>) {
+        drop(self.stdin.take());
+        let mut rest = String::new();
+        tokio::time::timeout(
+            common::HELPER_DEADLINE,
+            self.stdout.read_to_string(&mut rest),
+        )
+        .await
+        .expect("the bridge never closed stdout")
+        .expect("read the bridge's stdout");
+        let status = tokio::time::timeout(common::HELPER_DEADLINE, self.child.wait())
+            .await
+            .expect("the bridge never exited")
+            .expect("mcp child");
+        let replies = rest
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?} is not JSON: {e}")))
+            .collect();
+        (status, replies)
+    }
+}
+
+/// The text payload of a tool result.
+fn tool_text(reply: &serde_json::Value) -> serde_json::Value {
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no tool text in {reply}"));
+    serde_json::from_str(text).expect("the tool text is JSON")
+}
+
+/// Batches through the shipped bridge answer exactly as `POST /mcp` does
+/// (issue #72): two pings, a mixed batch, a batch with an unknown method,
+/// the empty and over-cap refusals — and nothing for notification batches.
+/// The old bridge wrote nothing for any array.
+#[tokio::test]
+async fn mcp_forwards_batches_as_the_http_endpoint_answers_them() {
+    let serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+    let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    let batches = [
+        r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"ping"}]"#
+            .to_string(),
+        format!(r#"[{{"jsonrpc":"2.0","id":3,"method":"ping"}},{note}]"#),
+        r#"[{"jsonrpc":"2.0","id":4,"method":"nope"}]"#.to_string(),
+        format!("[{note},{note}]"),
+        "[]".to_string(),
+        format!("[{}]", vec![note; 17].join(",")),
+    ];
+    let mut expected = Vec::new();
+    for batch in &batches {
+        let (_, body) = common::http_send_text(serve.http_addr, "POST", "/mcp", Some(batch)).await;
+        if !body.trim().is_empty() {
+            expected.push(serde_json::from_str::<serde_json::Value>(&body).unwrap());
+        }
+    }
+    assert_eq!(expected.len(), 5, "HTTP answers all but the notifications");
+
+    let mut mcp = McpChild::spawn(&serve);
+    mcp.send(format!("{}\n", batches.join("\n")).as_bytes())
+        .await;
+    let (status, replies) = mcp.finish().await;
+    assert!(status.success(), "mcp exit: {status:?}");
+    let canonical = |v: &[serde_json::Value]| {
+        let mut lines: Vec<String> = v.iter().map(|r| r.to_string()).collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(
+        canonical(&replies[..]),
+        canonical(&expected[..]),
+        "stdio answers as HTTP does"
+    );
+}
+
+/// A wait and the seed that satisfies it, sent back to back with a ping,
+/// return the mail (issue #90). The old bridge read the seed only after the
+/// wait had timed out. Correct in either arrival order: the wait subscribes
+/// before it scans (decision 0002).
+#[tokio::test]
+async fn mcp_answers_a_wait_with_the_seed_sent_beside_it() {
+    let serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+    let mut mcp = McpChild::spawn(&serve);
+    mcp.send(
+        concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"swarmail_wait_for_email","arguments":{"inbox":"beside","timeout_ms":4000}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"swarmail_seed_email","arguments":{"inbox":"beside","to":"a@x.io","subject":"the seed"}}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":3,"method":"ping"}"#,
+            "\n",
+        )
+        .as_bytes(),
+    )
+    .await;
+    let (status, replies) = mcp.finish().await;
+    assert!(status.success(), "mcp exit: {status:?}");
+    assert_eq!(replies.len(), 3, "{replies:?}");
+    let wait = replies
+        .iter()
+        .find(|r| r["id"] == 1)
+        .expect("the wait's reply");
+    let result = tool_text(wait);
+    assert!(
+        result.get("timed_out").is_none(),
+        "a false timeout: {result}"
+    );
+    assert_eq!(result["emails"][0]["subject"], "the seed", "{result}");
+}
+
+/// A ping sent behind a registered five-second wait is answered first
+/// (issue #90): the wait is observed parked on its own `/metrics` row, the
+/// ping's reply must arrive before the wait's, and the seed then releases
+/// the wait. The old bridge answered the wait (timed out) first.
+#[tokio::test]
+async fn mcp_answers_a_ping_behind_a_parked_wait_first() {
+    let serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+    let mut mcp = McpChild::spawn(&serve);
+    mcp.send(
+        concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"swarmail_wait_for_email","arguments":{"inbox":"behind","timeout_ms":5000}}}"#,
+            "\n",
+        )
+        .as_bytes(),
+    )
+    .await;
+    common::wait_for_metric_row(
+        serve.http_addr,
+        r#"swarmail_awaits_active{inbox="behind"}"#,
+        1,
+    )
+    .await;
+    mcp.send(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+        .await;
+    let first = mcp.reply().await;
+    assert_eq!(first["id"], 2, "the ping waited behind the wait: {first}");
+
+    mcp.send(
+        concat!(
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"swarmail_seed_email","arguments":{"inbox":"behind","to":"a@x.io"}}}"#,
+            "\n",
+        )
+        .as_bytes(),
+    )
+    .await;
+    let (status, replies) = mcp.finish().await;
+    assert!(status.success(), "mcp exit: {status:?}");
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    let wait = replies
+        .iter()
+        .find(|r| r["id"] == 1)
+        .expect("the wait's reply");
+    let result = tool_text(wait);
+    assert!(result.get("timed_out").is_none(), "{result}");
+    assert_eq!(
+        result["emails"].as_array().map(Vec::len),
+        Some(1),
+        "{result}"
+    );
+}
+
+/// A non-UTF-8 line and a malformed one each get a null-id -32700 and the
+/// bridge keeps going (issue #90): the ping behind them is answered and the
+/// process exits 0 at EOF. The old bridge died on the first byte 0xFF.
+#[tokio::test]
+async fn mcp_answers_bad_lines_and_keeps_serving() {
+    let serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+    let mut mcp = McpChild::spawn(&serve);
+    mcp.send(b"\xff\xfe\n{nope\n{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}\n")
+        .await;
+    let (status, replies) = mcp.finish().await;
+    assert!(status.success(), "mcp exit: {status:?}");
+    assert_eq!(replies.len(), 3, "{replies:?}");
+    let parse_errors = replies
+        .iter()
+        .filter(|r| r["error"]["code"] == -32700 && r["id"].is_null())
+        .count();
+    assert_eq!(parse_errors, 2, "{replies:?}");
+    let ping = replies
+        .iter()
+        .find(|r| r["id"] == 9)
+        .expect("the ping's reply");
+    assert_eq!(ping["result"], serde_json::json!({}), "{ping}");
+}

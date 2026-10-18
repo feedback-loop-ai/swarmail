@@ -44,6 +44,48 @@ pub(crate) fn error_object(code: i64, message: &str, id: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
+/// How a parsed envelope is answered (decision 0039 §2) — the one owner of
+/// the rule both transports apply: `dispatch` refuses by it, and the stdio
+/// bridge shapes its replies and its transport errors by it, so the bridge
+/// can no longer mistake a batch for a notification (issue #72).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Envelope {
+    /// No reply: a single value without an `id` (a notification, a scalar),
+    /// or an admitted batch of notifications only.
+    Silent,
+    /// One request: answered with one object carrying this id, null
+    /// included.
+    Single(Value),
+    /// An admitted batch with requests: answered with one array, one entry
+    /// per id-bearing member, in member order — duplicates and nulls kept.
+    Batch(Vec<Value>),
+    /// An empty or over-cap array: one null-id refusal, whatever ids its
+    /// members carry. The bounds are judged before any silence.
+    InvalidBatch,
+}
+
+/// Classify a parsed body. A batch member contributes only its own `id`,
+/// never one nested inside another array.
+pub(crate) fn classify(body: &Value) -> Envelope {
+    match body {
+        Value::Array(reqs) if reqs.is_empty() || reqs.len() > MCP_BATCH_CAP => {
+            Envelope::InvalidBatch
+        }
+        Value::Array(reqs) => {
+            let ids: Vec<Value> = reqs.iter().filter_map(|r| r.get("id").cloned()).collect();
+            if ids.is_empty() {
+                Envelope::Silent
+            } else {
+                Envelope::Batch(ids)
+            }
+        }
+        single => match single.get("id") {
+            Some(id) => Envelope::Single(id.clone()),
+            None => Envelope::Silent,
+        },
+    }
+}
+
 /// Answer one `POST /mcp` body: the parse lives here (the `Json` extractor
 /// is gone), so a malformed body is a JSON-RPC error object with a null id,
 /// not a plain-text 400 (decision 0029 §2). A JSON array is a batch,
@@ -64,20 +106,24 @@ pub async fn dispatch(ctx: &McpContext, body: &str) -> axum::response::Response 
             )),
         )
             .into_response(),
+        // The bounds are the shared classification's (decision 0039 §2):
+        // judged before any member runs, whatever ids the members carry.
+        Ok(batch) if classify(&batch) == Envelope::InvalidBatch => {
+            let reason = if batch.as_array().is_some_and(Vec::is_empty) {
+                "an empty batch is not a JSON-RPC request".to_string()
+            } else {
+                format!("a batch is at most {MCP_BATCH_CAP} requests")
+            };
+            // A refusal, never a clamp: one error object, id null.
+            (
+                StatusCode::OK,
+                Json(error_object(-32600, &reason, Value::Null)),
+            )
+                .into_response()
+        }
         Ok(Value::Array(reqs)) => {
-            if reqs.is_empty() || reqs.len() > MCP_BATCH_CAP {
-                let reason = if reqs.is_empty() {
-                    "an empty batch is not a JSON-RPC request".to_string()
-                } else {
-                    format!("a batch is at most {MCP_BATCH_CAP} requests")
-                };
-                // A refusal, never a clamp: one error object, id null.
-                return (
-                    StatusCode::OK,
-                    Json(error_object(-32600, &reason, Value::Null)),
-                )
-                    .into_response();
-            }
+            // Every admitted member runs — a notification's effect happens
+            // even though its answer is silence.
             let mut responses = Vec::new();
             for req in &reqs {
                 if let Some(resp) = handle(ctx, req).await {
@@ -104,12 +150,16 @@ pub async fn dispatch(ctx: &McpContext, body: &str) -> axum::response::Response 
 /// says; an id-less `notifications/initialized` and an id-less `tools/call`
 /// both get silence.
 pub async fn handle(ctx: &McpContext, req: &Value) -> Option<Value> {
-    let id = req.get("id")?.clone();
+    let id = req.get("id").cloned();
     let method = match req.get("method") {
-        None => return Some(error_object(-32600, "missing method", id)),
+        None => {
+            return id.map(|id| error_object(-32600, "missing method", id));
+        }
         Some(m) => match m.as_str() {
             Some(s) => s.to_string(),
-            None => return Some(error_object(-32600, "method must be a string", id)),
+            None => {
+                return id.map(|id| error_object(-32600, "method must be a string", id));
+            }
         },
     };
 
@@ -127,7 +177,11 @@ pub async fn handle(ctx: &McpContext, req: &Value) -> Option<Value> {
         other => Err((-32601, format!("unknown method: {other}"))),
     };
 
-    Some(match outcome {
+    // A notification's effect happens even though its answer is silence:
+    // an id-less member (a bare tools/call seed, a cancellation) runs to
+    // completion and answers nothing. The classification's Silent covers
+    // exactly this (decision 0039 §2).
+    id.map(|id| match outcome {
         Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
         Err((code, message)) => error_object(code, &message, id),
     })
@@ -559,6 +613,104 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shared envelope classification, row by row (decision 0039 §2):
+    /// bounds before silence, ids kept as JSON values, nothing discovered
+    /// inside a nested array.
+    #[test]
+    fn the_envelope_classification_answers_every_row() {
+        let over_cap = Value::Array(vec![json!({"jsonrpc":"2.0","id":1,"method":"ping"}); 17]);
+        let over_cap_silent = Value::Array(vec![json!({"jsonrpc":"2.0","method":"x"}); 17]);
+        for (body, want) in [
+            (json!({"id":7,"method":"ping"}), Envelope::Single(json!(7))),
+            (
+                json!({"id":null,"method":"ping"}),
+                Envelope::Single(Value::Null),
+            ),
+            (
+                json!({"method":"notifications/initialized"}),
+                Envelope::Silent,
+            ),
+            (json!({"jsonrpc":"2.0"}), Envelope::Silent),
+            (json!(42), Envelope::Silent),
+            (json!("text"), Envelope::Silent),
+            (json!([]), Envelope::InvalidBatch),
+            (over_cap, Envelope::InvalidBatch),
+            (over_cap_silent, Envelope::InvalidBatch),
+            (json!([{"method":"a"}, {"method":"b"}]), Envelope::Silent),
+            (json!([[{"id":1}], 3]), Envelope::Silent),
+            (
+                json!([{"id":1}, {"method":"n"}, {"id":null}, {"id":1}]),
+                Envelope::Batch(vec![json!(1), Value::Null, json!(1)]),
+            ),
+        ] {
+            assert_eq!(classify(&body), want, "{body}");
+        }
+    }
+
+    /// The classification is the server's own answer (decision 0039 §2,
+    /// AC8): for every row, real `dispatch` replies in exactly the shape
+    /// the classification promises — and a silent notification still
+    /// executes its effect.
+    #[tokio::test]
+    async fn dispatch_answers_as_the_classification_says() {
+        use axum::http::StatusCode;
+        let (_stop, shutdown) = tokio::sync::watch::channel(false);
+        let ctx = McpContext {
+            store: Arc::new(Store::new(0)),
+            chaos: Arc::new(Chaos::default()),
+            shutdown,
+        };
+        let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+        let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        let seed = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"swarmail_seed_email","arguments":{"inbox":"parity","to":"a@x.io"}}}"#;
+        let bodies = [
+            ping.to_string(),
+            r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#.to_string(),
+            seed.to_string(),
+            "42".to_string(),
+            "[]".to_string(),
+            format!("[{}]", vec![ping; 17].join(",")),
+            format!("[{}]", vec![note; 17].join(",")),
+            format!("[{note},{seed}]"),
+            format!(r#"[{ping},{note},{{"jsonrpc":"2.0","id":null,"method":"nope"}},{ping}]"#),
+        ];
+        for body in bodies {
+            let parsed: Value = serde_json::from_str(&body).unwrap();
+            let response = dispatch(&ctx, &body).await;
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            match classify(&parsed) {
+                Envelope::Silent => {
+                    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+                    assert!(bytes.is_empty(), "{body}");
+                }
+                Envelope::Single(id) => {
+                    let reply: Value = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(reply["id"], id, "{body}");
+                }
+                Envelope::Batch(ids) => {
+                    let reply: Value = serde_json::from_slice(&bytes).unwrap();
+                    let answered: Vec<Value> = reply
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|r| r["id"].clone())
+                        .collect();
+                    assert_eq!(answered, ids, "{body}");
+                }
+                Envelope::InvalidBatch => {
+                    let reply: Value = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(reply["error"]["code"], -32600, "{body}");
+                    assert_eq!(reply["id"], Value::Null, "{body}");
+                }
+            }
+        }
+        // Both silent seeds (the single one and the batch member) ran.
+        assert_eq!(ctx.store.count("parity", &Filter::default()), 2);
+    }
 
     /// The published schema is pinned to the domain's constants (issue #32
     /// slice 2, decision 0025): the wait's `timeout_ms` default is the one

@@ -1859,6 +1859,30 @@ async fn a_batch_is_answered_in_order_and_bounded() {
     }
 }
 
+/// Silence is an answer, not a skip (decision 0039 §2): an id-less tool
+/// call — alone or inside a notification-only batch — gets no reply, yet
+/// its effect happens. The shared classification decides the reply, never
+/// whether the call runs.
+#[tokio::test]
+async fn a_silent_notification_still_takes_effect() {
+    let srv = start().await;
+    let seed = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"swarmail_seed_email","arguments":{"inbox":"silent","to":"a@x.io"}}}"#;
+    for body in [seed.to_string(), format!("[{seed}]")] {
+        let (st, reply) = http_send_text(srv.http_addr, "POST", "/mcp", Some(&body)).await;
+        assert_eq!(st, 202, "{body}: {reply}");
+        assert_eq!(reply, "", "{body}");
+    }
+    let (st, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/silent/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(list["total"], 2, "both silent seeds ran: {list}");
+}
+
 /// `initialize` answers the one supported revision and advertises only
 /// what exists (decision 0029 §2): the client's requested version is not
 /// echoed, and `resources` — whose every method is unknown — is gone.

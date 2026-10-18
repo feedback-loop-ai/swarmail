@@ -44,6 +44,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0036](0036-smtp-trickle-lifetime.md) | SMTP trickle lifetime and listener recovery: one reap at admission, health from observed polls, POP3's own idle bound, the documented trickle residual (clarifies 0027) | proposed — awaiting the operator | (Run 14: issues #77, #78, #79, #80) |
 | [0037](0037-pop3-size-accounting.md) | POP3 sizes count the normalized payload without transparency dots (amends 0028 §1) | proposed — awaiting the operator | (Run 15: issues #84, #86) |
 | [0038](0038-store-memory-and-timestamps.md) | State the store's memory exposure and parse-start timestamps (amends 0021, 0026 §3) | proposed — awaiting the operator | (Run 15: issue #87) |
+| [0039](0039-stdio-concurrency.md) | Concurrent stdio lines preserve batch replies and recover from bad input (amends 0029 §4) | proposed — awaiting the operator | (Run 16: issues #72, #90) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
