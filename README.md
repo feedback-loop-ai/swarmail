@@ -173,13 +173,23 @@ capped at **250 items** (`limit`/`count` above the cap is refused with a
 400 on REST and the shims, a `-32602` error over MCP: named, never
 clamped). `await`'s exact-count `assert` keeps its unclamped semantics —
 its `limit` is parsed for parity with `list` but inert, because the
-assert answer is a count, not a page. SMTP request parsing and the REST
-list/await/compat page copies run off the async workers on the blocking
-pool, so a 50 MiB mail cannot stall the accept loop or the await wakes
-it gates; the MCP `swarmail_seed_email` seed build and the SSE
+assert answer is a count, not a page. The inbox listing
+(`/api/v1/inboxes` and the UI index) pages too: `limit` (default 100, at
+most 250, `0` an empty page) and an uncapped `offset`. SMTP request parsing
+runs off the async workers on the blocking pool, and so does the whole of
+every compat list and search build — scan, filter, page, snippet render and
+JSON serialization (proposed decision
+[0044](docs/decisions/0044-compat-validation.md)) — so a 50 MiB mail cannot
+stall the accept loop or the await wakes it gates; the MCP
+`swarmail_seed_email` seed build, the REST list/await pages and the SSE
 thread-view serialization still run inline (the seed is the test
-fixture's own path, and the thread view is a per-request read render —
-neither is on the ingest path the stall guards).
+fixture's own path, and the others are per-request read renders —
+neither is on the ingest path the stall guards). A Mailpit snippet reads at
+most an 8192-byte prefix of its body; a MailHog v2 page refuses whole once
+its JSON would pass 64 MiB (`compat page exceeds byte budget 67108864;
+reduce limit or fetch raw by id`). These bound responses, not memory: the
+stored mail, a full-scope search's candidates and concurrent requests still
+cost what they cost.
 
 ## The guarantees
 
@@ -408,7 +418,7 @@ $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 
 | Verb | What it does |
 |---|---|
-| `GET /api/v1/inboxes` | the live inbox list |
+| `GET /api/v1/inboxes` | the live inbox list, sorted by name — `limit` (default 100, ≤ 250, refused above) and `offset` page it |
 | `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first; wipe the inbox |
 | `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`/`from`/`subject`/`since_ms` filters, `count` (minimum one, even `count=0`), `limit`/`count` ≤ 250 (refused, never clamped), `timeout_ms` (≤ 60000: refused with 400 above, never clamped; a stopping server answers 503 `shutting down` instead of parking) |
 | `GET /api/v1/inboxes/{inbox}/assert` | exact-count assertion — `count=0` asserts an empty filter; never clamped — 200 or a named failure |
@@ -417,9 +427,25 @@ $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 | `POST /api/v1/inboxes/{inbox}/seed` | a fixture without SMTP — full parse + extraction; `html` preserved verbatim (supersedes `text`), CR/LF/NUL envelope fields refused |
 | `GET /api/v1/messages/{id}[/raw]` | one mail; the RFC 5322 source as `message/rfc822` |
 
-Every mail carries `text`, `html`, `links`, `codes` — extracted at ingest.
+Every mail carries `text`, `html`, `links`, `codes` — extracted at ingest —
+and `envelope_from`, the SMTP `MAIL FROM` reverse path: `""` for a bounce's
+null sender `<>`, `null` only for mail stored before swarmail kept it (it is
+never backfilled from the header `From`).
 `GET /api/v1/inboxes/{inbox}/count` is the exact-count read;
 `/openapi.json` serves the whole contract (3.1).
+
+The filters are exact about what they match. `to` is a case-insensitive
+substring of **any recipient** — the `To` and `Cc` headers *and* the SMTP
+envelope recipients — so a Bcc'd address matches, and `assert?to=…&count=0`
+is not a "this address is in no header" check. `from` is the header `From`
+address. Every query shape is closed: an unknown key (`assert?too=`,
+`await?offset=`) is a `400` naming it, never a silently dropped filter. In
+JSON bodies an omitted optional field takes its default while a present
+`null` is refused with the field named — on the seed's `from`, `subject`,
+`text` and `html` and on a chaos rule's `error` alike (only a whole chaos
+event set to `null` means "clear it"). A blank inbox name (empty after
+trimming whitespace) is refused on every surface — REST, MCP, UI, the
+shims, SMTP AUTH and POP3 `USER`; a nonblank name is kept exactly as given.
 
 ### MCP — agents drive the mail
 
@@ -444,8 +470,18 @@ Twelve tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_set_chaos`, `swarmail_clear_chaos`. Every tool validates its supplied arguments at the
 envelope: a wrong-typed or malformed value — the `arguments` container
 included — refuses with a JSON-RPC `-32602` error naming the field and its
-domain, before any effect; an unknown tool name is `-32601`; a JSON parse
-failure is `-32700`; a notifications-shaped line (no `id`) stays silent.
+domain, before any effect, and so does an argument key the tool does not
+publish (`{"inbx": "zz"}` can never clear `default`; every schema says
+`additionalProperties: false`); an unknown tool name is `-32601`; a JSON
+parse failure or invalid UTF-8 is HTTP 400 `-32700`; a body over the
+2,097,152-byte limit is HTTP 413 `-32600`; a value that is not an object
+(`5`, `null`, `"x"`, a nested array) is `-32600` with a null id — once per
+such member in a batch; an object without an `id` is a notification: it
+runs and stays silent. `swarmail_search_emails` pages with `offset` past
+its 250 limit. The members of one batch (at most 16) run concurrently:
+sixteen waits share one wait interval rather than queueing, replies keep
+member order, and the members' effects have **no** order — send dependent
+mutations as separate requests.
 Wire it up:
 
 ```jsonc
@@ -460,15 +496,18 @@ Wire it up:
 Streamable JSON-RPC at `POST /mcp`.
 
 The bridge answers each line as `POST /mcp` would (proposed decision
-[0039](docs/decisions/0039-stdio-concurrency.md)). A batch with requests
+[0039](docs/decisions/0039-stdio-concurrency.md), amended by proposed
+[0044](docs/decisions/0044-compat-validation.md)). A batch with requests
 gets one array line; a notification, or a batch of notifications only,
-gets nothing. Up to 16 lines are in flight at once, so a wait never holds
+gets nothing; a line that is valid JSON but not an object is an invalid
+request and gets the server's null-id `-32600`. Up to 16 lines are in flight at once, so a wait never holds
 up the seed that satisfies it. Replies arrive as they complete, so order
 holds only within a batch. A client that needs two mutations in order
 should await the first reply. A line that is not UTF-8 or not JSON gets a
 local `-32700` with a null id and never reaches the server. If the server
-cannot be reached, each request id gets a `-32000` error, and a rejected
-batch gets one null-id error. The outcome of such a request is unknown,
+cannot be reached, each request id — and each non-object member, as a
+null id — gets a `-32000` error, and a rejected batch gets one null-id
+error. The outcome of such a request is unknown,
 and nothing is retried. At EOF the bridge waits for every request in
 flight to finish, then exits 0. It exits 1 if stdin fails (after waiting)
 or if stdout fails (immediately). Known gaps: no length cap on a single
@@ -499,22 +538,27 @@ test suites actually hit, answered from one store:
 
 | Endpoint | Behavior |
 |---|---|
-| `GET /api/v1/messages` | Mailpit's summary envelope, newest first; `?inbox=` scopes, `?limit=`/`?start=` page |
-| `GET /api/v1/message/{id}` | Mailpit's full message shape (`Text`, `HTML`, `ReturnPath`, …); `GET /api/v1/message/latest` is the same shape over the newest stored mail (404 only when the store is empty) |
+| `GET /api/v1/messages` | Mailpit's summary envelope, newest first; `?inbox=` scopes, `?limit=`/`?start=` page; each `Snippet` is built from at most the first 8192 bytes of its body |
+| `GET /api/v1/message/{id}` | Mailpit's full message shape (`Text`, `HTML`, `ReturnPath`, …) |
+| `GET /api/v1/message/latest`, `…/latest/raw`, `…/latest/headers` | the newest mail — the maximum receive time, then id — in Mailpit's message shape, as its raw source, or as its header map; `?inbox=` scopes it to one inbox (404 when that inbox is empty, whatever the others hold), no `?inbox=` means the whole store; a nonblank `?query=` is a `400` — search, then fetch the id |
 | `GET /api/v1/message/{id}/plain`, `GET /api/v1/messages/{id}/plain` | the text part as `text/plain; charset=utf-8` — html-only mail is rendered to text at request time |
-| `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete (`IDs` accepted alike) — the named ids and nothing else; every other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that deletes nothing |
-| `DELETE /api/v1/delete-all` | MailHog's wipe alias |
-| `GET /api/v1/search` | Mailpit search: `kind=from\|to\|subject\|containing`, `?query=` required |
-| `GET /api/v2/messages` | MailHog v2 `{total, count, start, items}` with `data.Message` shapes |
+| `DELETE /api/v1/messages` | Mailpit's `{"ids": [...]}` delete (`IDs` accepted alike) — the named ids and nothing else; every other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that deletes nothing — including MailHog's bodyless wipe (decision 0011) |
+| `DELETE /api/v1/delete-all` | swarmail's own explicit wipe of every inbox — not an upstream route |
+| `GET /api/v1/search` | Mailpit search: `kind=from\|to\|subject\|containing`, `?query=` required; the envelope's `messages_unread` is the match count |
+| `GET /api/v2/messages` | MailHog v2 `{total, count, start, items}` with `data.Message` shapes; a page whose JSON would pass 64 MiB is refused whole by name |
 | `GET /api/v2/search` | MailHog search: `kind=from\|to\|containing` present and one of the three, as upstream requires; a bare `400` on an unknown kind, an absent kind or an empty query; `?limit=`/`?start=` page |
 | `GET /api/v1/messages/{id}/download`, `GET /api/v1/message/{id}/raw` | the RFC 5322 source as `message/rfc822` |
 
 **Deliberate omissions** — swarmail has no counterpart and a shim would
 lie: attachments and inline images (the fields exist, the arrays are
 empty), read/unread state, tags (always `[]`), the send API (mail arrives
-by SMTP), Mailpit's `mime/part` routes, and the `to:`-style query prefixes
-(a Mailpit search whose query carries a `to:` prefix answers a named
-`400` — the prefix grammar is not implemented; swarmail takes `kind=`).
+by SMTP), Mailpit's `mime/part` routes, `latest` on the plain/attachment
+routes, and the `to:`-style query prefixes: in a containing search, every
+whitespace-separated word that opens with a field name and a colon
+(`to:`, ` from:alice`, `plan subject:x`, an unknown `foo:`) answers a named
+`400` — the prefix grammar is not implemented; swarmail takes `kind=`. A
+URL's `://` is exempt, so `https://host/path` stays a literal search, but
+other colon words (`mailto:x`) refuse too; there is no quoting.
 swarmail's own single-message route is
 `/api/v1/messages/{id}`; the Mailpit-style singular `/api/v1/message/{id}`
 is the shim.
@@ -522,21 +566,24 @@ is the shim.
 **Known differences** — the shapes are close but not byte-identical, and
 the divergence is the honest part: a malformed `limit=`/`start=` answers
 axum's plain-text `400` (not Mailpit's JSON error envelope — matching it
-means a custom query extractor for one status-code shape);
-`/api/v1/delete-all` is swarmail's alias, not an upstream route name; and
-the Mailpit search envelope carries `messages_count`/`messages_unread_count`
-where upstream Mailpit spells the latter `messages_unread` — the count
-semantics match (mailbox `total`/`unread`, match-scoped `messages_*`), the
-field name is swarmail's.
+means a custom query extractor for one status-code shape); a blank
+`?inbox=` is a `400`, never the whole store. The sender the shims report —
+MailHog `From`, `Raw.From` and `kind=from`, Mailpit `ReturnPath`, the
+synthesized `Return-Path` — is the SMTP envelope sender, as upstream's is
+(`""` and `<>` for a bounce); only mail stored before swarmail kept the
+envelope falls back to the header `From`. Mailpit's `From` and the native
+`from` filter stay on the header.
 
 ### Threads and the live UI
 
 `GET /api/v1/inboxes/{inbox}/threads` groups the inbox into conversations —
 References/In-Reply-To/Message-ID chains when they resolve, the normalized
-subject (leading reply/forward markers stripped — `Re:`/`Fw:`/`Fwd:`/`Aw:`,
-whitespace before the colon tolerated; a numbered `Re[2]:` is *not* a
-marker and stays in the fallback key — and the
-remainder Unicode-lowercased) as the fallback for the *chain-less* mails
+subject (leading reply/forward markers stripped — `Re`, `Fw`, `Fwd`, `Aw`,
+`SV`, `VS`, `Antw`, `WG`, `TR`, `RV`, `Odp`, `R`, `I`, `ENC`, `RES`,
+`Ответ` and `回复`, in any case, with an ASCII `:` or a full-width `：` and
+whitespace before it tolerated; a numbered `Re[2]:` is *not* a marker and
+stays in the fallback key — then every whitespace run collapsed to one
+space and the remainder Unicode-lowercased) as the fallback for the *chain-less* mails
 only: a reply threads by its References even when the parent id was
 never published, because absence does not authorize a subject merge. Each
 conversation carries a
@@ -661,8 +708,10 @@ harmless slow-down (issue #17):
 | `rcpt` | wait, then `451 4.3.0 chaos` | wait, then the given line |
 | `data` | wait, then `451 4.3.0 chaos` — the mail is **not** stored | wait, then the given line — the mail is **not** stored |
 
-So `error: null` means *the stage's default failure*, not *no failure* —
-turn chaos off with `probability: 0` or by clearing the config. Two
+So an omitted `error` means *the stage's default failure*, not *no failure*
+— turn chaos off with `probability: 0` or by clearing the config. A
+present `"error": null` is refused like any non-string (decision 0044 §3);
+an unset line is omitted from the answer, so a fetched config PUTs back. Two
 orderings are pinned: a genuine over-limit `552 5.3.4` is answered before
 the data chaos rule is consulted (resource failures precede injected
 ones), and a data rule's delay applies after the body has been received

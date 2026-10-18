@@ -145,6 +145,95 @@ async fn index_shows_the_empty_state_before_any_mail() {
     assert!(page.contains("No inboxes yet"), "{page}");
 }
 
+/// The index is paged like `/api/v1/inboxes` (decision 0044 §3, issue
+/// #91): `limit`/`offset` pick the window and the links keep the limit; a
+/// page past the end says so without claiming the store is empty;
+/// `limit=0` offers the default page; an over-cap or unknown key refuses.
+/// Red before: every inbox on one page, and the query ignored.
+#[tokio::test]
+async fn the_index_pages_and_links_its_pages() {
+    let srv = start().await;
+    for inbox in ["pg-a", "pg-b", "pg-c"] {
+        seed(srv.http_addr, inbox, r#"{"to": "u@x.io"}"#).await;
+    }
+    let (st, page) = http_get_text(srv.http_addr, "/?limit=1&offset=1").await;
+    assert_eq!(st, 200);
+    assert!(
+        page.contains("pg-b") && !page.contains("pg-a") && !page.contains("pg-c"),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"href="/?limit=1&amp;offset=0">previous"#),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"href="/?limit=1&amp;offset=2">next"#),
+        "{page}"
+    );
+
+    let (_, page) = http_get_text(srv.http_addr, "/?offset=9").await;
+    assert!(page.contains("No inboxes on this page."), "{page}");
+    assert!(!page.contains("No inboxes yet"), "{page}");
+    let (_, page) = http_get_text(srv.http_addr, "/?limit=0").await;
+    assert!(page.contains(r#"href="/?offset=0">default page"#), "{page}");
+    assert!(!page.contains(">next<"), "{page}");
+
+    for query in ["limit=251", "lmit=1"] {
+        let (st, body) = http_json(srv.http_addr, "GET", &format!("/?{query}"), None).await;
+        assert_eq!(st, 400, "{query}: {body}");
+    }
+}
+
+/// A decoded blank inbox segment refuses on both live views (decision 0044
+/// §3) instead of painting a shell for an inbox that cannot exist.
+#[tokio::test]
+async fn the_live_views_refuse_a_blank_inbox() {
+    let srv = start().await;
+    for path in ["/ui/inbox/%20", "/ui/inbox/%09/thread/abc"] {
+        let (st, body) = http_json(srv.http_addr, "GET", path, None).await;
+        assert_eq!(st, 400, "{path}: {body}");
+        assert_eq!(body["error"], "inbox must not be blank", "{path}");
+    }
+}
+
+/// Issue #100 on the wire: orphan subjects carrying the localized markers
+/// and whitespace variants coalesce into one subject thread each (decision
+/// 0044 §9). Red before: every variant was its own thread.
+#[tokio::test]
+async fn localized_reply_markers_coalesce_orphan_threads() {
+    let srv = start().await;
+    for subject in [
+        "Plan",
+        "SV: Plan",
+        "Antw: Plan",
+        "WG: Plan",
+        "Odp: Plan",
+        "\u{41e}\u{442}\u{432}\u{435}\u{442}: Plan",
+        "\u{56de}\u{590d}\u{ff1a}Plan",
+        "Two  spaces",
+        "Two\\tspaces",
+    ] {
+        let body = format!(r#"{{"to": "u@x.io", "subject": "{subject}"}}"#);
+        seed(srv.http_addr, "thr-l10n", &body).await;
+    }
+    let (st, threads) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/thr-l10n/threads",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let mut counts: Vec<u64> = threads
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["count"].as_u64().unwrap())
+        .collect();
+    counts.sort_unstable();
+    assert_eq!(counts, [2, 7], "{threads}");
+}
+
 #[tokio::test]
 async fn inbox_view_is_a_live_shell_wired_to_the_api_and_feed() {
     let srv = start().await;

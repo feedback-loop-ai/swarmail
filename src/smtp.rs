@@ -1445,6 +1445,9 @@ pub fn build_seed_email(
     text: Option<&str>,
     html: Option<&str>,
 ) -> Result<Email, String> {
+    // A blank inbox names nothing (decision 0044 §3): refused before any
+    // field is read, on both seed transports.
+    crate::model::validate_inbox(inbox)?;
     let envelope = [
         ("to", to),
         ("from", from.unwrap_or(SEED_FROM)),
@@ -1506,6 +1509,9 @@ fn sender_html_part(message: &mail_parser::Message<'_>) -> Option<String> {
 pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope: String) -> Email {
     let now = Utc::now();
     let parsed = MessageParser::default().parse(raw);
+    // The envelope sender is recorded as given — the empty null reverse path
+    // included — before the header fallback below can consume it (0044 §8).
+    let envelope_from = Some(from_envelope.clone());
 
     let mut from = parsed
         .as_ref()
@@ -1579,6 +1585,7 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
         id: uuid::Uuid::now_v7().to_string(),
         inbox: inbox.to_string(),
         from,
+        envelope_from,
         to,
         cc,
         recipients: recipients.to_vec(),

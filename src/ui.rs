@@ -6,9 +6,10 @@
 //! with `textContent` in `static/ui.js` — never `innerHTML` — so nothing the
 //! SMTP peer sent can become markup here.
 
-use crate::api::AppState;
+use crate::api::{ApiError, AppState, InboxPageQuery, bad_request, inbox_page, parse_query};
+use crate::model::validate_inbox;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -78,9 +79,15 @@ pub fn router() -> Router<AppState> {
         .route("/ui/message/{id}", get(message_view))
 }
 
-async fn index(State(state): State<AppState>) -> Html<String> {
+/// The inbox index, paged like `/api/v1/inboxes` (decision 0044 §3, issue
+/// #91): the same closed `limit`/`offset` query, the same default and cap.
+/// An empty store says so; an empty page beyond the end says only that.
+async fn index(State(state): State<AppState>, raw: RawQuery) -> Result<Html<String>, ApiError> {
+    let q: InboxPageQuery = parse_query(raw.0.as_deref().unwrap_or(""), "inboxes")?;
+    let (limit, offset) = q.page().map_err(bad_request)?;
+    let total = state.store.inboxes().len();
     let mut rows = String::new();
-    for (name, count) in state.store.inboxes() {
+    for (name, count) in inbox_page(&state.store, limit, offset) {
         // The href is percent-encoded (a `#` or `?` in an inbox name would
         // otherwise be read as a fragment or query, and `a#b` would link to
         // `a`); the visible text stays escaped HTML.
@@ -90,31 +97,64 @@ async fn index(State(state): State<AppState>) -> Html<String> {
             r#"<div class="card"><a href="/ui/inbox/{href}"><b>{label}</b></a> <span class="pill">{count} emails</span></div>"#
         ));
     }
-    if rows.is_empty() {
+    if total == 0 {
         rows = r#"<div class="card muted">No inboxes yet — point SMTP at this server and send something.</div>"#.into();
+    } else if rows.is_empty() {
+        rows = r#"<div class="card muted">No inboxes on this page.</div>"#.into();
     }
-    page("inboxes", format!(r#"<h2>inboxes</h2>{rows}"#))
+    let pager = pager(limit, offset, total);
+    Ok(page("inboxes", format!(r#"<h2>inboxes</h2>{rows}{pager}"#)))
+}
+
+/// The index's navigation. A positive page links back (saturating at the
+/// first page) when it is not the first, and forward only when the checked
+/// next offset still names an inbox — never a wrapped or zero-step link. A
+/// zero-size page has no step at all: it links the default-size page at the
+/// same offset instead. Every link keeps the page's own positive `limit`.
+fn pager(limit: usize, offset: usize, total: usize) -> String {
+    if limit == 0 {
+        return format!(r#"<div class="muted"><a href="/?offset={offset}">default page</a></div>"#);
+    }
+    let mut links = Vec::new();
+    if offset > 0 {
+        let previous = offset.saturating_sub(limit);
+        links.push(format!(
+            r#"<a href="/?limit={limit}&amp;offset={previous}">previous</a>"#
+        ));
+    }
+    if let Some(next) = offset.checked_add(limit).filter(|next| *next < total) {
+        links.push(format!(
+            r#"<a href="/?limit={limit}&amp;offset={next}">next</a>"#
+        ));
+    }
+    if links.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<div class="muted">{}</div>"#, links.join(" · "))
+    }
 }
 
 /// The live inbox view: the thread list, repainted from the feed as mail
-/// arrives (no manual refresh).
-async fn inbox_view(Path(inbox): Path<String>) -> Html<String> {
-    shell(
+/// arrives (no manual refresh). A blank inbox refuses (decision 0044 §3).
+async fn inbox_view(Path(inbox): Path<String>) -> Result<Html<String>, ApiError> {
+    validate_inbox(&inbox).map_err(bad_request)?;
+    Ok(shell(
         &inbox,
         format!(r#"<div id="view" data-inbox="{}"></div>"#, esc(&inbox)),
-    )
+    ))
 }
 
 /// The live thread view: one conversation, oldest first, kept fresh too.
-async fn thread_view(Path((inbox, key)): Path<(String, String)>) -> Html<String> {
-    shell(
+async fn thread_view(Path((inbox, key)): Path<(String, String)>) -> Result<Html<String>, ApiError> {
+    validate_inbox(&inbox).map_err(bad_request)?;
+    Ok(shell(
         "thread",
         format!(
             r#"<div id="view" data-inbox="{}" data-thread="{}"></div>"#,
             esc(&inbox),
             esc(&key)
         ),
-    )
+    ))
 }
 
 async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -178,4 +218,41 @@ async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> 
         ),
     )
     .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every navigation arm (decision 0044 §3): no links on a lone page,
+    /// next-only at the start, previous-only at the end (saturating), both
+    /// in the middle, a default-page link for `limit=0`, and no wrapped next
+    /// at the top of `usize`.
+    #[test]
+    fn the_pager_never_wraps_or_steps_by_zero() {
+        assert_eq!(pager(100, 0, 3), "");
+        assert_eq!(
+            pager(2, 0, 3),
+            r#"<div class="muted"><a href="/?limit=2&amp;offset=2">next</a></div>"#
+        );
+        assert_eq!(
+            pager(2, 1, 3),
+            r#"<div class="muted"><a href="/?limit=2&amp;offset=0">previous</a></div>"#
+        );
+        assert_eq!(
+            pager(1, 1, 3),
+            r#"<div class="muted"><a href="/?limit=1&amp;offset=0">previous</a> · <a href="/?limit=1&amp;offset=2">next</a></div>"#
+        );
+        assert_eq!(
+            pager(0, 7, 3),
+            r#"<div class="muted"><a href="/?offset=7">default page</a></div>"#
+        );
+        assert_eq!(
+            pager(250, usize::MAX, usize::MAX),
+            format!(
+                r#"<div class="muted"><a href="/?limit=250&amp;offset={}">previous</a></div>"#,
+                usize::MAX - 250
+            )
+        );
+    }
 }

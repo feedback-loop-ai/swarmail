@@ -710,7 +710,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/webhooks",
             get(get_webhooks).put(set_webhooks).delete(clear_webhooks),
         )
-        .route("/mcp", post(mcp_endpoint))
+        .route(
+            "/mcp",
+            post(mcp_endpoint).layer(axum::extract::DefaultBodyLimit::max(MCP_BODY_LIMIT)),
+        )
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
         .merge(ui::router())
@@ -731,8 +734,13 @@ pub fn router(state: AppState) -> Router {
 }
 
 // ---------- shared query params ----------
+//
+// Every native query shape is closed (decision 0044 §3, issue #91): an
+// unknown key — `assert?too=` for `to=` — refuses `400` naming the key
+// instead of silently dropping a filter and answering a false pass.
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ListQuery {
     pub to: Option<String>,
     pub from: Option<String>,
@@ -756,8 +764,10 @@ impl ListQuery {
 /// The await/assert domain, held flat (decision 0029 §1): the struct's
 /// fields *are* the advertised query parameter set — no `#[serde(flatten)]`
 /// of the list shape, so an await's domain cannot silently grow `offset`
-/// (a wait has no pages: mail arrives as it lands).
+/// (a wait has no pages: mail arrives as it lands) — and, closed, an
+/// `offset` the wait would ignore is refused by name (decision 0044 §3).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AwaitQuery {
     pub to: Option<String>,
     pub from: Option<String>,
@@ -805,6 +815,44 @@ impl AwaitQuery {
         checked_wait_timeout_ms(self.timeout_ms.unwrap_or(DEFAULT_WAIT_TIMEOUT_MS))
             .map_err(bad_request)
     }
+}
+
+/// The inbox listing's page (decision 0044 §3, issue #91): `/api/v1/inboxes`
+/// and the UI index were the only unpaged listings. `limit` defaults to the
+/// shared 100 and refuses above the shared 250 cap; `offset` is uncapped.
+/// The page bounds the rows returned, not the name enumeration and sort.
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct InboxPageQuery {
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+impl InboxPageQuery {
+    /// The staged `(limit, offset)`: the cap refusal is the shared sentence
+    /// (decision 0030 §3), answered before the names are listed.
+    pub(crate) fn page(&self) -> Result<(usize, usize), String> {
+        let limit = checked_page_size("limit", self.limit.unwrap_or(DEFAULT_LIST_LIMIT))?;
+        Ok((limit, self.offset.unwrap_or(0)))
+    }
+}
+
+/// One page of the sorted inbox names with their counts.
+pub(crate) fn inbox_page(store: &Store, limit: usize, offset: usize) -> Vec<(String, usize)> {
+    store
+        .inboxes()
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect()
+}
+
+/// A path's inbox through the shared admission rule (decision 0044 §3): a
+/// decoded blank segment refuses `400` before any read, wait or clear.
+fn admit(inbox: &str) -> ApiResult<()> {
+    crate::model::validate_inbox(inbox)
+        .map(|_| ())
+        .map_err(bad_request)
 }
 
 #[derive(Debug, Serialize)]
@@ -992,18 +1040,21 @@ pub fn deliveries_in_flight() -> u64 {
     registry_total(&DELIVERIES)
 }
 
-async fn list_inboxes(State(state): State<AppState>) -> Json<Vec<InboxSummary>> {
-    Json(
-        state
-            .store
-            .inboxes()
+async fn list_inboxes(
+    State(state): State<AppState>,
+    raw: axum::extract::RawQuery,
+) -> ApiResult<Json<Vec<InboxSummary>>> {
+    let q: InboxPageQuery = parse_query(raw.0.as_deref().unwrap_or(""), "inboxes")?;
+    let (limit, offset) = q.page().map_err(bad_request)?;
+    Ok(Json(
+        inbox_page(&state.store, limit, offset)
             .into_iter()
             .map(|(name, count)| InboxSummary { name, count })
             .collect(),
-    )
+    ))
 }
 
-fn parse_query<T: DeserializeOwned>(raw: &str, what: &str) -> ApiResult<T> {
+pub(crate) fn parse_query<T: DeserializeOwned>(raw: &str, what: &str) -> ApiResult<T> {
     serde_urlencoded::from_str(raw).map_err(|e| bad_request(format!("invalid {what} query: {e}")))
 }
 
@@ -1012,6 +1063,7 @@ async fn list_messages(
     Path(inbox): Path<String>,
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Json<EmailList>> {
+    admit(&inbox)?;
     let q: ListQuery = parse_query(raw.0.as_deref().unwrap_or(""), "list")?;
     // The page cap is the shared refusal (decision 0030 §3), answered
     // before the scan is taken: staging before effect.
@@ -1029,6 +1081,7 @@ async fn count_messages(
     Path(inbox): Path<String>,
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Json<serde_json::Value>> {
+    admit(&inbox)?;
     let q: ListQuery = parse_query(raw.0.as_deref().unwrap_or(""), "count")?;
     Ok(Json(serde_json::json!({
         "inbox": inbox,
@@ -1041,6 +1094,7 @@ async fn await_messages(
     Path(inbox): Path<String>,
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Response> {
+    admit(&inbox)?;
     let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "await")?;
     let want = q.min_one_count();
     // The page cap is the shared refusal (decision 0030 §3), answered
@@ -1113,6 +1167,7 @@ async fn assert_messages(
     Path(inbox): Path<String>,
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Response> {
+    admit(&inbox)?;
     let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "assert")?;
     // `limit` is the shared filter shape (#38): parsed and type-checked
     // exactly as on list, inert here — an assertion's answer is a count,
@@ -1142,7 +1197,9 @@ async fn clear_inbox(
 ) -> ApiResult<Json<serde_json::Value>> {
     // A failed commit is the answer (decision 0014): the clear did not
     // commit, so the caller must hear a failure — `503`, the cause usually
-    // transient — instead of a count for work that never happened.
+    // transient — instead of a count for work that never happened. A blank
+    // inbox refuses first (decision 0044 §3): it clears nothing.
+    admit(&inbox)?;
     match state.store.clone().clear_async(inbox).await {
         Ok(removed) => Ok(Json(serde_json::json!({ "removed": removed }))),
         Err(_) => Err(ApiError(
@@ -1222,8 +1279,9 @@ async fn clear_chaos(State(state): State<AppState>) -> Json<ChaosConfig> {
 async fn list_threads(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
-) -> Json<Vec<threads::Thread>> {
-    Json(threads::view(&state.store, &inbox))
+) -> ApiResult<Json<Vec<threads::Thread>>> {
+    admit(&inbox)?;
+    Ok(Json(threads::view(&state.store, &inbox)))
 }
 
 /// One thread by its stable key: the conversation, oldest first.
@@ -1231,6 +1289,7 @@ async fn get_thread(
     State(state): State<AppState>,
     Path((inbox, key)): Path<(String, String)>,
 ) -> ApiResult<Json<threads::Thread>> {
+    admit(&inbox)?;
     threads::view(&state.store, &inbox)
         .into_iter()
         .find(|thread| thread.key == key)
@@ -1243,23 +1302,32 @@ async fn get_thread(
 async fn inbox_feed(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(feed::feed_stream(
+) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    // A blank inbox refuses before the feed subscribes (decision 0044 §3).
+    admit(&inbox)?;
+    Ok(Sse::new(feed::feed_stream(
         state.store.clone(),
         inbox,
         state.shutdown.clone(),
     ))
-    .keep_alive(KeepAlive::default())
+    .keep_alive(KeepAlive::default()))
 }
 
 // ---------- seed ----------
 
+/// The REST seed body. The optional strings take their defaults only when
+/// omitted: a present `null` is supplied and refuses with the field named —
+/// the same answer MCP's seed gives (decision 0025 §2, 0044 §3; issue #91).
 #[derive(Debug, Deserialize)]
 pub struct SeedRequest {
+    #[serde(default, deserialize_with = "crate::model::present_string")]
     pub from: Option<String>,
     pub to: String,
+    #[serde(default, deserialize_with = "crate::model::present_string")]
     pub subject: Option<String>,
+    #[serde(default, deserialize_with = "crate::model::present_string")]
     pub text: Option<String>,
+    #[serde(default, deserialize_with = "crate::model::present_string")]
     pub html: Option<String>,
 }
 
@@ -1360,10 +1428,36 @@ async fn clear_webhooks(State(state): State<AppState>) -> Json<serde_json::Value
 
 // ---------- MCP ----------
 
-/// The body is taken as text and parsed inside `mcp::dispatch`: the `Json`
-/// extractor is gone, so a malformed body is a JSON-RPC error object with a
-/// null id (HTTP 400), not a plain-text rejection (decision 0029 §2).
-async fn mcp_endpoint(State(state): State<AppState>, body: String) -> Response {
+/// The largest `POST /mcp` body: axum's default body limit, named so the
+/// refusal can say it (decision 0044 §1). The limit itself stays axum's
+/// streaming one — an oversized body is never read to its end to learn its
+/// size, chunked or not.
+pub(crate) const MCP_BODY_LIMIT: usize = 2_097_152;
+
+/// The body is taken as bounded bytes and parsed inside `mcp::dispatch`:
+/// malformed JSON and invalid UTF-8 alike are a JSON-RPC `-32700` with a
+/// null id (HTTP 400), not a plain-text rejection (decisions 0029 §2, 0044
+/// §1). A body the extractor refuses — over the limit (413), or one that
+/// could not be read — keeps the extractor's status and becomes a null-id
+/// `-32600` naming the limit and the cause, never axum's plain text.
+async fn mcp_endpoint(
+    State(state): State<AppState>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    let body = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            let message = format!(
+                "request body refused: {} (the limit is {MCP_BODY_LIMIT} bytes)",
+                rejection.body_text()
+            );
+            return (
+                rejection.status(),
+                Json(mcp::error_object(-32600, &message, serde_json::Value::Null)),
+            )
+                .into_response();
+        }
+    };
     let ctx = McpContext {
         store: state.store.clone(),
         chaos: state.chaos.clone(),

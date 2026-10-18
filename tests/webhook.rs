@@ -1719,6 +1719,7 @@ async fn the_final_sweep_survives_a_lagged_ring_and_accounts_the_backlog() {
             id: format!("lag-{i:05}"),
             inbox: "backlog".to_string(),
             from: None,
+            envelope_from: None,
             to: vec![],
             cc: vec![],
             recipients: vec![],

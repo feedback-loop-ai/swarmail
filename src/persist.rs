@@ -32,7 +32,7 @@ use std::sync::Mutex;
 /// Every column of a mail row, in the order both statements use it.
 const COLUMNS: &str = "id, inbox, from_json, to_json, cc_json, recipients_json, subject, \
                        received_at, received_ms, size, text, html, links_json, codes_json, \
-                       message_id, in_reply_to, references_json, raw";
+                       message_id, in_reply_to, references_json, raw, envelope_from";
 
 /// The whole schema, created idempotently on every open.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
@@ -54,7 +54,8 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
     message_id TEXT,
     in_reply_to TEXT,
     references_json TEXT NOT NULL DEFAULT '[]',
-    raw BLOB NOT NULL
+    raw BLOB NOT NULL,
+    envelope_from TEXT
 );
 -- Retired (issue #87): `emails_inbox` was maintained on every write and read
 -- by no query — the store answers per-inbox reads from memory, and restore
@@ -71,11 +72,14 @@ CREATE TABLE IF NOT EXISTS meta (
 );";
 
 /// Columns the first release lacked, with their types: a data file written
-/// before threading is migrated on open instead of abandoned.
+/// before threading — or before the envelope sender was kept (decision 0044
+/// §8: nullable, no default, no backfill, so an old row restores `None`) —
+/// is migrated on open instead of abandoned.
 const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("message_id", "TEXT"),
     ("in_reply_to", "TEXT"),
     ("references_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("envelope_from", "TEXT"),
 ];
 
 /// The full restore scan `load` runs — one builder, so the plan test
@@ -243,11 +247,11 @@ impl Persist {
         state.next_seq += 1;
         let tx = state.conn.transaction()?;
         tx.execute(
-            // 19 columns: COLUMNS + the ordering seq.
+            // 20 columns: COLUMNS + the ordering seq.
             &format!(
                 "INSERT INTO emails ({COLUMNS}, seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-                         ?17, ?18, ?19)"
+                         ?17, ?18, ?19, ?20)"
             ),
             params![
                 email.id,
@@ -269,6 +273,8 @@ impl Persist {
                 email.in_reply_to,
                 json(&email.references),
                 email.raw,
+                // NULL is unknown provenance; '' the known null reverse path.
+                email.envelope_from,
                 seq,
             ],
         )?;
@@ -320,6 +326,7 @@ fn row_to_email(row: &rusqlite::Row<'_>) -> rusqlite::Result<Email> {
         id: row.get(0)?,
         inbox: row.get(1)?,
         from: from_json(row.get(2)?),
+        envelope_from: row.get(18)?,
         to: from_json(row.get(3)?),
         cc: from_json(row.get(4)?),
         recipients: from_json(row.get(5)?),
@@ -474,6 +481,9 @@ mod tests {
             name: Some("Sender".into()),
             address: "sender@x.io".into(),
         });
+        // Deliberately unlike the header From: the envelope round-trips as
+        // its own column.
+        e.envelope_from = Some("bounce+1@x.io".into());
         e.cc = vec![crate::model::EmailAddress {
             name: None,
             address: "cc@x.io".into(),
@@ -562,6 +572,7 @@ mod tests {
         );
         assert_eq!(emails[0].message_id, None);
         assert!(emails[0].references.is_empty());
+        assert_eq!(emails[0].envelope_from, None, "no provenance is invented");
         // The migrated file keeps working as a write-through mirror.
         persist
             .record_insert(&email("new-1", "box", "a@x.io"), &[], 2, 0)
@@ -572,6 +583,65 @@ mod tests {
         // owner has dropped (decision 0033: one server per data file).
         drop(persist);
         assert!(Persist::open(&path).unwrap().load().is_ok());
+    }
+
+    /// Decision 0044 §8: a populated data file of the shape before the
+    /// envelope sender was kept — the previous explicit schema, not today's
+    /// `SCHEMA`, so the migration really runs — gains the nullable column
+    /// without loss. Its old rows restore `None` (unknown, never the header
+    /// From), new rows keep the known null reverse path `Some("")` apart from
+    /// a real sender, and ids, order, counters and raw bytes survive two
+    /// reopens of the migrated file.
+    #[test]
+    fn a_pre_envelope_data_file_migrates_and_keeps_all_three_sender_states() {
+        let (_guard, path) = db_path("pre-envelope");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE emails (id TEXT PRIMARY KEY, inbox TEXT NOT NULL, \
+                 seq INTEGER NOT NULL, from_json TEXT NOT NULL, to_json TEXT NOT NULL, \
+                 cc_json TEXT NOT NULL, recipients_json TEXT NOT NULL, subject TEXT, \
+                 received_at TEXT NOT NULL, received_ms INTEGER NOT NULL, size INTEGER NOT NULL, \
+                 text TEXT, html TEXT, links_json TEXT NOT NULL, codes_json TEXT NOT NULL, \
+                 message_id TEXT, in_reply_to TEXT, \
+                 references_json TEXT NOT NULL DEFAULT '[]', raw BLOB NOT NULL);
+                 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO emails VALUES ('old-1', 'box', 1, \
+                 '{\"address\":\"alice@x.io\"}', '[]', '[]', '[]', 'Hi', 't', 1, 1, NULL, NULL, \
+                 '[]', '[]', 'm1@x.io', NULL, '[]', x'FF00');
+                 INSERT INTO meta VALUES ('emails_inserted', '1');
+                 INSERT INTO meta VALUES ('emails_dropped', '0');",
+            )
+            .unwrap();
+        }
+        {
+            let persist = Persist::open(&path).unwrap();
+            let (emails, inserted, dropped) = persist.load().unwrap();
+            assert_eq!(emails.len(), 1, "the old mail survives the migration");
+            assert_eq!(emails[0].envelope_from, None, "unknown, not header From");
+            assert_eq!(emails[0].from.as_ref().unwrap().address, "alice@x.io");
+            assert_eq!(emails[0].message_id.as_deref(), Some("m1@x.io"));
+            assert_eq!(emails[0].raw, vec![0xFF, 0x00]);
+            assert_eq!((inserted, dropped), (1, 0));
+            let mut bounce = email("bounce", "box", "a@x.io");
+            bounce.envelope_from = Some(String::new());
+            let mut sent = email("sent", "box", "a@x.io");
+            sent.envelope_from = Some("bounce+77@mailer.io".into());
+            persist.record_insert(&bounce, &[], 2, 0).unwrap();
+            persist.record_insert(&sent, &[], 3, 0).unwrap();
+        }
+        for _ in 0..2 {
+            let persist = Persist::open(&path).unwrap();
+            let (emails, inserted, dropped) = persist.load().unwrap();
+            let ids: Vec<&str> = emails.iter().map(|e| e.id.as_str()).collect();
+            assert_eq!(ids, vec!["old-1", "bounce", "sent"]);
+            let senders: Vec<Option<&str>> =
+                emails.iter().map(|e| e.envelope_from.as_deref()).collect();
+            assert_eq!(senders, vec![None, Some(""), Some("bounce+77@mailer.io")]);
+            assert_eq!(emails[0].raw, vec![0xFF, 0x00], "raw bytes untouched");
+            assert_eq!((inserted, dropped), (3, 0));
+            drop(persist);
+        }
     }
 
     #[test]

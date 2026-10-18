@@ -43,9 +43,22 @@
   (quiet server reads 1). Label values use only the `\\`, `\"`, `\n` escapes.
 - Pages are capped at 250 items on every plane: `limit`/`count` above it is
   refused with a 400 (REST + shims) or a `-32602` error (MCP), never clamped.
-  SMTP request parsing and the REST/compat page copies run off the async
-  workers on the blocking pool; the MCP seed build and SSE thread-view
-  serialization stay inline (neither is on the ingest path).
+  `GET /api/v1/inboxes` (and the UI index) pages with `limit` (default 100)
+  and `offset`; MCP `swarmail_search_emails` pages with `offset`.
+  SMTP request parsing and every compat list/search build (scan, render,
+  serialization) run off the async workers on the blocking pool; the MCP
+  seed build, the REST list/await pages and SSE thread-view serialization
+  stay inline (none is on the ingest path).
+- Strict input everywhere: an unknown query key (`assert?too=`) or MCP
+  argument key (`{"inbx": "zz"}`) is refused by name; a present JSON `null`
+  for an optional string (seed `from`/`subject`/`text`/`html`, chaos `error`)
+  is refused, omission takes the default; a blank inbox name is refused on
+  every plane.
+- The `to` filter matches any recipient: the To/Cc headers **and** the SMTP
+  envelope (RCPT TO), so a Bcc'd address matches — `assert?to=x&count=0` is
+  not a header-presence check. `from` is the header From. Every email also
+  carries `envelope_from` (the MAIL FROM path; `""` for `<>`, `null` for mail
+  stored before it was kept).
 
 ## The agent loop (clear → act → assert)
 
@@ -78,7 +91,11 @@
 `swarmail_wait_for_email`, `swarmail_extract_links`, `swarmail_extract_codes`,
 `swarmail_seed_email`, `swarmail_set_chaos`, `swarmail_clear_chaos`.
 stdio transport: `swarmail mcp --url http://127.0.0.1:8025` (launch as an MCP
-subprocess; talks to the same server).
+subprocess; talks to the same server). Errors are always JSON-RPC: bad JSON
+or invalid UTF-8 is `-32700`, a body over 2 MiB is HTTP 413 `-32600`, a
+non-object value is `-32600` with a null id (once per batch member). The up
+to 16 members of a batch run concurrently — replies keep member order, the
+effects have no order, so send dependent mutations as separate requests.
 
 ## Chaos
 
@@ -118,8 +135,10 @@ naming the target and the cause), and a shutdown's undelivered backlog in
 
 - `GET /api/v1/inboxes/{inbox}/threads` — the inbox grouped into conversations:
   References/In-Reply-To/Message-ID chains first, the normalized subject
-  (Re:/Fwd: stripped, Unicode-lowercased — full case folding is a
-  recorded limitation) as the fallback; each thread lists its mails
+  (leading Re/Fw/Fwd/Aw/SV/VS/Antw/WG/TR/RV/Odp/R/I/ENC/RES/Ответ/回复
+  markers stripped with `:` or `：`, whitespace runs collapsed,
+  Unicode-lowercased — full case folding and numbered `Re[2]:` are
+  recorded limitations) as the fallback for chain-less mail; each thread lists its mails
   oldest first and has a stable `key` for
   `/api/v1/inboxes/{inbox}/threads/{key}` — the hash of the conversation's
   first mail's anchor, so replies (even one with a smaller message-id) never
@@ -138,32 +157,42 @@ naming the target and the cause), and a shutdown's undelivered backlog in
 Same store, the two shapes existing suites already speak:
 
 - `GET /api/v1/messages` — Mailpit's summary envelope (`total`, `unread`,
-  `count`, `messages_count`, `messages_unread_count`, `start`, `tags`,
+  `count`, `messages_count`, `messages_unread`, `start`, `tags`,
   `messages`), newest first. `?inbox=` scopes to one swarmail inbox;
   `?limit=`/`?start=` page (`limit` ≤ 250, refused with a 400 above).
+  Snippets read at most the first 8192 bytes of a body.
 - `GET /api/v1/message/{id}` — Mailpit's full message; `/plain` serves the
   text part as text/plain, rendering html at request time for html-only
-  mail. `GET /api/v1/message/latest` is the same shape over the newest
-  stored mail, newest by receive time then id (404 only when the store
-  is empty).
+  mail. `GET /api/v1/message/latest` (and `/latest/raw`, `/latest/headers`)
+  is the newest mail by receive time then id, scoped by `?inbox=` (404 when
+  that inbox is empty) or the whole store without it; a nonblank `?query=`
+  is a 400 — search, then fetch the id.
   `DELETE /api/v1/messages` deletes exactly the
   non-empty `{"ids": [...]}` named mails (the `IDs` spelling accepted
   alike) and replies `{"removed": n}`; any
   other body (absent, empty, unparseable, `{"ids": []}`) is a `400` that
-  deletes nothing — `DELETE /api/v1/delete-all` is the only cross-inbox wipe.
+  deletes nothing — MailHog's bodyless wipe included (decision 0011);
+  `DELETE /api/v1/delete-all`, swarmail's own route, is the only
+  cross-inbox wipe.
 - `GET /api/v2/messages` — MailHog's `{total, count, start, items}` with
   `data.Message` shapes (`Content.{Headers,Body,Size,MIME}`,
-  `Raw.{From,To,Data,Helo}`). `GET /api/v2/search` takes
+  `Raw.{From,To,Data,Helo}`); a page whose JSON would pass 64 MiB is
+  refused whole (`compat page exceeds byte budget 67108864; reduce limit or
+  fetch raw by id`). `GET /api/v2/search` takes
   `kind=from|to|containing` (present and one of the three, as upstream
   requires) and answers a bare 400 on an unknown kind, an absent kind or
   an empty query; `?limit=`/`?start=` page. `GET /api/v1/search` is the
   Mailpit flavor
-  (`kind=from|to|subject|containing`, JSON `400`).
+  (`kind=from|to|subject|containing`, JSON `400`). A containing query
+  refuses field syntax by name — any word like `to:x` or `foo:x`, a URL's
+  `://` excepted.
 - `GET /api/v1/messages/{id}/download` and `GET /api/v1/message/{id}/raw`
   serve the full RFC 5322 source as `message/rfc822`
   (`attachment; filename="<id>.eml"`).
-- Mapping: Mailpit `Username` = the swarmail inbox; `Return-Path`/`Raw.From` =
-  the header From; `Read` is always `false` and unread counts mirror `total`
+- Mapping: Mailpit `Username` = the swarmail inbox; MailHog `From`/`Raw.From`/
+  `kind=from`, Mailpit `ReturnPath` and `Return-Path` = the SMTP envelope
+  sender (`""`/`<>` for a bounce; the header From only for mail stored
+  before the envelope was kept); `Read` is always `false` and unread counts mirror `total`
   (no read state); tags are `[]`; attachments/inline are empty arrays. The
   swarmail-native `/api/v1/messages/{id}` is unchanged — the Mailpit-style
   single message is the singular `/api/v1/message/{id}`.

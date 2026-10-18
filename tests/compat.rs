@@ -152,7 +152,10 @@ async fn mailpit_envelope_lists_the_store_newest_first() {
     assert_eq!(body["total"], 4);
     assert_eq!(body["unread"], 4);
     assert_eq!(body["messages_count"], 4);
-    assert_eq!(body["messages_unread_count"], 4);
+    // Upstream's own key (issue #99): `messages_unread`, not the old
+    // `messages_unread_count`.
+    assert_eq!(body["messages_unread"], 4);
+    assert!(body.get("messages_unread_count").is_none(), "{body}");
     assert_eq!(body["count"], 4);
     assert_eq!(body["start"], 0);
     assert_eq!(body["tags"], json!([]));
@@ -210,7 +213,7 @@ async fn mailpit_search_supports_each_kind_and_scopes() {
     // (`storage.StatsGet()`), not from the result page (issue #55): the
     // store here is five mails (three alpha, two beta), so even a
     // one-hit search reports total/unread five. The match count rides
-    // `messages_count`/`messages_unread_count`.
+    // `messages_count`/`messages_unread`.
     let (status, body) = http_json(
         s.http_addr,
         "GET",
@@ -225,7 +228,7 @@ async fn mailpit_search_supports_each_kind_and_scopes() {
         body["messages_count"], 1,
         "the match count rides messages_count"
     );
-    assert_eq!(body["messages_unread_count"], 1);
+    assert_eq!(body["messages_unread"], 1);
     assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
     assert_eq!(body["messages"][0]["Subject"], "Alpha new");
 
@@ -1387,7 +1390,354 @@ async fn a_to_prefixed_query_is_refused_by_name() {
     assert_eq!(status, 400);
     assert_eq!(
         body["error"],
-        "unsupported search prefix \"to:\" — Mailpit's prefix grammar is not implemented; use ?kind=to",
+        "unsupported search prefix \"to:\" — Mailpit's prefix grammar is not implemented; use ?kind=to|from|subject",
         "the refusal names the prefix and the honest route: {body}"
     );
+}
+
+// ---------- run 21: #95 scoped latest ----------
+
+/// Issue #95's reproduction, inverted: one mail in `lat-a`, then a newer one
+/// in `lat-b`. Every latest route — message, raw, headers — honours
+/// `?inbox=`, and the global form still answers the store's newest. Red
+/// before: `latest?inbox=lat-a` answered lat-b's mail, `/raw` and
+/// `/headers` were 404s.
+#[tokio::test]
+async fn every_latest_route_is_scoped_by_inbox() {
+    let s = start().await;
+    let mine = "From: a@x.io\r\nSubject: mine\r\n\r\none";
+    let a = send_raw(s.smtp_addr, "lat-a", mine).await;
+    let b = send_raw(
+        s.smtp_addr,
+        "lat-b",
+        "From: b@x.io\r\nSubject: other inbox newest\r\n\r\ntwo",
+    )
+    .await;
+
+    let (status, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/message/latest?inbox=lat-a",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["ID"], a.as_str());
+    assert_eq!(body["Username"], "lat-a");
+    let (_, body) = http_json(s.http_addr, "GET", "/api/v1/message/latest", None).await;
+    assert_eq!(body["ID"], b.as_str(), "no inbox is the whole store");
+
+    // The raw source is byte-exact, and the headers belong to that mail.
+    let (status, headers, raw) = http_raw(
+        s.http_addr,
+        "GET",
+        "/api/v1/message/latest/raw?inbox=lat-a",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(raw, format!("{mine}\r\n").as_bytes());
+    assert_eq!(
+        header_value(&headers, "content-type"),
+        Some("message/rfc822")
+    );
+    let (status, h) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/message/latest/headers?inbox=lat-a",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{h}");
+    assert_eq!(h["Subject"], json!(["mine"]));
+    let (_, h) = http_json(s.http_addr, "GET", "/api/v1/message/latest/headers", None).await;
+    assert_eq!(h["Subject"], json!(["other inbox newest"]));
+
+    // An empty scope is a 404 even though another inbox has mail; ordinary
+    // ids still resolve through the id routes.
+    for path in [
+        "/api/v1/message/latest?inbox=lat-empty",
+        "/api/v1/message/latest/raw?inbox=lat-empty",
+        "/api/v1/message/latest/headers?inbox=lat-empty",
+    ] {
+        let (status, body) = http_json(s.http_addr, "GET", path, None).await;
+        assert_eq!(status, 404, "{path}: {body}");
+        assert_eq!(body["error"], "message not found");
+    }
+    let (status, body) = http_json(s.http_addr, "GET", &format!("/api/v1/message/{a}"), None).await;
+    assert_eq!((status, body["ID"].clone()), (200, json!(a.as_str())));
+}
+
+/// A filtered latest is refused by name rather than ignored (decision 0044
+/// §4): a nonblank `query` is a 400 naming it on every latest route, a
+/// blank one is unused, an unknown key and a blank inbox refuse too.
+#[tokio::test]
+async fn latest_refuses_a_query_an_unknown_key_and_a_blank_inbox() {
+    let s = start().await;
+    let id = send_raw(s.smtp_addr, "lat-q", "Subject: q\r\n\r\nbody").await;
+    for route in ["latest", "latest/raw", "latest/headers"] {
+        let (status, body) = http_json(
+            s.http_addr,
+            "GET",
+            &format!("/api/v1/message/{route}?inbox=lat-q&query=subject:q"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 400, "{route}: {body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("query is not supported on latest"),
+            "{route}: {body}"
+        );
+        let (status, body) = http_json(
+            s.http_addr,
+            "GET",
+            &format!("/api/v1/message/{route}?inbox=%20"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 400, "{route}: {body}");
+        assert_eq!(body["error"], "inbox must not be blank");
+        let (status, body) = http_json(
+            s.http_addr,
+            "GET",
+            &format!("/api/v1/message/{route}?inbx=lat-q"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 400, "{route}: {body}");
+        assert!(body["error"].as_str().unwrap().contains("inbx"), "{body}");
+    }
+    let (status, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/message/latest?inbox=lat-q&query=%20%20",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["ID"], id.as_str());
+}
+
+// ---------- run 21: #99 envelope sender and prefix queries ----------
+
+/// Issue #99's probe: `MAIL FROM:<bounce+77@mailer.io>` with header `From:
+/// Alice <alice@x.io>`. The compat sender is the envelope on every compat
+/// shape — MailHog `From`, `Raw.From`, `kind=from`, Mailpit `ReturnPath`
+/// and the synthesized `Return-Path` — while the native `from` filter and
+/// Mailpit's `From` stay on the header. Red before: `kind=from&query=bounce`
+/// found 0 and `ReturnPath` was alice.
+#[tokio::test]
+async fn the_compat_sender_follows_the_envelope() {
+    let s = start().await;
+    let mut conn = SmtpConn::connect(s.smtp_addr).await;
+    let plain = "\u{0}env\u{0}whatever";
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, plain);
+    conn.send(&format!("AUTH PLAIN {b64}")).await;
+    conn.reply().await;
+    conn.send("MAIL FROM:<bounce+77@mailer.io>").await;
+    conn.reply().await;
+    conn.send("RCPT TO:<a@x.io>").await;
+    conn.reply().await;
+    conn.send("RCPT TO:<bcc@x.io>").await;
+    conn.reply().await;
+    let reply = conn
+        .data("From: Alice <alice@x.io>\r\nTo: a@x.io\r\nSubject: diverge\r\n\r\nbody")
+        .await;
+    assert!(reply.starts_with("250"), "{reply}");
+
+    let addr = s.http_addr;
+    let search = move |query: &'static str| async move {
+        let (status, body) = http_json(
+            addr,
+            "GET",
+            &format!("/api/v2/search?inbox=env&kind=from&query={query}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        body["total"].clone()
+    };
+    assert_eq!(search("bounce").await, 1);
+    assert_eq!(search("alice").await, 0);
+    let (_, pit) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/search?inbox=env&kind=from&query=bounce",
+        None,
+    )
+    .await;
+    assert_eq!(pit["messages_count"], 1, "{pit}");
+
+    let (_, hog) = http_json(s.http_addr, "GET", "/api/v2/messages?inbox=env", None).await;
+    let item = &hog["items"][0];
+    assert_eq!(
+        item["From"],
+        json!({"Relays": null, "Mailbox": "bounce+77", "Domain": "mailer.io", "Params": ""})
+    );
+    assert_eq!(item["Raw"]["From"], "bounce+77@mailer.io");
+    assert_eq!(
+        item["Content"]["Headers"]["Return-Path"],
+        json!(["<bounce+77@mailer.io>"])
+    );
+    assert_eq!(
+        item["Content"]["Headers"]["From"],
+        json!(["Alice <alice@x.io>"])
+    );
+    let id = item["ID"].as_str().unwrap().to_string();
+    let (_, full) = http_json(s.http_addr, "GET", &format!("/api/v1/message/{id}"), None).await;
+    assert_eq!(full["ReturnPath"], "bounce+77@mailer.io");
+    assert_eq!(
+        full["From"],
+        json!({"name": "Alice", "address": "alice@x.io"})
+    );
+
+    // The native planes: `from` is the header, `to` includes the
+    // envelope-only Bcc (documented, decision 0044 §8).
+    let (_, native) = http_json(s.http_addr, "GET", "/api/v1/inboxes/env/messages", None).await;
+    assert_eq!(native["emails"][0]["envelope_from"], "bounce+77@mailer.io");
+    for (query, count) in [("from=alice", 1), ("from=bounce", 0), ("to=bcc@x.io", 1)] {
+        let (status, body) = http_json(
+            s.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/env/count?{query}"),
+            None,
+        )
+        .await;
+        assert_eq!(
+            (status, body["count"].clone()),
+            (200, json!(count)),
+            "{query}"
+        );
+    }
+}
+
+/// Every field-shaped token of a containing search refuses by name on both
+/// shims (decision 0044 §7) — leading spaces, mixed case, unknown fields
+/// and later tokens included — while a URL and an explicit kind's value
+/// stay literal. Red before: ` to:bcc@x.io`, `from:alice` and
+/// `subject:bcc` answered 200 with zero matches.
+#[tokio::test]
+async fn field_prefixes_refuse_by_name_and_urls_stay_literal() {
+    let s = start().await;
+    send_raw(
+        s.smtp_addr,
+        "pfx",
+        "From: sender@x.io\r\nSubject: see https://x.io/a\r\n\r\nbody to:literal",
+    )
+    .await;
+    for (query, field) in [
+        ("%20to:bcc@x.io", "to"),
+        ("from:alice", "from"),
+        ("Subject:bcc", "Subject"),
+        ("plan%20foo:x", "foo"),
+    ] {
+        for path in [
+            format!("/api/v1/search?inbox=pfx&query={query}"),
+            format!("/api/v2/search?inbox=pfx&kind=containing&query={query}"),
+        ] {
+            let (status, body) = http_json(s.http_addr, "GET", &path, None).await;
+            assert_eq!(status, 400, "{path}: {body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&format!("unsupported search prefix \"{field}:\"")),
+                "{path}: {body}"
+            );
+        }
+    }
+    let (status, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/search?inbox=pfx&query=https://x.io/a",
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, body["messages_count"].clone()),
+        (200, json!(1)),
+        "{body}"
+    );
+    let (status, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v1/search?inbox=pfx&kind=subject&query=see%20https",
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, body["messages_count"].clone()),
+        (200, json!(1)),
+        "{body}"
+    );
+}
+
+/// A blank compat `inbox` selector refuses on all four pages (decision 0044
+/// §3) instead of widening to the whole store.
+#[tokio::test]
+async fn a_blank_compat_inbox_refuses_on_every_page() {
+    let s = start().await;
+    for path in [
+        "/api/v1/messages?inbox=",
+        "/api/v1/search?inbox=%20&query=x",
+        "/api/v2/messages?inbox=%09",
+        "/api/v2/search?inbox=&kind=containing&query=x",
+    ] {
+        let (status, body) = http_json(s.http_addr, "GET", path, None).await;
+        assert_eq!(status, 400, "{path}: {body}");
+        assert_eq!(body["error"], "inbox must not be blank", "{path}");
+    }
+}
+
+// ---------- run 21: #96 bounded page work ----------
+
+/// A MailHog page whose JSON would pass 64 MiB refuses whole, by name
+/// (decision 0044 §6): one 18 MiB text mail serializes its body four times
+/// over (Body, both MIME fields, Raw.Data). Raw-by-id still serves it, and
+/// a page of small mail is untouched. Red before: the page was built and
+/// sent, hundreds of megabytes of server memory later.
+#[tokio::test]
+async fn an_over_budget_mailhog_page_refuses_by_name() {
+    let s = start().await;
+    let line = format!("{}\r\n", "a".repeat(76));
+    let body = line.repeat(18 * 1024 * 1024 / line.len());
+    let data = format!("From: big@x.io\r\nSubject: huge\r\n\r\n{body}");
+    let id = send_raw(s.smtp_addr, "huge", &data).await;
+    send_raw(s.smtp_addr, "small", "Subject: tiny\r\n\r\nsmall").await;
+
+    for path in [
+        "/api/v2/messages?inbox=huge&limit=1",
+        "/api/v2/search?inbox=huge&kind=containing&query=aaaa",
+    ] {
+        let (status, body) = http_json(s.http_addr, "GET", path, None).await;
+        assert_eq!(status, 400, "{path}");
+        assert_eq!(
+            body["error"],
+            "compat page exceeds byte budget 67108864; reduce limit or fetch raw by id",
+            "{path}"
+        );
+    }
+    let (status, _, raw) = http_raw(
+        s.http_addr,
+        "GET",
+        &format!("/api/v1/message/{id}/raw"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        raw.len(),
+        data.len() + 2,
+        "the exact source, CRLF-terminated"
+    );
+    let (status, body) = http_json(s.http_addr, "GET", "/api/v2/messages?inbox=small", None).await;
+    assert_eq!((status, body["count"].clone()), (200, json!(1)), "{body}");
+    // The Mailpit summary of the huge mail is a bounded snippet.
+    let (status, body) = http_json(s.http_addr, "GET", "/api/v1/messages?inbox=huge", None).await;
+    assert_eq!(status, 200);
+    let snippet = body["messages"][0]["Snippet"].as_str().unwrap();
+    assert_eq!(snippet.chars().count(), 203, "{snippet}");
 }
