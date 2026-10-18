@@ -4,6 +4,10 @@
 - **Date:** 2026-10-18.
 - **Scope:** Epic #120 batch 2, issues #129, #130, #132, #133.
 - **Spec:** [storage-rpc](../../specs/storage-rpc/spec.md).
+- **macOS fix-up (2026-10-18):**
+  [macos-identity-lock](../../specs/macos-identity-lock/spec.md) controls §1
+  and supersedes the original spec's data-file-lock instructions. This is
+  an in-place amendment of a proposal, not operator acceptance.
 - **Supplements:** accepted [0033](0033-one-server-per-data-file.md) §2's
   sidecar mechanism and proposed [0042](0042-single-writer-lock.md) §§1/5's
   lifetime, error and alias scope.
@@ -27,32 +31,110 @@ and body-limit responses can discard that correlation.
 
 ## Proposed ruling
 
-### 1. Own the file as well as the existing sidecar
+### 1. Own an identity sidecar as well as the existing pathname sidecar
 
-Retain 0033's exact supplied-path sidecar acquisition, nontruncation,
-nonblocking attempt and never-unlink behavior. Before SQLite open, also
-open/create the data file without truncation and take one exclusive std
-`File::try_lock` on that file. On Unix preserve SQLite's 0644 creation ceiling
-subject to umask; do not alter existing permissions. Store both handles after
-connection state so the connection drops first. Both guards must precede
-schema changes, restore and binding and remain held for `Persist` lifetime.
+**Diagnosis and amended mechanism (macOS fix-up, 2026-10-18).** The initial
+implementation at `794e919` took an exclusive std `File::try_lock` on the
+database itself before opening SQLite. On ordinary Linux local filesystems,
+flock and POSIX fcntl record locks are independent. Darwin/BSD advisory-lock
+interfaces interoperate: flock is owned by the open file description, while
+SQLite's POSIX locks are process-owned. They can conflict even within our
+process. SQLite's write-lock request while selecting WAL can therefore fail
+behind our own flock, explaining the reported macOS DatabaseBusy failures.
+A shared flock is not a repair: it still conflicts with a write lock.
+Network-filesystem emulation can also invalidate Linux's independence.
+This is the lock-semantics reasoning, not a claim of a local Darwin run.
 
-Either lock's contention gives the existing named InUse refusal; other
-failures give path/cause-bearing Io refusal. Explicit data-file open can
-therefore change a former Sqlite startup error into Io. Startup may leave an
+Application locking must never target the database or its `-wal`, `-shm` or
+`-journal` companions. SQLite continues to take its own locks. Retain 0033's
+exact supplied-path `.lock` acquisition, nontruncation, creation-mode ceiling,
+nonblocking attempt and never-unlink behavior. Replace only the second guard
+with the following Unix identity rendezvous:
+
+`/tmp/swarmail-db-locks-<database-owner-uid>/<device-hex>-<inode-hex>.lock`
+
+Read an existing database's uid/device/inode with `std::fs::metadata`, following
+database symlinks without opening a descriptor. Opening and closing an extra
+descriptor could release this process's POSIX locks during an in-process
+refused alias open. If absent, exclusively create a regular file read/write,
+nontruncating, no wider than SQLite's 0644 subject to umask; read its opened
+handle's metadata and close it before SQLite. If a competing creator wins
+(AlreadyExists), read metadata once without opening the existing file.
+Nonexclusive create after NotFound would reintroduce the close hazard.
+Existing file permissions/content are unchanged. Namespace replacement
+during lookup/open is outside the stable-namespace contract.
+
+The fixed root is not derived from temp_dir(), TMPDIR, HOME, cwd, a database
+parent or the calling user's identity. Hard links in different directories
+share the same file-owner/device/inode tuple and therefore the same guard;
+neither canonicalization nor a parent-local sidecar can provide this property.
+Linux and macOS are the target proof platforms. An unsupported identity
+platform must refuse persistent startup with Io, never fall back to locking
+SQLite or to pathname-only ownership.
+
+Create the owner directory with mode 0700; before using an existing directory,
+require symlink_metadata to show a real directory, owned by the database
+owner, with private owner-access permissions (0700). Otherwise refuse with
+path/cause-bearing Io; do not repair permissions or choose another root.
+Create identity guards exclusively at 0600 or validate existing entries before
+opening: regular, singly linked, owned by the database owner, no group/other
+access, not a symlink. Validate the opened metadata before locking too.
+This prevents planted symlinks/hard links from redirecting the identity lock
+onto SQLite and rejects FIFOs before a blocking open. The verified private,
+stable parent is the trust boundary, not a promise against hostile same-user
+replacement. Creation races converge to a validated existing entry.
+
+Take one nonblocking exclusive File::try_lock on the identity sidecar. Either
+guard's contention gives the existing exact named InUse refusal for the
+supplied database path; all other filesystem/metadata/validation failures
+give path/cause-bearing Io. SQL failures remain Sqlite. Startup may leave an
 empty file after failure but never writes database contents before ownership.
-Raw SQLite connections, WAL/FULL, the 5000 ms busy default and mutation
-ordering stay unchanged. No SQLite EXCLUSIVE mode, retry or lock stealing.
+Both guards precede schema changes, restore and binding, and remain held for
+Persist lifetime. Store both handles after connection state: SQLite must
+finish closing/checkpointing before ownership releases. No guard is deleted
+on drop, crash or failed startup. Raw SQLite writers, WAL/FULL, the exact
+5000 ms busy default and mutation ordering stay unchanged. No SQLite
+EXCLUSIVE mode, lock retry, stealing, lease or heartbeat.
 
-Cooperating current servers refuse ordinary symlink and hard-link aliases on
-supported local filesystems. The same-path sidecar retains compatibility
-with the previous sidecar-only binary. Those old binaries through distinct
-aliases, noncooperating writers, replacement of a live data/lock namespace,
+The alias contract covers cooperating current servers under the database
+owner's credentials, on supported local filesystems sharing one stable
+data/guard namespace. Same path, relative spellings, symlinked parents,
+symlink files and hard links (including another directory) are refused in
+both acquisition orders. A first owner is admitted with hard links present.
+Cross-user access may refuse as Io rather than InUse; it never selects a
+separate caller-keyed guard. Cross-container/private-tmp mount namespaces can
+split the identity rendezvous and are outside this guarantee. The original
+sidecar still retains same-path compatibility where its namespace is shared.
+
+Guard files are inert after release but persist per distinct file identity.
+Never unlink them while any server uses the namespace. Operators on hosts
+with age-based `/tmp` cleanup must exclude this directory for the entire
+owner lifetime: removing a held guard allows a new inode and can silently
+admit an alias rival. No heartbeat is claimed to close arbitrary deletion.
+The directory may be cleared only when no server uses it.
+
+Old sidecar-only binaries through distinct aliases, noncooperating writers,
+live data/lock replacement or chown, hostile same-user namespace mutation,
 unproven single-file bind mounts and remote lock semantics remain outside
 the proven contract. No universal filesystem or distributed-lease promise.
 Restart reloads surviving state; it does not repair prior multi-writer loss.
-Keep the configured database pathname stable across restarts: locking the
-inode does not relocate a crashed owner's WAL to another hard-link basename.
+Keep the configured database pathname stable across crash restarts: identity
+exclusion does not relocate a crashed owner's WAL to another hard-link name.
+
+**Proof:** Linux-only `server_guards_do_not_lock_sqlite_files` must take fresh
+exclusive flock probes on a live database and real WAL/SHM files, plus a
+journal if present. Its database case fails on `794e919`, passes with this
+repair, and is not run on Darwin where SQLite's own locks can block it.
+`identity_lock_preserves_raw_sqlite_and_busy_bound` proves raw BEGIN IMMEDIATE,
+commit, subsequent owner commit and the 5000 ms default. That witness passes
+on Linux before and after; it is not the Linux baseline-red proof. Preserve
+and widen both-order inline/real-process alias tests to another directory
+and different child TMPDIRs, guard-release and startup-order proofs, and a
+separate-process witness that refused in-process aliases do not drop SQLite
+write locks. Original #129 alias reds remain against `2a325c9`; the macOS
+self-lock regression was introduced later. CI `test (macos-latest)` after
+the operator's assistant pushes is the final Darwin proof; it is pending
+at design time.
 
 ### 2. Give overflow an impossible inbox name
 
@@ -101,13 +183,25 @@ large lines remain unbounded, and slow stdout can still stall the bridge.
 
 ## Alternatives and costs
 
-Adopt both panels' identity guard, simplicity's unchanged sidecar name and
-robustness's creation-mode discipline. Canonicalization alone loses the
-hard-link requirement; adding it to identity locking adds complexity without
-closing a required gap. Cost: one additional held descriptor, startup
-open/lock, carefully ordered destruction and possibly multiple inert alias
-sidecars. Reject robustness's claim that old binaries hold neither lock:
-the preceding implementation already holds a sidecar, but not an identity lock.
+For the macOS fix-up, adopt both panels' two-sidecar identity mechanism and
+std-only scope. Adopt robustness's verified private owner directory over
+simplicity's bare `/tmp` file: an unverified shared entry can redirect the
+lock onto the database. Cost: directory validation and covered refusal paths.
+Adopt metadata-only existing-file lookup over simplicity's opened descriptor;
+strengthen robustness's creation step to exclusive create plus metadata on
+AlreadyExists. Cost: a creation-race branch and stable-namespace assumption.
+Retain connection-first destruction despite robustness calling it tidiness:
+ownership must outlive SQLite close. Adopt simplicity's startup-only scope
+and robustness's documented-cleaner fallback over a refresh timer. Cost:
+operators must prevent live cleanup; no timer would close arbitrary unlink.
+
+Reject canonicalization as insufficient for hard links, nlink > 1 refusal
+as rejecting a legitimate first owner, data-file fcntl bytes as violating
+the no-SQLite-file-lock rule and vulnerable to descriptor close, and SQLite
+EXCLUSIVE as breaking raw-connection proofs. Accepted costs are two held
+sidecar descriptors, persistent inert guards, a fixed writable shared-root
+prerequisite, and explicit cross-user/private-namespace limits. No new
+dependency, public configuration or lock-management service.
 
 Adopt simplicity's LF sentinel over robustness's separate metric family.
 The validator already supplies a disjoint domain, so structural registry and
@@ -132,7 +226,10 @@ Rust/local and real-process alias proofs, exact registry/encoding tests,
 real HTTP/stdio errors and port-80/oversize exchanges, baseline-red receipts
 and final gates. No production line is excluded from measurement.
 
-The design change contains this proposal and its three spec artifacts only.
-Implementation adds the decision index entry and dated pointers in earlier
-records with their text/status intact; it lands README/module claims with
-code and tests. None of those pointers constitutes operator acceptance.
+The original design contained this proposal and the three storage-rpc
+artifacts. The macOS fix-up design contains this amended proposal and only
+the three macos-identity-lock artifacts. Implementation reconciles the
+decision index, previous spec lock instructions and misleading proposal
+pointers, preserving accepted text/status; it lands README/module claims
+with code and tests. §§2–4 and their tests remain unchanged. None of these
+documents constitutes operator acceptance or completed macOS verification.
