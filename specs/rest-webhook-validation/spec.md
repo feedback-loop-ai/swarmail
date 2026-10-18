@@ -1,7 +1,7 @@
 # REST and webhook validation
 
-Date: 2026-10-18. Design handoff for epic #120, batch 3: #122, #134, #135.
-Intended branch: `epic120-rest-webhook`; inspected base: `ffded10`, a descendant
+Date: 2026-10-18. Resume confirmation for epic #120, batch 3: #122, #134, #135.
+Branch: `epic120-rest-webhook`; original base: `ffded10`, a descendant
 of review baseline `2a325c9` containing batches 1 and 2.
 Decision: 0048 (proposed).
 
@@ -22,7 +22,9 @@ belongs to the operator; this design does not accept or rewrite older rulings.
 
 ## Evidence and synthesis
 
-Read both run-local positions, the complete local issue files
+### Original ruling (2026-10-18)
+
+The original design read both run-local positions, the complete local issue files
 `.brokkr/state/epic120/{120,122,134,135}.md`, and the matching
 `batch3-intake-framing.md`. The supplied issue files contain the review
 evidence but no separate comments section. `.brokkr/state/tasks/` contains
@@ -45,6 +47,33 @@ batch **1** (0046), and the 4,096-name awaits registry caps cumulative metric
 attribution, not waiter admission. Feed uses `Store::subscribe`, not that
 registry. Refusal before subscription remains required, but no registry-slot
 leak or active-wait admission limit is claimed.
+
+### Resume ruling (2026-10-18)
+
+Run `resume-point-read-first-epic-120-f30f3ba4` confirms this feature slug,
+design commit `e1e142a`, implementation `2079455`, and proposed decision 0048.
+Both current positions and `resume-intake-framing.md` were read alongside
+the original framing and issue evidence. The tasks directory still contains
+unrelated coverage framing. Both existing commits have good signatures;
+preserve them as ancestors. This confirmation changes no public contract.
+
+| Current position | Chief's ruling and cost |
+|---|---|
+| Both members confirm the implementation and reject speculative production work. | Adopt. No demonstrated acceptance gap warrants implementation changes. Reject restarting the design or rewriting either commit; fresh verification and review remain required. |
+| Simplicity favors no further commit; robustness asks for missing residual evidence to be recorded. | Reconcile with a documentation-only confirmation in these three existing spec files. The cost is a small review diff; it removes stale branch-creation and implementation instructions without adding runtime work or another decision. |
+| Robustness identifies synchronous validation CPU and a possible offload follow-up. | Accept the current design for this batch, as both members recommend. Reject adding `spawn_blocking` now; the cost is worker occupancy during large or concurrent PUTs, with no latency or global work-budget promise. |
+| Robustness asks for honest logging proof scope and inspection for copied 4xx bodies. | Adopt. Inspection of `json_body`, `BodyError`, response conversion and application tracing/middleware found no application log copying these 4xx envelopes. Caller-chosen unknown keys can appear in the response to that caller. This finding does not cover external proxies or log collectors. |
+| Both members preserve the lifecycle test and require fresh verification. | Adopt. Record host load and run the unchanged test on a quiet host. Reject widening deadlines or treating historical reruns as a fresh gate receipt; recurrence remains evidence to investigate. |
+
+The credential requirement below remains unchanged. Its execution proof is
+narrower than a universal claim: `a_transport_error_carries_no_url` exercises
+a refused connection and checks that neither URL host nor password appears
+in the error. The real-binary SIGTERM test checks exhaustion causes and absence
+of userinfo/secret markers in stdout. DNS and TLS source texts are not
+separately pinned for non-disclosure. Review must assess those paths and
+future dependency changes; these tests do not establish that every possible
+source string is safe. The eight-cause limit bounds traversal depth, not the
+byte length of a cause or complete log line.
 
 ## Required behavior
 
@@ -176,6 +205,13 @@ documented; “Strict input everywhere” is removed or accurately qualified.
     separately. All required final-tree gates pass with exact coverage and
     no new dependency, coverage exclusion or license-allowlist change.
 
+12. **AC12 / resume:** `e1e142a` and `2079455` remain signed ancestors of
+    HEAD on `epic120-rest-webhook`; `tests/lifecycle.rs` is byte-identical to
+    `2a325c9`. Verify records current host load and a fresh successful
+    `cargo test --locked --test lifecycle` as well as AC11's full gates.
+    Preserve any failed receipt; a later pass does not erase it. Leave a
+    clean tracked tree, with no push, PR, merge or issue closure.
+
 ## Scope boundaries
 
 No changes to synchronous commit before acceptance, subscribe-before-scan,
@@ -185,3 +221,14 @@ extraction pins, webhook plane, bridge, Origin guard, by-effect coverage gate,
 startupProbe/chart knobs and republish guard. No persistence, schema migration,
 new delivery guarantee, target limit, admission control, expiry warning,
 compat query-language work or later epic delivery-policy repair is included.
+
+Accepted costs: each supplied `ca_pem` target builds a temporary TLS client
+synchronously in the PUT handler, and delivery builds again on a cache miss.
+The existing 2 MiB body limit bounds input bytes only; it supplies no CPU
+latency bound or global concurrency budget. Moving validation to
+`spawn_blocking` is a possible separate follow-up, outside this resume.
+Configuration and retry state remain in memory and can be lost on restart;
+an in-flight delivery retains its old per-mail target snapshot across a PUT.
+Root loadability does not preflight validity dates or guarantee a future
+handshake. Compat list/search typos can still broaden selection across the
+store. These costs are preserved scope, not new delivery guarantees.

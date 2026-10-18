@@ -1,106 +1,91 @@
 # Ordered tasks — REST and webhook validation
 
-Implement [spec.md](spec.md) under [plan.md](plan.md) and proposed
-[0048](../../docs/decisions/0048-rest-webhook-validation.md). All tasks below
-remain open at design handoff. Proposed test names may change, but the signed
-implementation commit must map #122, #134 and #135 to the actual proving tests.
+Resume confirmation, 2026-10-18. Follow [spec.md](spec.md), [plan.md](plan.md)
+and proposed [0048](../../docs/decisions/0048-rest-webhook-validation.md).
+Design `e1e142a` and implementation `2079455` already exist. The original
+implementation tasks are superseded by this resume checklist, not reopened:
+unchecked boxes below mean pending confirmation or delivery evidence, not
+missing production code. Preserve both commits; repair only a demonstrated
+issue-acceptance gap in a new signed commit.
 
-- [ ] **T1 — Establish signed design delivery.** Fetch current main, verify
-  `2a325c9` ancestry and earlier batches, create/check out
-  `epic120-rest-webhook`, and commit exactly these three spec files and 0048
-  using the configured GPG key. Do not bypass read-only Git or disable signing.
-  **Proof:** nonempty artifacts, exact Acceptance Criteria/Risks headings,
-  checkbox tasks, valid relative decision link with proposed status;
-  `git verify-commit HEAD`, exact four-path commit diff and expected branch.
+- [ ] **R1 — Commit the design confirmation (#122/#134/#135).** Keep this
+  feature slug and 0048's proposed status; commit exactly the three existing
+  spec files, signed, on `epic120-rest-webhook`.
+  **Proof:** artifact validation (nonempty files, Acceptance Criteria, Risks,
+  checkboxes, valid relative decision link and proposed status), exact
+  three-path commit diff, good signature, and both original commits still
+  signed ancestors. No runtime or lifecycle-test diff from `2079455`.
 
-- [ ] **T2 — Record behavioral controls before repair (#122/#134/#135).**
-  Add the focused wire regressions below and run against the original review
-  behavior plus current main; identify already-landed blank-inbox repairs.
-  **Proof:** run-local issue/test/expected/observed red receipts on `2a325c9`
-  and `ffded10` where defective; unchanged preservation tests recorded green,
-  with no baseline control mutations retained in the working tree (AC11).
+- [ ] **R2 — Confirm #122's existing proof against AC1–AC3.** Inspect the
+  single complete builder and validation-before-swap ordering; do not rebuild
+  the feature or warm the cache during validation.
+  **Proof:** `webhook_ca_put_rejects_every_invalid_certificate` in
+  `tests/webhook.rs` includes complete installed-state preservation and
+  subsequent authenticated delivery, as well as trailing-invalid roots;
+  `webhook_second_ca_root_delivers_over_verified_https` proves later-root
+  trust. `webhook_validation_does_not_dial` and inline
+  `every_root_is_loaded_through_the_delivery_build` /
+  `validation_never_touches_the_client_cache` pin no dial and cache isolation.
+  Reconcile the original red/green map in `2079455`; fresh executions belong
+  to R5. Keep existing directness, retry, credential and cache-bound proofs.
 
-- [ ] **T3 — Validate every CA with the delivery builder (#122 first).**
-  Replace first-only parsing with uncached complete build, reused by PUT
-  validation and delivery misses. Preserve cache and boundary policy.
-  **Proof:** `webhook_ca_put_rejects_every_invalid_certificate` covers absent
-  section, empty certificate, malformed PEM/base64, invalid DER, later invalid
-  DER and later malformed block on HTTP/HTTPS; named 400s (AC1).
-  `webhook_ca_refusal_preserves_complete_configuration` covers valid target
-  followed by invalid target, all stored fields and subsequent old-target
-  authenticated delivery (AC2). Existing valid-first failures go red on both
-  bases; already-refused malformed input remains a preservation pin.
-
-- [ ] **T4 — Prove complete trust and isolation (#122).** Retain generated-CA
-  verified HTTPS; add a server trusted solely by the second root. Prove PUT
-  performs no outbound request or delivery-cache mutation.
-  **Proof:** `webhook_second_ca_root_delivers_over_verified_https`,
-  `webhook_validation_does_not_dial_or_change_cache` with positive controls,
-  isolated cache entries/builds/evictions/LRU victim checks, and existing
-  directness, proxy/redirect, retry and cap tests (AC3). No global resets.
-
-- [ ] **T5 — Close body shapes and scope the 400 amendment (#134/#135).**
-  Close SeedRequest/WebhookTarget, reject supplied optional webhook nulls with
-  the existing deserializer, and map only the two routes' typed JSON data
-  rejections to native 400s before effects. Preserve nullable redacted output.
+- [ ] **R3 — Confirm #134/#135's existing input proofs against AC4–AC8/AC10.**
+  Keep local data-error 400s, empty view queries, inert assert limit and the
+  documented compat exception. Do not replace the value-free readers with
+  default serde errors that quote wrong-shaped values.
   **Proof:** `seed_unknown_key_refuses_without_storing`,
-  `webhook_unknown_and_null_fields_preserve_configuration` (each optional
-  null tested independently), `seed_and_webhook_data_errors_are_local_400s`
-  for wrong types/missing fields/top-level shapes and unchanged syntax/media/
-  size/chaos responses, plus `webhook_echo_shape_stays_redacted_and_is_not_input`.
-  Include credential-bearing wrong-type inputs and all no-effect assertions
-  (AC2/AC4/AC5/AC8). Retain existing
-  `a_webhook_inbox_filter_answers_to_the_inbox_rule` as batch-1 preservation.
+  `native_count_assert_and_views_refuse_ignored_keys`,
+  `seed_and_webhook_data_errors_are_local_400s`,
+  `null_strings_refuse_on_rest_like_mcp`, and
+  `the_strictness_claims_match_the_wire` in `tests/api.rs`;
+  `webhook_unknown_and_null_fields_preserve_configuration` and the existing
+  `a_webhook_inbox_filter_answers_to_the_inbox_rule` in `tests/webhook.rs`.
+  Inline `a_refused_feed_query_never_subscribes`,
+  `the_target_shape_is_closed_and_refuses_by_kind_never_by_value` and served
+  OpenAPI parameter/body tests pin ordering, safe errors and contract shape.
+  Preserve successful feed/thread/filter/exact-count tests. Blank inboxes
+  are batch-1 preservation on `ffded10`, not a new regression to manufacture.
 
-- [ ] **T6 — Close native query shapes (#134).** Introduce independent flat
-  CountQuery/AssertQuery and one empty view query, retaining assert limit and
-  all valid filter/count semantics. Parse before reading or subscribing.
-  **Proof:** `native_count_assert_and_views_refuse_ignored_keys` covers each
-  route/key pairing with named 400s, including supported-elsewhere filters on
-  views; `count_and_assert_keep_their_filter_and_exact_count_contracts` covers
-  default/zero/above-250 counts, inert limits, bad numeric types and 200/409;
-  retain `the_assert_never_refuses_on_the_page_cap` (AC6).
+- [ ] **R4 — Confirm #135's diagnostics and proof limits against AC9.**
+  Preserve the message position, five totals, sweep/join ordering and
+  eight-cause traversal limit. Review application logging for copied 4xx
+  bodies and transport sources for credential disclosure.
+  **Proof:** real-binary
+  `sigterm_with_a_delivery_in_flight_prints_the_final_counts`, inline
+  `a_transport_error_carries_no_url` and
+  `causes_are_appended_in_order_and_bounded`. The chief's source inspection
+  found no application log copying seed/webhook 4xx envelopes. DNS/TLS
+  non-disclosure is not separately execution-pinned; review records its
+  assessment instead of claiming a universal test proof. No byte-size bound
+  follows from the source-depth limit.
 
-- [ ] **T7 — Prove feed ordering (#134).** Keep successful subscribe-before-
-  scan and ensure a refused query cannot construct a feed subscription.
-  **Proof:** `refused_feed_query_never_subscribes` observes the per-instance
-  subscription entry with an accepted positive control; real HTTP refusal
-  plus no-query initial SSE and subsequent SMTP delivery prove both paths.
-  Retain existing no-query thread/single-thread and feed tests (AC7). Follow
-  0020 placement; do not use awaits metric counts as feed observations.
+- [ ] **R5 — Obtain fresh verify receipts against AC11–AC12.** Run the
+  plan's ordered full inventory with `cargo fmt --all` before every check:
+  fmt check, clippy, workspace tests, named lifecycle suite, exact coverage,
+  coverage selftest, publish-guard test, licenses, fail-closed native-tls
+  absence and tooling-pinned bundle compilation in verify. No TMPDIR override.
+  **Proof:** recorded exit statuses and missed == 0 for lines, branches and
+  functions; current host load before/after tests and a passing
+  `an_in_flight_commit_neither_holds_stop_nor_half_lands` in the unchanged
+  `tests/lifecycle.rs`. Avoid competing heavy builds. Retain failures and
+  investigate recurrence; do not edit test timing or erase a failed receipt
+  with retries. Historical quiet-host passes do not discharge this task.
+  Record sandbox refusals honestly; cargo refusal requires immediate blocker
+  reporting and `.brokkr/state/epic120-rest-webhook.patch`.
 
-- [ ] **T8 — Repair stop and exhaustion diagnostics (#135, shared #122).**
-  Add bounded source-chain formatting after URL removal; use it for TLS
-  builder and delivery failures. Put the stop constant in message position.
-  **Proof:** inline no-source/nested/eight-source-bound tests;
-  `dispatcher_stop_has_one_message_and_five_totals` against a real binary;
-  `webhook_exhaustion_names_cause_without_credentials` pins a substantive
-  real transport cause, preserved prefix, no userinfo/secret, unchanged four
-  attempts and exhausted accounting (AC9). Preserve constant line mapping.
+- [ ] **R6 — Review the confirmed feature; repair only on evidence.** Hand
+  the protected review phase the acceptance map and fresh receipts, including
+  accepted synchronous PUT CPU cost, in-memory configuration, root-loadability
+  scope, compat tolerance and non-disclosure proof limits.
+  **Proof:** review findings explicitly assess AC1–AC12 and frozen guarantees.
+  Any required repair has an issue-named failing regression, a new signed
+  commit and refreshed affected/full gates; no speculative implementation
+  work, dependency widening, accepted-ruling rewrite or lifecycle timing edit.
 
-- [ ] **T9 — Publish exact contracts with executable pins (#134/#135/#122).**
-  Update OpenAPI request/response shapes, llms strictness scope, CA semantics
-  and README examples; index 0048 as proposed without rewriting accepted text.
-  **Proof:** `rest_validation_contracts_match_served_schemas_and_requests`
-  checks independent allowed-key sets and actual wire behavior, local
-  400/422 distinction, nullable output versus non-null request fields, and
-  compat list/search tolerance alongside strict latest (AC10). Relative
-  links and decision status remain valid; no blanket strictness claim remains.
-
-- [ ] **T10 — Complete regression and gate receipts (all issues).** Run the
-  targeted API/webhook/binary suites and the plan's ordered full gates,
-  formatting in write mode before every check. Keep tests/code at exact
-  coverage without exclusions, new dependencies or allowlist changes.
-  **Proof:** green fmt, clippy, workspace tests, coverage 100/100/100 with
-  missed counts zero and no TMPDIR override, coverage selftest, publish-guard
-  test, licenses and fail-closed native-tls absence; verify seat records
-  tooling-pinned bundle compilation honestly (AC11). Cargo refusal requires
-  immediate blocker reporting and `.brokkr/state/epic120-rest-webhook.patch`.
-
-- [ ] **T11 — Deliver signed implementation without publishing.** Commit on
-  the requested branch with #122/#134/#135 in the subject and the actual
-  issue-to-test red/green map in the body. Keep run-local evidence uncommitted.
-  **Proof:** valid GPG signature, reviewed diff preserving earlier protections,
-  clean working tree on `epic120-rest-webhook`; no push, PR, merge or issue
-  closure. Do not claim completion while a required gate, signature or
-  acceptance proof remains unavailable.
+- [ ] **R7 — Leave the authorized local ship handoff.** Only after verify
+  and review pass, hand off the existing branch with any approved signed
+  repair commits on top. Do not push, open a PR, merge or close an issue.
+  **Proof:** clean tracked tree on `epic120-rest-webhook`, good signatures,
+  original commit ancestry, proposed 0048 and unchanged lifecycle file.
+  Report no feature-completion claim while a required receipt or review is
+  outstanding; the operator's assistant owns remote landing.

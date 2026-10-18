@@ -2,7 +2,11 @@
 
 Implements [spec.md](spec.md) and proposed
 [0048](../../docs/decisions/0048-rest-webhook-validation.md).
-This is a design handoff, not an implementation or gate receipt.
+Resume confirmation, 2026-10-18: `e1e142a` committed the design and `2079455`
+implemented it. Preserve both. This plan records the delivered approach and
+remaining verify/review handoff; it is not a fresh execution-gate receipt.
+Only the three existing spec files change in this confirmation. Decision 0048
+stays proposed and unchanged; no new semantic decision is needed.
 
 ## Technical context
 
@@ -13,12 +17,14 @@ checkout contains a spec template but no plan template; this plan supplies
 the required technical context, constitution, structure, research, data model,
 contracts and quickstart sections directly, following the existing spec plans.
 
-`set_webhooks` already validates every target before `Webhooks::set`.
-`WebhookTarget::validate` calls the inbox validator (batch 1) and a PEM helper
-that currently takes only the first certificate. `client_for` holds the
-bounded process-global CA cache and performs the missing TLS build. Count
-reuses `ListQuery`; assert reuses `AwaitQuery`; the three view handlers ignore
-queries. `Json<T>` currently rejects data errors with axum's 422.
+`set_webhooks` validates all targets before one `Webhooks::set`.
+Validation and delivery cache misses share `build_ca_client`, which reads all
+certificates and completes the TLS build; validation never uses the cache.
+Count/assert have closed flat query structs and views parse an empty closed
+query. `json_body` maps data errors to 400 only for seed and webhook. The
+local `WebhookTargets`/`TargetSlot`/`Text` readers and `ShapeVisitor` refuse
+wrong-shaped values by kind without echoing credentials. Retain this local
+machinery: plain serde diagnostics would lose that protection.
 
 ## Constitution check
 
@@ -40,10 +46,11 @@ mutable test globals, coverage exclusions or denominator reductions.
 
 ## Research and resolved questions
 
-Both positions and all issue evidence were read. Current main is `ffded10`;
-`2a325c9` is an ancestor. Decisions 0001–0047 exist, so 0048 is next. The
-matching intake is `batch3-intake-framing.md` under `.brokkr/state/epic120/`;
-the tasks directory contains only older coverage framing. The spec's
+Both current positions and all issue evidence were read. The original base
+is `ffded10`, descending from `2a325c9`. Decision 0048 already exists. The
+original intake is `batch3-intake-framing.md` under `.brokkr/state/epic120/`;
+the tasks directory contains only older coverage framing. Resume authority is
+`resume-intake-framing.md` in the same directory. The spec's
 synthesis table resolves disagreements without importing factual errors:
 0041 explicitly disclaims configuration echo round trips, 0030 explicitly
 preserves assert limit, and the registry cap limits metric labels only.
@@ -62,9 +69,9 @@ exposes a credential-bearing value. Do not normalize chaos or all extractors.
 
 ## Project structure and files
 
-| File | Intended work |
+| File | Implementation ownership |
 |---|---|
-| `src/webhook.rs` | Complete uncached CA builder; reuse from validation and cache miss; close target deserialization with existing present-string helper; bounded error-chain formatting; explicit tracing message; inline deterministic proofs. |
+| `src/webhook.rs` | Complete uncached CA builder; reuse from validation and cache miss; close target deserialization with local value-free shape readers; bounded error-chain formatting; explicit tracing message; inline deterministic proofs. |
 | `src/api.rs` | Closed SeedRequest, CountQuery, AssertQuery and empty view query; local JSON data-rejection mapping for two handlers; docs and parser/schema unit pins. |
 | `src/model.rs` | Reuse `present_string` and `validate_inbox`; no new production rule expected. |
 | `tests/webhook.rs` | Real invalid-CA/body refusals and full-state preservation; generated later-root HTTPS; existing redaction/direct-delivery/retry/cache proofs. |
@@ -74,18 +81,19 @@ exposes a credential-bearing value. Do not normalize chaos or all extractors.
 | `src/static/openapi.json`, `src/static/llms.txt`, `README.md` | Exact accepted keys/statuses, CA loadability, input/output null distinction, compat tolerance and non-replayable echoes. |
 | `docs/decisions/README.md` | Index 0048 as proposed during implementation. Older records need at most clearly dated proposal pointers; no accepted text rewrite. |
 
-Only `specs/rest-webhook-validation/{spec,plan,tasks}.md` and
-`docs/decisions/0048-rest-webhook-validation.md` belong in the design commit.
-Keep product documentation and its executable contract tests with implementation.
+The original design commit contains the three spec files and 0048. This
+resume commit contains exactly `specs/rest-webhook-validation/{spec,plan,tasks}.md`.
+The table records implementation ownership, not newly authorized edits.
+Change production code only if a concrete acceptance gap is proven.
 
 ## Implementation approach
 
-1. Establish the authorized branch from current main containing `2a325c9`;
-   preserve earlier batches and any operator changes. Verify the decision
-   number and GPG configuration. Sign the four design artifacts before runtime
-   changes. The design environment refused fetch and branch creation because
-   `.git` is read-only; resume Git operations in an environment permitting
-   them. Do not redirect Git metadata or create an unsigned substitute.
+Steps 2–7 record the approach delivered by `2079455`; do not redo them.
+
+1. Confirm branch `epic120-rest-webhook`, signed ancestors `e1e142a` and
+   `2079455`, and the unchanged lifecycle test. Do not recreate the branch,
+   rebase, amend or squash. Sign this documentation confirmation with the
+   configured key; a signing failure remains a blocker.
 2. Replace the first-only CA path with `build_ca_client(pem)` in the same
    module. Iterate certificates to exhaustion, reject no certificates, add
    each root to `client_builder()` and finish `build()`. Keep one named
@@ -100,9 +108,10 @@ Keep product documentation and its executable contract tests with implementation
    chains deterministically inline, plus a real transport cause without
    OS-specific full-string matching. Existing cause-less HTTP status errors
    remain meaningful and unchanged.
-4. Close WebhookTarget and SeedRequest. Apply `default` plus existing
-   `present_string` to the three optional webhook strings; preserve Serialize
-   behavior. Change only the seed and webhook handlers to receive/examine
+4. Close WebhookTarget and SeedRequest. Apply `default` plus local
+   `optional_text` to the three optional webhook strings, with `text` for URL
+   and value-free shape readers for target objects and the array; preserve
+   Serialize behavior. Change only the seed and webhook handlers to receive/examine
    typed JSON extraction results. Map data errors to native 400; forward
    non-data rejection responses unchanged. Share a small mapping helper
    locally if needed, not a global middleware/validation framework. Ensure
@@ -122,9 +131,13 @@ Keep product documentation and its executable contract tests with implementation
    OpenAPI uses separate request/response schemas where necessary; this does
    not require runtime DTO duplication. Document exact query sets and the
    two local data-error mappings; qualify the strict-input sentence explicitly.
-8. Collect each behavioral red/green receipt and finish the full gate
-   inventory. Commit signed implementation with the issue-to-test mapping.
-   Do not push, open a PR, merge or close issues.
+8. Reconcile the existing issue-to-test receipts in `2079455` with the tests
+   named in tasks.md; unchecked boxes from the original design are not evidence
+   of missing implementation. Implement changes nothing absent a real gap.
+   Verify runs fresh full gates and the unchanged lifecycle suite on a quiet
+   host, recording load and every failure. Review assesses acceptance and
+   residual proof scope; ship is a local handoff. Do not push, open a PR,
+   merge or close issues.
 
 ## Data model and contracts
 
@@ -145,8 +158,9 @@ existing route/domain error envelopes except the explicitly scoped data-error
 
 ## Proof design
 
-Pair proposed test names in [tasks.md](tasks.md) with issue and AC identifiers;
-equivalent names are fine only when the final commit records the actual map.
+Actual test names in [tasks.md](tasks.md) map to issue and AC identifiers;
+`2079455` records original red/green evidence. The proof design below remains
+the review standard for those existing tests.
 Install a prior target carrying credentials, snapshot `srv.webhooks.current()`
 where public access already exists, submit each malformed body, compare every
 stored field and verify a real delivery still uses the prior secret/auth.
@@ -184,10 +198,17 @@ record them honestly as preservation proofs, not new reds. Output-shape
 preservation tests need not fail baseline; newly refused echo replay does.
 Keep all control mutations out of the final tree.
 
+Resume inspection found no application tracing or middleware copying the
+seed/webhook 4xx envelopes into logs. This is a source-inspection finding,
+not a new dynamic log-capture test or a claim about external logging.
+Connection-refusal redaction is pinned by `a_transport_error_carries_no_url`
+and the real-binary SIGTERM test. DNS/TLS source-chain non-disclosure has no
+separate execution pin; review must not call this coverage universal.
+
 ## Quickstart and validation
 
-After implementation, run targeted library, API, webhook and binary suites
-as each owning change lands. For manual inspection against a local server:
+Verify runs the existing library, API, webhook and binary proofs as part of
+the fresh workspace gates. For manual inspection against a local server:
 
 ```bash
 curl -i -H 'Content-Type: application/json' --data '{"to":"a@x.io","subjet":"typo"}' http://127.0.0.1:8025/api/v1/inboxes/batch3/seed
@@ -206,6 +227,8 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all
 cargo test --workspace --locked
 cargo fmt --all
+cargo test --locked --test lifecycle
+cargo fmt --all
 bash scripts/coverage-gate.sh
 cargo fmt --all
 bash scripts/coverage-gate.sh selftest
@@ -215,7 +238,10 @@ cargo fmt --all
 cargo deny check licenses
 ```
 
-No TMPDIR override. Require exact missed == 0 lines, branches and functions.
+Record host load (for example `uptime`) before and after test runs; avoid
+competing heavy builds. Leave `tests/lifecycle.rs` and its timings unchanged.
+Retain failed receipts and investigate recurrence instead of retrying until
+a green result hides it. No TMPDIR override. Require exact missed == 0 lines, branches and functions.
 Run the existing fail-closed native-tls absence proof. Verify owns
 `brokkr compile --bundle bundles/self` from the tooling-pinned binary; record
 any sandbox refusal and do not install a replacement or claim compile passed.
@@ -235,14 +261,15 @@ its success cannot prove Git delivery or implementation gates.
 |---|---|
 | Trailing roots are ignored or validation diverges from delivery. | One complete builder, later-invalid refusal and later-valid-root real HTTPS proof. |
 | PUT churn displaces active cached clients. | Uncached build-and-discard; prove no cache effects or lock access, retain bounded LRU. Rebuild on later misses is accepted. |
-| Many valid targets consume synchronous validation CPU. | Retain existing request size bound, one temporary client at a time, no shared lock. No latency/global concurrency guarantee; new admission limits are out of scope. |
+| Many valid targets consume synchronous validation CPU. | Retain the 2 MiB body bound, one temporary client at a time, no shared lock. No latency/global concurrency guarantee; `spawn_blocking` and new admission limits are separate follow-ups. |
 | Valid PUT is mistaken for guaranteed TLS success. | Publish root-loadability-only semantics; preserve actual handshake verification and no added validity-time policy. |
 | Refusal clears a secret or partially installs targets. | Parse and validate whole list before one swap; compare actual stored fields and subsequent authenticated delivery. |
-| Added source strings expose credentials. | Strip URL before formatting, bound traversal, real userinfo/secret log assertions and malicious wrong-type input probes. |
+| Added source strings expose credentials. | Strip URL before formatting; retain real connection-refusal userinfo/secret assertions and wrong-type probes. Eight causes bounds traversal, not bytes. DNS/TLS non-disclosure is not separately execution-pinned; review source paths and dependency changes. |
 | Local 400 mapping accidentally changes every route or syntax/media/size errors. | Match typed data rejection only in two handlers, explicit proposed amendment and status matrix including unchanged chaos. |
 | Clients replay nullable diagnostic echoes. | Preserve response shape, document request/response distinction and retention of original input; pin replay refusal with no effects. |
 | Query closure removes accepted assert parity. | Preserve and document inert typed limit, default/zero/exact count and no page cap. |
 | Compat typos still broaden scope. | Explicit documented exception permitted by #134; preserve upstream client tolerance and strict latest. |
 | Global counters or test sleeps hide races. | Dedicated subprocess/per-instance seams, observed events with cleanup bounds, no global resets or sleep synchronization. |
 | Refusal accidentally registers a feed watcher. | Parse before feed construction; wire proof plus observed subscription entry and positive control. |
-| A proposal or structural check is reported as completed delivery. | Proposed status, unchecked implementation tasks, distinct gate receipts and explicit Git/signing blocker reporting. |
+| Load causes the unchanged lifecycle proof to fail again. | Quiet host, recorded load, fresh suite receipts; retain failures and investigate without timing edits. |
+| A proposal or structural check is reported as completed delivery. | Keep 0048 proposed; distinguish existing implementation from pending verify/review/ship, and report any Git/signing blocker. |
