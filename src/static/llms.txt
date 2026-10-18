@@ -27,7 +27,20 @@
   still spells the attacker's name — and a present `Origin` that is not a
   loopback spelling of the bound port is refused 403 (a browser cannot forge
   it). No `Origin` (curl, agents, the stdio bridge, every harness) passes the
-  Origin leg untouched; every client names its Host honestly.
+  Origin leg untouched; every client names its Host honestly. A `Host` with
+  no port means 80; a portless loopback `Origin` still refuses.
+- Off loopback (`0.0.0.0`, the image and the chart): the Host allowlist is
+  inactive, but a present `Origin` must name the request's own `Host`
+  authority (same host, same port; an omitted port means the Origin scheme's
+  default, 80 or 443), else 403 `cross-origin requests must match the Host
+  authority`. Requests with no `Origin` pass. A reverse proxy must forward the
+  original `Host`, port included; `X-Forwarded-*` is ignored. This is not
+  authentication: any network peer is trusted and DNS rebinding is not
+  prevented. A forwarded port (`ssh -L`, VS Code, Codespaces) refuses on a
+  loopback bind; the remedy is an off-loopback bind such as
+  `SWARMAIL_HTTP_LISTEN=0.0.0.0:8025`, which the operator owns.
+- `/metrics`: `swarmail_http_requests_in_flight` counts the scrape itself
+  (quiet server reads 1). Label values use only the `\\`, `\"`, `\n` escapes.
 - Pages are capped at 250 items on every plane: `limit`/`count` above it is
   refused with a 400 (REST + shims) or a `-32602` error (MCP), never clamped.
   SMTP request parsing and the REST/compat page copies run off the async
