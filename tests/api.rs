@@ -2861,9 +2861,11 @@ async fn the_strictness_claims_match_the_wire() {
 /// its own source quote and then decodes, so the encoded apostrophes and
 /// quotes real templating engines write stay inside the link; balanced
 /// parentheses, IPv6 literals and path commas survive; a signed numeric
-/// reference stays literal and manufactures no code. Red at 2a325c9:
-/// `https://app.test/reset?name=O`, `https://x.io/?q=`, `…/Foo_(bar`,
-/// `http://[::1`, `…/w_100` and the code `4829`.
+/// reference stays literal and manufactures no code; named references of
+/// the full WHATWG table decode in an attribute and in text. Red at
+/// 2a325c9: `https://app.test/reset?name=O`, `https://x.io/?q=`,
+/// `…/Foo_(bar`, `http://[::1`, `…/w_100` and the code `4829`; red on the
+/// 71-name interim table: `…/caf&eacute;` and `…/go&rarr;`.
 #[tokio::test]
 async fn smtp_issue_136_link_fidelity() {
     let srv = start().await;
@@ -2875,6 +2877,7 @@ async fn smtp_issue_136_link_fidelity() {
         "<p>See https://en.wikipedia.org/wiki/Foo_(bar), <a href=\"http://[::1]:8080/p\">",
         "local</a> and (https://cdn.x.io/w_100,h_100/x.jpg).</p>",
         "<p>&#+52;&#+56;&#+50;&#+57; <a href=\"https://x.io/&#+52;/\">n</a></p>",
+        "<a href=\"https://x.io/caf&eacute;\">e</a><p>https://x.io/go&rarr;</p>",
     );
     let email = deliver_mime(&srv, "links136", &html_only(html)).await;
     assert_eq!(
@@ -2888,6 +2891,8 @@ async fn smtp_issue_136_link_fidelity() {
             "http://[::1]:8080/p",
             "https://cdn.x.io/w_100,h_100/x.jpg",
             "https://x.io/&#+52;/",
+            "https://x.io/café",
+            "https://x.io/go→",
         ])
     );
     assert_eq!(array(&email, "codes"), serde_json::json!([]));

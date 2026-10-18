@@ -818,6 +818,40 @@ mod tests {
         assert_eq!(decode_refs("&amp;lt;"), "&lt;", "decoded once, never again");
     }
 
+    // Decision 0040 §5 / 0049 §2: the snapshot's 106 legacy names without
+    // a semicolon are not syntax here, in either context — `&n` and
+    // `&n=1` stay literal, while `&n;x` decodes the full mapping and keeps
+    // the `x`. This is deliberately narrower than the HTML tokenizer's
+    // context-dependent bare matches; unknown `&notit;` gets no
+    // longest-prefix recovery. Derived from the independent JSON.
+    #[test]
+    fn legacy_names_need_their_semicolon() {
+        let source = entities::tests::snapshot();
+        let legacy: Vec<_> = source
+            .iter()
+            .filter(|(key, _)| !key.ends_with(';'))
+            .collect();
+        assert_eq!(legacy.len(), 106);
+        for (key, entry) in legacy {
+            let value = entities::tests::mapping(key, entry);
+            assert_eq!(decode_refs(key), *key);
+            assert_eq!(decode_refs(&format!("{key}=1")), format!("{key}=1"));
+            assert_eq!(decode_refs(&format!("{key};x")), format!("{value}x"));
+            let html = format!("<a href=\"https://x.io/?a{key}=1\">go</a> https://y.io/?b{key}=2");
+            assert_eq!(
+                extract_links(None, Some(&html)),
+                vec![
+                    format!("https://x.io/?a{key}=1"),
+                    format!("https://y.io/?b{key}=2")
+                ],
+                "{key}: literal in an attribute and in text"
+            );
+        }
+        assert_eq!(decode_refs("&amp"), "&amp");
+        assert_eq!(decode_refs("&amp=1"), "&amp=1");
+        assert_eq!(decode_refs("&notit;"), "&notit;");
+    }
+
     // ---- issue #39: first-occurrence document order ----
 
     #[test]

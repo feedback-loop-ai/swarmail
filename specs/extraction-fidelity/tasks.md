@@ -21,6 +21,10 @@ operator accepts it. Every task below includes its proving check.
   verify all 2,125 semicolon-required mappings against that snapshot, sorted
   uniqueness, longest name within the window and maximum 6/5 byte expansion;
   `cargo deny check licenses` passes (AC94-edges).
+  *Status 2026-10-18 (extraction-compat T02):* the interim subset this
+  batch shipped is replaced by the full generated table from the pinned
+  `scripts/data/html-entities.json`; `all_whatwg_entities_match_snapshot`
+  is the proof (see [0040's pointer](../../docs/decisions/0040-extraction-fidelity.md)).
 - [ ] **T04 — Extend the existing bounded decoder.** Support all replacement
   scalars with the existing window/stats owner; keep numeric failure policy
   and decode-once semantics. **Proof:** full-table and numeric/malformed
