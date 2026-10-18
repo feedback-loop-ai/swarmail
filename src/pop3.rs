@@ -1248,7 +1248,10 @@ mod tests {
         write_line(&mut rec, "+OK", Duration::from_secs(1))
             .await
             .unwrap();
-        assert_eq!(rec.ops, vec![crate::smtp::WriteOp::Write(b"+OK\r\n".to_vec())]);
+        assert_eq!(
+            rec.ops,
+            vec![crate::smtp::WriteOp::Write(b"+OK\r\n".to_vec())]
+        );
     }
 
     /// A peer that stops reading a multi-line reply is cut off at the idle

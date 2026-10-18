@@ -1281,8 +1281,13 @@ async fn a_legacy_data_file_sheds_the_unused_inbox_index_and_keeps_its_mail() {
     c.login("legacy").await;
     assert_eq!(c.cmd("UIDL 1").await, format!("+OK 1 {id}"));
     assert!(c.cmd("QUIT").await.starts_with("+OK"));
-    let (st, body) =
-        common::http_json(srv.http_addr, "GET", &format!("/api/v1/messages/{id}"), None).await;
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
     assert_eq!(st, 200);
     assert_eq!(body["subject"], "Legacy mail");
     srv.stop().await;

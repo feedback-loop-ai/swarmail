@@ -432,7 +432,11 @@ async fn the_session_reports_mail_removed_elsewhere() {
     assert_eq!(c.cmd("STAT").await, format!("+OK 2 {}", n1 + n2));
     // The survivor still marks and unmarks normally.
     assert_eq!(c.cmd("DELE 2").await, "+OK message 2 deleted");
-    assert!(c.cmd("RSET").await.starts_with("+OK maildrop has 2 messages"));
+    assert!(
+        c.cmd("RSET")
+            .await
+            .starts_with("+OK maildrop has 2 messages")
+    );
     // And the survivor still serves, byte-exact.
     assert_eq!(c.cmd("RETR 2").await, format!("+OK {n2} octets"));
     assert_eq!(
@@ -498,7 +502,10 @@ async fn retr_stuffs_leading_dots_and_normalizes_line_endings() {
     // wire, but its octet count is what the client keeps: CRLF-terminated,
     // the added dot not counted (decision 0037).
     let expected = payload_octets(b".leading-dots\nplain line\r\n");
-    assert_eq!(expected, 27, "15 + 12: the normalized payload, not the wire");
+    assert_eq!(
+        expected, 27,
+        "15 + 12: the normalized payload, not the wire"
+    );
     assert_eq!(wire_octets(b".leading-dots\nplain line\r\n"), 28);
     assert_eq!(c.cmd("RETR 1").await, format!("+OK {expected} octets"));
     // Dot-stuffing is undone by the client; the bare LF became CRLF.

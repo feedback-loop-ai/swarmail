@@ -108,7 +108,11 @@ fn the_pop3_size_rule_is_stated_alike_everywhere() {
             "0037-pop3-size-accounting.md",
         ],
     );
-    refuses(&readme, "README", &["CRLF-terminated and dot-stuffed, the terminating"]);
+    refuses(
+        &readme,
+        "README",
+        &["CRLF-terminated and dot-stuffed, the terminating"],
+    );
     let pop3 = doc("src/pop3.rs");
     states(
         &pop3,

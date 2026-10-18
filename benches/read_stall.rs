@@ -180,7 +180,11 @@ async fn smtp_roundtrips(transactions: usize) {
     }
     println!(
         "smtp-roundtrips: profile {}, {} measured transactions after 10 warm-up",
-        if cfg!(debug_assertions) { "debug" } else { "release" },
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
         transactions
     );
     for (name, set) in names.iter().zip(samples) {

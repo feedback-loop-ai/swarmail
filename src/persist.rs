@@ -598,7 +598,8 @@ mod tests {
             .collect::<rusqlite::Result<Vec<String>>>()
             .unwrap();
         assert!(
-            plan.iter().any(|row| row.contains("USING INDEX emails_seq")),
+            plan.iter()
+                .any(|row| row.contains("USING INDEX emails_seq")),
             "the seq index serves the restore scan: {plan:?}"
         );
         assert!(
