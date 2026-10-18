@@ -1477,25 +1477,30 @@ pub fn build_seed_email(
     ))
 }
 
-/// The first *text/plain* body part, verbatim — the sender's own text, with
-/// no synthesis (decision 0031 §1). A body part of any other type yields
-/// `None` even though the parser lists it: in a text-only
-/// multipart/alternative the text part is pushed into `html_body` as a
-/// fallback, so the part-type decides, not the list.
+/// The first *text/plain* part among the outer message's text-body
+/// candidates, verbatim — the sender's own text, with no synthesis
+/// (decision 0031 §1, 0040 §1). The parser's candidate lists carry
+/// presentation fallbacks: in multipart/mixed every inline part is listed
+/// in both, and in a text-only multipart/alternative the text part is
+/// pushed into `html_body` too. So the part-type decides, and the scan
+/// continues past a fallback to a later genuine part (issue #74) — never
+/// into an attachment or an attached message's bodies, which the outer
+/// lists do not hold.
 fn sender_text_part(message: &mail_parser::Message<'_>) -> Option<String> {
-    match &message.text_part(0)?.body {
+    message.text_bodies().find_map(|part| match &part.body {
         PartType::Text(text) => Some(text.to_string()),
         _ => None,
-    }
+    })
 }
 
-/// The first *text/html* body part, verbatim — the sender's own html, with
-/// no synthesis (decision 0031 §1).
+/// The first *text/html* part among the outer message's html-body
+/// candidates, verbatim — the sender's own html, with no synthesis
+/// (decision 0031 §1, 0040 §1).
 fn sender_html_part(message: &mail_parser::Message<'_>) -> Option<String> {
-    match &message.html_part(0)?.body {
+    message.html_bodies().find_map(|part| match &part.body {
         PartType::Html(html) => Some(html.to_string()),
         _ => None,
-    }
+    })
 }
 
 pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope: String) -> Email {
@@ -1543,9 +1548,9 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
     // the wrong direction (`body_text` on an html part converts html→text,
     // `body_html` on a text part converts text→html), which would store a
     // body the sender never sent. The part-type match below is the honest
-    // accessor — in a multipart/alternative missing one variant, the parser
-    // pushes the present part into both body lists, so list membership is
-    // not part-type membership.
+    // accessor — the parser lists fallback parts in both body lists, so
+    // list membership is not part-type membership, and the first genuine
+    // part of each type wins wherever it sits in its list (decision 0040).
     let text = parsed.as_ref().and_then(sender_text_part);
     let html = parsed.as_ref().and_then(sender_html_part);
 
@@ -1673,6 +1678,83 @@ mod tests {
         );
         assert!(bodyless.text.is_none());
         assert!(bodyless.html.is_none());
+    }
+
+    /// The first genuine part of each type, wherever its candidate list
+    /// puts it (issue #74, decision 0040 §1): multipart/mixed lists every
+    /// inline part in both lists, so candidate zero of the html list is the
+    /// text part. An attachment — an html file or an attached message — is
+    /// never a body.
+    #[test]
+    fn bodies_are_the_first_genuine_candidate_of_each_type() {
+        let parse = |raw: &str| {
+            build_email(
+                raw.as_bytes(),
+                "in",
+                &["r@x.io".to_string()],
+                "s@x.io".into(),
+            )
+        };
+        let mixed = |parts: &str| {
+            format!(
+                "From: s@x.io\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n{parts}--b--\r\n"
+            )
+        };
+        let text = "--b\r\nContent-Type: text/plain\r\n\r\nPlain sender body\r\n";
+        let html = "--b\r\nContent-Type: text/html\r\n\r\n<p>HTML sender body <a href=\"https://example.test/verify\">Verify</a></p>\r\n";
+        for order in [format!("{text}{html}"), format!("{html}{text}")] {
+            let mail = parse(&mixed(&order));
+            assert_eq!(mail.text.as_deref(), Some("Plain sender body"));
+            assert_eq!(
+                mail.html.as_deref(),
+                Some("<p>HTML sender body <a href=\"https://example.test/verify\">Verify</a></p>")
+            );
+            assert_eq!(mail.links, vec!["https://example.test/verify"]);
+        }
+
+        let several = parse(&mixed(
+            "--b\r\nContent-Type: text/plain\r\n\r\nfirst\r\n\
+             --b\r\nContent-Type: text/html\r\n\r\n<p>one</p>\r\n\
+             --b\r\nContent-Type: text/plain\r\n\r\nsecond\r\n\
+             --b\r\nContent-Type: text/html\r\n\r\n<p>two</p>\r\n",
+        ));
+        assert_eq!(several.text.as_deref(), Some("first"));
+        assert_eq!(several.html.as_deref(), Some("<p>one</p>"));
+
+        // An empty genuine body is present, not absent.
+        let empty = parse(&mixed("--b\r\nContent-Type: text/html\r\n\r\n\r\n"));
+        assert_eq!(empty.html.as_deref(), Some(""));
+        assert!(empty.text.is_none());
+
+        // Nested alternative bodies count; an attached html file does not.
+        let nested = parse(&mixed(
+            "--b\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n\
+             --a\r\nContent-Type: text/plain\r\n\r\nalt plain\r\n\
+             --a\r\nContent-Type: text/html\r\n\r\n<p>alt html</p>\r\n--a--\r\n\
+             --b\r\nContent-Type: text/html; name=\"f.html\"\r\n\
+             Content-Disposition: attachment; filename=\"f.html\"\r\n\r\n<p>attached 4444</p>\r\n",
+        ));
+        assert_eq!(nested.text.as_deref(), Some("alt plain"));
+        assert_eq!(nested.html.as_deref(), Some("<p>alt html</p>"));
+        assert!(nested.codes.is_empty());
+
+        let attached_file = parse(&mixed(
+            "--b\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n\
+             --b\r\nContent-Type: text/html\r\n\
+             Content-Disposition: attachment; filename=\"f.html\"\r\n\r\n<p>attached 4444</p>\r\n",
+        ));
+        assert_eq!(attached_file.text.as_deref(), Some("see attached"));
+        assert!(attached_file.html.is_none());
+
+        // An attached message's html is that message's body, not ours.
+        let attached_message = parse(&mixed(
+            "--b\r\nContent-Type: text/plain\r\n\r\nforwarded\r\n\
+             --b\r\nContent-Type: message/rfc822\r\n\r\n\
+             From: inner@x.io\r\nContent-Type: text/html\r\n\r\n<p>inner 5555</p>\r\n",
+        ));
+        assert_eq!(attached_message.text.as_deref(), Some("forwarded"));
+        assert!(attached_message.html.is_none());
+        assert!(attached_message.codes.is_empty());
     }
 
     /// An AsyncRead that yields its bytes one per poll — the harshest

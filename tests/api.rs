@@ -1515,3 +1515,166 @@ async fn an_off_loopback_bind_leaves_the_guard_inert() {
     .await;
     assert_eq!(st, 200, "the Host leg is inert off loopback: {body}");
 }
+
+// ---- run 17: extraction fidelity (issues #74, #93, #94; decision 0040) ----
+
+/// Deliver `data` (headers, blank line, body; CRLF) over real SMTP into
+/// `inbox` and return the stored mail REST serves right after the 250.
+async fn deliver_mime(srv: &swarmail::RunningServer, inbox: &str, data: &str) -> serde_json::Value {
+    let mut conn = SmtpConn::connect(srv.smtp_addr).await;
+    conn.send("EHLO swarmail-extract-test").await;
+    conn.reply_multi().await;
+    let plain = format!("\u{0}{inbox}\u{0}whatever");
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, plain);
+    conn.send(&format!("AUTH PLAIN {b64}")).await;
+    assert!(conn.reply().await.starts_with("235"));
+    conn.send("MAIL FROM:<sender@x.io>").await;
+    assert!(conn.reply().await.starts_with("250"));
+    conn.send(&format!("RCPT TO:<{inbox}@x.io>")).await;
+    assert!(conn.reply().await.starts_with("250"));
+    let reply = conn.data(data).await;
+    assert!(reply.starts_with("250"), "DATA refused: {reply}");
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/inboxes/{inbox}/messages"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    body["emails"][0].clone()
+}
+
+/// A stored array field, with the empty array the JSON shape omits.
+fn array(email: &serde_json::Value, key: &str) -> serde_json::Value {
+    email
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]))
+}
+
+fn html_only(html: &str) -> String {
+    format!(
+        "From: sender@x.io\r\nSubject: t\r\nMIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n{html}"
+    )
+}
+
+/// Issue #74's reproduction and its reversed order: the html body is a
+/// later candidate than the parser's text fallback, and both genuine
+/// bodies — and the html-only link — are stored at ingest. `/raw` serves
+/// exactly the accepted bytes: body selection never touches the source.
+#[tokio::test]
+async fn smtp_mixed_mime_keeps_both_genuine_bodies_in_either_order() {
+    let srv = start().await;
+    let text = "--b\r\nContent-Type: text/plain\r\n\r\nPlain sender body\r\n";
+    let html = "--b\r\nContent-Type: text/html\r\n\r\n\
+                <p>HTML sender body <a href=\"https://example.test/verify\">Verify</a></p>\r\n";
+    for (inbox, parts) in [
+        ("mixed-th", format!("{text}{html}")),
+        ("mixed-ht", format!("{html}{text}")),
+    ] {
+        let data = format!(
+            "From: sender@x.io\r\nTo: {inbox}@x.io\r\nSubject: mixed\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=b\r\n\r\n{parts}--b--"
+        );
+        let email = deliver_mime(&srv, inbox, &data).await;
+        assert_eq!(email["text"], "Plain sender body", "{inbox}");
+        assert_eq!(
+            email["html"],
+            "<p>HTML sender body <a href=\"https://example.test/verify\">Verify</a></p>",
+            "{inbox}"
+        );
+        assert_eq!(
+            array(&email, "links"),
+            serde_json::json!(["https://example.test/verify"]),
+            "{inbox}"
+        );
+        let id = email["id"].as_str().unwrap();
+        let (st, raw) = http_bytes(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await;
+        assert_eq!(st, 200);
+        assert_eq!(raw, format!("{data}\r\n").into_bytes(), "{inbox}");
+    }
+}
+
+/// Every row of issue #93's table over real SMTP, the whole codes array
+/// read back through REST (decision 0040 §2–§3): adjacent cells and blocks
+/// are never joined, a code in its own element is found, and typed
+/// `style`/`script` and attribute values yield nothing.
+#[tokio::test]
+async fn smtp_html_codes_come_from_tokenized_text_runs() {
+    let srv = start().await;
+    let rows: [(&str, &[&str]); 10] = [
+        (
+            "<table><tr><td>Order 1234</td><td>5678</td></tr></table>",
+            &["1234", "5678"],
+        ),
+        ("<div>Ref 2026</div><div>482913</div>", &["2026", "482913"]),
+        ("<div>482935</div><div>is your code</div>", &["482935"]),
+        ("<h1>Your code</h1><h2>482933</h2>", &["482933"]),
+        ("<ul><li>Code</li><li>482936</li></ul>", &["482936"]),
+        (
+            "<table><tr><td>482937</td><td>expires soon</td></tr></table>",
+            &["482937"],
+        ),
+        ("<p><strong>482938</strong>is your code</p>", &["482938"]),
+        (
+            "<style type=\"text/css\">p { color: #333333; }</style><p>Hello</p>",
+            &[],
+        ),
+        (
+            "<script type=\"text/javascript\">var t = 44445555;</script><p>Hello</p>",
+            &[],
+        ),
+        (
+            "<img alt=\"x > 12345678\" src=\"https://x.io/i.png\"><p>Hello</p>",
+            &[],
+        ),
+    ];
+    for (row, (html, want)) in rows.iter().enumerate() {
+        let email = deliver_mime(&srv, &format!("codes{row}"), &html_only(html)).await;
+        assert_eq!(array(&email, "codes"), serde_json::json!(want), "{html}");
+        assert!(email.get("text").is_none(), "no text synthesized: {html}");
+    }
+    // Arabic-Indic digits in a text body are not codes.
+    let email = deliver_mime(
+        &srv,
+        "codes-arabic",
+        "From: sender@x.io\r\nSubject: t\r\n\r\nYour code \u{661}\u{662}\u{663}\u{664}",
+    )
+    .await;
+    assert_eq!(array(&email, "codes"), serde_json::json!([]));
+}
+
+/// Every row of issue #94's table over real SMTP (decision 0040 §4): the
+/// html source is decoded before the URL pattern cuts, so a decoded
+/// delimiter ends the link; the full named set decodes; the scheme matches
+/// case-insensitively and keeps its spelling.
+#[tokio::test]
+async fn smtp_html_links_are_cut_after_decoding() {
+    let srv = start().await;
+    let rows: [(&str, &[&str]); 7] = [
+        (
+            "<p>Unsubscribe: &lt;https://x.io/unsub?u=1&gt;</p>",
+            &["https://x.io/unsub?u=1"],
+        ),
+        (
+            "<p>Link: &quot;https://x.io/q&quot; ok</p>",
+            &["https://x.io/q"],
+        ),
+        (
+            "<p>(see https://x.io/p&#41; for more)</p>",
+            &["https://x.io/p"],
+        ),
+        ("<a href=\"https://x.io/a&#32;b\">", &["https://x.io/a"]),
+        ("<p>Visit https://x.io/n&nbsp;now</p>", &["https://x.io/n"]),
+        (
+            "<a href=\"https://x.io/a?b=1&AMP;c=2\">",
+            &["https://x.io/a?b=1&c=2"],
+        ),
+        ("<a href=\"HTTPS://X.IO/upper\">", &["HTTPS://X.IO/upper"]),
+    ];
+    for (row, (html, want)) in rows.iter().enumerate() {
+        let email = deliver_mime(&srv, &format!("links{row}"), &html_only(html)).await;
+        assert_eq!(array(&email, "links"), serde_json::json!(want), "{html}");
+    }
+}

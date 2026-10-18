@@ -98,3 +98,25 @@ blocking pool, and a query never regexes raw HTML for links or codes.
 - It does not touch the wire-shape refusal disciplines (0029/0025/0018);
   nothing here refuses anything — it stops inventing.
 - It does not alter `raw`'s 0022 contract or `/raw`'s byte-exactness.
+
+## Clarification — 2026-10-18 (extraction fidelity)
+
+This clarification cites [0040](0040-extraction-fidelity.md), which is
+**proposed** — acceptance is the operator's; nothing here claims it. The
+ruling above stays as accepted. Issues #74, #93, #94.
+
+- **§1 — which parts are the bodies.** The stored `text`/`html` are the
+  first part of the matching type among the outer message's body
+  candidates, continuing past the parser's fallback candidates; nested
+  multipart bodies count, attachments and an attached message's bodies do
+  not.
+- **§3 — codes are not harvested from rendered text.** Ingest no longer
+  calls the display renderer: codes come from the plain text, or from the
+  html's own text runs read by a small tokenizer (0040 §2–§3). The display
+  carve-out — `snippet`, `plain_response` — is unchanged.
+- **Historical rows.** These repairs govern fresh ingest only. Restore is
+  verbatim: a row written by an older build keeps its stored `text`,
+  `html`, `links` and `codes` — including a synthesized body, an `&amp;`
+  link or a stylesheet code — across every restart, and nothing re-derives
+  them from the stored raw mail. A new delivery of the same raw mail gets
+  the repaired values. Old rows are outside the sender-honesty claim.

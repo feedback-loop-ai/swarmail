@@ -1476,3 +1476,39 @@ async fn a_full_pop3_listener_refuses_the_next_session_before_a_greeting() {
         "the fresh session speaks"
     );
 }
+
+/// A multipart/mixed mail whose html body is the html list's second
+/// candidate (issue #74): body selection reads the parse and never the
+/// stored source, so RETR still serves the accepted payload under the
+/// usual CRLF/transparency rules while REST serves both genuine bodies.
+#[tokio::test]
+async fn retr_serves_a_mixed_mime_payload_untouched_by_body_selection() {
+    let s = start().await;
+    let raw: &[u8] = b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: mixed\r\n\
+        MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
+        --b\r\nContent-Type: text/plain\r\n\r\nPlain sender body\r\n\
+        --b\r\nContent-Type: text/html\r\n\r\n\
+        <p>HTML sender body <a href=\"https://example.test/verify\">Verify</a></p>\r\n\
+        --b--\r\n";
+    deliver_raw(&s, "mime", raw).await;
+
+    let (status, list) = http_json(s.http_addr, "GET", "/api/v1/inboxes/mime/messages", None).await;
+    assert_eq!(status, 200);
+    let email = &list["emails"][0];
+    assert_eq!(email["text"], "Plain sender body");
+    assert_eq!(
+        email["html"],
+        "<p>HTML sender body <a href=\"https://example.test/verify\">Verify</a></p>"
+    );
+    assert_eq!(
+        email["links"],
+        serde_json::json!(["https://example.test/verify"])
+    );
+
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    c.login("mime").await;
+    let octets = payload_octets(raw);
+    assert_eq!(c.cmd("RETR 1").await, format!("+OK {octets} octets"));
+    assert_eq!(c.data_bytes().await, crlf_of(raw));
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+}
