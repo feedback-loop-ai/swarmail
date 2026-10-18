@@ -43,7 +43,9 @@ pub struct AppState {
     /// The bound HTTP port when the HTTP listener is loopback-bound — the
     /// Origin guard's vocabulary (decision 0030 §2). `None` when the
     /// operator bound an explicit non-loopback address: the bind is then
-    /// the trust statement and the check is inert. A loopback bind serves
+    /// the trust statement and the Host allowlist is inactive, but a
+    /// present `Origin` must still name the request's own `Host`
+    /// authority (decision 0043 §2). A loopback bind serves
     /// the operator's own machine, where a browser page from any other
     /// origin must not be able to drive the API. Two honest headers close
     /// the class: `Host` (a rebound page still spells its own hostname,
@@ -310,14 +312,26 @@ pub(crate) fn park_delivery(inbox: &str) -> UnitGuard {
 async fn count_in_flight(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let inbox = inbox_of_path(req.uri().path());
     let _label = inbox.as_deref().map(|i| UnitGuard::take(&REQUESTS, i));
-    let _total = TotalGuard(&HTTP_REQUESTS_IN_FLIGHT);
+    let _total = TotalGuard::take(&HTTP_REQUESTS_IN_FLIGHT);
     next.run(req).await
 }
 
 /// Count one request against the router's total until the guard drops.
-struct TotalGuard(&'static AtomicU64);
+/// The constructor owns the increment and `Drop` the decrement (issue
+/// #88): a bare struct literal paired a decrement with no increment and
+/// wrapped the total below zero on the first request. The counter is
+/// borrowed, not `'static`, so the lifecycle is provable on a fresh local
+/// atomic without touching the process-global one.
+struct TotalGuard<'a>(&'a AtomicU64);
 
-impl Drop for TotalGuard {
+impl<'a> TotalGuard<'a> {
+    fn take(total: &'a AtomicU64) -> Self {
+        total.fetch_add(1, Ordering::Relaxed);
+        Self(total)
+    }
+}
+
+impl Drop for TotalGuard<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
     }
@@ -347,83 +361,126 @@ impl Drop for TotalGuard {
 // Everything that is not a browser — curl, agents, the MCP stdio bridge,
 // every test harness — sends a loopback `Host` to a loopback bind and no
 // `Origin` at all, and is untouched.
+//
+// Off loopback (decision 0043, amending 0030 §2) the Host allowlist is
+// inactive — there is no loopback plane to rebind to — but the Origin leg
+// stays: a page the operator visits can still POST `text/plain` to a
+// published `0.0.0.0` bind without a preflight. A present `Origin` must
+// name the request's own `Host` authority.
 
-/// The whole-plane loopback guard: while the listener is loopback-bound
-/// (an off-loopback bind is the operator's own trust statement — the
-/// check is inert), a request is answered `403` before the router unless
-/// its `Host` authority is a loopback spelling of the bound HTTP port
-/// and any present `Origin` is one too. Every method, every route:
-/// `/mcp` and the UI are as drivable as the REST surface. A request
-/// without `Origin` passes the Origin leg — the shape of every
-/// non-browser client and of a rebound page's same-origin reads, which
-/// is why the Host leg exists.
+/// The off-loopback refusal sentence (decision 0043 §4).
+const ORIGIN_HOST_MISMATCH: &str = "cross-origin requests must match the Host authority";
+
+/// The whole-plane guard: while the listener is loopback-bound, a request
+/// is answered `403` before the router unless its `Host` authority is a
+/// loopback spelling of the bound HTTP port and any present `Origin` is
+/// one too. Off loopback, a present `Origin` must name the request's own
+/// `Host` authority (decision 0043). Every method, every route: `/mcp`
+/// and the UI are as drivable as the REST surface. A request without
+/// `Origin` passes the Origin leg — the shape of every non-browser client
+/// and of a rebound page's same-origin reads, which is why the loopback
+/// Host leg exists.
 async fn origin_guard(
     State(state): State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if let Some(bound) = state.http_origin_guard {
-        let host_ok = req
-            .headers()
-            .get(axum::http::header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .map(|h| authority_is_loopback_of(h, bound))
+    let Some(bound) = state.http_origin_guard else {
+        if req.headers().contains_key(axum::http::header::ORIGIN)
+            && !origin_matches_host(req.headers())
+        {
+            return ApiError(StatusCode::FORBIDDEN, ORIGIN_HOST_MISMATCH.into()).into_response();
+        }
+        return next.run(req).await;
+    };
+    // A Host line that omits its port names http's default, 80 (issue
+    // #92); an Origin's omitted port keeps refusing (0043 §1).
+    let host_ok = req
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(|h| authority_is_loopback_of(h, bound, Some(80)))
+        .unwrap_or(false);
+    if !host_ok {
+        return ApiError(
+            StatusCode::FORBIDDEN,
+            "requests to the loopback plane must name a loopback Host".into(),
+        )
+        .into_response();
+    }
+    if let Some(origin) = req.headers().get(axum::http::header::ORIGIN) {
+        let allowed = origin
+            .to_str()
+            .ok()
+            .map(|o| origin_is_loopback_of(o, bound))
             .unwrap_or(false);
-        if !host_ok {
+        if !allowed {
             return ApiError(
                 StatusCode::FORBIDDEN,
-                "requests to the loopback plane must name a loopback Host".into(),
+                "cross-origin requests are refused on the loopback plane".into(),
             )
             .into_response();
-        }
-        if let Some(origin) = req.headers().get(axum::http::header::ORIGIN) {
-            let allowed = origin
-                .to_str()
-                .ok()
-                .map(|o| origin_is_loopback_of(o, bound))
-                .unwrap_or(false);
-            if !allowed {
-                return ApiError(
-                    StatusCode::FORBIDDEN,
-                    "cross-origin requests are refused on the loopback plane".into(),
-                )
-                .into_response();
-            }
         }
     }
     next.run(req).await
 }
 
-/// Whether an `authority` (the `host[:port]` of a Host line or an
-/// Origin's tail) names this plane: a loopback spelling — `localhost`,
-/// any `127.0.0.0/8` address, or `[::1]` — carrying the bound port
-/// explicitly. Hosts compare case-insensitively (DNS names are
-/// case-insensitive); anything else — a named host, another port, no
-/// port, garbage — is not this plane.
-fn authority_is_loopback_of(authority: &str, bound: u16) -> bool {
-    let authority = authority.trim();
-    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
-        // IPv6 literal: the host ends at `]`, an optional port follows.
-        match rest.split_once(']') {
-            Some((host, tail)) => (host, tail.strip_prefix(':')),
-            None => return false,
+/// Split an authority into its host text (an IPv6 literal keeps its
+/// brackets) and its port as spelled: `Some((host, None))` only when the
+/// port is genuinely omitted. A supplied port that is empty, non-decimal
+/// or out of `u16` range, an unclosed bracket, or anything but `:port`
+/// after `]` is `None` — malformed, never mistaken for omission (the
+/// absent-versus-invalid line of decision 0025, applied to ports).
+fn split_authority(authority: &str) -> Option<(&str, Option<u16>)> {
+    let (host, port) = if authority.starts_with('[') {
+        // IPv6 literal: the host runs through `]`; only `:port` may follow.
+        let end = authority.find(']')? + 1;
+        let (host, tail) = authority.split_at(end);
+        if tail.is_empty() {
+            return Some((host, None));
         }
+        (host, tail.strip_prefix(':')?)
     } else {
         // The port is the *last* colon; a bare host has none.
         match authority.rsplit_once(':') {
-            Some((host, port)) => (host, Some(port)),
-            None => (authority, None),
+            Some(split) => split,
+            None => return Some((authority, None)),
         }
     };
-    // The bound port is the vocabulary: a loopback spelling of another
-    // port is a different origin. No explicit port means the scheme's
-    // default, which cannot be this bound port.
-    let Some(explicit) = port.and_then(|p| p.parse::<u16>().ok()) else {
+    Some((host, Some(parse_port(port)?)))
+}
+
+/// A port as spelled: decimal digits in `u16` range. `u16::from_str`
+/// alone would admit a leading `+`.
+fn parse_port(text: &str) -> Option<u16> {
+    if text.bytes().all(|b| b.is_ascii_digit()) {
+        text.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Whether an `authority` (the `host[:port]` of a Host line or an
+/// Origin's tail) names this plane: a loopback spelling — `localhost`,
+/// any `127.0.0.0/8` address, or `[::1]` — of the bound port. An omitted
+/// port means `omitted`: the Host line passes `Some(80)`, http's default
+/// (issue #92), so a port-80 bind admits `Host: localhost`; an Origin
+/// passes `None` and still needs the port spelled (0043 §1). Hosts
+/// compare case-insensitively (DNS names are case-insensitive); anything
+/// else — a named host, another port, a malformed port, garbage — is not
+/// this plane.
+fn authority_is_loopback_of(authority: &str, bound: u16, omitted: Option<u16>) -> bool {
+    let Some((host, port)) = split_authority(authority.trim()) else {
         return false;
     };
-    if explicit != bound {
+    // The bound port is the vocabulary: a loopback spelling of another
+    // port is a different origin.
+    if port.or(omitted) != Some(bound) {
         return false;
     }
+    let host = host
+        .strip_prefix('[')
+        .map_or(host, |h| h.trim_end_matches(']'));
     let host = host.to_ascii_lowercase();
     host == "localhost"
         || host == "::1"
@@ -442,7 +499,75 @@ fn origin_is_loopback_of(origin: &str, bound: u16) -> bool {
     // a lenient caller may pass one); before it there is always a
     // remainder, even when there is no slash at all.
     let end = authority.find('/').unwrap_or(authority.len());
-    authority_is_loopback_of(&authority[..end], bound)
+    authority_is_loopback_of(&authority[..end], bound, None)
+}
+
+/// Off loopback (decision 0043 §2–3): whether the request's one `Origin`
+/// names the authority of its one `Host`. Both omitted ports take the
+/// Origin scheme's default — http 80, https 443 — because Host carries no
+/// scheme and a TLS-terminating proxy speaks plaintext to this socket;
+/// then host text (ASCII case-insensitive) and port must both be equal.
+/// A duplicate or non-text header, a missing Host or a malformed value on
+/// either side is a mismatch. No `Forwarded`/`X-Forwarded-*` participates.
+fn origin_matches_host(headers: &axum::http::HeaderMap) -> bool {
+    let (Some(origin), Some(host)) = (
+        sole_header(headers, axum::http::header::ORIGIN),
+        sole_header(headers, axum::http::header::HOST),
+    ) else {
+        return false;
+    };
+    let Some((default, origin_host, origin_port)) = serialized_origin(origin) else {
+        return false;
+    };
+    let Some((host, host_port)) = strict_authority(host) else {
+        return false;
+    };
+    origin_host.eq_ignore_ascii_case(host)
+        && origin_port.unwrap_or(default) == host_port.unwrap_or(default)
+}
+
+/// A header's value when it appears exactly once, as visible text.
+fn sole_header(headers: &axum::http::HeaderMap, name: axum::http::HeaderName) -> Option<&str> {
+    let mut values = headers.get_all(name).iter();
+    match (values.next(), values.next()) {
+        (Some(value), None) => value.to_str().ok(),
+        _ => None,
+    }
+}
+
+/// A serialized Origin (decision 0043 §2): `http://` or `https://` and an
+/// authority, nothing else — no path, query, fragment or userinfo; `null`
+/// and lists are not origins. Returns the scheme's default port, the host
+/// text and the port as spelled.
+fn serialized_origin(origin: &str) -> Option<(u16, &str, Option<u16>)> {
+    let (default, authority) = match origin.strip_prefix("https://") {
+        Some(authority) => (443, authority),
+        None => (80, origin.strip_prefix("http://")?),
+    };
+    let (host, port) = strict_authority(authority)?;
+    Some((default, host, port))
+}
+
+/// An authority valid for the off-loopback comparison: a bracketed IPv6
+/// literal, or a non-empty registered name / IPv4 spelling of unreserved
+/// characters — so userinfo (`@`), a path, a query, a fragment, a stray
+/// colon or bracket, whitespace and list commas all refuse. No DNS lookup,
+/// no IDNA, no alternative-spelling equivalence.
+fn strict_authority(authority: &str) -> Option<(&str, Option<u16>)> {
+    let (host, port) = split_authority(authority)?;
+    let valid = match host.strip_prefix('[') {
+        Some(literal) => literal
+            .trim_end_matches(']')
+            .parse::<std::net::Ipv6Addr>()
+            .is_ok(),
+        None => {
+            !host.is_empty()
+                && host
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
+        }
+    };
+    valid.then_some((host, port))
 }
 
 /// The inbox a request path scopes — `/api/v1/inboxes/<inbox>/…`, the wire
@@ -476,7 +601,28 @@ fn registry_rows(registry: &'static Registry, name: &str, kind: &str, total: u64
         .expect("a readiness registry mutex cannot poison");
     let mut out = format!("# TYPE {name} {kind}\n{name} {total}\n");
     for (inbox, count) in units.iter() {
-        out.push_str(&format!("{name}{{inbox={inbox:?}}} {count}\n"));
+        out.push_str(&format!(
+            "{name}{{inbox=\"{}\"}} {count}\n",
+            prom_label(inbox)
+        ));
+    }
+    out
+}
+
+/// A label value in the Prometheus text format (issue #88, decision 0043
+/// §6): exactly the three escapes the format defines — backslash, double
+/// quote and line feed. Every other character, a tab, a CR or any
+/// Unicode, passes literally. Rust's `Debug` rendering emitted `\t` and
+/// `\u{…}`, which a strict parser rejects along with the whole scrape.
+fn prom_label(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
     }
     out
 }
@@ -1382,6 +1528,251 @@ mod tests {
         }
     }
 
+    /// The authority split keeps absence and malformation apart (issue
+    /// #92, decision 0043 §1): only a genuinely omitted port is `None`; an
+    /// empty, signed, non-decimal or overflowing port and every malformed
+    /// bracket tail are refusals, never a default in disguise.
+    #[test]
+    fn the_authority_split_tells_an_omitted_port_from_a_malformed_one() {
+        assert_eq!(split_authority("localhost"), Some(("localhost", None)));
+        assert_eq!(
+            split_authority("localhost:8025"),
+            Some(("localhost", Some(8025)))
+        );
+        assert_eq!(split_authority("[::1]"), Some(("[::1]", None)));
+        assert_eq!(split_authority("[::1]:80"), Some(("[::1]", Some(80))));
+        for malformed in [
+            "localhost:",      // empty port
+            "localhost:+80",   // u16::from_str would admit the sign
+            "localhost:8o",    // non-decimal
+            "localhost:65536", // out of range
+            "[::1",            // unclosed bracket
+            "[::1]x",          // garbage after the bracket
+            "[::1]:",          // empty port after the bracket
+            "[::1]:99999",     // out of range after the bracket
+        ] {
+            assert_eq!(split_authority(malformed), None, "{malformed}");
+        }
+        assert_eq!(parse_port("0"), Some(0));
+        assert_eq!(parse_port("65535"), Some(65535));
+        assert_eq!(parse_port(""), None);
+    }
+
+    /// The loopback Host leg's port default (issue #92): a portless Host
+    /// is http's 80, so it names a port-80 plane and no other, while a
+    /// malformed supplied port never rides the default; the Origin leg
+    /// passes no default and keeps refusing a portless origin (0043 §1).
+    #[test]
+    fn a_portless_host_means_80_and_a_portless_origin_still_refuses() {
+        for host in ["localhost", "LOCALHOST", "127.0.0.1", "[::1]"] {
+            assert!(authority_is_loopback_of(host, 80, Some(80)), "{host}");
+            assert!(!authority_is_loopback_of(host, 8025, Some(80)), "{host}");
+        }
+        assert!(authority_is_loopback_of("localhost:80", 80, Some(80)));
+        assert!(authority_is_loopback_of(" localhost:8025 ", 8025, Some(80)));
+        for refused in [
+            "localhost:",
+            "localhost:abc",
+            "localhost:65616", // overflow, not 80 wrapped
+            "[::1]x",
+            "[::1",
+            "attacker.example",
+            "10.0.0.9",
+            "",
+        ] {
+            assert!(
+                !authority_is_loopback_of(refused, 80, Some(80)),
+                "{refused:?}"
+            );
+        }
+        assert!(!origin_is_loopback_of("http://localhost", 80));
+        assert!(origin_is_loopback_of("http://localhost:80", 80));
+    }
+
+    /// A header map built from `(name, value)` octets — `from_bytes` so a
+    /// value that is not visible text can be named.
+    fn headers(pairs: &[(&str, &[u8])]) -> axum::http::HeaderMap {
+        let mut map = axum::http::HeaderMap::new();
+        for (name, value) in pairs {
+            map.append(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_bytes(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    /// The off-loopback authority comparison (decision 0043 §2–3), case
+    /// by case: matching authorities pass with omitted ports normalized by
+    /// the Origin scheme; a mismatch, a duplicate, non-text, a missing
+    /// Host and every malformed authority class refuse — including the
+    /// spellings the HTTP parser would reject before the router.
+    #[test]
+    fn the_off_loopback_origin_must_name_the_host_authority() {
+        let matches = |origin: &[u8], host: &[u8]| {
+            origin_matches_host(&headers(&[("origin", origin), ("host", host)]))
+        };
+        for (origin, host) in [
+            ("http://mail.example:8025", "mail.example:8025"),
+            ("http://MAIL.example:8025", "mail.EXAMPLE:8025"),
+            ("http://[::1]:8025", "[::1]:8025"),
+            ("http://mail.example", "mail.example"),
+            ("http://mail.example", "mail.example:80"),
+            ("http://mail.example:80", "mail.example"),
+            ("https://mail.example", "mail.example"),
+            ("https://mail.example", "mail.example:443"),
+            ("https://mail.example:443", "mail.example"),
+            ("http://10.0.0.9:8025", "10.0.0.9:8025"),
+        ] {
+            assert!(
+                matches(origin.as_bytes(), host.as_bytes()),
+                "{origin} + Host {host} must pass"
+            );
+        }
+        for (origin, host) in [
+            ("https://evil.example", "mail.example"),
+            ("http://mail.example:8025", "mail.example:8026"),
+            ("https://mail.example", "mail.example:8025"),
+            ("https://mail.example:8025", "mail.example"),
+            ("http://mail.example", "mail.example:443"),
+            ("null", "mail.example"),
+            ("mail.example", "mail.example"),
+            ("ftp://mail.example", "mail.example"),
+            ("HTTP://mail.example", "mail.example"),
+            ("https://", "mail.example"),
+            ("https://user@mail.example", "mail.example"),
+            ("https://mail.example/", "mail.example"),
+            ("https://mail.example/path", "mail.example"),
+            ("https://mail.example?q", "mail.example"),
+            ("https://mail.example#f", "mail.example"),
+            ("https://mail.example:443/x", "mail.example"),
+            ("https://a.example, https://mail.example", "mail.example"),
+            ("https://mail.example:", "mail.example"),
+            ("https://mail.example:+443", "mail.example"),
+            ("https://mail.example:99999", "mail.example"),
+            ("http://[::1", "[::1]"),
+            ("http://[::1]x", "[::1]"),
+            ("http://[zz]", "[zz]"),
+            ("http://[]", "[]"),
+            ("http://a:b:8025", "a:b:8025"),
+            ("https://mail.example", ""),
+            ("https://mail.example", "mail.example:"),
+            ("https://mail.example", "user@mail.example"),
+        ] {
+            assert!(
+                !matches(origin.as_bytes(), host.as_bytes()),
+                "{origin} + Host {host:?} must refuse"
+            );
+        }
+        // Non-text header octets on either side.
+        assert!(!matches(
+            &b"https://mail.\xffexample"[..],
+            &b"mail.example"[..]
+        ));
+        assert!(!matches(
+            &b"https://mail.example"[..],
+            &b"mail.\xffexample"[..]
+        ));
+        // A missing Host, a duplicate Origin and a duplicate Host.
+        let origin = "https://mail.example".as_bytes();
+        let host = "mail.example".as_bytes();
+        assert!(!origin_matches_host(&headers(&[("origin", origin)])));
+        assert!(!origin_matches_host(&headers(&[
+            ("origin", origin),
+            ("origin", origin),
+            ("host", host),
+        ])));
+        assert!(!origin_matches_host(&headers(&[
+            ("origin", origin),
+            ("host", host),
+            ("host", host),
+        ])));
+        assert!(origin_matches_host(&headers(&[
+            ("origin", origin),
+            ("host", host)
+        ])));
+    }
+
+    /// The label renderer emits exactly the Prometheus text format's three
+    /// escapes and passes every other character literally (issue #88): the
+    /// byte fixtures pin the backslash, quote and LF escapes and the
+    /// literal tab, CR and Unicode that `Debug` used to mangle.
+    #[test]
+    fn label_values_take_exactly_the_three_prometheus_escapes() {
+        assert_eq!(prom_label("plain-box"), "plain-box");
+        assert_eq!(prom_label("a\\b"), "a\\\\b");
+        assert_eq!(prom_label("a\"b"), "a\\\"b");
+        assert_eq!(prom_label("a\nb"), "a\\nb");
+        assert_eq!(prom_label("a\tb"), "a\tb");
+        assert_eq!(prom_label("a\rb"), "a\rb");
+        assert_eq!(prom_label("posté✉"), "posté✉");
+        assert_eq!(
+            prom_label("tab\tname\\\"q\n"),
+            "tab\tname\\\\\\\"q\\n",
+            "the issue's hostile name renders with legal escapes only"
+        );
+    }
+
+    /// Every registry family renders through the one encoder: a local
+    /// registry holding a hostile name renders the same escaped sample
+    /// under each family's name and kind.
+    #[test]
+    fn every_registry_family_renders_through_the_label_encoder() {
+        static LOCAL: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        let guard = UnitGuard::take(&LOCAL, "q\"\\\n\t");
+        for (name, kind) in [
+            ("swarmail_awaits_active", "gauge"),
+            ("swarmail_awaits_registered_total", "counter"),
+            ("swarmail_http_requests_in_flight", "gauge"),
+            ("swarmail_deliveries_in_flight", "gauge"),
+        ] {
+            let escaped = "q\\\"\\\\\\n\t";
+            assert_eq!(
+                registry_rows(&LOCAL, name, kind, 1),
+                format!("# TYPE {name} {kind}\n{name} 1\n{name}{{inbox=\"{escaped}\"}} 1\n")
+            );
+        }
+        drop(guard);
+    }
+
+    /// The router's total is owned by its guard (issue #88): the
+    /// constructor increments and `Drop` decrements, on a fresh local
+    /// atomic — no reset of the process-global total — across a normal
+    /// drop, a cancelled future that holds the guard, and an unwind.
+    #[test]
+    fn the_total_guard_counts_up_on_take_and_down_on_every_release() {
+        let total = AtomicU64::new(0);
+        let guard = TotalGuard::take(&total);
+        assert_eq!(total.load(Ordering::Relaxed), 1, "take raises the total");
+        drop(guard);
+        assert_eq!(total.load(Ordering::Relaxed), 0, "drop releases it");
+
+        // Cancellation: a pending future owning the guard is destroyed.
+        let held = TotalGuard::take(&total);
+        let mut pending = Box::pin(std::future::poll_fn(move |_| {
+            let _owned = &held;
+            std::task::Poll::<()>::Pending
+        }));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(pending.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(
+            total.load(Ordering::Relaxed),
+            1,
+            "the parked future holds it"
+        );
+        drop(pending);
+        assert_eq!(total.load(Ordering::Relaxed), 0, "cancellation releases it");
+
+        // Unwind: a panic while the guard is live still releases it.
+        let unwound = std::panic::catch_unwind::<_, ()>(std::panic::AssertUnwindSafe(|| {
+            let _guard = TotalGuard::take(&total);
+            assert_eq!(total.load(Ordering::Relaxed), 1);
+            std::panic::resume_unwind(Box::new("the handler unwinds"))
+        }));
+        assert!(unwound.is_err(), "the closure unwound");
+        assert_eq!(total.load(Ordering::Relaxed), 0, "unwind releases it");
+    }
+
     /// The wait's page is byte-identical to the whole-clone shape it
     /// replaced and carries no `raw` key, exactly like the listing page:
     /// the matches come out of the store as `Arc`s and serialize in place.
@@ -1437,7 +1828,7 @@ mod tests {
             smtp_degraded: Arc::new(AtomicBool::new(smtp)),
             pop3_degraded: Arc::new(AtomicBool::new(pop3)),
             // The healthz gauges are probe-only state; the probe runs
-            // headerless, so the guard is inert here.
+            // headerless, so the guard has nothing to refuse here.
             http_origin_guard: None,
         }
     }

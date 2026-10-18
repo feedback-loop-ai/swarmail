@@ -48,6 +48,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0040](0040-extraction-fidelity.md) | Extraction fidelity: genuine body candidates, tokenizer-read codes, links cut after one full decode (amends 0031) | proposed — awaiting the operator | (Run 17: issues #74, #93, #94) |
 | [0041](0041-webhook-boundary.md) | Webhook boundary: header-valid secrets, direct delivery, redacted URL credentials, shared payload bytes and an observable final ledger (amends 0029 §5) | proposed — awaiting the operator | (Run 18: issues #75, #76, #97, #98) |
 | [0042](0042-single-writer-lock.md) | Single-writer startup errors and the limit of restart recovery: a typed `OpenError`, and restart reloads rather than reconciles (supplements 0033 §§2–4; amends 0033 §1) | proposed — awaiting the operator | (Run 19: issue #85) |
+| [0043](0043-mcp-origin-boundary.md) | Origin validation on exposed HTTP listeners: off-loopback Origin-to-Host authority check, portless Host means 80, a paired in-flight total and Prometheus label escaping (amends 0030 §2) | proposed — awaiting the operator | (Run 20: issues #88, #89, #92) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

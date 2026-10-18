@@ -1486,25 +1486,13 @@ async fn a_rebound_host_refuses_even_without_an_origin() {
     assert!(s.contains("must name a loopback Host"), "{s}");
 }
 
-/// With an explicit off-loopback bind the check is inert — the operator's
-/// recorded posture (0030 §2): any `Origin` rides through and so does any
-/// `Host`, because there is no loopback plane to protect.
+/// With an explicit off-loopback bind the Host allowlist is inactive — the
+/// operator's recorded posture (0030 §2): any `Host` rides through without
+/// an `Origin`, because there is no loopback plane to rebind to. An
+/// `Origin` naming that same Host authority passes (decision 0043).
 #[tokio::test]
-async fn an_off_loopback_bind_leaves_the_guard_inert() {
-    let srv = start_with(|mut c| {
-        c.http_listen = "0.0.0.0:0".into();
-        c
-    })
-    .await;
-    let (st, body) = http_send_text_with_headers(
-        srv.http_addr,
-        "GET",
-        "/api/v1/inboxes",
-        &[("Origin", "http://attacker.example:1")],
-        None,
-    )
-    .await;
-    assert_eq!(st, 200, "the guard is inert off loopback: {body}");
+async fn an_off_loopback_bind_leaves_the_host_allowlist_inactive() {
+    let srv = start_off_loopback().await;
     let (st, body) = send_with_host(
         srv.http_addr,
         "GET",
@@ -1513,7 +1501,657 @@ async fn an_off_loopback_bind_leaves_the_guard_inert() {
         None,
     )
     .await;
-    assert_eq!(st, 200, "the Host leg is inert off loopback: {body}");
+    assert_eq!(st, 200, "the Host leg is inactive off loopback: {body}");
+    // The helper's Host line names the address it dials.
+    let origin = format!("http://{}", srv.http_addr);
+    let (st, body) = http_send_text_with_headers(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes",
+        &[("Origin", origin.as_str())],
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "a same-authority Origin passes: {body}");
+}
+
+// ---- run 20: the HTTP plane's edges (issues #88, #89, #92; decision 0043) ----
+
+/// The refusal sentence off loopback (decision 0043 §4).
+const MISMATCH: &str = "cross-origin requests must match the Host authority";
+
+/// A server whose HTTP listener is really bound to `0.0.0.0:0` through
+/// `run_on`, so the posture comes from lib.rs's own derivation — not a
+/// hand-disabled guard. The reported address is asserted non-loopback.
+async fn start_off_loopback() -> swarmail::RunningServer {
+    let srv = start_with(|mut c| {
+        c.http_listen = "0.0.0.0:0".into();
+        c
+    })
+    .await;
+    assert!(
+        srv.http_addr.ip().is_unspecified(),
+        "the listener is off loopback: {}",
+        srv.http_addr
+    );
+    srv
+}
+
+/// The address a client dials to reach an all-interfaces listener.
+fn dial(srv: &swarmail::RunningServer) -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([127, 0, 0, 1], srv.http_addr.port()))
+}
+
+/// One raw HTTP/1.1 exchange, the head written byte for byte: no Host or
+/// Content-Type is added behind the caller's back, so an exact Host, a
+/// repeated header or a `text/plain` body rides as spelled. Returns the
+/// status, the response head and the body.
+async fn raw_exchange(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[&str],
+    body: &str,
+) -> (u16, String, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut req = format!("{method} {path} HTTP/1.1\r\nConnection: close\r\n");
+    for header in headers {
+        req.push_str(header);
+        req.push_str("\r\n");
+    }
+    req.push_str(&format!("Content-Length: {}\r\n\r\n{body}", body.len()));
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = Vec::new();
+    tokio::time::timeout(common::HELPER_DEADLINE, stream.read_to_end(&mut buf))
+        .await
+        .expect("the server answers within the helper deadline")
+        .expect("the response reads to EOF");
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    let (head, body) = text.split_once("\r\n\r\n").expect("a complete response");
+    let status = head
+        .split(' ')
+        .nth(1)
+        .expect("a status line")
+        .parse()
+        .expect("a numeric status");
+    (status, head.to_string(), body.to_string())
+}
+
+/// The issue's drive, verbatim: armed chaos at probability 100.
+const EVIL_SET_CHAOS: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"swarmail_set_chaos","arguments":{"event":"connect","probability":100,"error":"554 pwned"}}}"#;
+
+/// The chaos configuration as REST reads it — the before/after witness.
+async fn chaos_now(addr: std::net::SocketAddr, host: &str) -> serde_json::Value {
+    let (st, _, body) = raw_exchange(
+        addr,
+        "GET",
+        "/api/v1/chaos",
+        &[format!("Host: {host}").as_str()],
+        "",
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    serde_json::from_str(&body).expect("chaos is JSON")
+}
+
+/// Issue #89's reproduction (AC4): on a real `0.0.0.0` bind, the
+/// cross-site `text/plain` MCP POST from `https://evil.example` is refused
+/// `403` before dispatch, and the chaos configuration read before it is
+/// unchanged after. Red before 0043: the guard was off, the call answered
+/// 200 and armed the rule. The same request without `Origin` — curl's
+/// shape — is still dispatched and arms it (AC5), then is cleared.
+#[tokio::test]
+async fn an_off_loopback_bind_refuses_the_cross_site_mcp_drive() {
+    let srv = start_off_loopback().await;
+    let addr = dial(&srv);
+    let host_line = format!("Host: 127.0.0.1:{}", addr.port());
+    let host = host_line.as_str();
+    let before = chaos_now(addr, &host[6..]).await;
+    let (st, head, body) = raw_exchange(
+        addr,
+        "POST",
+        "/mcp",
+        &[
+            host,
+            "Origin: https://evil.example",
+            "Content-Type: text/plain",
+        ],
+        EVIL_SET_CHAOS,
+    )
+    .await;
+    assert_eq!(st, 403, "{head}\n{body}");
+    assert!(body.contains(MISMATCH), "{body}");
+    assert_eq!(
+        chaos_now(addr, &host[6..]).await,
+        before,
+        "no effect landed"
+    );
+
+    // The control: no Origin, the same text/plain body, dispatched.
+    let (st, _, body) = raw_exchange(
+        addr,
+        "POST",
+        "/mcp",
+        &[host, "Content-Type: text/plain"],
+        EVIL_SET_CHAOS,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert_ne!(
+        chaos_now(addr, &host[6..]).await,
+        before,
+        "the control armed"
+    );
+    let (st, _, body) = raw_exchange(addr, "DELETE", "/api/v1/chaos", &[host], "").await;
+    assert!(st < 300, "the control's rule is cleared: {st} {body}");
+    assert_eq!(chaos_now(addr, &host[6..]).await, before);
+}
+
+/// Non-browser compatibility off loopback (AC5): with no `Origin`, a valid
+/// MCP call is dispatched under every media type a client sends today —
+/// JSON, text, form, none — and malformed JSON the guard admits still
+/// reaches dispatch and answers its own parse error (0029 §2).
+#[tokio::test]
+async fn an_off_loopback_bind_keeps_every_originless_mcp_client() {
+    let srv = start_off_loopback().await;
+    let addr = dial(&srv);
+    let host_line = format!("Host: 127.0.0.1:{}", addr.port());
+    let host = host_line.as_str();
+    let list = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#;
+    for content_type in [
+        Some("Content-Type: application/json"),
+        Some("Content-Type: text/plain"),
+        Some("Content-Type: application/x-www-form-urlencoded"),
+        None,
+    ] {
+        let mut headers = vec![host];
+        headers.extend(content_type);
+        let (st, _, body) = raw_exchange(addr, "POST", "/mcp", &headers, list).await;
+        assert_eq!(st, 200, "{content_type:?}: {body}");
+        let reply: serde_json::Value = serde_json::from_str(&body).expect("a JSON-RPC reply");
+        assert_eq!(reply["id"], 7, "{content_type:?}: {body}");
+        assert!(reply["result"]["tools"].is_array(), "{body}");
+    }
+    let (st, _, body) = raw_exchange(addr, "POST", "/mcp", &[host], "{not json").await;
+    // Dispatch's own parse-error status (src/mcp.rs): 400 with the
+    // -32700 object, the shape the stdio bridge forwards verbatim.
+    assert_eq!(st, 400, "{body}");
+    assert!(
+        body.contains("-32700"),
+        "dispatch owns the parse error: {body}"
+    );
+}
+
+/// The off-loopback authority matrix over real HTTP (AC6–AC7): matching
+/// authorities pass — same host and port, host case, bracketed IPv6,
+/// explicit scheme defaults, omitted ports on both sides — and every
+/// mismatch or malformed Origin refuses with the sentence. Host text is
+/// free off loopback, so the client dials 127.0.0.1 and spells any Host.
+#[tokio::test]
+async fn an_off_loopback_origin_must_name_its_own_host_authority() {
+    let srv = start_off_loopback().await;
+    let addr = dial(&srv);
+    for (origin, host) in [
+        ("http://mail.example:8025", "mail.example:8025"),
+        ("http://MAIL.example:8025", "mail.EXAMPLE:8025"),
+        ("http://[::1]:8025", "[::1]:8025"),
+        ("http://mail.example", "mail.example"),
+        ("http://mail.example:80", "mail.example"),
+        ("https://mail.example", "mail.example"),
+        ("https://mail.example", "mail.example:443"),
+        ("https://mail.example:443", "mail.example"),
+    ] {
+        let (st, _, body) = raw_exchange(
+            addr,
+            "GET",
+            "/api/v1/inboxes",
+            &[
+                format!("Host: {host}").as_str(),
+                format!("Origin: {origin}").as_str(),
+            ],
+            "",
+        )
+        .await;
+        assert_eq!(st, 200, "{origin} + Host {host}: {body}");
+    }
+    for (origin, host) in [
+        ("https://evil.example", "mail.example"),
+        ("http://mail.example:8025", "mail.example:8026"),
+        ("https://mail.example", "mail.example:8025"),
+        ("https://mail.example:8025", "mail.example"),
+        ("null", "mail.example"),
+        ("mail.example", "mail.example"),
+        ("https://user@mail.example", "mail.example"),
+        ("https://mail.example/path", "mail.example"),
+        ("https://mail.example:99999", "mail.example"),
+        ("http://[::1", "[::1]"),
+    ] {
+        let (st, _, body) = raw_exchange(
+            addr,
+            "GET",
+            "/api/v1/inboxes",
+            &[
+                format!("Host: {host}").as_str(),
+                format!("Origin: {origin}").as_str(),
+            ],
+            "",
+        )
+        .await;
+        assert_eq!(st, 403, "{origin} + Host {host}: {body}");
+        assert!(body.contains(MISMATCH), "{origin} + Host {host}: {body}");
+    }
+    // Duplicates the HTTP parser delivers to the middleware: two Origins,
+    // two Hosts. A missing Host with an Origin is HTTP/1.1-invalid.
+    let origin = "Origin: https://mail.example";
+    let host = "Host: mail.example";
+    for headers in [[host, origin, origin], [host, host, origin]] {
+        let (st, _, body) = raw_exchange(addr, "GET", "/api/v1/inboxes", &headers, "").await;
+        assert!(
+            (st == 403 && body.contains(MISMATCH)) || st == 400,
+            "{headers:?}: {st} {body}"
+        );
+    }
+}
+
+/// The whole plane and the preflight off loopback (AC8): a hostile Origin
+/// is refused on REST reads and writes, MCP and the UI before any effect
+/// — chaos reads unchanged after an attempted PUT — and `OPTIONS /mcp`
+/// answers 405 when the guard admits it and 403 when it does not, with
+/// no `Access-Control-*` header on either.
+#[tokio::test]
+async fn an_off_loopback_hostile_origin_is_refused_on_every_route_and_preflight() {
+    let srv = start_off_loopback().await;
+    let addr = dial(&srv);
+    let host_line = format!("Host: 127.0.0.1:{}", addr.port());
+    let host = host_line.as_str();
+    let evil = "Origin: https://evil.example";
+    let before = chaos_now(addr, &host[6..]).await;
+    let put = r#"{"rules":[{"event":"connect","probability":100}]}"#;
+    for (method, path, headers, body) in [
+        ("GET", "/api/v1/inboxes", vec![host, evil], ""),
+        (
+            "PUT",
+            "/api/v1/chaos",
+            vec![host, evil, "Content-Type: application/json"],
+            put,
+        ),
+        (
+            "DELETE",
+            "/api/v1/inboxes/guarded/messages",
+            vec![host, evil],
+            "",
+        ),
+        (
+            "POST",
+            "/mcp",
+            vec![host, evil, "Content-Type: text/plain"],
+            EVIL_SET_CHAOS,
+        ),
+        ("GET", "/", vec![host, evil], ""),
+    ] {
+        let (st, _, text) = raw_exchange(addr, method, path, &headers, body).await;
+        assert_eq!(st, 403, "{method} {path}: {text}");
+        assert!(text.contains(MISMATCH), "{method} {path}: {text}");
+    }
+    assert_eq!(chaos_now(addr, &host[6..]).await, before, "no write landed");
+
+    for (headers, wanted) in [(vec![host], 405), (vec![host, evil], 403)] {
+        let (st, head, body) = raw_exchange(addr, "OPTIONS", "/mcp", &headers, "").await;
+        assert_eq!(st, wanted, "{headers:?}: {head}\n{body}");
+        assert!(
+            !head.to_ascii_lowercase().contains("access-control-"),
+            "no CORS grant: {head}"
+        );
+    }
+}
+
+/// The loopback plane is unchanged by 0043 (AC9): a `text/plain` MCP call
+/// with no Origin is dispatched; a rebound Host is refused before a hostile
+/// Origin is looked at (Host-first precedence, the Host sentence); and a
+/// portless Origin still refuses on a loopback bind.
+#[tokio::test]
+async fn the_loopback_plane_keeps_its_order_and_its_text_plain_clients() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let host_line = format!("Host: {addr}");
+    let host = host_line.as_str();
+    let list = r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#;
+    let (st, _, body) = raw_exchange(
+        addr,
+        "POST",
+        "/mcp",
+        &[host, "Content-Type: text/plain"],
+        list,
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    assert!(body.contains("\"tools\""), "{body}");
+
+    let (st, _, body) = raw_exchange(
+        addr,
+        "GET",
+        "/api/v1/inboxes",
+        &[
+            format!("Host: attacker.example:{}", addr.port()).as_str(),
+            "Origin: https://evil.example",
+        ],
+        "",
+    )
+    .await;
+    assert_eq!(st, 403, "{body}");
+    assert!(
+        body.contains("must name a loopback Host"),
+        "Host first: {body}"
+    );
+
+    let (st, _, body) = raw_exchange(
+        addr,
+        "GET",
+        "/api/v1/inboxes",
+        &[host, "Origin: http://localhost"],
+        "",
+    )
+    .await;
+    assert_eq!(st, 403, "{body}");
+    assert!(
+        body.contains("cross-origin requests are refused on the loopback plane"),
+        "{body}"
+    );
+}
+
+/// Serve the public router with an explicit loopback policy on an
+/// ephemeral loopback socket. This proves the port-80 *policy* honestly
+/// without binding privileged port 80; lib.rs's derivation of the policy
+/// from the real listener is covered by `start()`'s loopback fixtures and
+/// `start_off_loopback`. The stop sender lives in the serve task, so the
+/// server never reads its own stop.
+async fn serve_policy(bound: u16) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let state = swarmail::api::AppState {
+        store: std::sync::Arc::new(swarmail::store::Store::new(0)),
+        chaos: Default::default(),
+        webhooks: Default::default(),
+        started: std::time::Instant::now(),
+        shutdown: stop_rx,
+        smtp_degraded: Default::default(),
+        pop3_degraded: Default::default(),
+        http_origin_guard: Some(bound),
+    };
+    tokio::spawn(async move {
+        let _stop = stop_tx;
+        swarmail::api::serve(listener, state, std::future::pending()).await
+    });
+    addr
+}
+
+/// Issue #92 (AC10): with policy `Some(80)` a portless Host — `localhost`,
+/// `127.0.0.1`, `[::1]` — is admitted, because an omitted port is http's
+/// 80; the same lines refuse under `Some(8025)`. Explicit matching ports
+/// pass; a wrong, empty, non-decimal or overflowing port, a malformed
+/// bracket tail and a non-loopback host refuse; a portless Origin still
+/// refuses at policy 80 (0043 §1). Red before the repair: every portless
+/// Host refused.
+#[tokio::test]
+async fn a_portless_host_is_port_80_on_the_real_router() {
+    let port_80 = serve_policy(80).await;
+    let port_8025 = serve_policy(8025).await;
+    let get = |addr, host: &str| {
+        let header = format!("Host: {host}");
+        async move {
+            let (st, _, body) =
+                raw_exchange(addr, "GET", "/api/v1/inboxes", &[header.as_str()], "").await;
+            (st, body)
+        }
+    };
+    for host in ["localhost", "127.0.0.1", "[::1]", "LOCALHOST"] {
+        let (st, body) = get(port_80, host).await;
+        assert_eq!(st, 200, "policy 80 admits {host}: {body}");
+        let (st, body) = get(port_8025, host).await;
+        assert_eq!(st, 403, "policy 8025 refuses {host}: {body}");
+        assert!(body.contains("must name a loopback Host"), "{body}");
+    }
+    for (addr, host) in [(port_80, "localhost:80"), (port_8025, "localhost:8025")] {
+        let (st, body) = get(addr, host).await;
+        assert_eq!(st, 200, "{host}: {body}");
+    }
+    for host in [
+        "localhost:8025",
+        "localhost:",
+        "localhost:8o",
+        "localhost:65616",
+        "[::1]x",
+        "[::1]:",
+        "mail.example",
+    ] {
+        let (st, body) = get(port_80, host).await;
+        assert!(
+            (st == 403 && body.contains("must name a loopback Host")) || st == 400,
+            "policy 80 refuses {host:?}: {st} {body}"
+        );
+    }
+    // No Host at all.
+    let (st, _, body) = raw_exchange(port_80, "GET", "/api/v1/inboxes", &[], "").await;
+    assert_eq!(st, 403, "{body}");
+    // The Origin leg is unchanged: a portless loopback Origin refuses even
+    // where a portless Host is admitted.
+    let (st, _, body) = raw_exchange(
+        port_80,
+        "GET",
+        "/api/v1/inboxes",
+        &["Host: localhost", "Origin: http://localhost"],
+        "",
+    )
+    .await;
+    assert_eq!(st, 403, "{body}");
+    assert!(
+        body.contains("cross-origin requests are refused on the loopback plane"),
+        "{body}"
+    );
+    let (st, _, body) = raw_exchange(
+        port_80,
+        "GET",
+        "/api/v1/inboxes",
+        &["Host: localhost", "Origin: http://localhost:80"],
+        "",
+    )
+    .await;
+    assert_eq!(st, 200, "an explicit :80 Origin passes: {body}");
+}
+
+/// One Prometheus sample: metric name, label pairs, value.
+type Sample = (String, Vec<(String, String)>, f64);
+
+fn is_metric_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == ':')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+}
+
+fn is_label_name(name: &str) -> bool {
+    !name.contains(':') && is_metric_name(name)
+}
+
+/// A strict reader for the Prometheus text-format subset `/metrics` emits,
+/// written from the format's grammar and independent of the server's
+/// encoder: `# TYPE <name> counter|gauge` lines; samples of a metric name,
+/// an optional `{label="value",…}` set whose values admit only the `\\`,
+/// `\"` and `\n` escapes and no raw LF, one space, a numeric value and an
+/// LF. Anything else fails the whole scrape, as a strict scraper would.
+fn parse_prometheus(text: &str) -> Result<Vec<Sample>, String> {
+    let mut samples = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(comment) = rest.strip_prefix('#') {
+            let (line, tail) = comment.split_once('\n').ok_or("a comment without LF")?;
+            let words: Vec<&str> = line.split(' ').collect();
+            let typed = matches!(
+                words.as_slice(),
+                ["", "TYPE", name, "counter" | "gauge"] if is_metric_name(name)
+            );
+            if !typed {
+                return Err(format!("a malformed comment line: #{line:?}"));
+            }
+            rest = tail;
+            continue;
+        }
+        let end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+            .unwrap_or(rest.len());
+        let (name, tail) = rest.split_at(end);
+        if !is_metric_name(name) {
+            return Err(format!("a malformed metric name at {rest:?}"));
+        }
+        rest = tail;
+        let mut labels = Vec::new();
+        if let Some(tail) = rest.strip_prefix('{') {
+            rest = tail;
+            loop {
+                let (label, tail) = rest.split_once('=').ok_or("a label without '='")?;
+                if !is_label_name(label) {
+                    return Err(format!("a malformed label name {label:?}"));
+                }
+                let mut chars = tail
+                    .strip_prefix('"')
+                    .ok_or("an unquoted label value")?
+                    .chars();
+                let mut value = String::new();
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') => match chars.next() {
+                            Some('\\') => value.push('\\'),
+                            Some('"') => value.push('"'),
+                            Some('n') => value.push('\n'),
+                            other => return Err(format!("an illegal escape \\{other:?}")),
+                        },
+                        Some('\n') => return Err("a raw LF inside a label value".into()),
+                        Some(c) => value.push(c),
+                        None => return Err("an unterminated label value".into()),
+                    }
+                }
+                rest = chars.as_str();
+                labels.push((label.to_string(), value));
+                if let Some(tail) = rest.strip_prefix(',') {
+                    rest = tail;
+                    continue;
+                }
+                rest = rest.strip_prefix('}').ok_or("a label set without '}'")?;
+                break;
+            }
+        }
+        let tail = rest.strip_prefix(' ').ok_or("no space before the value")?;
+        let (value, tail) = tail.split_once('\n').ok_or("a sample without LF")?;
+        let value: f64 = value
+            .parse()
+            .map_err(|_| format!("a non-numeric value {value:?}"))?;
+        samples.push((name.to_string(), labels, value));
+        rest = tail;
+    }
+    Ok(samples)
+}
+
+/// The reader itself is pinned before it is trusted (AC3): a known-valid
+/// independent sample parses to its exact decoded labels, and the
+/// spellings Rust's `Debug` produced — `\t`, `\u{…}` — a raw LF inside a
+/// quoted label, an unterminated quote and malformed sample or value
+/// syntax are all rejected.
+#[test]
+fn the_strict_prometheus_reader_accepts_the_format_and_nothing_else() {
+    let valid = "# TYPE m gauge\nm 1\nm{inbox=\"a\\\\b\\\"c\\nd\te\",x=\"\"} 2\n";
+    assert_eq!(
+        parse_prometheus(valid),
+        Ok(vec![
+            ("m".to_string(), vec![], 1.0),
+            (
+                "m".to_string(),
+                vec![
+                    ("inbox".to_string(), "a\\b\"c\nd\te".to_string()),
+                    ("x".to_string(), String::new()),
+                ],
+                2.0,
+            ),
+        ])
+    );
+    for invalid in [
+        "m{inbox=\"tab\\tname\"} 1\n", // Rust's \t
+        "m{inbox=\"\\u{7f}\"} 1\n",    // Rust's \u{…}
+        "m{inbox=\"raw\nlf\"} 1\n",    // a raw LF inside the quotes
+        "m{inbox=\"open} 1\n",         // unterminated quote
+        "m{inbox=open} 1\n",           // unquoted value
+        "m{inbox=\"a\" 1\n",           // unclosed label set
+        "m{9x=\"a\"} 1\n",             // malformed label name
+        "m{inbox} 1\n",                // label without '='
+        "m 1 2\n",                     // trailing junk after the value
+        "m one\n",                     // non-numeric value
+        "m\t1\n",                      // wrong separator
+        "m 1",                         // no final LF
+        "9m 1\n",                      // malformed metric name
+        "# HELP m text\n",             // not a TYPE line
+        "# TYPE m",                    // a comment without LF
+    ] {
+        assert!(
+            parse_prometheus(invalid).is_err(),
+            "{invalid:?} must reject"
+        );
+    }
+}
+
+/// Issue #88's label defect on the wire (AC3): a wait parked on a
+/// percent-encoded inbox whose decoded name holds a tab, a backslash, a
+/// quote and an LF yields a scrape the strict reader accepts whole, and
+/// the awaits family carries that exact decoded name. Red before the
+/// repair: `Debug` rendered `\t`, which the reader (and Prometheus)
+/// rejects. Then the wait is satisfied and joined.
+#[tokio::test]
+async fn a_hostile_inbox_name_round_trips_through_a_strict_scrape() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let encoded = "run20%09back%5Cquote%22lf%0Aend";
+    let decoded = "run20\tback\\quote\"lf\nend";
+    let wait = tokio::spawn(async move {
+        http_json(
+            addr,
+            "GET",
+            &format!("/api/v1/inboxes/{encoded}/await?timeout_ms=60000"),
+            None,
+        )
+        .await
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let samples = loop {
+        let (st, text) = http_get_text(addr, "/metrics").await;
+        assert_eq!(st, 200);
+        let samples = parse_prometheus(&text).unwrap_or_else(|e| panic!("{e}:\n{text}"));
+        if samples.iter().any(|(name, labels, value)| {
+            name == "swarmail_awaits_active"
+                && labels == &[("inbox".to_string(), decoded.to_string())]
+                && *value == 1.0
+        }) {
+            break samples;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the hostile wait never parked:\n{text}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    assert!(!samples.is_empty());
+    let (st, body) = http_json(
+        addr,
+        "POST",
+        &format!("/api/v1/inboxes/{encoded}/seed"),
+        Some(r#"{"to": "hostile@x.io", "text": "satisfy the wait"}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    let (st, body) = wait.await.expect("the wait joins");
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 1, "{body}");
 }
 
 // ---- run 17: extraction fidelity (issues #74, #93, #94; decision 0040) ----

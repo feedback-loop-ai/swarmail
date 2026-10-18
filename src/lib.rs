@@ -184,10 +184,11 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         let store = store.clone();
         let chaos = chaos.clone();
         let webhooks = webhooks.clone();
-        // The Origin guard's vocabulary is the bound port, and it is live
+        // The loopback guard's vocabulary is the bound port, and it is live
         // only while the bind itself is loopback (decision 0030 §2): a
         // loopback bind serves the operator's machine, an off-loopback one
-        // is the operator's own trust statement and the check is inert.
+        // is the operator's own trust statement — the Host allowlist is
+        // inactive there, the Origin-to-Host check is not (decision 0043).
         let http_origin_guard = http_addr.ip().is_loopback().then(|| http_addr.port());
         let state = api::AppState {
             store,

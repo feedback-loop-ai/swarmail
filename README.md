@@ -102,9 +102,54 @@ is answered `403` — the one header a browser sets honestly, so a
 cross-site drive is named and refused. Every method and every route is
 covered, `/mcp` and the UI included; requests without an `Origin` — curl,
 agents, the stdio bridge, every test harness — pass untouched (their
-`Host` is the loopback spelling they dialed), and an operator who binds
-`0.0.0.0` states the trust themselves (the guard is inert, not the
-posture weaker). There is no auth on any surface, by design: the loopback
+`Host` is the loopback spelling they dialed). A `Host` without a port
+means `80`, the http default, so a port-80 loopback bind admits
+`Host: localhost`; a portless loopback `Origin` is still refused, so a
+browser write to a port-80 loopback bind must spell `:80` in its origin
+(a limitation decision 0043 §1 keeps on purpose).
+
+**An off-loopback bind trusts the network, not the browser.** An operator
+who binds `0.0.0.0` (the image and the chart do) states the trust
+themselves: the `Host` allowlist is inactive, because there is no loopback
+plane to rebind to. The `Origin` leg stays active (decision 0043): a
+present `Origin` must name the request's own `Host` authority — scheme
+`http` or `https`, the same host (case-insensitive) and the same port,
+where an omitted port on either side means the Origin scheme's default
+(80 or 443) — or the request is answered `403` (`cross-origin requests
+must match the Host authority`) before any handler runs. So a page at
+`https://evil.example` can no longer POST `text/plain` to `/mcp` and arm
+chaos, while curl, MCP SDK clients and the stdio bridge, which send no
+`Origin`, are untouched. Behind a TLS-terminating reverse proxy, forward
+the browser's original `Host` authority unchanged, including a
+nondefault external port: `https://mail.example` with `Host:
+mail.example` (or `mail.example:443`) passes, a proxy that rewrites
+`Host` to the backend's own address, or strips an external `:8443`,
+makes every browser request with an `Origin` refuse. `Forwarded` and
+`X-Forwarded-*` are never consulted. What an off-loopback bind still
+trusts: any network peer can reach it, a direct client can omit or forge
+`Origin`, and DNS rebinding is not prevented without the loopback `Host`
+allowlist — this is a header check against cross-site browser pages, not
+authentication.
+
+**Forwarded ports refuse on a loopback bind.** `ssh -L 9000:localhost:8025`,
+VS Code and devcontainer port forwarding and GitHub Codespaces all
+deliver the browser's `Host: localhost:9000` (or a forwarding hostname)
+to a listener bound to `127.0.0.1:8025`; the port (or host) is not the
+bound one, so the loopback guard answers `403`. The remedy is a choice
+the operator owns (decision 0030): bind off loopback, for example
+`SWARMAIL_HTTP_LISTEN=0.0.0.0:8025`, which exposes the plane to the
+network and keeps the Origin-to-Host check above active. There is no
+port-forward bypass and no proxy allowlist.
+
+**`/metrics` counts its own scrape.** `swarmail_http_requests_in_flight`
+counts every request inside the router, refusals and the scrape itself
+included, so a quiet server reads `1`, one parked request plus the scrape
+reads `2` — subtract the observer for `0`/`1` (decision 0043 §5). The
+per-inbox readiness rows (`{inbox="…"}`) escape label values exactly as
+the Prometheus text format defines — `\\`, `\"` and `\n` — and pass every
+other character, tab and Unicode included, literally.
+
+There is no auth on any surface, by design: the loopback
 posture is the boundary, and a server with secrets would need auth —
 this one holds test mail, and its knobs are local (`set-chaos`
 included). Webhooks dial out only to addresses an operator explicitly

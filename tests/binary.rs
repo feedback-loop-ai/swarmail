@@ -213,6 +213,60 @@ async fn serve_answers_healthz_and_stops_on_sigint() {
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
 
+/// Issue #88's total over real HTTP (decision 0043 §5). The total is a
+/// process-global static, so only a serve child of its own reads it
+/// exactly; per-inbox uniqueness cannot isolate it inside the parallel
+/// in-process suites. Every request counts, the scrape included: quiet
+/// scrapes read 1, one parked await plus the scrape reads 2, and once the
+/// wait is satisfied over real SMTP and joined, scrapes read 1 again —
+/// 0/1/0 with the observer subtracted. The labeled awaits row is the
+/// readiness signal, never a sleep. Red before the repair: the guard
+/// only decremented, and the first scrape read `18446744073709551615`.
+#[tokio::test]
+async fn the_in_flight_total_counts_each_request_once_and_returns_to_rest() {
+    let serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+    let addr = serve.http_addr;
+    let total = "swarmail_http_requests_in_flight";
+    for _ in 0..3 {
+        assert_eq!(common::metric_now(addr, total).await, 1, "a quiet scrape");
+    }
+    let wait = tokio::spawn(async move {
+        common::http_json(
+            addr,
+            "GET",
+            "/api/v1/inboxes/totalbox/await?timeout_ms=60000",
+            None,
+        )
+        .await
+    });
+    common::wait_for_metric_row(addr, "swarmail_awaits_active{inbox=\"totalbox\"}", 1).await;
+    let (st, text) = common::http_get_text(addr, "/metrics").await;
+    assert_eq!(st, 200, "{text}");
+    assert_eq!(
+        common::metric_value(&text, total),
+        Some(2),
+        "the parked await and the scrape:\n{text}"
+    );
+    let reply = common::smtp_send(
+        serve.smtp_addr,
+        Some("totalbox"),
+        "a@x.io",
+        "b@x.io",
+        "Total",
+        "the body",
+    )
+    .await
+    .expect("smtp send");
+    assert!(reply.starts_with("250"), "{reply}");
+    let (st, body) = wait.await.expect("the await joins");
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(body["matched"], 1, "{body}");
+    for _ in 0..3 {
+        assert_eq!(common::metric_now(addr, total).await, 1, "back at rest");
+    }
+}
+
 /// A concrete free loopback port: bound, then released. The caller names
 /// it in env; between the release and the server's bind nothing else in
 /// this process wants it (the three ports are distinct), so the server
