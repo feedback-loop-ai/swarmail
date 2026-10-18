@@ -182,6 +182,49 @@ thread_local! {
         const { core::cell::RefCell::new(Vec::new()) };
 }
 
+/// Test-only: one transport operation a reply helper made (issue #83's
+/// structural pin, decision 0020 rule 4 — `pub(crate)` because the POP3
+/// sibling's helper test installs it too). Not a protocol mock: it stands
+/// in for the socket under a single helper call, never a server.
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub(crate) enum WriteOp {
+    Write(Vec<u8>),
+    Flush,
+    Shutdown,
+}
+
+/// Test-only: an `AsyncWrite` that accepts every offered slice whole and
+/// records it, so one `write_all` is exactly one recorded `Write` — the
+/// application-level call shape #83 pins.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Recorder {
+    pub(crate) ops: Vec<WriteOp>,
+}
+
+#[cfg(test)]
+impl AsyncWrite for Recorder {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        self.ops.push(WriteOp::Write(buf.to_vec()));
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.ops.push(WriteOp::Flush);
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.ops.push(WriteOp::Shutdown);
+        Poll::Ready(Ok(()))
+    }
+}
+
 pub async fn serve(
     listener: TcpListener,
     store: Arc<Store>,
@@ -341,15 +384,23 @@ pub(crate) async fn bound_io<T>(
     }
 }
 
+/// One reply line: the text and its CRLF assembled into one buffer and
+/// offered in exactly one `write_all`, under one idle bound (decision
+/// 0027). Two writes — text, then a 2-byte CRLF — let Nagle hold the tail
+/// until the peer's delayed ACK, about 40 ms per reply to a client that
+/// waits for each one (issue #83). One application write is the promise,
+/// not one syscall, TLS record or TCP segment.
 async fn write_line<W: tokio::io::AsyncWrite + Unpin>(
     stream: &mut W,
     line: &str,
     idle: Duration,
 ) -> io::Result<()> {
+    let mut out = Vec::with_capacity(line.len() + 2);
+    out.extend_from_slice(line.as_bytes());
+    out.extend_from_slice(b"\r\n");
     bound_io(
         async {
-            stream.write_all(line.as_bytes()).await?;
-            stream.write_all(b"\r\n").await?;
+            stream.write_all(&out).await?;
             // Pushed through the transport now: it puts the STARTTLS 220 on
             // the wire before the handshake begins, and is a no-op for
             // plain TCP.
@@ -1559,6 +1610,25 @@ fn header_ids(value: &HeaderValue<'_>) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::store::Filter;
+
+    /// A reply line is one application write of text plus CRLF, then the
+    /// flush that puts a STARTTLS 220 on the wire before the handshake
+    /// (issue #83; red on the text-then-CRLF shape, which records two
+    /// writes). The recorder's shutdown arm is driven here so the seam has
+    /// no dead line.
+    #[tokio::test]
+    async fn a_reply_line_is_one_write_then_one_flush() {
+        let mut rec = Recorder::default();
+        write_line(&mut rec, "250 2.0.0 OK", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            rec.ops,
+            vec![WriteOp::Write(b"250 2.0.0 OK\r\n".to_vec()), WriteOp::Flush]
+        );
+        rec.shutdown().await.unwrap();
+        assert_eq!(rec.ops.last(), Some(&WriteOp::Shutdown));
+    }
 
     /// The stored bodies are exactly what the sender sent (decision 0031
     /// §1): a text part stores `text` and no `html`, an html part stores

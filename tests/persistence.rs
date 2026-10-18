@@ -1242,3 +1242,74 @@ async fn a_failed_delete_answers_failure_and_never_resurrects() {
     srv.stop().await;
     clean_up(&db);
 }
+
+/// The `emails_inbox` index names on `emails`, read straight out of the
+/// data file's schema.
+fn has_inbox_index(db: &std::path::Path) -> bool {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'emails_inbox'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .unwrap()
+        > 0
+}
+
+/// A data file written by a release that still created `emails_inbox`
+/// (issue #87) restarts with its mail intact over SMTP-delivered, POP3-read
+/// and REST-read paths, its counter preserved and its seq index kept —
+/// and with the retired index gone (red on the baseline schema, which
+/// recreates and maintains it on every write).
+#[tokio::test]
+async fn a_legacy_data_file_sheds_the_unused_inbox_index_and_keeps_its_mail() {
+    let db = data_file("legacy-index");
+    clean_up(&db);
+
+    let srv = serve_data_file(&db).await;
+    let id = send(&srv, "legacy", "Legacy mail").await;
+    srv.stop().await;
+    // The legacy shape: the retired index present on the file.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch("CREATE INDEX IF NOT EXISTS emails_inbox ON emails(inbox);")
+        .unwrap();
+    assert!(has_inbox_index(&db));
+
+    let srv = serve_data_file(&db).await;
+    let mut c = common::Pop3::connect(srv.pop3_addr).await;
+    c.login("legacy").await;
+    assert_eq!(c.cmd("UIDL 1").await, format!("+OK 1 {id}"));
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+    let (st, body) = common::http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(body["subject"], "Legacy mail");
+    srv.stop().await;
+
+    assert!(!has_inbox_index(&db), "the retired index survived the open");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let seq_index: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'emails_seq'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(seq_index, 1, "the restore's seq index stays");
+    let inserted: String = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'emails_inserted'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(inserted, "1");
+    drop(conn);
+    clean_up(&db);
+}

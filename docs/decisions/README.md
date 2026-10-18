@@ -42,6 +42,8 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0033](0033-one-server-per-data-file.md) | One server per data file: the single-writer posture and the named two-servers hazards | **accepted** (operator, 2026-10-16 — "accept all"; the single-writer lock is in the tree; run 11 receipt) | (Run 11 receipt) |
 | [0034](0034-data-terminator-boundary.md) | Complete DATA boundaries and deliberate SMTP session transitions (amends 0022's SIZE alternative; strengthens 0028) | proposed — awaiting the operator | (Run 13: issues #73, #81, #82) |
 | [0036](0036-smtp-trickle-lifetime.md) | SMTP trickle lifetime and listener recovery: one reap at admission, health from observed polls, POP3's own idle bound, the documented trickle residual (clarifies 0027) | proposed — awaiting the operator | (Run 14: issues #77, #78, #79, #80) |
+| [0037](0037-pop3-size-accounting.md) | POP3 sizes count the normalized payload without transparency dots (amends 0028 §1) | proposed — awaiting the operator | (Run 15: issues #84, #86) |
+| [0038](0038-store-memory-and-timestamps.md) | State the store's memory exposure and parse-start timestamps (amends 0021, 0026 §3) | proposed — awaiting the operator | (Run 15: issue #87) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

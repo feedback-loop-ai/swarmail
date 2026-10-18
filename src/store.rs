@@ -1,8 +1,27 @@
 //! The in-memory, per-inbox email store.
 //!
-//! Design goals: lossless under bursts (no async drop points), bounded memory
-//! (per-inbox ring pruning of *oldest* mail only), and cheap waiting
-//! (broadcast watchers for `await` endpoints).
+//! Design goals: lossless under bursts (no async drop points), per-inbox
+//! ring pruning of *oldest* mail only, and cheap waiting (broadcast
+//! watchers for `await` endpoints).
+//!
+//! Memory is not globally bounded (decision 0038, proposed). The per-inbox
+//! message cap (`max_per_inbox`; zero disables it) is not a global byte or
+//! RSS cap: inbox count is unlimited, so resident memory grows with the
+//! number of inboxes times their mail. A held mail costs its raw bytes,
+//! decoded bodies and extracted fields, both index entries, any `Arc` a
+//! watcher ring still holds, and the transient buffers of concurrent
+//! requests. A data file restores every persisted row before bind, without
+//! applying the cap; its size on disk is not a measure of RAM. Each
+//! distinct awaited inbox name keeps its watcher channel — roughly 780 B
+//! per name observed on one build, not a fixed ceiling — until the inbox's
+//! mail is cleared or emptied, or the process restarts; a repeated name
+//! reuses its channel.
+//!
+//! `received_at`/`received_ms` are sampled at `build_email` entry, before
+//! parsing and before acceptance: neither the sender's `Date` nor a commit
+//! sequence, and not guaranteed to sort in acceptance order across sessions
+//! or clock steps. Per-inbox order, POP3 numbering, oldest-only pruning and
+//! the data file's restore sequence follow acceptance.
 
 use crate::model::Email;
 use crate::persist;
@@ -188,6 +207,13 @@ pub struct Store {
     /// same shard write lock.
     #[cfg(test)]
     post_subscribe_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+    /// Test-only seam for POP3's PASS snapshot (issue #86, the seam per
+    /// 0020): when set, the closure runs inside the snapshot job, so a test
+    /// can hold real PASS work and observe that the async worker still
+    /// serves other sockets. Per instance — never a global gate. Compiled
+    /// only under test; never set in production.
+    #[cfg(test)]
+    snapshot_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Totals {
@@ -227,6 +253,8 @@ impl Store {
             pre_mirror_gate: std::sync::Mutex::new(None),
             #[cfg(test)]
             post_subscribe_gate: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            snapshot_gate: std::sync::Mutex::new(None),
         }
     }
 
@@ -375,6 +403,27 @@ impl Store {
             .post_subscribe_gate
             .lock()
             .expect("post-subscribe gate poisoned")
+            .clone();
+        if let Some(gate) = gate {
+            gate();
+        }
+    }
+
+    /// Test-only: install (or remove) the PASS snapshot gate. See the field
+    /// doc.
+    #[cfg(test)]
+    pub(crate) fn set_snapshot_gate(&self, gate: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+        *self.snapshot_gate.lock().expect("snapshot gate poisoned") = gate;
+    }
+
+    /// Test-only: fire the PASS snapshot gate, if one is installed. The Arc
+    /// is cloned out before the call so the closure may block freely.
+    #[cfg(test)]
+    pub(crate) fn run_snapshot_gate(&self) {
+        let gate = self
+            .snapshot_gate
+            .lock()
+            .expect("snapshot gate poisoned")
             .clone();
         if let Some(gate) = gate {
             gate();
@@ -747,6 +796,15 @@ impl Store {
         out
     }
 
+    /// Whether `name` is a live inbox — one map lookup (issue #86). POP3's
+    /// `USER` and `PASS` ask exactly this; enumerating and sorting every
+    /// name through [`Store::inboxes`] to answer it scaled with the inbox
+    /// count. An emptied inbox does not exist (decision 0032), so it
+    /// answers `false` like one never seen.
+    pub fn has_inbox(&self, name: &str) -> bool {
+        self.inboxes.contains_key(name)
+    }
+
     /// Subscribe to new-mail notifications for an inbox (lazy per-inbox
     /// channel).
     ///
@@ -859,6 +917,39 @@ pub(crate) fn email(id: &str, inbox: &str, to: &str) -> Email {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `has_inbox` answers present, absent and emptied: the first mail
+    /// mints the inbox, a delete that empties it removes it (0032).
+    #[test]
+    fn has_inbox_answers_present_absent_and_emptied() {
+        let store = Store::new(0);
+        assert!(!store.has_inbox("pop"));
+        let _ = store.insert(email("1", "pop", "a@x.io"));
+        assert!(store.has_inbox("pop"));
+        assert!(!store.has_inbox("other"));
+        assert!(store.delete("1").unwrap());
+        assert!(!store.has_inbox("pop"));
+    }
+
+    /// Pruning follows acceptance order, never the timestamp (decision
+    /// 0038): mail stamped deliberately *later* but accepted first is the
+    /// oldest and the one evicted. Synthetic stamps, no clock.
+    #[test]
+    fn pruning_follows_acceptance_not_received_ms() {
+        let store = Store::new(1);
+        let mut first = email("a", "order", "a@x.io");
+        first.received_ms = 2_000;
+        let mut second = email("b", "order", "a@x.io");
+        second.received_ms = 1_000;
+        let _ = store.insert(first);
+        let _ = store.insert(second);
+        let kept: Vec<String> = store
+            .list("order", &Filter::default())
+            .iter()
+            .map(|e| e.id.clone())
+            .collect();
+        assert_eq!(kept, vec!["b".to_string()]);
+    }
 
     #[test]
     fn insert_prunes_oldest_beyond_cap() {
@@ -1111,7 +1202,7 @@ mod tests {
 
     /// One rule on every path (decision 0032, issue #54): a `delete` that
     /// empties an inbox removes its entry — the listing `inboxes()` serves
-    /// (and POP3's `inbox_exists` follows) — releasing the watcher channel
+    /// (and POP3's `has_inbox` follows) — releasing the watcher channel
     /// with it, exactly as `clear` does via `drain_inbox`. The live store
     /// and a reopen of the same data file agree: no empty entry is
     /// restored, and a later insert re-mints the inbox.
@@ -1135,6 +1226,7 @@ mod tests {
             // Drain the buffered pushes so the release below is observable.
             let _ = rx.try_recv();
             let _ = store.delete("e1");
+            assert!(!store.has_inbox("gone"), "the emptied inbox is absent");
             assert!(
                 matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Closed)),
                 "the emptied inbox's channel is released with the entry"
@@ -1166,6 +1258,9 @@ mod tests {
                 vec!["gone", "kept"],
                 "restore rebuilds entries only for inboxes with rows"
             );
+            // The single lookup agrees with the listing after restore.
+            assert!(store.has_inbox("gone") & store.has_inbox("kept"));
+            assert!(!store.has_inbox("never"));
         }
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));

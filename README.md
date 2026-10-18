@@ -418,12 +418,15 @@ Streamable JSON-RPC at `POST /mcp`.
 QUIT. The maildrop **is** a swarmail inbox: `USER proj-42` names the inbox
 exactly like SMTP AUTH does, so mail delivered over SMTP reads back over
 POP3 — including mail that arrived before the session opened. UIDLs are the
-swarmail ids; octet counts are the octets RETR transmits — the payload
-CRLF-terminated and dot-stuffed, the terminating `.` not counted — derived
-from the stored payload by running the same writer RETR uses, never stored
-a second time. DELE marks in-session and applies
-on QUIT — the update stage; RSET unmarks; a dropped connection leaves the
-maildrop untouched. Plaintext only: no APOP, no STLS — a test-harness
+swarmail ids; octet counts are the payload the client keeps — every line
+CRLF-terminated, the transparency dots RETR adds not counted (RFC 1939
+§11), the terminating `.` not counted — derived from the stored payload by
+the same traversal RETR writes with, never stored a second time (proposed
+decision [0037](docs/decisions/0037-pop3-size-accounting.md), amending
+0028 §1). DELE marks in-session and applies
+on QUIT — the update stage; a DELE of mail removed elsewhere answers
+`-ERR no such message`, like RETR; RSET unmarks; a dropped connection
+leaves the maildrop untouched. Plaintext only: no APOP, no STLS — a test-harness
 surface behind the same trust boundary as the SMTP listener.
 
 ### MailHog / Mailpit shims
@@ -601,7 +604,28 @@ swarmail serve --data-file /var/lib/swarmail/mail.db   # or SWARMAIL_DATA_FILE=�
 ```
 
 Restored mail does not re-fire webhooks or waiters — it is
-already-delivered state, not a new delivery. Restart is exercised by
+already-delivered state, not a new delivery.
+
+**Memory is not globally bounded** (proposed decision
+[0038](docs/decisions/0038-store-memory-and-timestamps.md)).
+`SWARMAIL_MAX_PER_INBOX` caps messages per inbox — `0` disables it — and is
+not a global byte or RSS cap: the inbox count is unlimited, and all
+persisted rows restore before bind without application of that cap. A
+resident mail costs its raw bytes, decoded bodies and extracted fields, its
+index entries, any copy a watcher still holds, and the buffers of concurrent
+requests; the data file's size on disk is not its size in RAM. Each distinct
+awaited inbox name keeps a watcher channel — about 780 B per name observed
+on one build, not a fixed ceiling — until that inbox is cleared or emptied
+or the process restarts; awaiting the same name again reuses it. This is
+separate from the 4,096-name cap on the await-metrics registry.
+
+**`received_at` / `received_ms` are parse-start stamps**: sampled when
+`build_email` begins, before parsing and before acceptance. They are not
+the sender's `Date` and not a commit sequence, and need not sort in
+acceptance order across sessions or clock steps — a large mail can be
+stamped before a small one that is accepted first. Per-inbox order, POP3
+numbering, oldest-only pruning and the data file's restore order all follow
+acceptance. Restart is exercised by
 `tests/persistence.rs`: the exact state comes back, and a clear racing a
 250-answered insert never loses the answered mail.
 

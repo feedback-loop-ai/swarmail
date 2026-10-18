@@ -15,18 +15,25 @@ fn raw_of(from: &str, to: &str, subject: &str, body: &str) -> Vec<u8> {
     format!("From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{body}\r\n").into_bytes()
 }
 
-/// The octets RETR transmits for these arguments (decision 0028 §1): the
-/// payload with every line CRLF-terminated and dot-stuffed, the final
-/// `.\r\n` excluded — derived from the payload itself, never from a stored
-/// length.
+/// The size POP3 advertises for these arguments (decision 0037, amending
+/// 0028 §1): the payload with every line CRLF-terminated, the transparency
+/// dots RETR adds not counted, the final `.\r\n` excluded — derived from
+/// the payload itself, never from a stored length.
 fn octets(from: &str, to: &str, subject: &str, body: &str) -> u64 {
-    wire_octets(&raw_of(from, to, subject, body))
+    payload_octets(&raw_of(from, to, subject, body))
 }
 
-/// The wire form of a stored mail, computed here — an independent statement
-/// of the RFC 1939 §11 rule the server must follow (every line
-/// CRLF-terminated, dot-stuffed, no terminating "." counted) — so a server
-/// drift shows up as a red count, not a tautology.
+/// The advertised size of a stored mail, computed here as the length of the
+/// client's view (`crlf_of`) — an independent statement of RFC 1939 §11
+/// ("need not (and must not) be counted twice") — so a server drift shows
+/// up as a red count, not a tautology.
+fn payload_octets(raw: &[u8]) -> u64 {
+    crlf_of(raw).len() as u64
+}
+
+/// The octets RETR puts on the wire for a stored mail, computed here: every
+/// line CRLF-terminated *and* dot-stuffed, no terminating "." counted. Not
+/// the advertised size — it exceeds it by one per dot-leading line.
 fn wire_octets(raw: &[u8]) -> u64 {
     let mut n = 0u64;
     let mut start = 0;
@@ -263,13 +270,14 @@ async fn stat_list_uidl_retr_answer_from_the_same_store() {
     }
 }
 
-/// The advertised octet count is the wire, for every line-ending shape
-/// (issue #44, decision 0028 §1): PASS, STAT, LIST, LIST n and RETR n all
-/// name the octets RETR actually transmits — measured here straight off the
-/// socket, no dot-unstuffing and no CRLF restoration — and that count is
-/// derived from the payload, never stored a second time. Bare-LF and
-/// dot-stuffed payloads make the stored length and the wire length differ,
-/// so a count copied from the store would be red here.
+/// The advertised octet count is the payload the client keeps, for every
+/// line-ending shape (issue #84, decision 0037 amending 0028 §1): PASS,
+/// STAT, LIST, LIST n, RSET and RETR n all name the CRLF-normalized payload
+/// without the transparency dots — the client's unstuffed view, checked
+/// here against the bytes it received — while the wire itself, measured
+/// straight off the socket, still carries one extra octet per dot-leading
+/// line. Bare-LF payloads make the stored length differ, and dot-leading
+/// ones make the wire length differ, so a count copied from either is red.
 #[tokio::test]
 async fn sizes_match_what_retr_transmits() {
     let s = start().await;
@@ -283,17 +291,20 @@ async fn sizes_match_what_retr_transmits() {
         b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: barelf\r\n\r\nline1\nline2\n\r\n".to_vec(),
         // Mixed: one bare-LF line, one CRLF line.
         b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: mixed\r\n\r\na\nb\r\n".to_vec(),
-        // Dot-stuffed: each leading-dot line gains one octet on the wire.
+        // Dot-stuffed: each leading-dot line gains one octet on the wire,
+        // none in the advertised size.
         b"From: sender@x.io\r\nTo: r@x.io\r\nSubject: dotted\r\n\r\n.x\n.y\r\n".to_vec(),
     ];
     for raw in &mails {
         deliver_raw(&s, "sizes", raw).await;
     }
-    let wire: Vec<u64> = mails.iter().map(|raw| wire_octets(raw)).collect();
-    let total: u64 = wire.iter().sum();
+    let sizes: Vec<u64> = mails.iter().map(|raw| payload_octets(raw)).collect();
+    let total: u64 = sizes.iter().sum();
+    // The dotted mail's wire is two octets longer than its size.
+    assert_eq!(wire_octets(&mails[3]), sizes[3] + 2);
 
     let mut c = Pop3::connect(s.pop3_addr).await;
-    // PASS names the wire total, not the stored total.
+    // PASS names the normalized total, not the stored or the wire total.
     assert_eq!(c.cmd("USER sizes").await, "+OK name is a valid mailbox");
     assert_eq!(
         c.cmd("PASS whatever").await,
@@ -308,39 +319,41 @@ async fn sizes_match_what_retr_transmits() {
         c.data().await,
         format!(
             "1 {}\r\n2 {}\r\n3 {}\r\n4 {}\r\n",
-            wire[0], wire[1], wire[2], wire[3]
+            sizes[0], sizes[1], sizes[2], sizes[3]
         )
     );
-    for (i, n) in wire.iter().enumerate() {
+    for (i, n) in sizes.iter().enumerate() {
         let num = i + 1;
         assert_eq!(
             c.cmd(&format!("LIST {num}")).await,
             format!("+OK {num} {n}")
         );
-        // The count RETR announces is the count of the bytes that follow it
-        // — measured verbatim off the socket.
+        // The wire RETR sends is the stuffed form — measured verbatim off
+        // the socket, its added dots and all.
         let reply = c.cmd(&format!("RETR {num}")).await;
         assert_eq!(reply, format!("+OK {n} octets"), "mail {num}: {reply}");
         let transmitted = c.raw_bytes().await;
         assert_eq!(
             transmitted.len() as u64,
-            *n,
-            "mail {num}: advertised {n}, transmitted {}",
+            wire_octets(&mails[i]),
+            "mail {num}: transmitted {}",
             transmitted.len()
         );
-        // And the body the client reads is the payload with line endings
-        // normalized: stuffing undone, nothing else touched.
+        // And the body the client keeps — stuffing undone — is exactly the
+        // advertised count: the payload with line endings normalized.
         assert_eq!(
             c.cmd(&format!("RETR {num}")).await,
             format!("+OK {n} octets")
         );
+        let kept = c.data_bytes().await;
+        assert_eq!(kept.len() as u64, *n, "mail {num}: advertised vs kept");
         assert_eq!(
-            c.data_bytes().await,
+            kept,
             crlf_of(&mails[i]),
             "mail {num}: body is the payload, CRLF-terminated"
         );
     }
-    // RSET restates the same wire total.
+    // RSET restates the same total.
     assert_eq!(
         c.cmd("RSET").await,
         format!("+OK maildrop has 4 messages ({total} octets)")
@@ -410,18 +423,61 @@ async fn the_session_reports_mail_removed_elsewhere() {
     );
     assert_eq!(c.data().await, format!("1 {n1}\r\n2 {n2}\r\n"));
 
-    // But the store is the truth for fetches: the removed mail answers
-    // "no such message" on RETR. DELE is a mark, not a fetch — RFC 1939
-    // gives it no store semantics — so it answers "+OK" and its delete
-    // applies idempotently at QUIT (the named residual in 0028 §3 is
-    // RETR/TOP honesty, not DELE).
+    // But the store is the truth for fetches and updates alike (decision
+    // 0028 §3, issue #86): the removed mail answers "no such message" on
+    // RETR and on DELE, and DELE adds no mark — the snapshot's numbering
+    // and listings are unchanged.
     assert_eq!(c.cmd("RETR 1").await, "-ERR no such message");
-    assert_eq!(c.cmd("DELE 1").await, "+OK message 1 deleted");
+    assert_eq!(c.cmd("DELE 1").await, "-ERR no such message");
+    assert_eq!(c.cmd("STAT").await, format!("+OK 2 {}", n1 + n2));
+    // The survivor still marks and unmarks normally.
+    assert_eq!(c.cmd("DELE 2").await, "+OK message 2 deleted");
+    assert!(
+        c.cmd("RSET")
+            .await
+            .starts_with("+OK maildrop has 2 messages")
+    );
     // And the survivor still serves, byte-exact.
     assert_eq!(c.cmd("RETR 2").await, format!("+OK {n2} octets"));
     assert_eq!(
         c.data_bytes().await,
         raw_of("sender@x.io", "skew", "Two", "second")
+    );
+    assert!(c.cmd("QUIT").await.starts_with("+OK"));
+}
+
+/// Issue #84's literal fixture: a 30-octet mail of three dot-leading lines
+/// reports 30 in every reply — PASS, STAT, LIST, LIST 1, RETR, RSET — while
+/// RETR's payload occupies 33 octets on the wire (red on the dot-inclusive
+/// count, which said 33 everywhere). Literal bytes, no derived oracle; the
+/// sender stuffs its own dots per RFC 5321, so the store keeps 30.
+#[tokio::test]
+async fn three_dot_leading_lines_report_thirty_octets_everywhere() {
+    let s = start().await;
+    deliver_raw(&s, "thirty", b"..123456\r\n..123456\r\n..123456789\r\n").await;
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    assert_eq!(c.cmd("USER thirty").await, "+OK name is a valid mailbox");
+    assert_eq!(
+        c.cmd("PASS x").await,
+        "+OK maildrop has 1 messages (30 octets)"
+    );
+    assert_eq!(c.cmd("STAT").await, "+OK 1 30");
+    assert_eq!(c.cmd("LIST").await, "+OK 1 messages (30 octets)");
+    assert_eq!(c.data().await, "1 30\r\n");
+    assert_eq!(c.cmd("LIST 1").await, "+OK 1 30");
+    assert_eq!(c.cmd("RETR 1").await, "+OK 30 octets");
+    assert_eq!(
+        c.raw_bytes().await,
+        b"..123456\r\n..123456\r\n..123456789\r\n".to_vec()
+    );
+    assert_eq!(c.cmd("RETR 1").await, "+OK 30 octets");
+    assert_eq!(
+        c.data_bytes().await,
+        b".123456\r\n.123456\r\n.123456789\r\n".to_vec()
+    );
+    assert_eq!(
+        c.cmd("RSET").await,
+        "+OK maildrop has 1 messages (30 octets)"
     );
     assert!(c.cmd("QUIT").await.starts_with("+OK"));
 }
@@ -442,11 +498,15 @@ async fn retr_stuffs_leading_dots_and_normalizes_line_endings() {
     let mut c = Pop3::connect(s.pop3_addr).await;
     c.login("stuffed").await;
     // The stored raw keeps the bare LF (".leading-dots\nplain line\r\n");
-    // RETR's octet count is the wire: the stuffed, CRLF-terminated bytes
-    // this RETR transmits — ".leading-dots\r\n" is re-stuffed to
-    // "..leading-dots\r\n" and every line ends CRLF (decision 0028 §1).
-    let expected = wire_octets(b".leading-dots\nplain line\r\n");
-    assert_eq!(expected, 28, "15 + 16 + 12: the stuffed wire, not the raw");
+    // RETR re-stuffs ".leading-dots\r\n" to "..leading-dots\r\n" on the
+    // wire, but its octet count is what the client keeps: CRLF-terminated,
+    // the added dot not counted (decision 0037).
+    let expected = payload_octets(b".leading-dots\nplain line\r\n");
+    assert_eq!(
+        expected, 27,
+        "15 + 12: the normalized payload, not the wire"
+    );
+    assert_eq!(wire_octets(b".leading-dots\nplain line\r\n"), 28);
     assert_eq!(c.cmd("RETR 1").await, format!("+OK {expected} octets"));
     // Dot-stuffing is undone by the client; the bare LF became CRLF.
     assert_eq!(c.data_bytes().await, b".leading-dots\r\nplain line\r\n");

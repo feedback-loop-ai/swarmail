@@ -48,7 +48,10 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
     references_json TEXT NOT NULL DEFAULT '[]',
     raw BLOB NOT NULL
 );
-CREATE INDEX IF NOT EXISTS emails_inbox ON emails(inbox);
+-- Retired (issue #87): `emails_inbox` was maintained on every write and read
+-- by no query — the store answers per-inbox reads from memory, and restore
+-- scans by seq. Dropped on every open so existing files shed it too.
+DROP INDEX IF EXISTS emails_inbox;
 -- The restore's sort key (issue #54): without it `load()` sorts every raw
 -- BLOB through a temp b-tree on every open. An index on (seq) is (seq,
 -- rowid) — SQLite's implicit rowid column — so `ORDER BY seq, rowid` is
@@ -66,6 +69,15 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("in_reply_to", "TEXT"),
     ("references_json", "TEXT NOT NULL DEFAULT '[]'"),
 ];
+
+/// The full restore scan `load` runs — one builder, so the plan test
+/// EXPLAINs exactly this projection and never a narrowed stand-in (issue
+/// #87). `seq, rowid`: the index answers it, and rows that share a seq (a
+/// legacy file written before the seed fix) come back in write order
+/// instead of SQLite's arbitrary tie-break (issue #54).
+fn restore_query() -> String {
+    format!("SELECT {COLUMNS} FROM emails ORDER BY seq, rowid")
+}
 
 /// Counters live in `meta` as decimal strings.
 const UPSERT_COUNTER: &str = "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)";
@@ -109,12 +121,7 @@ impl Persist {
     /// Every stored email in insertion order, plus the lifetime counters.
     pub fn load(&self) -> rusqlite::Result<(Vec<Email>, u64, u64)> {
         let state = self.state.lock().expect("persist state poisoned");
-        let mut stmt = state.conn.prepare(&format!(
-            // `seq, rowid`: the index answers it, and rows that share a seq
-            // (a legacy file written before the seed fix) come back in write
-            // order instead of SQLite's arbitrary tie-break (issue #54).
-            "SELECT {COLUMNS} FROM emails ORDER BY seq, rowid"
-        ))?;
+        let mut stmt = state.conn.prepare(&restore_query())?;
         let emails = stmt
             .query_map([], row_to_email)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -571,8 +578,9 @@ mod tests {
     }
 
     /// The restore scan is answered by the seq index, not a temp b-tree over
-    /// every raw BLOB (issue #54): the plan names `emails_seq` and sorts
-    /// nothing.
+    /// every raw BLOB (issue #54): the plan of the exact full-column query
+    /// `load` runs (issue #87 — not a narrowed `SELECT id`) names
+    /// `emails_seq` and, on every plan row, sorts nothing.
     #[test]
     fn the_restore_scan_reads_the_seq_index() {
         let (_guard, path) = db_path("plan");
@@ -581,22 +589,91 @@ mod tests {
             .record_insert(&email("a", "box", "a@x.io"), &[], 1, 0)
             .unwrap();
         let state = persist.state.lock().unwrap();
-        let plan: String = state
+        let plan: Vec<String> = state
             .conn
-            .query_row(
-                "EXPLAIN QUERY PLAN SELECT id FROM emails ORDER BY seq, rowid",
-                [],
-                |row| row.get(3),
-            )
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", restore_query()))
+            .unwrap()
+            .query_map([], |row| row.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
             .unwrap();
         assert!(
-            plan.contains("USING INDEX emails_seq"),
-            "the seq index serves the restore scan: {plan}"
+            plan.iter()
+                .any(|row| row.contains("USING INDEX emails_seq")),
+            "the seq index serves the restore scan: {plan:?}"
         );
         assert!(
-            !plan.to_lowercase().contains("temp b-tree"),
-            "no temp sort over the blobs: {plan}"
+            !plan
+                .iter()
+                .any(|row| row.to_lowercase().contains("temp b-tree")),
+            "no temp sort over the blobs: {plan:?}"
         );
+    }
+
+    /// The names of the data file's indexes on `emails`, read straight out
+    /// of the schema.
+    fn email_indexes(path: &Path) -> Vec<String> {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'emails' \
+             AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .unwrap()
+    }
+
+    /// The retired `emails_inbox` index (issue #87) is never created on a
+    /// fresh file and is dropped from a legacy one, which keeps `emails_seq`,
+    /// its rows and its counters; a reopen is idempotent.
+    #[test]
+    fn open_retires_the_unused_inbox_index_on_fresh_and_legacy_files() {
+        let (_fresh_guard, fresh) = db_path("fresh-index");
+        drop(Persist::open(&fresh).unwrap());
+        assert_eq!(email_indexes(&fresh), vec!["emails_seq".to_string()]);
+
+        let (_guard, path) = db_path("legacy-index");
+        {
+            let persist = Persist::open(&path).unwrap();
+            persist
+                .record_insert(&email("a", "box", "a@x.io"), &[], 1, 0)
+                .unwrap();
+        }
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE INDEX emails_inbox ON emails(inbox);")
+            .unwrap();
+        assert_eq!(
+            email_indexes(&path),
+            vec!["emails_inbox".to_string(), "emails_seq".to_string()]
+        );
+        for _ in 0..2 {
+            let persist = Persist::open(&path).unwrap();
+            let (emails, inserted, dropped) = persist.load().unwrap();
+            assert_eq!(emails.len(), 1);
+            assert_eq!((inserted, dropped), (1, 0));
+            drop(persist);
+            assert_eq!(email_indexes(&path), vec!["emails_seq".to_string()]);
+        }
+    }
+
+    /// Restore follows the seq order, never the timestamp (decision 0038):
+    /// rows stamped deliberately in reverse come back in write order.
+    #[test]
+    fn restore_follows_seq_not_received_ms() {
+        let (_guard, path) = db_path("reversed-stamps");
+        let persist = Persist::open(&path).unwrap();
+        let mut first = email("first", "box", "a@x.io");
+        first.received_ms = 2_000;
+        let mut second = email("second", "box", "a@x.io");
+        second.received_ms = 1_000;
+        persist.record_insert(&first, &[], 1, 0).unwrap();
+        persist.record_insert(&second, &[], 2, 0).unwrap();
+        let (emails, _, _) = persist.load().unwrap();
+        let ids: Vec<&str> = emails.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["first", "second"]);
     }
 
     #[test]
