@@ -78,8 +78,9 @@ pub struct ServeArgs {
 
     /// Maximum time in milliseconds a STARTTLS handshake may take before
     /// the session is dropped: a client that stalls mid-upgrade must not
-    /// tie a session task up forever. The pre-TLS plaintext idle posture
-    /// has no timeout and stays that way.
+    /// tie a session task up forever. Plaintext sessions are bounded per
+    /// read and per write by a compiled idle timeout — 5 minutes on SMTP,
+    /// 10 minutes on POP3 — not by a session lifetime (decision 0036).
     #[arg(
         long,
         value_name = "MS",
@@ -122,6 +123,10 @@ pub struct Config {
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
     pub smtp: SmtpConfig,
+    /// The POP3 single-I/O idle bound, independent of SMTP's (decision
+    /// 0036 §4): no CLI knob, `pop3::DEFAULT_IDLE_TIMEOUT` from the CLI,
+    /// overridable in-process. A Rust struct literal must name it.
+    pub pop3_idle_timeout: Duration,
 }
 
 impl From<&ServeArgs> for Config {
@@ -138,6 +143,7 @@ impl From<&ServeArgs> for Config {
                 tls_handshake_timeout: Duration::from_millis(args.tls_handshake_timeout_ms),
                 ..SmtpConfig::default()
             },
+            pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
         }
     }
 }

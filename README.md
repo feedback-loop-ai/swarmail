@@ -294,25 +294,49 @@ afresh, clearing identity and envelope. A bare `AUTH` or surplus tokens is
 greeting is accepted, and so are greetings with no hostname.
 
 **The listener never dies on a bad accept.** A transient `accept()` error
-backs the loop off (1 s) and clears on the next success, and `/healthz`
-says so honestly: `200 {"status":"ok"}` when every listener accepts, `503
-{"status":"degraded","degraded":["smtp", ...]}` naming the surfaces that
-cannot, and `503 {"status":"stopping"}` once the stop has fired — that
-state wins over everything else. Sessions are bounded where the wire
-admits them: more than 256 concurrent SMTP or POP3 sessions is refused
-before any greeting (`421 4.7.0 Too many connections, closing transmission
-channel` / `-ERR too many connections`), a freed slot is offered to the
-next peer, more than 100 recipients on one mail is refused `452 4.5.3 Too
+flags the listener degraded and backs the loop off (1 s); the flag clears
+when the next accept is observed waiting or succeeds — an idle recovered
+listener goes green without a peer, while back-to-back failures stay red
+across the retry (the backoff clock alone never clears it). Waiting is an
+observation, not a promise that a later accept succeeds. `/healthz` says
+so: `200 {"status":"ok"}` when no listener is flagged, `503
+{"status":"degraded","degraded":["smtp", ...]}` naming the flagged
+surfaces, and `503 {"status":"stopping"}` for a request that reaches the
+handler after the stop has fired — that state wins over everything else.
+Sessions are bounded where the wire admits them: more than 256 concurrent
+SMTP or POP3 sessions is refused before any greeting (`421 4.7.0 Too many
+connections, closing transmission channel` / `-ERR too many connections`);
+completed sessions are reaped right after each accept, before the cap is
+checked, so a slot freed while the listener waited is offered to the very
+next peer. More than 100 recipients on one mail is refused `452 4.5.3 Too
 many recipients` before anything is appended, and an idle session is
 answered `421 4.4.2 idle timeout, closing transmission channel` (POP3:
-`-ERR idle timeout`) and closed — SMTP 5 min, POP3 10 min, never armed
-across a commit (a mid-DATA expiry stores nothing, exactly as if the
-peer had hung up).
+`-ERR idle timeout`) and closed — SMTP 5 min, POP3 10 min, each its own
+compiled default, never armed across a commit (a mid-DATA expiry stores
+nothing, exactly as if the peer had hung up).
+
+**The idle bounds are per read and per write, not a session lifetime**
+(decision 0036, proposed). One incomplete read or write is cut off at the
+bound, but a peer that completes a command or a DATA line inside each
+window earns another window, indefinitely: there is no session lifetime,
+no DATA lifetime and no minimum transfer rate. At the defaults,
+complete-line tricklers can occupy all 256 SMTP slots indefinitely, and
+each DATA connection can retain a payload buffer approaching 50 MiB —
+about 12.5 GiB across 256 connections before allocation, parsing and
+other overhead (an exposure estimate, not an RSS ceiling); an over-limit
+DATA drain has no total time bound either while complete lines keep
+arriving. POP3 command trickles can hold its 256 slots the same way. The
+cap and the idle bounds are no availability guarantee against a
+deliberately slow client.
 
 **The stop is wired to both signals and has a documented exit vocabulary.**
 `SIGINT` and `SIGTERM` take the same path: the first starts the graceful
-drain (`shutting down` on stdout, the 5 s drain deadline raced against
-graceful serve), and a second signal during the drain is the operator's
+drain (`shutting down` on stdout, the 10 s drain deadline raced against
+graceful serve). HTTP graceful shutdown closes admission: a new probe
+after that gets connection refusal, not a `stopping` body; an already
+accepted connection gets `503 {"status":"stopping"}` only if its request
+reaches the handler after the stop, and may close without a response. A
+second signal during the drain is the operator's
 explicit "now" — a forced `exit(70)`, never a disposition accident. The
 exit codes are **0** graceful, **70** forced; the image declares
 `STOPSIGNAL SIGTERM` so `docker stop` rides the graceful path.
@@ -321,11 +345,9 @@ exit codes are **0** graceful, **70** forced; the image declares
 advertises `STARTTLS`, the session upgrades with rustls/ring, and the
 session restarts per RFC 3207 §4.2 — plaintext pipelining before the
 handshake is discarded, every further command is TLS-only. A stalled
-handshake is dropped after `--tls-handshake-timeout-ms` (default 10 s); the
-plaintext session has no idle timeout and gains none. *(Amended by
-decision 0027: the plaintext idle posture is now bounded — 5 min SMTP /
-10 min POP3, as above; the STARTTLS handshake timeout itself is
-unchanged.)* Without a cert the
+handshake is dropped after `--tls-handshake-timeout-ms` (default 10 s);
+plaintext sessions answer to the per-I/O idle bounds above (5 min SMTP,
+10 min POP3, decisions 0027 and 0036). Without a cert the
 plaintext listener is byte-identical to the one without the flag.
 
 ```
@@ -672,7 +694,8 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/rate.rs` | the 5k losslessness guarantee + burst |
 | `tests/burst.rs` | 1000 mails / 50 conns exact-count, per-inbox isolation, cap eviction, chaos rejection + recovery |
 | `tests/api.rs` | every REST route, happy + error branches |
-| `tests/config_cli.rs` | the CLI/env config surface |
+| `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
+| `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and proposed 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
@@ -680,7 +703,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/starttls.rs` | STARTTLS: byte-identical plaintext listener, real rustls upgrade, RFC 3207 restart (identity and envelope reset), refused certs, stalled handshakes, malformed PEM refusal, gen-cert file handling |
 | `tests/lifecycle.rs` | graceful stop: serve futures return, ports release, parked awaits answer 503 inside the stop budget, an in-flight commit neither holds stop nor half-lands, queued seeds refuse once the stop has fired — at most one busy wait, never one per queued request; a stalled body and a partial head cannot hold stop hostage (the drain deadline ends the wait) and the partial head is answered `503 stopping` on the wire |
 | `tests/binary.rs` | the shipped binary: SIGINT and SIGTERM → clean exit, SIGINT with seeds queued on a held write lock exits inside the budget and stores nothing, a second signal during the drain exits 70, a mail committed before SIGTERM is queryable after restart, mcp EOF → 0 |
-| `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT |
+| `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT, its own idle bound wired independently of SMTP's |
 | `tests/compat.rs` | the shims: Mailpit + MailHog envelopes, searches, deletes, 404/400 branches |
 | `tests/persistence.rs` | restart restores exact state; a racing clear never loses 250-answered mail |
 | unit | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |

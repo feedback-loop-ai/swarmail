@@ -10,8 +10,10 @@
 //! restarts per RFC 3207 §4.2, with everything the client said before the
 //! handshake discarded. The handshake itself is bounded: a client that
 //! stalls mid-upgrade is dropped after `SmtpConfig::tls_handshake_timeout`
-//! instead of pinning its session task, while the plaintext idle posture
-//! (no read timeout at all) is untouched.
+//! instead of pinning its session task. Plaintext is bounded per read and
+//! per write by `SmtpConfig::idle_timeout` (decision 0027) — one operation,
+//! never a session or DATA lifetime: a peer completing a line inside each
+//! window keeps its slot indefinitely (decision 0036 §5).
 //!
 //! AUTH PLAIN and AUTH LOGIN assign the session's inbox only on success: a
 //! credential that names nothing — undecodable base64, a PLAIN that is not
@@ -95,12 +97,14 @@ pub struct SmtpConfig {
     /// How long a STARTTLS handshake may take before the session is
     /// dropped. A client that connects, greets and then goes silent
     /// mid-upgrade must not be able to tie the session task up forever;
-    /// the deadline bounds exactly that wait and nothing else — the
-    /// pre-TLS plaintext idle posture stays unbounded, as ever.
+    /// the deadline bounds exactly that wait and nothing else — plaintext
+    /// reads and writes answer to `idle_timeout`.
     pub tls_handshake_timeout: Duration,
     /// The single-I/O idle bound (decision 0027): bounds one peer read or
     /// one reply write, never the commit. Expiry says goodbye —
     /// `421 4.4.2 …` between commands, silence mid-DATA (nothing stored).
+    /// SMTP's alone: POP3 has its own `Config::pop3_idle_timeout`
+    /// (decision 0036 §4).
     pub idle_timeout: Duration,
     /// Concurrent sessions this listener serves (decision 0027). Beyond it
     /// the refusal is wire-honest (`421 4.7.0 …`) and retryable, written
@@ -164,6 +168,20 @@ fn take_injected_accept_error() -> bool {
     })
 }
 
+// Test-only observers of the accept loop (decision 0020 rule 4): whether
+// its last accept poll parked, the flag value each error arm found, and
+// every spawned session's abort handle — so a test can establish real task
+// completion (`is_finished`, which a peer's EOF does not prove) while
+// accept is parked. Observers only: none reaps, counts or admits.
+#[cfg(test)]
+thread_local! {
+    static PARKED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    static ERRORS_SEEN: core::cell::RefCell<Vec<bool>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+    static SPAWNED: core::cell::RefCell<Vec<tokio::task::AbortHandle>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
 pub async fn serve(
     listener: TcpListener,
     store: Arc<Store>,
@@ -175,10 +193,11 @@ pub async fn serve(
 ) -> io::Result<()> {
     let mut shutdown = std::pin::pin!(shutdown);
     // Every session is owned by this loop: ready completions are reaped at
-    // the top of every iteration — never parked — so a finished session
-    // cannot accumulate in the set with the cumulative connection count; the
-    // set is drained on the shutdown arm, so no session socket outlives the
-    // serve loop. (Dropping the set would abort its children — the drain
+    // admission — after each successful accept, right before the cap check
+    // (decision 0036 §1) — so the count the cap compares is never stale by
+    // the sessions that finished while accept was parked; the set is
+    // drained on the shutdown arm, so no session socket outlives the serve
+    // loop. (Dropping the set would abort its children — the drain
     // makes the wait explicit, and the abort's reach is stage-precise: a
     // session that has not crossed the DATA terminator has no commit to
     // land, so the closed socket is the only goodbye it gets; a session
@@ -193,26 +212,30 @@ pub async fn serve(
     // asserts the wire truth.)
     let mut sessions: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {
-        // Reap ready completions without blocking: `try_join_next` never
-        // parks the accept path and never touches a session still running.
-        while sessions.try_join_next().is_some() {
-            #[cfg(test)]
-            REAPED.fetch_add(1, Ordering::Relaxed);
-        }
         // The accept itself, raced against the stop. The seam arm (test-only)
-        // is consumed on the first poll, so the error arm below is reachable
-        // and branch-stable; in production the block is just the accept.
+        // is checked before the listener on every poll, so the error arm
+        // below is reachable and branch-stable; in production the poll is
+        // just the accept's. A poll that parks is an observed healthy wait
+        // (decision 0036 §2): it clears the flag — never the backoff clock,
+        // so back-to-back failures stay degraded throughout. Parked is not
+        // proof a future accept succeeds; the next failure sets it again.
         let accepted = tokio::select! {
-            res = async {
+            res = std::future::poll_fn(|cx| {
                 #[cfg(test)]
                 if take_injected_accept_error() {
-                    return Err(io::Error::new(
+                    return Poll::Ready(Err(io::Error::new(
                         io::ErrorKind::ConnectionAborted,
                         "injected accept error",
-                    ));
+                    )));
                 }
-                listener.accept().await
-            } => res,
+                let polled = listener.poll_accept(cx);
+                #[cfg(test)]
+                PARKED.with(|parked| parked.set(polled.is_pending()));
+                if polled.is_pending() {
+                    degraded.store(false, Ordering::Relaxed);
+                }
+                polled
+            }) => res,
             _ = &mut shutdown => {
                 sessions.abort_all();
                 while sessions.join_next().await.is_some() {}
@@ -235,7 +258,10 @@ pub async fn serve(
                 // the honest surface, the backoff the pace. The stop is
                 // raced against the backoff, never stacked behind it — a
                 // stop arriving mid-pause resolves immediately.
-                degraded.store(true, Ordering::Relaxed);
+                #[cfg_attr(not(test), allow(unused_variables))]
+                let was_degraded = degraded.swap(true, Ordering::Relaxed);
+                #[cfg(test)]
+                ERRORS_SEEN.with(|seen| seen.borrow_mut().push(was_degraded));
                 tracing::warn!(error = %e, "smtp accept failed; retrying after the backoff");
                 tokio::select! {
                     _ = &mut shutdown => {
@@ -248,10 +274,20 @@ pub async fn serve(
                 continue;
             }
         };
+        // The one reap, at admission (decision 0036 §1): `try_join_next`
+        // never parks and never touches a session still running, so every
+        // completion ready by now — including those that finished while
+        // accept was parked — frees its slot for this very peer. A task
+        // completing after this reap can still race the check; a peer's EOF
+        // is not proof Tokio has marked its session complete.
+        while sessions.try_join_next().is_some() {
+            #[cfg(test)]
+            REAPED.fetch_add(1, Ordering::Relaxed);
+        }
         // Bounded sessions (decision 0027): the cap is checked against the
-        // live set after the reap. A refusal is wire-honest and retryable,
-        // written under the same idle deadline before any session state
-        // exists, and the socket is closed without spawning.
+        // live set right after the reap. A refusal is wire-honest and
+        // retryable, written under the same idle deadline before any
+        // session state exists, and the socket is closed without spawning.
         if sessions.len() >= cfg.max_sessions {
             let _ = bound_io(
                 async {
@@ -275,11 +311,14 @@ pub async fn serve(
         let chaos = chaos.clone();
         let cfg = cfg.clone();
         let tls = tls.clone();
-        sessions.spawn(async move {
+        #[cfg_attr(not(test), allow(unused_variables))]
+        let handle = sessions.spawn(async move {
             if let Err(e) = handle_conn(stream, store, chaos, cfg, tls).await {
                 debug!(session, error = %e, "connection ended");
             }
         });
+        #[cfg(test)]
+        SPAWNED.with(|spawned| spawned.borrow_mut().push(handle));
     }
 }
 
@@ -2015,13 +2054,14 @@ mod tests {
         );
     }
 
-    /// One injected accept failure: the loop flags itself degraded, backs
-    /// off, and then delivers a real mail on the same listener — a
-    /// transient accept error is survived, not fatal (red: the old `?`
-    /// arm returned from `serve` on the first failure). The flag is also
-    /// observed cleared: the next successful accept is the recovery.
+    /// One injected accept failure with nothing queued: the loop flags
+    /// itself degraded, backs off, and clears the flag when the next accept
+    /// poll parks — before any peer connects (decision 0036 §2; red on the
+    /// success-only clear, which leaves an idle recovered listener degraded
+    /// forever). Only then does a real mail prove the listener survived
+    /// (red on the old `?` arm, which returned from `serve` on the failure).
     #[tokio::test]
-    async fn one_failed_accept_backs_off_then_delivers() {
+    async fn one_failed_accept_clears_on_the_parked_retry_then_delivers() {
         let store = Arc::new(Store::new(0));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2040,14 +2080,137 @@ mod tests {
         inject_accept_errors(1);
 
         flag_becomes(&degraded, true, "flagged degraded on the failed accept").await;
-        // The same listener still delivers once the backoff has passed.
+        // No peer yet: the parked retry alone is the recovery.
+        flag_becomes(&degraded, false, "cleared the flag on the parked retry").await;
         deliver_one(&store, addr).await;
-        flag_becomes(
-            &degraded,
-            false,
-            "cleared the flag after the successful accept",
-        )
-        .await;
+        server.abort();
+    }
+
+    /// Back-to-back failures publish no healthy moment between them: the
+    /// second error arm finds the flag still set — the backoff clock alone
+    /// never clears it (decision 0036 §2; red on a clear before the poll or
+    /// at the backoff's end). The parked third poll then clears it, and a
+    /// real mail follows.
+    #[tokio::test]
+    async fn successive_failed_accepts_stay_degraded_across_the_retry() {
+        let store = Arc::new(Store::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let degraded = Arc::new(AtomicBool::new(false));
+        ERRORS_SEEN.with(|seen| seen.borrow_mut().clear());
+        let server = tokio::spawn(serve(
+            listener,
+            store.clone(),
+            Arc::new(Chaos::default()),
+            SmtpConfig::default(),
+            None,
+            degraded.clone(),
+            std::future::pending(),
+        ));
+        inject_accept_errors(2);
+
+        // The loop has not been polled yet, so the wait is always entered.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while ERRORS_SEEN.with(|seen| seen.borrow().len()) < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the accept loop never took both injected errors"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            ERRORS_SEEN.with(|seen| seen.borrow().clone()),
+            vec![false, true],
+            "the retry boundary published a healthy flag between failures"
+        );
+        flag_becomes(&degraded, false, "cleared the flag on the parked retry").await;
+        deliver_one(&store, addr).await;
+        server.abort();
+    }
+
+    /// A greeted SMTP session on a driven listener — the banner is written
+    /// by the session task, so reading it proves the spawn.
+    async fn greeted(addr: std::net::SocketAddr) -> TcpStream {
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        let banner = reply(&mut c).await;
+        assert!(banner.starts_with("220 "), "{banner}");
+        c
+    }
+
+    /// Tokio's own completion flag for the session spawned `index`-th on
+    /// this thread (a peer's EOF does not prove it), and-ed — never
+    /// short-circuited — with the accept loop being parked.
+    fn finished_while_parked(index: usize) -> bool {
+        SPAWNED.with(|spawned| spawned.borrow()[index].is_finished())
+            & PARKED.with(|parked| parked.get())
+    }
+
+    /// `QUIT` the session spawned `index`-th, then wait until its task has
+    /// really finished while the accept loop is parked — the completion
+    /// lands with nothing to wake the loop, so no reap can run before the
+    /// next peer arrives. A real deadline, never a sleep; the first check
+    /// precedes any yield, so the session cannot have run yet and the wait
+    /// is entered on every call.
+    async fn quit_finished_while_parked(c: &mut TcpStream, index: usize) {
+        c.write_all(b"QUIT\r\n").await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !finished_while_parked(index) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "session {index} never finished while accept was parked"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(reply(c).await, "221 2.0.0 Bye\r\n");
+    }
+
+    /// Admission reaps (decision 0036 §1): a genuinely full cap refuses
+    /// exactly and stores nothing, and a slot freed while accept is parked
+    /// — one session, then a whole full burst — admits the very next peer,
+    /// offered once (red on the loop-head reap, whose stale count refuses
+    /// it).
+    #[tokio::test]
+    async fn a_slot_freed_while_accept_is_parked_admits_the_next_peer() {
+        use tokio::io::AsyncReadExt;
+
+        let store = Arc::new(Store::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        SPAWNED.with(|spawned| spawned.borrow_mut().clear());
+        let server = tokio::spawn(serve(
+            listener,
+            store.clone(),
+            Arc::new(Chaos::default()),
+            SmtpConfig {
+                max_sessions: 2,
+                ..SmtpConfig::default()
+            },
+            None,
+            Arc::new(AtomicBool::new(false)),
+            std::future::pending(),
+        ));
+        let mut first = greeted(addr).await; // spawned 0
+        let mut second = greeted(addr).await; // spawned 1
+
+        // Both sessions live: the cap is genuinely full.
+        let mut refused = TcpStream::connect(addr).await.unwrap();
+        let mut wire = Vec::new();
+        refused.read_to_end(&mut wire).await.unwrap();
+        assert_eq!(
+            wire,
+            b"421 4.7.0 Too many connections, closing transmission channel\r\n"
+        );
+
+        // One slot frees while accept is parked.
+        quit_finished_while_parked(&mut first, 0).await;
+        let mut third = greeted(addr).await; // spawned 2
+
+        // The whole full burst completes while accept is parked.
+        quit_finished_while_parked(&mut second, 1).await;
+        quit_finished_while_parked(&mut third, 2).await;
+        let _fourth = greeted(addr).await;
+        let _fifth = greeted(addr).await;
+        assert!(store.inboxes().is_empty(), "admission stores nothing");
         server.abort();
     }
 

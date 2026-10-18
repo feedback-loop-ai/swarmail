@@ -196,3 +196,45 @@ survivable, and they land together or the retry is a spinner.
   (retryable), the trickler closed at the bound rather than indulged, detached connection
   tasks dying at process exit (and with the runtime for embedders), and the startup
   registration window (microseconds, nothing stored).
+
+## Clarification — 2026-10-18 (controlling)
+
+This clarification controls where it conflicts with the text above, which stays as the
+accepted historical ruling. It implements the posture of
+[0036](0036-smtp-trickle-lifetime.md), which is **proposed** — acceptance is the operator's;
+nothing here claims it. Issues #77–#80.
+
+- **§1 and §2 — recovery follows an observed poll outcome.** *Superseded:* "The flag clears on
+  the next successful accept." The flag clears when an accept poll is observed waiting
+  (pending) or succeeds, and is set by an error; the end of the backoff alone never clears it,
+  so back-to-back errors publish no healthy moment between them. Waiting is an observation,
+  not proof that descriptors are available; a later failure sets the flag again.
+- **§2 — the stopping answer is conditional.** *Superseded:* the unconditional "At stop-start
+  `/healthz` answers `503 {"status":"stopping"}`". HTTP graceful shutdown closes admission:
+  a new probe after that gets connection refusal. An already accepted connection gets
+  `503 {"status":"stopping"}` only if its request reaches the handler after the stop; some
+  close without a response. The 10 s fence of §7 is unchanged.
+- **§3 — one reap, at admission.** *Superseded:* the cap "checked after the top-of-loop reap"
+  and the Residual "a burst landing inside one reap window can refuse one honest connection,
+  which retries". Each listener's only reap runs after a successful accept, immediately
+  before the cap check, so completions that became ready while accept was parked never cause
+  a refusal. A task that completes after that reap can still race admission; a peer's EOF is
+  not proof the task has completed. Completed entries may wait, bounded by the cap, until the
+  next admission or shutdown.
+- **§4 and §9 — independent idle defaults.** SMTP keeps 300 s; POP3 uses its own 600 s
+  (`pop3::DEFAULT_IDLE_TIMEOUT`) through `Config::pop3_idle_timeout`, set in the CLI
+  conversion and passed by `run_on`. *Superseded:* §9's "`config.rs` ends at zero diff" —
+  `Config` gains that one field (a Rust struct-literal source change) and the `serve --help`
+  text is corrected to name both defaults. No flag, env variable or `Pop3Config` is added.
+- **§4 and Consequences — no session or DATA lifetime.** *Superseded:* "it bounds silence
+  *and* the pathological trickle" and "Plaintext sessions can no longer be held forever by
+  silence, by a zero window, or by a trickler". The bound is per read and per write: one
+  incomplete operation is cut off, but a peer that completes a command or DATA line inside
+  each window earns another, indefinitely. There is no session lifetime, no DATA lifetime and
+  no minimum transfer rate. At the defaults, complete-line tricklers can occupy all 256 SMTP
+  slots indefinitely, and each DATA connection can retain a payload approaching 50 MiB —
+  about 12.5 GiB across 256 connections before allocation and other overhead (an exposure
+  estimate, not an RSS ceiling). An over-limit DATA drain has no total time bound while
+  complete lines keep arriving, and POP3 complete-command trickles can hold its slots the
+  same way. Silence and zero windows remain bounded; no availability guarantee against a
+  deliberately slow client follows from the cap or the idle bounds.
