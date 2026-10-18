@@ -2316,3 +2316,196 @@ async fn smtp_html_links_are_cut_after_decoding() {
         assert_eq!(array(&email, "links"), serde_json::json!(want), "{html}");
     }
 }
+
+// ---------- run 21: #91 closed queries, null parity, paged inboxes ----------
+
+/// Every native query shape is closed (decision 0044 §3, issue #91): the
+/// issue's `assert?count=0&too=` typo — a silently dropped filter that
+/// answered a false 409, or with `count=1` a false pass — refuses `400`
+/// naming the key, and so does `await?offset=`, which a wait would ignore.
+/// Red before: 409 / 200 / 200.
+#[tokio::test]
+async fn an_unknown_native_query_key_refuses_by_name() {
+    let srv = start().await;
+    seed(srv.http_addr, "closed", "a@x.io").await;
+    for (path, key) in [
+        ("/api/v1/inboxes/closed/assert?count=0&too=zzz@x.io", "too"),
+        ("/api/v1/inboxes/closed/assert?count=1&too=zzz@x.io", "too"),
+        (
+            "/api/v1/inboxes/closed/await?offset=3&timeout_ms=60000",
+            "offset",
+        ),
+        ("/api/v1/inboxes/closed/messages?ofset=1", "ofset"),
+        ("/api/v1/inboxes/closed/count?inbox=x", "inbox"),
+        ("/api/v1/inboxes?page=2", "page"),
+    ] {
+        let (st, body) = http_json(srv.http_addr, "GET", path, None).await;
+        assert_eq!(st, 400, "{path}: {body}");
+        let error = body["error"].as_str().unwrap();
+        assert!(error.contains(&format!("`{key}`")), "{path}: {body}");
+    }
+    // The real filter still asserts exactly, the count=0 meaning intact.
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/closed/assert?count=0&to=zzz@x.io",
+        None,
+    )
+    .await;
+    assert_eq!((st, body["matched"].clone()), (200, serde_json::json!(0)));
+}
+
+/// A present `null` is supplied, not omitted (decision 0025 §2, 0044 §3):
+/// every optional REST seed string and the chaos rule's `error` refuse
+/// `null` and a non-string with the field named, storing nothing; omission
+/// keeps the defaults; a per-event `null` still clears that event. Red
+/// before: `"from": null` seeded the default sender, `"error": null` armed.
+#[tokio::test]
+async fn null_strings_refuse_on_rest_like_mcp() {
+    let srv = start().await;
+    for field in ["from", "subject", "text", "html"] {
+        for bad in ["null", "7"] {
+            let body = format!(r#"{{"to": "a@x.io", "{field}": {bad}}}"#);
+            let (st, text) = http_send_text(
+                srv.http_addr,
+                "POST",
+                "/api/v1/inboxes/nulls/seed",
+                Some(&body),
+            )
+            .await;
+            assert_eq!(st, 422, "{body}: {text}");
+            assert!(text.contains(field), "{body}: the field is named: {text}");
+        }
+    }
+    let (_, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/nulls/count", None).await;
+    assert_eq!(count["count"], 0, "no refused seed stored anything");
+    let (st, mail) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/nulls/seed",
+        Some(r#"{"to": "a@x.io"}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{mail}");
+    assert_eq!(mail["from"]["address"], "fixture@swarmail.dev");
+    assert_eq!(mail["envelope_from"], "fixture@swarmail.dev");
+
+    let (st, text) = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 100, "error": null}}"#),
+    )
+    .await;
+    assert_eq!(st, 422, "{text}");
+    assert!(text.contains("error"), "{text}");
+    let (_, chaos) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert!(chaos["data"].is_null(), "nothing armed: {chaos}");
+
+    let (st, chaos) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 0}, "rcpt": null}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{chaos}");
+    assert!(chaos["rcpt"].is_null(), "a per-event null clears: {chaos}");
+    assert!(
+        chaos["data"].get("error").is_none(),
+        "an unset line is omitted, so the config PUTs back: {chaos}"
+    );
+    let echoed = chaos.to_string();
+    let (st, again) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(&echoed)).await;
+    assert_eq!((st, &again), (200, &chaos));
+}
+
+/// A decoded blank inbox segment refuses on every native inbox route
+/// (decision 0044 §3) — no read, wait, clear, seed or feed — and nothing
+/// blank is ever stored; a padded nonblank name is kept verbatim. Red
+/// before: the blank seed stored an inbox the UI linked to a 404.
+#[tokio::test]
+async fn a_blank_path_inbox_refuses_on_every_native_route() {
+    let srv = start().await;
+    for blank in ["%20", "%20%09", "%E3%80%80"] {
+        for (method, route) in [
+            ("GET", "messages"),
+            ("GET", "count"),
+            ("GET", "await?timeout_ms=60000"),
+            ("GET", "assert?count=0"),
+            ("DELETE", "messages"),
+            ("GET", "threads"),
+            ("GET", "threads/abc"),
+            ("GET", "feed"),
+        ] {
+            let path = format!("/api/v1/inboxes/{blank}/{route}");
+            let (st, body) = http_json(srv.http_addr, method, &path, None).await;
+            assert_eq!(st, 400, "{method} {path}: {body}");
+            assert_eq!(body["error"], "inbox must not be blank", "{path}");
+        }
+        let (st, body) = http_json(
+            srv.http_addr,
+            "POST",
+            &format!("/api/v1/inboxes/{blank}/seed"),
+            Some(r#"{"to": "a@x.io"}"#),
+        )
+        .await;
+        assert_eq!(st, 400, "{body}");
+        assert_eq!(body["error"], "inbox must not be blank");
+    }
+    let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(inboxes, serde_json::json!([]), "nothing blank was stored");
+    seed(srv.http_addr, "%20pad%20", "a@x.io").await;
+    let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(inboxes, serde_json::json!([{"name": " pad ", "count": 1}]));
+}
+
+/// `/api/v1/inboxes` is paged (decision 0044 §3, issue #91): with 251
+/// inboxes the default page is 100, 250 is the largest page, 251 refuses by
+/// name, `limit=0` is empty, a huge offset is past the end, and walking the
+/// pages yields every name once, sorted. Red before: one unbounded array.
+#[tokio::test]
+async fn the_inbox_listing_pages_past_the_cap() {
+    let srv = start().await;
+    for i in 0..251 {
+        srv.store
+            .insert(swarmail::smtp::build_email(
+                b"Subject: x\r\n\r\nx",
+                &format!("page-{i:03}"),
+                &["a@x.io".to_string()],
+                "s@x.io".into(),
+            ))
+            .unwrap();
+    }
+    let names = |body: &serde_json::Value| -> Vec<String> {
+        body.as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(names(&body).len(), 100);
+    assert_eq!(body[0], serde_json::json!({"name": "page-000", "count": 1}));
+    let (_, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes?limit=250", None).await;
+    assert_eq!(names(&body).len(), 250);
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes?limit=251", None).await;
+    assert_eq!(st, 400);
+    assert_eq!(body["error"], "limit must be at most 250");
+    let (_, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes?limit=0", None).await;
+    assert_eq!(body, serde_json::json!([]));
+    let huge = format!("/api/v1/inboxes?offset={}", u64::MAX);
+    let (_, body) = http_json(srv.http_addr, "GET", &huge, None).await;
+    assert_eq!(body, serde_json::json!([]));
+    let (st, _) = http_json(srv.http_addr, "GET", "/api/v1/inboxes?offset=-1", None).await;
+    assert_eq!(st, 400);
+    let mut walked = Vec::new();
+    for offset in (0..300).step_by(100) {
+        let path = format!("/api/v1/inboxes?limit=100&offset={offset}");
+        let (_, body) = http_json(srv.http_addr, "GET", &path, None).await;
+        walked.extend(names(&body));
+    }
+    let expected: Vec<String> = (0..251).map(|i| format!("page-{i:03}")).collect();
+    assert_eq!(walked, expected, "disjoint, complete, sorted");
+}

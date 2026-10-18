@@ -85,39 +85,63 @@ pub fn parse_ids(header: &str) -> Vec<String> {
 }
 
 /// The subject two mails must share to fall into one thread: leading
-/// reply/forward markers stripped, trimmed. `None` when nothing remains.
+/// reply/forward markers stripped, every whitespace run collapsed to one
+/// space, trimmed (issue #100: `Two  spaces` and `Two\tspaces` are one
+/// subject). `None` when nothing remains.
 pub fn normalize_subject(subject: Option<&str>) -> Option<String> {
     let mut current = subject?.trim();
     while let Some(rest) = strip_marker(current) {
         current = rest;
     }
-    let normalized = current.trim();
+    let normalized = current.split_whitespace().collect::<Vec<_>>().join(" ");
     if normalized.is_empty() {
         None
     } else {
-        Some(normalized.to_string())
+        Some(normalized)
     }
 }
 
-/// One leading reply/forward marker, ASCII case-insensitive: `Re:`, `Fw:`,
-/// `Fwd:`, `Aw:` — tolerating whitespace between the word and the colon
-/// (`RE : Plan`, a mailer convention). A bare word or a numbered `Re[2]:`
-/// is left alone: anything non-whitespace between word and colon ends the
-/// marker.
+/// The localized reply/forward markers the subject fallback strips, compared
+/// after Unicode lowercasing (issue #100, decision 0044 §9). A finite list —
+/// no locale detection and no numbered `Re[2]:` grammar.
+const MARKERS: [&str; 17] = [
+    "re",
+    "fw",
+    "fwd",
+    "aw",
+    "sv",
+    "vs",
+    "antw",
+    "wg",
+    "tr",
+    "rv",
+    "odp",
+    "r",
+    "i",
+    "enc",
+    "res",
+    "ответ",
+    "回复",
+];
+
+/// One leading reply/forward marker, Unicode case-insensitive: a word from
+/// [`MARKERS`], optional Unicode whitespace, then an ASCII `:` or a
+/// full-width `：` (`回复：Plan`) — tolerating whitespace between the word and
+/// the colon (`RE : Plan`, a mailer convention). A bare word or a numbered
+/// `Re[2]:` is left alone: anything non-whitespace between word and colon
+/// ends the marker. Every cut is at a character boundary, and a strip always
+/// consumes the nonempty word and its delimiter, so the caller's loop ends.
 fn strip_marker(subject: &str) -> Option<&str> {
-    let bytes = subject.as_bytes();
-    let word_end = bytes.iter().position(|b| !b.is_ascii_alphabetic())?;
-    let colon = bytes[word_end..]
-        .iter()
-        .position(|b| *b == b':')
-        .map(|i| word_end + i)?;
-    if !bytes[word_end..colon].iter().all(u8::is_ascii_whitespace) {
+    let (word_end, _) = subject.char_indices().find(|(_, c)| !c.is_alphabetic())?;
+    let after_word = subject[word_end..].trim_start();
+    let delimiter = after_word
+        .chars()
+        .next()
+        .filter(|c| matches!(c, ':' | '：'))?;
+    if !MARKERS.contains(&subject[..word_end].to_lowercase().as_str()) {
         return None;
     }
-    match subject[..word_end].to_ascii_lowercase().as_str() {
-        "re" | "fw" | "fwd" | "aw" => Some(subject[colon + 1..].trim_start()),
-        _ => None,
-    }
+    Some(after_word[delimiter.len_utf8()..].trim_start())
 }
 
 /// Union-find over thread nodes. The root of a component is always its
@@ -372,6 +396,109 @@ mod tests {
             normalize_subject(Some("Auto: Plan")),
             Some("Auto: Plan".into())
         );
+    }
+
+    #[test]
+    fn localized_markers_strip_and_whitespace_collapses() {
+        // Issue #100: every listed marker strips, with either colon and any
+        // Unicode whitespace around it; whitespace runs collapse to one
+        // space. Red before the repair: each of these kept its marker.
+        let plan = Some("Plan".to_string());
+        for subject in [
+            "Re: Plan",
+            "Fw: Plan",
+            "Fwd: Plan",
+            "Aw: Plan",
+            "SV: Plan",
+            "VS: Plan",
+            "Antw: Plan",
+            "WG: Plan",
+            "TR: Plan",
+            "RV: Plan",
+            "Odp: Plan",
+            "R: Plan",
+            "I: Plan",
+            "ENC: Plan",
+            "RES: Plan",
+            "Ответ: Plan",
+            "ОТВЕТ: Plan",
+            "回复：Plan",
+            "回复: Plan",
+            "Re：Plan",
+            "SV : Plan",
+            "WG\u{a0}:\u{a0}Plan",
+            "Re: SV: Fwd: Plan",
+            "Plan",
+        ] {
+            assert_eq!(normalize_subject(Some(subject)), plan, "{subject:?}");
+        }
+        for (subject, normalized) in [
+            ("Two  spaces", "Two spaces"),
+            ("Two\tspaces", "Two spaces"),
+            ("Two\u{a0}spaces", "Two spaces"),
+            (" Re:  Two \t spaces ", "Two spaces"),
+        ] {
+            assert_eq!(
+                normalize_subject(Some(subject)),
+                Some(normalized.to_string()),
+                "{subject:?}"
+            );
+        }
+        // Not markers: numbered markers, a non-listed word, a word with no
+        // delimiter, a lone colon, a high codepoint — kept literally.
+        for subject in [
+            "Re[2]: Plan",
+            "Re[10]: Plan",
+            "Aw[2]: Plan",
+            "Rex: Plan",
+            "回复我：Plan",
+            ": Plan",
+            "：",
+            "😀: Plan",
+            "Ответ",
+        ] {
+            assert_eq!(
+                normalize_subject(Some(subject)),
+                Some(subject.to_string()),
+                "{subject:?}"
+            );
+        }
+        // Marker-only subjects leave nothing: the singleton key applies.
+        for subject in ["Re:", "回复：", "Ответ : ", "SV: \u{a0}"] {
+            assert_eq!(normalize_subject(Some(subject)), None, "{subject:?}");
+        }
+    }
+
+    #[test]
+    fn localized_orphans_group_while_header_keys_stay_exact() {
+        // The orphan variants of one subject group into one thread; mails
+        // that carry ids keep exactly their header-derived key (issue #9),
+        // whatever their subject says.
+        let threads = group(vec![
+            mail("o1", Some("Plan"), 100),
+            mail("o2", Some("SV: Plan"), 200),
+            mail("o3", Some("回复：Plan"), 300),
+            mail("o4", Some("Two  spaces"), 400),
+            mail("o5", Some("two\tspaces"), 500),
+        ]);
+        assert_eq!(threads.len(), 2, "{threads:?}");
+        let plan = threads.iter().find(|t| t.count == 3).unwrap();
+        assert_eq!(ids_of(plan), ["o1", "o2", "o3"]);
+        assert_eq!(plan.key, thread_key("subject:plan"));
+        let spaces = threads.iter().find(|t| t.count == 2).unwrap();
+        assert_eq!(spaces.key, thread_key("subject:two spaces"));
+
+        let mut root = chained("h1", Some("Plan"), 100, &[]);
+        root.message_id = Some("h1@x.io".into());
+        let mut reply = chained("h2", Some("SV: Plan"), 200, &[]);
+        reply.in_reply_to = Some("h1@x.io".into());
+        let threads = group(vec![root, reply, mail("o1", Some("Odp: Plan"), 300)]);
+        assert_eq!(threads.len(), 2, "{threads:?}");
+        let chain = threads.iter().find(|t| t.count == 2).unwrap();
+        assert_eq!(ids_of(chain), ["h1", "h2"]);
+        assert_eq!(chain.key, thread_key("id:h1@x.io"));
+        let orphan = threads.iter().find(|t| t.count == 1).unwrap();
+        assert_eq!(orphan.key, thread_key("subject:plan"));
     }
 
     #[test]

@@ -480,9 +480,11 @@ mod tests {
                 Envelope::Single(json!(7))
             )
         );
+        // A scalar is an invalid request, owed a null-id reply (decision
+        // 0044 §1) — still posted, so the server's own answer is forwarded.
         assert_eq!(
             read_line(b"42"),
-            Line::Post("42".to_string(), Envelope::Silent)
+            Line::Post("42".to_string(), Envelope::Single(Value::Null))
         );
     }
 

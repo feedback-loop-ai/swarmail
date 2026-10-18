@@ -10,29 +10,29 @@
     "/metrics": { "get": { "summary": "Prometheus metrics", "responses": { "200": { "description": "text/plain metrics" } } } },
     "/openapi.json": { "get": { "summary": "This document", "responses": { "200": { "description": "OK" } } } },
     "/llms.txt": { "get": { "summary": "LLM-oriented quick reference", "responses": { "200": { "description": "text/plain" } } } },
-    "/mcp": { "post": { "summary": "Model Context Protocol endpoint (JSON-RPC 2.0)", "description": "initialize, tools/list, tools/call. The stdio transport is available via `swarmail mcp`.", "responses": { "200": { "description": "JSON-RPC response" }, "202": { "description": "Notification accepted" } } } },
-    "/api/v1/inboxes": { "get": { "summary": "List inboxes with message counts", "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/InboxSummary" } } } } } } } },
+    "/mcp": { "post": { "summary": "Model Context Protocol endpoint (JSON-RPC 2.0)", "description": "initialize, tools/list, tools/call. The stdio transport is available via `swarmail mcp`. Every error is a JSON-RPC error object (decision 0044 §1): malformed JSON or invalid UTF-8 is HTTP 400 -32700; a body over 2097152 bytes is HTTP 413 -32600 naming the limit; a value that is not an object is -32600 with a null id, once per such batch member; an object without an id is a notification that runs and gets no reply. A batch holds 1 to 16 members, polled concurrently: replies keep member order, member effects have no order. Every tool refuses an argument key its inputSchema does not publish (-32602, additionalProperties: false).", "responses": { "200": { "description": "JSON-RPC response" }, "202": { "description": "Notification accepted" }, "400": { "description": "-32700 parse error, null id" }, "413": { "description": "-32600 body over the 2097152-byte limit, null id" } } } },
+    "/api/v1/inboxes": { "get": { "summary": "List inboxes with message counts, sorted by name and paged", "parameters": [ { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 100, "minimum": 0, "maximum": 250 }, "description": "Page size; above 250 refused with 400, never clamped; 0 is an empty page" }, { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0, "minimum": 0 }, "description": "Inboxes to skip; past the end is an empty page" } ], "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/InboxSummary" } } } } }, "400": { "description": "An over-cap limit, a malformed value or an unknown query key, named" } } } },
     "/api/v1/inboxes/{inbox}/messages": {
       "get": {
         "summary": "List messages in an inbox (newest first)",
         "parameters": [
           { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "to", "in": "query", "schema": { "type": "string" }, "description": "Substring match on any recipient (to/cc)" },
-          { "name": "from", "in": "query", "schema": { "type": "string" } },
+          { "name": "to", "in": "query", "schema": { "type": "string" }, "description": "Case-insensitive substring of any recipient: the To and Cc headers and the SMTP envelope recipients (RCPT TO), so a Bcc'd address matches — not a header-presence assertion" },
+          { "name": "from", "in": "query", "schema": { "type": "string" }, "description": "Case-insensitive substring of the header From address" },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
           { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
           { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 250 } },
           { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } }
         ],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmailList" } } } } }
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmailList" } } } }, "400": { "description": "A blank inbox, an over-cap limit, a malformed value or an unknown query key (named) — every native query shape is closed (decision 0044 §3)" } }
       },
       "delete": { "summary": "Clear an inbox", "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Removed count" } } }
     },
     "/api/v1/inboxes/{inbox}/count": {
       "get": {
         "summary": "Count messages matching a filter",
-        "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "to", "in": "query", "schema": { "type": "string" } }, { "name": "from", "in": "query", "schema": { "type": "string" } }, { "name": "subject", "in": "query", "schema": { "type": "string" } }, { "name": "since_ms", "in": "query", "schema": { "type": "integer" } } ],
-        "responses": { "200": { "description": "{ inbox, count }" } }
+        "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "to", "in": "query", "schema": { "type": "string" }, "description": "Any recipient, envelope included (see the list's `to`)" }, { "name": "from", "in": "query", "schema": { "type": "string" } }, { "name": "subject", "in": "query", "schema": { "type": "string" } }, { "name": "since_ms", "in": "query", "schema": { "type": "integer" } } ],
+        "responses": { "200": { "description": "{ inbox, count }" }, "400": { "description": "A blank inbox, a malformed value or an unknown query key, named" } }
       }
     },
     "/api/v1/inboxes/{inbox}/await": {
@@ -40,7 +40,7 @@
         "summary": "Long-poll until `count` messages match the filter (push-based wait, no sleep-polling)",
         "parameters": [
           { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "to", "in": "query", "schema": { "type": "string" } },
+          { "name": "to", "in": "query", "schema": { "type": "string" }, "description": "Any recipient, envelope included (see the list's `to`)" },
           { "name": "from", "in": "query", "schema": { "type": "string" } },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
           { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
@@ -50,7 +50,7 @@
         ],
         "responses": {
           "200": { "description": "Matched — `total` is counted after the wait, describing the response's observed state (decision 0018)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AwaitResponse" } } } },
-          "400": { "description": "`timeout_ms` above 60000 — refused, never clamped (decision 0018)" },
+          "400": { "description": "`timeout_ms` above 60000 — refused, never clamped (decision 0018); a blank inbox, or an unknown query key such as `offset`, named — no waiter is registered (decision 0044 §3)" },
           "408": { "description": "Timed out" },
           "503": { "description": "The server is stopping — the wait answers `{\"error\":\"shutting down\"}` instead of parking (decision 0018)" }
         }
@@ -61,20 +61,20 @@
         "summary": "Assert an exact match count (200 when equal, 409 with expected/matched otherwise)",
         "parameters": [
           { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "to", "in": "query", "schema": { "type": "string" } },
+          { "name": "to", "in": "query", "schema": { "type": "string" }, "description": "Any recipient, envelope included: `to=bcc@x&count=0` fails when the address was a Bcc envelope recipient — this is not a header-presence assertion" },
           { "name": "from", "in": "query", "schema": { "type": "string" } },
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
           { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
           { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "minimum": 1 }, "description": "Parsed for parity with list (decision 0029 §1) but inert: the assert answer is a count, not a page" },
           { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 }, "description": "Exact match count — 0 asserts the filtered inbox is empty; the count is never clamped to one" }
         ],
-        "responses": { "200": { "description": "Assertion held" }, "409": { "description": "Assertion failed" } }
+        "responses": { "200": { "description": "Assertion held" }, "400": { "description": "A blank inbox, a malformed value or an unknown query key — a misspelled filter refuses by name instead of vanishing (decision 0044 §3)" }, "409": { "description": "Assertion failed" } }
       }
     },
     "/api/v1/inboxes/{inbox}/threads": {
       "get": {
         "summary": "Thread view of an inbox (newest thread first)",
-        "description": "Mails are grouped into conversations by their References/In-Reply-To/Message-ID chains, falling back to the normalized subject (Re:/Fwd: markers stripped, case-folded) when a chain cannot resolve. Each thread lists its mails oldest first. Capped at 200 mails.",
+        "description": "Mails are grouped into conversations by their References/In-Reply-To/Message-ID chains, falling back, for mail with no chain at all, to the normalized subject (leading Re/Fw/Fwd/Aw/SV/VS/Antw/WG/TR/RV/Odp/R/I/ENC/RES/Ответ/回复 markers stripped with an ASCII or full-width colon, whitespace runs collapsed, case-folded; a numbered Re[2]: stays literal). Each thread lists its mails oldest first. Capped at 200 mails.",
         "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } } ],
         "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Thread" } } } } } }
       }
@@ -106,7 +106,7 @@
     "/api/v1/messages": {
       "get": {
         "summary": "MailHog/Mailpit list shape over the whole store (Mailpit's summary envelope, newest first)",
-        "description": "The Mailpit `/api/v1/messages` shape: {total, unread, count, messages_count, messages_unread_count, start, tags, messages}. No query names a mailbox: the whole store is one global mailbox, as both tools expose it. `?inbox=` scopes to a single swarmail inbox; `?limit=`/`?start=` page.",
+        "description": "The Mailpit `/api/v1/messages` shape: {total, unread, count, messages_count, messages_unread, start, tags, messages}. No query names a mailbox: the whole store is one global mailbox, as both tools expose it. `?inbox=` scopes to a single swarmail inbox (a blank one is a 400); `?limit=`/`?start=` page. Each Snippet is built from at most the first 8192 bytes of its body; the page is built off the async workers.",
         "parameters": [ { "name": "inbox", "in": "query", "schema": { "type": "string" }, "description": "Scope to one swarmail inbox" }, { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 250 } }, { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } } ],
         "responses": { "200": { "description": "Mailpit MessageSummary envelope" } }
       },
@@ -117,10 +117,12 @@
       }
     },
     "/api/v1/message/{id}": { "get": { "summary": "Mailpit's full message shape", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Mailpit Message" }, "404": { "description": "Not found" } } } },
-    "/api/v1/message/latest": { "get": { "summary": "Mailpit's full message shape for the newest stored mail (issue #55)", "description": "The same shape as `GET /api/v1/message/{id}`, over the newest mail in the store, newest by receive time then id (the recorded `list_all` order — not commit sequence; concurrent parses can insert out of arrival order). `404` only when the store is empty.", "responses": { "200": { "description": "Mailpit Message" }, "404": { "description": "Not found — the store is empty" } } } },
+    "/api/v1/message/latest": { "get": { "summary": "Mailpit's full message shape for the newest mail in scope (issues #55, #95)", "description": "The same shape as `GET /api/v1/message/{id}`, over the newest mail by receive time then id — not commit sequence; concurrent parses can insert out of arrival order (decision 0044 §4). `?inbox=` scopes to one inbox; no inbox is the whole store. A nonblank `?query=` is refused with 400: search, then fetch the id. Two calls are two snapshots.", "parameters": [ { "name": "inbox", "in": "query", "schema": { "type": "string" }, "description": "Scope to one swarmail inbox; a blank one is a 400" }, { "name": "query", "in": "query", "schema": { "type": "string" }, "description": "Not supported: a nonblank value is a 400 naming it" } ], "responses": { "200": { "description": "Mailpit Message" }, "400": { "description": "A nonblank query, a blank inbox or an unknown query key, named" }, "404": { "description": "Not found — no mail in the scope, whatever other inboxes hold" } } } },
+    "/api/v1/message/latest/raw": { "get": { "summary": "The RFC 5322 source of the newest mail in scope", "description": "The same resolver as `/api/v1/message/latest`, served byte-exact like `/api/v1/message/{id}/raw`.", "parameters": [ { "name": "inbox", "in": "query", "schema": { "type": "string" } }, { "name": "query", "in": "query", "schema": { "type": "string" }, "description": "Not supported: a nonblank value is a 400" } ], "responses": { "200": { "description": "message/rfc822" }, "400": { "description": "A nonblank query, a blank inbox or an unknown query key, named" }, "404": { "description": "Not found — no mail in the scope" } } } },
+    "/api/v1/message/latest/headers": { "get": { "summary": "The synthesized header map of the newest mail in scope", "description": "The same resolver as `/api/v1/message/latest`, in the `/api/v1/message/{id}/headers` shape.", "parameters": [ { "name": "inbox", "in": "query", "schema": { "type": "string" } }, { "name": "query", "in": "query", "schema": { "type": "string" }, "description": "Not supported: a nonblank value is a 400" } ], "responses": { "200": { "description": "Header name to array of values" }, "400": { "description": "A nonblank query, a blank inbox or an unknown query key, named" }, "404": { "description": "Not found — no mail in the scope" } } } },
     "/api/v1/message/{id}/plain": { "get": { "summary": "The text part (html-only mail renders to text at request time) as text/plain (Mailpit + MailHog)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "text/plain; charset=utf-8" }, "404": { "description": "Not found" } } } },
     "/api/v1/message/{id}/raw": { "get": { "summary": "The full RFC 5322 source (MailHog's raw shape)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "message/rfc822" }, "404": { "description": "Not found" } } } },
-    "/api/v1/message/{id}/headers": { "get": { "summary": "The synthesized header map (MailHog's Content.Headers)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Header name to array of values, including Received and Return-Path stamps" }, "404": { "description": "Not found" } } } },
+    "/api/v1/message/{id}/headers": { "get": { "summary": "The synthesized header map (MailHog's Content.Headers)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Header name to array of values, including Received and Return-Path stamps; Return-Path is the SMTP envelope sender (`<>` for a bounce), the header From only for mail stored before the envelope was kept" }, "404": { "description": "Not found" } } } },
     "/api/v1/messages/{id}/plain": { "get": { "summary": "The text part (html-only mail renders to text at request time) as text/plain (the plural path MailHog clients use)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "text/plain; charset=utf-8" }, "404": { "description": "Not found" } } } },
     "/api/v1/messages/{id}/download": { "get": { "summary": "The message as an .eml attachment download", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "message/rfc822, Content-Disposition: attachment; filename=\"<id>.eml\"" }, "404": { "description": "Not found" } } } },
     "/api/v1/search": {
@@ -133,25 +135,25 @@
           { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 250 } },
           { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } }
         ],
-        "responses": { "200": { "description": "Mailpit MessageSummary envelope" }, "400": { "description": "Missing query or unknown kind" } }
+        "responses": { "200": { "description": "Mailpit MessageSummary envelope; kind=from matches the SMTP envelope sender" }, "400": { "description": "Missing query, unknown kind, a blank inbox, or field syntax in a containing query: every whitespace-separated word opening with an identifier and a colon (`to:x`, `foo:x`) is refused by name, a URL's `://` excepted (decision 0044 §7)" } }
       }
     },
     "/api/v2/messages": {
       "get": {
         "summary": "MailHog v2 list shape over the whole store",
-        "description": "{total, count, start, items} where items are MailHog data.Message objects (Content.{Headers,Body,Size,MIME}, Raw.{From,To,Data,Helo}). `?inbox=` scopes; `?limit=`/`?start=` page.",
+        "description": "{total, count, start, items} where items are MailHog data.Message objects (Content.{Headers,Body,Size,MIME}, Raw.{From,To,Data,Helo}); From and Raw.From are the SMTP envelope sender. `?inbox=` scopes; `?limit=`/`?start=` page. The page is serialized off the async workers into one buffer capped at 67108864 bytes of actual JSON (decision 0044 §6).",
         "parameters": [ { "name": "inbox", "in": "query", "schema": { "type": "string" } }, { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 250 } }, { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } } ],
-        "responses": { "200": { "description": "MailHog v2 envelope" } }
+        "responses": { "200": { "description": "MailHog v2 envelope" }, "400": { "description": "An over-cap limit, a blank inbox, or `compat page exceeds byte budget 67108864; reduce limit or fetch raw by id` — the whole page refused, nothing partial sent; one large mail can exceed it even at limit=1" } }
       }
     },
     "/api/v2/search": {
       "get": {
         "summary": "MailHog v2 search",
         "parameters": [ { "name": "query", "in": "query", "required": true, "schema": { "type": "string" } }, { "name": "kind", "in": "query", "required": true, "schema": { "type": "string", "enum": [ "from", "to", "containing" ] } }, { "name": "inbox", "in": "query", "schema": { "type": "string" } }, { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 250 } }, { "name": "start", "in": "query", "schema": { "type": "integer", "default": 0 } } ],
-        "responses": { "200": { "description": "MailHog v2 envelope" }, "400": { "description": "Bare 400 (no body) for an unknown kind, an absent kind, or an empty query, as upstream answers" } }
+        "responses": { "200": { "description": "MailHog v2 envelope" }, "400": { "description": "Bare 400 (no body) for an unknown kind, an absent kind, or an empty query, as upstream answers; a JSON error naming an over-cap limit, a blank inbox, field syntax in a containing query, or the 67108864-byte page budget" } }
       }
     },
-    "/api/v1/delete-all": { "delete": { "summary": "MailHog's wipe alias", "responses": { "200": { "description": "{\"removed\": n}" }, "503": { "description": "`storage commit failed` — the commit refused, nothing was deleted (decision 0012); during shutdown the boundary refuses before any commit with the same text (decision 0024)" } } } },
+    "/api/v1/delete-all": { "delete": { "summary": "swarmail's own explicit wipe of every inbox — not an upstream route; MailHog's bodyless DELETE /api/v1/messages is refused (decision 0011)", "responses": { "200": { "description": "{\"removed\": n}" }, "503": { "description": "`storage commit failed` — the commit refused, nothing was deleted (decision 0012); during shutdown the boundary refuses before any commit with the same text (decision 0024)" } } } },
     "/api/v1/messages/{id}": {
       "get": { "summary": "Get one email in full (bodies, links, codes)", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Email" } } } }, "404": { "description": "Not found" } } },
       "delete": { "summary": "Delete one email", "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "200": { "description": "Deleted" }, "404": { "description": "Not found" } } }
@@ -193,9 +195,10 @@
           "id": { "type": "string" },
           "inbox": { "type": "string" },
           "from": { "$ref": "#/components/schemas/EmailAddress" },
+          "envelope_from": { "type": [ "string", "null" ], "description": "The SMTP MAIL FROM reverse path, captured at ingest: \"\" for a bounce's null sender <>, null only for mail stored before it was kept — never backfilled from the header From (decision 0044 §8)" },
           "to": { "type": "array", "items": { "$ref": "#/components/schemas/EmailAddress" } },
           "cc": { "type": "array", "items": { "$ref": "#/components/schemas/EmailAddress" } },
-          "recipients": { "type": "array", "items": { "type": "string" } },
+          "recipients": { "type": "array", "items": { "type": "string" }, "description": "The envelope recipients (RCPT TO), Bcc included; the `to` filter matches these as well as the To/Cc headers" },
           "subject": { "type": [ "string", "null" ] },
           "received_at": { "type": "string" },
           "received_ms": { "type": "integer" },
@@ -224,7 +227,7 @@
       "InboxSummary": { "type": "object", "properties": { "name": { "type": "string" }, "count": { "type": "integer" } } },
       "SeedRequest": {
         "type": "object",
-        "description": "Fixture body. `html` is preserved verbatim and supersedes `text` when both are given. `to`, `from` and `subject` refuse CR, LF and NUL.",
+        "description": "Fixture body. `html` is preserved verbatim and supersedes `text` when both are given. `to`, `from` and `subject` refuse CR, LF and NUL. An omitted optional field takes its default; a present null or non-string is refused with 422 naming the field (decision 0044 §3). The stored mail's envelope_from is the seed's from.",
         "properties": {
           "from": { "type": "string", "description": "Defaults to fixture@swarmail.dev; refuses CR, LF and NUL" },
           "to": { "type": "string", "description": "The recipient envelope address; refuses CR, LF and NUL" },
@@ -234,8 +237,8 @@
         },
         "required": [ "to" ]
       },
-      "ChaosRule": { "type": "object", "properties": { "probability": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage chance the event fires. Outside 0-100 the PUT is refused with 400 — probability must be an integer between 0 and 100 (issue #32 slice 2, decision 0025)." }, "error": { "type": [ "string", "null" ] }, "delay_ms": { "type": "integer" } } },
-      "ChaosConfig": { "type": "object", "properties": { "connect": { "$ref": "#/components/schemas/ChaosRule" }, "mail_from": { "$ref": "#/components/schemas/ChaosRule" }, "rcpt": { "$ref": "#/components/schemas/ChaosRule" }, "data": { "$ref": "#/components/schemas/ChaosRule" } } },
+      "ChaosRule": { "type": "object", "properties": { "probability": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage chance the event fires. Outside 0-100 the PUT is refused with 400 — probability must be an integer between 0 and 100 (issue #32 slice 2, decision 0025)." }, "error": { "type": "string", "description": "Optional reply line; omitted means the stage's default failure, and a present null is refused with 422 (decision 0044 §3). Omitted from answers when unset." }, "delay_ms": { "type": "integer" } } },
+      "ChaosConfig": { "type": "object", "description": "A null event clears that event's rule.", "properties": { "connect": { "$ref": "#/components/schemas/ChaosRule" }, "mail_from": { "$ref": "#/components/schemas/ChaosRule" }, "rcpt": { "$ref": "#/components/schemas/ChaosRule" }, "data": { "$ref": "#/components/schemas/ChaosRule" } } },
       "WebhookTarget": {
         "type": "object",
         "properties": {

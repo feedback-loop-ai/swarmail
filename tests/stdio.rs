@@ -430,9 +430,11 @@ async fn a_request_batch_is_forwarded_as_one_array_line() {
 }
 
 /// Envelope refusals are forwarded, and notification batches stay silent
-/// (decision 0039 §2): `[]` and a 17-member array — even one of
-/// notifications only — get the server's single -32600; an all-notification
-/// batch and a scalar line write nothing.
+/// (decision 0039 §2, amended by proposed 0044 §1): `[]` and a 17-member
+/// array — even one of notifications only — get the server's single
+/// -32600, and so does a scalar line, which is an invalid request, not a
+/// notification; an all-notification batch writes nothing. Red before:
+/// the scalar line was silent.
 #[tokio::test]
 async fn batch_refusals_are_forwarded_and_notification_batches_stay_silent() {
     let srv = common::start().await;
@@ -442,11 +444,52 @@ async fn batch_refusals_are_forwarded_and_notification_batches_stay_silent() {
     let (code, out) = bridge_over(&base, input.as_bytes()).await;
     assert_eq!(code, 0);
     let replies = reply_lines(&out);
-    assert_eq!(replies.len(), 2, "two refusals, nothing else: {out:?}");
+    assert_eq!(replies.len(), 3, "three refusals, nothing else: {out:?}");
     for reply in &replies {
         assert_eq!(reply["id"], serde_json::Value::Null, "{reply}");
         assert_eq!(reply["error"]["code"], -32600, "{reply}");
     }
+}
+
+/// Invalid batch members are answered through the bridge in both arms
+/// (decision 0044 §1): against the real server each non-object member gets
+/// its own null-id -32600 in member order beside the request's reply; when
+/// the exchange fails, the transport error carries a null-id position for
+/// each, and a scalar line gets one null-id error instead of silence.
+#[tokio::test]
+async fn invalid_batch_members_are_answered_in_both_arms() {
+    let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
+    let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    let batch = format!("[{ping},5,{note},[]]");
+
+    let srv = common::start().await;
+    let base = format!("http://{}", srv.http_addr);
+    let (code, out) = bridge_over(&base, format!("{batch}\n").as_bytes()).await;
+    assert_eq!(code, 0);
+    let replies = reply_lines(&out);
+    assert_eq!(replies.len(), 1, "{out:?}");
+    let answers = replies[0].as_array().expect("an array reply");
+    let ids: Vec<&serde_json::Value> = answers.iter().map(|e| &e["id"]).collect();
+    let null = serde_json::Value::Null;
+    assert_eq!(ids, [&serde_json::json!(1), &null, &null], "{out}");
+    assert_eq!(answers[1]["error"]["code"], -32600, "{out}");
+    assert_eq!(answers[2]["error"]["code"], -32600, "{out}");
+
+    let (code, out) = bridge_over("http://127.0.0.1:1", format!("{batch}\n7\n").as_bytes()).await;
+    assert_eq!(code, 0);
+    let replies = reply_lines(&out);
+    assert_eq!(replies.len(), 2, "{out:?}");
+    let failed = replies.iter().find(|r| r.is_array()).expect("the batch");
+    let ids: Vec<&serde_json::Value> = failed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| &e["id"])
+        .collect();
+    assert_eq!(ids, [&serde_json::json!(1), &null, &null], "{failed}");
+    let scalar = replies.iter().find(|r| r.is_object()).expect("the scalar");
+    assert_eq!(scalar["id"], null, "{scalar}");
+    assert_eq!(scalar["error"]["code"], -32000, "{scalar}");
 }
 
 /// A peer body for an all-notification batch is not a reply the client

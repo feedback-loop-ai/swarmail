@@ -214,6 +214,13 @@ pub struct Store {
     /// only under test; never set in production.
     #[cfg(test)]
     snapshot_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+    /// Test-only seam for the compat page builds (issue #96, decision 0044
+    /// §5, the seam per 0020): when set, the closure runs at the start of
+    /// every compat list/search build on the blocking pool, so a test can
+    /// hold real page work and observe that the async worker still greets
+    /// SMTP and answers health. Per instance; compiled only under test.
+    #[cfg(test)]
+    compat_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Totals {
@@ -255,6 +262,8 @@ impl Store {
             post_subscribe_gate: std::sync::Mutex::new(None),
             #[cfg(test)]
             snapshot_gate: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            compat_gate: std::sync::Mutex::new(None),
         }
     }
 
@@ -436,6 +445,27 @@ impl Store {
         }
     }
 
+    /// Test-only: install (or remove) the compat page gate. See the field
+    /// doc.
+    #[cfg(test)]
+    pub(crate) fn set_compat_gate(&self, gate: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+        *self.compat_gate.lock().expect("compat gate poisoned") = gate;
+    }
+
+    /// Test-only: fire the compat page gate, if one is installed. The Arc
+    /// is cloned out before the call so the closure may block freely.
+    #[cfg(test)]
+    pub(crate) fn run_compat_gate(&self) {
+        let gate = self
+            .compat_gate
+            .lock()
+            .expect("compat gate poisoned")
+            .clone();
+        if let Some(gate) = gate {
+            gate();
+        }
+    }
+
     /// Subscribe to every accepted email (webhook dispatcher).
     pub fn subscribe_all(&self) -> broadcast::Receiver<Arc<Email>> {
         self.global_tx.subscribe()
@@ -606,6 +636,41 @@ impl Store {
                 .then_with(|| b.id.cmp(&a.id))
         });
         all
+    }
+
+    /// The newest mail in scope — one inbox, or the whole store for `None` —
+    /// by `(received_ms, id)`, the order every newest-first listing uses
+    /// (issue #95, decision 0044 §4). One pass over every scoped mail under
+    /// short-lived shard read guards, retaining only the running winner: no
+    /// sorted page and no mutation lock. Deliberately not a deque's tail —
+    /// the receive stamp is sampled at parse start, before acceptance, so
+    /// commit order and stamp order can differ even within one inbox. A
+    /// DashMap walk is not an atomic snapshot of the whole store.
+    pub fn latest(&self, inbox: Option<&str>) -> Option<Arc<Email>> {
+        let mut winner: Option<Arc<Email>> = None;
+        let mut consider = |list: &VecDeque<Arc<Email>>| {
+            for email in list {
+                let newer = winner
+                    .as_ref()
+                    .is_none_or(|w| (email.received_ms, &email.id) > (w.received_ms, &w.id));
+                if newer {
+                    winner = Some(email.clone());
+                }
+            }
+        };
+        match inbox {
+            Some(inbox) => {
+                if let Some(list) = self.inboxes.get(inbox) {
+                    consider(list.value());
+                }
+            }
+            None => {
+                for entry in self.inboxes.iter() {
+                    consider(entry.value());
+                }
+            }
+        }
+        winner
     }
 
     /// How many emails in `inbox` match `filter`.
@@ -899,6 +964,9 @@ pub(crate) fn email(id: &str, inbox: &str, to: &str) -> Email {
         id: id.to_string(),
         inbox: inbox.to_string(),
         from: None,
+        // The fixture has no SMTP session behind it: unknown provenance,
+        // the shape a row restored from before 0044 has.
+        envelope_from: None,
         to: vec![crate::model::EmailAddress {
             name: None,
             address: to.to_string(),
@@ -1469,6 +1537,44 @@ mod wait_tests {
             hits <= 4,
             "a single release must be answered with one Closed arm hit, not {hits}"
         );
+    }
+}
+
+#[cfg(test)]
+mod latest_tests {
+    use super::*;
+
+    fn stamped(id: &str, inbox: &str, ms: i64) -> Email {
+        let mut e = email(id, inbox, "a@x.io");
+        e.received_ms = ms;
+        e
+    }
+
+    /// `latest` is the maximum `(received_ms, id)` in scope (decision 0044
+    /// §4, issue #95), never the deque's tail: insertion order and receive
+    /// stamps run opposite here, an equal-stamp tie breaks on the id, a
+    /// named inbox never answers another inbox's mail, and an empty or
+    /// unknown scope answers nothing. Red before: the route ignored the
+    /// scope and answered the global newest.
+    #[test]
+    fn latest_is_the_scoped_maximum_not_the_tail() {
+        let store = Store::new(0);
+        assert!(store.latest(None).is_none());
+        // Inserted newest-stamp first: the tail is the *oldest* stamp.
+        store.insert(stamped("a-2", "a", 300)).unwrap();
+        store.insert(stamped("a-1", "a", 100)).unwrap();
+        // A tie on the stamp: the larger id wins, whatever arrived first.
+        store.insert(stamped("a-3", "a", 300)).unwrap();
+        store.insert(stamped("a-0", "a", 300)).unwrap();
+        store.insert(stamped("b-9", "b", 900)).unwrap();
+        assert_eq!(store.latest(Some("a")).unwrap().id, "a-3");
+        assert_eq!(store.latest(Some("b")).unwrap().id, "b-9");
+        assert_eq!(store.latest(None).unwrap().id, "b-9");
+        assert!(store.latest(Some("ghost")).is_none());
+        // The scope's winner is untouched by mail elsewhere.
+        store.insert(stamped("c-1", "c", 5_000)).unwrap();
+        assert_eq!(store.latest(Some("a")).unwrap().id, "a-3");
+        assert_eq!(store.latest(None).unwrap().id, "c-1");
     }
 }
 

@@ -2197,3 +2197,171 @@ async fn the_cap_leaves_the_count_poles_alone() {
     .await;
     assert_eq!(text(&r)["matched"], 1, "{r}");
 }
+
+// ---------- run 21: #91 the envelope's transport and value shapes ----------
+
+/// POST raw bytes to `/mcp` with the given framing headers: (status,
+/// content type, parsed JSON body). The request is written whole — a write
+/// the server cut short is tolerated — so the refusal can be read whatever
+/// the server consumed.
+async fn post_mcp_bytes(
+    addr: Http,
+    framing: &str,
+    body: &[u8],
+) -> (u16, Option<String>, serde_json::Value) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{framing}Connection: close\r\n\r\n"
+    )
+    .into_bytes();
+    request.extend_from_slice(body);
+    let _ = stream.write_all(&request).await;
+    let mut reply = Vec::new();
+    let _ = stream.read_to_end(&mut reply).await;
+    let split = reply
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a response head");
+    let head = String::from_utf8_lossy(&reply[..split]).to_lowercase();
+    let status = head.split_whitespace().nth(1).unwrap().parse().unwrap();
+    let content_type = head
+        .lines()
+        .find_map(|l| l.strip_prefix("content-type: "))
+        .map(str::to_string);
+    let json = serde_json::from_slice(&reply[split + 4..]).unwrap_or(serde_json::Value::Null);
+    (status, content_type, json)
+}
+
+/// Every malformed `/mcp` body is a JSON-RPC error object (decision 0044
+/// §1, issue #91): bad JSON and invalid UTF-8 are HTTP 400 `-32700`; a
+/// scalar, `null` or string is HTTP 200 `-32600`; each non-object batch
+/// member — a nested array included — earns its own null-id `-32600` in
+/// member order, while a notification member still runs silently. Red
+/// before: invalid UTF-8 was a text/plain 400 and every non-object a 202.
+#[tokio::test]
+async fn malformed_and_non_object_bodies_get_json_rpc_errors() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    for (body, status, code) in [
+        (&b"{nope"[..], 400, -32700),
+        (
+            &b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"\xff\"}"[..],
+            400,
+            -32700,
+        ),
+        (&b"\xff\xfe"[..], 400, -32700),
+        (&b"5"[..], 200, -32600),
+        (&b"null"[..], 200, -32600),
+        (&b"\"x\""[..], 200, -32600),
+    ] {
+        let framing = format!("Content-Length: {}\r\n", body.len());
+        let (st, content_type, reply) = post_mcp_bytes(addr, &framing, body).await;
+        let shown = String::from_utf8_lossy(body);
+        assert_eq!(st, status, "{shown}: {reply}");
+        assert_eq!(content_type.as_deref(), Some("application/json"), "{shown}");
+        assert_eq!(reply["error"]["code"], code, "{shown}: {reply}");
+        assert_eq!(reply["id"], serde_json::Value::Null, "{shown}");
+    }
+
+    let seed = r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"swarmail_seed_email","arguments":{"inbox":"mixed","to":"a@x.io"}}}"#;
+    let batch = format!(
+        r#"[{{"jsonrpc":"2.0","id":1,"method":"ping"}},5,{seed},[],"s",{{"jsonrpc":"2.0","id":1,"method":"ping"}}]"#
+    );
+    let (st, reply) = http_json(addr, "POST", "/mcp", Some(&batch)).await;
+    assert_eq!(st, 200, "{reply}");
+    let answers = reply.as_array().unwrap();
+    let ids: Vec<&serde_json::Value> = answers.iter().map(|a| &a["id"]).collect();
+    assert_eq!(
+        ids,
+        [
+            &serde_json::json!(1),
+            &serde_json::Value::Null,
+            &serde_json::Value::Null,
+            &serde_json::Value::Null,
+            &serde_json::json!(1)
+        ],
+        "{reply}"
+    );
+    for invalid in &answers[1..4] {
+        assert_eq!(invalid["error"]["code"], -32600, "{reply}");
+    }
+    let (_, count) = http_json(addr, "GET", "/api/v1/inboxes/mixed/count", None).await;
+    assert_eq!(count["count"], 1, "the notification member ran once");
+
+    // An empty or over-cap batch refuses whole, before any member runs.
+    let seeds = format!("[{}]", vec![seed; 17].join(","));
+    let (st, reply) = http_json(addr, "POST", "/mcp", Some(&seeds)).await;
+    assert_eq!(
+        (st, reply["error"]["code"].clone()),
+        (200, serde_json::json!(-32600))
+    );
+    let (_, count) = http_json(addr, "GET", "/api/v1/inboxes/mixed/count", None).await;
+    assert_eq!(count["count"], 1, "no member of the refused batch ran");
+}
+
+/// The body limit is axum's streaming 2 MiB, now answered as JSON-RPC
+/// (decision 0044 §1): exactly 2,097,152 bytes is served, one byte more is
+/// HTTP 413 `-32600` naming the limit — by `Content-Length` and chunked
+/// alike, so the size is never learned by reading an unbounded body. Red
+/// before: axum's plain-text 413.
+#[tokio::test]
+async fn the_mcp_body_limit_is_a_json_rpc_refusal() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let exact = |len: usize| {
+        let head = r#"{"jsonrpc":"2.0","id":9,"method":"ping","pad":""#;
+        let tail = r#""}"#;
+        format!("{head}{}{tail}", "x".repeat(len - head.len() - tail.len())).into_bytes()
+    };
+    let limit = 2_097_152;
+    let fits = exact(limit);
+    let (st, _, reply) = post_mcp_bytes(addr, &format!("Content-Length: {limit}\r\n"), &fits).await;
+    assert_eq!(
+        (st, reply["id"].clone()),
+        (200, serde_json::json!(9)),
+        "{reply}"
+    );
+
+    let over = exact(limit + 1);
+    let framing = format!("Content-Length: {}\r\n", over.len());
+    let (st, content_type, reply) = post_mcp_bytes(addr, &framing, &over).await;
+    assert_eq!(st, 413, "{reply}");
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(reply["error"]["code"], -32600, "{reply}");
+    assert_eq!(reply["id"], serde_json::Value::Null);
+    assert!(
+        reply["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("2097152"),
+        "the limit is named: {reply}"
+    );
+
+    let mut chunked = format!("{:x}\r\n", over.len()).into_bytes();
+    chunked.extend_from_slice(&over);
+    chunked.extend_from_slice(b"\r\n0\r\n\r\n");
+    let (st, _, reply) = post_mcp_bytes(addr, "Transfer-Encoding: chunked\r\n", &chunked).await;
+    assert_eq!(st, 413, "{reply}");
+    assert_eq!(reply["error"]["code"], -32600, "{reply}");
+}
+
+/// A wait and the seed that satisfies it, in one batch, complete together
+/// (decision 0044 §2): the members are polled concurrently, so the wait
+/// sees the seed instead of parking its full 60 s before the seed may run.
+/// Red before: the serial loop timed the wait out first.
+#[tokio::test]
+async fn a_batched_wait_is_satisfied_by_its_batched_seed() {
+    let srv = start().await;
+    let batch = r#"[
+        {"jsonrpc":"2.0","id":"wait","method":"tools/call","params":{"name":"swarmail_wait_for_email","arguments":{"inbox":"together","timeout_ms":60000}}},
+        {"jsonrpc":"2.0","id":"seed","method":"tools/call","params":{"name":"swarmail_seed_email","arguments":{"inbox":"together","to":"a@x.io"}}}
+    ]"#;
+    let (st, reply) = http_json(srv.http_addr, "POST", "/mcp", Some(batch)).await;
+    assert_eq!(st, 200, "{reply}");
+    assert_eq!(reply[0]["id"], "wait", "replies keep member order");
+    assert_eq!(reply[1]["id"], "seed");
+    let waited = text(&reply[0]["result"]);
+    assert_eq!(waited["matched"], 1, "{reply}");
+    assert!(waited.get("timed_out").is_none(), "{reply}");
+}
