@@ -87,7 +87,10 @@ remain unchanged and green; root green alone says nothing about evals.
    environment contract is EVAL_TASK_ID, EVAL_APP_URL, EVAL_MCP_URL (ending
    `/mcp`), EVAL_IDENTITY, EVAL_INBOX, EVAL_GOAL, EVAL_PROMPT_FILE and
    EVAL_DEADLINE_MS. The prompt file and EVAL_GOAL are identical; no admin
-   inputs are exported. Oracle and null use this exact subprocess path.
+   inputs are exported. Every app request names its identity in the
+   `X-Eval-Identity` header, so a presentation of another identity's token
+   is observable as `wrong_message` rather than silently completing it.
+   Oracle and null use this exact subprocess path.
    Oracle uses public app HTTP and current MCP 2025-03-26 text-block data,
    never REST mailbox reads, seeds or private state.
 8. Runner owns Unix process groups, bounded readiness/I/O/agent/shutdown
@@ -141,6 +144,15 @@ mock substitute for the acceptance path. Matrix/schema/report/lifecycle
 tests complete the evidence. A source defect discovered in Swarmail is
 recorded with a reproduction and leaves the affected proof outstanding;
 no source change or transport workaround is authorized here.
+
+The proof target is `evals/tests/proof.rs` (`cargo test --locked --test
+proof` from `evals/`); the fixture's wire controls, the lifecycle and
+external-command controls, the scorer and the matrix/report live beside it
+in `evals/tests/`. Until the CI and verify wiring follows #120 batch 5,
+**evals is proven by its own suite run by the implement seat and
+reproduced by reviewers**; nothing in the root gate inventory runs it. The
+implementing run found no Swarmail defect: every flow's mail was accepted
+with a final DATA `250` and read back over MCP as sent.
 
 This proposed decision records the new eval task/result contracts and the
 operator's scoped proof exception. It changes no accepted frozen guarantee

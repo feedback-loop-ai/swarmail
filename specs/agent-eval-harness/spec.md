@@ -2,7 +2,7 @@
 
 - Date: 2026-10-19; branch: `epic164-harness`.
 - Scope: epic #164, #148's runner seam, fixture #149, task suite #150.
-- Design status: drafted; implementation remains outstanding.
+- Status: implemented under `evals/` (run A); the proof is `evals/tests/proof.rs`.
 - Decision: [0055 — agent eval harness](../../docs/decisions/0055-agent-eval-harness.md), **proposed**; acceptance belongs to the operator.
 
 ## Why and scope
@@ -55,7 +55,8 @@ every trial is explicitly unconfined. No endpoint directly sets success.
 
 The runner provisions synthetic identities and inbox mappings on the admin
 plane before launching agents. Public requests identify the synthetic
-identity; secret presentations must also match that identity and flow.
+identity in the `X-Eval-Identity` header; secret presentations must also
+match that identity and flow.
 Mail uses AUTH PLAIN with the **inbox as username** (0004); recipient
 addresses alone do not select an inbox. Mail is never seeded.
 
