@@ -5,7 +5,16 @@ test names may be adjusted to local naming; preserve their issue/AC mapping.
 Each changed behavior needs a red against reviewed behavior and a green
 after repair. Existing passing checks are preservation evidence.
 
-- [ ] T01 Establish `epic120-extraction-compat` from fetched main at or after
+**Implementation status (2026-10-18, implement seat).** T01 and T04–T09
+are done with red/green evidence (the reds observed on `067ab91`, whose
+behavior on these paths is `2a325c9`'s); T10 is done apart from the
+entity-table reconciliation, and T11 is green apart from the bundle compile,
+which the verify seat runs. **T02 is not done:** no WHATWG `entities.json`
+snapshot was available offline and this seat holds no fetch capability, so
+the 71-name interim table stands, unclaimed as complete. T03 is done except
+its two named-entity rows (`caf&eacute;`, `go&rarr;`), which wait on T02.
+
+- [x] T01 Establish `epic120-extraction-compat` from fetched main at or after
   `067ab91`; preserve previous batches and capture baseline reds. Proof:
   ancestor/branch/signature checks and the T03–T09 regression receipts
   mapped to #136–#139; no claim based solely on baseline compilation.
@@ -21,36 +30,36 @@ after repair. Existing passing checks are preservation evidence.
   and deterministic region/trim work tests; preserve `decoded_delimiters_end_the_link`,
   `an_ampersand_run_decodes_in_bounded_work`,
   `the_reference_window_counts_characters_not_bytes` and all tokenizer pins.
-- [ ] T04 (#139, AC9–AC10) Introduce one bounded 64-distinct-code collector
+- [x] T04 (#139, AC9–AC10) Introduce one bounded 64-distinct-code collector
   across runs, without changing scan accounting. Proof:
   `codes_cap_bounds_collection_before_allocation` covers 0/64/65, duplicates,
   ten-digit maximum, HTML runs and at most 64 retained values; collect-then-
   truncate is an explicitly failing negative control.
-- [ ] T05 (#137, AC4; #139, AC9) Retain chosen MIME identities and use direct
+- [x] T05 (#137, AC4; #139, AC9) Retain chosen MIME identities and use direct
   sibling alternative preference, otherwise source-order collection through
   the same cap. Proof: real SMTP `mixed_footers_do_not_hide_html_codes` and
   `only_direct_alternative_siblings_prefer_text`, exact arrays from both
   issue fixtures, reversed order/nested related/empty-text-code fallback,
   mixed-source 65th code; all #74/alternative/body/raw/attachment pins stay.
-- [ ] T06 (#138, AC5/AC7) Extend the finite refusal detector on both compat
+- [x] T06 (#138, AC5/AC7) Extend the finite refusal detector on both compat
   containing searches, keeping accepted literals untouched. Proof:
   `wrapped_field_prefixes_refuse_by_name` with negative/quoted/parenthesized/
   whitespace cases and URL/plain-word/explicit-kind positive controls;
   `latest_timezone_is_a_documented_refusal` pins tz's named 400 and existing
   empty/filter behavior.
-- [ ] T07 (#138, AC6) Sort all scoped compat candidate views by the existing
+- [x] T07 (#138, AC6) Sort all scoped compat candidate views by the existing
   descending timestamp/ID order and correct the latest comment. Proof:
   `compat_views_share_timestamp_order` builds deterministic reverse-acceptance
   and equal-stamp fixtures, checks real scoped/global list/search pages and
   latest, then reopens persistence; existing native/POP3/pruning pins remain.
-- [ ] T08 (#139, AC8) Move complete single-message JSON/plain/raw/header and
+- [x] T08 (#139, AC8) Move complete single-message JSON/plain/raw/header and
   download response builds, including latest and native aliases, into
   awaited existing offload. Proof:
   `held_single_message_builds_leave_smtp_and_health_serving` extends the
   current real-server harness with construction-site gates, HTML-only render,
   native serialization, inline negative control, completed bytes/content
   types and unchanged 404/raw fidelity. Retain the existing four page proofs.
-- [ ] T09 (#139, AC9–AC10) Prove the cap on SMTP and seed ingest, persisted
+- [x] T09 (#139, AC9–AC10) Prove the cap on SMTP and seed ingest, persisted
   records and real webhook payloads; preserve historical rows explicitly.
   Proof: `numeric_mail_has_bounded_codes_and_response_bytes` uses exactly the
   8 MiB/1,048,576-number fixture, 641-byte seven-digit array, <9 MiB full

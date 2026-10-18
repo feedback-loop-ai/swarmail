@@ -34,11 +34,13 @@
 //! or a `.` CRLF line behind a bare LF, is payload.
 
 use crate::chaos::{Chaos, ChaosEvent};
-use crate::extract::{extract_codes, extract_links};
+use crate::extract::{BodyOrder, extract_codes, extract_links};
 use crate::model::{Email, EmailAddress};
 use crate::store::Store;
 use chrono::Utc;
-use mail_parser::{Addr, Address, HeaderValue, MessageParser, PartType};
+use mail_parser::{
+    Addr, Address, HeaderValue, MessageParser, MessagePartId, MimeHeaders, PartType,
+};
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -1567,21 +1569,65 @@ pub fn build_seed_email(
 /// continues past a fallback to a later genuine part (issue #74) — never
 /// into an attachment or an attached message's bodies, which the outer
 /// lists do not hold.
-fn sender_text_part(message: &mail_parser::Message<'_>) -> Option<String> {
-    message.text_bodies().find_map(|part| match &part.body {
-        PartType::Text(text) => Some(text.to_string()),
-        _ => None,
-    })
+/// The part's id rides along, transiently, so extraction can tell how the
+/// two chosen bodies relate (decision 0049 §3); it is never stored.
+fn sender_text_part(message: &mail_parser::Message<'_>) -> Option<(MessagePartId, String)> {
+    message
+        .text_body
+        .iter()
+        .zip(message.text_bodies())
+        .find_map(|(&id, part)| match &part.body {
+            PartType::Text(text) => Some((id, text.to_string())),
+            _ => None,
+        })
 }
 
 /// The first *text/html* part among the outer message's html-body
 /// candidates, verbatim — the sender's own html, with no synthesis
-/// (decision 0031 §1, 0040 §1).
-fn sender_html_part(message: &mail_parser::Message<'_>) -> Option<String> {
-    message.html_bodies().find_map(|part| match &part.body {
-        PartType::Html(html) => Some(html.to_string()),
-        _ => None,
-    })
+/// (decision 0031 §1, 0040 §1) — and its part id, as for the text.
+fn sender_html_part(message: &mail_parser::Message<'_>) -> Option<(MessagePartId, String)> {
+    message
+        .html_body
+        .iter()
+        .zip(message.html_bodies())
+        .find_map(|(&id, part)| match &part.body {
+            PartType::Html(html) => Some((id, html.to_string())),
+            _ => None,
+        })
+}
+
+/// How the chosen text and HTML parts relate (decision 0049 §3, issue
+/// #137): two renderings of one message only when both are direct children
+/// of the same `multipart/alternative`; otherwise independent parts, ordered
+/// by where they start in the source. In a multipart/mixed mail the parser
+/// lists every inline part as both a text and an HTML candidate, so a list
+/// footer after an HTML-only body is chosen as `text` — preferring its
+/// digits hid the HTML's code. A shared ancestor further up is not enough:
+/// `alternative[text, related[html]]` merges both, in source order.
+fn body_order(
+    message: &mail_parser::Message<'_>,
+    text: MessagePartId,
+    html: MessagePartId,
+) -> BodyOrder {
+    let alternatives = message.parts.iter().any(|part| match &part.body {
+        PartType::Multipart(children) => {
+            children.contains(&text)
+                && children.contains(&html)
+                && part
+                    .content_type()
+                    .and_then(|ct| ct.subtype())
+                    .is_some_and(|subtype| subtype.eq_ignore_ascii_case("alternative"))
+        }
+        _ => false,
+    });
+    let offset = |id: MessagePartId| message.parts[id as usize].offset_header;
+    if alternatives {
+        BodyOrder::Alternatives
+    } else if offset(text) < offset(html) {
+        BodyOrder::TextFirst
+    } else {
+        BodyOrder::HtmlFirst
+    }
 }
 
 pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope: String) -> Email {
@@ -1635,11 +1681,17 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
     // accessor — the parser lists fallback parts in both body lists, so
     // list membership is not part-type membership, and the first genuine
     // part of each type wins wherever it sits in its list (decision 0040).
-    let text = parsed.as_ref().and_then(sender_text_part);
-    let html = parsed.as_ref().and_then(sender_html_part);
+    let text_part = parsed.as_ref().and_then(sender_text_part);
+    let html_part = parsed.as_ref().and_then(sender_html_part);
+    let order = match (&parsed, &text_part, &html_part) {
+        (Some(message), Some((text, _)), Some((html, _))) => body_order(message, *text, *html),
+        _ => BodyOrder::Alternatives,
+    };
+    let text = text_part.map(|(_, text)| text);
+    let html = html_part.map(|(_, html)| html);
 
     let links = extract_links(text.as_deref(), html.as_deref());
-    let codes = extract_codes(text.as_deref(), html.as_deref());
+    let codes = extract_codes(text.as_deref(), html.as_deref(), order);
 
     // Thread headers are extracted once, here at ingest (decision 0005), and
     // stored as first-class fields: the thread view must not re-parse the raw

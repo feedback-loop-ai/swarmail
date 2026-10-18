@@ -2854,3 +2854,202 @@ async fn the_strictness_claims_match_the_wire() {
     let (st, _) = http_json(srv.http_addr, "GET", "/api/v1/message/latest?inbx=s1", None).await;
     assert_eq!(st, 400, "latest stays strict");
 }
+
+// ---- epic #120 batch 4: extraction fidelity (issues #136, #137, #139; decision 0049) ----
+
+/// Issue #136 over real SMTP and REST: a quoted attribute value ends at
+/// its own source quote and then decodes, so the encoded apostrophes and
+/// quotes real templating engines write stay inside the link; balanced
+/// parentheses, IPv6 literals and path commas survive; a signed numeric
+/// reference stays literal and manufactures no code. Red at 2a325c9:
+/// `https://app.test/reset?name=O`, `https://x.io/?q=`, `…/Foo_(bar`,
+/// `http://[::1`, `…/w_100` and the code `4829`.
+#[tokio::test]
+async fn smtp_issue_136_link_fidelity() {
+    let srv = start().await;
+    let html = concat!(
+        "<a href=\"https://app.test/reset?name=O&#39;Brien&amp;token=abc123\">a</a>",
+        "<a href=\"https://app.test/reset?name=O&#x27;Brien&amp;token=abc124\">b</a>",
+        "<a href=\"https://app.test/reset?name=O'Brien&amp;token=abc125\">c</a>",
+        "<a href=\"https://x.io/?q=&quot;x&quot;\">q</a>",
+        "<p>See https://en.wikipedia.org/wiki/Foo_(bar), <a href=\"http://[::1]:8080/p\">",
+        "local</a> and (https://cdn.x.io/w_100,h_100/x.jpg).</p>",
+        "<p>&#+52;&#+56;&#+50;&#+57; <a href=\"https://x.io/&#+52;/\">n</a></p>",
+    );
+    let email = deliver_mime(&srv, "links136", &html_only(html)).await;
+    assert_eq!(
+        array(&email, "links"),
+        serde_json::json!([
+            "https://app.test/reset?name=O'Brien&token=abc123",
+            "https://app.test/reset?name=O'Brien&token=abc124",
+            "https://app.test/reset?name=O'Brien&token=abc125",
+            "https://x.io/?q=\"x\"",
+            "https://en.wikipedia.org/wiki/Foo_(bar)",
+            "http://[::1]:8080/p",
+            "https://cdn.x.io/w_100,h_100/x.jpg",
+            "https://x.io/&#+52;/",
+        ])
+    );
+    assert_eq!(array(&email, "codes"), serde_json::json!([]));
+    // The stored body is the sender's, byte for byte (decision 0031).
+    assert_eq!(email["html"], format!("{html}\r\n"));
+}
+
+/// One multipart/mixed mail: `parts` between the outer boundary lines.
+fn mixed_mime(parts: &str) -> String {
+    format!(
+        "From: sender@x.io\r\nSubject: m\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=b\r\n\r\n{parts}--b--"
+    )
+}
+
+/// Issue #137 over real SMTP: only a text part and an HTML part that are
+/// direct siblings in one multipart/alternative earn text preference;
+/// independent parts contribute in source order, so a footer or an inline
+/// text file after an HTML-only body no longer hides its code. Red at
+/// 2a325c9: `["2026"]` and `["444445"]`. The stored bodies stay the
+/// sender's own, and the alternative preference is unchanged.
+#[tokio::test]
+async fn smtp_mixed_footers_do_not_hide_html_codes() {
+    let srv = start().await;
+    let footer = "--b\r\nContent-Type: text/plain\r\n\r\n-- list footer 2026\r\n";
+    let html = "--b\r\nContent-Type: text/html\r\n\r\n<p>Your code is 121212</p>\r\n";
+    let cases: [(&str, String, &[&str]); 6] = [
+        (
+            "foot137",
+            mixed_mime(&format!(
+                "--b\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n\
+                 --a\r\nContent-Type: text/html\r\n\r\n<p>Your code is 121212</p>\r\n--a--\r\n\
+                 {footer}"
+            )),
+            &["121212", "2026"],
+        ),
+        (
+            "file137",
+            mixed_mime(
+                "--b\r\nContent-Type: text/html\r\n\r\n<p>Your code is 333334</p>\r\n\
+                 --b\r\nContent-Type: text/plain\r\n\
+                 Content-Disposition: inline; filename=notes.txt\r\n\r\nnotes 444445\r\n",
+            ),
+            &["333334", "444445"],
+        ),
+        // Reversed: the text part comes first in the source.
+        (
+            "rev137",
+            mixed_mime(&format!("{footer}{html}")),
+            &["2026", "121212"],
+        ),
+        // Direct alternatives: the text's code, the HTML's ignored.
+        (
+            "alt137",
+            mixed_mime(
+                "--b\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n\
+                 --a\r\nContent-Type: text/plain\r\n\r\nCode 555556\r\n\
+                 --a\r\nContent-Type: text/html\r\n\r\n<p>Code 666667</p>\r\n--a--\r\n",
+            ),
+            &["555556"],
+        ),
+        // Direct alternatives whose text has no code: the HTML's.
+        (
+            "empty137",
+            mixed_mime(
+                "--b\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n\
+                 --a\r\nContent-Type: text/plain\r\n\r\nSee the HTML\r\n\
+                 --a\r\nContent-Type: text/html\r\n\r\n<p>Code 777778</p>\r\n--a--\r\n",
+            ),
+            &["777778"],
+        ),
+        // A shared ancestor is not enough: related under alternative merges.
+        (
+            "rel137",
+            "From: sender@x.io\r\nSubject: r\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/alternative; boundary=a\r\n\r\n\
+             --a\r\nContent-Type: text/plain\r\n\r\nCode 888889\r\n\
+             --a\r\nContent-Type: multipart/related; boundary=r\r\n\r\n\
+             --r\r\nContent-Type: text/html\r\n\r\n<p>Code 999990</p>\r\n--r--\r\n--a--"
+                .to_string(),
+            &["888889", "999990"],
+        ),
+    ];
+    for (inbox, data, want) in cases {
+        let email = deliver_mime(&srv, inbox, &data).await;
+        assert_eq!(array(&email, "codes"), serde_json::json!(want), "{inbox}");
+        assert!(
+            email["text"].is_string() && email["html"].is_string(),
+            "{inbox}: {email}"
+        );
+    }
+    let email = deliver_mime(&srv, "body137", &mixed_mime(&format!("{html}{footer}"))).await;
+    assert_eq!(email["text"], "-- list footer 2026");
+    assert_eq!(email["html"], "<p>Your code is 121212</p>");
+}
+
+/// Issue #139's 8 MiB numeric fixture over real SMTP: 1,048,576 distinct
+/// seven-digit numbers, each followed by one space. Exactly the first 64
+/// codes are stored — a 641-byte array — and every page that carries the
+/// mail is bounded by its body, not by a million strings: the native list
+/// (full bodies) under 9 MiB, Mailpit's summary page under 16 KiB, the
+/// complete MailHog page under 40 MiB. Red at 2a325c9: 1,048,576 codes, an
+/// 18.9 MB native list and a 33.6 MB MailHog page.
+#[tokio::test]
+async fn smtp_numeric_mail_has_bounded_codes_and_response_bytes() {
+    let srv = start().await;
+    let body: String = (0..1_048_576u32)
+        .map(|n| format!("{} ", 1_000_000 + n))
+        .collect();
+    assert_eq!(body.len(), 8 * 1024 * 1024);
+    let data = format!("From: sender@x.io\r\nSubject: n\r\n\r\n{body}");
+    let email = deliver_mime(&srv, "num139", &data).await;
+    let want: Vec<String> = (0..64).map(|n| (1_000_000 + n).to_string()).collect();
+    assert_eq!(array(&email, "codes"), serde_json::json!(want));
+    assert_eq!(serde_json::to_string(&email["codes"]).unwrap().len(), 641);
+
+    let (st, native) = http_bytes(srv.http_addr, "/api/v1/inboxes/num139/messages").await;
+    assert_eq!(st, 200);
+    assert!(native.len() < 9 * 1024 * 1024, "{}", native.len());
+    let native: serde_json::Value = serde_json::from_slice(&native).unwrap();
+    assert!(native["emails"][0]["text"].as_str().unwrap().len() >= body.len() - 2);
+
+    let (st, summary) = http_bytes(srv.http_addr, "/api/v1/messages?inbox=num139").await;
+    assert_eq!(st, 200);
+    assert!(summary.len() < 16 * 1024, "{}", summary.len());
+    let summary: serde_json::Value = serde_json::from_slice(&summary).unwrap();
+    assert_eq!(summary["messages"].as_array().unwrap().len(), 1);
+
+    let (st, hog) = http_bytes(srv.http_addr, "/api/v2/messages?inbox=num139&limit=1").await;
+    assert_eq!(st, 200);
+    assert!(hog.len() < 40 * 1024 * 1024, "{}", hog.len());
+    let hog: serde_json::Value = serde_json::from_slice(&hog).unwrap();
+    assert_eq!(hog["items"].as_array().unwrap().len(), 1);
+}
+
+/// The cap holds on the seed path too (decision 0049 §4): 65 distinct
+/// codes across the HTML's runs, the 65th dropped, a duplicate taking no
+/// slot.
+#[tokio::test]
+async fn seeded_mail_keeps_the_first_64_distinct_codes() {
+    let srv = start().await;
+    let mut cells: Vec<String> = (0..65).map(|n| (500_000 + n).to_string()).collect();
+    cells.insert(10, "500000".into());
+    let html: String = cells.iter().map(|c| format!("<td>{c}</td>")).collect();
+    let body = serde_json::json!({"to": "a@x.io", "html": html}).to_string();
+    let (st, seeded) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/seed139/seed",
+        Some(&body),
+    )
+    .await;
+    assert_eq!(st, 200, "{seeded}");
+    let want: Vec<String> = (0..64).map(|n| (500_000 + n).to_string()).collect();
+    let id = first_id(srv.http_addr, "seed139").await;
+    let (st, stored) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(stored["codes"], serde_json::json!(want));
+}

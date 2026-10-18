@@ -116,3 +116,14 @@ At least one observed behavioral red per child precedes its passing repair.
 Keep 0020's test placement and 0035's exact coverage discipline, with no gate
 edits. All six house gates are owed by implementation. This decision is
 proposed and the design files do not claim those repairs have shipped.
+
+## Pointer — 2026-10-18 (proposed 0049)
+
+[0049](0049-extraction-compat.md) §§1–4, also **proposed**, update §§2/4 here (issues
+#136, #137, #139): a quoted attribute value is delimited by its source quote before it
+is decoded, so a decoded quote is URL data there; balanced parentheses, brackets and
+interior commas stay in a link; numeric references take ASCII digits only; text codes
+are preferred only for direct `multipart/alternative` siblings; and a fresh mail keeps
+at most 64 distinct codes. §5–§7's full 2,125-name table is still outstanding: the
+batch-4 implementing seat had no WHATWG snapshot, and the interim subset is not claimed
+complete.

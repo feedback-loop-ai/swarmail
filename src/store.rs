@@ -143,6 +143,13 @@ fn drain_inbox(
     }
 }
 
+/// The compat views' one order (decision 0049 §5): newest receive stamp
+/// first, the larger UUIDv7 id first on a tie — the reverse of the
+/// `(received_ms, id)` maximum [`Store::latest`] picks.
+pub fn newest_first(a: &Arc<Email>, b: &Arc<Email>) -> std::cmp::Ordering {
+    (b.received_ms, &b.id).cmp(&(a.received_ms, &a.id))
+}
+
 pub struct Store {
     /// Oldest at the front, newest at the back (insertion order). A deque
     /// because eviction pops the front: a `Vec`'s front-drain memmoves every
@@ -621,26 +628,24 @@ impl Store {
     /// Newest-first listing across ALL inboxes matching `filter`.
     ///
     /// The MailHog/Mailpit compat shims expose a single global mailbox, so
-    /// they read the whole store through this (and scope to one inbox by
-    /// calling `list` when the request names one). Insertion order is only
-    /// per-inbox, so the merged view is ordered by receive time, with the
-    /// UUIDv7 id as the tiebreak (it sorts chronologically).
+    /// they read the whole store through this (and sort one inbox's `list`
+    /// the same way when the request names one, decision 0049 §5).
+    /// Insertion order is only per-inbox, so the merged view is ordered by
+    /// [`newest_first`].
     pub fn list_all(&self, filter: &Filter) -> Vec<Arc<Email>> {
         let mut all: Vec<Arc<Email>> = Vec::new();
         for entry in self.inboxes.iter() {
             all.extend(entry.value().iter().filter(|e| filter.matches(e)).cloned());
         }
-        all.sort_by(|a, b| {
-            b.received_ms
-                .cmp(&a.received_ms)
-                .then_with(|| b.id.cmp(&a.id))
-        });
+        all.sort_by(newest_first);
         all
     }
 
     /// The newest mail in scope — one inbox, or the whole store for `None` —
-    /// by `(received_ms, id)`, the order every newest-first listing uses
-    /// (issue #95, decision 0044 §4). One pass over every scoped mail under
+    /// by `(received_ms, id)`, the order every compat listing uses (issue
+    /// #95, decision 0044 §4; decision 0049 §5). Native inbox listings
+    /// (`list`), POP3 numbering and pruning use acceptance order instead,
+    /// which can differ. One pass over every scoped mail under
     /// short-lived shard read guards, retaining only the running winner: no
     /// sorted page and no mutation lock. Deliberately not a deque's tail —
     /// the receive stamp is sampled at parse start, before acceptance, so

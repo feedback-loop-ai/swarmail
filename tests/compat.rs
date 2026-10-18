@@ -1675,6 +1675,96 @@ async fn field_prefixes_refuse_by_name_and_urls_stay_literal() {
     );
 }
 
+// ---------- epic #120 batch 4: #138 wrapped prefixes, tz, one order ----------
+
+/// Mailpit's exclusion (`-`, `!`), quoted and parenthesized forms refuse by
+/// the field's name on both shims (decision 0049 §6) — a quoted field whose
+/// value spans a space included — while a URL, a plain `-word`, an
+/// ordinary quoted phrase and an explicit kind's value stay literal. Red at
+/// 2a325c9: every refused form answered 200 with zero matches, so a ported
+/// "no mail to anyone but x" assertion passed against any mailbox.
+#[tokio::test]
+async fn wrapped_field_prefixes_refuse_by_name() {
+    let s = start().await;
+    send_raw(
+        s.smtp_addr,
+        "wrap",
+        "From: sender@x.io\r\nSubject: -minus \"quoted phrase\" -https://x.io/a\r\n\r\nbody",
+    )
+    .await;
+    for (query, field) in [
+        ("-to%3Abcc%40x.io", "to"),
+        ("!from%3Aalice", "from"),
+        ("%22to%3Abcc%40x.io%22", "to"),
+        ("-%22subject%3Ax%22", "subject"),
+        ("(to%3Ax)", "to"),
+        ("%22subject%3Ahello%20world%22", "subject"),
+        ("plain%20(!%22From%3Ax%22)", "From"),
+    ] {
+        for path in [
+            format!("/api/v1/search?inbox=wrap&query={query}"),
+            format!("/api/v2/search?inbox=wrap&kind=containing&query={query}"),
+        ] {
+            let (status, body) = http_json(s.http_addr, "GET", &path, None).await;
+            assert_eq!(status, 400, "{path}: {body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&format!("unsupported search prefix \"{field}:\"")),
+                "{path}: {body}"
+            );
+        }
+    }
+    for (query, hits) in [
+        ("-minus", 1),
+        ("%22quoted%20phrase%22", 1),
+        ("-https://x.io/a", 1),
+        ("-nothing-here", 0),
+    ] {
+        let path = format!("/api/v1/search?inbox=wrap&query={query}");
+        let (status, body) = http_json(s.http_addr, "GET", &path, None).await;
+        assert_eq!(
+            (status, body["messages_count"].clone()),
+            (200, json!(hits)),
+            "{path}: {body}"
+        );
+        let path = format!("/api/v2/search?inbox=wrap&kind=containing&query={query}");
+        let (status, body) = http_json(s.http_addr, "GET", &path, None).await;
+        assert_eq!(
+            (status, body["total"].clone()),
+            (200, json!(hits)),
+            "{path}"
+        );
+    }
+    // An explicit kind takes its value literally, wrappers and all.
+    let (status, body) = http_json(
+        s.http_addr,
+        "GET",
+        "/api/v2/search?inbox=wrap&kind=to&query=-to%3Ax",
+        None,
+    )
+    .await;
+    assert_eq!((status, body["total"].clone()), (200, json!(0)), "{body}");
+}
+
+/// Mailpit's `tz` is not read on latest (decision 0049 §5): a named 400 on
+/// every latest route, which README's known differences states.
+#[tokio::test]
+async fn latest_timezone_is_a_documented_refusal() {
+    let s = start().await;
+    send_raw(s.smtp_addr, "lat-tz", "Subject: tz\r\n\r\nbody").await;
+    for route in ["latest", "latest/raw", "latest/headers"] {
+        let path = format!("/api/v1/message/{route}?inbox=lat-tz&tz=UTC");
+        let (status, body) = http_json(s.http_addr, "GET", &path, None).await;
+        assert_eq!(status, 400, "{route}: {body}");
+        assert!(body["error"].as_str().unwrap().contains("tz"), "{body}");
+    }
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    assert!(readme.contains("`tz`"), "README names the tz refusal");
+}
+
 /// A blank compat `inbox` selector refuses on all four pages (decision 0044
 /// §3) instead of widening to the whole store.
 #[tokio::test]

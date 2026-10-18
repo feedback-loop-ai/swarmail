@@ -134,3 +134,12 @@ everywhere, and stored rows are not renamed.
 #132): an `id`-less object is a notification only with a string `method` — any other is
 `-32600` with a null id, alone or in a batch — and the cumulative registry folds into a
 line-feed overflow label instead of `_uncounted`, which stays an ordinary inbox.
+
+## Pointer — 2026-10-18 (proposed 0049)
+
+[0049](0049-extraction-compat.md) §§5–7, also **proposed**, update §§4/5/7 here (issues
+#138, #139): every compat list and search, scoped or global, sorts by descending
+`(received_ms, id)` — the order `latest` maximizes — so the scoped views no longer follow
+acceptance order; `tz` on `latest` stays a named 400 and is documented; the containing
+refusal looks past one `(`, one `-`/`!` and one `"` before the identifier check; and every
+single-message response is built on the blocking pool, not only the pages.

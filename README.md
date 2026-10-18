@@ -191,12 +191,19 @@ most 250, `0` an empty page) and an uncapped `offset`. SMTP request parsing
 runs off the async workers on the blocking pool, and so does the whole of
 every compat list and search build — scan, filter, page, snippet render and
 JSON serialization (proposed decision
-[0044](docs/decisions/0044-compat-validation.md)) — so a 50 MiB mail cannot
-stall the accept loop or the await wakes it gates; the MCP
-`swarmail_seed_email` seed build, the REST list/await pages and the SSE
-thread-view serialization still run inline (the seed is the test
-fixture's own path, and the others are per-request read renders —
-neither is on the ingest path the stall guards). A Mailpit snippet reads at
+[0044](docs/decisions/0044-compat-validation.md)) — and every
+single-message response: Mailpit's `/message/{id}`, `/plain` (both
+spellings), `/raw`, `/headers`, the three `latest` routes, MailHog's
+`/download` and the native `GET /api/v1/messages/{id}[/raw]` are projected,
+rendered and serialized to finished bytes on the pool (proposed decision
+[0049](docs/decisions/0049-extraction-compat.md)) — so a 50 MiB mail read
+through those routes cannot stall the accept loop or the await wakes it
+gates. The MCP `swarmail_seed_email` seed build, the REST list/await pages,
+the UI's message page and the SSE thread-view serialization still run
+inline on the async workers: a 50 MiB mail read through them *can* delay
+an SMTP greeting, and that residual is named here rather than hidden. The
+pool is shared with ingest, so offloading is not an admission bound
+either. A Mailpit snippet reads at
 most an 8192-byte prefix of its body; a MailHog v2 page refuses whole once
 its JSON would pass 64 MiB (`compat page exceeds byte budget 67108864;
 reduce limit or fetch raw by id`). These bound responses, not memory: the
@@ -501,6 +508,18 @@ Every mail carries `text`, `html`, `links`, `codes` — extracted at ingest —
 and `envelope_from`, the SMTP `MAIL FROM` reverse path: `""` for a bounce's
 null sender `<>`, `null` only for mail stored before swarmail kept it (it is
 never backfilled from the header `From`).
+`codes` holds at most the first **64 distinct** codes, in extraction order
+(proposed decision [0049](docs/decisions/0049-extraction-compat.md)): a
+text part and an HTML part that are direct siblings in one
+`multipart/alternative` contribute the text's codes (the HTML's only when
+the text has none); otherwise both bodies contribute in source order, so a
+mailing-list footer after an HTML-only mail cannot hide its code. Mail
+stored before the cap keeps its longer array verbatim — nothing is
+re-extracted or truncated on restore. `links` is uncapped (bounded only by
+the body): a quoted attribute's link ends at the attribute's own closing
+quote, so `href="…?name=O&#39;Brien&amp;t=1"` stays whole, and balanced
+parentheses, IPv6 brackets and interior commas are kept while trailing
+sentence punctuation and unmatched closers are trimmed.
 `GET /api/v1/inboxes/{inbox}/count` is the exact-count read;
 `/openapi.json` serves the whole contract (3.1).
 
@@ -642,7 +661,7 @@ test suites actually hit, answered from one store:
 
 | Endpoint | Behavior |
 |---|---|
-| `GET /api/v1/messages` | Mailpit's summary envelope, newest first; `?inbox=` scopes, `?limit=`/`?start=` page; each `Snippet` is built from at most the first 8192 bytes of its body |
+| `GET /api/v1/messages` | Mailpit's summary envelope, newest first — the receive time, then id, as `latest` uses, scoped or not; `?inbox=` scopes, `?limit=`/`?start=` page; each `Snippet` is built from at most the first 8192 bytes of its body |
 | `GET /api/v1/message/{id}` | Mailpit's full message shape (`Text`, `HTML`, `ReturnPath`, …) |
 | `GET /api/v1/message/latest`, `…/latest/raw`, `…/latest/headers` | the newest mail — the maximum receive time, then id — in Mailpit's message shape, as its raw source, or as its header map; `?inbox=` scopes it to one inbox (404 when that inbox is empty, whatever the others hold), no `?inbox=` means the whole store; a nonblank `?query=` is a `400` — search, then fetch the id |
 | `GET /api/v1/message/{id}/plain`, `GET /api/v1/messages/{id}/plain` | the text part as `text/plain; charset=utf-8` — html-only mail is rendered to text at request time |
@@ -660,9 +679,15 @@ by SMTP), Mailpit's `mime/part` routes, `latest` on the plain/attachment
 routes, and the `to:`-style query prefixes: in a containing search, every
 whitespace-separated word that opens with a field name and a colon
 (`to:`, ` from:alice`, `plan subject:x`, an unknown `foo:`) answers a named
-`400` — the prefix grammar is not implemented; swarmail takes `kind=`. A
-URL's `://` is exempt, so `https://host/path` stays a literal search, but
-other colon words (`mailto:x`) refuse too; there is no quoting.
+`400` — the prefix grammar is not implemented; swarmail takes `kind=`.
+Mailpit's own wrappers are looked past for that refusal — one leading `(`,
+then one exclusion `-` or `!`, then one `"` — so `-to:x`, `!from:alice`,
+`"to:x"`, `-"subject:x"` and `(to:x)` refuse by the field's name instead of
+silently matching nothing. A URL's `://` is exempt, so `https://host/path`
+(and `-https://host/path`) stays a literal search, as do `-word` and
+`"a phrase"`, but other colon words (`mailto:x`, `"note:x"`) refuse too;
+there is no quoting, grouping or negation — an accepted query is searched
+as the literal it is.
 swarmail's own single-message route is
 `/api/v1/messages/{id}`; the Mailpit-style singular `/api/v1/message/{id}`
 is the shim.
@@ -676,7 +701,14 @@ MailHog `From`, `Raw.From` and `kind=from`, Mailpit `ReturnPath`, the
 synthesized `Return-Path` — is the SMTP envelope sender, as upstream's is
 (`""` and `<>` for a bounce); only mail stored before swarmail kept the
 envelope falls back to the header `From`. Mailpit's `From` and the native
-`from` filter stay on the header.
+`from` filter stay on the header. Every compat list and search, scoped by
+`?inbox=` or not, and `latest` order by the receive time, then the id —
+so at a stable store `messages?inbox=x&limit=1` is `latest?inbox=x`. The
+receive time is stamped when parsing starts, so a large mail accepted after
+a small one can sort behind it; the native inbox list, POP3 numbering and
+pruning keep acceptance order, and can disagree with the compat views.
+`latest` does not read Mailpit's `tz`: `?tz=` is a `400` naming it, like any
+other unknown key there.
 
 ### Threads and the live UI
 

@@ -79,6 +79,42 @@ fn restore_keeps_legacy_derived_fields_while_fresh_ingest_repairs_them() {
     assert_eq!(fresh.codes, vec!["1234", "5678"]);
 }
 
+/// The code cap is a fresh-ingest contract (decision 0049 §4, issue #139):
+/// a freshly built mail stores its 64 capped codes and restores them
+/// as-is, while a row stored before the cap — 100 codes here — restores
+/// and reads verbatim, never truncated or re-derived on load.
+#[test]
+fn fresh_codes_stay_capped_and_historical_codes_restore_verbatim() {
+    let (_guard, path) = db_path("codes");
+    let numbers: Vec<String> = (0..100).map(|n| (2_000_000 + n).to_string()).collect();
+    let raw = format!(
+        "From: s@x.io\r\nSubject: n\r\n\r\n{}\r\n",
+        numbers.join(" ")
+    );
+    {
+        let store = Store::open(0, &path).unwrap();
+        let fresh = crate::smtp::build_email(
+            raw.as_bytes(),
+            "box",
+            &["a@x.io".to_string()],
+            "s@x.io".into(),
+        );
+        assert_eq!(fresh.codes, numbers[..64]);
+        let fresh_id = fresh.id.clone();
+        store.insert(fresh).unwrap();
+        let mut historical = email("historical", "box", "a@x.io");
+        historical.raw = raw.clone().into_bytes();
+        historical.codes = numbers.clone();
+        store.insert(historical).unwrap();
+        assert_eq!(store.get(&fresh_id).unwrap().codes.len(), 64);
+    }
+    let store = Store::open(0, &path).unwrap();
+    let listed = store.list("box", &Filter::default());
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].codes, numbers, "the historical row is verbatim");
+    assert_eq!(listed[1].codes, numbers[..64], "the fresh row stays capped");
+}
+
 #[test]
 fn cap_pruning_is_mirrored_to_the_data_file() {
     let (_guard, path) = db_path("cap");
