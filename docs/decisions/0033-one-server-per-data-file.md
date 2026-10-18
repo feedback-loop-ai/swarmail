@@ -147,3 +147,12 @@ as the historical claim and is not a current recovery promise. The
 correction, and the typed `persist::OpenError` the implementation carries,
 are recorded in [0042](0042-single-writer-lock.md) — *proposed*, awaiting
 the operator; this addendum does not accept it.
+
+## Pointer — 2026-10-18 (proposed 0047)
+
+[0047](0047-storage-rpc.md) §1, which is **proposed**, would supplement §2's mechanism
+(issue #129): the sidecar is kept exactly as described above, and the server also takes an
+exclusive lock on the data file itself before SQLite opens it, so a second server reaching
+the same file through a symlink or a hard link is refused with §3's named refusal. The
+scope and its residuals are 0047's. Nothing above is rewritten by this pointer, and its
+status is unchanged.

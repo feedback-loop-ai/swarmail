@@ -84,3 +84,12 @@ transport-failure shape, writer failure and HTTP parity are also pinned.
 Use 0020 test placement and 0035 exact coverage rules; a red per child must
 fail behaviorally, not merely fail compilation. Only the operator accepts
 this document; do not mark 0029 amended before acceptance.
+
+## Pointer — 2026-10-18 (proposed 0047)
+
+[0047](0047-storage-rpc.md) §§3–4, also **proposed**, update §§1/2/6 here (issues #132,
+#133): the shared classification owes an `id`-less object without a string `method` a
+null-id `-32600`; the bridge dials port 80 for a URL that names no port, keeping `Host` as
+spelled; and a line whose body exceeds the server's 2,097,152-byte limit is refused
+locally, never posted, with `-32600` in the server's wording and the line's own ids.
+Reading and parsing a line stay unbounded, as §6 names.

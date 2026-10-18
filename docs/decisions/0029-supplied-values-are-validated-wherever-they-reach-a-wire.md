@@ -350,3 +350,11 @@ operator acceptance, 0025 gains its dated `Amended by` marker, and the
 README/openapi sentences this decision promises (per-target slots, the
 chaos `error` grammar, the batch cap and codes, the redacted GET) are
 already in the tree — the docs were *not* left ahead of the code.
+
+## Pointer — 2026-10-18 (proposed 0047)
+
+[0047](0047-storage-rpc.md) §3, which is **proposed**, would amend §2's notification
+predicate (issue #132): an object is silent only when it has no `id` key *and* a string
+`method`. Any other `id`-less object is an invalid request answered `-32600` with a null
+id, over HTTP and on the stdio bridge alike. Supplied ids, null included, keep their
+behavior. Nothing above is rewritten by this pointer, and its status is unchanged.

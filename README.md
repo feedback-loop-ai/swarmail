@@ -149,6 +149,18 @@ per-inbox readiness rows (`{inbox="…"}`) escape label values exactly as
 the Prometheus text format defines — `\\`, `\"` and `\n` — and pass every
 other character, tab and Unicode included, literally.
 
+`swarmail_awaits_registered_total` keeps one row per awaited inbox name for
+the first 4,096 names. A name first seen after that has no row of its own:
+its waits are counted, exactly, in the overflow sample
+`swarmail_awaits_registered_total{inbox="\n"}` — a label of one line feed,
+which no inbox name can be — while names tracked before the cap keep
+counting in their own rows. The cap limits attribution, never which waits
+are admitted, and the unlabeled total is the sum of all labeled rows in the
+same scrape. Dashboards that selected the old overflow label
+`inbox="_uncounted"` must move to `inbox="\n"`; `_uncounted` is now an
+ordinary inbox with its own row (proposed
+[0047](docs/decisions/0047-storage-rpc.md), issue #130).
+
 There is no auth on any surface, by design: the loopback
 posture is the boundary, and a server with secrets would need auth —
 this one holds test mail, and its knobs are local (`set-chaos`
@@ -543,8 +555,12 @@ publish (`{"inbx": "zz"}` can never clear `default`; every schema says
 parse failure or invalid UTF-8 is HTTP 400 `-32700`; a body over the
 2,097,152-byte limit is HTTP 413 `-32600`; a value that is not an object
 (`5`, `null`, `"x"`, a nested array) is `-32600` with a null id — once per
-such member in a batch; an object without an `id` is a notification: it
-runs and stays silent. `swarmail_search_emails` pages with `offset` past
+such member in a batch; an object without an `id` is a notification only
+when its `method` is a string: it runs and stays silent, whatever the
+method names. Any other `id`-less object — `{}`, `{"foo":"boo"}`,
+`{"method":1}` — is `-32600` with a null id, alone or as a batch member
+(proposed [0047](docs/decisions/0047-storage-rpc.md), issue #132).
+`swarmail_search_emails` pages with `offset` past
 its 250 limit. The members of one batch (at most 16) run concurrently:
 sixteen waits share one wait interval rather than queueing, replies keep
 member order, and the members' effects have **no** order — send dependent
@@ -560,14 +576,21 @@ Wire it up:
 
 `swarmail mcp` speaks JSON-RPC over stdin/stdout and bridges to
 `SWARMAIL_URL` (default `http://127.0.0.1:8025`). The HTTP surface is
-Streamable JSON-RPC at `POST /mcp`.
+Streamable JSON-RPC at `POST /mcp`. A URL without a port dials HTTP's port
+80 and sends its `Host` exactly as spelled; a malformed port is refused
+(proposed [0047](docs/decisions/0047-storage-rpc.md), issue #133).
 
 The bridge answers each line as `POST /mcp` would (proposed decision
 [0039](docs/decisions/0039-stdio-concurrency.md), amended by proposed
 [0044](docs/decisions/0044-compat-validation.md)). A batch with requests
 gets one array line; a notification, or a batch of notifications only,
-gets nothing; a line that is valid JSON but not an object is an invalid
-request and gets the server's null-id `-32600`. Up to 16 lines are in flight at once, so a wait never holds
+gets nothing; a line that is valid JSON but not an object — or an `id`-less
+object without a string `method` — is an invalid request and gets the
+server's null-id `-32600`. A line whose body is over the server's
+2,097,152-byte limit (counted in bytes, without its line ending) is never
+sent: the bridge answers `-32600` in the server's own 413 wording with the
+line's own ids — one error, or one array in member order for a batch —
+and nothing for a notification. Up to 16 lines are in flight at once, so a wait never holds
 up the seed that satisfies it. Replies arrive as they complete, so order
 holds only within a batch. A client that needs two mutations in order
 should await the first reply. A line that is not UTF-8 or not JSON gets a
@@ -577,9 +600,11 @@ null id — gets a `-32000` error, and a rejected batch gets one null-id
 error. The outcome of such a request is unknown,
 and nothing is retried. At EOF the bridge waits for every request in
 flight to finish, then exits 0. It exits 1 if stdin fails (after waiting)
-or if stdout fails (immediately). Known gaps: no length cap on a single
-input line; a stalled stdout reader stalls the bridge; sixteen parked
-waits delay a seventeenth line.
+or if stdout fails (immediately). Known gaps: no length cap on reading or
+parsing a single input line (the body limit bounds what is sent, not what
+is held); a stalled stdout reader stalls the bridge; sixteen parked
+waits delay a seventeenth line; a server or proxy with a lower body limit
+than the bridge's still answers its own null-id refusal.
 
 ### POP3 — the same store, RFC 1939
 
@@ -814,6 +839,35 @@ predecessor is still draining is refused until that predecessor exits;
 retrying belongs to the supervisor. Restart reloads what is on disk; it does
 not repair a file two servers already wrote together before this lock
 existed (proposed [0042](docs/decisions/0042-single-writer-lock.md)).
+
+The refusal follows the *file*, not its name: besides the sidecar, the
+server holds an identity guard,
+`/tmp/swarmail-db-locks-<owner uid>/<device>-<inode>.lock`, named by the
+data file's owner, device and inode — which every symlink and hard link of
+the file shares, in any directory — so a second server reaching it through
+an alias is refused the same way (proposed
+[0047](docs/decisions/0047-storage-rpc.md), issue #129). The root is always
+`/tmp`, whatever `TMPDIR` says. The server never locks the SQLite database
+or its `-wal`/`-shm` files itself: on macOS and the BSDs such a lock
+conflicts with SQLite's own. The owner directory must be private (0700) to
+the data file's owner and is never repaired; an unsafe directory or guard
+refuses startup. Guard files are inert after the server stops and are never
+deleted by it; exclude `/tmp/swarmail-db-locks-*` from age-based `/tmp`
+cleanup while any server runs, and clear it only when none does. A data
+file the server creates is no wider than SQLite's own 0644 (subject to
+umask); an existing one keeps its mode and bytes. The guarantee covers
+cooperating current servers running as the data file's owner, on a local
+filesystem with working `flock`, sharing one `/tmp` (separate containers
+with private `/tmp` mounts do not share guards; another user's server may be
+refused with an I/O error rather than "in use"). Still **not** refused: an
+older, sidecar-only swarmail reaching the file through a different alias
+(the same path still collides on the sidecar); a writer that takes no lock
+at all; replacing the file or its directory under a live server; single-file
+bind mounts (unproven); and network filesystems, whose lock semantics vary.
+Keep one configured path across
+restarts — after a crash, SQLite looks for the `-wal` file beside the name
+it was given, so restarting through another hard link's name would miss
+the crashed server's last commits.
 
 **Memory is not globally bounded** (proposed decision
 [0038](docs/decisions/0038-store-memory-and-timestamps.md)).

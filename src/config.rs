@@ -103,7 +103,7 @@ pub struct GenCertArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct McpArgs {
-    /// Base URL of a running Swarmail server.
+    /// Base URL of a running Swarmail server (http:// only; no port means 80).
     #[arg(long, default_value = "http://127.0.0.1:8025", env = "SWARMAIL_URL")]
     pub url: String,
 }

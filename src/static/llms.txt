@@ -94,7 +94,10 @@
 stdio transport: `swarmail mcp --url http://127.0.0.1:8025` (launch as an MCP
 subprocess; talks to the same server). Errors are always JSON-RPC: bad JSON
 or invalid UTF-8 is `-32700`, a body over 2 MiB is HTTP 413 `-32600`, a
-non-object value is `-32600` with a null id (once per batch member). The up
+non-object value — or an id-less object without a string `method` — is
+`-32600` with a null id (once per batch member). The stdio bridge dials
+port 80 for a portless URL and refuses a body over 2 MiB itself, `-32600`
+with the request's own ids, without sending it. The up
 to 16 members of a batch run concurrently — replies keep member order, the
 effects have no order, so send dependent mutations as separate requests.
 
