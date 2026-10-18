@@ -1028,8 +1028,12 @@ async fn a_second_server_on_a_held_data_file_refuses_and_a_dead_owner_frees_it()
 /// Run a `serve` that must be refused because `spelled` reaches a held
 /// data file, and assert 0033's named refusal: non-zero, never ready.
 async fn assert_refused_on(spelled: &std::path::Path) {
+    // Each refused rival sees its own TMPDIR: the identity guard's root is
+    // fixed, so a different temp directory never selects another guard.
+    let tmp = tempfile::TempDir::with_prefix("swarmail-binary-rival-tmp-").unwrap();
     let mut second = serve_with_data(spelled);
     second
+        .env("TMPDIR", tmp.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
@@ -1084,8 +1088,10 @@ async fn subjects(serve: &Serve, inbox: &str) -> Vec<String> {
 
 /// One server per data *file*, not per name (proposed 0047 §1, issue
 /// #129; red before: the alias server started, and the two servers' mail
-/// broke the cap and lost acknowledged rows). For a symlink and a hard
-/// link, in both orders, a second server reaching the held file exits
+/// broke the cap and lost acknowledged rows). For a symlink, a hard link
+/// and a hard link in another directory (macOS fix-up: the identity guard
+/// lives under a fixed root, never beside the file or under the rival's
+/// own TMPDIR), in both orders, a second server reaching the held file exits
 /// with the named refusal and never announces readiness; the owner keeps
 /// serving. Under a cap of 2 every 250 the owners gave is accounted for
 /// across a SIGKILL and graceful restarts: the newest two survive and the
@@ -1099,6 +1105,8 @@ async fn aliases_of_a_held_data_file_refuse_and_the_owners_mail_survives() {
     let db = dir.path().join("mail.db");
     let soft = dir.path().join("soft.db");
     let hard = dir.path().join("hard.db");
+    let elsewhere = tempfile::TempDir::with_prefix("swarmail-binary-alias-far-").unwrap();
+    let far = elsewhere.path().join("far.db");
     let capped = |spelled: &std::path::Path| {
         let mut cmd = serve_with_data(spelled);
         cmd.args(["--max-per-inbox", "2"]);
@@ -1109,9 +1117,10 @@ async fn aliases_of_a_held_data_file_refuse_and_the_owners_mail_survives() {
     wait_http_up(first.http_addr).await;
     std::os::unix::fs::symlink(&db, &soft).unwrap();
     std::fs::hard_link(&db, &hard).unwrap();
+    std::fs::hard_link(&db, &far).unwrap();
 
     let mut sent = 0;
-    for alias in [&soft, &hard] {
+    for alias in [&soft, &hard, &far] {
         // The real name owns; the alias is refused.
         assert_refused_on(alias).await;
         sent += 1;

@@ -9,6 +9,13 @@
 
 Decision: 0047 (proposed; relative link above).
 
+> **macOS fix-up (2026-10-18):** [macos-identity-lock](../macos-identity-lock/spec.md)
+> and amended 0047 §1 control #129's mechanism. The data-file lock this
+> design called for (`794e919`) locked SQLite's own file, which conflicts
+> with SQLite's locks on Darwin; it is replaced by an identity sidecar and
+> no instruction here to lock the database stands. #130/#132/#133 are
+> unchanged.
+
 ## Framing and rationale
 
 One database reached through two names must not admit two servers with

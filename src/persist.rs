@@ -18,32 +18,43 @@
 //! **One server per data file** — a second process opening the same file
 //! refuses at startup. Two advisory locks are held for the process's
 //! lifetime: the `<data-file>.lock` sidecar beside the path as spelled
-//! (decision 0033 §§2–4, proposed 0042), and an exclusive lock on the data
-//! file itself, so the file's identity — not its name — is owned: a second
-//! server reaching it through a symlink or a hard link is refused too
-//! (proposed 0047 §1, issue #129). Both are taken before SQLite touches the
-//! file and are owned by [`Persist`], so the kernel releases them when the
-//! last owner drops or the process dies; the sidecar is never unlinked and
-//! carries no content, and the data file is opened without truncation (a
-//! new one is created no wider than SQLite's own 0644, subject to umask).
+//! (decision 0033 §§2–4, proposed 0042), and an identity guard,
+//! `/tmp/swarmail-db-locks-<owner uid>/<device>-<inode>.lock`, so the file's
+//! identity — not its name — is owned: a second server reaching it through
+//! a symlink or a hard link, in any directory, names the same guard and is
+//! refused too (proposed 0047 §1, issue #129). The root is fixed — never
+//! `TMPDIR`, `HOME` or the file's own directory — so every spelling meets
+//! there. Neither lock is ever on the database or its `-wal`/`-shm`/
+//! `-journal`: on Darwin and the BSDs `flock` and SQLite's POSIX record
+//! locks share one table and conflict, so a lock of ours on the database
+//! refuses our own SQLite. Both are taken before SQLite touches the file and
+//! are owned by [`Persist`], so the kernel releases them when the last owner
+//! drops or the process dies. Neither is ever unlinked; the owner directory
+//! must be private (0700) to the data file's owner and the guard a private,
+//! singly linked file, or startup refuses. An existing data file is
+//! identified by metadata alone, never opened — closing a descriptor on it
+//! would drop this process's SQLite record locks — and a missing one is
+//! created exclusively, no wider than SQLite's own 0644 (subject to umask).
 //!
-//! The scope is cooperating current servers on a local filesystem with
-//! working `flock`. Outside it, and not refused: an older, sidecar-only
-//! binary reaching the file through a different alias (same path still
-//! collides on the sidecar); a writer that takes no lock at all; replacing
-//! the file or its directory under a live owner; single-file bind mounts
-//! (unproven); and remote filesystems, whose lock semantics vary. Keep one
-//! configured pathname across restarts: owning the inode does not move a
-//! crashed owner's `-wal` file to another hard link's basename, and a
-//! restart never repairs loss an earlier multi-writer run already caused.
-//! One `Persist` per data file per process: a refused in-process alias open
-//! closes its descriptor, which by POSIX drops this process's SQLite record
-//! locks on that file — a server holds one, so only tests meet this.
+//! The scope is cooperating current servers under the data file's owner,
+//! on a local filesystem with working `flock`, sharing one `/tmp`. Outside
+//! it, and not refused: an older, sidecar-only binary reaching the file
+//! through a different alias (same path still collides on the sidecar); a
+//! writer that takes no lock at all; servers in separate private-`/tmp`
+//! mount namespaces; a `/tmp` cleaner deleting a held guard (exclude the
+//! directory from age-based cleanup); replacing the file or its directory
+//! under a live owner; single-file bind mounts (unproven); and remote
+//! filesystems, whose lock semantics vary. A server under another user may
+//! be refused as an I/O error rather than as in use. Keep one configured
+//! pathname across restarts: owning the inode does not move a crashed
+//! owner's `-wal` file to another hard link's basename, and a restart never
+//! repairs loss an earlier multi-writer run already caused.
 
 use crate::model::Email;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::fs::{File, OpenOptions, TryLockError};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -122,9 +133,9 @@ struct State {
 /// The write-through mirror. Cheap to clone-free share: `&self` is enough.
 pub struct Persist {
     state: Mutex<State>,
-    /// The held lock on the data file itself (proposed 0047 §1). Declared
-    /// after `state`: closing this descriptor drops every POSIX record lock
-    /// the process holds on the file, so the connection must close first.
+    /// The held identity guard (proposed 0047 §1) — never the data file
+    /// itself. Declared after `state` so SQLite finishes closing and
+    /// checkpointing before ownership is released.
     _identity: File,
     /// The held `<data-file>.lock` (decision 0033 §2). Declared after
     /// `state` so the connection closes before ownership is released.
@@ -198,32 +209,182 @@ fn lock_error(path: &Path, locked: PathBuf, err: TryLockError) -> OpenError {
     }
 }
 
-/// Open `file` — the sidecar, or the data file itself — and take its
-/// exclusive lock: one nonblocking attempt, no truncation, no retry, no
-/// unlink. A file this creates is no wider than SQLite's own 0644 (subject
-/// to umask); an existing file keeps its mode and its bytes.
+/// The I/O refusal naming `path`, keeping its cause.
+fn io_at(path: &Path) -> impl FnOnce(std::io::Error) -> OpenError + '_ {
+    move |source| OpenError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+/// An unusable or unsafe filesystem entry: an I/O refusal naming it.
+fn refuse_unless(ok: bool, path: &Path, what: &str) -> Result<(), OpenError> {
+    if ok {
+        Ok(())
+    } else {
+        Err(io_at(path)(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            what.to_string(),
+        )))
+    }
+}
+
+/// Open the sidecar `file` and take its exclusive lock: one nonblocking
+/// attempt, no truncation, no retry, no unlink. A file this creates is no
+/// wider than SQLite's own 0644 (subject to umask); an existing file keeps
+/// its mode and its bytes.
 fn acquire(path: &Path, file: &Path) -> Result<File, OpenError> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o644);
-    let held = options.open(file).map_err(|source| OpenError::Io {
-        path: file.to_path_buf(),
-        source,
-    })?;
+    let held = options.open(file).map_err(io_at(file))?;
     held.try_lock()
         .map_err(|e| lock_error(path, file.to_path_buf(), e))?;
     Ok(held)
 }
 
+/// The fixed rendezvous root of the identity guards (proposed 0047 §1):
+/// never `TMPDIR`, `HOME`, the working directory or the data file's own
+/// directory, so every spelling of one file — a hard link in another
+/// directory included — meets at the same guard.
+#[cfg(unix)]
+const IDENTITY_ROOT: &str = "/tmp";
+
+/// The data file's identity, read without opening an existing file
+/// (proposed 0047 §1): closing any descriptor on the database drops every
+/// POSIX record lock this process's SQLite holds on it, so a refused
+/// in-process alias must never open and close one. A missing file is
+/// created exclusively — no wider than SQLite's 0644, subject to umask —
+/// and the created handle is closed before SQLite opens the file.
+#[cfg(unix)]
+fn identity_of(path: &Path) -> Result<std::fs::Metadata, OpenError> {
+    let found = match std::fs::metadata(path) {
+        Err(e) if e.kind() == ErrorKind::NotFound => create_identity(path),
+        found => found,
+    }
+    .map_err(io_at(path))?;
+    refuse_unless(found.is_file(), path, "the data file is not a regular file")?;
+    Ok(found)
+}
+
+/// Create the missing data file exclusively and read the created handle's
+/// identity; when a competing creator won, read the winner's metadata
+/// instead — never opening the file it created.
+#[cfg(unix)]
+fn create_identity(path: &Path) -> std::io::Result<std::fs::Metadata> {
+    match create_new(path, 0o644)? {
+        Some(created) => created.metadata(),
+        None => std::fs::metadata(path),
+    }
+}
+
+/// Create `path` exclusively, read/write, no wider than `mode` (subject to
+/// umask): the new file, or `None` when an entry already exists there — an
+/// exclusive create never follows a symlink and never truncates.
+#[cfg(unix)]
+fn create_new(path: &Path, mode: u32) -> std::io::Result<Option<File>> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
+    match options.open(path) {
+        Ok(created) => Ok(Some(created)),
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// The identity guard (proposed 0047 §1),
+/// `<root>/swarmail-db-locks-<owner uid>/<device>-<inode>.lock`, locked
+/// exclusively. The database and its `-wal`/`-shm`/`-journal` companions
+/// are never locked by us: on Darwin and the BSDs `flock` and SQLite's
+/// POSIX record locks share one lock table and conflict, so our own lock
+/// would refuse our own SQLite. Every hard link and symlink of a file
+/// shares its owner, device and inode, so every spelling names this one
+/// guard. The owner directory must be a private (0700) directory of the
+/// data file's owner, and the guard a private, singly linked regular file
+/// of that owner — checked before it is opened and again on the opened
+/// handle, so a planted symlink, hard link or FIFO never redirects it.
+#[cfg(unix)]
+fn identity_guard(root: &Path, path: &Path, data: &std::fs::Metadata) -> Result<File, OpenError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let owner = data.uid();
+    let dir = root.join(format!("swarmail-db-locks-{owner}"));
+    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Err(e) if e.kind() != ErrorKind::AlreadyExists => return Err(io_at(&dir)(e)),
+        _ => {}
+    }
+    let meta = std::fs::symlink_metadata(&dir).map_err(io_at(&dir))?;
+    refuse_unless(
+        private_dir(&meta, owner),
+        &dir,
+        "the identity-lock directory is not a private (0700) directory of the data file's owner",
+    )?;
+    let guard = dir.join(format!("{:x}-{:x}.lock", data.dev(), data.ino()));
+    let held = match create_new(&guard, 0o600).map_err(io_at(&guard))? {
+        Some(created) => created,
+        None => {
+            check_guard(
+                &std::fs::symlink_metadata(&guard).map_err(io_at(&guard))?,
+                owner,
+                &guard,
+            )?;
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&guard)
+                .map_err(io_at(&guard))?
+        }
+    };
+    check_guard(&held.metadata().map_err(io_at(&guard))?, owner, &guard)?;
+    held.try_lock()
+        .map_err(|e| lock_error(path, guard.clone(), e))?;
+    Ok(held)
+}
+
+/// A real directory of `owner`, owner-only (0700) — not a symlink.
+#[cfg(unix)]
+fn private_dir(meta: &std::fs::Metadata, owner: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    meta.is_dir() && meta.uid() == owner && meta.mode() & 0o777 == 0o700
+}
+
+/// A guard is a regular, singly linked file of `owner` with no group or
+/// other access — not a symlink, a FIFO or a hard link onto anything else.
+#[cfg(unix)]
+fn check_guard(meta: &std::fs::Metadata, owner: u32, guard: &Path) -> Result<(), OpenError> {
+    use std::os::unix::fs::MetadataExt;
+    refuse_unless(
+        meta.is_file() && meta.nlink() == 1 && meta.uid() == owner && meta.mode() & 0o077 == 0,
+        guard,
+        "the identity guard is not a private, singly linked file of the data file's owner",
+    )
+}
+
+/// Take the data file's identity guard under the fixed root.
+#[cfg(unix)]
+fn acquire_identity(path: &Path) -> Result<File, OpenError> {
+    identity_guard(Path::new(IDENTITY_ROOT), path, &identity_of(path)?)
+}
+
+/// No identity mechanism is proven here: refuse persistent startup rather
+/// than lock SQLite's own file or fall back to pathname-only ownership.
+#[cfg(not(unix))]
+fn acquire_identity(path: &Path) -> Result<File, OpenError> {
+    Err(io_at(path)(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "data-file identity locking is unsupported on this platform",
+    )))
+}
+
 impl Persist {
     /// Open (creating if needed) the data file and its schema — after
-    /// taking its sidecar lock (decision 0033 §2) and then the data file's
-    /// own lock (proposed 0047 §1), so a refused second server, by the same
+    /// taking its sidecar lock (decision 0033 §2) and then its identity
+    /// guard (proposed 0047 §1), so a refused second server, by the same
     /// path or through an alias, never runs SQLite on the database.
     pub fn open(path: &Path) -> Result<Self, OpenError> {
         let lock = acquire(path, &lock_path(path))?;
-        let identity = acquire(path, path)?;
+        let identity = acquire_identity(path)?;
         let conn = Connection::open(path)?;
         // WAL keeps per-mail commits cheap; FULL makes a commit mean "on
         // disk" — a `250` stays the truth even across a hard kill.
@@ -1126,21 +1287,25 @@ mod tests {
     }
 
     /// The refusal follows the file, not its name (proposed 0047 §1, issue
-    /// #129; red before: both aliases opened beside the owner): a symlink
-    /// and a hard link each get their own sidecar, so only the data file's
-    /// own lock can refuse them — in both acquisition orders, each refusal
-    /// named by the path the refused open was given.
+    /// #129; red before: both aliases opened beside the owner): a symlink,
+    /// a hard link and a hard link in another directory each get their own
+    /// sidecar, so only the identity guard can refuse them — in both
+    /// acquisition orders, each refusal named by the path the refused open
+    /// was given. A first owner is admitted with the links already present.
     #[cfg(unix)]
     #[test]
     fn data_file_aliases_refuse_in_both_orders() {
         let dir = tempfile::TempDir::with_prefix("swarmail-persist-alias-").unwrap();
+        let elsewhere = tempfile::TempDir::with_prefix("swarmail-persist-elsewhere-").unwrap();
         let real = dir.path().join("mail.db");
         let soft = dir.path().join("soft.db");
         let hard = dir.path().join("hard.db");
+        let far = elsewhere.path().join("far.db");
         drop(Persist::open(&real).unwrap());
         std::os::unix::fs::symlink(&real, &soft).unwrap();
         std::fs::hard_link(&real, &hard).unwrap();
-        for alias in [&soft, &hard] {
+        std::fs::hard_link(&real, &far).unwrap();
+        for alias in [&soft, &hard, &far] {
             for (first, second) in [(&real, alias), (alias, &real)] {
                 let owner = Persist::open(first).unwrap();
                 let err = Persist::open(second)
@@ -1161,18 +1326,29 @@ mod tests {
         }
     }
 
-    /// The data file's own lock comes before SQLite (proposed 0047 §1):
-    /// with only the file held, the refused open leaves it empty — no
-    /// schema, no `-wal` — and the failed SQLite open of a malformed file
-    /// releases the file's lock with the sidecar's.
+    /// The production identity guard of `path`, taken under the fixed root.
+    #[cfg(unix)]
+    fn hold_identity(path: &Path) -> Result<File, OpenError> {
+        identity_guard(
+            Path::new(IDENTITY_ROOT),
+            path,
+            &std::fs::metadata(path).unwrap(),
+        )
+    }
+
+    /// The identity guard comes before SQLite (proposed 0047 §1): with
+    /// only the guard held, the refused open leaves the file empty — no
+    /// schema, no `-wal` — and releases its sidecar; the failed SQLite open
+    /// of a malformed file releases the identity guard with the sidecar.
+    #[cfg(unix)]
     #[test]
     fn identity_guards_release_after_drop_and_failed_open() {
         let (_guard, path) = db_path("identity-first");
-        let holder = File::create(&path).unwrap();
-        holder.try_lock().unwrap();
+        File::create(&path).unwrap();
+        let holder = hold_identity(&path).unwrap();
         let err = Persist::open(&path)
             .err()
-            .expect("a held data file refuses the open");
+            .expect("a held identity guard refuses the open");
         assert_eq!(format!("{err:?}"), format!("InUse({path:?})"));
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "no schema");
         let mut wal = path.clone().into_os_string();
@@ -1183,20 +1359,265 @@ mod tests {
             .try_lock()
             .expect("the refused open released its sidecar");
         drop(holder);
-        drop(Persist::open(&path).expect("the released file admits"));
+        drop(Persist::open(&path).expect("the released guard admits"));
 
         let (_garbage_guard, garbage) = db_path("identity-garbage");
         std::fs::write(&garbage, b"definitely not sqlite").unwrap();
         assert!(Persist::open(&garbage).is_err());
-        File::open(&garbage)
-            .unwrap()
-            .try_lock()
-            .expect("the failed open released the data file's lock");
+        drop(hold_identity(&garbage).expect("the failed open released the identity guard"));
     }
 
-    /// The data file is opened without truncation, its bytes and mode
-    /// untouched (proposed 0047 §1); a data path that cannot be opened is
-    /// an I/O refusal naming it with its cause, not a SQLite error.
+    /// The macOS self-lock regression (proposed 0047 §1, #129 fix-up; red
+    /// on `794e919`, whose `flock` on the database itself refused this
+    /// probe): while a server owns a live database, no lock of ours sits on
+    /// the database or on SQLite's `-wal`/`-shm` — so on Darwin, where
+    /// `flock` and SQLite's record locks share one table, our guard cannot
+    /// refuse our own SQLite. Linux only: there SQLite's record locks never
+    /// meet `flock`, so a refused probe can only be ours; on Darwin SQLite's
+    /// legitimate locks would refuse it. WAL mode keeps no `-journal`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn server_guards_do_not_lock_sqlite_files() {
+        let (_guard, path) = db_path("no-self-lock");
+        let persist = Persist::open(&path).unwrap();
+        persist
+            .record_insert(&email("x", "box", "a@x.io"), &[], 1, 0)
+            .unwrap();
+        let companion = |suffix: &str| {
+            let mut name = path.clone().into_os_string();
+            name.push(suffix);
+            PathBuf::from(name)
+        };
+        for file in [path.clone(), companion("-wal"), companion("-shm")] {
+            let probe = File::open(&file).expect("the SQLite file exists");
+            let taken = probe.try_lock();
+            assert!(taken.is_ok(), "{file:?} is locked by the server: {taken:?}");
+        }
+        assert!(!companion("-journal").exists(), "WAL mode keeps no journal");
+        drop(persist);
+    }
+
+    /// A missing data file's creation race (proposed 0047 §1): when a
+    /// competing creator wins the exclusive create, the winner's identity
+    /// is read from metadata — its bytes and mode untouched, no truncation.
+    #[cfg(unix)]
+    #[test]
+    fn identity_creation_race_reads_the_winners_metadata() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let (_guard, path) = db_path("creation-race");
+        std::fs::write(&path, b"winner").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let found = create_identity(&path).expect("the winner's metadata");
+        assert_eq!(found.ino(), std::fs::metadata(&path).unwrap().ino());
+        assert_eq!(std::fs::read(&path).unwrap(), b"winner");
+        assert_eq!(found.mode() & 0o777, 0o600);
+
+        let (_fresh_guard, fresh) = db_path("creation-fresh");
+        let created = create_identity(&fresh).expect("an exclusive create");
+        assert!(created.is_file());
+        assert_eq!(created.len(), 0);
+
+        // Any failure but an existing entry is the creator's own error —
+        // unreachable through `Persist::open`, whose sidecar fails first.
+        let unreachable = fresh.with_extension("absent").join("mail.db");
+        assert_eq!(
+            create_identity(&unreachable)
+                .expect_err("a missing directory refuses")
+                .kind(),
+            ErrorKind::NotFound
+        );
+    }
+
+    /// A data path whose lookup fails for any reason but absence (a
+    /// symlink loop, whose sidecar still opens) is an I/O refusal naming
+    /// the supplied path with its cause — nothing is created through it.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_identity_is_an_io_refusal() {
+        let (_guard, path) = db_path("loop");
+        std::os::unix::fs::symlink(&path, &path).unwrap();
+        let err = Persist::open(&path)
+            .err()
+            .expect("an unreadable identity refuses the open");
+        assert_eq!(
+            std::error::Error::source(&err)
+                .and_then(|e| e.downcast_ref::<std::io::Error>())
+                .and_then(std::io::Error::raw_os_error),
+            Some(libc::ELOOP)
+        );
+        assert!(
+            format!("{err:?}").starts_with(&format!("Io {{ path: {path:?}, source: ")),
+            "{err:?}"
+        );
+    }
+
+    /// The rendezvous (proposed 0047 §1): the owner directory is created
+    /// private (0700), the guard private (0600) and keyed by device and
+    /// inode alone — so a symlink and a hard link in another directory
+    /// meet the held guard and are refused by their own names, a distinct
+    /// file is independent, and a released guard and directory are reused.
+    #[cfg(unix)]
+    #[test]
+    fn identity_guards_meet_by_file_identity_under_a_private_root() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let root = tempfile::TempDir::with_prefix("swarmail-identity-root-").unwrap();
+        let (_a, data) = db_path("rendezvous");
+        let (_b, other) = db_path("rendezvous-other");
+        let (_c, far_dir) = db_path("rendezvous-far");
+        std::fs::write(&data, b"").unwrap();
+        std::fs::write(&other, b"").unwrap();
+        std::fs::create_dir(&far_dir).unwrap();
+        let far = far_dir.join("far.db");
+        std::fs::hard_link(&data, &far).unwrap();
+        let soft = other.with_extension("soft");
+        std::os::unix::fs::symlink(&data, &soft).unwrap();
+        let meta = |p: &Path| std::fs::metadata(p).unwrap();
+        let held = identity_guard(root.path(), &data, &meta(&data)).unwrap();
+
+        let dir = root
+            .path()
+            .join(format!("swarmail-db-locks-{}", meta(&data).uid()));
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+        let guard = dir.join(format!(
+            "{:x}-{:x}.lock",
+            meta(&data).dev(),
+            meta(&data).ino()
+        ));
+        assert_eq!(
+            std::fs::metadata(&guard).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        for alias in [&far, &soft] {
+            let err = identity_guard(root.path(), alias, &meta(alias))
+                .expect_err("an alias meets the held guard");
+            assert_eq!(format!("{err:?}"), format!("InUse({alias:?})"));
+        }
+        let independent = identity_guard(root.path(), &other, &meta(&other))
+            .expect("a distinct file has its own guard");
+        drop(held);
+        drop(identity_guard(root.path(), &far, &meta(&far)).expect("a released guard is reused"));
+        drop(independent);
+    }
+
+    /// The owner directory fails closed (proposed 0047 §1): a missing root,
+    /// a regular file, a symlink to a private directory, a directory open
+    /// to others and one of another owner are each an I/O refusal naming
+    /// the directory with its cause — never repaired, never replaced.
+    #[cfg(unix)]
+    #[test]
+    fn an_unsafe_identity_directory_is_an_io_refusal() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let (_g, data) = db_path("unsafe-dir");
+        std::fs::write(&data, b"").unwrap();
+        let meta = std::fs::metadata(&data).unwrap();
+        let name = format!("swarmail-db-locks-{}", meta.uid());
+        let refused = |root: &Path| {
+            let dir = root.join(&name);
+            let err = identity_guard(root, &data, &meta).expect_err("an unsafe directory refuses");
+            assert!(
+                format!("{err:?}").starts_with(&format!("Io {{ path: {dir:?}, source: ")),
+                "{err:?}"
+            );
+            let cause = std::error::Error::source(&err).unwrap().to_string();
+            assert_eq!(err.to_string(), format!("{}: {cause}", dir.display()));
+        };
+
+        let missing = tempfile::TempDir::with_prefix("swarmail-identity-missing-").unwrap();
+        refused(&missing.path().join("absent"));
+
+        let file = tempfile::TempDir::with_prefix("swarmail-identity-file-").unwrap();
+        std::fs::write(file.path().join(&name), b"").unwrap();
+        refused(file.path());
+
+        let linked = tempfile::TempDir::with_prefix("swarmail-identity-link-").unwrap();
+        let real = linked.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink(&real, linked.path().join(&name)).unwrap();
+        refused(linked.path());
+
+        let open = tempfile::TempDir::with_prefix("swarmail-identity-open-").unwrap();
+        std::fs::create_dir(open.path().join(&name)).unwrap();
+        std::fs::set_permissions(
+            open.path().join(&name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        refused(open.path());
+        assert_eq!(
+            std::fs::metadata(open.path().join(&name)).unwrap().mode() & 0o777,
+            0o755,
+            "an unsafe directory is never repaired"
+        );
+
+        let private = std::fs::metadata(&real).unwrap();
+        assert!(private_dir(&private, private.uid()));
+        assert!(
+            !private_dir(&private, private.uid() + 1),
+            "another owner's directory"
+        );
+    }
+
+    /// The guard entry fails closed before it is opened (proposed 0047
+    /// §1): a symlink (planted onto the database itself), a directory, a
+    /// hard-linked guard and one open to others are each an I/O refusal
+    /// naming the guard; the planted symlink never lets us lock the
+    /// database. One of another owner is refused too.
+    #[cfg(unix)]
+    #[test]
+    fn an_unsafe_identity_guard_is_an_io_refusal() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let (_g, data) = db_path("unsafe-guard");
+        std::fs::write(&data, b"").unwrap();
+        let meta = std::fs::metadata(&data).unwrap();
+        let name = format!("swarmail-db-locks-{}", meta.uid());
+        let entry = format!("{:x}-{:x}.lock", meta.dev(), meta.ino());
+        let planted = |plant: &dyn Fn(&Path)| {
+            let root = tempfile::TempDir::with_prefix("swarmail-identity-guard-").unwrap();
+            let dir = root.path().join(&name);
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let guard = dir.join(&entry);
+            plant(&guard);
+            let err =
+                identity_guard(root.path(), &data, &meta).expect_err("an unsafe guard refuses");
+            assert!(
+                format!("{err:?}").starts_with(&format!("Io {{ path: {guard:?}, source: ")),
+                "{err:?}"
+            );
+        };
+        planted(&|guard| std::os::unix::fs::symlink(&data, guard).unwrap());
+        File::open(&data)
+            .unwrap()
+            .try_lock()
+            .expect("the planted symlink never locked the database");
+        planted(&|guard| std::fs::create_dir(guard).unwrap());
+        planted(&|guard| {
+            std::fs::write(guard, b"").unwrap();
+            std::fs::set_permissions(guard, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::fs::hard_link(guard, guard.with_extension("twin")).unwrap();
+        });
+        planted(&|guard| {
+            std::fs::write(guard, b"").unwrap();
+            std::fs::set_permissions(guard, std::fs::Permissions::from_mode(0o640)).unwrap();
+        });
+
+        let guard = data.with_extension("guard");
+        std::fs::write(&guard, b"").unwrap();
+        std::fs::set_permissions(&guard, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let own = std::fs::metadata(&guard).unwrap();
+        assert!(check_guard(&own, own.uid(), &guard).is_ok());
+        assert!(
+            check_guard(&own, own.uid() + 1, &guard).is_err(),
+            "another owner's guard"
+        );
+    }
+
+    /// The data file is never opened to be identified (proposed 0047 §1):
+    /// an existing file's bytes and mode are untouched; a data path that is
+    /// not a regular file is an I/O refusal naming it with its cause, not
+    /// a SQLite error.
     #[cfg(unix)]
     #[test]
     fn identity_open_preserves_contents_and_permissions() {
@@ -1229,10 +1650,11 @@ mod tests {
         assert_eq!(err.to_string(), format!("{}: {cause}", dir_path.display()));
     }
 
-    /// The data file's lock is `flock`, which SQLite's POSIX record locks
-    /// never see (proposed 0047 §1): a raw connection beside the owner
-    /// still takes `BEGIN IMMEDIATE` and commits, the owner then commits
-    /// its own write, and the owner's busy bound is the dependency's.
+    /// Our guards lock no SQLite file (proposed 0047 §1): a raw connection
+    /// beside the owner still takes `BEGIN IMMEDIATE` and commits, the
+    /// owner then commits its own write, and the owner's busy bound is the
+    /// dependency's. Green on Linux before the macOS repair too — the
+    /// Linux red is `server_guards_do_not_lock_sqlite_files`.
     #[test]
     fn identity_lock_preserves_raw_sqlite_and_busy_bound() {
         let (_guard, path) = db_path("identity-raw");

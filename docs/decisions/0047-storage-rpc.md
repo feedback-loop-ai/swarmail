@@ -136,6 +136,36 @@ self-lock regression was introduced later. CI `test (macos-latest)` after
 the operator's assistant pushes is the final Darwin proof; it is pending
 at design time.
 
+**Why the repair holds on Darwin (reasoning, not a Darwin run).** Darwin's
+advisory locks are kept per vnode; flock and fcntl requests on the *same*
+vnode meet in one list and conflict. Locks on different vnodes never
+interact. After the repair our only flocks are on two files SQLite never
+opens — `<path>.lock` and the identity guard under
+`/tmp/swarmail-db-locks-<uid>/` — and SQLite's record locks fall on the
+database and `-shm` alone, so no request of ours can share a vnode with a
+request of SQLite's. A planted symlink or hard link cannot bring the
+database's vnode back under our flock: the guard must be a singly linked
+regular file (not a symlink) in a private directory, checked before and
+after open. The existing-file identity read is a `stat`, not an open, so
+no descriptor of ours on the database can be closed under SQLite's POSIX
+locks either — the same per-process close rule holds on Darwin and Linux.
+
+**Implementation receipt (2026-10-18, Linux).** The journal case is an
+assertion that WAL mode left no `-journal`, not a conditional probe. The
+separate-process witness is `refused_aliases_preserve_the_owners_sqlite_locks`
+in `tests/sqlite_locks.rs`, alone in its binary (a child forked beside a
+sibling test briefly shares that test's flocked descriptors, which made an
+in-crate placement flaky): with a live owner and a raw writer of the same
+process in a write transaction, refused hard-link and symlink opens must
+leave a zero-timeout raw child refused both a write and a switch out of WAL
+(which needs the database file's exclusive lock); after the commit the
+child writes, and the owner's shared lock still refuses the WAL switch. It
+uses only the public `Persist` API. Against
+`794e919`'s data-file lock both new tests are red on Linux — the database
+probe reports `WouldBlock`, and the child's WAL switch succeeds beside a live
+owner because the refused alias closed a descriptor on the database — and
+both are green with the identity sidecar.
+
 ### 2. Give overflow an impossible inbox name
 
 Use exactly one LF character as the overflow key. It is nonempty and refused

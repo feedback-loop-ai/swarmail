@@ -4,6 +4,12 @@ Implements [spec.md](spec.md) and proposed
 [0047](../../docs/decisions/0047-storage-rpc.md). This is the design handoff,
 not an implementation or verification receipt.
 
+> **Superseded for #129 (2026-10-18):** step 2's data-file `File::try_lock`
+> is replaced by [macos-identity-lock](../macos-identity-lock/plan.md) and
+> amended 0047 §1 — no lock of ours on the database or its companions —
+> and step 1's branch creation is history: the branch exists and later work
+> appends to it. The remaining steps stand.
+
 ## Technical context
 
 One Rust crate using std file locks, rusqlite, Tokio and existing HTTP/JSON

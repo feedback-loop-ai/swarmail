@@ -90,7 +90,9 @@ decision index name the actual state and retain this record as proposed.
 ## Pointer — 2026-10-18 (proposed 0047)
 
 [0047](0047-storage-rpc.md) §1, also **proposed**, updates §§1/5 here (issue #129): the
-lock is held on the data file's identity as well as on the sidecar, so §5's "stable common
+lock is held on the data file's identity as well as on the sidecar — after the macOS
+fix-up of the same day, an identity sidecar named by owner, device and inode, never a
+lock on the database itself — so §5's "stable common
 pathnames" limit no longer covers symlink and hard-link aliases between current servers.
 The residuals that remain — old sidecar-only binaries through other aliases, writers that
 take no lock, live namespace replacement, single-file bind mounts, remote filesystems and

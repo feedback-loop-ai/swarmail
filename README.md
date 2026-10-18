@@ -841,17 +841,30 @@ not repair a file two servers already wrote together before this lock
 existed (proposed [0042](docs/decisions/0042-single-writer-lock.md)).
 
 The refusal follows the *file*, not its name: besides the sidecar, the
-server holds an exclusive lock on the data file itself, so a second server
-reaching it through a symlink or a hard link is refused the same way
-(proposed [0047](docs/decisions/0047-storage-rpc.md), issue #129). A data
+server holds an identity guard,
+`/tmp/swarmail-db-locks-<owner uid>/<device>-<inode>.lock`, named by the
+data file's owner, device and inode — which every symlink and hard link of
+the file shares, in any directory — so a second server reaching it through
+an alias is refused the same way (proposed
+[0047](docs/decisions/0047-storage-rpc.md), issue #129). The root is always
+`/tmp`, whatever `TMPDIR` says. The server never locks the SQLite database
+or its `-wal`/`-shm` files itself: on macOS and the BSDs such a lock
+conflicts with SQLite's own. The owner directory must be private (0700) to
+the data file's owner and is never repaired; an unsafe directory or guard
+refuses startup. Guard files are inert after the server stops and are never
+deleted by it; exclude `/tmp/swarmail-db-locks-*` from age-based `/tmp`
+cleanup while any server runs, and clear it only when none does. A data
 file the server creates is no wider than SQLite's own 0644 (subject to
 umask); an existing one keeps its mode and bytes. The guarantee covers
-cooperating current servers on a local filesystem with working `flock`.
-Still **not** refused: an older, sidecar-only swarmail reaching the file
-through a different alias (the same path still collides on the sidecar); a
-writer that takes no lock at all; replacing the file or its directory under
-a live server; single-file bind mounts (unproven); and network
-filesystems, whose lock semantics vary. Keep one configured path across
+cooperating current servers running as the data file's owner, on a local
+filesystem with working `flock`, sharing one `/tmp` (separate containers
+with private `/tmp` mounts do not share guards; another user's server may be
+refused with an I/O error rather than "in use"). Still **not** refused: an
+older, sidecar-only swarmail reaching the file through a different alias
+(the same path still collides on the sidecar); a writer that takes no lock
+at all; replacing the file or its directory under a live server; single-file
+bind mounts (unproven); and network filesystems, whose lock semantics vary.
+Keep one configured path across
 restarts — after a crash, SQLite looks for the `-wal` file beside the name
 it was given, so restarting through another hard link's name would miss
 the crashed server's last commits.

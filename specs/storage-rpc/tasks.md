@@ -4,6 +4,10 @@ These tasks are uncompleted implementation work. See [spec.md](spec.md) for
 AC1–AC10 and [plan.md](plan.md) for placement, sequencing and gate rules.
 Names below are planned tests; final commit bodies must use actual names.
 
+> **Superseded for #129 (2026-10-18):** task 2's data-file guard is replaced
+> by the identity sidecar of [macos-identity-lock](../macos-identity-lock/tasks.md)
+> (amended 0047 §1); task 1's branch creation is done. Other tasks stand.
+
 - [ ] 1. Establish `epic120-storage-rpc` from current fetched main, verify
   `2a325c9` ancestry and decision numbering, and sign exactly the four design
   artifacts. **Proof:** ancestry check, artifact validator, commit signature
