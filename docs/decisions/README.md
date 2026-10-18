@@ -46,6 +46,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0038](0038-store-memory-and-timestamps.md) | State the store's memory exposure and parse-start timestamps (amends 0021, 0026 §3) | proposed — awaiting the operator | (Run 15: issue #87) |
 | [0039](0039-stdio-concurrency.md) | Concurrent stdio lines preserve batch replies and recover from bad input (amends 0029 §4) | proposed — awaiting the operator | (Run 16: issues #72, #90) |
 | [0040](0040-extraction-fidelity.md) | Extraction fidelity: genuine body candidates, tokenizer-read codes, links cut after one full decode (amends 0031) | proposed — awaiting the operator | (Run 17: issues #74, #93, #94) |
+| [0041](0041-webhook-boundary.md) | Webhook boundary: header-valid secrets, direct delivery, redacted URL credentials, shared payload bytes and an observable final ledger (amends 0029 §5) | proposed — awaiting the operator | (Run 18: issues #75, #76, #97, #98) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

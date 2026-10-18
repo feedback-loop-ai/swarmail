@@ -108,7 +108,9 @@ posture weaker). There is no auth on any surface, by design: the loopback
 posture is the boundary, and a server with secrets would need auth —
 this one holds test mail, and its knobs are local (`set-chaos`
 included). Webhooks dial out only to addresses an operator explicitly
-configures — **and that is the whole boundary**: an arbitrary or
+configures — directly: environment proxies (`HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY`) are ignored and redirects are never followed (decision
+0041 §2) — **and that is the whole boundary**: an arbitrary or
 internal address is accepted at registration and dialed from this
 process, so on a network with sensitive internal services the operator
 should spell loopback or otherwise-sanctioned targets (no allowlist, no
@@ -533,11 +535,17 @@ A target is validated when it is PUT, not at delivery: the URL must parse
 with an `http`/`https` scheme and a host to dial (`localhost:9000` is read
 as *scheme* `localhost` and refused — the misconfiguration that would
 otherwise surface only at delivery), the `ca_pem` must load through the
-delivery TLS stack itself, and the `secret` must be a single-line header
-value of at most 4096 octets. A refusal is a 400 naming the defect and
-applies nothing. `GET /api/v1/webhooks` redacts the secret (PUT is the
-only writer; an operator retains their own payload) and returns everything
-else verbatim.
+delivery TLS stack itself, and the `secret` must be an HTTP header value
+the delivery client accepts — no control characters but tab, no leading
+or trailing space or tab — of at most 4096 octets. A refusal is a 400
+naming the defect (never echoing the secret) and applies nothing: a list
+with one bad target leaves the previous list in place. `GET
+/api/v1/webhooks` and the PUT echo redact the secret and strip URL
+userinfo (`http://user:pw@host/x` is shown as `http://host/x`; the
+delivery still sends the credentials as Basic authorization), and every
+log line shows the URL the same way. Query strings and fragments are shown
+as configured — keep credentials out of them. PUT is the only writer; an
+operator retains their own payload.
 
 Delivery is best-effort with the loss made observable — there is no durable
 outbox: a mail whose fan-out cannot fire is never re-fired after a restart.
@@ -546,7 +554,11 @@ At most 32 deliveries are in flight **per target**
 normalized URL): a stalled sink holds only its own target's slots, so it
 cannot cause drops for a healthy one. A mail whose target's slots are all
 taken has that fan-out refused at the bound, counted once in
-`swarmail_webhook_dropped_total`, and never retried. A target that accepts
+`swarmail_webhook_dropped_total`, and never retried; the first refusal
+per target warns, and further refusals within 60 s of that warning are
+counted without a line. A mail's payload is serialized once and shared by
+every target and retry, so extra targets cost references, not copies of
+the mail. A target that accepts
 and never answers wedges its delivery for the dispatcher's whole budget —
 about 22.1 s (four attempts under the 5 s POST timeout plus the backoff) —
 so a stalled slot holds the bound for that long, then the delivery is
@@ -556,7 +568,11 @@ delivery error (no per-attempt spam). The five ledger counters —
 `swarmail_webhook_{delivered,dropped,lagged,exhausted,aborted}_total` — are
 cumulative since process start (they reset on restart, they are not
 persisted), and a shutdown counts its backlog of undelivered notifications
-in `swarmail_webhook_aborted_total` instead of dropping them silently.
+as aborted instead of dropping them silently. That count is made after the
+HTTP plane has stopped, so `/metrics` cannot show it: on a graceful stop
+the dispatcher logs one default-level `webhook dispatcher stopped` line
+with all five final totals (`delivered= dropped= lagged= exhausted=
+aborted=`) on stdout.
 
 ### Chaos — break SMTP on purpose
 

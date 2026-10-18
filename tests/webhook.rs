@@ -1553,7 +1553,17 @@ async fn a_target_that_cannot_be_delivered_is_refused_at_put_and_applies_nothing
         );
     }
 
-    for secret in ["a\r\nb", "a\0b", "x".repeat(4097).as_str()] {
+    // The header parser's domain (issue #75, decision 0041 §1): U+0001 and
+    // DEL were accepted here and then failed every delivery locally.
+    for secret in [
+        "a\r\nb",
+        "a\0b",
+        "bad\u{1}secret",
+        "bad\u{7f}secret",
+        " padded",
+        "padded\t",
+        "x".repeat(4097).as_str(),
+    ] {
         let body = serde_json::json!([
             { "url": "http://127.0.0.1:9/hook", "secret": secret }
         ])
@@ -1579,4 +1589,178 @@ async fn a_target_that_cannot_be_delivered_is_refused_at_put_and_applies_nothing
     )
     .await;
     assert_eq!(st, 200, "{resp}");
+}
+
+// ---------- decision 0041: the webhook boundary ----------
+
+/// A refused list replaces nothing (issue #75): with a configuration in
+/// place, a PUT whose second target carries a U+0001 secret is a 400 that
+/// names the secret without echoing it, and GET still returns exactly the
+/// prior list.
+#[tokio::test]
+async fn a_list_with_one_unheaderable_secret_leaves_the_prior_config_whole() {
+    let srv = start().await;
+    let prior = r#"[{"url": "http://127.0.0.1:9/prior", "inbox": "kept", "secret": "s"}]"#;
+    let (st, before) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(prior)).await;
+    assert_eq!(st, 200, "{before}");
+
+    let body = serde_json::json!([
+        { "url": "http://127.0.0.1:9/fine" },
+        { "url": "http://127.0.0.1:9/bad", "secret": "bad\u{1}secret" },
+    ])
+    .to_string();
+    let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+    assert_eq!(st, 400, "{resp}");
+    let message = resp["error"].as_str().expect("a JSON refusal body");
+    assert!(
+        message.starts_with("webhook target 1: webhook secret"),
+        "{resp}"
+    );
+    assert!(
+        !message.contains("bad"),
+        "the refusal never echoes the secret: {resp}"
+    );
+
+    let (_, after) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(after, before, "the prior list is untouched");
+}
+
+/// URL credentials are delivered, never echoed (issue #98, decision 0041
+/// §3): a target spelled `user:hunter2@` comes back from PUT and GET with
+/// its userinfo removed — query kept — while the sink receives the Basic
+/// authorization reqwest derives from it, and the accepted secret's exact
+/// bytes (internal tab, UTF-8) in its header (issue #75).
+#[tokio::test]
+async fn url_credentials_reach_the_sink_and_never_the_echo() {
+    let srv = start().await;
+    let (addr, rx, _, _hits) = http_sink(204, SINK_LIFETIME).await;
+    let body = serde_json::json!([{
+        "url": format!("http://user:hunter2@{addr}/hook?k=v"),
+        "secret": "a\tb é",
+    }])
+    .to_string();
+    let (st, echo) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+    assert_eq!(st, 200, "{echo}");
+    let (_, listed) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    for shown in [&echo, &listed] {
+        assert_eq!(
+            shown[0]["url"],
+            format!("http://{addr}/hook?k=v"),
+            "{shown}"
+        );
+        assert_eq!(shown[0]["secret"], serde_json::Value::Null, "{shown}");
+        assert!(!shown.to_string().contains("hunter2"), "{shown}");
+    }
+
+    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "basic", "x")
+        .await
+        .unwrap();
+    let head = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .expect("webhook delivery timed out")
+        .unwrap();
+    let lower = head.to_ascii_lowercase();
+    // base64("user:hunter2")
+    assert!(
+        lower.contains("authorization: basic dxnlcjpodw50zxiy"),
+        "{head}"
+    );
+    assert!(lower.contains("x-swarmail-secret: a\tb é\r\n"), "{head}");
+    assert!(head.starts_with("POST /hook?k=v HTTP/1.1"), "{head}");
+}
+
+/// The final shutdown sweep survives a lagged ring and accounts the backlog
+/// it drains (issue #76): a broadcast receiver's first read can be
+/// `Lagged(n)` with retained mail still behind it, and the old
+/// `while let Ok(...)` loop exited on that error — recording neither the
+/// lag nor the retained notifications' aborts. Driven on the unmodified
+/// public APIs, current-thread, the way the review reproduced it: no
+/// yield to the dispatcher, more inserts than the ring holds, then a
+/// shutdown. The task must finish, and the ledger must say what happened.
+#[tokio::test(flavor = "current_thread")]
+async fn the_final_sweep_survives_a_lagged_ring_and_accounts_the_backlog() {
+    use swarmail::store::Store;
+    use swarmail::webhook::{WebhookTarget, Webhooks, spawn_dispatcher};
+    // A subscriber, so the dispatcher's final default-level ledger line
+    // actually executes under coverage — a disabled tracing callsite never
+    // reaches its format machinery.
+    let _subscriber = {
+        use tracing_subscriber::util::SubscriberInitExt;
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .finish()
+            .set_default()
+    };
+
+    let store = Arc::new(Store::new(0));
+    let webhooks = Arc::new(Webhooks::default());
+    webhooks.set(vec![WebhookTarget {
+        inbox: Some("backlog".to_string()),
+        url: "http://127.0.0.1:1/hook".to_string(),
+        secret: Some("s3cret".to_string()),
+        ca_pem: None,
+    }]);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let (drained_tx, drained_rx) = tokio::sync::watch::channel(false);
+    let mut tasks = tokio::task::JoinSet::new();
+    spawn_dispatcher(
+        &store,
+        &webhooks,
+        shutdown_rx.clone(),
+        drained_rx.clone(),
+        &mut tasks,
+    );
+
+    // More unique mails than the 8192-slot broadcast ring, none yielding
+    // to the dispatcher in between: the receiver must wake lagged.
+    for i in 0..8200u64 {
+        let email = swarmail::model::Email {
+            id: format!("lag-{i:05}"),
+            inbox: "backlog".to_string(),
+            from: None,
+            to: vec![],
+            cc: vec![],
+            recipients: vec![],
+            subject: Some(format!("lag {i}")),
+            received_at: "2026-10-18T00:00:00Z".to_string(),
+            received_ms: 0,
+            size: 1,
+            text: Some("x".to_string()),
+            html: None,
+            links: vec![],
+            codes: vec![],
+            message_id: None,
+            in_reply_to: None,
+            references: vec![],
+            raw: b"x".to_vec(),
+        };
+        store.insert(email).expect("the insert lands");
+    }
+
+    shutdown_tx.send_replace(true);
+    drained_tx.send_replace(true);
+    let mut saw_lag = false;
+    while let Some(done) = tasks.join_next().await {
+        done.expect("the dispatcher task ends cleanly, never hung on the backlog");
+        saw_lag = true;
+    }
+    assert!(saw_lag, "the dispatcher task was spawned and awaited");
+
+    let ledger = webhooks.snapshot();
+    // The ring is 8192 and the dispatcher never ran: everything it saw was
+    // lag or an abort of the retained backlog — and the sweep walked BOTH
+    // instead of exiting on the first Lagged(n).
+    assert_eq!(ledger.delivered, 0, "a port-1 target delivers nothing");
+    assert!(
+        ledger.lagged >= 1,
+        "the lag is recorded, not swallowed: {:?}",
+        ledger
+    );
+    assert_eq!(
+        ledger.aborted,
+        8200u64 - ledger.lagged,
+        "every retained notification is accounted: {:?}",
+        ledger
+    );
 }

@@ -1161,9 +1161,10 @@ async fn seed_inbox(
 
 // ---------- webhooks ----------
 
-/// GET returns the configured targets with the **secret redacted**
-/// (decision 0029 §5): an echoed secret is the one irreversible leak in the
-/// batch — a certificate is public material and `ca_pem` stays, it is the
+/// GET returns the configured targets **redacted** (decision 0029 §5, as
+/// amended by 0041 §3): the secret is withheld and the URL loses its
+/// userinfo — an echoed credential is the one irreversible leak in the
+/// batch. A certificate is public material and `ca_pem` stays, it is the
 /// diagnostic. The round-trip loss is deliberate: PUT is the only writer,
 /// and the operator retains their own payload.
 async fn get_webhooks(State(state): State<AppState>) -> Json<Vec<WebhookTarget>> {
@@ -1171,8 +1172,8 @@ async fn get_webhooks(State(state): State<AppState>) -> Json<Vec<WebhookTarget>>
         state
             .webhooks
             .current()
-            .into_iter()
-            .map(|t| WebhookTarget { secret: None, ..t })
+            .iter()
+            .map(WebhookTarget::redacted)
             .collect(),
     )
 }
@@ -1180,8 +1181,9 @@ async fn get_webhooks(State(state): State<AppState>) -> Json<Vec<WebhookTarget>>
 /// PUT validates every supplied value before any effect (decision 0029 §5):
 /// the URL must parse with an `http`/`https` scheme and a host, the
 /// `ca_pem` must load through the delivery TLS stack itself, and the
-/// `secret` must be a single-line header value of at most 4096 octets. A
-/// target that cannot be delivered is a 400 naming the defect — never a
+/// `secret` must be an HTTP header value of at most 4096 octets with no
+/// leading or trailing space or tab (decision 0041 §1). A target that
+/// cannot be delivered is a 400 naming the defect — never a
 /// misconfiguration discovered at delivery time — and nothing is applied.
 async fn set_webhooks(
     State(state): State<AppState>,
@@ -1193,14 +1195,14 @@ async fn set_webhooks(
             .map_err(|e| bad_request(format!("webhook target {i}: {e}")))?;
     }
     state.webhooks.set(targets);
+    // The echoed configuration is redacted the same way as GET: the caller
+    // wrote the credentials, but a response body is still a log.
     Ok(Json(
-        // The echoed configuration is redacted the same way as GET: the
-        // caller wrote the secret, but a response body is still a log.
         state
             .webhooks
             .current()
-            .into_iter()
-            .map(|t| WebhookTarget { secret: None, ..t })
+            .iter()
+            .map(WebhookTarget::redacted)
             .collect(),
     ))
 }

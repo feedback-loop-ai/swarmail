@@ -937,11 +937,13 @@ async fn an_exhausted_delivery_names_its_target_and_cause_in_stdout() {
 
     // A port nothing listens on: every attempt is refused at once, so the
     // four-attempt budget burns in ~2.1 s of backoff, not 22 s of timeouts.
+    // The URL carries credentials: the line names the target without them
+    // (issue #98, decision 0041 §3).
     let (st, resp) = common::http_json(
         serve.http_addr,
         "PUT",
         "/api/v1/webhooks",
-        Some(r#"[{"url": "http://127.0.0.1:1/hook"}]"#),
+        Some(r#"[{"url": "http://user:hunter2@127.0.0.1:1/hook"}]"#),
     )
     .await;
     assert_eq!(st, 200, "{resp}");
@@ -971,10 +973,239 @@ async fn an_exhausted_delivery_names_its_target_and_cause_in_stdout() {
         line.contains("error="),
         "the warn carries the cause: {line:?}"
     );
+    assert!(
+        !line.contains("hunter2") && !line.contains("user@"),
+        "the warn carries no URL credentials: {line:?}"
+    );
 
     let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
+}
+
+// ---------- the webhook boundary (decision 0041) ----------
+
+/// A sink that accepts one delivery: it reads the request whole, answers
+/// `reply` (or, with `None`, never answers and holds the socket open), and
+/// hands the request text over the channel as soon as it is read.
+async fn one_request_sink(
+    reply: Option<&'static str>,
+) -> (SocketAddr, tokio::sync::oneshot::Receiver<String>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let request = loop {
+            let n = stream.read(&mut chunk).await.unwrap_or(0);
+            buf.extend_from_slice(&chunk[..n]);
+            let text = String::from_utf8_lossy(&buf).into_owned();
+            if n == 0 || request_complete(&text) {
+                break text;
+            }
+        };
+        let _ = tx.send(request);
+        match reply {
+            Some(reply) => {
+                let _ = stream.write_all(reply.as_bytes()).await;
+            }
+            // Held open until the test process ends: the delivery stays in
+            // flight for as long as the server lives.
+            None => std::mem::forget(stream),
+        }
+    });
+    (addr, rx)
+}
+
+/// A request is complete once its head is in and its Content-Length body
+/// has followed it.
+fn request_complete(text: &str) -> bool {
+    text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+        let len = head
+            .lines()
+            .find_map(|line| {
+                let line = line.to_ascii_lowercase();
+                line.strip_prefix("content-length:")?
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+            })
+            .unwrap_or(0);
+        body.len() >= len
+    })
+}
+
+/// A recording proxy: every connection is counted and answered 502, so a
+/// client that wrongly routes through it sees a real reply (and retries)
+/// rather than a hang. The count is the evidence.
+async fn recording_proxy() -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&hits);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut chunk = [0u8; 4096];
+                let _ = stream.read(&mut chunk).await;
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 502 Proxy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+            });
+        }
+    });
+    (addr, hits)
+}
+
+/// A self-signed CA's PEM: a `ca_pem` puts the delivery on the per-root
+/// client, the other client path.
+fn a_ca_pem() -> String {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+    params.self_signed(&key).unwrap().pem()
+}
+
+/// Issue #97: with every proxy variable pointed at a recording proxy — in
+/// the child's environment only, both spellings, no bypass list — the
+/// delivery still reaches its target directly, secret and body included,
+/// and the proxy sees nothing, before or after the delivery. A fresh child
+/// per client path (`ca_pem` absent or present), so neither cached client
+/// was built under another test's environment.
+async fn a_delivery_dials_its_target_and_never_the_proxy(ca_pem: Option<String>) {
+    let (proxy, proxy_hits) = recording_proxy().await;
+    let (target, request) =
+        one_request_sink(Some("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")).await;
+    let mut cmd = serve_command();
+    let proxy_url = format!("http://{proxy}");
+    for var in [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        cmd.env(var, &proxy_url);
+    }
+    cmd.env_remove("NO_PROXY").env_remove("no_proxy");
+    let mut serve = spawn_serve(cmd).await;
+    wait_http_up(serve.http_addr).await;
+
+    let targets = serde_json::json!([{
+        "url": format!("http://{target}/direct"),
+        "secret": "s3cret",
+        "ca_pem": ca_pem,
+    }])
+    .to_string();
+    let (st, resp) =
+        common::http_json(serve.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200, "{resp}");
+    common::smtp_send(serve.smtp_addr, None, "f@x.io", "r@x.io", "direct", "x")
+        .await
+        .expect("the mail is accepted");
+
+    let seen = tokio::time::timeout(Duration::from_secs(15), request)
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "the target never received the delivery; the proxy saw {} connection(s)",
+                proxy_hits.load(std::sync::atomic::Ordering::SeqCst)
+            )
+        })
+        .expect("the sink read a request");
+    assert!(seen.starts_with("POST /direct HTTP/1.1"), "{seen}");
+    assert!(
+        seen.to_ascii_lowercase()
+            .contains("x-swarmail-secret: s3cret"),
+        "{seen}"
+    );
+    assert!(seen.contains("\"event\":\"received\""), "{seen}");
+
+    let status = signal_and_wait(&mut serve.child, libc::SIGTERM, Duration::from_secs(30)).await;
+    serve.reaped = true;
+    assert!(status.success(), "SIGTERM exit: {status:?}");
+    assert_eq!(
+        proxy_hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the proxy saw nothing"
+    );
+}
+
+#[tokio::test]
+async fn the_default_client_ignores_proxy_environment() {
+    a_delivery_dials_its_target_and_never_the_proxy(None).await;
+}
+
+#[tokio::test]
+async fn the_ca_pem_client_ignores_proxy_environment() {
+    a_delivery_dials_its_target_and_never_the_proxy(Some(a_ca_pem())).await;
+}
+
+/// Issue #98's shutdown count, visible from the shipped binary: with one
+/// delivery in flight against a sink that read it and never answers, a
+/// SIGTERM ends the process cleanly and its stdout — at the default level,
+/// no `RUST_LOG` — carries exactly one `webhook dispatcher stopped` line
+/// with all five totals: the in-flight delivery aborted, nothing else.
+/// Ordered by the sink's read and the process's EOF, never a sleep.
+#[tokio::test]
+async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
+    let (stalled, request) = one_request_sink(None).await;
+    let mut cmd = serve_command();
+    cmd.env_remove("RUST_LOG");
+    let mut serve = spawn_serve(cmd).await;
+    wait_http_up(serve.http_addr).await;
+
+    let targets = format!(r#"[{{"url": "http://user:hunter2@{stalled}/hook"}}]"#);
+    let (st, resp) =
+        common::http_json(serve.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200, "{resp}");
+    common::smtp_send(serve.smtp_addr, None, "f@x.io", "r@x.io", "in flight", "x")
+        .await
+        .expect("the mail is accepted");
+    tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("the delivery reached the stalled sink")
+        .expect("the sink read a request");
+
+    unsafe {
+        libc::kill(serve.child.id().expect("a live pid") as i32, libc::SIGTERM);
+    }
+    let mut rest = String::new();
+    let mut stdout = serve.stdout.take().expect("piped stdout");
+    tokio::time::timeout(Duration::from_secs(30), stdout.read_to_string(&mut rest))
+        .await
+        .expect("the server's stdout reaches EOF")
+        .expect("stdout reads");
+    let status = tokio::time::timeout(Duration::from_secs(30), serve.child.wait())
+        .await
+        .expect("the server exits")
+        .expect("the server is reaped");
+    serve.reaped = true;
+    assert!(status.success(), "SIGTERM exit: {status:?}");
+
+    let finals: Vec<&str> = rest
+        .lines()
+        .filter(|l| l.contains("webhook dispatcher stopped"))
+        .collect();
+    assert_eq!(finals.len(), 1, "exactly one final line: {rest}");
+    let fields: Vec<&str> = finals[0].split_whitespace().collect();
+    for total in [
+        "delivered=0",
+        "dropped=0",
+        "lagged=0",
+        "exhausted=0",
+        "aborted=1",
+    ] {
+        assert!(fields.contains(&total), "{total} in {:?}", finals[0]);
+    }
+    assert!(!rest.contains("hunter2"), "no credential on stdout: {rest}");
 }
 
 // ---------- the fallible EOF helper (issue #102, 0018 §2) ----------
