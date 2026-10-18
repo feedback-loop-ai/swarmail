@@ -49,12 +49,20 @@
   serialization) run off the async workers on the blocking pool; the MCP
   seed build, the REST list/await pages and SSE thread-view serialization
   stay inline (none is on the ingest path).
-- Strict input everywhere: an unknown query key (`assert?too=`) or MCP
-  argument key (`{"inbx": "zz"}`) is refused by name; a present JSON `null`
-  for an optional string (seed `from`/`subject`/`text`/`html`, chaos `error`)
-  is refused, omission takes the default; a blank inbox name, or one with a
+- Strict native input: an unknown query key on a native route (`assert?too=`,
+  `count?limit=`, `assert?timeout_ms=`, any key on `threads`, `threads/{key}`
+  or `feed`), an MCP argument key (`{"inbx": "zz"}`), or an unknown key in a
+  seed or webhook body (`subjet`, `secrt`) is refused by name with 400; a
+  present JSON `null` for an optional string (seed `from`/`subject`/`text`/
+  `html`, webhook `inbox`/`secret`/`ca_pem`, chaos `error`) is refused,
+  omission takes the default. Seed and webhook body errors are 400 with a
+  JSON `error`; chaos body errors stay 422. A blank inbox name, or one with a
   control character, is refused on every plane (SMTP AUTH and POP3 USER
   included), and any other name is kept verbatim, padding included.
+- The Mailpit/MailHog compat list and search routes keep their upstream
+  tolerance: unknown query keys are ignored, so a typo such as
+  `/api/v1/messages?inbx=` answers the whole store. The compat `latest`
+  routes refuse unknown keys.
 - The `to` filter matches any recipient: the To/Cc headers **and** the SMTP
   envelope (RCPT TO), so a Bcc'd address matches — `assert?to=x&count=0` is
   not a header-presence check. `from` is the header From. Every email also
@@ -114,17 +122,22 @@ same sentence on both the REST and MCP planes (decision 0025/0029).
 
 ## Webhooks
 
-`PUT /api/v1/webhooks` with `[{"url": "http://127.0.0.1:9999/hooks", "inbox":
-null, "secret": "s3cret"}]` — every accepted email is POSTed as
+`PUT /api/v1/webhooks` with `[{"url": "http://127.0.0.1:9999/hooks", "secret":
+"s3cret"}]` (omit `inbox` for every inbox) — every accepted email is POSTed as
 `{"event":"received","email":{...}}` with the secret in `X-Swarmail-Secret`;
 queued, retried 4x (100ms → 1.6s), never blocking SMTP. Delivered via
 reqwest + rustls: `http://` targets stay plain, `https://` targets are TLS
 with certificate verification on — for a self-signed test server, pass its
 CA in the target's optional `ca_pem` (PEM of a root to trust on top of the
 built-in root store). A target is validated at PUT (a 400 naming the
-defect: the URL must parse with an http/https scheme and a host, the
-`ca_pem` must load, the `secret` must be a single-line header value ≤4096
-octets) and `GET /api/v1/webhooks` redacts the secret. Delivery is bounded
+defect: the keys are exactly `url`, `inbox`, `secret`, `ca_pem`; the URL
+must parse with an http/https scheme and a host; every certificate in
+`ca_pem` must load into the delivery client — at least one, a bundle's
+later roots included — which proves loadability, not that a handshake will
+succeed; the `secret` must be a single-line header value ≤4096 octets) and
+a refused list leaves the previous one in place. `GET /api/v1/webhooks`
+redacts the secret and shows absent values as `null` — a diagnostic, not a
+body to PUT back. Delivery is bounded
 per target — 32 in flight per normalized URL (`WEBHOOK_DELIVERY_CAP`), so
 a stalled sink cannot starve a healthy one; the bound is per URL, so many
 distinct targets multiply the ceiling (a target-count cap is not implied),
