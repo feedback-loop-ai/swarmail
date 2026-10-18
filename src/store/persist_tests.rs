@@ -41,6 +41,44 @@ fn a_reopened_store_restores_mail_order_and_counters() {
     assert_eq!(store.inboxes(), vec![("box".to_string(), 2)]);
 }
 
+/// The historical-data residual (decision 0040 §8): restore is verbatim,
+/// so a row stored by an older extractor keeps its synthesized text, its
+/// mis-cut link and its joined code across a restart, while a fresh
+/// delivery of the same raw source gets the repaired derivation. Nothing
+/// is re-derived on load.
+#[test]
+fn restore_keeps_legacy_derived_fields_while_fresh_ingest_repairs_them() {
+    let (_guard, path) = db_path("legacy");
+    let raw = b"From: s@x.io\r\nSubject: legacy\r\nMIME-Version: 1.0\r\n\
+        Content-Type: text/html\r\n\r\n\
+        <p>Unsubscribe: &lt;https://x.io/unsub?u=1&gt;</p>\
+        <table><tr><td>Order 1234</td><td>5678</td></tr></table>\r\n"
+        .to_vec();
+    {
+        let store = Store::open(0, &path).unwrap();
+        let mut legacy = email("old", "box", "a@x.io");
+        legacy.raw = raw.clone();
+        legacy.text = Some("Unsubscribe: <https://x.io/unsub?u=1>Order 12345678".into());
+        legacy.links = vec!["https://x.io/unsub?u=1>".into()];
+        legacy.codes = vec!["12345678".into()];
+        let _ = store.insert(legacy);
+    }
+    let store = Store::open(0, &path).unwrap();
+    let restored = store.get("old").unwrap();
+    assert_eq!(
+        restored.text.as_deref(),
+        Some("Unsubscribe: <https://x.io/unsub?u=1>Order 12345678")
+    );
+    assert_eq!(restored.links, vec!["https://x.io/unsub?u=1>"]);
+    assert_eq!(restored.codes, vec!["12345678"]);
+    assert_eq!(restored.raw, raw);
+
+    let fresh = crate::smtp::build_email(&raw, "box", &["a@x.io".to_string()], "s@x.io".into());
+    assert!(fresh.text.is_none(), "no text synthesized from html");
+    assert_eq!(fresh.links, vec!["https://x.io/unsub?u=1"]);
+    assert_eq!(fresh.codes, vec!["1234", "5678"]);
+}
+
 #[test]
 fn cap_pruning_is_mirrored_to_the_data_file() {
     let (_guard, path) = db_path("cap");
