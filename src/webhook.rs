@@ -16,13 +16,20 @@
 //! ([`Webhooks::snapshot`]), and nothing is ever durable — there is no
 //! outbox. Every bound is `try`-shaped (drop-and-count, never
 //! wait-and-delay), so the fan-out can never push back on the accept path.
+//!
+//! The boundary (decision 0041): a delivery dials the configured address
+//! and nothing else — no environment proxy, no redirect hop. A URL leaves
+//! the process (an echo, a log line) only with its userinfo removed, and a
+//! mail's payload is serialized once into shared bytes every target and
+//! every retry reuses.
 
 use crate::store::Store;
+use axum::body::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// One delivery attempt must not hang: the whole round trip — connect
 /// (TLS handshake included), send and status — is bounded by this.
@@ -132,7 +139,8 @@ pub struct WebhookTarget {
     /// Only fire for this inbox; None = every inbox.
     #[serde(default)]
     pub inbox: Option<String>,
-    /// Sent verbatim as the X-Swarmail-Secret header.
+    /// Sent verbatim as the X-Swarmail-Secret header — so it must be one
+    /// (decision 0041 §1, [`secret_header`]).
     #[serde(default)]
     pub secret: Option<String>,
     /// Optional PEM of an extra root CA to trust for this target, on top of
@@ -155,23 +163,75 @@ impl WebhookTarget {
             parse_ca_pem(pem)?;
         }
         if let Some(secret) = &self.secret {
-            validate_secret(secret)?;
+            secret_header(secret)?;
         }
         Ok(())
     }
+
+    /// The outward copy of a target (decision 0041 §3): what GET and the PUT
+    /// echo return. The secret is withheld, the URL loses its userinfo, and
+    /// everything else — `inbox`, the public `ca_pem` — is kept. The
+    /// installed target is untouched: delivery still sends its credentials.
+    pub fn redacted(&self) -> WebhookTarget {
+        WebhookTarget {
+            url: display_url(&self.url),
+            inbox: self.inbox.clone(),
+            secret: None,
+            ca_pem: self.ca_pem.clone(),
+        }
+    }
 }
 
-/// The secret rule (decision 0029 §5): a single-line header value — no
-/// CR/LF/NUL, at most 4096 octets. Two refusals, one per clause, so the 400
-/// names the defect.
-fn validate_secret(secret: &str) -> Result<(), String> {
+/// The header the secret rides in.
+const SECRET_HEADER: &str = "X-Swarmail-Secret";
+
+/// The secret rule (decision 0041 §1, superseding 0029 §5's CR/LF/NUL
+/// wording): at most 4096 octets, no leading or trailing space or tab (a
+/// receiver may trim them, so the secret it compares would not be the one
+/// configured), and a value the HTTP client's own header parser accepts.
+/// One owner: the PUT validator discards the value, delivery installs it,
+/// so a secret that passed PUT always builds its header. No refusal echoes
+/// the secret.
+pub(crate) fn secret_header(secret: &str) -> Result<reqwest::header::HeaderValue, String> {
     if secret.len() > 4096 {
         return Err("webhook secret must be at most 4096 octets".to_string());
     }
-    if secret.contains(['\r', '\n', '\0']) {
-        return Err("webhook secret must be a single line with no CR, LF or NUL".to_string());
+    if secret.starts_with([' ', '\t']) || secret.ends_with([' ', '\t']) {
+        return Err("webhook secret must not begin or end with a space or tab".to_string());
     }
-    Ok(())
+    let mut value = reqwest::header::HeaderValue::from_bytes(secret.as_bytes())
+        .map_err(|_| SECRET_NOT_A_HEADER.to_string())?;
+    value.set_sensitive(true);
+    Ok(value)
+}
+
+/// The parser refusal, named without the value: U+0001, DEL, CR, LF and
+/// NUL all land here.
+const SECRET_NOT_A_HEADER: &str =
+    "webhook secret must be a valid HTTP header value: no control characters but tab";
+
+/// What a URL that does not parse is shown as: never its own text, which
+/// could carry credentials no parser located.
+const UNPARSEABLE_URL: &str = "<unparseable webhook URL>";
+
+/// The one display of a webhook URL outside the process (decision 0041
+/// §3): echoes and every diagnostic. Userinfo — username and password — is
+/// removed; a URL without any keeps its configured spelling. Query and
+/// fragment are kept: credentials do not belong there.
+pub(crate) fn display_url(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut parsed) => {
+            if parsed.username().is_empty() && parsed.password().is_none() {
+                url.to_string()
+            } else {
+                // A URL with userinfo has a host, so both setters succeed.
+                let _ = parsed.set_username("");
+                let _ = parsed.set_password(None);
+                parsed.to_string()
+            }
+        }
+        Err(_) => UNPARSEABLE_URL.to_string(),
+    }
 }
 
 /// A copy of the delivery ledger: every death a notification can die has a
@@ -209,6 +269,11 @@ pub struct Webhooks {
     lagged: AtomicU64,
     exhausted: AtomicU64,
     aborted: AtomicU64,
+    /// Test-only observation (decision 0020 rule 4): every payload the
+    /// dispatcher built, kept alive so a test can compare a request body's
+    /// backing allocation against it without address reuse faking identity.
+    #[cfg(test)]
+    built: Mutex<Vec<Bytes>>,
 }
 
 impl Webhooks {
@@ -254,15 +319,66 @@ fn classify(
 ) -> Wake {
     match res {
         Ok(email) => Wake::Mail(email),
-        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-            let note = format!(
-                "webhook dispatcher lagged, skipped {n}; the store remains the source of truth"
-            );
-            tracing::warn!("{note}");
-            Wake::Lagged(n)
-        }
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => Wake::Lagged(n),
         Err(_) => Wake::Stop, // closed
     }
+}
+
+/// The one owner of a lag's effects, live or in the tail sweep (decision
+/// 0041 §5): the warn line and the ledger row. Unit: mails — their fan-out
+/// is unknowable, and the store stays the truth.
+fn record_lag(webhooks: &Webhooks, n: u64) {
+    let note =
+        format!("webhook dispatcher lagged, skipped {n}; the store remains the source of truth");
+    tracing::warn!("{note}");
+    webhooks.lagged.fetch_add(n, Ordering::Relaxed);
+}
+
+/// How long an over-budget target stays quiet after its warning (decision
+/// 0041 §7): every refusal is still counted in `dropped`, but only the first
+/// in each window is logged, so a burst against a stalled sink costs one
+/// line, not one per mail.
+const DROP_WARN_WINDOW: Duration = Duration::from_secs(60);
+
+/// Whether a refusal at `now` warns. The window starts at the last emitted
+/// warning; a refusal inside it is silent and does not extend it. Nothing
+/// else resets it — a successful admission between refusals leaves it be.
+fn should_warn(last: &mut Option<Instant>, now: Instant) -> bool {
+    match *last {
+        Some(at) if now.saturating_duration_since(at) < DROP_WARN_WINDOW => false,
+        _ => {
+            *last = Some(now);
+            true
+        }
+    }
+}
+
+/// One sink's budget: its in-flight deliveries, plus when it last warned
+/// about a refusal. Suppression lives beside the capacity it reports on,
+/// so it retires with the budget (decision 0041 §7).
+#[derive(Default)]
+struct Budget {
+    set: tokio::task::JoinSet<()>,
+    warned: Option<Instant>,
+}
+
+/// The payload's shape: borrowed, so serializing builds no owned copy of
+/// the mail first (decision 0041 §4).
+#[derive(Serialize)]
+struct Envelope<'a> {
+    event: &'static str,
+    email: &'a crate::model::Email,
+}
+
+/// Serialize a mail's payload once, into bytes every target and retry
+/// shares: `Bytes::from(Vec)` takes the allocation, it copies nothing.
+fn build_payload(email: &crate::model::Email) -> Bytes {
+    let envelope = Envelope {
+        event: "received",
+        email,
+    };
+    let json = serde_json::to_vec(&envelope).expect("Email serializes");
+    Bytes::from(json)
 }
 
 /// A delivery budget's key: the target's **parsed, normalized [`reqwest::Url`]** —
@@ -289,10 +405,10 @@ fn sink_key(target: &WebhookTarget) -> SinkKey {
 /// dead key. A vanished target with deliveries still in flight keeps its
 /// key — its budget is still live, and its outcome still owes a row.
 fn retire_dead(
-    deliveries: &mut HashMap<SinkKey, tokio::task::JoinSet<()>>,
+    deliveries: &mut HashMap<SinkKey, Budget>,
     live: &std::collections::HashSet<SinkKey>,
 ) {
-    deliveries.retain(|key, set| live.contains(key) || !set.is_empty());
+    deliveries.retain(|key, budget| live.contains(key) || !budget.set.is_empty());
 }
 
 /// The dispatcher core: consume the firehose until it closes or the drain
@@ -312,7 +428,7 @@ pub(crate) async fn dispatch_loop(
     mut drained: tokio::sync::watch::Receiver<bool>,
 ) {
     // One budget per sink, keyed by the normalized URL (decision 0029 §5).
-    let mut deliveries: HashMap<SinkKey, tokio::task::JoinSet<()>> = HashMap::new();
+    let mut deliveries: HashMap<SinkKey, Budget> = HashMap::new();
     // The stop watch has fired: every later mail is counted, never
     // delivered, until the drain.
     let mut stopping = false;
@@ -355,8 +471,8 @@ pub(crate) async fn dispatch_loop(
                 } else {
                     // Harvest finished deliveries first, so the bounds
                     // reflect live capacity and not last pass's dead weight.
-                    for set in deliveries.values_mut() {
-                        while set.try_join_next().is_some() {}
+                    for budget in deliveries.values_mut() {
+                        while budget.set.try_join_next().is_some() {}
                     }
                     // Retire dead-and-drained keys, so config churn cannot
                     // leak a budget per PUT (decision 0029 §5).
@@ -371,33 +487,38 @@ pub(crate) async fn dispatch_loop(
                     // pre-spawn snapshot.
                     let mut room = Vec::with_capacity(matching.len());
                     let mut claimed: HashMap<SinkKey, usize> = HashMap::new();
+                    let now = Instant::now();
                     for target in matching {
                         let key = sink_key(&target);
-                        let used = deliveries.get(&key).map(|set| set.len()).unwrap_or(0)
+                        let used = deliveries.get(&key).map(|b| b.set.len()).unwrap_or(0)
                             + claimed.get(&key).copied().unwrap_or(0);
                         if used >= WEBHOOK_DELIVERY_CAP {
-                            // The refusal is named (#47 AC6.2): the count
-                            // alone cannot tell an operator *which* target
-                            // is over budget — the warn does.
-                            tracing::warn!(url = %target.url, budget = WEBHOOK_DELIVERY_CAP, "webhook target over its delivery budget, refusing until slots free");
+                            // Every refusal is counted; the first in each
+                            // window is named (#47 AC6.2, decision 0041 §7):
+                            // the count alone cannot tell an operator *which*
+                            // target is over budget — the warn does, once.
                             webhooks.dropped.fetch_add(1, Ordering::Relaxed);
+                            let budget = deliveries.entry(key).or_default();
+                            if should_warn(&mut budget.warned, now) {
+                                let shown = display_url(&target.url);
+                                tracing::warn!(url = %shown, budget = WEBHOOK_DELIVERY_CAP, "webhook target over its delivery budget, refusing until slots free; further refusals within 60 s are counted, not logged");
+                            }
                         } else {
                             *claimed.entry(key).or_insert(0) += 1;
                             room.push(target);
                         }
                     }
                     if !room.is_empty() {
-                        // The payload is built once per mail — an `Arc<str>`
-                        // the deliveries own. A delivery that outlives the
-                        // mail (a sink that delays its reply, a retry against
-                        // a pruned inbox) replays these bytes; it never
+                        // The payload is built once per mail, into shared
+                        // bytes the deliveries own (decision 0041 §4): each
+                        // target and each retry clones a reference, never
+                        // the body. A delivery that outlives the mail (a
+                        // sink that delays its reply, a retry against a
+                        // pruned inbox) replays these bytes; it never
                         // re-reads the store.
-                        let payload: Arc<str> = serde_json::json!({
-                            "event": "received",
-                            "email": &*email,
-                        })
-                        .to_string()
-                        .into();
+                        let payload = build_payload(&email);
+                        #[cfg(test)]
+                        webhooks.built.lock().unwrap().push(payload.clone());
                         for target in room {
                             let webhooks = Arc::clone(&webhooks);
                             let key = sink_key(&target);
@@ -407,22 +528,20 @@ pub(crate) async fn dispatch_loop(
                                 ca_pem,
                                 ..
                             } = target;
-                            deliveries.entry(key).or_default().spawn(deliver(
+                            deliveries.entry(key).or_default().set.spawn(deliver(
                                 webhooks,
                                 url,
                                 secret,
                                 ca_pem,
-                                Arc::clone(&payload),
+                                payload.clone(),
                             ));
                         }
                     }
                 }
             }
-            Wake::Lagged(n) => {
-                // Unit: mails. Their fan-out is unknowable — the store stays
-                // the truth, and the loss is a row, not a warn line alone.
-                webhooks.lagged.fetch_add(n, Ordering::Relaxed);
-            }
+            // Unit: mails. Their fan-out is unknowable — the store stays the
+            // truth, and the loss is a row, not a warn line alone.
+            Wake::Lagged(n) => record_lag(&webhooks, n),
             // The stop watch fired: keep consuming until the drain — post-stop
             // mails are counted, never silently lost (decision 0029 §5).
             Wake::Shutdown => stopping = true,
@@ -435,20 +554,56 @@ pub(crate) async fn dispatch_loop(
     // ring residents that never got a pass, then every delivery that ends
     // without reporting its own outcome is counted (an `Ok` already
     // reported, at its last await).
-    while let Ok(email) = rx.try_recv() {
-        let matching = matching_count(webhooks.current(), &email);
-        webhooks
-            .aborted
-            .fetch_add(matching as u64, Ordering::Relaxed);
+    //
+    // The sweep ends only at Empty or Closed (decision 0041 §5): a lag
+    // report is not the end of the ring — retained mail follows it — so
+    // each lag is recorded (mails, fan-out unknown) and the sweep goes on.
+    loop {
+        match rx.try_recv() {
+            Ok(email) => {
+                let matching = matching_count(webhooks.current(), &email);
+                webhooks
+                    .aborted
+                    .fetch_add(matching as u64, Ordering::Relaxed);
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                record_lag(&webhooks, n);
+            }
+            Err(_) => break, // Empty or Closed: nothing is retained
+        }
     }
-    deliveries.values_mut().for_each(|set| set.abort_all());
-    for set in deliveries.values_mut() {
-        while let Some(res) = set.join_next().await {
+    deliveries
+        .values_mut()
+        .for_each(|budget| budget.set.abort_all());
+    for budget in deliveries.values_mut() {
+        while let Some(res) = budget.set.join_next().await {
             if res.is_err() {
                 webhooks.aborted.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
+    // The final ledger, once, after every join (decision 0041 §6): the
+    // shutdown's `aborted` count is produced after HTTP has stopped, so
+    // `/metrics` can never show it — this default-level line does.
+    let WebhookLedger {
+        delivered,
+        dropped,
+        lagged,
+        exhausted,
+        aborted,
+    } = webhooks.snapshot();
+    // The message rides a const: a multiline field list leaves the literal's
+    // line mapped to the callsite's static registration, which llvm-cov
+    // counts as never executed even when the event fires.
+    const DISPATCHER_STOPPED: &str = "webhook dispatcher stopped";
+    tracing::info!(
+        delivered,
+        dropped,
+        lagged,
+        exhausted,
+        aborted,
+        DISPATCHER_STOPPED
+    );
 }
 
 /// How many of `targets` fire for `email`.
@@ -488,8 +643,11 @@ async fn deliver(
     url: String,
     secret: Option<String>,
     ca_pem: Option<String>,
-    body: Arc<str>,
+    body: Bytes,
 ) {
+    // The URL as every line below shows it: userinfo removed (decision 0041
+    // §3). The delivery itself still dials `url`, credentials and all.
+    let shown = display_url(&url);
     // The last delivery error, for the final warn (decision 0029 §5): the
     // cause rides the one default-level line — no new metrics family, no
     // per-attempt spam.
@@ -505,16 +663,16 @@ async fn deliver(
             }
             Ok(status) => {
                 last = format!("status {status}");
-                tracing::debug!(%url, status, "webhook non-2xx");
+                tracing::debug!(url = %shown, status, "webhook non-2xx");
             }
             Err(e) => {
                 last = e;
-                tracing::debug!(%url, error = %last, "webhook delivery failed");
+                tracing::debug!(url = %shown, error = %last, "webhook delivery failed");
             }
         }
     }
     webhooks.exhausted.fetch_add(1, Ordering::Relaxed);
-    tracing::warn!(%url, error = %last, "webhook dropped after retries");
+    tracing::warn!(url = %shown, error = %last, "webhook dropped after retries");
 }
 
 /// Redirects are not part of the delivery contract. A webhook target is an
@@ -528,14 +686,25 @@ fn redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::none()
 }
 
+/// The one delivery policy every client derives from (decision 0041 §2):
+/// rustls only — no native-tls in the tree — redirects never followed, and
+/// no proxy. reqwest would otherwise read `HTTP_PROXY`/`HTTPS_PROXY`/
+/// `ALL_PROXY` from the environment and hand every payload and secret to
+/// a proxy nobody configured for webhooks; a delivery dials the configured
+/// address and nothing else.
+fn client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .use_rustls_tls()
+        .redirect(redirect_policy())
+        .no_proxy()
+}
+
 /// The client for targets that trust the built-in root store: rustls with
 /// the webpki roots, certificate verification on, built once per process.
 fn shared_client() -> reqwest::Client {
     CLIENT
         .get_or_init(|| {
-            reqwest::Client::builder()
-                .use_rustls_tls() // rustls only — no native-tls in the tree
-                .redirect(redirect_policy())
+            client_builder()
                 .build()
                 .expect("the rustls webhook client must build")
         })
@@ -570,6 +739,10 @@ pub(crate) fn parse_ca_pem(pem: &str) -> Result<reqwest::Certificate, String> {
     reqwest::Certificate::from_der(der.as_ref()).map_err(ca_pem_error)
 }
 
+/// The scheme refusal, fixed text: the scheme is the caller's input.
+const UNSUPPORTED_SCHEME: &str =
+    "unsupported webhook URL scheme: only http and https are delivered";
+
 /// One owner for the URL rule (decision 0029 §5): the PUT validator and the
 /// delivery path both call it, so a target is refused where it is authored
 /// and the delivery arm stays warm. The URL must parse with scheme
@@ -582,10 +755,12 @@ pub(crate) fn parse_target_url(url: &str) -> Result<reqwest::Url, String> {
         // `Url::parse` reads `localhost:9000` as *scheme* `localhost` with
         // no host at all — the misconfig that used to surface only at
         // delivery. Named for the defect it is.
+        // Neither refusal reflects the input (decision 0041 §3): a URL
+        // that does not parse right could carry credentials anywhere.
         _ if parsed.host_str().is_none() => {
-            return Err(format!("webhook URL must name a host: {url}"));
+            return Err("webhook URL must name a host".to_string());
         }
-        other => return Err(format!("unsupported webhook URL scheme: {other}")),
+        _ => return Err(UNSUPPORTED_SCHEME.to_string()),
     }
     // For `http`/`https` the parser itself refuses an empty host, so a URL
     // that reaches here always names one; the rule has one owner.
@@ -602,9 +777,9 @@ fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
         return Ok(client);
     }
     let root = parse_ca_pem(pem)?;
-    let client = reqwest::Client::builder()
-        .use_rustls_tls()
-        .redirect(redirect_policy()) // same no-redirect contract as the shared client
+    // The same policy as the shared client — no redirect, no proxy — plus
+    // this target's root.
+    let client = client_builder()
         .add_root_certificate(root)
         .build()
         .map_err(ca_pem_error)?;
@@ -617,23 +792,47 @@ fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
     Ok(client)
 }
 
+/// One attempt's request, built and returned rather than sent, so the body
+/// a test inspects is the very request `post_json` executes. The body is a
+/// clone of the shared payload — a reference count, not a copy (decision
+/// 0041 §4) — and the secret header comes from [`secret_header`], the PUT
+/// validator's own rule.
+fn build_request(
+    client: &reqwest::Client,
+    url: reqwest::Url,
+    body: &Bytes,
+    secret: Option<&str>,
+) -> Result<reqwest::Request, String> {
+    let mut request = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .timeout(POST_TIMEOUT)
+        .body(body.clone());
+    if let Some(secret) = secret {
+        request = request.header(SECRET_HEADER, secret_header(secret)?);
+    }
+    // Every part above is already valid — a parsed URL, a static content
+    // type, a parsed header value — so the build cannot refuse.
+    Ok(request
+        .build()
+        .expect("a request of already-valid parts always builds"))
+}
+
 async fn post_json(
     url: &str,
-    body: &str,
+    body: &Bytes,
     secret: Option<&str>,
     ca_pem: Option<&str>,
 ) -> Result<u16, String> {
     let url = parse_target_url(url)?;
     let client = client_for(ca_pem)?;
-    let mut request = client
-        .post(url)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .timeout(POST_TIMEOUT)
-        .body(body.to_string());
-    if let Some(secret) = secret {
-        request = request.header("X-Swarmail-Secret", secret);
-    }
-    let response = request.send().await.map_err(|e| e.to_string())?;
+    let request = build_request(&client, url, body, secret)?;
+    // reqwest's error text ends "for url (…)"; the caller logs the redacted
+    // URL beside it, so the error's own copy goes (decision 0041 §3).
+    let response = client
+        .execute(request)
+        .await
+        .map_err(|e| e.without_url().to_string())?;
     Ok(response.status().as_u16())
 }
 
@@ -688,7 +887,7 @@ mod loop_tests {
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::broadcast;
 
-    fn email() -> Email {
+    pub(super) fn email() -> Email {
         Email {
             id: "1".into(),
             inbox: "default".into(),
@@ -802,6 +1001,10 @@ mod loop_tests {
             hits.load(Ordering::Relaxed),
             0,
             "the sink records nothing: no payload was ever built"
+        );
+        assert!(
+            webhooks.built.lock().unwrap().is_empty(),
+            "a stopping mail builds no payload"
         );
     }
 
@@ -1189,7 +1392,7 @@ mod loop_tests {
     static CAPTURED_LOG: std::sync::OnceLock<Capture> = std::sync::OnceLock::new();
 
     #[derive(Clone, Default)]
-    struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+    pub(super) struct Capture(pub(super) Arc<std::sync::Mutex<Vec<u8>>>);
 
     impl std::io::Write for Capture {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -1208,7 +1411,7 @@ mod loop_tests {
         }
     }
 
-    fn captured_log() -> &'static Capture {
+    pub(super) fn captured_log() -> &'static Capture {
         CAPTURED_LOG.get_or_init(|| {
             let capture = Capture::default();
             let _ = tracing::subscriber::set_global_default(
@@ -1420,17 +1623,95 @@ mod delivery_tests {
     /// A URL that does not parse at all is a delivery error, not a panic.
     #[tokio::test]
     async fn unparseable_url_is_an_error() {
-        let err = post_json("not a url", "{}", None, None).await.unwrap_err();
+        let body = Bytes::from_static(b"{}");
+        let err = post_json("not a url", &body, None, None).await.unwrap_err();
         assert!(err.contains("invalid webhook URL"), "{err}");
     }
 
-    /// Schemes other than http/https are rejected before any connection.
+    /// Schemes other than http/https are rejected before any connection,
+    /// by a fixed sentence that does not reflect the input.
     #[tokio::test]
     async fn unsupported_scheme_is_an_error() {
-        let err = post_json("ftp://hooks.example/x", "{}", None, None)
+        let body = Bytes::from_static(b"{}");
+        let err = post_json("ftp://user:hunter2@hooks.example/x", &body, None, None)
             .await
             .unwrap_err();
-        assert!(err.contains("unsupported webhook URL scheme: ftp"), "{err}");
+        assert_eq!(err, UNSUPPORTED_SCHEME);
+    }
+
+    /// A secret installed without the PUT validator (a direct `set`) is
+    /// refused by the delivery's own header rule before anything is
+    /// dialed — the same rule, the same named error, no secret echoed.
+    #[tokio::test]
+    async fn a_directly_installed_bad_secret_is_refused_before_dialing() {
+        let body = Bytes::from_static(b"{}");
+        let err = post_json(
+            "http://127.0.0.1:9/hook",
+            &body,
+            Some("bad\u{1}secret"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, SECRET_NOT_A_HEADER);
+        assert!(!err.contains("bad"), "the refusal never echoes the secret");
+    }
+
+    /// The request a delivery executes carries the shared payload itself:
+    /// its body is the very allocation the dispatcher built, not a copy
+    /// (decision 0041 §4) — the source is kept alive, so a matching address
+    /// cannot be allocator reuse. Two attempts' requests share it too. The
+    /// accepted secret rides as a sensitive header with its exact bytes.
+    #[test]
+    fn a_built_request_shares_the_payload_allocation() {
+        let payload = build_payload(&loop_tests::email());
+        let client = shared_client();
+        let url = parse_target_url("http://user:pw@127.0.0.1:9/hook").unwrap();
+        let first = build_request(&client, url.clone(), &payload, Some("s3\tcret é")).unwrap();
+        let second = build_request(&client, url, &payload, None).unwrap();
+        for request in [&first, &second] {
+            let body = request.body().unwrap().as_bytes().unwrap();
+            assert_eq!(
+                body.as_ptr(),
+                payload.as_ptr(),
+                "the body is the shared allocation"
+            );
+            assert_eq!(body.len(), payload.len());
+        }
+        let header = first.headers().get(SECRET_HEADER).unwrap();
+        assert_eq!(header.as_bytes(), "s3\tcret é".as_bytes());
+        assert!(
+            header.is_sensitive(),
+            "the secret header is marked sensitive"
+        );
+        assert!(second.headers().get(SECRET_HEADER).is_none());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&payload).unwrap(),
+            serde_json::json!({ "event": "received", "email": loop_tests::email() }),
+            "the shared bytes are the documented envelope"
+        );
+    }
+
+    /// A reqwest transport error loses its own URL copy (decision 0041 §3):
+    /// the text that reaches a log line names the failure, never the URL —
+    /// the caller logs the redacted URL beside it.
+    #[tokio::test]
+    async fn a_transport_error_carries_no_url() {
+        // Bind and drop: a port nothing listens on, so the dial is refused.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let body = Bytes::from_static(b"{}");
+        let url = format!("http://user:hunter2@127.0.0.1:{port}/hook?k=v");
+        let err = post_json(&url, &body, None, None).await.unwrap_err();
+        assert!(err.starts_with("error sending request"), "{err}");
+        assert!(!err.contains("127.0.0.1"), "no URL in the error: {err}");
+        assert!(
+            !err.contains("hunter2"),
+            "no credential in the error: {err}"
+        );
     }
 
     /// A ca_pem that is not a PEM certificate fails before connecting.
@@ -1443,7 +1724,7 @@ mod delivery_tests {
 
 #[cfg(test)]
 mod validation_tests {
-    use super::loop_tests::{FAST_REPLY, counting_sink, spin_until, target};
+    use super::loop_tests::{FAST_REPLY, captured_log, counting_sink, spin_until, target};
     use super::*;
     use crate::model::Email;
     use tokio::sync::broadcast;
@@ -1506,17 +1787,14 @@ mod validation_tests {
         };
         assert_eq!(
             schemeless.validate().unwrap_err(),
-            "webhook URL must name a host: localhost:9000/hook"
+            "webhook URL must name a host"
         );
 
         let ftp = WebhookTarget {
             url: "ftp://hooks.example/x".into(),
             ..legal.clone()
         };
-        assert_eq!(
-            ftp.validate().unwrap_err(),
-            "unsupported webhook URL scheme: ftp"
-        );
+        assert_eq!(ftp.validate().unwrap_err(), UNSUPPORTED_SCHEME);
 
         // A string with no PEM section at all: the parse is the refusal, not
         // the client build (which has its own arm in delivery_tests).
@@ -1552,10 +1830,118 @@ mod validation_tests {
             secret: Some("a\r\nb".into()),
             ..legal
         };
+        assert_eq!(crlf.validate().unwrap_err(), SECRET_NOT_A_HEADER);
+    }
+
+    /// The secret domain is the HTTP client's own (decision 0041 §1, issue
+    /// #75): every value the PUT validator accepts builds the delivery
+    /// header, and every control the header parser refuses — U+0001 and
+    /// DEL included, which the old CR/LF/NUL rule let through — is refused
+    /// by name, without echoing the secret.
+    #[test]
+    fn the_secret_domain_is_the_header_parsers() {
+        for refused in [
+            "bad\u{1}secret",
+            "bad\u{7f}secret",
+            "a\rb",
+            "a\nb",
+            "a\0b",
+            "\u{1b}[0m",
+        ] {
+            let err = secret_header(refused).unwrap_err();
+            assert_eq!(err, SECRET_NOT_A_HEADER, "{refused:?}");
+            assert!(!err.contains("bad"), "no secret in the refusal: {err}");
+        }
+        // Edge whitespace a receiver may trim: each side, each character.
+        for padded in [" s", "\ts", "s ", "s\t"] {
+            assert_eq!(
+                secret_header(padded).unwrap_err(),
+                "webhook secret must not begin or end with a space or tab",
+                "{padded:?}"
+            );
+        }
+        // Accepted: empty, internal tab and space, visible ASCII, UTF-8.
+        for accepted in ["", "a\tb c", "s3cret!~", "pässwörd", "密码"] {
+            let value = secret_header(accepted).unwrap();
+            assert_eq!(value.as_bytes(), accepted.as_bytes(), "{accepted:?}");
+            assert!(value.is_sensitive());
+        }
+        // The octet bound counts bytes, not characters: 2048 two-octet
+        // characters are exactly the cap, one octet more is a refusal.
+        assert!(secret_header(&"é".repeat(2048)).is_ok());
         assert_eq!(
-            crlf.validate().unwrap_err(),
-            "webhook secret must be a single line with no CR, LF or NUL"
+            secret_header(&format!("{}x", "é".repeat(2048))).unwrap_err(),
+            "webhook secret must be at most 4096 octets"
         );
+        assert!(secret_header(&"x".repeat(4096)).is_ok());
+    }
+
+    /// One display policy for URLs that leave the process (decision 0041
+    /// §3): userinfo goes whole — username, password, either alone, plain
+    /// or percent-encoded — query and fragment stay, a URL without
+    /// userinfo keeps its spelling, and an unparseable one is a constant.
+    #[test]
+    fn display_url_removes_userinfo_and_nothing_else() {
+        assert_eq!(
+            display_url("http://127.0.0.1:9"),
+            "http://127.0.0.1:9",
+            "no userinfo: the configured spelling"
+        );
+        assert_eq!(
+            display_url("http://user:hunter2@127.0.0.1:9/x?token=t#f"),
+            "http://127.0.0.1:9/x?token=t#f"
+        );
+        assert_eq!(
+            display_url("https://user@hooks.example/x"),
+            "https://hooks.example/x"
+        );
+        assert_eq!(
+            display_url("http://:hunter2@127.0.0.1:9/x"),
+            "http://127.0.0.1:9/x"
+        );
+        assert_eq!(
+            display_url("http://us%65r:hun%74er2@127.0.0.1:9/x"),
+            "http://127.0.0.1:9/x"
+        );
+        assert_eq!(display_url("not a url hunter2"), UNPARSEABLE_URL);
+    }
+
+    /// The outward copy withholds the secret and the userinfo and keeps
+    /// the rest; the installed target keeps everything.
+    #[test]
+    fn a_redacted_target_keeps_inbox_and_ca_pem() {
+        let installed = WebhookTarget {
+            url: "http://user:hunter2@127.0.0.1:9/hook".into(),
+            inbox: Some("only".into()),
+            secret: Some("s3cret".into()),
+            ca_pem: Some("PEM".into()),
+        };
+        let shown = installed.redacted();
+        assert_eq!(shown.url, "http://127.0.0.1:9/hook");
+        assert_eq!(shown.inbox.as_deref(), Some("only"));
+        assert_eq!(shown.secret, None);
+        assert_eq!(shown.ca_pem.as_deref(), Some("PEM"));
+        assert_eq!(installed.url, "http://user:hunter2@127.0.0.1:9/hook");
+        assert_eq!(installed.secret.as_deref(), Some("s3cret"));
+    }
+
+    /// The drop-warning window on supplied instants (decision 0041 §7): the
+    /// first refusal warns, one nanosecond short of 60 s stays quiet (and
+    /// does not extend the window), exactly 60 s after the last warning
+    /// warns again and restarts it. No test waits a minute.
+    #[test]
+    fn the_drop_warning_window_is_sixty_seconds_from_the_last_warning() {
+        let t = Instant::now();
+        let mut last = None;
+        assert!(should_warn(&mut last, t), "the first refusal warns");
+        assert_eq!(last, Some(t));
+        let almost = t + DROP_WARN_WINDOW - Duration::from_nanos(1);
+        assert!(!should_warn(&mut last, almost), "inside the window: quiet");
+        assert_eq!(last, Some(t), "a quiet refusal does not move the window");
+        let edge = t + DROP_WARN_WINDOW;
+        assert!(should_warn(&mut last, edge), "the window has passed");
+        assert_eq!(last, Some(edge));
+        assert!(!should_warn(&mut last, edge + Duration::from_secs(1)));
     }
 
     /// The budget key: a parsed URL normalizes, so two spellings of one
@@ -1585,18 +1971,23 @@ mod validation_tests {
         let mut live = std::collections::HashSet::new();
 
         // A live target keeps its budget whether drained or not.
-        deliveries.insert(SinkKey::Raw("live".into()), tokio::task::JoinSet::new());
+        deliveries.insert(SinkKey::Raw("live".into()), Budget::default());
         live.insert(SinkKey::Raw("live".into()));
         // A vanished target with a delivery still in flight keeps its key:
         // its outcome still owes a row.
-        let mut busy = tokio::task::JoinSet::new();
-        busy.spawn(std::future::pending::<()>());
+        let mut busy = Budget::default();
+        busy.set.spawn(std::future::pending::<()>());
         deliveries.insert(SinkKey::Raw("busy".into()), busy);
-        // A vanished, drained target goes.
-        deliveries.insert(SinkKey::Raw("dead".into()), tokio::task::JoinSet::new());
+        // A vanished, drained target goes — and its warning window with it
+        // (decision 0041 §7): a re-added target warns afresh.
+        let dead = Budget {
+            warned: Some(Instant::now()),
+            ..Budget::default()
+        };
+        deliveries.insert(SinkKey::Raw("dead".into()), dead);
 
         retire_dead(&mut deliveries, &live);
-        assert_eq!(deliveries.len(), 2, "{deliveries:?}");
+        assert_eq!(deliveries.len(), 2);
         assert!(deliveries.contains_key(&SinkKey::Raw("live".into())));
         assert!(deliveries.contains_key(&SinkKey::Raw("busy".into())));
         assert!(!deliveries.contains_key(&SinkKey::Raw("dead".into())));
@@ -1724,5 +2115,173 @@ mod validation_tests {
         drop(tx);
         handle.await.unwrap();
         assert_eq!(webhooks.snapshot().lagged, 2);
+    }
+
+    // ---------- decision 0041: the webhook boundary ----------
+
+    /// Issue #76's controlled case: the shutdown sweep continues past a lag
+    /// report. On this current-thread runtime the dispatcher is spawned but
+    /// never polled while 8,200 uniquely identified mails are inserted
+    /// synchronously — the global ring holds 8,192 — and both shutdown
+    /// signals are sent before its first poll, so the biased select hands
+    /// it the drain at once. The tail's first read is `Lagged(8)`, and the
+    /// 8,192 retained notifications follow it: 8 lagged mails, 8,192 aborted
+    /// notifications, no delivery attempt, no payload built. The old
+    /// `while let Ok` sweep stopped at the lag and counted nothing.
+    #[tokio::test]
+    async fn the_shutdown_sweep_continues_past_a_lagged_report() {
+        let store = Store::new(16); // pruning keeps the store small; the ring is fixed
+        let webhooks = Arc::new(Webhooks::default());
+        // Never dialed: the stop path counts, it never spawns.
+        webhooks.set(vec![target("http://127.0.0.1:9/hook".into())]);
+        let mut tasks = tokio::task::JoinSet::new();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (drained_tx, drained_rx) = tokio::sync::watch::channel(false);
+        spawn_dispatcher(&store, &webhooks, shutdown_rx, drained_rx, &mut tasks);
+        for i in 0..8200 {
+            let mut e = email();
+            e.id = format!("lag-{i}");
+            store.insert(e).unwrap();
+        }
+        let _ = shutdown_tx.send(true);
+        let _ = drained_tx.send(true);
+        tasks
+            .join_next()
+            .await
+            .expect("the dispatcher was spawned")
+            .expect("the dispatcher returns cleanly");
+        assert_eq!(
+            webhooks.snapshot(),
+            WebhookLedger {
+                delivered: 0,
+                dropped: 0,
+                lagged: 8,
+                exhausted: 0,
+                aborted: 8192,
+            }
+        );
+        assert!(webhooks.built.lock().unwrap().is_empty());
+    }
+
+    /// One mail to four sinks builds one payload (decision 0041 §4): every
+    /// target's delivery — and every retry of the one that fails all four
+    /// attempts — replays that single build, and each sink receives it.
+    #[tokio::test]
+    async fn one_mail_builds_one_payload_for_every_target_and_retry() {
+        let mut sinks = Vec::new();
+        for _ in 0..4 {
+            sinks.push(counting_sink(Some(FAST_REPLY)).await);
+        }
+        // Bind and drop: a port nothing listens on, every attempt refused.
+        let refused = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let webhooks = Arc::new(Webhooks::default());
+        let mut targets: Vec<WebhookTarget> = sinks
+            .iter()
+            .map(|(addr, ..)| target(format!("http://{addr}/hook")))
+            .collect();
+        targets.push(target(format!("http://{refused}/hook")));
+        webhooks.set(targets);
+        let (tx, rx) = broadcast::channel(8);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (drained_tx, drained_rx) = tokio::sync::watch::channel(false);
+        let loop_task = tokio::spawn(dispatch_loop(
+            rx,
+            Arc::clone(&webhooks),
+            shutdown_rx,
+            drained_rx,
+        ));
+
+        tx.send(Arc::new(email())).unwrap();
+        spin_until(5000, || webhooks.snapshot().delivered == 4).await;
+        spin_until(10_000, || webhooks.snapshot().exhausted == 1).await;
+        assert_eq!(webhooks.built.lock().unwrap().len(), 1, "built once");
+        for (_, hits, ..) in &sinks {
+            assert_eq!(hits.load(Ordering::Relaxed), 1);
+        }
+
+        let _ = drained_tx.send(true);
+        tokio::time::timeout(std::time::Duration::from_secs(2), loop_task)
+            .await
+            .expect("the drain must end the loop")
+            .unwrap();
+        for (_, _, retire, sink) in sinks {
+            drop(retire);
+            tokio::time::timeout(std::time::Duration::from_secs(2), sink)
+                .await
+                .expect("the retired sink's accept loop must end")
+                .unwrap();
+        }
+    }
+
+    /// A burst of refusals against one stalled target (issue #98, decision
+    /// 0041 §7 and §3): every refusal is counted in `dropped`, one warning
+    /// names the target, its URL carries no credentials, and a refused
+    /// fan-out builds no payload. The target's userinfo is real: the
+    /// stalled sink is dialed with it.
+    #[tokio::test]
+    async fn a_refusal_burst_counts_every_drop_and_warns_once_without_credentials() {
+        let log = captured_log();
+        let (stalled, stalled_hits, stalled_retire, stalled_sink) = counting_sink(None).await;
+        let webhooks = Arc::new(Webhooks::default());
+        webhooks.set(vec![target(format!("http://user:hunter2@{stalled}/hook"))]);
+        let (tx, rx) = broadcast::channel(2 * WEBHOOK_DELIVERY_CAP);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (drained_tx, drained_rx) = tokio::sync::watch::channel(false);
+        let loop_task = tokio::spawn(dispatch_loop(
+            rx,
+            Arc::clone(&webhooks),
+            shutdown_rx,
+            drained_rx,
+        ));
+
+        for i in 0..WEBHOOK_DELIVERY_CAP {
+            let mut e = email();
+            e.id = format!("fill-{i}");
+            tx.send(Arc::new(e)).unwrap();
+        }
+        spin_until(5000, || {
+            stalled_hits.load(Ordering::Relaxed) == WEBHOOK_DELIVERY_CAP
+        })
+        .await;
+        const BURST: u64 = 5;
+        for i in 0..BURST {
+            let mut e = email();
+            e.id = format!("burst-{i}");
+            tx.send(Arc::new(e)).unwrap();
+        }
+        spin_until(5000, || webhooks.snapshot().dropped == BURST).await;
+        assert_eq!(
+            webhooks.built.lock().unwrap().len(),
+            WEBHOOK_DELIVERY_CAP,
+            "one build per admitted mail; a refused fan-out builds nothing"
+        );
+
+        let _ = drained_tx.send(true);
+        tokio::time::timeout(std::time::Duration::from_secs(2), loop_task)
+            .await
+            .expect("the drain must end the loop")
+            .unwrap();
+        std::io::Write::flush(&mut log.clone()).unwrap();
+        let logged = String::from_utf8_lossy(&log.0.lock().unwrap()).to_string();
+        // Only the budget warning names this sink: the lines carrying its
+        // address are exactly the drop warnings.
+        let sink = format!("{stalled}/hook");
+        let warnings: Vec<&str> = logged.lines().filter(|l| l.contains(&sink)).collect();
+        assert_eq!(warnings.len(), 1, "{BURST} drops, one warning: {logged}");
+        assert!(warnings[0].contains("over its delivery budget"), "{logged}");
+        assert!(
+            !logged.contains("hunter2"),
+            "no credential is logged: {logged}"
+        );
+        assert_eq!(webhooks.snapshot().aborted, WEBHOOK_DELIVERY_CAP as u64);
+
+        drop(stalled_retire);
+        tokio::time::timeout(std::time::Duration::from_secs(2), stalled_sink)
+            .await
+            .expect("the retired sink's accept loop must end")
+            .unwrap();
     }
 }

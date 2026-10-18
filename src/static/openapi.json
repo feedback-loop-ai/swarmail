@@ -172,13 +172,13 @@
       "delete": { "summary": "Disable all chaos", "responses": { "200": { "description": "OK" } } }
     },
     "/api/v1/webhooks": {
-      "get": { "summary": "Current webhook targets (the secret is redacted: null)", "responses": { "200": { "description": "OK" } }, "description": "The targets as stored, with every secret null (decision 0029 §5): PUT is the only writer and an operator retains their own payload. Everything else is verbatim." },
+      "get": { "summary": "Current webhook targets (the secret is redacted: null)", "responses": { "200": { "description": "OK" } }, "description": "The targets redacted (decision 0029 §5, amended by 0041 §3): every secret is null and every URL loses its userinfo (http://user:pw@host/x is shown as http://host/x; delivery still sends the credentials). Query, fragment, inbox and ca_pem are shown as stored. PUT is the only writer and an operator retains their own payload." },
       "put": {
-        "summary": "Replace webhook targets. Each delivery POSTs {event:\"received\", email:{...}} with X-Swarmail-Secret; retried 4x (100ms..1.6s). http:// and https:// targets (https over TLS via reqwest + rustls, verification on; optional per-target ca_pem).",
+        "summary": "Replace webhook targets. Each delivery POSTs {event:\"received\", email:{...}} with X-Swarmail-Secret; retried 4x (100ms..1.6s). http:// and https:// targets (https over TLS via reqwest + rustls, verification on; optional per-target ca_pem), dialed directly: environment proxies are ignored and redirects are not followed. The 200 echo is redacted like GET.",
         "requestBody": { "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookTarget" } } } } },
         "responses": {
           "200": { "description": "OK" },
-          "400": { "description": "A target that cannot be delivered is refused before any effect (issue #47, decision 0029 §5): the body names the defect, e.g. \"webhook target 0: webhook URL must name a host\" (a scheme-forgotten localhost:9000), an unsupported scheme, an unparsable URL, a ca_pem that does not load, or a secret that is not a single-line header value of at most 4096 octets. Nothing is applied." }
+          "400": { "description": "A target that cannot be delivered is refused before any effect (issue #47, decision 0029 §5): the body names the defect, e.g. \"webhook target 0: webhook URL must name a host\" (a scheme-forgotten localhost:9000), an unsupported scheme, an unparsable URL, a ca_pem that does not load, or a secret that is not an HTTP header value of at most 4096 octets without leading or trailing space or tab (decision 0041 §1). No refusal echoes the secret or the URL. Nothing is applied: the previous target list stays in place." }
         }
       },
       "delete": { "summary": "Remove all webhook targets", "responses": { "200": { "description": "OK" } } }
@@ -239,9 +239,9 @@
       "WebhookTarget": {
         "type": "object",
         "properties": {
-          "url": { "type": "string", "description": "Must parse with an http:// or https:// scheme and a host to dial — refused at PUT otherwise (localhost:9000 is read as scheme localhost and is refused)" },
+          "url": { "type": "string", "description": "Must parse with an http:// or https:// scheme and a host to dial — refused at PUT otherwise (localhost:9000 is read as scheme localhost and is refused). Userinfo is sent as Basic authorization and stripped from every echo and log line" },
           "inbox": { "type": [ "string", "null" ] },
-          "secret": { "type": [ "string", "null" ], "description": "Single-line header value, at most 4096 octets, no CR/LF/NUL; GET /api/v1/webhooks redacts it — PUT is the only writer" },
+          "secret": { "type": [ "string", "null" ], "description": "An HTTP header value the delivery client accepts: at most 4096 octets, no control characters but tab, no leading or trailing space or tab; GET /api/v1/webhooks redacts it — PUT is the only writer" },
           "ca_pem": { "type": [ "string", "null" ], "description": "Optional PEM of an extra root CA to trust for this target, on top of the built-in root store" }
         }
       }
