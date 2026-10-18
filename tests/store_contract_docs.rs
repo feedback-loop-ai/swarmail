@@ -121,12 +121,99 @@ fn the_pop3_size_rule_is_stated_alike_everywhere() {
     );
 }
 
+/// Run 21's contracts as published (proposed decision 0044, AC11): the
+/// widened recipient predicate, the nullable envelope sender, the renamed
+/// unread key, the wipe route's honest name, latest's limits, the bounded
+/// snippet and page budget and the unordered batch effects — stated in
+/// README and llms.txt and in the served schema, with the drifted claims
+/// issue #99 named gone.
+#[test]
+fn the_compat_validation_contracts_are_published() {
+    let readme = doc("README.md");
+    states(
+        &readme,
+        "README",
+        &[
+            "the SMTP envelope recipients — so a Bcc'd address matches",
+            "`envelope_from`, the SMTP `MAIL FROM` reverse path",
+            "the envelope's `messages_unread` is the match count",
+            "swarmail's own explicit wipe of every inbox — not an upstream route",
+            "a nonblank `?query=` is a `400` — search, then fetch the id",
+            "the members' effects have **no** order",
+            "compat page exceeds byte budget 67108864; reduce limit or fetch raw by id",
+            "at most an 8192-byte prefix of its body",
+            "0044-compat-validation.md",
+        ],
+    );
+    refuses(
+        &readme,
+        "README",
+        &["messages_unread_count", "MailHog's wipe alias"],
+    );
+    let llms = doc("src/static/llms.txt");
+    states(
+        &llms,
+        "llms.txt",
+        &[
+            "the SMTP envelope (RCPT TO), so a Bcc'd address matches",
+            "`messages_unread`, `start`",
+            "the effects have no order",
+        ],
+    );
+    refuses(
+        &llms,
+        "llms.txt",
+        &["messages_unread_count", "= the header From;"],
+    );
+
+    let openapi: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/static/openapi.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let to = openapi["paths"]["/api/v1/inboxes/{inbox}/messages"]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "to")
+        .unwrap()["description"]
+        .clone();
+    assert!(
+        to.as_str()
+            .unwrap()
+            .contains("SMTP envelope recipients (RCPT TO)"),
+        "{to}"
+    );
+    let envelope = &openapi["components"]["schemas"]["Email"]["properties"]["envelope_from"];
+    assert_eq!(
+        envelope["type"],
+        serde_json::json!(["string", "null"]),
+        "{envelope}"
+    );
+    for path in [
+        "/api/v1/message/latest/raw",
+        "/api/v1/message/latest/headers",
+    ] {
+        assert!(
+            openapi["paths"][path]["get"].is_object(),
+            "{path} is published"
+        );
+    }
+    let wipe = openapi["paths"]["/api/v1/delete-all"]["delete"]["summary"]
+        .as_str()
+        .unwrap();
+    assert!(wipe.contains("not an upstream route"), "{wipe}");
+}
+
 #[test]
 fn the_index_lists_both_proposals_as_proposed() {
     let index = doc("docs/decisions/README.md");
     for file in [
         "0037-pop3-size-accounting.md",
         "0038-store-memory-and-timestamps.md",
+        "0044-compat-validation.md",
     ] {
         let row = index
             .split("| [")
@@ -137,6 +224,7 @@ fn the_index_lists_both_proposals_as_proposed() {
     for file in [
         "docs/decisions/0037-pop3-size-accounting.md",
         "docs/decisions/0038-store-memory-and-timestamps.md",
+        "docs/decisions/0044-compat-validation.md",
     ] {
         assert!(
             doc(file).contains("**Status:** proposed"),

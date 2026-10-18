@@ -44,58 +44,78 @@ pub(crate) fn error_object(code: i64, message: &str, id: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-/// How a parsed envelope is answered (decision 0039 §2) — the one owner of
-/// the rule both transports apply: `dispatch` refuses by it, and the stdio
-/// bridge shapes its replies and its transport errors by it, so the bridge
-/// can no longer mistake a batch for a notification (issue #72).
+/// The refusal a non-object request earns (decision 0044 §1): JSON-RPC 2.0
+/// §5–§6 make it an invalid request, answered with a null id — never the
+/// silence a notification gets.
+const NOT_AN_OBJECT: &str = "a JSON-RPC request must be an object";
+
+/// How a parsed envelope is answered (decision 0039 §2, amended by proposed
+/// 0044 §1) — the one owner of the rule both transports apply: `dispatch`
+/// refuses by it, and the stdio bridge shapes its replies and its transport
+/// errors by it, so the bridge can no longer mistake a batch for a
+/// notification (issue #72).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Envelope {
-    /// No reply: a single value without an `id` (a notification, a scalar),
-    /// or an admitted batch of notifications only.
+    /// No reply: a single object without an `id` (a notification), or an
+    /// admitted batch of notifications only.
     Silent,
     /// One request: answered with one object carrying this id, null
-    /// included.
+    /// included — a non-object value is answered too, with a null id.
     Single(Value),
     /// An admitted batch with requests: answered with one array, one entry
-    /// per id-bearing member, in member order — duplicates and nulls kept.
+    /// per id-bearing member and one null-id entry per non-object member, in
+    /// member order — duplicates and nulls kept.
     Batch(Vec<Value>),
     /// An empty or over-cap array: one null-id refusal, whatever ids its
     /// members carry. The bounds are judged before any silence.
     InvalidBatch,
 }
 
+/// The id one value is answered with, if any: an object's own `id`
+/// (`None` for a notification), and a null id for anything that is not an
+/// object — a scalar, `null`, a string or a nested array is an invalid
+/// request, never a notification (decision 0044 §1, issue #91).
+fn reply_id(value: &Value) -> Option<Value> {
+    match value {
+        Value::Object(fields) => fields.get("id").cloned(),
+        _ => Some(Value::Null),
+    }
+}
+
 /// Classify a parsed body. A batch member contributes only its own `id`,
-/// never one nested inside another array.
+/// never one nested inside another array — a nested array is itself an
+/// invalid member, answered with a null id.
 pub(crate) fn classify(body: &Value) -> Envelope {
     match body {
         Value::Array(reqs) if reqs.is_empty() || reqs.len() > MCP_BATCH_CAP => {
             Envelope::InvalidBatch
         }
         Value::Array(reqs) => {
-            let ids: Vec<Value> = reqs.iter().filter_map(|r| r.get("id").cloned()).collect();
+            let ids: Vec<Value> = reqs.iter().filter_map(reply_id).collect();
             if ids.is_empty() {
                 Envelope::Silent
             } else {
                 Envelope::Batch(ids)
             }
         }
-        single => match single.get("id") {
-            Some(id) => Envelope::Single(id.clone()),
+        single => match reply_id(single) {
+            Some(id) => Envelope::Single(id),
             None => Envelope::Silent,
         },
     }
 }
 
-/// Answer one `POST /mcp` body: the parse lives here (the `Json` extractor
-/// is gone), so a malformed body is a JSON-RPC error object with a null id,
-/// not a plain-text 400 (decision 0029 §2). A JSON array is a batch,
-/// answered in order; a single object is one request.
-pub async fn dispatch(ctx: &McpContext, body: &str) -> axum::response::Response {
+/// Answer one `POST /mcp` body: the parse lives here, from the bounded body
+/// bytes (decision 0044 §1), so malformed JSON and invalid UTF-8 alike are a
+/// JSON-RPC `-32700` with a null id, not a plain-text 400 (decision 0029
+/// §2). A JSON array is a batch, its members polled concurrently and
+/// answered in member order; a single value is one request.
+pub async fn dispatch(ctx: &McpContext, body: &[u8]) -> axum::response::Response {
     use axum::Json;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
-    let parsed: Result<Value, _> = serde_json::from_str(body);
+    let parsed: Result<Value, _> = serde_json::from_slice(body);
     match parsed {
         Err(e) => (
             StatusCode::BAD_REQUEST,
@@ -123,13 +143,14 @@ pub async fn dispatch(ctx: &McpContext, body: &str) -> axum::response::Response 
         }
         Ok(Value::Array(reqs)) => {
             // Every admitted member runs — a notification's effect happens
-            // even though its answer is silence.
-            let mut responses = Vec::new();
-            for req in &reqs {
-                if let Some(resp) = handle(ctx, req).await {
-                    responses.push(resp);
-                }
-            }
+            // even though its answer is silence. The members are polled
+            // concurrently (decision 0044 §2): at most `MCP_BATCH_CAP`
+            // futures on this task, no spawn, so sixteen waits share one
+            // wait interval instead of summing sixteen. Replies keep member
+            // order; the members' effects have no order — a client that
+            // needs two mutations ordered sends them as two requests.
+            let replies = futures_util::future::join_all(reqs.iter().map(|req| handle(ctx, req)));
+            let responses: Vec<Value> = replies.await.into_iter().flatten().collect();
             // An all-notification batch is answered with silence; a mixed
             // one carries only the requests' answers, in order.
             if responses.is_empty() {
@@ -150,6 +171,11 @@ pub async fn dispatch(ctx: &McpContext, body: &str) -> axum::response::Response 
 /// says; an id-less `notifications/initialized` and an id-less `tools/call`
 /// both get silence.
 pub async fn handle(ctx: &McpContext, req: &Value) -> Option<Value> {
+    // A value that is not an object is no request at all (decision 0044
+    // §1): `-32600`, null id — the classification's null-id position.
+    if !req.is_object() {
+        return Some(error_object(-32600, NOT_AN_OBJECT, Value::Null));
+    }
     let id = req.get("id").cloned();
     let method = match req.get("method") {
         None => {
@@ -246,9 +272,26 @@ fn arg_i64(args: &Value, key: &str) -> Result<Option<i64>, (i64, String)> {
 }
 
 /// The inbox argument with its schema default: an absent inbox is the
-/// `default` inbox on every tool that reads one.
+/// `default` inbox on every tool that reads one, and a supplied blank one
+/// refuses by the shared rule (decision 0044 §3) — never the default.
 fn arg_inbox(args: &Value) -> Result<String, (i64, String)> {
-    Ok(arg_str(args, "inbox")?.unwrap_or_else(|| "default".into()))
+    let inbox = arg_str(args, "inbox")?.unwrap_or_else(|| "default".into());
+    crate::model::validate_inbox(&inbox).map_err(|sentence| (-32602, sentence.to_string()))?;
+    Ok(inbox)
+}
+
+/// The first supplied argument key the tool's own descriptor does not
+/// publish (decision 0044 §3): the descriptor's `properties` are the
+/// vocabulary — no second registry — and a tool without inputs publishes
+/// none, so any key it is handed is unknown. An unknown tool has no
+/// descriptor and keeps its `-32601`.
+fn unknown_argument<'a>(tool: &str, args: &'a Value) -> Option<&'a str> {
+    let descriptor = TOOLS.as_array()?.iter().find(|t| t["name"] == tool)?;
+    let known = descriptor["inputSchema"].get("properties");
+    args.as_object()?
+        .keys()
+        .map(String::as_str)
+        .find(|key| known.and_then(|p| p.get(*key)).is_none())
 }
 
 /// The `id` argument, required on the by-id tools: absence keeps its
@@ -272,6 +315,19 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
         return Err(refusal("arguments", "an object of named arguments"));
     }
     let a = args(req);
+    // Every tool's argument shape is closed (decision 0044 §3, closing 0029
+    // §7's named residual): a typo'd key refuses by name before any effect
+    // — `{"inbx":"zz"}` must never clear the default inbox. The chaos tool
+    // keeps its pinned sentence (0029 §3).
+    if let Some(key) = unknown_argument(&name, a) {
+        let sentence = match name.as_str() {
+            "swarmail_set_chaos" => {
+                format!("unknown argument: {key} (use event|probability|error|delay_ms)")
+            }
+            _ => format!("unknown argument: {key}"),
+        };
+        return Err((-32602, sentence));
+    }
     let store = &ctx.store;
 
     match name.as_str() {
@@ -294,10 +350,15 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
                     crate::api::checked_page_size("limit", n).map_err(|msg| (-32602, msg))?
                 }
             };
+            // `offset` pages past the cap (decision 0044 §3, issue #91):
+            // uncapped like REST's, skipped before the limit is taken, and
+            // `total` stays the unpaged match count.
+            let offset = arg_usize(a, "offset")?.unwrap_or(0);
             let all = store.list(&inbox, &filter);
             let total = all.len();
             let emails: Vec<Value> = all
                 .into_iter()
+                .skip(offset)
                 .take(limit)
                 .map(|e| serde_json::to_value(&*e).unwrap())
                 .collect();
@@ -481,20 +542,9 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
             }
         }
         "swarmail_set_chaos" => {
-            // An unknown argument key refuses (decision 0029 §3): a typo'd
+            // An unknown argument key has already refused, by the shared
+            // descriptor check above (decision 0029 §3, 0044 §3): a typo'd
             // key must not arm nothing while answering success.
-            if let Some(keys) = a.as_object() {
-                for key in keys.keys() {
-                    if !matches!(key.as_str(), "event" | "probability" | "error" | "delay_ms") {
-                        return Err((
-                            -32602,
-                            format!(
-                                "unknown argument: {key} (use event|probability|error|delay_ms)"
-                            ),
-                        ));
-                    }
-                }
-            }
             let event =
                 arg_str(a, "event")?.ok_or_else(|| (-32602, "missing event".to_string()))?;
             let event_enum: ChaosEvent = serde_json::from_value(json!(event)).map_err(|_| {
@@ -558,6 +608,7 @@ static SCHEMA_EMAIL_ID: std::sync::LazyLock<Value> = std::sync::LazyLock::new(||
         "type": "object",
         "properties": { "id": { "type": "string", "description": "Email id" } },
         "required": ["id"],
+        "additionalProperties": false,
     })
 });
 
@@ -565,31 +616,42 @@ static SCHEMA_INBOX_ONLY: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
     json!({
         "type": "object",
         "properties": { "inbox": { "type": "string", "description": "Inbox name (default: default)" } },
+        "additionalProperties": false,
     })
 });
 
+/// The recipient predicate every `to` filter publishes (decision 0044 §8,
+/// issue #99): header To/Cc *and* the envelope's RCPT TO list.
+const TO_FILTER_DESCRIPTION: &str = "Case-insensitive substring of any recipient: the To and Cc headers and the SMTP envelope recipients (RCPT TO, so a Bcc'd address matches) — not a header-presence assertion";
+
 static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     json!([
-        { "name": "swarmail_search_emails", "description": "Search captured emails in an inbox by recipient, sender, subject or arrival time. Returns full emails (bodies, links, codes included) and the full match count as total.",
+        { "name": "swarmail_search_emails", "description": "Search captured emails in an inbox by recipient, sender, subject or arrival time. Returns full emails (bodies, links, codes included) and the full match count as total; offset pages past the limit.",
           "inputSchema": { "type": "object", "properties": {
-            "inbox": { "type": "string" }, "to": { "type": "string" }, "from": { "type": "string" },
+            "inbox": { "type": "string" }, "to": { "type": "string", "description": TO_FILTER_DESCRIPTION },
+            "from": { "type": "string", "description": "Case-insensitive substring of the header From address" },
             "subject": { "type": "string" }, "since_ms": { "type": "integer", "description": "Arrival time lower bound in ms since the epoch; negative values are legal" },
-            "limit": { "type": "integer", "minimum": 0, "maximum": 250, "default": 100 } } } },
+            "limit": { "type": "integer", "minimum": 0, "maximum": 250, "default": 100 },
+            "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Matches to skip, newest first; total is counted before paging" } },
+            "additionalProperties": false } },
         { "name": "swarmail_get_email", "description": "Fetch one captured email in full by id.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_get_latest_email", "description": "Fetch the most recent email(s) in an inbox.",
-          "inputSchema": { "type": "object", "properties": { "inbox": { "type": "string" }, "count": { "type": "integer", "minimum": 1, "maximum": 250, "default": 1 } } } },
+          "inputSchema": { "type": "object", "properties": { "inbox": { "type": "string" }, "count": { "type": "integer", "minimum": 1, "maximum": 250, "default": 1 } },
+            "additionalProperties": false } },
         { "name": "swarmail_delete_email", "description": "Delete one captured email by id (start the next assertion clean).",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_clear_inbox", "description": "Delete all emails in one inbox — the 'clear' of the clear/act/assert loop.",
           "inputSchema": SCHEMA_INBOX_ONLY.clone() },
-        { "name": "swarmail_clear_all", "description": "Delete every email in every inbox.", "inputSchema": { "type": "object" } },
-        { "name": "swarmail_wait_for_email", "description": "Block until count emails matching the filter arrive (push-based, no polling). Returns the matched emails. Waits at most timeout_ms (60000 at most) and races the server's shutdown, answering an error once it begins stopping. A count of 0 still means at least one (decision 0010).",
+        { "name": "swarmail_clear_all", "description": "Delete every email in every inbox.", "inputSchema": { "type": "object", "additionalProperties": false } },
+        { "name": "swarmail_wait_for_email", "description": "Block until count emails matching the filter arrive (push-based, no polling). Returns the matched emails. Waits at most timeout_ms (60000 at most) and races the server's shutdown, answering an error once it begins stopping. A count of 0 still means at least one (decision 0010). Waits inside one batch run concurrently; their effects have no order.",
           "inputSchema": { "type": "object", "properties": {
-            "inbox": { "type": "string" }, "to": { "type": "string" }, "from": { "type": "string" },
+            "inbox": { "type": "string" }, "to": { "type": "string", "description": TO_FILTER_DESCRIPTION },
+            "from": { "type": "string", "description": "Case-insensitive substring of the header From address" },
             "subject": { "type": "string" }, "since_ms": { "type": "integer", "description": "Arrival time lower bound in ms since the epoch; negative values are legal" },
             "count": { "type": "integer", "minimum": 0, "maximum": 250, "default": 1, "description": "Matched emails to wait for; 0 still means at least one" },
-            "timeout_ms": { "type": "integer", "default": 5000, "minimum": 0, "maximum": 60000 } } } },
+            "timeout_ms": { "type": "integer", "default": 5000, "minimum": 0, "maximum": 60000 } },
+            "additionalProperties": false } },
         { "name": "swarmail_extract_links", "description": "Extract all http(s) URLs from a captured email's text/HTML bodies.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_extract_codes", "description": "Extract likely OTP/verification codes from a captured email.",
@@ -598,17 +660,20 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
           "inputSchema": { "type": "object", "properties": {
             "inbox": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" },
             "subject": { "type": "string" }, "text": { "type": "string" }, "html": { "type": "string" } },
-            "required": ["to"] } },
+            "required": ["to"], "additionalProperties": false } },
         { "name": "swarmail_set_chaos", "description": "Enable deliberate SMTP failure: event = connect|mail_from|rcpt|data, probability 0-100, optional SMTP error line (a single line starting with a 4xx or 5xx code, at most 510 octets) and delay_ms (at most 300000).",
           "inputSchema": { "type": "object", "properties": {
             "event": { "type": "string", "enum": ["connect", "mail_from", "rcpt", "data"] },
             "probability": { "type": "integer", "minimum": 0, "maximum": 100 },
             "error": { "type": "string", "description": "A single-line SMTP reply starting with a 4xx or 5xx code, at most 510 octets" },
             "delay_ms": { "type": "integer", "minimum": 0, "maximum": 300000 } },
-            "required": ["event", "probability"] } },
-        { "name": "swarmail_clear_chaos", "description": "Disable all chaos rules.", "inputSchema": { "type": "object" } },
+            "required": ["event", "probability"], "additionalProperties": false } },
+        { "name": "swarmail_clear_chaos", "description": "Disable all chaos rules.", "inputSchema": { "type": "object", "additionalProperties": false } },
     ])
 });
+
+#[cfg(test)]
+mod batch_tests;
 
 #[cfg(test)]
 mod tests {
@@ -632,16 +697,26 @@ mod tests {
                 Envelope::Silent,
             ),
             (json!({"jsonrpc":"2.0"}), Envelope::Silent),
-            (json!(42), Envelope::Silent),
-            (json!("text"), Envelope::Silent),
+            // A non-object is an invalid request, answered with a null id —
+            // never silence (decision 0044 §1; red before: all Silent).
+            (json!(42), Envelope::Single(Value::Null)),
+            (json!("text"), Envelope::Single(Value::Null)),
+            (Value::Null, Envelope::Single(Value::Null)),
             (json!([]), Envelope::InvalidBatch),
             (over_cap, Envelope::InvalidBatch),
             (over_cap_silent, Envelope::InvalidBatch),
             (json!([{"method":"a"}, {"method":"b"}]), Envelope::Silent),
-            (json!([[{"id":1}], 3]), Envelope::Silent),
+            (
+                json!([[{"id":1}], 3]),
+                Envelope::Batch(vec![Value::Null, Value::Null]),
+            ),
             (
                 json!([{"id":1}, {"method":"n"}, {"id":null}, {"id":1}]),
                 Envelope::Batch(vec![json!(1), Value::Null, json!(1)]),
+            ),
+            (
+                json!([{"id":"a"}, 5, {"method":"n"}, null]),
+                Envelope::Batch(vec![json!("a"), Value::Null, Value::Null]),
             ),
         ] {
             assert_eq!(classify(&body), want, "{body}");
@@ -669,15 +744,17 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":null,"method":"ping"}"#.to_string(),
             seed.to_string(),
             "42".to_string(),
+            "null".to_string(),
             "[]".to_string(),
             format!("[{}]", vec![ping; 17].join(",")),
             format!("[{}]", vec![note; 17].join(",")),
             format!("[{note},{seed}]"),
             format!(r#"[{ping},{note},{{"jsonrpc":"2.0","id":null,"method":"nope"}},{ping}]"#),
+            format!("[{ping},[1,2],{note},\"x\"]"),
         ];
         for body in bodies {
             let parsed: Value = serde_json::from_str(&body).unwrap();
-            let response = dispatch(&ctx, &body).await;
+            let response = dispatch(&ctx, body.as_bytes()).await;
             let status = response.status();
             let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await
@@ -710,6 +787,174 @@ mod tests {
         }
         // Both silent seeds (the single one and the batch member) ran.
         assert_eq!(ctx.store.count("parity", &Filter::default()), 2);
+    }
+
+    /// A fresh context and its stop sender — held by the test, since a
+    /// dropped sender reads as stopping.
+    fn context() -> (tokio::sync::watch::Sender<bool>, McpContext) {
+        let (stop, shutdown) = tokio::sync::watch::channel(false);
+        let ctx = McpContext {
+            store: Arc::new(Store::new(0)),
+            chaos: Arc::new(Chaos::default()),
+            shutdown,
+        };
+        (stop, ctx)
+    }
+
+    async fn call(ctx: &McpContext, tool: &str, arguments: Value) -> Value {
+        let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                         "params":{"name": tool, "arguments": arguments}});
+        handle(ctx, &req).await.expect("a request is answered")
+    }
+
+    /// Every tool's argument shape is closed (decision 0044 §3, issue #91):
+    /// a sentinel key refuses `-32602` naming it — zero-argument tools
+    /// included — before any effect. A typo'd clear leaves `default`
+    /// standing, a typo'd wait registers no watcher, and the chaos tool keeps
+    /// its pinned sentence. Red before: the typo'd clear emptied `default`.
+    #[tokio::test]
+    async fn every_tool_refuses_an_unknown_argument_before_any_effect() {
+        let (_stop, ctx) = context();
+        ctx.store
+            .insert(crate::store::email("keep", "default", "a@x.io"))
+            .unwrap();
+        let tools = TOOLS.as_array().unwrap();
+        assert_eq!(tools.len(), 12);
+        for tool in tools {
+            let name = tool["name"].as_str().unwrap();
+            assert_eq!(
+                tool["inputSchema"]["additionalProperties"], false,
+                "{name} publishes its closed shape"
+            );
+            let reply = call(&ctx, name, json!({"zz_typo": 1})).await;
+            assert_eq!(reply["error"]["code"], -32602, "{name}: {reply}");
+            let message = reply["error"]["message"].as_str().unwrap();
+            assert!(
+                message.starts_with("unknown argument: zz_typo"),
+                "{name}: {reply}"
+            );
+        }
+        let reply = call(
+            &ctx,
+            "swarmail_set_chaos",
+            json!({"event": "data", "probability": 100, "solus": 1}),
+        )
+        .await;
+        assert_eq!(
+            reply["error"]["message"],
+            "unknown argument: solus (use event|probability|error|delay_ms)"
+        );
+        assert!(ctx.chaos.current().data.is_none(), "no rule armed");
+        let reply = call(&ctx, "swarmail_clear_inbox", json!({"inbx": "zz"})).await;
+        assert_eq!(reply["error"]["message"], "unknown argument: inbx");
+        assert_eq!(ctx.store.count("default", &Filter::default()), 1);
+        let reply = call(
+            &ctx,
+            "swarmail_wait_for_email",
+            json!({"inbox": "typo-wait", "timeout_ms": 60000, "tto": "a@x.io"}),
+        )
+        .await;
+        assert_eq!(reply["error"]["message"], "unknown argument: tto");
+        assert_eq!(ctx.store.watcher_count(), 0, "no waiter registered");
+        // An unknown tool keeps its own code: there is no descriptor to
+        // judge the keys by.
+        let reply = call(&ctx, "swarmail_nope", json!({"zz_typo": 1})).await;
+        assert_eq!(reply["error"]["code"], -32601, "{reply}");
+        // Advertised keys still stage.
+        let reply = call(&ctx, "swarmail_search_emails", json!({"inbox": "default"})).await;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+    }
+
+    /// A supplied blank inbox refuses on every inbox-reading tool (decision
+    /// 0044 §3) — never the default, never a stored blank inbox — while an
+    /// omitted one still selects `default` and a padded nonblank name is
+    /// kept verbatim. Red before: the blank seed was stored.
+    #[tokio::test]
+    async fn a_blank_inbox_refuses_on_every_inbox_tool() {
+        let (_stop, ctx) = context();
+        for blank in ["", "  ", "\t\u{3000}\u{a0}"] {
+            for (tool, extra) in [
+                ("swarmail_search_emails", json!({})),
+                ("swarmail_get_latest_email", json!({})),
+                ("swarmail_clear_inbox", json!({})),
+                ("swarmail_wait_for_email", json!({"timeout_ms": 60000})),
+                ("swarmail_seed_email", json!({"to": "a@x.io"})),
+            ] {
+                let mut arguments = extra.clone();
+                arguments["inbox"] = json!(blank);
+                let reply = call(&ctx, tool, arguments).await;
+                assert_eq!(reply["error"]["code"], -32602, "{tool} {blank:?}: {reply}");
+                assert_eq!(
+                    reply["error"]["message"],
+                    crate::model::BLANK_INBOX_REFUSAL,
+                    "{tool} {blank:?}"
+                );
+            }
+        }
+        assert!(ctx.store.inboxes().is_empty(), "nothing stored");
+        assert_eq!(ctx.store.watcher_count(), 0, "no waiter registered");
+        let padded = json!({"inbox": " pad ", "to": "a@x.io"});
+        let reply = call(&ctx, "swarmail_seed_email", padded).await;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        assert_eq!(ctx.store.inboxes(), vec![(" pad ".to_string(), 1)]);
+    }
+
+    /// MCP search pages with `offset` (issue #91): skipped before the limit,
+    /// `total` unpaged, beyond the end empty, a malformed offset refused by
+    /// name. Red before: the offset was ignored and older mail unreachable.
+    #[tokio::test]
+    async fn search_pages_with_offset_and_keeps_the_total() {
+        let (_stop, ctx) = context();
+        for (i, id) in ["m0", "m1", "m2"].into_iter().enumerate() {
+            let mut email = crate::store::email(id, "paged", "a@x.io");
+            email.received_ms = i as i64;
+            ctx.store.insert(email).unwrap();
+        }
+        let page = |reply: Value| -> (Value, Vec<String>) {
+            let body: Value =
+                serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            let ids = body["emails"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["id"].as_str().unwrap().to_string())
+                .collect();
+            (body["total"].clone(), ids)
+        };
+        let reply = call(
+            &ctx,
+            "swarmail_search_emails",
+            json!({"inbox": "paged", "limit": 1, "offset": 1}),
+        )
+        .await;
+        assert_eq!(page(reply), (json!(3), vec!["m1".to_string()]));
+        let reply = call(
+            &ctx,
+            "swarmail_search_emails",
+            json!({"inbox": "paged", "offset": 2}),
+        )
+        .await;
+        assert_eq!(page(reply), (json!(3), vec!["m0".to_string()]));
+        let reply = call(
+            &ctx,
+            "swarmail_search_emails",
+            json!({"inbox": "paged", "offset": u64::MAX}),
+        )
+        .await;
+        assert_eq!(page(reply), (json!(3), Vec::<String>::new()));
+        for bad in [json!(-1), json!(null), json!("1"), json!(1.5)] {
+            let reply = call(
+                &ctx,
+                "swarmail_search_emails",
+                json!({"inbox": "paged", "offset": bad}),
+            )
+            .await;
+            assert_eq!(
+                reply["error"]["message"], "offset must be a non-negative integer",
+                "{bad}"
+            );
+        }
     }
 
     /// The published schema is pinned to the domain's constants (issue #32
@@ -781,6 +1026,14 @@ mod tests {
             crate::api::MAX_PAGE_SIZE,
             "{search}"
         );
+        // The recipient predicate and the search's offset are published
+        // where they are enforced (decision 0044 §§3, 8).
+        for tool in [&search, &wait] {
+            assert_eq!(tool["to"]["description"], TO_FILTER_DESCRIPTION, "{tool}");
+        }
+        assert!(TO_FILTER_DESCRIPTION.contains("envelope recipients"));
+        assert_eq!(search["offset"]["minimum"], 0, "{search}");
+        assert_eq!(search["offset"]["default"], 0, "{search}");
         let latest = find("swarmail_get_latest_email");
         assert_eq!(latest["count"]["minimum"], 1, "{latest}");
         assert_eq!(

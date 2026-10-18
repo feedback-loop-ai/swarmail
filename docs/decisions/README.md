@@ -49,6 +49,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0041](0041-webhook-boundary.md) | Webhook boundary: header-valid secrets, direct delivery, redacted URL credentials, shared payload bytes and an observable final ledger (amends 0029 §5) | proposed — awaiting the operator | (Run 18: issues #75, #76, #97, #98) |
 | [0042](0042-single-writer-lock.md) | Single-writer startup errors and the limit of restart recovery: a typed `OpenError`, and restart reloads rather than reconciles (supplements 0033 §§2–4; amends 0033 §1) | proposed — awaiting the operator | (Run 19: issue #85) |
 | [0043](0043-mcp-origin-boundary.md) | Origin validation on exposed HTTP listeners: off-loopback Origin-to-Host authority check, portless Host means 80, a paired in-flight total and Prometheus label escaping (amends 0030 §2) | proposed — awaiting the operator | (Run 20: issues #88, #89, #92) |
+| [0044](0044-compat-validation.md) | Validate requests and bound compat page work without losing provenance: JSON-RPC errors for every malformed body, concurrent batch members, closed argument and query shapes, scoped latest, bounded snippets and MailHog pages, the persisted envelope sender, localized subject markers (amends 0029 §§2/4/7, 0030 §4, 0031 §3; extends 0030 §3; updates proposed 0039 §§2–4) | proposed — awaiting the operator | (Run 21: issues #91, #95, #96, #99, #100) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

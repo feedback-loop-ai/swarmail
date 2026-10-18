@@ -38,8 +38,16 @@ pub struct ChaosRule {
     /// `None` is not a pass: a fired rule always fails its stage, with the
     /// stage's default when no line is set — `451 4.3.0 chaos` at
     /// `mail_from`/`rcpt`/`data` (and at `data` the mail is never stored),
-    /// a close with no banner at `connect` (issue #17).
-    #[serde(default)]
+    /// a close with no banner at `connect` (issue #17). Omission is `None`;
+    /// a present `null` refuses (decision 0025 §2, 0044 §3) — only the
+    /// per-event rule itself may be `null`, which clears that event. An
+    /// unset line is omitted on the way out too, so a GET'd config PUTs
+    /// back unchanged.
+    #[serde(
+        default,
+        deserialize_with = "crate::model::present_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub error: Option<String>,
     /// Delay before responding/processing, milliseconds, at most
     /// [`MAX_DELAY_MS`] — a rule is a stage condition, not an unbounded
