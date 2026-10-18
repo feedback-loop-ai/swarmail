@@ -4,6 +4,17 @@ target/
 .github/
 dist/
 # The run's own harness state and evidence are not build inputs — and a
-# stray SQLite file from a local seat must never enter the image.
+# stray SQLite file from a local seat must never enter the image. The
+# state home is .brokkr/ (it moved from .forge/), and the database
+# patterns are recursive: a bare `*.db` matches only at the context root
+# (issue #103). WAL/SHM companions and lock sidecars go with them.
+.brokkr/
 .forge/
-*.db
+.specify/
+**/*.db
+**/*.db-*
+**/*.db.lock
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/*.sqlite3-*

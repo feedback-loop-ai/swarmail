@@ -44,6 +44,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # Finite: a wedged test fails in half an hour, not GitHub's 360-minute
+    # default (issue #104).
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -60,9 +63,12 @@ jobs:
   # component). `dtolnay/rust-toolchain` with the `nightly` toolchain pin
   # supplies exactly that. The gate measures with --locked and preserves the
   # full lcov + summary under target/coverage/ even on refusal, so the
-  # artifact below is burn-down evidence, not just a green check.
+  # artifact below is burn-down evidence, not just a green check. The gate's
+  # verdict is untrusted without its selftest (the gate's own header), so
+  # CI runs it here as the verify seat does (issue #104).
   coverage:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -74,6 +80,7 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: bash scripts/coverage-gate.sh selftest
       - run: bash scripts/coverage-gate.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
@@ -150,17 +157,24 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # Every field is validated *before* anything reaches $GITHUB_OUTPUT —
+      # a value carrying a newline could otherwise inject extra output keys
+      # — and the values travel onward through `env:` only, never `${{ }}`
+      # spliced into a `run:` body (decision 0019 §1, issue #104).
       - name: Read the pinned brokkr record (fail closed)
         id: tooling
         run: |
           set -euo pipefail
           record=bundles/self/tooling.json
           if [ ! -f "$record" ]; then
-            echo "REFUSAL: $record is absent — the brokkr pin is an operator-owned record (see .forge/run6-operator-edits.md); the bundle cannot be compiled against a known toolchain without it, so this job refuses" >&2
+            echo "REFUSAL: $record is absent — the brokkr pin is an operator-owned record (docs/decisions/0045-delivery-repairs.md); the bundle cannot be compiled against a known toolchain without it, so this job refuses" >&2
             exit 1
           fi
-          if ! jq -e '.brokkr | type == "object" and (.sha | type == "string" and length == 40) and (.version | type == "string" and length > 0)' "$record" > /dev/null; then
-            echo "REFUSAL: $record is malformed — expected {\"brokkr\": {\"sha\": \"<40-hex commit>\", \"version\": \"<x.y.z>\"}}" >&2
+          if ! jq -e '.brokkr | type == "object"
+              and (.sha | type == "string" and test("^[0-9a-f]{40}$"))
+              and (.version | type == "string" and test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' \
+              "$record" > /dev/null; then
+            echo "REFUSAL: $record is malformed — expected {\"brokkr\": {\"sha\": \"<40 lowercase hex>\", \"version\": \"<major.minor.patch>\"}}" >&2
             exit 1
           fi
           echo "sha=$(jq -r '.brokkr.sha' "$record")" >> "$GITHUB_OUTPUT"
@@ -170,13 +184,17 @@ jobs:
           repository: feedback-loop-ai/brokkr
           ref: ${{ steps.tooling.outputs.sha }}
           path: brokkr-src
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      # --locked: the recorded commit's own Cargo.lock, never a fresh resolve.
       - name: Build the pinned brokkr
         working-directory: brokkr-src
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Assert the built version is the recorded one
+        env:
+          RECORDED_VERSION: ${{ steps.tooling.outputs.version }}
         run: |
           built="$(brokkr-src/target/release/brokkr --version)"
-          expected="brokkr ${{ steps.tooling.outputs.version }}"
+          expected="brokkr $RECORDED_VERSION"
           if [ "$built" != "$expected" ]; then
             echo "REFUSAL: the built brokkr is '$built' but the record pins '$expected'" >&2
             exit 1
@@ -184,12 +202,13 @@ jobs:
       - name: Compile the delivery bundle with the pinned brokkr
         run: brokkr-src/target/release/brokkr compile --bundle bundles/self
 
-  # The 5k delivery-bound proof at release optimization, tag-scoped and
-  # non-required: a slow release run must never block a PR, but a tag that
-  # cannot survive its own rate proof does not publish. No `needs:` — it
-  # rides the same push as the gates without gating on them (the publish
-  # jobs gate on the required set; this job's verdict is evidence, not
-  # permission).
+  # The 5k delivery-bound proof at release optimization, tag-scoped: a slow
+  # release run must never block a PR or a main push, but a tag that cannot
+  # survive its own rate proof does not publish — both publish jobs list it
+  # in `needs:` and require `success` on a tag ref (issue #104). On main it
+  # is skipped by its own `if:`, and the publishers admit exactly that
+  # `skipped` result there and nowhere else. No `needs:` of its own — it
+  # rides the same push as the gates without waiting on them.
   release-rate-5k:
     name: release rate 5k (tags only)
     runs-on: ubuntu-latest
@@ -218,18 +237,44 @@ jobs:
   # the two forms the docs name (issue #53).
   # NOT enforced: anything about :main/:sha-<sha> (re-publishable by design)
   # and any actor who can already push tags or delete packages.
+  #
+  # Admission is spelled out per prerequisite: `!cancelled()` lets the job
+  # see a skipped rate proof on main, so every other need must then name
+  # `success` explicitly — a failed, cancelled or skipped gate never
+  # publishes. A tag needs the rate proof green; main admits only its
+  # `skipped`. `packages: write` is held by this job only on those two push
+  # refs: the continuous `:main` is a publication too (decisions 0018/0019).
   docker:
     runs-on: ubuntu-latest
-    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile]
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile, release-rate-5k]
+    if: >-
+      !cancelled()
+      && github.event_name == 'push'
+      && needs.quality.result == 'success'
+      && needs.test.result == 'success'
+      && needs.coverage.result == 'success'
+      && needs.deny.result == 'success'
+      && needs.dependency-audit.result == 'success'
+      && needs.brokkr-compile.result == 'success'
+      && ((github.ref == 'refs/heads/main' && needs.release-rate-5k.result == 'skipped')
+        || (startsWith(github.ref, 'refs/tags/v') && needs.release-rate-5k.result == 'success'))
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # Validated before it reaches $GITHUB_OUTPUT (decision 0019 §1).
       - name: Read the crate version (the chart's appVersion must resolve)
         id: ver
-        run: echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! [[ "$version" =~ $semver ]]; then
+            echo "REFUSAL: Cargo.toml version '$version' is not the semver publish-guard.sh accepts" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -278,10 +323,28 @@ jobs:
   # NOT enforced: a concurrent publish can still race the probe (GHCR is
   # last-writer-wins) and any actor who can already push tags or delete
   # packages; re-publishing a version means deleting the registry tag.
-  chart:
+  #
+  # Verification and publication are two jobs (issue #104): `chart-verify`
+  # runs on every push and PR with a read-only token; only `chart-publish`,
+  # tag refs only, holds `packages: write`, and it needs the chart proof,
+  # every required gate and the tag's own rate proof green.
+  chart-verify:
     name: helm chart
     runs-on: ubuntu-latest
-    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.16.3
+      - run: bash scripts/chart-verify.sh
+
+  chart-publish:
+    name: helm chart publish (tags only)
+    runs-on: ubuntu-latest
+    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile, release-rate-5k, chart-verify]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       packages: write
@@ -290,28 +353,30 @@ jobs:
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.16.3
-      - run: bash scripts/chart-verify.sh
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        if: startsWith(github.ref, 'refs/tags/v')
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Validated before it reaches $GITHUB_OUTPUT (decision 0019 §1).
       - name: Read the chart version (the guard binds it to the ref)
         id: chartver
-        # Block scalar: the sed idiom carries `version: ` — a plain YAML
-        # scalar cannot.
         run: |
-          echo "version=$(sed -n 's/^version: \(.*\)/\1/p' charts/swarmail/Chart.yaml | head -1)" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          version="$(sed -n 's/^version: \(.*\)/\1/p' charts/swarmail/Chart.yaml | head -1)"
+          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          if ! [[ "$version" =~ $semver ]]; then
+            echo "REFUSAL: Chart.yaml version '$version' is not the semver publish-guard.sh accepts" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Guard the chart version (exact ref match; refuse a republish)
-        if: startsWith(github.ref, 'refs/tags/v')
         env:
           VERSION: ${{ steps.chartver.outputs.version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_USER: ${{ github.actor }}
         run: scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/charts/swarmail bare
       - name: Publish the chart (OCI, ghcr.io, v* refs only)
-        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           helm package charts/swarmail
           helm push swarmail-*.tgz oci://ghcr.io/feedback-loop-ai/charts

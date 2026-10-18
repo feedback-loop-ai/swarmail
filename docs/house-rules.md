@@ -34,19 +34,29 @@ Leave all of these clean before reporting success:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-brokkr compile --bundle bundles/self
-bash scripts/coverage-gate.sh     # the floor may rise, never fall
-cargo deny check licenses         # permissive-only tree
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+brokkr compile --bundle bundles/self   # the brokkr pinned in bundles/self/tooling.json
+bash scripts/coverage-gate.sh          # the floor may rise, never fall
+bash scripts/coverage-gate.sh selftest # the gate's verdict is untrusted without it
+bash scripts/publish-guard-test.sh     # the publish guard's proof
+cargo deny check licenses              # permissive-only tree
 ```
+
+This is the one gate inventory: CI and the verify seat both run all of it,
+plus a fail-closed proof that `native-tls` is absent from the tree. The
+differences are listed here once (issue #104). CI also owns the Helm chart
+contract (`scripts/chart-verify.sh`), the network-backed RustSec advisory
+audit, and the tag-only `release-rate-5k` proof that both publish jobs
+need. The verify seat runs offline and installs nothing.
 
 Tests are part of every change. Extend the suite that proves the code —
 `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` or the unit tests — and run
 the suite against real servers; no mocks in the loop.
 
 The coverage floor lives in `scripts/coverage-gate.sh` — currently **100% of
-lines, exact** (missed == 0, not a rounded 99.95). Raising it is an ordinary
+lines, branches and functions, exact** (missed == 0, not a rounded 99.95).
+The full lcov report and summary land under `target/coverage/`. Raising it is an ordinary
 change; lowering it is refused. Attribute-based coverage exclusions
 (`coverage(off)`) are forbidden — production code cannot shrink the
 denominator. Every new line of production code ships with a test that
@@ -55,7 +65,7 @@ executes it; a feature without its tests is an incomplete feature.
 ### Regression-test placement (decision 0020)
 
 Decision [0020](decisions/0020-concurrency-tests-and-the-coverage-gate.md)
-(*proposed*, awaiting the operator) settles where a concurrency regression
+(*accepted*, operator, 2026-10-16) settles where a concurrency regression
 test lives; the axis is **cold-path presence**, not seam access:
 
 1. **Inline `#[cfg(test)]` in `src/<module>.rs` is the default and stays
@@ -97,7 +107,11 @@ test lives; the axis is **cold-path presence**, not seam access:
 ## Dependencies
 
 `deny.toml` allowlists permissive licenses only (MIT, Apache-2.0, BSD, ISC,
-Zlib, Unicode-3.0, CC-BY-4.0 for data noted inline). Anything outside the
+Zlib, Unicode-3.0, CC-BY-4.0 for data noted inline, and CDLA-Permissive-2.0
+for one data dependency). The CDLA-Permissive-2.0 entry covers
+`webpki-roots`, Mozilla's root CA bundle shipped as data. It is the only
+license under which rustls distributes the offline trust store, and it
+carries no copyleft and no field-of-use restriction. Anything outside the
 allowlist fails `cargo deny check licenses`; a new dependency needs a
 permissive license and a reason a human can defend in one sentence.
 
@@ -105,7 +119,9 @@ permissive license and a reason a human can defend in one sentence.
 
 Commits are GPG-signed with the operator's key (`commit.gpgsign` is set
 repo-locally). Write messages in the repository's style: imperative mood, a
-body that says why, not what the diff shows. History is append-only on
+body that says why, not what the diff shows. A squash merge on GitHub is
+signed by GitHub's key, not the operator's; the signed author commits
+remain on the PR branch. History is append-only on
 `main`; force-push only ever repairs signed history the operator asked to
 re-sign.
 
@@ -113,10 +129,10 @@ re-sign.
 
 Every feature lands through a brokkr run: `brokkr run` drives
 intake → design → implement → verify → review → ship (decision 0009,
-*proposed*: the realm runs the speckit dialect, a contrarian design
+*accepted*: the realm runs the speckit dialect, a contrarian design
 panel argues before any code, a chief commits the spec, a deterministic
-check rules the artifacts, and review splits into correctness +
-security members); the review gate is constitutionally protected and
+check rules the artifacts, and review is a four-member panel —
+correctness and security among them, decision 0013); the review gate is constitutionally protected and
 security-hold is a hard stop. `verify` and `ship` are hermetic exec
 seats — a shell proves what a model claims. The work axis (intake,
 design, implement) is pinned to `spark-glm/GLM-5.3-Flash-EXL3`

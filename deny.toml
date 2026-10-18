@@ -3,7 +3,8 @@
 # allowlist; anything outside it fails CI. Permissive only, in the spirit
 # of the dual license: openness that imposes nothing. The list mirrors the
 # house rules' named allowances; anything beyond them is a genuine,
-# commented need recorded for the operator (see the run-11 operator notes).
+# commented need, and docs/house-rules.md records each one by name
+# (CDLA-Permissive-2.0 included).
 [licenses]
 allow = [
   "MIT",
@@ -23,8 +24,8 @@ allow = [
   # is the permissive flavor of the data license family (no copyleft, no
   # field-of-use restriction) and the only license under which rustls
   # distributes the offline trust store. The house rules do not name it:
-  # the tree's rustls-tls leg genuinely needs it, so the allowance is
-  # recorded in the run's operator notes rather than silently widened.
+  # the tree's rustls-tls leg genuinely needs it. The house rules list the
+  # allowance by name, so it is a tracked widening, not a silent one.
   "CDLA-Permissive-2.0",
 ]
 
