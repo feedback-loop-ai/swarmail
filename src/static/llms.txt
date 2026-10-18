@@ -83,7 +83,12 @@
    applied (decision 0024).
 4. Assert subject/body: fields `subject`, `text`, `html` are on every email; the
    `links` array holds every URL and `codes` holds likely OTP/verification codes —
-   no regexing HTML required. Exact counts: `GET /api/v1/inboxes/{inbox}/assert?count=N`
+   no regexing HTML required. `codes` keeps at most the first 64 distinct codes
+   (mail stored before the cap keeps its array verbatim); text and HTML that
+   are direct `multipart/alternative` siblings yield the text's codes (the
+   HTML's only when the text has none), other bodies contribute in source
+   order. A quoted attribute's link ends at its own closing quote, so an
+   encoded `&#39;` or `&quot;` inside `href` stays in the URL. Exact counts: `GET /api/v1/inboxes/{inbox}/assert?count=N`
    answers 200 only when exactly N mails match — `assert?count=0` is the negative
    assertion ("nothing arrived"), 200 on an empty filter and 409 with
    expected/matched otherwise; counts are never clamped to one.
@@ -175,7 +180,9 @@ Same store, the two shapes existing suites already speak:
 
 - `GET /api/v1/messages` — Mailpit's summary envelope (`total`, `unread`,
   `count`, `messages_count`, `messages_unread`, `start`, `tags`,
-  `messages`), newest first. `?inbox=` scopes to one swarmail inbox;
+  `messages`), newest first by receive time then id — every compat list,
+  search and `latest` share that order, scoped or not (the native inbox list
+  keeps acceptance order, which can differ). `?inbox=` scopes to one swarmail inbox;
   `?limit=`/`?start=` page (`limit` ≤ 250, refused with a 400 above).
   Snippets read at most the first 8192 bytes of a body.
 - `GET /api/v1/message/{id}` — Mailpit's full message; `/plain` serves the
@@ -183,7 +190,7 @@ Same store, the two shapes existing suites already speak:
   mail. `GET /api/v1/message/latest` (and `/latest/raw`, `/latest/headers`)
   is the newest mail by receive time then id, scoped by `?inbox=` (404 when
   that inbox is empty) or the whole store without it; a nonblank `?query=`
-  is a 400 — search, then fetch the id.
+  is a 400 — search, then fetch the id; Mailpit's `?tz=` is a 400 naming it.
   `DELETE /api/v1/messages` deletes exactly the
   non-empty `{"ids": [...]}` named mails (the `IDs` spelling accepted
   alike) and replies `{"removed": n}`; any
@@ -201,8 +208,10 @@ Same store, the two shapes existing suites already speak:
   an empty query; `?limit=`/`?start=` page. `GET /api/v1/search` is the
   Mailpit flavor
   (`kind=from|to|subject|containing`, JSON `400`). A containing query
-  refuses field syntax by name — any word like `to:x` or `foo:x`, a URL's
-  `://` excepted.
+  refuses field syntax by name — any word like `to:x` or `foo:x`, also
+  behind Mailpit's `(`, `-`/`!` and `"` wrappers (`-to:x`, `"to:x"`,
+  `(to:x)`), a URL's `://` excepted; there is no negation or quoting
+  grammar.
 - `GET /api/v1/messages/{id}/download` and `GET /api/v1/message/{id}/raw`
   serve the full RFC 5322 source as `message/rfc822`
   (`attachment; filename="<id>.eml"`).

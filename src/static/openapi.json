@@ -206,7 +206,7 @@
           "text": { "type": [ "string", "null" ] },
           "html": { "type": [ "string", "null" ] },
           "links": { "type": "array", "items": { "type": "string" } },
-          "codes": { "type": "array", "items": { "type": "string" } },
+          "codes": { "type": "array", "items": { "type": "string" }, "description": "Likely OTP/verification codes (4–10 ASCII digits), extracted at ingest: at most the first 64 distinct, in extraction order (proposed decision 0049); a row stored before the cap keeps its array verbatim" },
           "message_id": { "type": "string", "description": "The Message-ID header value, angle brackets stripped; absent when the mail has none" },
           "in_reply_to": { "type": "string", "description": "The first In-Reply-To id; absent when the mail has none" },
           "references": { "type": "array", "items": { "type": "string" }, "description": "The References ids in header order; absent when the mail has none" }

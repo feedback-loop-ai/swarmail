@@ -1293,18 +1293,14 @@ async fn clear_inbox(
     }
 }
 
-async fn get_message(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> ApiResult<Json<Arc<Email>>> {
+async fn get_message(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
     // The store already holds the mail behind an `Arc`; the response
     // serializes it in place — a deep clone here would copy the bytes the
     // wire is byte-identical without (`raw` is skipped, decision 0030 §1).
-    state
-        .store
-        .get(&id)
-        .map(Json)
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "message not found".into()))
+    // The serialization finishes on the blocking pool (decision 0049 §7):
+    // a 30 MiB body serialized by Axum after the handler returned would
+    // occupy the async worker the SMTP greeting needs.
+    compat::render_by_id(&state, id, |e| Json(e).into_response()).await
 }
 
 async fn delete_message(
@@ -1326,13 +1322,10 @@ async fn delete_message(
 }
 
 async fn get_raw(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
-    state
-        .store
-        .get(&id)
-        // The exact received bytes — no charset re-encoding, no newline
-        // translation — in the one shape that owns them: message/rfc822.
-        .map(|e| compat::raw_response(&e))
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "message not found".into()))
+    // The exact received bytes — no charset re-encoding, no newline
+    // translation — in the one shape that owns them: message/rfc822, copied
+    // on the blocking pool (decision 0049 §7).
+    compat::render_by_id(&state, id, compat::raw_response).await
 }
 
 async fn get_chaos(State(state): State<AppState>) -> Json<ChaosConfig> {

@@ -94,3 +94,11 @@ alternatives use documentation-contract red/green tests: unchanged runtime
 tests are preservation evidence, never claimed fixes. The index lists this
 record as proposed and current docs link to it, without editing accepted
 0021/0026. This record does not claim operator acceptance or implementation.
+
+## Pointer — 2026-10-18 (proposed 0049)
+
+[0049](0049-extraction-compat.md) §5, also **proposed**, updates §4 here (issue #138):
+the compat views — scoped and global lists, searches and `latest` — share descending
+`(received_ms, id)`, so a parse-start stamp that disagrees with acceptance order moves a
+mail within those views; native inbox listings, POP3 numbering, pruning and restore keep
+acceptance order.
