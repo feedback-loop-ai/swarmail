@@ -5,16 +5,25 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// The blank-inbox refusal (decision 0044 §3): one sentence, every plane.
 pub const BLANK_INBOX_REFUSAL: &str = "inbox must not be blank";
 
-/// The one inbox-name admission rule (decision 0044 §3): a client-supplied
-/// inbox that is empty after Unicode whitespace trimming names nothing and
-/// is refused — an empty name was stored and then linked to a 404 (issue
-/// #91). A nonblank name is kept verbatim, padding included; nothing is
-/// renamed and no stored row is rewritten. Every admitting plane calls this
-/// (REST, MCP, UI, compat, the shared seed builder); SMTP AUTH and POP3
-/// `USER` already refuse an empty-after-trim name (decision 0028 §2).
+/// The control-character refusal (decision 0046 §4): one sentence, every
+/// plane.
+pub const CONTROL_INBOX_REFUSAL: &str = "inbox must not contain control characters";
+
+/// The one inbox-name admission rule (decisions 0044 §3, 0046 §4): a
+/// client-supplied inbox that is empty after Unicode whitespace trimming
+/// names nothing and is refused — an empty name was stored and then linked
+/// to a 404 (issue #91) — and so is one carrying any Unicode control
+/// character (C0, DEL, C1): a NUL-separated credential must never become an
+/// inbox name holding its password (issue #128). Any other name is kept
+/// verbatim, padding included: no trimming, folding or normalization, and
+/// no stored row is renamed. Every admitting plane calls this — REST, MCP,
+/// UI, compat, the shared seed builder, webhook inbox filters, SMTP AUTH
+/// and POP3 `USER` — so one name means one inbox on all of them.
 pub fn validate_inbox(name: &str) -> Result<&str, &'static str> {
     if name.trim().is_empty() {
         Err(BLANK_INBOX_REFUSAL)
+    } else if name.contains(char::is_control) {
+        Err(CONTROL_INBOX_REFUSAL)
     } else {
         Ok(name)
     }
@@ -82,4 +91,37 @@ pub struct Email {
     pub references: Vec<String>,
     #[serde(skip)]
     pub raw: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The one name rule (decision 0046 §4): blank refuses, any Unicode
+    /// control refuses, and everything else — padding, UTF-8 — comes back
+    /// verbatim (issue #128).
+    #[test]
+    fn the_inbox_rule_refuses_blank_and_controls_and_keeps_the_rest() {
+        for blank in ["", " ", "\t", "  \u{3000} "] {
+            assert_eq!(validate_inbox(blank), Err(BLANK_INBOX_REFUSAL), "{blank:?}");
+        }
+        for control in [
+            "\0user\0s3cretpw",
+            "a\u{1}b",
+            "a\tb",
+            "pad\r",
+            "del\u{7f}",
+            "c1\u{85}",
+            "c1\u{9f}x",
+        ] {
+            assert_eq!(
+                validate_inbox(control),
+                Err(CONTROL_INBOX_REFUSAL),
+                "{control:?}"
+            );
+        }
+        for kept in ["default", " pad", "pad ", " pad ", "j\u{f6}rg", "a b"] {
+            assert_eq!(validate_inbox(kept), Ok(kept));
+        }
+    }
 }

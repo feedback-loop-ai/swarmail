@@ -119,3 +119,11 @@ no test-only seam ships in production, no floor or denominator is lowered.
 The design commit includes only this proposed record and its three spec
 artifacts. Indexing this record and updating product docs belongs to
 implementation; operator acceptance remains a separate act.
+
+## Pointer — 2026-10-18 (proposed 0046)
+
+[0046](0046-smtp-pop3-edges.md) §4, also **proposed**, updates §3 here (issue #128).
+The shared inbox rule also refuses any Unicode control character, with one sentence on
+every plane ("inbox must not contain control characters"). Webhook inbox filters, SMTP
+AUTH and POP3 `USER` now use the same rule. A nonblank padded name stays verbatim
+everywhere, and stored rows are not renamed.

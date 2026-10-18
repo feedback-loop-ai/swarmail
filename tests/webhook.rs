@@ -1591,6 +1591,50 @@ async fn a_target_that_cannot_be_delivered_is_refused_at_put_and_applies_nothing
     assert_eq!(st, 200, "{resp}");
 }
 
+/// A webhook inbox filter answers to the one inbox-name rule (issue #128,
+/// decision 0046 §4): a blank or control-bearing filter is a 400 naming the
+/// rule and replaces nothing — the installed list survives whole — while a
+/// padded filter is installed verbatim and an omitted one stays "every
+/// inbox". Red before: `"  "` and `"a\0b"` were installed as filters no
+/// admitted inbox could ever match.
+#[tokio::test]
+async fn a_webhook_inbox_filter_answers_to_the_inbox_rule() {
+    let srv = start().await;
+    let installed = r#"[{"url": "http://127.0.0.1:9/hook", "inbox": " pad "},
+                        {"url": "http://127.0.0.1:9/all"}]"#;
+    let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(installed)).await;
+    assert_eq!(st, 200, "{resp}");
+    for (inbox, sentence) in [
+        ("", "inbox must not be blank"),
+        ("  \u{3000}", "inbox must not be blank"),
+        ("a\0b", "inbox must not contain control characters"),
+        ("pad\r", "inbox must not contain control characters"),
+        ("c1\u{85}", "inbox must not contain control characters"),
+    ] {
+        let body = serde_json::json!([
+            { "url": "http://127.0.0.1:9/ok" },
+            { "url": "http://127.0.0.1:9/hook", "inbox": inbox }
+        ])
+        .to_string();
+        let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+        assert_eq!(st, 400, "{inbox:?}: {resp}");
+        assert_eq!(
+            resp["error"],
+            format!("webhook target 1: {sentence}"),
+            "{inbox:?}"
+        );
+    }
+    let (_, body) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(
+        body,
+        serde_json::json!([
+            {"url": "http://127.0.0.1:9/hook", "inbox": " pad ", "secret": null, "ca_pem": null},
+            {"url": "http://127.0.0.1:9/all", "inbox": null, "secret": null, "ca_pem": null}
+        ]),
+        "the refused lists replaced nothing"
+    );
+}
+
 // ---------- decision 0041: the webhook boundary ----------
 
 /// A refused list replaces nothing (issue #75): with a configuration in

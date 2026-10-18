@@ -52,8 +52,9 @@
 - Strict input everywhere: an unknown query key (`assert?too=`) or MCP
   argument key (`{"inbx": "zz"}`) is refused by name; a present JSON `null`
   for an optional string (seed `from`/`subject`/`text`/`html`, chaos `error`)
-  is refused, omission takes the default; a blank inbox name is refused on
-  every plane.
+  is refused, omission takes the default; a blank inbox name, or one with a
+  control character, is refused on every plane (SMTP AUTH and POP3 USER
+  included), and any other name is kept verbatim, padding included.
 - The `to` filter matches any recipient: the To/Cc headers **and** the SMTP
   envelope (RCPT TO), so a Bcc'd address matches — `assert?to=x&count=0` is
   not a header-presence check. `from` is the header From. Every email also

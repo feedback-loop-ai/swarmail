@@ -194,6 +194,16 @@ async fn the_live_views_refuse_a_blank_inbox() {
         assert_eq!(st, 400, "{path}: {body}");
         assert_eq!(body["error"], "inbox must not be blank", "{path}");
     }
+    // A control-bearing name refuses on both views with the shared
+    // sentence (issue #128, decision 0046 §4).
+    for path in ["/ui/inbox/a%00b", "/ui/inbox/a%7Fb/thread/abc"] {
+        let (st, body) = http_json(srv.http_addr, "GET", path, None).await;
+        assert_eq!(st, 400, "{path}: {body}");
+        assert_eq!(
+            body["error"], "inbox must not contain control characters",
+            "{path}"
+        );
+    }
 }
 
 /// Issue #100 on the wire: orphan subjects carrying the localized markers

@@ -2102,17 +2102,27 @@ fn the_strict_prometheus_reader_accepts_the_format_and_nothing_else() {
 }
 
 /// Issue #88's label defect on the wire (AC3): a wait parked on a
-/// percent-encoded inbox whose decoded name holds a tab, a backslash, a
-/// quote and an LF yields a scrape the strict reader accepts whole, and
-/// the awaits family carries that exact decoded name. Red before the
-/// repair: `Debug` rendered `\t`, which the reader (and Prometheus)
-/// rejects. Then the wait is satisfied and joined.
+/// percent-encoded inbox whose decoded name holds a backslash, a quote and
+/// padding yields a scrape the strict reader accepts whole, and the awaits
+/// family carries that exact decoded name. Then the wait is satisfied and
+/// joined. Since issue #128 (decision 0046 §4) a name with a tab or an LF
+/// is refused `400` before any wait parks — the escaper's own unit tests
+/// keep the control characters; here the refusal is what the wire shows.
 #[tokio::test]
 async fn a_hostile_inbox_name_round_trips_through_a_strict_scrape() {
     let srv = start().await;
     let addr = srv.http_addr;
-    let encoded = "run20%09back%5Cquote%22lf%0Aend";
-    let decoded = "run20\tback\\quote\"lf\nend";
+    let (st, body) = http_json(
+        addr,
+        "GET",
+        "/api/v1/inboxes/run20%09tab%0Alf/await?timeout_ms=60000",
+        None,
+    )
+    .await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(body["error"], "inbox must not contain control characters");
+    let encoded = "%20run20back%5Cquote%22end%20";
+    let decoded = " run20back\\quote\"end ";
     let wait = tokio::spawn(async move {
         http_json(
             addr,
@@ -2458,6 +2468,52 @@ async fn a_blank_path_inbox_refuses_on_every_native_route() {
     seed(srv.http_addr, "%20pad%20", "a@x.io").await;
     let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
     assert_eq!(inboxes, serde_json::json!([{"name": " pad ", "count": 1}]));
+}
+
+/// A decoded inbox segment carrying a control character refuses on every
+/// native inbox route with the shared sentence (issue #128, decision 0046
+/// §4) — before any read, wait, clear, seed or feed — so no waiter parks
+/// and nothing is stored. Red before: `a%00b` was an inbox like any other.
+#[tokio::test]
+async fn a_control_path_inbox_refuses_on_every_native_route() {
+    let srv = start().await;
+    for control in [
+        "a%00b",
+        "%00user%00s3cretpw",
+        "pad%0D",
+        "del%7F",
+        "c1%C2%85",
+    ] {
+        for (method, route) in [
+            ("GET", "messages"),
+            ("GET", "count"),
+            ("GET", "await?timeout_ms=60000"),
+            ("GET", "assert?count=0"),
+            ("DELETE", "messages"),
+            ("GET", "threads"),
+            ("GET", "threads/abc"),
+            ("GET", "feed"),
+        ] {
+            let path = format!("/api/v1/inboxes/{control}/{route}");
+            let (st, body) = http_json(srv.http_addr, method, &path, None).await;
+            assert_eq!(st, 400, "{method} {path}: {body}");
+            assert_eq!(
+                body["error"], "inbox must not contain control characters",
+                "{path}"
+            );
+        }
+        let (st, body) = http_json(
+            srv.http_addr,
+            "POST",
+            &format!("/api/v1/inboxes/{control}/seed"),
+            Some(r#"{"to": "a@x.io"}"#),
+        )
+        .await;
+        assert_eq!(st, 400, "{body}");
+        assert_eq!(body["error"], "inbox must not contain control characters");
+    }
+    let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(inboxes, serde_json::json!([]), "nothing was stored");
 }
 
 /// `/api/v1/inboxes` is paged (decision 0044 §3, issue #91): with 251

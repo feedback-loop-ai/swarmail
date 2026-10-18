@@ -92,6 +92,60 @@ fn the_0027_clarification_controls_and_links_proposed_0036() {
     );
 }
 
+/// Batch 1 of epic #120 as documented (decision 0046, issues #121, #126,
+/// #127, #128, #131): the README states the per-successful-write POP3 bound
+/// with its retention residual, the failed-session drop, `TCP_NODELAY`, the
+/// two named path limitations and the one verbatim inbox rule; 0046 is
+/// indexed as proposed and the dated pointers on 0027 and 0036 point at it
+/// without claiming its acceptance. Red before: the README promised no
+/// whole-reply semantics either way and named neither path limitation.
+#[test]
+fn the_readme_and_0046_state_the_batch_one_listener_posture() {
+    let readme = doc("README.md");
+    states(
+        &readme,
+        "README.md",
+        &[
+            "A POP3 reply has no whole-reply deadline either",
+            "every write that moves bytes starts a fresh window",
+            "keeps its slot and that reply's buffer for as long as it takes",
+            "drops its connection at once",
+            "gets one more idle window for its close",
+            "sets `TCP_NODELAY` before its first byte",
+            "a quoted local part containing `>`",
+            "a source route (`<@hop1,@hop2:bob@y.io>`) is not stripped",
+            "inbox must not contain control characters",
+            "padding included, so `\" pad \"` names the same inbox everywhere",
+        ],
+    );
+    assert!(
+        !readme.contains("no one reply write may wait longer"),
+        "README.md still claims a whole-write POP3 bound"
+    );
+    let index = doc("docs/decisions/README.md");
+    let row = index
+        .split("| [0046](0046-smtp-pop3-edges.md) |")
+        .nth(1)
+        .expect("the decision index must list 0046");
+    let row = row.split(" | [").next().unwrap_or(row);
+    assert!(row.contains("proposed — awaiting the operator"), "{row}");
+    for record in [
+        "docs/decisions/0027-living-listeners-bounded-sessions.md",
+        "docs/decisions/0036-smtp-trickle-lifetime.md",
+    ] {
+        let text = doc(record);
+        let (_, pointer) = text
+            .split_once("## Pointer — 2026-10-18 (proposed 0046)")
+            .unwrap_or_else(|| panic!("{record} must carry the dated 0046 pointer"));
+        assert!(
+            pointer.contains("[0046](0046-smtp-pop3-edges.md)"),
+            "{record}"
+        );
+        assert!(pointer.contains("**proposed**"), "{record}");
+        assert!(pointer.contains("moves bytes"), "{record}: {pointer}");
+    }
+}
+
 #[test]
 fn decision_0036_is_proposed_and_indexed() {
     let record = doc("docs/decisions/0036-smtp-trickle-lifetime.md");

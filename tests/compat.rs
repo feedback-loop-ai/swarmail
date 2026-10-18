@@ -1692,6 +1692,41 @@ async fn a_blank_compat_inbox_refuses_on_every_page() {
     }
 }
 
+/// A control-bearing compat `inbox` selector refuses on every page and
+/// every latest route with the shared sentence (issue #128, decision 0046
+/// §4) — the one name rule, never a widened or renamed scope — while a
+/// padded selector still scopes to exactly the padded inbox.
+#[tokio::test]
+async fn a_control_compat_inbox_refuses_on_every_scope() {
+    let s = start().await;
+    for selector in ["a%00b", "a%01b", "pad%0D", "del%7F", "c1%C2%85"] {
+        for path in [
+            format!("/api/v1/messages?inbox={selector}"),
+            format!("/api/v1/search?inbox={selector}&query=x"),
+            format!("/api/v2/messages?inbox={selector}"),
+            format!("/api/v2/search?inbox={selector}&kind=containing&query=x"),
+            format!("/api/v1/message/latest?inbox={selector}"),
+            format!("/api/v1/message/latest/raw?inbox={selector}"),
+            format!("/api/v1/message/latest/headers?inbox={selector}"),
+        ] {
+            let (status, body) = http_json(s.http_addr, "GET", &path, None).await;
+            assert_eq!(status, 400, "{path}: {body}");
+            assert_eq!(
+                body["error"], "inbox must not contain control characters",
+                "{path}"
+            );
+        }
+    }
+    send_raw(s.smtp_addr, "pad", "Subject: unpadded\r\n\r\nbody").await;
+    let (status, body) =
+        http_json(s.http_addr, "GET", "/api/v1/messages?inbox=%20pad%20", None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body["total"], 0,
+        "the padded scope is its own inbox: {body}"
+    );
+}
+
 // ---------- run 21: #96 bounded page work ----------
 
 /// A MailHog page whose JSON would pass 64 MiB refuses whole, by name

@@ -112,3 +112,11 @@ after repair for each child, exact raw/envelope/inbox assertions, deterministic
 reader splits, TLS reset and real smtplib compatibility. Six house gates,
 including exact coverage without exclusions, remain mandatory. This record
 does not assert implementation, operator acceptance or gate completion.
+
+## Pointer — 2026-10-18 (proposed 0046)
+
+[0046](0046-smtp-pop3-edges.md) §§3–4, also **proposed**, updates §§3/5/6 here (issues
+#127, #128). A nonempty path that is blank after Unicode trimming, or that carries a
+control character, is refused `501` like any other malformed path. A quoted local part
+holding `>` and a literal source route are named limitations, not supported grammar.
+AUTH names pass the shared inbox rule untrimmed.

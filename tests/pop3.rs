@@ -1521,3 +1521,118 @@ async fn retr_serves_a_mixed_mime_payload_untouched_by_body_selection() {
     assert_eq!(c.data_bytes().await, crlf_of(raw));
     assert!(c.cmd("QUIT").await.starts_with("+OK"));
 }
+
+// ---- 0046: one verbatim inbox name on every plane (issue #128) ----
+
+/// The ids POP3 UIDL lists for a logged-in session, as a set.
+async fn uidl_ids(c: &mut Pop3) -> std::collections::HashSet<String> {
+    assert_eq!(c.cmd("UIDL").await, "+OK");
+    c.data()
+        .await
+        .lines()
+        .map(|line| line.split_once(' ').unwrap().1.to_string())
+        .collect()
+}
+
+/// One padded name is one inbox on every plane (issue #128, decision 0046
+/// §4): REST seeds into `" pad "`, SMTP AUTH as `" pad "` delivers into it
+/// and POP3 `USER  pad ` (the name after its one separator, verbatim)
+/// opens exactly those two mails — while `pad` stays its own, distinct
+/// inbox with its own mail. Red before: POP3 trimmed the name to `pad`
+/// and SMTP AUTH filed its mail under `pad`.
+#[tokio::test]
+async fn padded_inbox_routes_across_smtp_pop3_rest() {
+    let s = start().await;
+    let seed = r#"{"to": "a@x.io", "text": "seeded"}"#;
+    for inbox in ["%20pad%20", "pad"] {
+        let path = format!("/api/v1/inboxes/{inbox}/seed");
+        let (st, body) = http_json(s.http_addr, "POST", &path, Some(seed)).await;
+        assert_eq!(st, 200, "{body}");
+    }
+    smtp_send(s.smtp_addr, Some(" pad "), "f@x.io", "r@x.io", "smtp", "x")
+        .await
+        .unwrap();
+    let padded = common::list_all_ids(s.http_addr, "%20pad%20").await;
+    let unpadded = common::list_all_ids(s.http_addr, "pad").await;
+    assert_eq!((padded.len(), unpadded.len()), (2, 1));
+
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    assert_eq!(c.cmd("USER  pad ").await, "+OK name is a valid mailbox");
+    assert!(
+        c.cmd("PASS x")
+            .await
+            .starts_with("+OK maildrop has 2 messages")
+    );
+    assert_eq!(uidl_ids(&mut c).await, padded);
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    c.login("pad").await;
+    assert_eq!(uidl_ids(&mut c).await, unpadded);
+}
+
+/// POP3 `USER` refuses what the shared rule refuses and clears the pending
+/// name (issue #128, decisions 0028 §2, 0046 §§4–5): a blank name, an embedded
+/// control character and an extra CR before the CRLF — data, not
+/// delimiter — all answer `-ERR` with the shared sentence, and the `PASS`
+/// after each is `USER required first`. A bare-LF line is one delimiter, so
+/// its name routes. Red before: the extra CR and the padding were trimmed
+/// away, so `USER real\r` logged into `real`.
+#[tokio::test]
+async fn pop3_user_controls_clear_pending_name() {
+    const BLANK: &str = "-ERR inbox must not be blank";
+    const CONTROL: &str = "-ERR inbox must not contain control characters";
+    let s = start().await;
+    smtp_send(s.smtp_addr, Some("real"), "f@x.io", "r@x.io", "x", "x")
+        .await
+        .unwrap();
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    for (user, want) in [
+        ("USER  ", BLANK),
+        ("USER \u{3000}", BLANK),
+        ("USER re\u{1}al", CONTROL),
+        ("USER real\r", CONTROL),
+        ("USER real\u{7f}", CONTROL),
+        ("USER real\u{85}", CONTROL),
+    ] {
+        assert_eq!(c.cmd("USER real").await, "+OK name is a valid mailbox");
+        assert_eq!(c.cmd(user).await, want, "{user:?}");
+        assert_eq!(
+            c.cmd("PASS x").await,
+            "-ERR USER required first",
+            "{user:?}"
+        );
+    }
+    c.send_bytes(b"USER real\n").await;
+    assert_eq!(c.reply().await, "+OK name is a valid mailbox");
+    assert!(
+        c.cmd("PASS x")
+            .await
+            .starts_with("+OK maildrop has 1 messages")
+    );
+}
+
+/// A POP3 command that is not UTF-8 ends the session before dispatch
+/// (issue #128, decision 0046 §5): no reply, no inbox selected — even when
+/// an inbox named by the U+FFFD replacement exists — and a non-UTF-8
+/// `PASS` after a good `USER` logs into nothing. Red before: the lossy
+/// decode turned `USER \xff` into `USER \u{fffd}` and selected it.
+#[tokio::test]
+async fn invalid_utf8_cannot_select_a_replacement_inbox() {
+    let s = start().await;
+    let (st, body) = http_json(
+        s.http_addr,
+        "POST",
+        "/api/v1/inboxes/%EF%BF%BD/seed",
+        Some(r#"{"to": "a@x.io"}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{body}");
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    c.send_bytes(b"USER \xff\r\n").await;
+    assert_eq!(c.read_to_eof().await, "", "the session ended undispatched");
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    assert_eq!(c.cmd("USER \u{fffd}").await, "+OK name is a valid mailbox");
+    c.send_bytes(b"PASS \xff\r\n").await;
+    assert_eq!(c.read_to_eof().await, "", "PASS ended undispatched");
+    let mut c = Pop3::connect(s.pop3_addr).await;
+    c.login("\u{fffd}").await;
+}

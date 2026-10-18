@@ -891,6 +891,27 @@ mod tests {
                 );
             }
         }
+        // A control-bearing name refuses on every inbox tool too, with the
+        // shared sentence and before any effect (issue #128).
+        for control in ["\0user\0pw", "a\u{1}b", "del\u{7f}", "c1\u{85}"] {
+            for (tool, extra) in [
+                ("swarmail_search_emails", json!({})),
+                ("swarmail_get_latest_email", json!({})),
+                ("swarmail_clear_inbox", json!({})),
+                ("swarmail_wait_for_email", json!({"timeout_ms": 60000})),
+                ("swarmail_seed_email", json!({"to": "a@x.io"})),
+            ] {
+                let mut arguments = extra.clone();
+                arguments["inbox"] = json!(control);
+                let reply = call(&ctx, tool, arguments).await;
+                assert_eq!(reply["error"]["code"], -32602, "{tool} {control:?}");
+                assert_eq!(
+                    reply["error"]["message"],
+                    crate::model::CONTROL_INBOX_REFUSAL,
+                    "{tool} {control:?}"
+                );
+            }
+        }
         assert!(ctx.store.inboxes().is_empty(), "nothing stored");
         assert_eq!(ctx.store.watcher_count(), 0, "no waiter registered");
         let padded = json!({"inbox": " pad ", "to": "a@x.io"});

@@ -13,12 +13,17 @@
 //! instead of pinning its session task. Plaintext is bounded per read and
 //! per write by `SmtpConfig::idle_timeout` (decision 0027) — one operation,
 //! never a session or DATA lifetime: a peer completing a line inside each
-//! window keeps its slot indefinitely (decision 0036 §5).
+//! window keeps its slot indefinitely (decision 0036 §5). A session that
+//! failed — a reply write expired included — drops its transport without a
+//! graceful close; one that ended well gets one more bounded window for
+//! it (decision 0046 §1). Accepted sockets carry `TCP_NODELAY` (§2).
 //!
 //! AUTH PLAIN and AUTH LOGIN assign the session's inbox only on success: a
 //! credential that names nothing — undecodable base64, a PLAIN that is not
-//! exactly three fields, an empty decoded username, a `*` cancel, a
-//! non-UTF-8 one — is refused `501 5.5.2` and changes nothing (decision 0028
+//! exactly three fields, a decoded username the shared inbox rule refuses
+//! (blank, or carrying a control character — decision 0046 §4; never
+//! trimmed), a `*` cancel, a non-UTF-8 one — is refused `501 5.5.2` and
+//! changes nothing (decision 0028
 //! §2, amending 0004's accept-any posture; `535` is reserved for the day
 //! credentials are checked), and one success per TLS epoch is all a session
 //! gets (decision 0034 §5). The transaction state machine is RFC 5321's: the
@@ -182,6 +187,32 @@ thread_local! {
         const { core::cell::RefCell::new(Vec::new()) };
 }
 
+// Test-only (decision 0020 rule 4): counted, one-shot `TCP_NODELAY`
+// refusals — a fresh socket never refuses the option, so the drop arm is
+// installed here — and the option each admitted socket carries once set,
+// read back off the accepted socket itself (issue #126).
+#[cfg(test)]
+thread_local! {
+    static INJECTED_NODELAY_ERRORS: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
+    static NODELAY_SEEN: core::cell::RefCell<Vec<bool>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Consume one installed `TCP_NODELAY` refusal, if any remain.
+#[cfg(test)]
+fn take_injected_nodelay_error() -> bool {
+    INJECTED_NODELAY_ERRORS.with(|errors| {
+        let left = errors.get();
+        if left == 0 {
+            false
+        } else {
+            errors.set(left - 1);
+            true
+        }
+    })
+}
+
 /// Test-only: one transport operation a reply helper made (issue #83's
 /// structural pin, decision 0020 rule 4 — `pub(crate)` because the POP3
 /// sibling's helper test installs it too). Not a protocol mock: it stands
@@ -317,6 +348,16 @@ pub async fn serve(
                 continue;
             }
         };
+        // Every reply leaves at once (issue #126, decision 0046 §2): with
+        // Nagle on, each reply behind the first in a pipelined group waits
+        // for the peer's delayed ACK, about 40 ms a group. Set before any
+        // byte is written — the cap's refusal and the greeting included —
+        // and inherited by the STARTTLS upgrade. A socket that refuses the
+        // option is dropped alone; the listener keeps accepting.
+        if let Err(e) = set_nodelay(&stream) {
+            debug!(%peer, error = %e, "smtp connection dropped: TCP_NODELAY refused");
+            continue;
+        }
         // The one reap, at admission (decision 0036 §1): `try_join_next`
         // never parks and never touches a session still running, so every
         // completion ready by now — including those that finished while
@@ -363,6 +404,20 @@ pub async fn serve(
         #[cfg(test)]
         SPAWNED.with(|spawned| spawned.borrow_mut().push(handle));
     }
+}
+
+/// `TCP_NODELAY` on one accepted SMTP socket (issue #126). The test build
+/// can install a refusal and records the option the accepted socket really
+/// carries afterwards — the accept-site pin, not a call of this helper.
+fn set_nodelay(stream: &TcpStream) -> io::Result<()> {
+    #[cfg(test)]
+    if take_injected_nodelay_error() {
+        return Err(io::Error::other("injected TCP_NODELAY error"));
+    }
+    stream.set_nodelay(true)?;
+    #[cfg(test)]
+    NODELAY_SEEN.with(|seen| seen.borrow_mut().push(stream.nodelay().unwrap()));
+    Ok(())
 }
 
 /// One deadline around exactly one I/O operation — one peer read or one
@@ -498,8 +553,14 @@ struct Envelope {
 /// whitespace, then `<path>` with no further angle bracket inside, then
 /// nothing or whitespace before any parameters. Anything else — a missing
 /// or wrong keyword, a bracketless or inverted path, a suffix glued to the
-/// `>` — is `None`, the 501. The path itself stays opaque: local names and
-/// UTF-8 are kept, no `@` or mailbox grammar is demanded.
+/// `>` — is `None`, the 501. So is a path that only looks like one (issue
+/// #127, decision 0046 §3): nonempty but blank after Unicode trimming
+/// (`< >`, `<\u{3000}>`), or carrying any Unicode control character (C0,
+/// DEL, C1) — only the literal `<>` is the null path. The path itself stays
+/// opaque and verbatim: local names and UTF-8 are kept, no `@` or mailbox
+/// grammar is demanded, a quoted local part ends at its first `>` like any
+/// other (so `<"a>b"@x>` is refused), and a source route is kept as
+/// literal path text — both named limitations, not RFC 5321 support.
 fn envelope_path<'a>(arg: &'a str, keyword: &str) -> Option<(&'a str, &'a str)> {
     let head = arg.get(..keyword.len())?;
     if !head.eq_ignore_ascii_case(keyword) {
@@ -510,7 +571,8 @@ fn envelope_path<'a>(arg: &'a str, keyword: &str) -> Option<(&'a str, &'a str)> 
     let close = rest.find('>')?;
     let (path, tail) = (&rest[..close], &rest[close + 1..]);
     let separated = tail.is_empty() || tail.starts_with([' ', '\t']);
-    if path.contains('<') || !separated {
+    let blank = !path.is_empty() && path.trim().is_empty();
+    if path.contains('<') || !separated || blank || path.contains(char::is_control) {
         return None;
     }
     Some((path, tail))
@@ -589,10 +651,26 @@ async fn handle_conn(
         Some(cfg) => TlsOffer::Offered(TlsAcceptor::from(cfg)),
     };
     let result = session(&mut reader, &store, &chaos, &cfg, offer).await;
-    // Graceful close whatever happened: TLS sends close_notify, plain sends
-    // FIN, and a socket already taken for a failed handshake is done.
-    let _ = reader.into_inner().shutdown().await;
-    result
+    close(result, reader.into_inner(), cfg.idle_timeout).await
+}
+
+/// The session's last act on its transport (issue #121, decision 0046 §1).
+/// A failed session — a reply write that timed out, a reset, a handshake
+/// that never finished — is dropped as it stands, its error returned
+/// unchanged: a TLS shutdown flushes pending output, so it would wait on
+/// the very peer that stopped reading and hold the slot with no deadline
+/// at all. A session that ended well closes gracefully — TLS sends
+/// close_notify, plain sends FIN, a socket taken for a handshake is done —
+/// under one more idle window, and a close that fails or expires is still
+/// a finished session.
+async fn close(
+    result: io::Result<()>,
+    mut transport: impl AsyncWrite + Unpin,
+    idle: Duration,
+) -> io::Result<()> {
+    result?;
+    let _ = bound_io(transport.shutdown(), idle).await;
+    Ok(())
 }
 
 /// One protocol line, as the wire delivered it.
@@ -1342,11 +1420,14 @@ async fn session(
 }
 
 /// The inbox a PLAIN credential names, or `None` when it names nothing:
-/// undecodable base64, anything but exactly three NUL-separated fields, an
-/// empty-after-trim authcid, or a non-UTF-8 one. `None` is the `501 5.5.2`
-/// refusal (decisions 0028 §2, 0034 §5) — the session's inbox is assigned
-/// only on success, never minted from a replacement character, and never
-/// from a password that a short credential shifted into the authcid's seat.
+/// undecodable base64, anything but exactly three NUL-separated fields, or
+/// an authcid that is not UTF-8 or fails the shared inbox rule — blank, or
+/// carrying a control character (decision 0046 §4). `None` is the `501
+/// 5.5.2` refusal (decisions 0028 §2, 0034 §5) — the session's inbox is
+/// assigned only on success, never minted from a replacement character,
+/// and never from a password that a short credential shifted into the
+/// authcid's seat. An accepted name is kept verbatim, padding included —
+/// the inbox REST and POP3 call by the same name (issue #128).
 fn auth_plain_inbox(b64: Option<&str>) -> Option<String> {
     let decoded = b64_decode(b64?)?;
     // PLAIN: authzid NUL authcid NUL passwd — the authcid names the inbox;
@@ -1357,28 +1438,25 @@ fn auth_plain_inbox(b64: Option<&str>) -> Option<String> {
     else {
         return None;
     };
-    let user = String::from_utf8(user.to_vec()).ok()?;
-    let user = user.trim();
-    if user.is_empty() {
-        None
-    } else {
-        Some(user.to_string())
-    }
+    auth_inbox(user.to_vec())
 }
 
 /// The inbox a LOGIN username line names, or `None` when it names nothing —
-/// undecodable base64, a non-UTF-8 username, or an empty-after-trim one
-/// (decision 0028 §2). The literal `*` cancel is not valid base64 and
-/// refuses the same way.
+/// undecodable base64, a non-UTF-8 username, or one the shared inbox rule
+/// refuses (decisions 0028 §2, 0046 §4): a PLAIN-shaped `\0user\0password`
+/// sent as a LOGIN username carries NULs, so it never files mail under a
+/// name holding the password (issue #128). The literal `*` cancel is not
+/// valid base64 and refuses the same way.
 fn auth_login_username(line: &str) -> Option<String> {
-    let decoded = b64_decode(line)?;
-    let user = String::from_utf8(decoded).ok()?;
-    let user = user.trim();
-    if user.is_empty() {
-        None
-    } else {
-        Some(user.to_string())
-    }
+    auth_inbox(b64_decode(line)?)
+}
+
+/// A decoded AUTH username through the one inbox-name rule: strict UTF-8,
+/// then `model::validate_inbox`, never trimmed.
+fn auth_inbox(user: Vec<u8>) -> Option<String> {
+    let user = String::from_utf8(user).ok()?;
+    crate::model::validate_inbox(&user).ok()?;
+    Some(user)
 }
 
 fn b64_decode(input: &str) -> Option<Vec<u8>> {
@@ -2044,7 +2122,19 @@ mod tests {
         };
         assert_eq!(plain(b"\0box\0pw"), Some("box".to_string()));
         assert_eq!(plain(b"admin\0box\0"), Some("box".to_string()));
-        assert_eq!(plain(b"\0 box \0pw"), Some("box".to_string()));
+        // Verbatim, padding included: the padded inbox REST and POP3 name
+        // (issue #128), never a trimmed neighbour.
+        assert_eq!(plain(b"\0 box \0pw"), Some(" box ".to_string()));
+        assert_eq!(plain(b"\0  \0pw"), None);
+        assert_eq!(plain(b"\0a\x01b\0pw"), None);
+        assert_eq!(plain(b"\0a\tb\0pw"), None);
+        assert_eq!(plain(b"\0a\rb\0pw"), None);
+        assert_eq!(plain(b"\0del\x7f\0pw"), None);
+        assert_eq!(plain("\0c1\u{85}\0pw".as_bytes()), None);
+        assert_eq!(
+            plain("\0j\u{f6}rg\0pw".as_bytes()),
+            Some("j\u{f6}rg".to_string())
+        );
         assert_eq!(plain(b""), None);
         assert_eq!(plain(b"secret"), None);
         assert_eq!(plain(b"box\0secret"), None);
@@ -2169,7 +2259,7 @@ mod tests {
     /// One reply line from a loopback SMTP peer, byte-at-a-time so replies
     /// the server pipelines behind the banner are still consumed one line
     /// per call.
-    async fn reply(stream: &mut TcpStream) -> String {
+    pub(super) async fn reply(stream: &mut TcpStream) -> String {
         use tokio::io::AsyncReadExt;
         let mut line = Vec::new();
         let mut byte = [0u8; 1];
@@ -2289,7 +2379,7 @@ mod tests {
 
     /// A greeted SMTP session on a driven listener — the banner is written
     /// by the session task, so reading it proves the spawn.
-    async fn greeted(addr: std::net::SocketAddr) -> TcpStream {
+    pub(super) async fn greeted(addr: std::net::SocketAddr) -> TcpStream {
         let mut c = TcpStream::connect(addr).await.unwrap();
         let banner = reply(&mut c).await;
         assert!(banner.starts_with("220 "), "{banner}");
@@ -2299,7 +2389,7 @@ mod tests {
     /// Tokio's own completion flag for the session spawned `index`-th on
     /// this thread (a peer's EOF does not prove it), and-ed — never
     /// short-circuited — with the accept loop being parked.
-    fn finished_while_parked(index: usize) -> bool {
+    pub(super) fn finished_while_parked(index: usize) -> bool {
         SPAWNED.with(|spawned| spawned.borrow()[index].is_finished())
             & PARKED.with(|parked| parked.get())
     }
@@ -2473,7 +2563,16 @@ mod tests {
             TlsAcceptor::from(cfg).accept(tcp).await.unwrap()
         });
 
-        // The client trusts only the minted cert — a real verification.
+        let connector = tls_connector(&pair);
+        tokio::spawn(async move {
+            tls_connect(&connector, TcpStream::connect(addr).await.unwrap()).await;
+        });
+
+        server.await.unwrap()
+    }
+
+    /// A client that trusts only the minted cert — a real verification.
+    pub(super) fn tls_connector(pair: &crate::tls::TlsConfig) -> tokio_rustls::TlsConnector {
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
         for cert in rustls_pemfile::certs(&mut pair.cert_pem.as_bytes()) {
             roots.add(cert.unwrap()).unwrap();
@@ -2487,18 +2586,108 @@ mod tests {
             .with_root_certificates(roots)
             .with_no_client_auth(),
         );
-        let connector = tokio_rustls::TlsConnector::from(client_cfg);
-        tokio::spawn(async move {
-            connector
-                .connect(
-                    tokio_rustls::rustls::pki_types::ServerName::try_from("localhost".to_string())
-                        .unwrap(),
-                    TcpStream::connect(addr).await.unwrap(),
-                )
-                .await
-                .unwrap();
-        });
+        tokio_rustls::TlsConnector::from(client_cfg)
+    }
 
-        server.await.unwrap()
+    /// The client side of a handshake to `localhost` over `tcp`.
+    pub(super) async fn tls_connect(
+        connector: &tokio_rustls::TlsConnector,
+        tcp: TcpStream,
+    ) -> tokio_rustls::client::TlsStream<TcpStream> {
+        let name =
+            tokio_rustls::rustls::pki_types::ServerName::try_from("localhost".to_string()).unwrap();
+        connector.connect(name, tcp).await.unwrap()
+    }
+
+    /// A transport that never makes progress in any direction — a peer
+    /// whose receive window stays shut. Every operation is pending forever.
+    struct Stalled;
+
+    impl AsyncWrite for Stalled {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Pending
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    /// The session's last act (issue #121, decision 0046 §1): a failed
+    /// session is dropped with its own error and no shutdown is attempted
+    /// — no second window for a peer that already stalled one — while a
+    /// good one shuts down, and a good one whose shutdown stalls is still
+    /// finished inside one more window (red on the unbounded
+    /// `shutdown().await`, which never returns here). The stalled
+    /// transport's write and flush answer to the same bound.
+    #[tokio::test]
+    async fn a_failed_session_drops_and_a_good_one_closes_within_one_window() {
+        let window = Duration::from_millis(50);
+        let mut rec = Recorder::default();
+        let failed = close(
+            Err(io::Error::from(io::ErrorKind::TimedOut)),
+            &mut rec,
+            window,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(failed.kind(), io::ErrorKind::TimedOut);
+        assert!(rec.ops.is_empty(), "no shutdown for a failed session");
+        close(Ok(()), &mut rec, window).await.unwrap();
+        assert_eq!(rec.ops, vec![WriteOp::Shutdown]);
+
+        close(Ok(()), Stalled, window).await.unwrap();
+        let mut stalled = Stalled;
+        let write = bound_io(stalled.write(b"x"), window).await.unwrap_err();
+        assert_eq!(write.kind(), io::ErrorKind::TimedOut);
+        let flush = bound_io(stalled.flush(), window).await.unwrap_err();
+        assert_eq!(flush.kind(), io::ErrorKind::TimedOut);
+    }
+
+    /// Every accepted SMTP socket carries `TCP_NODELAY` before its first
+    /// byte (issue #126, AC3) — read back off the accepted socket itself,
+    /// so removing the setter turns the recorded `true` into `false`. An
+    /// installed option refusal drops exactly that socket before any reply
+    /// and the listener serves the next peer.
+    #[tokio::test]
+    async fn smtp_accepted_socket_nodelay() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        NODELAY_SEEN.with(|seen| seen.borrow_mut().clear());
+        let server = tokio::spawn(serve(
+            listener,
+            Arc::new(Store::new(0)),
+            Arc::new(Chaos::default()),
+            SmtpConfig::default(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            std::future::pending(),
+        ));
+        // Installed before the loop is first polled: branch-stable.
+        INJECTED_NODELAY_ERRORS.with(|errors| errors.set(1));
+
+        let mut dropped = TcpStream::connect(addr).await.unwrap();
+        let mut wire = Vec::new();
+        dropped.read_to_end(&mut wire).await.unwrap();
+        assert!(wire.is_empty(), "no byte before the drop: {wire:?}");
+        let _served = greeted(addr).await;
+        assert_eq!(NODELAY_SEEN.with(|seen| seen.borrow().clone()), vec![true]);
+        server.abort();
     }
 }
+
+#[cfg(test)]
+// The stalled-STARTTLS release proof lives in src/smtp/protocol_edges_tests.rs
+// (decision 0020 rule 2): its "never released its slot" diagnostic runs
+// only while the unbounded TLS close is back, so it is unwritable inline.
+mod protocol_edges_tests;

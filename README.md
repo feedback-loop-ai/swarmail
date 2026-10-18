@@ -364,8 +364,15 @@ session idles out with nothing stored. MAIL needs `FROM:<path>` and RCPT
 needs `TO:<path>` — keyword case-insensitive, whitespace after the colon
 allowed, angle brackets required; a bracketless, inverted or glued-on path
 is `501`, `MAIL FROM:<>` is the null sender and `RCPT TO:<>` is refused.
-Paths are otherwise opaque: local names (`<alice>`) and UTF-8 addresses are
-kept, no `@` or DNS check is made. MAIL accepts `SIZE=<digits>` (a
+A path that only looks like one is `501` too
+([0046](docs/decisions/0046-smtp-pop3-edges.md), *proposed*): blank after
+trimming whitespace (`< >`, `<\t>`, an ideographic space), or carrying any
+control character — only the literal `<>` is null. Paths are otherwise
+opaque and kept verbatim: local names (`<alice>`) and UTF-8 addresses are
+kept, no `@` or DNS check is made. Two RFC 5321 forms are deliberately not
+parsed: a quoted local part containing `>` (`<"a>b"@x.io>`) ends at its
+first `>` and is refused, and a source route (`<@hop1,@hop2:bob@y.io>`) is
+not stripped — the whole route is stored as the address. MAIL accepts `SIZE=<digits>` (a
 declaration above the cap, however many digits, is `552` at MAIL; the real
 bytes are still counted at DATA), `BODY=7BIT|8BITMIME` and bare `SMTPUTF8`;
 a malformed or repeated one is `501`, any other MAIL parameter is `555`, and
@@ -374,7 +381,10 @@ open transaction exactly as it was — they are checked before chaos rolls —
 and HELO/EHLO reset the transaction like RSET (HELO answers one line). PLAIN
 must be exactly `authzid NUL authcid NUL password`; only the authcid names
 the inbox, the authzid is ignored and any password — empty included — is
-accepted. One AUTH succeeds per session (`503` after that, even as
+accepted. The username (PLAIN's authcid, LOGIN's username) is the inbox
+name verbatim, padding included, and a blank one or one carrying a control
+character — a PLAIN-shaped `\0user\0password` sent to LOGIN included — is
+`501 5.5.2` with nothing assigned. One AUTH succeeds per session (`503` after that, even as
 `default`), surviving RSET and greetings; only a successful STARTTLS starts
 afresh, clearing identity and envelope. A bare `AUTH` or surplus tokens is
 `501`, an unknown mechanism `504`. Deliberately lenient: MAIL before any
@@ -400,7 +410,13 @@ many recipients` before anything is appended, and an idle session is
 answered `421 4.4.2 idle timeout, closing transmission channel` (POP3:
 `-ERR idle timeout`) and closed — SMTP 5 min, POP3 10 min, each its own
 compiled default, never armed across a commit (a mid-DATA expiry stores
-nothing, exactly as if the peer had hung up).
+nothing, exactly as if the peer had hung up). A session that fails — a reply
+write that expires included — drops its connection at once, without a
+graceful close that could wait on the same stalled peer; a session that ended
+well gets one more idle window for its close (TLS `close_notify`), so a
+STARTTLS peer that stops reading frees its slot at the deadline. Every
+accepted SMTP and POP3 socket sets `TCP_NODELAY` before its first byte, so a
+pipelined group's replies are not held for the client's delayed ACK.
 
 **The idle bounds are per read and per write, not a session lifetime**
 (decision 0036, proposed). One incomplete read or write is cut off at the
@@ -412,7 +428,19 @@ each DATA connection can retain a payload buffer approaching 50 MiB —
 about 12.5 GiB across 256 connections before allocation, parsing and
 other overhead (an exposure estimate, not an RSS ceiling); an over-limit
 DATA drain has no total time bound either while complete lines keep
-arriving. POP3 command trickles can hold its 256 slots the same way. The
+arriving. POP3 command trickles can hold its 256 slots the same way. A POP3
+reply has no whole-reply deadline either: its bound applies to each socket
+write, and every write that moves bytes starts a fresh window, so a reader
+whose socket accepts some bytes of each next write within its window
+receives a 50 MiB RETR in full, and keeps its slot and that reply's buffer
+for as long as it takes — at the defaults, 256 such replies are about
+12.5 GiB of raw-message-scale exposure, not an RSS ceiling; a write that
+moves nothing for a whole window cuts the reader off (decision 0046,
+proposed).
+Progress means bytes the local socket accepted, not bytes the client's
+application consumed, so a reader that stopped is seen only once its
+socket buffers fill. Command reads keep their whole-command bound and the
+cap's refusal stays one bounded write. The
 cap and the idle bounds are no availability guarantee against a
 deliberately slow client.
 
@@ -473,9 +501,18 @@ address. Every query shape is closed: an unknown key (`assert?too=`,
 JSON bodies an omitted optional field takes its default while a present
 `null` is refused with the field named — on the seed's `from`, `subject`,
 `text` and `html` and on a chaos rule's `error` alike (only a whole chaos
-event set to `null` means "clear it"). A blank inbox name (empty after
-trimming whitespace) is refused on every surface — REST, MCP, UI, the
-shims, SMTP AUTH and POP3 `USER`; a nonblank name is kept exactly as given.
+event set to `null` means "clear it"). One inbox-name rule holds on every
+surface — REST, MCP, UI, the shims, webhook inbox filters, SMTP AUTH and
+POP3 `USER`: a blank name (empty after trimming whitespace) is refused, and
+so is one carrying any control character (`inbox must not contain control
+characters`); any other name is kept exactly as given, padding included, so
+`" pad "` names the same inbox everywhere and never the inbox `pad`.
+Previously stored rows are not renamed: a control-bearing name stored
+before this rule still lists in `/api/v1/inboxes`, but its by-name routes
+refuse it; its mail still shows in the unscoped `GET /api/v1/messages`
+and is removed by id (`DELETE /api/v1/messages/{id}`, or `DELETE
+/api/v1/messages` with an `ids` list). Nothing promises such a name ages
+out.
 
 ### MCP — agents drive the mail
 
@@ -549,7 +586,10 @@ waits delay a seventeenth line.
 `:1110` — USER, PASS, STAT, LIST, UIDL, RETR, DELE, NOOP, RSET, TOP, CAPA,
 QUIT. The maildrop **is** a swarmail inbox: `USER proj-42` names the inbox
 exactly like SMTP AUTH does, so mail delivered over SMTP reads back over
-POP3 — including mail that arrived before the session opened. UIDLs are the
+POP3 — including mail that arrived before the session opened. The name is
+everything after `USER` and its one space, verbatim (only the line's CRLF is
+removed, so an extra CR is part of the name and refused); a command that is
+not UTF-8 ends the session unanswered. UIDLs are the
 swarmail ids; octet counts are the payload the client keeps — every line
 CRLF-terminated, the transparency dots RETR adds not counted (RFC 1939
 §11), the terminating `.` not counted — derived from the stored payload by
