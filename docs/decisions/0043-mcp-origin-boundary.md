@@ -109,3 +109,11 @@ exact coverage. Unit lifecycle tests use private atomics; wire tests use
 fresh servers and observed readiness, no sleeps or shared resets. The spec's
 AC1–AC12 and paired task proofs are the implementation acceptance contract.
 Index this record as proposed with the implementation, never self-accept it.
+
+## Pointer — 2026-10-18 (proposed 0047)
+
+[0047](0047-storage-rpc.md) §2, also **proposed**, updates §6 here (issue #130): the
+awaits-registry overflow label is no longer `_uncounted`, a legal inbox name, but a single
+line feed, which the shared inbox rule refuses; it renders as `inbox="\n"`. Metric names
+and the 4,096-name cap are unchanged, and the cumulative total is summed from the rows of
+the same scrape.

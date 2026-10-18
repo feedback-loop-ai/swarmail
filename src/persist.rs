@@ -16,11 +16,29 @@
 //! never occupies an async worker (decision 0023) — it parks a task instead.
 //!
 //! **One server per data file** — a second process opening the same file
-//! refuses at startup (a `<data-file>.lock` advisory lock held for the
-//! process's lifetime). The lock is taken before SQLite touches the file
-//! and is owned by [`Persist`], so the kernel releases it when the last
-//! owner drops or the process dies; the sidecar itself is never unlinked
-//! and carries no content (decision 0033 §§2–4, proposed 0042).
+//! refuses at startup. Two advisory locks are held for the process's
+//! lifetime: the `<data-file>.lock` sidecar beside the path as spelled
+//! (decision 0033 §§2–4, proposed 0042), and an exclusive lock on the data
+//! file itself, so the file's identity — not its name — is owned: a second
+//! server reaching it through a symlink or a hard link is refused too
+//! (proposed 0047 §1, issue #129). Both are taken before SQLite touches the
+//! file and are owned by [`Persist`], so the kernel releases them when the
+//! last owner drops or the process dies; the sidecar is never unlinked and
+//! carries no content, and the data file is opened without truncation (a
+//! new one is created no wider than SQLite's own 0644, subject to umask).
+//!
+//! The scope is cooperating current servers on a local filesystem with
+//! working `flock`. Outside it, and not refused: an older, sidecar-only
+//! binary reaching the file through a different alias (same path still
+//! collides on the sidecar); a writer that takes no lock at all; replacing
+//! the file or its directory under a live owner; single-file bind mounts
+//! (unproven); and remote filesystems, whose lock semantics vary. Keep one
+//! configured pathname across restarts: owning the inode does not move a
+//! crashed owner's `-wal` file to another hard link's basename, and a
+//! restart never repairs loss an earlier multi-writer run already caused.
+//! One `Persist` per data file per process: a refused in-process alias open
+//! closes its descriptor, which by POSIX drops this process's SQLite record
+//! locks on that file — a server holds one, so only tests meet this.
 
 use crate::model::Email;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -104,18 +122,23 @@ struct State {
 /// The write-through mirror. Cheap to clone-free share: `&self` is enough.
 pub struct Persist {
     state: Mutex<State>,
+    /// The held lock on the data file itself (proposed 0047 §1). Declared
+    /// after `state`: closing this descriptor drops every POSIX record lock
+    /// the process holds on the file, so the connection must close first.
+    _identity: File,
     /// The held `<data-file>.lock` (decision 0033 §2). Declared after
     /// `state` so the connection closes before ownership is released.
     _lock: File,
 }
 
 /// Why a data file could not be opened (decision 0042 §2): another
-/// server owns it, its sidecar lock is unusable, or SQLite refused it.
+/// server owns it, its sidecar or the file itself cannot be opened or
+/// locked, or SQLite refused it.
 #[derive(Debug)]
 pub enum OpenError {
     /// Another `Persist` — this process or another — holds the data file.
     InUse(PathBuf),
-    /// The sidecar lock file could not be opened or locked.
+    /// The sidecar or the data file could not be opened or locked.
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -162,42 +185,45 @@ fn lock_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Only contention is `InUse`; any other lock failure (an unsupported
-/// filesystem) refuses startup with its cause — never a silent unlocked run.
-fn lock_error(path: &Path, sidecar: PathBuf, err: TryLockError) -> OpenError {
+/// Only contention is `InUse`, named by the data file as supplied; any
+/// other lock failure (an unsupported filesystem) refuses startup with the
+/// locked file and its cause — never a silent unlocked run.
+fn lock_error(path: &Path, locked: PathBuf, err: TryLockError) -> OpenError {
     match err {
         TryLockError::WouldBlock => OpenError::InUse(path.to_path_buf()),
         TryLockError::Error(source) => OpenError::Io {
-            path: sidecar,
+            path: locked,
             source,
         },
     }
 }
 
-/// Take the data file's exclusive sidecar lock: one nonblocking attempt,
-/// no truncation, no retry, no unlink.
-fn acquire(path: &Path) -> Result<File, OpenError> {
-    let sidecar = lock_path(path);
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&sidecar)
-        .map_err(|source| OpenError::Io {
-            path: sidecar.clone(),
-            source,
-        })?;
-    file.try_lock().map_err(|e| lock_error(path, sidecar, e))?;
-    Ok(file)
+/// Open `file` — the sidecar, or the data file itself — and take its
+/// exclusive lock: one nonblocking attempt, no truncation, no retry, no
+/// unlink. A file this creates is no wider than SQLite's own 0644 (subject
+/// to umask); an existing file keeps its mode and its bytes.
+fn acquire(path: &Path, file: &Path) -> Result<File, OpenError> {
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o644);
+    let held = options.open(file).map_err(|source| OpenError::Io {
+        path: file.to_path_buf(),
+        source,
+    })?;
+    held.try_lock()
+        .map_err(|e| lock_error(path, file.to_path_buf(), e))?;
+    Ok(held)
 }
 
 impl Persist {
     /// Open (creating if needed) the data file and its schema — after
-    /// taking its sidecar lock, so a refused second server never touches
-    /// the database (decision 0033 §2).
+    /// taking its sidecar lock (decision 0033 §2) and then the data file's
+    /// own lock (proposed 0047 §1), so a refused second server, by the same
+    /// path or through an alias, never runs SQLite on the database.
     pub fn open(path: &Path) -> Result<Self, OpenError> {
-        let lock = acquire(path)?;
+        let lock = acquire(path, &lock_path(path))?;
+        let identity = acquire(path, path)?;
         let conn = Connection::open(path)?;
         // WAL keeps per-mail commits cheap; FULL makes a commit mean "on
         // disk" — a `250` stays the truth even across a hard kill.
@@ -216,6 +242,7 @@ impl Persist {
             })?;
         Ok(Self {
             state: Mutex::new(State { conn, next_seq }),
+            _identity: identity,
             _lock: lock,
         })
     }
@@ -1096,6 +1123,134 @@ mod tests {
         probe
             .try_lock()
             .expect("the failed open released the sidecar");
+    }
+
+    /// The refusal follows the file, not its name (proposed 0047 §1, issue
+    /// #129; red before: both aliases opened beside the owner): a symlink
+    /// and a hard link each get their own sidecar, so only the data file's
+    /// own lock can refuse them — in both acquisition orders, each refusal
+    /// named by the path the refused open was given.
+    #[cfg(unix)]
+    #[test]
+    fn data_file_aliases_refuse_in_both_orders() {
+        let dir = tempfile::TempDir::with_prefix("swarmail-persist-alias-").unwrap();
+        let real = dir.path().join("mail.db");
+        let soft = dir.path().join("soft.db");
+        let hard = dir.path().join("hard.db");
+        drop(Persist::open(&real).unwrap());
+        std::os::unix::fs::symlink(&real, &soft).unwrap();
+        std::fs::hard_link(&real, &hard).unwrap();
+        for alias in [&soft, &hard] {
+            for (first, second) in [(&real, alias), (alias, &real)] {
+                let owner = Persist::open(first).unwrap();
+                let err = Persist::open(second)
+                    .err()
+                    .expect("an alias of a held data file refuses");
+                assert_eq!(format!("{err:?}"), format!("InUse({second:?})"));
+                assert_eq!(
+                    err.to_string(),
+                    format!(
+                        "the data file is already in use by another server: {}",
+                        second.display()
+                    )
+                );
+                assert!(lock_path(second).is_file(), "the sidecar alone admitted it");
+                drop(owner);
+                drop(Persist::open(second).expect("the dropped owner frees every alias"));
+            }
+        }
+    }
+
+    /// The data file's own lock comes before SQLite (proposed 0047 §1):
+    /// with only the file held, the refused open leaves it empty — no
+    /// schema, no `-wal` — and the failed SQLite open of a malformed file
+    /// releases the file's lock with the sidecar's.
+    #[test]
+    fn identity_guards_release_after_drop_and_failed_open() {
+        let (_guard, path) = db_path("identity-first");
+        let holder = File::create(&path).unwrap();
+        holder.try_lock().unwrap();
+        let err = Persist::open(&path)
+            .err()
+            .expect("a held data file refuses the open");
+        assert_eq!(format!("{err:?}"), format!("InUse({path:?})"));
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "no schema");
+        let mut wal = path.clone().into_os_string();
+        wal.push("-wal");
+        assert!(!Path::new(&wal).exists(), "no SQLite work ran");
+        File::open(lock_path(&path))
+            .unwrap()
+            .try_lock()
+            .expect("the refused open released its sidecar");
+        drop(holder);
+        drop(Persist::open(&path).expect("the released file admits"));
+
+        let (_garbage_guard, garbage) = db_path("identity-garbage");
+        std::fs::write(&garbage, b"definitely not sqlite").unwrap();
+        assert!(Persist::open(&garbage).is_err());
+        File::open(&garbage)
+            .unwrap()
+            .try_lock()
+            .expect("the failed open released the data file's lock");
+    }
+
+    /// The data file is opened without truncation, its bytes and mode
+    /// untouched (proposed 0047 §1); a data path that cannot be opened is
+    /// an I/O refusal naming it with its cause, not a SQLite error.
+    #[cfg(unix)]
+    #[test]
+    fn identity_open_preserves_contents_and_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_guard, path) = db_path("identity-mode");
+        drop(Persist::open(&path).unwrap());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        drop(Persist::open(&path).unwrap());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "an existing mode is kept"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing truncated");
+
+        let (_dir_guard, dir_path) = db_path("identity-dir");
+        std::fs::create_dir(&dir_path).unwrap();
+        let err = Persist::open(&dir_path)
+            .err()
+            .expect("a directory is no data file");
+        let debug = format!("{err:?}");
+        assert!(
+            debug.starts_with(&format!("Io {{ path: {dir_path:?}, source: ")),
+            "{debug}"
+        );
+        let cause = std::error::Error::source(&err)
+            .expect("the I/O cause is kept")
+            .to_string();
+        assert_eq!(err.to_string(), format!("{}: {cause}", dir_path.display()));
+    }
+
+    /// The data file's lock is `flock`, which SQLite's POSIX record locks
+    /// never see (proposed 0047 §1): a raw connection beside the owner
+    /// still takes `BEGIN IMMEDIATE` and commits, the owner then commits
+    /// its own write, and the owner's busy bound is the dependency's.
+    #[test]
+    fn identity_lock_preserves_raw_sqlite_and_busy_bound() {
+        let (_guard, path) = db_path("identity-raw");
+        let persist = Persist::open(&path).unwrap();
+        let raw = Connection::open(&path).unwrap();
+        raw.execute_batch(
+            "BEGIN IMMEDIATE; INSERT INTO meta (key, value) VALUES ('raw', '1'); COMMIT;",
+        )
+        .expect("a raw writer commits beside the owner");
+        persist
+            .record_insert(&email("x", "box", "a@x.io"), &[], 1, 0)
+            .expect("the owner commits after the raw writer");
+        let rows: i64 = raw
+            .query_row("SELECT COUNT(*) FROM emails", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_dependency_busy_default(&persist.state.lock().expect("persist state poisoned").conn);
+        drop(raw);
     }
 
     /// The busy bound is a fact of the dependency, not of this crate:

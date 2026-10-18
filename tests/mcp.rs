@@ -1764,9 +1764,10 @@ async fn the_envelope_carries_the_code_taxonomy() {
 }
 
 /// The id predicate is JSON-RPC's, not a method-name prefix (decision 0029
-/// §2): an id-less request gets silence — 202 with an empty body over HTTP
-/// — whatever its method is called; a notification *carrying* an id is a
-/// request and answers -32601.
+/// §2): an id-less request with a string method gets silence — 202 with an
+/// empty body over HTTP — whatever its method is called; a notification
+/// *carrying* an id is a request and answers -32601. (An id-less object
+/// with no string method is no notification: see the test below.)
 #[tokio::test]
 async fn an_idless_request_is_a_notification() {
     let srv = start().await;
@@ -1775,8 +1776,8 @@ async fn an_idless_request_is_a_notification() {
         r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"swarmail_clear_all"}}"#,
         // An id-less notification: the same silence.
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
-        // A non-string method with no id: silence — the id is the predicate.
-        r#"{"jsonrpc":"2.0","method":42}"#,
+        // An unknown method is still a notification: silence.
+        r#"{"jsonrpc":"2.0","method":"notifications/nope"}"#,
     ] {
         let (st, body) = http_send_text(srv.http_addr, "POST", "/mcp", Some(line)).await;
         assert_eq!(st, 202, "{line}: {body}");
@@ -1800,6 +1801,59 @@ async fn an_idless_request_is_a_notification() {
         body["error"]["message"], "unknown method: notifications/initialized",
         "{body}"
     );
+}
+
+/// An id-less object is a notification only with a string method (proposed
+/// 0047 §3, issue #132; red before: every case below was an empty 202):
+/// `{}`, a lost method and a numeric one each get 200, `-32600` and a null
+/// id; in a batch the malformed member keeps its null-id slot while the
+/// notification beside it stays silent, and sixteen malformed members get
+/// sixteen errors. `notifications/initialized` is still an empty 202.
+#[tokio::test]
+async fn malformed_objects_answer_over_http() {
+    let srv = start().await;
+    for (body, message) in [
+        ("{}", "missing method"),
+        (r#"{"foo":"boo"}"#, "missing method"),
+        (r#"{"method":1}"#, "method must be a string"),
+        (
+            r#"{"jsonrpc":"2.0","method":42}"#,
+            "method must be a string",
+        ),
+    ] {
+        let (st, reply) = http_json(srv.http_addr, "POST", "/mcp", Some(body)).await;
+        assert_eq!(st, 200, "{body}: {reply}");
+        assert_eq!(
+            reply,
+            serde_json::json!({"jsonrpc":"2.0","id":null,
+                "error":{"code":-32600,"message":message}}),
+            "{body}"
+        );
+    }
+
+    let mixed = r#"[{"foo":"boo"},{"jsonrpc":"2.0","method":"x"}]"#;
+    let (st, reply) = http_json(srv.http_addr, "POST", "/mcp", Some(mixed)).await;
+    assert_eq!(st, 200, "{reply}");
+    let answers = reply.as_array().expect("an array");
+    assert_eq!(answers.len(), 1, "one element: {reply}");
+    assert_eq!(answers[0]["error"]["code"], -32600, "{reply}");
+    assert_eq!(answers[0]["id"], serde_json::Value::Null, "{reply}");
+
+    let sixteen = format!("[{}]", vec![r#"{"foo":"boo"}"#; 16].join(","));
+    let (st, reply) = http_json(srv.http_addr, "POST", "/mcp", Some(&sixteen)).await;
+    assert_eq!(st, 200, "{reply}");
+    let answers = reply.as_array().expect("an array");
+    assert_eq!(answers.len(), 16, "{reply}");
+    assert!(
+        answers
+            .iter()
+            .all(|a| a["error"]["code"] == -32600 && a["id"].is_null()),
+        "{reply}"
+    );
+
+    let initialized = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    let (st, body) = http_send_text(srv.http_addr, "POST", "/mcp", Some(initialized)).await;
+    assert_eq!((st, body.as_str()), (202, ""));
 }
 
 /// Batches are answered in order and bounded (decision 0029 §2): requests

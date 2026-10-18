@@ -54,6 +54,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo test --workspace --locked
+      # The portless bridge's real port-80 exchange (issue #133, proposed
+      # 0047 §4) is ignored by default — 80 is privileged on Linux — and run
+      # here explicitly: Linux lowers the unprivileged port floor first,
+      # macOS lets any user bind 80.
+      - if: runner.os == 'Linux'
+        run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
+      - run: cargo test --locked --test binary -- --ignored portless_bridge_pings_port_eighty
 
   # Exact 100% of lines, branches and functions, on every push and PR — not
   # just main. The gate never auto-installs a toolchain and refuses without

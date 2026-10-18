@@ -11,7 +11,9 @@
 //!
 //! The envelope follows decision 0029 §2: the JSON-RPC predicate is a
 //! *missing id* (a request has an id, a notification does not — whatever
-//! its method name), the code taxonomy is `-32700`/`-32600`/`-32601`/
+//! its method name), narrowed by proposed 0047 §3 to objects whose `method`
+//! is a string — an id-less object without one is an invalid request
+//! answered with a null id. The code taxonomy is `-32700`/`-32600`/`-32601`/
 //! `-32602`, and every argument is staged — an absent key keeps its schema
 //! default, a present-but-wrong-typed key (or explicit `null`) refuses by
 //! name before any effect.
@@ -56,28 +58,38 @@ const NOT_AN_OBJECT: &str = "a JSON-RPC request must be an object";
 /// notification (issue #72).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Envelope {
-    /// No reply: a single object without an `id` (a notification), or an
-    /// admitted batch of notifications only.
+    /// No reply: a single notification (an object without an `id` whose
+    /// `method` is a string), or an admitted batch of notifications only.
     Silent,
     /// One request: answered with one object carrying this id, null
     /// included — a non-object value is answered too, with a null id.
     Single(Value),
     /// An admitted batch with requests: answered with one array, one entry
-    /// per id-bearing member and one null-id entry per non-object member, in
-    /// member order — duplicates and nulls kept.
+    /// per id-bearing member and one null-id entry per invalid member (a
+    /// non-object, or an id-less object without a string method), in member
+    /// order — duplicates and nulls kept.
     Batch(Vec<Value>),
     /// An empty or over-cap array: one null-id refusal, whatever ids its
     /// members carry. The bounds are judged before any silence.
     InvalidBatch,
 }
 
-/// The id one value is answered with, if any: an object's own `id`
-/// (`None` for a notification), and a null id for anything that is not an
-/// object — a scalar, `null`, a string or a nested array is an invalid
-/// request, never a notification (decision 0044 §1, issue #91).
+/// The id one value is answered with, if any — the one notification
+/// predicate, shared by [`classify`] and [`handle`] so the server and the
+/// bridge owe the same replies. An object's own `id`, null included, is
+/// answered. `None` — silence — only for a notification: an object with no
+/// `id` *and* a string `method` (JSON-RPC 2.0 §4.1; proposed 0047 §3, issue
+/// #132). Any other id-less object (`{}`, a lost `method`, a numeric one)
+/// is an invalid request owed a null id, and so is anything that is not an
+/// object — a scalar, `null`, a string or a nested array (decision 0044
+/// §1, issue #91).
 fn reply_id(value: &Value) -> Option<Value> {
     match value {
-        Value::Object(fields) => fields.get("id").cloned(),
+        Value::Object(fields) => match fields.get("id") {
+            Some(id) => Some(id.clone()),
+            None if fields.get("method").is_some_and(Value::is_string) => None,
+            None => Some(Value::Null),
+        },
         _ => Some(Value::Null),
     }
 }
@@ -166,17 +178,21 @@ pub async fn dispatch(ctx: &McpContext, body: &[u8]) -> axum::response::Response
     }
 }
 
-/// Handle one JSON-RPC request. Returns `None` for a notification — the
-/// predicate is a *missing id* (decision 0029 §2), whatever the method name
-/// says; an id-less `notifications/initialized` and an id-less `tools/call`
-/// both get silence.
+/// Handle one JSON-RPC request. Returns `None` for a notification — an
+/// object with no `id` and a string `method` (decision 0029 §2 as amended
+/// by proposed 0047 §3), whatever that method names; an id-less
+/// `notifications/initialized` and an id-less `tools/call` both get
+/// silence, while an id-less object without a string method is answered.
 pub async fn handle(ctx: &McpContext, req: &Value) -> Option<Value> {
     // A value that is not an object is no request at all (decision 0044
     // §1): `-32600`, null id — the classification's null-id position.
     if !req.is_object() {
         return Some(error_object(-32600, NOT_AN_OBJECT, Value::Null));
     }
-    let id = req.get("id").cloned();
+    // The classification's own predicate: an id-less object reaches the
+    // method checks below with a null id, so a missing or non-string
+    // method is answered `-32600` (issue #132), never silence.
+    let id = reply_id(req);
     let method = match req.get("method") {
         None => {
             return id.map(|id| error_object(-32600, "missing method", id));
@@ -686,6 +702,7 @@ mod tests {
     fn the_envelope_classification_answers_every_row() {
         let over_cap = Value::Array(vec![json!({"jsonrpc":"2.0","id":1,"method":"ping"}); 17]);
         let over_cap_silent = Value::Array(vec![json!({"jsonrpc":"2.0","method":"x"}); 17]);
+        let sixteen_malformed = Value::Array(vec![json!({"foo":"boo"}); 16]);
         for (body, want) in [
             (json!({"id":7,"method":"ping"}), Envelope::Single(json!(7))),
             (
@@ -696,7 +713,18 @@ mod tests {
                 json!({"method":"notifications/initialized"}),
                 Envelope::Silent,
             ),
-            (json!({"jsonrpc":"2.0"}), Envelope::Silent),
+            // An id-less object is silent only with a string method
+            // (proposed 0047 §3; red before: all four Silent).
+            (json!({"jsonrpc":"2.0"}), Envelope::Single(Value::Null)),
+            (json!({}), Envelope::Single(Value::Null)),
+            (json!({"foo":"boo"}), Envelope::Single(Value::Null)),
+            (json!({"method":1}), Envelope::Single(Value::Null)),
+            (json!({"jsonrpc":"2.0","method":"nope"}), Envelope::Silent),
+            (
+                json!([{"foo":"boo"}, {"jsonrpc":"2.0","method":"x"}]),
+                Envelope::Batch(vec![Value::Null]),
+            ),
+            (sixteen_malformed, Envelope::Batch(vec![Value::Null; 16])),
             // A non-object is an invalid request, answered with a null id —
             // never silence (decision 0044 §1; red before: all Silent).
             (json!(42), Envelope::Single(Value::Null)),
@@ -751,6 +779,12 @@ mod tests {
             format!("[{note},{seed}]"),
             format!(r#"[{ping},{note},{{"jsonrpc":"2.0","id":null,"method":"nope"}},{ping}]"#),
             format!("[{ping},[1,2],{note},\"x\"]"),
+            "{}".to_string(),
+            r#"{"foo":"boo"}"#.to_string(),
+            r#"{"method":1}"#.to_string(),
+            r#"{"jsonrpc":"2.0","method":"nope"}"#.to_string(),
+            format!(r#"[{{"foo":"boo"}},{note}]"#),
+            format!("[{}]", vec![r#"{"foo":"boo"}"#; 16].join(",")),
         ];
         for body in bodies {
             let parsed: Value = serde_json::from_str(&body).unwrap();

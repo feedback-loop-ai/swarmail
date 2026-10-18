@@ -47,8 +47,11 @@ This is the one gate inventory: CI and the verify seat both run all of it,
 plus a fail-closed proof that `native-tls` is absent from the tree. The
 differences are listed here once (issue #104). CI also owns the Helm chart
 contract (`scripts/chart-verify.sh`), the network-backed RustSec advisory
-audit, and the tag-only `release-rate-5k` proof that both publish jobs
-need. The verify seat runs offline and installs nothing.
+audit, the tag-only `release-rate-5k` proof that both publish jobs
+need, and the stdio bridge's real port-80 exchange (the ignored
+`portless_bridge_pings_port_eighty`, run with the Linux unprivileged port
+floor lowered — proposed 0047 §4). The verify seat runs offline and
+installs nothing.
 
 Tests are part of every change. Extend the suite that proves the code —
 `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` or the unit tests — and run

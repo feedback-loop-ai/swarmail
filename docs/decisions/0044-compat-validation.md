@@ -127,3 +127,10 @@ The shared inbox rule also refuses any Unicode control character, with one sente
 every plane ("inbox must not contain control characters"). Webhook inbox filters, SMTP
 AUTH and POP3 `USER` now use the same rule. A nonblank padded name stays verbatim
 everywhere, and stored rows are not renamed.
+
+## Pointer — 2026-10-18 (proposed 0047)
+
+[0047](0047-storage-rpc.md) §§2–3, also **proposed**, update §§1/2 here (issues #130,
+#132): an `id`-less object is a notification only with a string `method` — any other is
+`-32600` with a null id, alone or in a batch — and the cumulative registry folds into a
+line-feed overflow label instead of `_uncounted`, which stays an ordinary inbox.

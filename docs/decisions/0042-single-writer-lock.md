@@ -86,3 +86,13 @@ pruning, ingest extraction, WAL/FULL, mutation ordering and the exact 5000 ms
 busy-default tripwire. All six house gates remain required. README/module
 sentence, behavior and tests land together; implementation metadata and the
 decision index name the actual state and retain this record as proposed.
+
+## Pointer — 2026-10-18 (proposed 0047)
+
+[0047](0047-storage-rpc.md) §1, also **proposed**, updates §§1/5 here (issue #129): the
+lock is held on the data file's identity as well as on the sidecar, so §5's "stable common
+pathnames" limit no longer covers symlink and hard-link aliases between current servers.
+The residuals that remain — old sidecar-only binaries through other aliases, writers that
+take no lock, live namespace replacement, single-file bind mounts, remote filesystems and
+restarting a crashed owner through another hard link's name — are named in 0047, the
+README and the persistence module.

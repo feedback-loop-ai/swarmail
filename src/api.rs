@@ -264,14 +264,18 @@ pub(crate) fn park_await(inbox: &str) -> UnitGuard {
 /// released (a parked wait stays registered by design, the refusal side of
 /// 0025 §5) and /metrics renders every row. Past [`AWAIT_REGISTRY_CAP`] a
 /// new name's count folds into the reserved [`AWAIT_REGISTRY_OVERFLOW`]
-/// row: the total stays exact, the per-name attribution is best-effort,
-/// and a refusal triple for a name beyond the cap reads the total row.
-/// Legit deployments name far fewer inboxes than the cap.
+/// row: the total stays exact, a name tracked before the cap keeps its own
+/// exact row, a name first seen past it has none, and a refusal triple for
+/// such a name reads the total row. The cap limits attribution, never
+/// admission. Legit deployments name far fewer inboxes than the cap.
 const AWAIT_REGISTRY_CAP: usize = 4096;
 
-/// The reserved overflow row's label — not a valid inbox name, so it can
-/// never collide with a real one.
-const AWAIT_REGISTRY_OVERFLOW: &str = "_uncounted";
+/// The reserved overflow row's label: one line feed, which
+/// [`crate::model::validate_inbox`] refuses (a control, and blank), so no
+/// admissible inbox can share the row (proposed 0047 §2, issue #130 — the
+/// old `_uncounted` was a legal name). It renders as `inbox="\n"`, the
+/// Prometheus escape; a literal backslash-n name renders as `inbox="\\n"`.
+const AWAIT_REGISTRY_OVERFLOW: &str = "\n";
 
 fn raise_cumulative(registry: &Registry, inbox: &str) {
     raise_cumulative_with_cap(registry, inbox, AWAIT_REGISTRY_CAP);
@@ -430,8 +434,9 @@ async fn origin_guard(
 /// port is genuinely omitted. A supplied port that is empty, non-decimal
 /// or out of `u16` range, an unclosed bracket, or anything but `:port`
 /// after `]` is `None` — malformed, never mistaken for omission (the
-/// absent-versus-invalid line of decision 0025, applied to ports).
-fn split_authority(authority: &str) -> Option<(&str, Option<u16>)> {
+/// absent-versus-invalid line of decision 0025, applied to ports). The
+/// stdio bridge dials by the same reading (proposed 0047 §4).
+pub(crate) fn split_authority(authority: &str) -> Option<(&str, Option<u16>)> {
     let (host, port) = if authority.starts_with('[') {
         // IPv6 literal: the host runs through `]`; only `:port` may follow.
         let end = authority.find(']')? + 1;
@@ -599,6 +604,26 @@ fn registry_rows(registry: &'static Registry, name: &str, kind: &str, total: u64
     let units = registry
         .lock()
         .expect("a readiness registry mutex cannot poison");
+    render_rows(&units, name, kind, total)
+}
+
+/// A cumulative registry's rows with the total summed from the very rows
+/// rendered — one lock, one snapshot (proposed 0047 §2), so a scrape's
+/// unlabeled total always equals the sum of its labeled samples, the
+/// overflow row's included, however many waits register meanwhile.
+fn cumulative_rows(registry: &Registry, name: &str) -> String {
+    let units = registry
+        .lock()
+        .expect("a readiness registry mutex cannot poison");
+    render_rows(&units, name, "counter", units.values().sum())
+}
+
+fn render_rows(
+    units: &std::collections::BTreeMap<String, u64>,
+    name: &str,
+    kind: &str,
+    total: u64,
+) -> String {
     let mut out = format!("# TYPE {name} {kind}\n{name} {total}\n");
     for (inbox, count) in units.iter() {
         out.push_str(&format!(
@@ -1013,11 +1038,9 @@ async fn metrics(State(state): State<AppState>) -> String {
     ));
     // The waits ever registered, per inbox (issue #102): the refusal side
     // of 0025 §5, observable — a refused call leaves the delta at zero.
-    out.push_str(&registry_rows(
+    out.push_str(&cumulative_rows(
         &AWAITS_REGISTERED,
         "swarmail_awaits_registered_total",
-        "counter",
-        registry_total(&AWAITS_REGISTERED),
     ));
     out.push_str(&registry_rows(
         &REQUESTS,
@@ -1434,6 +1457,18 @@ async fn clear_webhooks(State(state): State<AppState>) -> Json<serde_json::Value
 /// size, chunked or not.
 pub(crate) const MCP_BODY_LIMIT: usize = 2_097_152;
 
+/// The cause axum's extractor gives a body over [`MCP_BODY_LIMIT`]: the
+/// stdio bridge refuses an oversized body locally in these same words
+/// (proposed 0047 §4), pinned against a real 413 by the bridge's suite.
+pub(crate) const MCP_BODY_TOO_LARGE: &str =
+    "Failed to buffer the request body: length limit exceeded";
+
+/// The one wording of a refused `POST /mcp` body: the cause, then the
+/// named limit — the server's 413 and the bridge's local refusal alike.
+pub(crate) fn mcp_body_refusal(cause: &str) -> String {
+    format!("request body refused: {cause} (the limit is {MCP_BODY_LIMIT} bytes)")
+}
+
 /// The body is taken as bounded bytes and parsed inside `mcp::dispatch`:
 /// malformed JSON and invalid UTF-8 alike are a JSON-RPC `-32700` with a
 /// null id (HTTP 400), not a plain-text rejection (decisions 0029 §2, 0044
@@ -1447,10 +1482,7 @@ async fn mcp_endpoint(
     let body = match body {
         Ok(body) => body,
         Err(rejection) => {
-            let message = format!(
-                "request body refused: {} (the limit is {MCP_BODY_LIMIT} bytes)",
-                rejection.body_text()
-            );
+            let message = mcp_body_refusal(&rejection.body_text());
             return (
                 rejection.status(),
                 Json(mcp::error_object(-32600, &message, serde_json::Value::Null)),
@@ -1478,31 +1510,116 @@ async fn llms_txt() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{AWAIT_REGISTRY_CAP, AWAIT_REGISTRY_OVERFLOW, Registry, raise_cumulative_with_cap};
+    use super::{
+        AWAIT_REGISTRY_CAP, AWAIT_REGISTRY_OVERFLOW, Registry, cumulative_rows, prom_label,
+        raise_cumulative_with_cap,
+    };
 
-    /// The cap folds a new name past the limit into the reserved overflow
-    /// row, keeps counting known names, and still inserts the reserved name
-    /// itself (the landed review's LOW residual on #107, closed by
-    /// construction). Driven on a local registry: the process-global one
-    /// stays untouched for the other tests.
-    #[test]
-    fn the_cumulative_registry_folds_past_its_cap() {
-        let registry: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
-        for name in ["a", "b", "c"] {
-            raise_cumulative_with_cap(&registry, name, 3);
+    /// A Prometheus label value decoded by the text format's own three
+    /// escapes — written here independently of `prom_label`, so the
+    /// distinction below is the format's, not the encoder's say-so.
+    fn decode_label(escaped: &str) -> String {
+        let mut out = String::new();
+        let mut chars = escaped.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next().unwrap_or('\\') {
+                'n' => out.push('\n'),
+                other => out.push(other),
+            }
         }
-        raise_cumulative_with_cap(&registry, "d", 3);
-        raise_cumulative_with_cap(&registry, "_uncounted", 3);
-        raise_cumulative_with_cap(&registry, "a", 3);
+        out
+    }
+
+    /// The overflow row can be no inbox's (proposed 0047 §2, issue #130;
+    /// red before: `_uncounted` was both a legal inbox and the overflow
+    /// label): the sentinel is one line feed, which the shared inbox rule
+    /// refuses, while `_uncounted` and the literal two-character `\n` stay
+    /// legal — and after encoding all three samples are distinct, each
+    /// decoding back to its own name.
+    #[test]
+    fn overflow_is_inadmissible_and_distinct_after_prometheus_encoding() {
+        assert_eq!(AWAIT_REGISTRY_OVERFLOW, "\n");
+        assert!(crate::model::validate_inbox(AWAIT_REGISTRY_OVERFLOW).is_err());
+        let legal = ["_uncounted", r"\n"];
+        for name in legal {
+            assert_eq!(crate::model::validate_inbox(name), Ok(name));
+        }
+        let encoded: Vec<String> = [AWAIT_REGISTRY_OVERFLOW, legal[0], legal[1]]
+            .into_iter()
+            .map(prom_label)
+            .collect();
+        assert_eq!(encoded, [r"\n", "_uncounted", r"\\n"]);
+        for (escaped, name) in encoded
+            .iter()
+            .zip([AWAIT_REGISTRY_OVERFLOW, legal[0], legal[1]])
+        {
+            assert_eq!(decode_label(escaped), name);
+        }
+    }
+
+    /// Past the production cap a real `_uncounted` keeps an exact row of
+    /// its own (issue #130's reproduction, on a local registry so the
+    /// process-global one stays untouched): tracked before the cap, it
+    /// counts only its own registrations; names first seen past the cap —
+    /// `_uncounted` would be one too — fold, exactly, into the one
+    /// overflow row. 4096 real rows plus the overflow, never more.
+    #[test]
+    fn tracked_uncounted_stays_exact_after_registry_capacity() {
+        let registry: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        raise_cumulative_with_cap(&registry, "_uncounted", AWAIT_REGISTRY_CAP);
+        for n in 1..AWAIT_REGISTRY_CAP {
+            raise_cumulative_with_cap(&registry, &format!("box-{n}"), AWAIT_REGISTRY_CAP);
+        }
+        for late in ["late-1", "late-2", "late-3"] {
+            raise_cumulative_with_cap(&registry, late, AWAIT_REGISTRY_CAP);
+        }
+        raise_cumulative_with_cap(&registry, "_uncounted", AWAIT_REGISTRY_CAP);
+        raise_cumulative_with_cap(&registry, "box-1", AWAIT_REGISTRY_CAP);
         let units = registry.lock().expect("test registry cannot poison");
-        assert_eq!(units.get("a"), Some(&2), "a known name keeps counting");
-        assert_eq!(units.get("d"), None, "a fresh name past the cap folds");
+        assert_eq!(units.get("_uncounted"), Some(&2), "only its own two waits");
+        assert_eq!(
+            units.get("box-1"),
+            Some(&2),
+            "a tracked name keeps counting"
+        );
+        assert_eq!(
+            units.get("late-1"),
+            None,
+            "a name first seen past the cap folds"
+        );
         assert_eq!(
             units.get(AWAIT_REGISTRY_OVERFLOW),
-            Some(&2),
-            "the folds land in the reserved row"
+            Some(&3),
+            "folded exactly"
         );
-        assert_eq!(units.len(), 4, "the map is bounded by the cap plus one");
+        assert_eq!(units.len(), AWAIT_REGISTRY_CAP + 1);
+        assert_eq!(
+            units.values().sum::<u64>(),
+            AWAIT_REGISTRY_CAP as u64 + 5,
+            "every registration counted once"
+        );
+    }
+
+    /// The cumulative scrape is one snapshot (proposed 0047 §2): the
+    /// unlabeled total is summed from the rows rendered beside it, so it
+    /// equals the sum of the labeled samples — the overflow's `inbox="\n"`
+    /// included.
+    #[test]
+    fn cumulative_scrape_uses_one_registry_snapshot() {
+        let registry: Registry = std::sync::Mutex::new(std::collections::BTreeMap::new());
+        for name in ["a", "b", "a", "c", "d", "_uncounted"] {
+            raise_cumulative_with_cap(&registry, name, 3);
+        }
+        let rendered = cumulative_rows(&registry, "t");
+        assert_eq!(
+            rendered,
+            "# TYPE t counter\nt 6\nt{inbox=\"\\n\"} 2\nt{inbox=\"a\"} 2\nt{inbox=\"b\"} 1\n\
+             t{inbox=\"c\"} 1\n"
+        );
     }
 
     /// The production cap is the documented constant.

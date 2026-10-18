@@ -1025,6 +1025,162 @@ async fn a_second_server_on_a_held_data_file_refuses_and_a_dead_owner_frees_it()
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
 
+/// Run a `serve` that must be refused because `spelled` reaches a held
+/// data file, and assert 0033's named refusal: non-zero, never ready.
+async fn assert_refused_on(spelled: &std::path::Path) {
+    let mut second = serve_with_data(spelled);
+    second
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(common::HELPER_DEADLINE, second.output())
+        .await
+        .expect("a refused second server exits instead of serving")
+        .expect("spawn the second server");
+    assert!(
+        !out.status.success(),
+        "{spelled:?} must exit non-zero: {out:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let refusal = format!(
+        "the data file is already in use by another server: {}",
+        spelled.display()
+    );
+    assert!(stderr.contains(&refusal), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().all(|line| parse_addrs(line).is_none()),
+        "the refused server announced readiness: {stdout}"
+    );
+}
+
+/// Accept one mail over real SMTP: the 250 is the claim the restart checks.
+async fn deliver(serve: &Serve, inbox: &str, subject: &str) {
+    let reply = common::smtp_send(
+        serve.smtp_addr,
+        Some(inbox),
+        "a@x.io",
+        "b@x.io",
+        subject,
+        "the body",
+    )
+    .await
+    .expect("smtp send");
+    assert!(reply.starts_with("250"), "{reply}");
+}
+
+/// The subjects an inbox serves, newest first.
+async fn subjects(serve: &Serve, inbox: &str) -> Vec<String> {
+    let path = format!("/api/v1/inboxes/{inbox}/messages");
+    let (st, list) = common::http_json(serve.http_addr, "GET", &path, None).await;
+    assert_eq!(st, 200, "{list}");
+    list["emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["subject"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// One server per data *file*, not per name (proposed 0047 §1, issue
+/// #129; red before: the alias server started, and the two servers' mail
+/// broke the cap and lost acknowledged rows). For a symlink and a hard
+/// link, in both orders, a second server reaching the held file exits
+/// with the named refusal and never announces readiness; the owner keeps
+/// serving. Under a cap of 2 every 250 the owners gave is accounted for
+/// across a SIGKILL and graceful restarts: the newest two survive and the
+/// oldest were evicted, exactly as one writer would leave them. A killed
+/// owner is reopened by the name it used — 0047 §1's residual: owning the
+/// inode does not move a crashed owner's `-wal` to another hard link's
+/// basename — and names change hands only across graceful stops.
+#[tokio::test]
+async fn aliases_of_a_held_data_file_refuse_and_the_owners_mail_survives() {
+    let dir = tempfile::TempDir::with_prefix("swarmail-binary-alias-").unwrap();
+    let db = dir.path().join("mail.db");
+    let soft = dir.path().join("soft.db");
+    let hard = dir.path().join("hard.db");
+    let capped = |spelled: &std::path::Path| {
+        let mut cmd = serve_with_data(spelled);
+        cmd.args(["--max-per-inbox", "2"]);
+        cmd
+    };
+    // The file must exist before a hard link can name it.
+    let mut first = spawn_serve(capped(&db)).await;
+    wait_http_up(first.http_addr).await;
+    std::os::unix::fs::symlink(&db, &soft).unwrap();
+    std::fs::hard_link(&db, &hard).unwrap();
+
+    let mut sent = 0;
+    for alias in [&soft, &hard] {
+        // The real name owns; the alias is refused.
+        assert_refused_on(alias).await;
+        sent += 1;
+        deliver(&first, "aliased", &format!("m{sent}")).await;
+        let status = signal_and_wait(&mut first.child, libc::SIGINT, Duration::from_secs(30)).await;
+        first.reaped = true;
+        assert!(status.success(), "SIGINT exit: {status:?}");
+
+        // The alias owns; the real name is refused.
+        let mut owner = spawn_serve(capped(alias)).await;
+        wait_http_up(owner.http_addr).await;
+        assert_refused_on(&db).await;
+        let (st, body) = common::http_json(owner.http_addr, "GET", "/healthz", None).await;
+        assert_eq!(st, 200, "the owner keeps serving: {body}");
+        sent += 1;
+        deliver(&owner, "aliased", &format!("m{sent}")).await;
+
+        // A SIGKILLed and reaped owner frees the file at once, by its name.
+        tokio::time::timeout(common::HELPER_DEADLINE, owner.child.kill())
+            .await
+            .expect("the killed owner is reaped")
+            .expect("kill the owner");
+        owner.reaped = true;
+        let mut owner = spawn_serve(capped(alias)).await;
+        wait_http_up(owner.http_addr).await;
+        assert_refused_on(&db).await;
+        assert_eq!(
+            subjects(&owner, "aliased").await[0],
+            format!("m{sent}"),
+            "the killed owner's 250 survives"
+        );
+        let status =
+            signal_and_wait(&mut owner.child, libc::SIGTERM, Duration::from_secs(30)).await;
+        owner.reaped = true;
+        assert!(status.success(), "SIGTERM exit: {status:?}");
+
+        first = spawn_serve(capped(&db)).await;
+        wait_http_up(first.http_addr).await;
+        assert_eq!(
+            subjects(&first, "aliased").await,
+            vec![format!("m{sent}"), format!("m{}", sent - 1)],
+            "the newest two of {sent} acknowledged mails, oldest evicted"
+        );
+    }
+    let status = signal_and_wait(&mut first.child, libc::SIGINT, Duration::from_secs(30)).await;
+    first.reaped = true;
+    assert!(status.success(), "SIGINT exit: {status:?}");
+}
+
+/// A data file `serve` creates is no wider than SQLite's own 0644 (proposed
+/// 0047 §1): run under umask 000, where the plain-open default would be
+/// 0666, it is 0644 exactly — and SQLite's companions follow it.
+#[tokio::test]
+async fn a_created_data_file_is_no_wider_than_0644() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::TempDir::with_prefix("swarmail-binary-mode-").unwrap();
+    let db = dir.path().join("mail.db");
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "umask 000 && exec \"$0\" \"$@\"", binary()])
+        .args(serve_with_data(&db).as_std().get_args());
+    let mut serve = spawn_serve(cmd).await;
+    wait_http_up(serve.http_addr).await;
+    let mode = std::fs::metadata(&db).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o644, "{mode:o}");
+    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    serve.reaped = true;
+    assert!(status.success(), "SIGINT exit: {status:?}");
+}
+
 /// The drain is held open by a body that never lands, so the second signal
 /// provably arrives *during* it: the sequence is anchored on the server's
 /// own `shutting down` line, never a sleep. The operator has said they are
@@ -1415,8 +1571,14 @@ struct McpChild {
 
 impl McpChild {
     fn spawn(serve: &Serve) -> McpChild {
-        let mut child = Command::new(binary())
-            .args(["mcp", "--url", &format!("http://{}", serve.http_addr)])
+        let mut cmd = Command::new(binary());
+        cmd.args(["mcp", "--url", &format!("http://{}", serve.http_addr)]);
+        McpChild::spawn_command(cmd)
+    }
+
+    /// Any command that ends in `swarmail mcp`, wired the same way.
+    fn spawn_command(mut cmd: Command) -> McpChild {
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -1635,4 +1797,161 @@ async fn mcp_answers_bad_lines_and_keeps_serving() {
         .find(|r| r["id"] == 9)
         .expect("the ping's reply");
     assert_eq!(ping["result"], serde_json::json!({}), "{ping}");
+}
+
+/// An id-less object without a string method is no notification on the
+/// bridge either (proposed 0047 §3, issue #132; red before: the bridge
+/// wrote nothing for it): `{"foo":"boo"}` gets exactly one `-32600` line
+/// with a null id, and the ping behind it is answered.
+#[tokio::test]
+async fn mcp_answers_a_malformed_object_with_one_invalid_request_line() {
+    let serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+    let mut mcp = McpChild::spawn(&serve);
+    mcp.send(b"{\"foo\":\"boo\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+        .await;
+    let (status, replies) = mcp.finish().await;
+    assert!(status.success(), "mcp exit: {status:?}");
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    let invalid = replies
+        .iter()
+        .find(|r| r["id"].is_null())
+        .expect("the malformed object's reply");
+    assert_eq!(invalid["error"]["code"], -32600, "{invalid}");
+    assert_eq!(invalid["error"]["message"], "missing method", "{invalid}");
+    let ping = replies
+        .iter()
+        .find(|r| r["id"] == 2)
+        .expect("the ping's reply");
+    assert_eq!(ping["result"], serde_json::json!({}), "{ping}");
+}
+
+/// A raw `POST /mcp` of `body` and the JSON the server answered — a
+/// refused body may be cut off mid-write, which is not a failure here.
+async fn post_mcp_raw(addr: SocketAddr, body: &[u8]) -> serde_json::Value {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let mut request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(body);
+    let _ = stream.write_all(&request).await;
+    let mut reply = Vec::new();
+    let _ = stream.read_to_end(&mut reply).await;
+    let split = reply
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a response head");
+    serde_json::from_slice(&reply[split + 4..]).expect("a JSON body")
+}
+
+/// An oversized request is refused by the bridge itself, with its own ids
+/// (proposed 0047 §4, issue #133; red before: the 3 MiB line got the
+/// server's null-id 413 and the 40 MiB one a `-32000` broken pipe). A 3 MiB
+/// and a 40 MiB seed with id 7 each get exactly one `-32600` line with id 7
+/// in the server's own 413 words — read from a real over-limit POST — an
+/// oversized two-request batch gets one two-element array in member order,
+/// an oversized notification gets nothing, none of them seeds a mail, and
+/// the ping behind them is answered. Local refusals are written as their
+/// lines are read, so the order is the input's.
+#[tokio::test]
+async fn oversized_bridge_requests_keep_ids_without_effects() {
+    let serve = spawn_serve(serve_command()).await;
+    wait_http_up(serve.http_addr).await;
+    let limit = 2_097_152;
+    let over_http = post_mcp_raw(serve.http_addr, &vec![b' '; limit + 1]).await;
+    let words = over_http["error"]["message"].clone();
+    assert!(
+        words
+            .as_str()
+            .unwrap()
+            .contains("(the limit is 2097152 bytes)"),
+        "{over_http}"
+    );
+
+    let seed = |id: &str, size: usize| {
+        format!(
+            r#"{{"jsonrpc":"2.0",{id}"method":"tools/call","params":{{"name":"swarmail_seed_email","arguments":{{"inbox":"oversized","to":"a@x.io","text":"{}"}}}}}}"#,
+            "x".repeat(size)
+        )
+    };
+    let mib = 1024 * 1024;
+    let lines = [
+        seed(r#""id":7,"#, 3 * mib),
+        seed(r#""id":7,"#, 40 * mib),
+        format!(
+            r#"[{},{{"jsonrpc":"2.0","id":8,"method":"ping"}}]"#,
+            seed(r#""id":7,"#, 3 * mib)
+        ),
+        seed("", 3 * mib),
+        r#"{"jsonrpc":"2.0","id":9,"method":"ping"}"#.to_string(),
+    ];
+    let mut mcp = McpChild::spawn(&serve);
+    for line in &lines {
+        mcp.send(format!("{line}\n").as_bytes()).await;
+    }
+    let (status, replies) = mcp.finish().await;
+    assert!(status.success(), "mcp exit: {status:?}");
+    let refused = |id: serde_json::Value| serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":-32600,"message":words}});
+    assert_eq!(
+        replies,
+        [
+            refused(7.into()),
+            refused(7.into()),
+            serde_json::json!([refused(7.into()), refused(8.into())]),
+            serde_json::json!({"jsonrpc":"2.0","id":9,"result":{}}),
+        ]
+    );
+    let (st, count) = common::http_json(
+        serve.http_addr,
+        "GET",
+        "/api/v1/inboxes/oversized/count",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200, "{count}");
+    assert_eq!(count["count"], 0, "no oversized line reached the server");
+}
+
+/// `serve` bound on 127.0.0.1:80.
+const SERVE_ON_EIGHTY: [&str; 7] = [
+    "serve",
+    "--smtp-listen",
+    "127.0.0.1:0",
+    "--pop3-listen",
+    "127.0.0.1:0",
+    "--http-listen",
+    "127.0.0.1:80",
+];
+
+/// A URL with no port dials HTTP's 80 (proposed 0047 §4, issue #133; red
+/// before: "invalid socket address"): a real bridge given
+/// `--url http://127.0.0.1` answers a ping from a real server bound on
+/// 127.0.0.1:80 — never an ephemeral-port stand-in. Ignored by default
+/// because port 80 is privileged on Linux (and unprivileged user
+/// namespaces are refused on hosts that restrict them); CI runs it
+/// explicitly, after lowering `net.ipv4.ip_unprivileged_port_start` on
+/// Linux (macOS lets any user bind 80). Where 80 cannot be bound it fails
+/// loudly at the server's startup.
+#[tokio::test]
+#[ignore = "needs a host that lets this user bind 127.0.0.1:80; CI runs it explicitly"]
+async fn portless_bridge_pings_port_eighty() {
+    let mut serve = Command::new(binary());
+    serve.args(SERVE_ON_EIGHTY);
+    let serve = spawn_serve(serve).await;
+    assert_eq!(serve.http_addr.port(), 80);
+    wait_http_up(serve.http_addr).await;
+    let mut bridge = Command::new(binary());
+    bridge.args(["mcp", "--url", "http://127.0.0.1"]);
+    let mut mcp = McpChild::spawn_command(bridge);
+    mcp.send(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+        .await;
+    let (status, replies) = mcp.finish().await;
+    assert!(status.success(), "mcp exit: {status:?}");
+    assert_eq!(
+        replies,
+        [serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}})]
+    );
 }
