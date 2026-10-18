@@ -2383,7 +2383,9 @@ async fn null_strings_refuse_on_rest_like_mcp() {
                 Some(&body),
             )
             .await;
-            assert_eq!(st, 422, "{body}: {text}");
+            // 400, the native envelope (decision 0048 §2): a refused
+            // supplied value on seed is no longer the extractor's 422.
+            assert_eq!(st, 400, "{body}: {text}");
             assert!(text.contains(field), "{body}: the field is named: {text}");
         }
     }
@@ -2564,4 +2566,291 @@ async fn the_inbox_listing_pages_past_the_cap() {
     }
     let expected: Vec<String> = (0..251).map(|i| format!("page-{i:03}")).collect();
     assert_eq!(walked, expected, "disjoint, complete, sorted");
+}
+
+// ---------- batch 3 (#134, #135): closed bodies and route-named query sets ----------
+
+/// A raw request with whatever head the test spells — the media-type and
+/// size legs need a body without the helpers' `application/json`. Write
+/// errors are tolerated: a server may answer an oversized body before it
+/// has read it all.
+async fn raw_http(addr: std::net::SocketAddr, head: &str, body: &[u8]) -> (u16, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut request = format!("{head}Host: {addr}\r\nConnection: close\r\n\r\n").into_bytes();
+    request.extend_from_slice(body);
+    let _ = stream.write_all(&request).await;
+    let mut buf = Vec::new();
+    let _ = stream.read_to_end(&mut buf).await;
+    let s = String::from_utf8_lossy(&buf).to_string();
+    let status = s
+        .split(' ')
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0);
+    let body = s.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+    (status, body.to_string())
+}
+
+/// Issue #134: the REST seed body is closed (decision 0048 §2). `subjet`
+/// used to answer 200 and store "(no subject)"; it is now a 400 naming the
+/// key, nothing is stored and no inbox is minted. The legal spelling still
+/// seeds through the ingest pipeline and is queryable at once.
+#[tokio::test]
+async fn seed_unknown_key_refuses_without_storing() {
+    let srv = start().await;
+    let (st, body) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/n1/seed",
+        Some(r#"{"to": "a@x.io", "subjet": "typo"}"#),
+    )
+    .await;
+    assert_eq!(st, 400, "{body}");
+    let error = body["error"].as_str().unwrap();
+    assert!(error.starts_with("invalid seed body: "), "{body}");
+    assert!(error.contains("unknown field `subjet`"), "{body}");
+    let (_, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/n1/count", None).await;
+    assert_eq!(count["count"], 0, "nothing stored");
+    let (_, inboxes) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(inboxes, serde_json::json!([]), "no inbox minted");
+
+    let (st, mail) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/n1/seed",
+        Some(r#"{"to": "a@x.io", "subject": "kept", "text": "Code 424242"}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{mail}");
+    assert_eq!(mail["subject"], "kept");
+    assert_eq!(
+        mail["codes"],
+        serde_json::json!(["424242"]),
+        "extracted at ingest"
+    );
+    let (_, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/n1/count", None).await;
+    assert_eq!(count["count"], 1, "the accepted seed is queryable");
+}
+
+/// Decision 0048 §2's scoped amendment: on seed POST and webhook PUT every
+/// JSON *data* error — unknown key, `null`, wrong type, missing field, wrong
+/// top-level shape — is a native 400 `{"error": …}` naming the field, where
+/// the extractor answered 422; nothing is stored or replaced. Syntax (400),
+/// media type (415) and size (413) keep the extractor's own responses, and
+/// chaos keeps its 422.
+#[tokio::test]
+async fn seed_and_webhook_data_errors_are_local_400s() {
+    let srv = start().await;
+    let prior = r#"[{"url": "http://127.0.0.1:9/prior", "secret": "s"}]"#;
+    let (st, installed) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(prior)).await;
+    assert_eq!(st, 200, "{installed}");
+
+    for (body, named) in [
+        (r#"{"to": "a@x.io", "subject": null}"#, "subject"),
+        (r#"{"to": 7}"#, "to"),
+        (r#"{"text": "x"}"#, "missing field `to`"),
+        (r#"["a@x.io"]"#, "invalid seed body"),
+        (r#""a@x.io""#, "invalid seed body"),
+    ] {
+        let (st, resp) = http_json(
+            srv.http_addr,
+            "POST",
+            "/api/v1/inboxes/dataerr/seed",
+            Some(body),
+        )
+        .await;
+        assert_eq!(st, 400, "{body}: {resp}");
+        assert!(
+            resp["error"].as_str().unwrap().contains(named),
+            "{body}: {resp}"
+        );
+    }
+    let (_, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/dataerr/count", None).await;
+    assert_eq!(count["count"], 0, "no refused seed stored anything");
+
+    for (body, named) in [
+        (
+            r#"{"url": "http://127.0.0.1:9/x"}"#,
+            "expected a JSON array of webhook targets, found an object",
+        ),
+        (r#""http://user:hunter2@127.0.0.1:9/x""#, "found a string"),
+        (
+            r#"["http://user:hunter2@127.0.0.1:9/x"]"#,
+            "[0]: expected a webhook target object, found a string",
+        ),
+        (
+            r#"[{"url": 7}]"#,
+            "[0].url: expected a string, found a number",
+        ),
+        (
+            r#"[{"url": "http://127.0.0.1:9/x", "secret": 4242}]"#,
+            "[0].secret: expected a string, found a number",
+        ),
+        (r#"[{"inbox": "a"}]"#, "missing field `url`"),
+    ] {
+        let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(body)).await;
+        assert_eq!(st, 400, "{body}: {resp}");
+        let error = resp["error"].as_str().unwrap();
+        assert!(
+            error.starts_with("invalid webhooks body: "),
+            "{body}: {resp}"
+        );
+        assert!(error.contains(named), "{body}: {resp}");
+        assert!(
+            !error.contains("hunter2") && !error.contains("4242"),
+            "no value echoed: {resp}"
+        );
+    }
+    let (_, after) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(after, installed, "no refused PUT replaced the list");
+
+    // The non-data rejections are the extractor's own, untouched. Each
+    // malformed body opens the shape its route reads, so the syntax error
+    // is what the parse meets first.
+    for (method, path, malformed) in [
+        ("POST", "/api/v1/inboxes/dataerr/seed", "{ nope"),
+        ("PUT", "/api/v1/webhooks", "[ nope"),
+    ] {
+        let (st, text) = http_send_text(srv.http_addr, method, path, Some(malformed)).await;
+        assert_eq!(st, 400, "{path}: {text}");
+        assert!(
+            text.starts_with("Failed to parse the request body"),
+            "{path}: {text}"
+        );
+        let head = format!(
+            "{method} {path} HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n"
+        );
+        let (st, text) = raw_http(srv.http_addr, &head, b"[]").await;
+        assert_eq!(st, 415, "{path}: {text}");
+        let big = vec![b' '; 2_097_153];
+        let head = format!(
+            "{method} {path} HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+            big.len()
+        );
+        let (st, text) = raw_http(srv.http_addr, &head, &big).await;
+        assert_eq!(st, 413, "{path}: {text}");
+    }
+    let (st, text) = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 100, "eror": "x"}}"#),
+    )
+    .await;
+    assert_eq!(st, 422, "chaos keeps the extractor's 422: {text}");
+    let (_, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/dataerr/count", None).await;
+    assert_eq!(count["count"], 0);
+    let (_, after) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(after, installed, "nothing replaced the list");
+}
+
+/// Issue #134: count, assert and the three view routes take exactly their
+/// own keys (decision 0048 §4). Each key below used to answer 200 and be
+/// ignored — `assert?timeout_ms=` promised a wait that never happened — and
+/// is now a 400 naming the route and the key; a filter name supported on
+/// list is still refused where the route takes none.
+#[tokio::test]
+async fn native_count_assert_and_views_refuse_ignored_keys() {
+    let srv = start().await;
+    let seeded = seed(srv.http_addr, "q134", "a@x.io").await;
+    let (_, threads) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/q134/threads", None).await;
+    let key = threads[0]["key"].as_str().unwrap().to_string();
+    let thread_query = format!("threads/{key}?limit=1");
+    for (path, route, bad) in [
+        ("count?limit=1", "count", "limit"),
+        ("count?offset=3&limit=1", "count", "offset"),
+        ("count?limit=9999", "count", "limit"),
+        ("count?bogus=1", "count", "bogus"),
+        ("assert?count=0&timeout_ms=5000", "assert", "timeout_ms"),
+        ("assert?timeout_ms=1", "assert", "timeout_ms"),
+        ("assert?offset=1", "assert", "offset"),
+        ("assert?bogus=1", "assert", "bogus"),
+        ("threads?bogus=1", "threads", "bogus"),
+        ("threads?to=nobody", "threads", "to"),
+        (thread_query.as_str(), "thread", "limit"),
+        ("feed?bogus=1", "feed", "bogus"),
+        ("feed?since_ms=1", "feed", "since_ms"),
+    ] {
+        let full = format!("/api/v1/inboxes/q134/{path}");
+        let (st, body) = http_json(srv.http_addr, "GET", &full, None).await;
+        assert_eq!(st, 400, "{full}: {body}");
+        let error = body["error"].as_str().unwrap();
+        assert!(
+            error.starts_with(&format!("invalid {route} query: ")),
+            "{full}: {body}"
+        );
+        assert!(error.contains(&format!("`{bad}`")), "{full}: {body}");
+    }
+
+    // The retained keys keep their meaning: every count filter applies,
+    // and the assert compares exactly — default 1, 0 legal, above the page
+    // cap legal — with `limit` type-checked and inert.
+    let since = seeded["received_ms"].as_i64().unwrap();
+    let later = format!("?since_ms={}", since + 1);
+    let exact = format!("?since_ms={since}");
+    for (query, count) in [
+        ("", 1),
+        ("?to=a@x.io", 1),
+        ("?to=b@x.io", 0),
+        ("?from=fixture@swarmail.dev", 1),
+        ("?subject=nomatch", 0),
+        (later.as_str(), 0),
+        (exact.as_str(), 1),
+    ] {
+        let path = format!("/api/v1/inboxes/q134/count{query}");
+        let (st, body) = http_json(srv.http_addr, "GET", &path, None).await;
+        assert_eq!(
+            (st, body["count"].clone()),
+            (200, serde_json::json!(count)),
+            "{path}"
+        );
+    }
+    for (query, status) in [
+        ("", 200),
+        ("?count=1", 200),
+        ("?count=0", 409),
+        ("?count=0&to=b@x.io", 200),
+        ("?count=1&limit=1", 200),
+        ("?count=1&limit=999", 200),
+        ("?count=300", 409),
+    ] {
+        let path = format!("/api/v1/inboxes/q134/assert{query}");
+        let (st, body) = http_json(srv.http_addr, "GET", &path, None).await;
+        assert_eq!(st, status, "{path}: {body}");
+    }
+    for path in ["count?since_ms=soon", "assert?limit=-1", "assert?count=x"] {
+        let full = format!("/api/v1/inboxes/q134/{path}");
+        let (st, body) = http_json(srv.http_addr, "GET", &full, None).await;
+        assert_eq!(st, 400, "{full}: {body}");
+    }
+
+    // The views still answer without a query.
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/q134/threads", None).await;
+    assert_eq!((st, body.as_array().unwrap().len()), (200, 1));
+    let thread = format!("/api/v1/inboxes/q134/threads/{key}");
+    let (st, body) = http_json(srv.http_addr, "GET", &thread, None).await;
+    assert_eq!((st, body["count"].clone()), (200, serde_json::json!(1)));
+}
+
+/// Issue #134's documentation half (decision 0048 §5): the served llms.txt
+/// no longer claims "Strict input everywhere" — compat list/search keep
+/// their open shapes, which the wire still shows (`inbx=` is tolerated and
+/// scopes nothing), while the native routes and the latest family refuse.
+#[tokio::test]
+async fn the_strictness_claims_match_the_wire() {
+    let srv = start().await;
+    let (_, llms) = http_get_text(srv.http_addr, "/llms.txt").await;
+    assert!(!llms.contains("Strict input everywhere"), "{llms}");
+    assert!(
+        llms.contains("inbx"),
+        "the compat tolerance is named: {llms}"
+    );
+    seed(srv.http_addr, "s1", "a@x.io").await;
+    seed(srv.http_addr, "s2", "a@x.io").await;
+    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/messages?inbx=s1", None).await;
+    assert_eq!(st, 200, "compat list tolerates an unknown key: {body}");
+    assert_eq!(body["total"], 2, "and the typo scopes nothing: {body}");
+    let (st, _) = http_json(srv.http_addr, "GET", "/api/v1/message/latest?inbx=s1", None).await;
+    assert_eq!(st, 400, "latest stays strict");
 }

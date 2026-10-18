@@ -1713,6 +1713,280 @@ async fn url_credentials_reach_the_sink_and_never_the_echo() {
     assert!(head.starts_with("POST /hook?k=v HTTP/1.1"), "{head}");
 }
 
+// ---------- decision 0048: complete CA validation and the closed target ----------
+
+/// A well-framed PEM certificate block whose base64 carries `bytes`.
+fn framed_pem(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    let body = base64::engine::general_purpose::STANDARD.encode(bytes);
+    format!("-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n")
+}
+
+/// A fresh self-signed CA, PEM-encoded, that signs nothing the test serves.
+fn unrelated_ca_pem() -> String {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+    params.self_signed(&key).unwrap().pem()
+}
+
+/// The installed list, field by field — the server's own state, not the
+/// redacted GET: a refusal that cleared a secret or a URL's credentials
+/// would pass a GET comparison.
+fn installed(srv: &swarmail::RunningServer) -> Vec<[Option<String>; 4]> {
+    srv.webhooks
+        .current()
+        .into_iter()
+        .map(|t| [Some(t.url), t.inbox, t.secret, t.ca_pem])
+        .collect()
+}
+
+/// A prior target carrying URL credentials and a secret, filtered to
+/// `inbox` and pointed at a fresh sink: the configuration every refusal
+/// below must leave whole.
+async fn install_prior(srv: &swarmail::RunningServer, inbox: &str) -> Receiver<String> {
+    let (addr, rx, _, _hits) = http_sink(204, SINK_LIFETIME).await;
+    let prior = serde_json::json!([{
+        "url": format!("http://user:hunter2@{addr}/prior"),
+        "inbox": inbox,
+        "secret": "kept-secret",
+    }])
+    .to_string();
+    let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&prior)).await;
+    assert_eq!(st, 200, "{resp}");
+    rx
+}
+
+/// The prior target still delivers with its own credentials: the refusals
+/// replaced nothing the delivery path reads.
+async fn assert_prior_delivers(srv: &swarmail::RunningServer, inbox: &str, rx: Receiver<String>) {
+    smtp_send(srv.smtp_addr, Some(inbox), "f@x.io", "r@x.io", "prior", "x")
+        .await
+        .unwrap();
+    let head = tokio::time::timeout(Duration::from_secs(10), rx)
+        .await
+        .expect("the prior target still delivers")
+        .unwrap();
+    let lower = head.to_ascii_lowercase();
+    assert!(head.starts_with("POST /prior HTTP/1.1"), "{head}");
+    assert!(lower.contains("x-swarmail-secret: kept-secret"), "{head}");
+    // base64("user:hunter2")
+    assert!(
+        lower.contains("authorization: basic dxnlcjpodw50zxiy"),
+        "{head}"
+    );
+}
+
+/// Issue #122 (decision 0048 §1): every certificate a `ca_pem` carries must
+/// load into the delivery client at PUT. Red before: a well-framed block
+/// of junk DER — the issue's reproduction — and a junk block after a good
+/// one answered 200, replaced the working list, and every delivery then
+/// failed building its client. Each defect refuses on an http and an https
+/// target, alone and after a valid target, with the named `ca_pem`
+/// sentence at the bad target's index; the installed list — credentials
+/// and all — is untouched, and the prior target still delivers with them.
+#[tokio::test]
+async fn webhook_ca_put_rejects_every_invalid_certificate() {
+    let srv = start().await;
+    let rx = install_prior(&srv, "ca122").await;
+    let before = installed(&srv);
+    let good = unrelated_ca_pem();
+    let malformed = "-----BEGIN CERTIFICATE-----\n!!!not base64!!!\n-----END CERTIFICATE-----\n";
+    for (case, pem) in [
+        ("no certificate section", "not a pem".to_string()),
+        ("empty certificate", framed_pem(b"")),
+        ("malformed base64", malformed.to_string()),
+        ("invalid DER", framed_pem(b"not a DER certificate")),
+        (
+            "valid then invalid DER",
+            format!("{good}{}", framed_pem(b"junk")),
+        ),
+        ("valid then malformed block", format!("{good}{malformed}")),
+    ] {
+        for url in ["http://127.0.0.1:9/hook", "https://127.0.0.1:9/hook"] {
+            let bad = serde_json::json!({ "url": url, "ca_pem": pem });
+            let fine = serde_json::json!({ "url": "http://127.0.0.1:9/fine", "ca_pem": good });
+            for (index, list) in [(0, vec![bad.clone()]), (1, vec![fine, bad])] {
+                let body = serde_json::Value::Array(list).to_string();
+                let (st, resp) =
+                    http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+                assert_eq!(st, 400, "{case} {url} at {index}: {resp}");
+                let error = resp["error"].as_str().unwrap();
+                assert!(
+                    error.starts_with(&format!(
+                        "webhook target {index}: webhook ca_pem could not be loaded into the rustls client: "
+                    )),
+                    "{case} {url} at {index}: {resp}"
+                );
+                assert_eq!(installed(&srv), before, "{case} {url} at {index}");
+            }
+        }
+    }
+    assert_prior_delivers(&srv, "ca122", rx).await;
+}
+
+/// Issue #135 (decision 0048 §2): the target object is closed and its
+/// optional strings are omitted or strings. Red before: `secrt` installed a
+/// target with no secret, and `null` rode the default. Each defect — after
+/// a valid target — is a 400 naming the key and leaves the installed list
+/// whole; replaying the GET echo, whose absent values are `null`, refuses
+/// the same way (the echo is a diagnostic, 0048 §3). Omission still
+/// installs.
+#[tokio::test]
+async fn webhook_unknown_and_null_fields_preserve_configuration() {
+    let srv = start().await;
+    let rx = install_prior(&srv, "keys135").await;
+    let before = installed(&srv);
+    let (_, echo) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(echo[0]["secret"], serde_json::Value::Null, "{echo}");
+    assert_eq!(echo[0]["ca_pem"], serde_json::Value::Null, "{echo}");
+
+    let fine = r#"{"url": "http://127.0.0.1:9/fine"}"#;
+    for (bad, named) in [
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "secrt": "s3cret"}"#,
+            "[1].secrt: unknown field `secrt`",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "inbox": null}"#,
+            "[1].inbox: expected a string, found null",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "secret": null}"#,
+            "[1].secret: expected a string, found null",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "ca_pem": null}"#,
+            "[1].ca_pem: expected a string, found null",
+        ),
+    ] {
+        let body = format!("[{fine}, {bad}]");
+        let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+        assert_eq!(st, 400, "{bad}: {resp}");
+        let error = resp["error"].as_str().unwrap();
+        assert!(error.contains(named), "{bad}: {resp}");
+        assert!(!error.contains("s3cret"), "{bad}: {resp}");
+        assert_eq!(installed(&srv), before, "{bad}");
+    }
+    let (st, resp) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/webhooks",
+        Some(&echo.to_string()),
+    )
+    .await;
+    assert_eq!(st, 400, "the echo is not a PUT template: {resp}");
+    // The first null the parse meets: `ca_pem`, the re-serialized echo's
+    // keys being sorted.
+    assert!(
+        resp["error"]
+            .as_str()
+            .unwrap()
+            .contains("[0].ca_pem: expected a string, found null"),
+        "{resp}"
+    );
+    assert_eq!(installed(&srv), before, "the replay replaced nothing");
+    assert_prior_delivers(&srv, "keys135", rx).await;
+
+    let (st, resp) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/webhooks",
+        Some(&format!("[{fine}]")),
+    )
+    .await;
+    assert_eq!(st, 200, "omission installs: {resp}");
+    assert_eq!(
+        installed(&srv),
+        vec![[
+            Some("http://127.0.0.1:9/fine".to_string()),
+            None,
+            None,
+            None
+        ]]
+    );
+}
+
+/// Issue #122 (decision 0048 §1): a bundle's later roots are trusted, not
+/// just its first. The sink's leaf is signed by the *second* CA of the
+/// target's `ca_pem`; verification stays on, so the delivery reaching the
+/// sink is the proof. Red before: only the first certificate was decoded,
+/// the handshake failed on every attempt and nothing arrived.
+#[tokio::test]
+async fn webhook_second_ca_root_delivers_over_verified_https() {
+    let srv = start().await;
+    let (second, leaf, leaf_key) = mint_cert();
+    let (addr, rx, _, _hits) = tls_sink(
+        b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        leaf,
+        leaf_key,
+        SINK_LIFETIME,
+    )
+    .await;
+    let targets = serde_json::json!([{
+        "url": format!("https://127.0.0.1:{}/hook", addr.port()),
+        "ca_pem": format!("{}{second}", unrelated_ca_pem()),
+    }])
+    .to_string();
+    let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200, "{resp}");
+    smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "second root", "x")
+        .await
+        .unwrap();
+    let captured = tokio::time::timeout(Duration::from_secs(10), rx)
+        .await
+        .expect("the second root's leaf was trusted")
+        .unwrap();
+    assert!(captured.tls.contains("TLSv1"), "{captured:?}");
+    assert!(
+        captured.head.starts_with("POST /hook HTTP/1.1"),
+        "{captured:?}"
+    );
+}
+
+/// PUT validation is offline (decision 0048 §1): building a target's CA
+/// client dials nothing. The target's listener has no queued connection
+/// once the PUT has answered — a dial made by the handler would have
+/// completed its handshake, and so been queued, before the 200 — and the
+/// positive control, a matching mail, does reach the same listener.
+#[tokio::test]
+async fn webhook_validation_does_not_dial() {
+    let srv = start().await;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let targets = serde_json::json!([{
+        "url": format!("http://{addr}/hook"),
+        "inbox": "nodial",
+        "ca_pem": unrelated_ca_pem(),
+    }])
+    .to_string();
+    let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200, "{resp}");
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "the PUT dialed nothing"
+    );
+
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+    smtp_send(
+        srv.smtp_addr,
+        Some("nodial"),
+        "f@x.io",
+        "r@x.io",
+        "dial",
+        "x",
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), listener.accept())
+        .await
+        .expect("the delivery dials the target")
+        .unwrap();
+}
+
 /// The final shutdown sweep survives a lagged ring and accounts the backlog
 /// it drains (issue #76): a broadcast receiver's first read can be
 /// `Lagged(n)` with retained mail still behind it, and the old

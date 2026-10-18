@@ -1407,12 +1407,16 @@ async fn a_delivery_dials_its_target_and_never_the_proxy(ca_pem: Option<String>)
     let mut serve = spawn_serve(cmd).await;
     wait_http_up(serve.http_addr).await;
 
-    let targets = serde_json::json!([{
+    // An absent `ca_pem` is omitted, never `null` — a present null is
+    // refused (decision 0048 §2).
+    let mut target_json = serde_json::json!({
         "url": format!("http://{target}/direct"),
         "secret": "s3cret",
-        "ca_pem": ca_pem,
-    }])
-    .to_string();
+    });
+    if let Some(pem) = ca_pem {
+        target_json["ca_pem"] = pem.into();
+    }
+    let targets = serde_json::json!([target_json]).to_string();
     let (st, resp) =
         common::http_json(serve.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200, "{resp}");
@@ -1461,17 +1465,33 @@ async fn the_ca_pem_client_ignores_proxy_environment() {
 /// delivery in flight against a sink that read it and never answers, a
 /// SIGTERM ends the process cleanly and its stdout — at the default level,
 /// no `RUST_LOG` — carries exactly one `webhook dispatcher stopped` line
-/// with all five totals: the in-flight delivery aborted, nothing else.
-/// Ordered by the sink's read and the process's EOF, never a sleep.
+/// with all five totals: the in-flight delivery aborted, a refused one
+/// exhausted, nothing else. Ordered by the sink's read, the exhaustion
+/// counter and the process's EOF, never a sleep.
+///
+/// Issue #135 (decision 0048 §6) rides the same run. The final event's
+/// *message* is `webhook dispatcher stopped` — red before: the constant was
+/// a field, `DISPATCHER_STOPPED="webhook dispatcher stopped"` — and the
+/// exhausted delivery's warn names its transport cause past `error
+/// sending request`, with neither the URL's credentials nor the secret
+/// anywhere on stdout.
 #[tokio::test]
 async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
     let (stalled, request) = one_request_sink(None).await;
+    // Bind and drop: a port nothing listens on, so every dial is refused.
+    let refused = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
     let mut cmd = serve_command();
     cmd.env_remove("RUST_LOG");
     let mut serve = spawn_serve(cmd).await;
     wait_http_up(serve.http_addr).await;
 
-    let targets = format!(r#"[{{"url": "http://user:hunter2@{stalled}/hook"}}]"#);
+    let targets = format!(
+        r#"[{{"url": "http://user:hunter2@{stalled}/hook"}},
+            {{"url": "http://user:hunter3@{refused}/hook", "secret": "marker-secret"}}]"#
+    );
     let (st, resp) =
         common::http_json(serve.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200, "{resp}");
@@ -1482,6 +1502,7 @@ async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
         .await
         .expect("the delivery reached the stalled sink")
         .expect("the sink read a request");
+    common::wait_for_metric_from(serve.http_addr, "swarmail_webhook_exhausted_total", 0, 1).await;
 
     unsafe {
         libc::kill(serve.child.id().expect("a live pid") as i32, libc::SIGTERM);
@@ -1504,17 +1525,50 @@ async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
         .filter(|l| l.contains("webhook dispatcher stopped"))
         .collect();
     assert_eq!(finals.len(), 1, "exactly one final line: {rest}");
+    // The message position: the fmt layer writes the `message` field bare
+    // and every other field as `name=value`, in their order — the sentence
+    // follows the target directly, the five totals after it.
+    let (_, event) = finals[0]
+        .split_once("swarmail::webhook: ")
+        .expect("the event names its target");
+    assert!(
+        event.starts_with("webhook dispatcher stopped delivered="),
+        "the sentence is the message: {:?}",
+        finals[0]
+    );
+    assert!(!finals[0].contains("DISPATCHER_STOPPED"), "{:?}", finals[0]);
+    assert!(
+        !finals[0].contains('"'),
+        "no quoted field value: {:?}",
+        finals[0]
+    );
     let fields: Vec<&str> = finals[0].split_whitespace().collect();
     for total in [
         "delivered=0",
         "dropped=0",
         "lagged=0",
-        "exhausted=0",
+        "exhausted=1",
         "aborted=1",
     ] {
         assert!(fields.contains(&total), "{total} in {:?}", finals[0]);
     }
-    assert!(!rest.contains("hunter2"), "no credential on stdout: {rest}");
+
+    let dropped: Vec<&str> = rest
+        .lines()
+        .filter(|l| l.contains("webhook dropped after retries"))
+        .collect();
+    assert_eq!(dropped.len(), 1, "one exhaustion line: {rest}");
+    let (_, cause) = dropped[0]
+        .split_once("error=error sending request")
+        .expect("the display prefix is kept");
+    assert!(
+        cause.starts_with(": ") && cause.len() > ": ".len() + 8,
+        "the transport cause follows the prefix: {:?}",
+        dropped[0]
+    );
+    for secret in ["hunter2", "hunter3", "marker-secret"] {
+        assert!(!rest.contains(secret), "no {secret} on stdout: {rest}");
+    }
 }
 
 // ---------- the fallible EOF helper (issue #102, 0018 §2) ----------

@@ -9,7 +9,8 @@ use crate::smtp;
 use crate::store::{Filter, Store, WaitOutcome};
 use crate::threads;
 use crate::ui;
-use crate::webhook::{WebhookTarget, Webhooks, ca_cache_stats};
+use crate::webhook::{WebhookTarget, WebhookTargets, Webhooks, ca_cache_stats};
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -786,7 +787,7 @@ impl ListQuery {
     }
 }
 
-/// The await/assert domain, held flat (decision 0029 §1): the struct's
+/// The await domain, held flat (decision 0029 §1): the struct's
 /// fields *are* the advertised query parameter set — no `#[serde(flatten)]`
 /// of the list shape, so an await's domain cannot silently grow `offset`
 /// (a wait has no pages: mail arrives as it lands) — and, closed, an
@@ -825,13 +826,6 @@ impl AwaitQuery {
         self.count.unwrap_or(1).max(1)
     }
 
-    /// ASSERT semantics (decision 0010): the exact filtered match count,
-    /// zero included — `count=0` is the negative assertion. `assert` never
-    /// waits and never subscribes; a snapshot is a snapshot.
-    fn exact_count(&self) -> usize {
-        self.count.unwrap_or(1)
-    }
-
     fn timeout(&self) -> Result<Duration, ApiError> {
         // `unwrap_or` touches only genuine omission (decision 0025): a
         // supplied malformed `timeout_ms` never reaches here — the query
@@ -841,6 +835,73 @@ impl AwaitQuery {
             .map_err(bad_request)
     }
 }
+
+/// The count domain (decision 0048 §4, issue #134): the four-name filter and
+/// nothing else. A count never paginates, so `limit` and `offset` — which
+/// it used to accept from the list shape and ignore — refuse by name.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CountQuery {
+    pub to: Option<String>,
+    pub from: Option<String>,
+    pub subject: Option<String>,
+    pub since_ms: Option<i64>,
+}
+
+impl CountQuery {
+    fn filter(&self) -> Filter {
+        Filter {
+            to: self.to.clone(),
+            from: self.from.clone(),
+            subject: self.subject.clone(),
+            since_ms: self.since_ms,
+        }
+    }
+}
+
+/// The assert domain (decision 0048 §4, issue #134): the filter, the exact
+/// `count`, and the inert `limit` accepted 0030 §3 keeps for parity with
+/// list — parsed and type-checked, never a page. An assert never waits, so
+/// `timeout_ms` — which it used to accept from the await shape and ignore —
+/// refuses by name instead of promising a wait.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssertQuery {
+    pub to: Option<String>,
+    pub from: Option<String>,
+    pub subject: Option<String>,
+    pub since_ms: Option<i64>,
+    /// Inert (0030 §3): type-checked as on list, never applied.
+    pub limit: Option<usize>,
+    /// The exact filtered match count expected (default 1).
+    pub count: Option<usize>,
+}
+
+impl AssertQuery {
+    fn filter(&self) -> Filter {
+        Filter {
+            to: self.to.clone(),
+            from: self.from.clone(),
+            subject: self.subject.clone(),
+            since_ms: self.since_ms,
+        }
+    }
+
+    /// ASSERT semantics (decision 0010): the exact filtered match count,
+    /// zero included — `count=0` is the negative assertion. `assert` never
+    /// waits and never subscribes; a snapshot is a snapshot.
+    fn exact_count(&self) -> usize {
+        self.count.unwrap_or(1)
+    }
+}
+
+/// The view routes' domain — threads, one thread, feed — is empty (decision
+/// 0048 §4, issue #134): they take no query, so any key refuses by name
+/// where it used to be ignored. Parsed after the inbox is admitted and
+/// before any read or subscription.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewQuery {}
 
 /// The inbox listing's page (decision 0044 §3, issue #91): `/api/v1/inboxes`
 /// and the UI index were the only unpaged listings. `limit` defaults to the
@@ -1105,7 +1166,7 @@ async fn count_messages(
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Json<serde_json::Value>> {
     admit(&inbox)?;
-    let q: ListQuery = parse_query(raw.0.as_deref().unwrap_or(""), "count")?;
+    let q: CountQuery = parse_query(raw.0.as_deref().unwrap_or(""), "count")?;
     Ok(Json(serde_json::json!({
         "inbox": inbox,
         "count": state.store.count(&inbox, &q.filter()),
@@ -1191,10 +1252,10 @@ async fn assert_messages(
     raw: axum::extract::RawQuery,
 ) -> ApiResult<Response> {
     admit(&inbox)?;
-    let q: AwaitQuery = parse_query(raw.0.as_deref().unwrap_or(""), "assert")?;
+    let q: AssertQuery = parse_query(raw.0.as_deref().unwrap_or(""), "assert")?;
     // `limit` is the shared filter shape (#38): parsed and type-checked
     // exactly as on list, inert here — an assertion's answer is a count,
-    // not a page.
+    // not a page (0030 §3, kept by 0048 §4).
     let want = q.exact_count();
     let matched = state.store.count(&inbox, &q.filter());
     if matched == want {
@@ -1302,8 +1363,10 @@ async fn clear_chaos(State(state): State<AppState>) -> Json<ChaosConfig> {
 async fn list_threads(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
+    raw: axum::extract::RawQuery,
 ) -> ApiResult<Json<Vec<threads::Thread>>> {
     admit(&inbox)?;
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "threads")?;
     Ok(Json(threads::view(&state.store, &inbox)))
 }
 
@@ -1311,8 +1374,10 @@ async fn list_threads(
 async fn get_thread(
     State(state): State<AppState>,
     Path((inbox, key)): Path<(String, String)>,
+    raw: axum::extract::RawQuery,
 ) -> ApiResult<Json<threads::Thread>> {
     admit(&inbox)?;
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "thread")?;
     threads::view(&state.store, &inbox)
         .into_iter()
         .find(|thread| thread.key == key)
@@ -1325,9 +1390,12 @@ async fn get_thread(
 async fn inbox_feed(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
+    raw: axum::extract::RawQuery,
 ) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
-    // A blank inbox refuses before the feed subscribes (decision 0044 §3).
+    // A blank inbox refuses before the feed subscribes (decision 0044 §3),
+    // and so does any query key (0048 §4): the feed takes none.
     admit(&inbox)?;
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "feed")?;
     Ok(Sse::new(feed::feed_stream(
         state.store.clone(),
         inbox,
@@ -1341,7 +1409,10 @@ async fn inbox_feed(
 /// The REST seed body. The optional strings take their defaults only when
 /// omitted: a present `null` is supplied and refuses with the field named —
 /// the same answer MCP's seed gives (decision 0025 §2, 0044 §3; issue #91).
+/// The key set is closed (decision 0048 §2, issue #134): a typo such as
+/// `subjet` refuses by name instead of storing the default subject.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SeedRequest {
     #[serde(default, deserialize_with = "crate::model::present_string")]
     pub from: Option<String>,
@@ -1363,8 +1434,9 @@ pub struct SeedRequest {
 async fn seed_inbox(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
-    Json(seed): Json<SeedRequest>,
-) -> ApiResult<Json<Arc<Email>>> {
+    body: Result<Json<SeedRequest>, JsonRejection>,
+) -> Result<Json<Arc<Email>>, BodyError> {
+    let seed = json_body(body, "seed")?;
     let email = Store::offload(move || {
         smtp::build_seed_email(
             &inbox,
@@ -1392,7 +1464,49 @@ async fn seed_inbox(
         Err(_) => Err(ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
             "storage commit failed".into(),
-        )),
+        )
+        .into()),
+    }
+}
+
+/// A seed or webhook refusal: the native `{"error": …}` envelope, or an
+/// extractor rejection forwarded exactly as axum shaped it.
+pub enum BodyError {
+    Native(ApiError),
+    Extractor(JsonRejection),
+}
+
+impl From<ApiError> for BodyError {
+    fn from(e: ApiError) -> Self {
+        BodyError::Native(e)
+    }
+}
+
+impl IntoResponse for BodyError {
+    fn into_response(self) -> Response {
+        match self {
+            BodyError::Native(e) => e.into_response(),
+            BodyError::Extractor(rejection) => rejection.into_response(),
+        }
+    }
+}
+
+/// The seed and webhook bodies' extraction (decision 0048 §2, amending
+/// 0025/0029's extractor posture for these two routes only): a JSON *data*
+/// error — an unknown key, a present `null`, a wrong type, a missing field,
+/// a wrong top-level shape — is a refusal of a supplied value, so it answers
+/// the native `400 {"error": …}` naming the field, where axum's extractor
+/// answered 422. Every other rejection — malformed JSON 400, a missing or
+/// wrong media type 415, an oversized body 413 — is forwarded exactly as
+/// the extractor shaped it. Chaos and every other route keep the
+/// extractor's own mapping.
+fn json_body<T>(body: Result<Json<T>, JsonRejection>, what: &str) -> Result<T, BodyError> {
+    match body {
+        Ok(Json(value)) => Ok(value),
+        Err(JsonRejection::JsonDataError(e)) => {
+            Err(bad_request(format!("invalid {what} body: {}", e.body_text())).into())
+        }
+        Err(other) => Err(BodyError::Extractor(other)),
     }
 }
 
@@ -1424,8 +1538,15 @@ async fn get_webhooks(State(state): State<AppState>) -> Json<Vec<WebhookTarget>>
 /// misconfiguration discovered at delivery time — and nothing is applied.
 async fn set_webhooks(
     State(state): State<AppState>,
-    Json(targets): Json<Vec<WebhookTarget>>,
-) -> ApiResult<Json<Vec<WebhookTarget>>> {
+    body: Result<Json<WebhookTargets>, JsonRejection>,
+) -> Result<Json<Vec<WebhookTarget>>, BodyError> {
+    // The closed shape first (decision 0048 §2): an unknown key, a `null`
+    // or a wrong kind refuses 400 by path and kind — never by value, so no
+    // credential is echoed — before any target is looked at.
+    let WebhookTargets(targets) = json_body(body, "webhooks")?;
+    // Every target validates — its CA roots built into a throwaway client
+    // (0048 §1) — before the one swap below: a refused list replaces
+    // nothing, however many valid targets precede the bad one.
     for (i, target) in targets.iter().enumerate() {
         target
             .validate()
@@ -2279,23 +2400,29 @@ mod tests {
 
         // The parser accepts each documented name, so the document is never
         // ahead of the handler.
-        for (params, has_timeout) in [
-            (
-                "to=a&from=b&subject=c&since_ms=1&limit=7&count=2&timeout_ms=3",
-                true,
-            ),
-            ("to=a&from=b&subject=c&since_ms=1&limit=7&count=2", false),
-        ] {
-            let q: AwaitQuery = serde_urlencoded::from_str(params)
-                .expect("the parser accepts every documented parameter");
-            assert_eq!(q.to.as_deref(), Some("a"), "{params}");
-            assert_eq!(q.from.as_deref(), Some("b"), "{params}");
-            assert_eq!(q.subject.as_deref(), Some("c"), "{params}");
-            assert_eq!(q.since_ms, Some(1), "{params}");
-            assert_eq!(q.limit, Some(7), "{params}");
-            assert_eq!(q.count, Some(2), "{params}");
-            assert_eq!(q.timeout_ms.is_some(), has_timeout, "{params}");
-        }
+        let q: AwaitQuery = serde_urlencoded::from_str(
+            "to=a&from=b&subject=c&since_ms=1&limit=7&count=2&timeout_ms=3",
+        )
+        .expect("the await parser accepts every documented parameter");
+        assert_eq!(
+            (q.to.as_deref(), q.from.as_deref(), q.subject.as_deref()),
+            (Some("a"), Some("b"), Some("c"))
+        );
+        assert_eq!((q.since_ms, q.limit, q.count), (Some(1), Some(7), Some(2)));
+        assert_eq!(q.timeout_ms, Some(3));
+        let q: AssertQuery =
+            serde_urlencoded::from_str("to=a&from=b&subject=c&since_ms=1&limit=7&count=2")
+                .expect("the assert parser accepts every documented parameter");
+        assert_eq!(
+            (q.to.as_deref(), q.from.as_deref(), q.subject.as_deref()),
+            (Some("a"), Some("b"), Some("c"))
+        );
+        assert_eq!((q.since_ms, q.limit, q.count), (Some(1), Some(7), Some(2)));
+        // …and refuses what the document leaves out (decision 0048 §4): an
+        // assert never waits.
+        let err = serde_urlencoded::from_str::<AssertQuery>("timeout_ms=1")
+            .expect_err("an assert timeout refuses");
+        assert!(err.to_string().contains("`timeout_ms`"), "{err}");
 
         // A supplied value of the wrong type refuses with 400 — the same
         // shared sentence `list`'s limit yields for a non-digit (#38).
@@ -2305,6 +2432,151 @@ mod tests {
             err.to_string().contains("invalid digit"),
             "the shared parse sentence names the defect: {err}"
         );
+    }
+
+    /// The count and view routes publish exactly what their parsers take
+    /// (decision 0048 §4, issue #134): count the four-name filter, the three
+    /// view routes nothing beyond their path. Each documented count key
+    /// parses; `limit` and `offset` — the list keys count used to swallow —
+    /// refuse, and so does any key on a view.
+    #[test]
+    fn the_served_openapi_publishes_the_count_and_view_parameters() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("static/openapi.json")).expect("openapi.json");
+        let query_names = |path: &str| -> Vec<String> {
+            let mut v: Vec<String> = doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|p| p["in"] == "query")
+                .map(|p| p["name"].as_str().unwrap().to_string())
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(
+            query_names("/api/v1/inboxes/{inbox}/count"),
+            ["from", "since_ms", "subject", "to"]
+        );
+        for view in [
+            "/api/v1/inboxes/{inbox}/threads",
+            "/api/v1/inboxes/{inbox}/threads/{key}",
+            "/api/v1/inboxes/{inbox}/feed",
+        ] {
+            assert!(query_names(view).is_empty(), "{view} takes no query");
+        }
+        let q: CountQuery = serde_urlencoded::from_str("to=a&from=b&subject=c&since_ms=-1")
+            .expect("the count parser accepts every documented parameter");
+        assert_eq!(
+            (q.to.as_deref(), q.from.as_deref(), q.subject.as_deref()),
+            (Some("a"), Some("b"), Some("c"))
+        );
+        assert_eq!(q.since_ms, Some(-1));
+        for key in ["limit", "offset"] {
+            let err = serde_urlencoded::from_str::<CountQuery>(&format!("{key}=1"))
+                .expect_err("a page key refuses on count");
+            assert!(err.to_string().contains(&format!("`{key}`")), "{err}");
+        }
+        serde_urlencoded::from_str::<ViewQuery>("").expect("an empty query is a view query");
+        let err = serde_urlencoded::from_str::<ViewQuery>("to=a").expect_err("a view key refuses");
+        assert!(err.to_string().contains("`to`"), "{err}");
+    }
+
+    /// The served body schemas agree with the parsers (decision 0048 §§2–3):
+    /// the seed and webhook request objects are closed, their documented
+    /// keys are exactly what the parsers take and their optional strings
+    /// are non-null on input, while the webhook response schema keeps the
+    /// echo's nullable fields.
+    #[test]
+    fn the_served_openapi_publishes_the_closed_bodies() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("static/openapi.json")).expect("openapi.json");
+        let schemas = &doc["components"]["schemas"];
+        let keys = |schema: &serde_json::Value| -> Vec<String> {
+            let mut v: Vec<String> = schema["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            v.sort();
+            v
+        };
+        let seed = &schemas["SeedRequest"];
+        assert_eq!(seed["additionalProperties"], false);
+        assert_eq!(keys(seed), ["from", "html", "subject", "text", "to"]);
+        let request = &schemas["WebhookTargetRequest"];
+        assert_eq!(request["additionalProperties"], false);
+        assert_eq!(request["required"], serde_json::json!(["url"]));
+        assert_eq!(keys(request), ["ca_pem", "inbox", "secret", "url"]);
+        let response = &schemas["WebhookTarget"];
+        assert_eq!(keys(response), keys(request));
+        for field in ["inbox", "secret", "ca_pem"] {
+            assert_eq!(request["properties"][field]["type"], "string", "{field}");
+            assert_eq!(
+                response["properties"][field]["type"],
+                serde_json::json!(["string", "null"]),
+                "{field}"
+            );
+        }
+        let put = &doc["paths"]["/api/v1/webhooks"]["put"];
+        assert_eq!(
+            put["requestBody"]["content"]["application/json"]["schema"]["items"]["$ref"],
+            "#/components/schemas/WebhookTargetRequest"
+        );
+
+        // Every documented key parses; one more key refuses.
+        let full =
+            r#"{"to": "a@x.io", "from": "b@x.io", "subject": "s", "text": "t", "html": "h"}"#;
+        serde_json::from_str::<SeedRequest>(full).expect("every documented seed key parses");
+        let err = serde_json::from_str::<SeedRequest>(r#"{"to": "a@x.io", "cc": "c@x.io"}"#)
+            .expect_err("an undocumented seed key refuses");
+        assert!(err.to_string().contains("unknown field `cc`"), "{err}");
+        let full = r#"[{"url": "http://h/", "inbox": "i", "secret": "s", "ca_pem": "p"}]"#;
+        serde_json::from_str::<WebhookTargets>(full).expect("every documented target key parses");
+    }
+
+    /// A refused feed query subscribes nothing (decision 0048 §4, issue
+    /// #134): the query parse sits between the inbox admission and the
+    /// feed's construction, so a `?bogus=` feed answers 400 with the
+    /// store's watcher table untouched — and the positive control, a
+    /// query-less feed on the same state, does subscribe at construction
+    /// (0002's subscribe-before-scan), so the observation can fail.
+    #[tokio::test]
+    async fn a_refused_feed_query_never_subscribes() {
+        let (_stop, rx) = tokio::sync::watch::channel(false);
+        let state = gauge_state(rx, false, false);
+        let refused = inbox_feed(
+            State(state.clone()),
+            Path("feedq".into()),
+            axum::extract::RawQuery(Some("bogus=1".into())),
+        )
+        .await;
+        let ApiError(status, message) = refused.map(drop).expect_err("a feed query key refuses");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            message.starts_with("invalid feed query: unknown field `bogus`"),
+            "{message}"
+        );
+        assert_eq!(
+            state.store.watcher_count(),
+            0,
+            "the refusal subscribed nothing"
+        );
+
+        let accepted = inbox_feed(
+            State(state.clone()),
+            Path("feedq".into()),
+            axum::extract::RawQuery(None),
+        )
+        .await;
+        assert!(accepted.is_ok(), "a query-less feed is served");
+        assert_eq!(
+            state.store.watcher_count(),
+            1,
+            "the served feed subscribed at construction"
+        );
+        drop(accepted);
     }
 
     /// The labeled registry's release paths, probed in isolation (decision

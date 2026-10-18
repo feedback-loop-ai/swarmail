@@ -131,23 +131,170 @@ fn evict_lru(cache: &mut CaCache) {
     CA_CACHE_EVICTIONS.fetch_add(1, Ordering::Relaxed);
 }
 
+/// A webhook target as PUT supplies it and GET echoes it. The request shape
+/// is closed (decision 0048 §2, issue #135): an unknown key refuses — a
+/// misspelled `secret` used to install a target with no secret — and the
+/// optional strings default only on omission, so a present `null` refuses
+/// like any other non-string. The echo still carries `null` for an absent
+/// or withheld value (0048 §3): the response is a diagnostic, not a
+/// template.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebhookTarget {
     /// Full URL, e.g. "http://127.0.0.1:9999/hooks/mail" or
     /// "https://hooks.internal/mail" (delivered over TLS via reqwest/rustls).
+    #[serde(deserialize_with = "text")]
     pub url: String,
     /// Only fire for this inbox; None = every inbox.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_text")]
     pub inbox: Option<String>,
     /// Sent verbatim as the X-Swarmail-Secret header — so it must be one
     /// (decision 0041 §1, [`secret_header`]).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_text")]
     pub secret: Option<String>,
     /// Optional PEM of an extra root CA to trust for this target, on top of
     /// the built-in root store — how a self-signed test server is trusted
     /// while certificate verification stays on.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_text")]
     pub ca_pem: Option<String>,
+}
+
+/// The PUT body: a JSON array of [`WebhookTarget`] objects. Its refusals
+/// name the JSON *kind* that arrived, never its content (decision 0048 §2):
+/// serde's own wording quotes a wrong-typed value — `["http://user:pw@h/"]`
+/// would echo the credential — so every shape below the array is read
+/// through [`Shape`], whose refusals are value-free.
+#[derive(Debug)]
+pub struct WebhookTargets(pub Vec<WebhookTarget>);
+
+impl<'de> Deserialize<'de> for WebhookTargets {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        de.deserialize_any(ShapeVisitor::<WebhookTargets>(std::marker::PhantomData))
+    }
+}
+
+/// One element of the PUT array: an object, handed to the derived (closed)
+/// [`WebhookTarget`] reader — anything else refuses by kind.
+struct TargetSlot(WebhookTarget);
+
+impl<'de> Deserialize<'de> for TargetSlot {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        de.deserialize_any(ShapeVisitor::<TargetSlot>(std::marker::PhantomData))
+    }
+}
+
+/// A target's string value, read value-free.
+struct Text(String);
+
+/// A required string field: refused by kind, never echoed.
+fn text<'de, D: serde::Deserializer<'de>>(de: D) -> Result<String, D::Error> {
+    de.deserialize_any(ShapeVisitor::<Text>(std::marker::PhantomData))
+        .map(|t| t.0)
+}
+
+/// An optional string field: omission is `None` through `#[serde(default)]`,
+/// a present `null` refuses like any other non-string (decision 0025 §2).
+fn optional_text<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
+    text(de).map(Some)
+}
+
+/// The value-free reading of one JSON shape (decision 0048 §2): the
+/// accepted kind is handed on, every other kind refuses with the sentence
+/// `expected <want>, found <kind>` — the kind, never the content.
+trait Shape: Sized {
+    /// What the shape is, in the refusal and the visitor's `expecting`.
+    const WANT: &'static str;
+
+    fn string<E: serde::de::Error>(_: &str) -> Result<Self, E> {
+        Err(refuse_kind(Self::WANT, "a string"))
+    }
+
+    fn seq<'de, A: serde::de::SeqAccess<'de>>(_: A) -> Result<Self, A::Error> {
+        Err(refuse_kind(Self::WANT, "an array"))
+    }
+
+    fn map<'de, A: serde::de::MapAccess<'de>>(_: A) -> Result<Self, A::Error> {
+        Err(refuse_kind(Self::WANT, "an object"))
+    }
+}
+
+/// The one refusal sentence of a wrong-kinded JSON value.
+fn refuse_kind<E: serde::de::Error>(want: &str, found: &str) -> E {
+    E::custom(format!("expected {want}, found {found}"))
+}
+
+impl Shape for WebhookTargets {
+    const WANT: &'static str = "a JSON array of webhook targets";
+
+    fn seq<'de, A: serde::de::SeqAccess<'de>>(mut seq: A) -> Result<Self, A::Error> {
+        let mut targets = Vec::new();
+        while let Some(TargetSlot(target)) = seq.next_element()? {
+            targets.push(target);
+        }
+        Ok(WebhookTargets(targets))
+    }
+}
+
+impl Shape for TargetSlot {
+    const WANT: &'static str = "a webhook target object";
+
+    fn map<'de, A: serde::de::MapAccess<'de>>(map: A) -> Result<Self, A::Error> {
+        WebhookTarget::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+            .map(TargetSlot)
+    }
+}
+
+impl Shape for Text {
+    const WANT: &'static str = "a string";
+
+    fn string<E: serde::de::Error>(value: &str) -> Result<Self, E> {
+        Ok(Text(value.to_string()))
+    }
+}
+
+/// The visitor every [`Shape`] reads through. Every JSON kind has its own
+/// arm, so serde's value-quoting `invalid_type` default is never reached
+/// from JSON.
+struct ShapeVisitor<T>(std::marker::PhantomData<T>);
+
+impl<'de, T: Shape> serde::de::Visitor<'de> for ShapeVisitor<T> {
+    type Value = T;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(T::WANT)
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<T, E> {
+        Err(refuse_kind(T::WANT, "a boolean"))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<T, E> {
+        Err(refuse_kind(T::WANT, "a number"))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<T, E> {
+        Err(refuse_kind(T::WANT, "a number"))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<T, E> {
+        Err(refuse_kind(T::WANT, "a number"))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<T, E> {
+        T::string(value)
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<T, E> {
+        Err(refuse_kind(T::WANT, "null"))
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<T, A::Error> {
+        T::seq(seq)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+        T::map(map)
+    }
 }
 
 impl WebhookTarget {
@@ -156,7 +303,9 @@ impl WebhookTarget {
     /// a target that cannot be delivered is a 400 at PUT time — never a
     /// misconfiguration that surfaces only at delivery. The URL and PEM
     /// checks are the delivery stack's own functions ([`parse_target_url`],
-    /// [`parse_ca_pem`]), one owner, both arms warm.
+    /// [`build_ca_client`]), one owner, both arms warm. The PEM check
+    /// builds a whole client from every root (decision 0048 §1) and drops
+    /// it: no cache entry, no counter, no dial.
     pub fn validate(&self) -> Result<(), String> {
         parse_target_url(&self.url)?;
         // A supplied inbox filter names an inbox by the one rule every
@@ -167,7 +316,7 @@ impl WebhookTarget {
             crate::model::validate_inbox(inbox).map_err(String::from)?;
         }
         if let Some(pem) = &self.ca_pem {
-            parse_ca_pem(pem)?;
+            build_ca_client(pem)?;
         }
         if let Some(secret) = &self.secret {
             secret_header(secret)?;
@@ -601,16 +750,14 @@ pub(crate) async fn dispatch_loop(
     } = webhooks.snapshot();
     // The message rides a const: a multiline field list leaves the literal's
     // line mapped to the callsite's static registration, which llvm-cov
-    // counts as never executed even when the event fires.
+    // counts as never executed even when the event fires. It is bound to a
+    // local named `message` (decision 0048 §6, issue #135) — the event's
+    // message field, where a bare const identifier became a field of its
+    // own (`DISPATCHER_STOPPED="…"`) and `message = CONST` left its line
+    // reading as never executed: a const value generates no code.
     const DISPATCHER_STOPPED: &str = "webhook dispatcher stopped";
-    tracing::info!(
-        delivered,
-        dropped,
-        lagged,
-        exhausted,
-        aborted,
-        DISPATCHER_STOPPED
-    );
+    let message = DISPATCHER_STOPPED;
+    tracing::info!(message, delivered, dropped, lagged, exhausted, aborted);
 }
 
 /// How many of `targets` fire for `email`.
@@ -730,20 +877,56 @@ fn ca_pem_error(e: impl std::fmt::Display) -> String {
     format!("webhook ca_pem could not be loaded into the rustls client: {e}")
 }
 
-/// One owner for the PEM rule (decision 0029 §5): the PUT validator and the
-/// delivery client build both call it, so a PEM the validator accepted is
-/// exactly a PEM the client can build — the two arms cannot drift. The
-/// section is demanded explicitly: `reqwest::Certificate::from_pem` is lazy
-/// (it defers every parse to the build and accepts bytes with no PEM in
-/// them at all), so the honest check is rustls-pemfile's own parse of the
-/// first certificate — the same parser the operator's key pair goes
-/// through.
-pub(crate) fn parse_ca_pem(pem: &str) -> Result<reqwest::Certificate, String> {
-    let der = rustls_pemfile::certs(&mut pem.as_bytes())
-        .next()
-        .ok_or_else(|| ca_pem_error("no PEM certificate section was found"))?
-        .map_err(ca_pem_error)?;
-    reqwest::Certificate::from_der(der.as_ref()).map_err(ca_pem_error)
+/// How many source causes an error's display carries past its own text
+/// (decision 0048 §6): enough for reqwest → hyper → connector → io, and a
+/// fixed bound so a cyclic or pathological chain cannot grow a log line.
+const CAUSE_DEPTH: usize = 8;
+
+/// An error's display with its source causes appended, `: `-separated, at
+/// most [`CAUSE_DEPTH`] of them (issue #135): reqwest's own text stops at
+/// `error sending request` or `builder error`, which leaves an operator
+/// unable to tell why. A reqwest error reaches here only after
+/// `without_url`, so no cause can carry the target's userinfo.
+pub(crate) fn with_causes(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    for _ in 0..CAUSE_DEPTH {
+        let Some(cause) = source else {
+            break;
+        };
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
+/// One owner for the PEM rule (decisions 0029 §5, 0048 §1): the PUT
+/// validator and the delivery cache miss both build through here, so a PEM
+/// the validator accepted is exactly a PEM delivery can build — the two
+/// arms cannot drift. Every certificate in the PEM is read (a bundle's
+/// trailing root is trusted, a trailing bad block refuses), at least one is
+/// demanded — `reqwest::Certificate::from_pem` is lazy and accepts bytes
+/// with no PEM in them at all — and the client build is completed, because
+/// under rustls the DER is only loaded into the root store there (issue
+/// #122: a well-framed PEM of junk DER passed every earlier check). Unrelated
+/// PEM sections are skipped by the parser, as before. Uncached and offline:
+/// the caller owns the cache.
+pub(crate) fn build_ca_client(pem: &str) -> Result<reqwest::Client, String> {
+    let mut builder = client_builder();
+    let mut roots = 0usize;
+    for der in rustls_pemfile::certs(&mut pem.as_bytes()) {
+        let der = der.map_err(ca_pem_error)?;
+        let root = reqwest::Certificate::from_der(der.as_ref()).map_err(ca_pem_error)?;
+        builder = builder.add_root_certificate(root);
+        roots += 1;
+    }
+    if roots == 0 {
+        return Err(ca_pem_error("no PEM certificate section was found"));
+    }
+    // The same policy as the shared client — no redirect, no proxy — plus
+    // these roots.
+    builder.build().map_err(|e| ca_pem_error(with_causes(&e)))
 }
 
 /// The scheme refusal, fixed text: the scheme is the caller's input.
@@ -783,13 +966,7 @@ fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
         touch_lru(&mut cache.lru, pem);
         return Ok(client);
     }
-    let root = parse_ca_pem(pem)?;
-    // The same policy as the shared client — no redirect, no proxy — plus
-    // this target's root.
-    let client = client_builder()
-        .add_root_certificate(root)
-        .build()
-        .map_err(ca_pem_error)?;
+    let client = build_ca_client(pem)?;
     if cache.clients.len() >= CA_CLIENT_CAP {
         evict_lru(&mut cache); // make room: the least-recently-used build goes
     }
@@ -835,11 +1012,13 @@ async fn post_json(
     let client = client_for(ca_pem)?;
     let request = build_request(&client, url, body, secret)?;
     // reqwest's error text ends "for url (…)"; the caller logs the redacted
-    // URL beside it, so the error's own copy goes (decision 0041 §3).
+    // URL beside it, so the error's own copy goes (decision 0041 §3) —
+    // before the causes are read, which name the failure, not the target
+    // (decision 0048 §6).
     let response = client
         .execute(request)
         .await
-        .map_err(|e| e.without_url().to_string())?;
+        .map_err(|e| with_causes(&e.without_url()))?;
     Ok(response.status().as_u16())
 }
 
@@ -1715,7 +1894,10 @@ mod delivery_tests {
         let body = Bytes::from_static(b"{}");
         let url = format!("http://user:hunter2@127.0.0.1:{port}/hook?k=v");
         let err = post_json(&url, &body, None, None).await.unwrap_err();
-        assert!(err.starts_with("error sending request"), "{err}");
+        // The display prefix is kept and the transport cause follows it
+        // (decision 0048 §6, issue #135): bare `error sending request` told
+        // an operator nothing.
+        assert!(err.starts_with("error sending request: "), "{err}");
         assert!(!err.contains("127.0.0.1"), "no URL in the error: {err}");
         assert!(
             !err.contains("hunter2"),
@@ -1728,6 +1910,136 @@ mod delivery_tests {
     async fn bad_ca_pem_is_an_error() {
         let err = client_for(Some("-----BEGIN CERTIFICATE-----\nnope")).unwrap_err();
         assert!(err.contains("ca_pem"), "{err}");
+    }
+
+    /// A PEM block whose base64 carries `bytes`: well-framed, whatever the
+    /// DER inside.
+    fn framed(bytes: &[u8]) -> String {
+        use base64::Engine as _;
+        let body = base64::engine::general_purpose::STANDARD.encode(bytes);
+        format!("-----BEGIN CERTIFICATE-----\n{body}\n-----END CERTIFICATE-----\n")
+    }
+
+    /// Issue #122, decision 0048 §1: every certificate in the PEM is loaded
+    /// into the delivery client's own root store and the build completed,
+    /// so a well-framed block of junk DER refuses — before, only the first
+    /// block was decoded and `from_der` merely wrapped the bytes, so PUT
+    /// answered 200 and every delivery failed building its client. A
+    /// trailing bad or malformed block refuses after a good one; a bundle
+    /// of good roots, and an unrelated PEM section beside one, build. Each
+    /// refusal is the one named `ca_pem` sentence.
+    #[test]
+    fn every_root_is_loaded_through_the_delivery_build() {
+        let good = ca_pem();
+        let refused = [
+            ("no section", "not a pem at all".to_string()),
+            ("empty block", framed(b"")),
+            (
+                "malformed base64",
+                "-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n".to_string(),
+            ),
+            ("junk DER", framed(b"not a DER certificate")),
+            ("good then junk DER", format!("{good}{}", framed(b"junk"))),
+            (
+                "good then malformed block",
+                format!("{good}-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n"),
+            ),
+        ];
+        for (case, pem) in refused {
+            let err = build_ca_client(&pem).expect_err(case);
+            assert!(
+                err.starts_with("webhook ca_pem could not be loaded into the rustls client: "),
+                "{case}: {err}"
+            );
+        }
+        let junk = build_ca_client(&framed(b"not a DER certificate")).unwrap_err();
+        assert!(
+            junk.len() > ca_pem_error("builder error").len(),
+            "the build refusal names its cause past `builder error`: {junk}"
+        );
+        for (case, pem) in [
+            ("one root", good.clone()),
+            ("two roots", format!("{good}{}", ca_pem())),
+            (
+                "an unrelated section first",
+                format!("-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n{good}"),
+            ),
+        ] {
+            assert!(build_ca_client(&pem).is_ok(), "{case}");
+        }
+    }
+
+    /// PUT validation builds and drops (decision 0048 §1): it never takes a
+    /// cache entry, moves a counter or touches recency. With the cache full,
+    /// validating its least-recently-used PEM leaves that PEM the LRU — the
+    /// next cold root evicts it, and its next delivery rebuilds — and a
+    /// flood of validations beyond the cap changes no stat at all.
+    #[test]
+    fn validation_never_touches_the_client_cache() {
+        let _g = CACHE_TESTS.lock().unwrap();
+        let oldest = ca_pem();
+        client_for(Some(&oldest)).unwrap();
+        for _ in 0..CA_CLIENT_CAP - 1 {
+            client_for(Some(&ca_pem())).unwrap();
+        }
+        let before = ca_cache_stats();
+        let target = |pem: &str| WebhookTarget {
+            url: "http://127.0.0.1:9/hook".into(),
+            inbox: None,
+            secret: None,
+            ca_pem: Some(pem.into()),
+        };
+        assert_eq!(target(&oldest).validate(), Ok(()));
+        for _ in 0..CA_CLIENT_CAP + 1 {
+            assert_eq!(target(&ca_pem()).validate(), Ok(()));
+        }
+        assert_eq!(ca_cache_stats(), before, "validation moved no stat");
+
+        client_for(Some(&ca_pem())).unwrap(); // one cold root: evicts the LRU
+        let builds = ca_cache_stats().builds;
+        client_for(Some(&oldest)).unwrap();
+        assert_eq!(
+            ca_cache_stats().builds,
+            builds + 1,
+            "the validated PEM stayed least recently used, so it was the one evicted"
+        );
+    }
+
+    /// One link of a test error chain: `link n`, sourced by `link n-1`.
+    #[derive(Debug)]
+    struct Link(usize, Option<Box<Link>>);
+
+    impl Link {
+        fn chain(depth: usize) -> Link {
+            (1..=depth).fold(Link(0, None), |inner, n| Link(n, Some(Box::new(inner))))
+        }
+    }
+
+    impl std::fmt::Display for Link {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "link {}", self.0)
+        }
+    }
+
+    impl std::error::Error for Link {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|l| l as _)
+        }
+    }
+
+    /// The cause formatter (decision 0048 §6): a sourceless error is its own
+    /// text, a chain is `: `-joined in order, and a chain deeper than the
+    /// bound stops after [`CAUSE_DEPTH`] causes.
+    #[test]
+    fn causes_are_appended_in_order_and_bounded() {
+        assert_eq!(with_causes(&Link::chain(0)), "link 0");
+        assert_eq!(
+            with_causes(&Link::chain(3)),
+            "link 3: link 2: link 1: link 0"
+        );
+        let deep = with_causes(&Link::chain(20));
+        assert_eq!(deep.split(": ").count(), 1 + CAUSE_DEPTH, "{deep}");
+        assert!(deep.ends_with("link 12"), "{deep}");
     }
 }
 
@@ -1759,6 +2071,109 @@ mod validation_tests {
             in_reply_to: None,
             references: vec![],
             raw: vec![],
+        }
+    }
+
+    // ---------- decision 0048 §2: the closed, value-free request shape ----------
+
+    /// The PUT body's reader (issue #135): an array of closed objects whose
+    /// strings are present or omitted, never `null`. Every JSON kind meets
+    /// every shape — the array, its element, a string field — and each
+    /// mismatch is refused by its kind alone; a value never rides into the
+    /// error (a URL's credential would). Unknown, duplicate and missing keys
+    /// keep serde's own wording, which names keys only.
+    #[test]
+    fn the_target_shape_is_closed_and_refuses_by_kind_never_by_value() {
+        let parse = |body: &str| serde_json::from_str::<WebhookTargets>(body).map(|t| t.0);
+        let kinds = [
+            ("true", "a boolean"),
+            ("-7", "a number"),
+            ("12345", "a number"),
+            ("1.5", "a number"),
+            (r#""hunter2""#, "a string"),
+            ("null", "null"),
+            (r#"["hunter2"]"#, "an array"),
+            (r#"{"k": "hunter2"}"#, "an object"),
+        ];
+        for (value, kind) in kinds {
+            let shapes = [
+                (
+                    value.to_string(),
+                    "a JSON array of webhook targets",
+                    "an array",
+                ),
+                (format!("[{value}]"), "a webhook target object", "an object"),
+                (format!(r#"[{{"url": {value}}}]"#), "a string", "a string"),
+                (
+                    format!(r#"[{{"url": "http://h/", "secret": {value}}}]"#),
+                    "a string",
+                    "a string",
+                ),
+            ];
+            for (body, want, accepted) in shapes {
+                if kind == accepted {
+                    continue;
+                }
+                let err = parse(&body).expect_err(&body).to_string();
+                assert!(
+                    err.starts_with(&format!("expected {want}, found {kind}")),
+                    "{body}: {err}"
+                );
+                assert!(!err.contains("hunter2"), "{body}: no value echoed: {err}");
+                assert!(!err.contains("12345"), "{body}: no value echoed: {err}");
+            }
+        }
+        for field in ["inbox", "secret", "ca_pem"] {
+            let body = format!(r#"[{{"url": "http://h/", "{field}": null}}]"#);
+            let err = parse(&body).expect_err(&body).to_string();
+            assert!(err.starts_with("expected a string, found null"), "{err}");
+        }
+        for (body, words) in [
+            (
+                r#"[{"url": "http://h/", "secrt": "s3cret"}]"#,
+                "unknown field `secrt`, expected one of `url`, `inbox`, `secret`, `ca_pem`",
+            ),
+            (r#"[{"secret": "s3cret"}]"#, "missing field `url`"),
+            (
+                r#"[{"url": "http://h/", "url": "http://i/"}]"#,
+                "duplicate field `url`",
+            ),
+        ] {
+            let err = parse(body).expect_err(body).to_string();
+            assert!(err.starts_with(words), "{body}: {err}");
+            assert!(!err.contains("s3cret"), "{body}: {err}");
+        }
+
+        let legal = parse(r#"[{"url": "http://h/"}, {"url": "http://i/", "inbox": "a", "secret": "s", "ca_pem": "p"}]"#)
+            .expect("a legal list parses");
+        assert_eq!(legal.len(), 2);
+        assert_eq!(
+            (&legal[0].inbox, &legal[0].secret, &legal[0].ca_pem),
+            (&None, &None, &None),
+            "omission is None"
+        );
+        assert_eq!(legal[1].url, "http://i/");
+        assert_eq!(legal[1].inbox.as_deref(), Some("a"));
+        assert_eq!(legal[1].secret.as_deref(), Some("s"));
+        assert_eq!(legal[1].ca_pem.as_deref(), Some("p"));
+        assert!(parse("[]").expect("an empty list clears").is_empty());
+
+        // A non-JSON caller reaches the visitors' `expecting` through a kind
+        // JSON never produces (bytes): each shape names itself.
+        let bytes = || serde::de::value::BytesDeserializer::<serde::de::value::Error>::new(b"x");
+        let expecting = [
+            WebhookTargets::deserialize(bytes()).map(drop),
+            TargetSlot::deserialize(bytes()).map(drop),
+            text(bytes()).map(drop),
+        ];
+        let wants = [
+            "a JSON array of webhook targets",
+            "a webhook target object",
+            "a string",
+        ];
+        for (result, want) in expecting.into_iter().zip(wants) {
+            let err = result.unwrap_err().to_string();
+            assert!(err.ends_with(&format!("expected {want}")), "{err}");
         }
     }
 

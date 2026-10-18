@@ -508,12 +508,21 @@ The filters are exact about what they match. `to` is a case-insensitive
 substring of **any recipient** — the `To` and `Cc` headers *and* the SMTP
 envelope recipients — so a Bcc'd address matches, and `assert?to=…&count=0`
 is not a "this address is in no header" check. `from` is the header `From`
-address. Every query shape is closed: an unknown key (`assert?too=`,
-`await?offset=`) is a `400` naming it, never a silently dropped filter. In
-JSON bodies an omitted optional field takes its default while a present
-`null` is refused with the field named — on the seed's `from`, `subject`,
-`text` and `html` and on a chaos rule's `error` alike (only a whole chaos
-event set to `null` means "clear it"). One inbox-name rule holds on every
+address. Every native query shape is closed to its own keys: an unknown
+key (`assert?too=`, `await?offset=`, `count?limit=`, `assert?timeout_ms=`
+— an assert never waits — or any key on `threads`, `threads/{key}` and
+`feed`, which take none) is a `400` naming the route and the key, never a
+silently dropped filter. The Mailpit/MailHog list and search shims keep
+their upstream tolerance of unknown keys — `/api/v1/messages?inbx=` is a
+typo that answers the whole store — while the `latest` shims refuse them.
+The seed and webhook bodies are closed too (`subjet`, `secrt` refuse by
+name). In JSON bodies an omitted optional field takes its default while a
+present `null` is refused with the field named — on the seed's `from`,
+`subject`, `text` and `html`, a webhook's `inbox`, `secret` and `ca_pem`,
+and on a chaos rule's `error` alike (only a whole chaos event set to
+`null` means "clear it"). A seed or webhook body error is a `400` with a
+JSON `error` (decision 0048); a chaos body error stays the extractor's
+`422`. One inbox-name rule holds on every
 surface — REST, MCP, UI, the shims, webhook inbox filters, SMTP AUTH and
 POP3 `USER`: a blank name (empty after trimming whitespace) is refused, and
 so is one carrying any control character (`inbox must not contain control
@@ -705,7 +714,7 @@ updates live — no manual refresh, zero frontend dependencies.
 
 ```
 $ curl -X PUT localhost:8025/api/v1/webhooks -H 'content-type: application/json' -d \
-    '[{"url": "http://127.0.0.1:9999/hooks", "inbox": null, "secret": "s3cret"}]'
+    '[{"url": "http://127.0.0.1:9999/hooks", "secret": "s3cret"}]'
 ```
 
 Every accepted email is POSTed as `{"event":"received","email":{…}}` with
@@ -718,21 +727,30 @@ Clients pinned to a `ca_pem` are cached per PEM under a fixed bound of 32
 delivery rebuilds it. `swarmail_webhook_ca_cache_{entries,builds_total,
 evictions_total}` on `/metrics` lets you watch the bound hold.
 
-A target is validated when it is PUT, not at delivery: the URL must parse
+A target is validated when it is PUT, not at delivery. Its keys are
+exactly `url`, `inbox`, `secret` and `ca_pem` — an unknown key such as
+`secrt` is refused, and an optional one is either omitted or a string,
+never `null` (omit `inbox` for every inbox). The URL must parse
 with an `http`/`https` scheme and a host to dial (`localhost:9000` is read
 as *scheme* `localhost` and refused — the misconfiguration that would
-otherwise surface only at delivery), the `ca_pem` must load through the
-delivery TLS stack itself, and the `secret` must be an HTTP header value
+otherwise surface only at delivery); every certificate in `ca_pem` — at
+least one, a bundle's later roots included — must load into the delivery
+TLS client itself, built the way delivery builds it (decision 0048: this
+proves the roots load, not that a later handshake succeeds); and the
+`secret` must be an HTTP header value
 the delivery client accepts — no control characters but tab, no leading
 or trailing space or tab — of at most 4096 octets. A refusal is a 400
-naming the defect (never echoing the secret) and applies nothing: a list
+naming the defect (never echoing the secret, the URL or any wrong-typed
+value: a body-shape error names the path and the JSON kind) and applies
+nothing: a list
 with one bad target leaves the previous list in place. `GET
 /api/v1/webhooks` and the PUT echo redact the secret and strip URL
 userinfo (`http://user:pw@host/x` is shown as `http://host/x`; the
 delivery still sends the credentials as Basic authorization), and every
 log line shows the URL the same way. Query strings and fragments are shown
 as configured — keep credentials out of them. PUT is the only writer; an
-operator retains their own payload.
+operator retains their own payload — the echo shows absent values as
+`null`, so it is a diagnostic, not a body to PUT back.
 
 Delivery is best-effort with the loss made observable — there is no durable
 outbox: a mail whose fan-out cannot fire is never re-fired after a restart.

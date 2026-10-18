@@ -32,7 +32,7 @@
       "get": {
         "summary": "Count messages matching a filter",
         "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "to", "in": "query", "schema": { "type": "string" }, "description": "Any recipient, envelope included (see the list's `to`)" }, { "name": "from", "in": "query", "schema": { "type": "string" } }, { "name": "subject", "in": "query", "schema": { "type": "string" } }, { "name": "since_ms", "in": "query", "schema": { "type": "integer" } } ],
-        "responses": { "200": { "description": "{ inbox, count }" }, "400": { "description": "A blank inbox, a malformed value or an unknown query key, named" } }
+        "responses": { "200": { "description": "{ inbox, count }" }, "400": { "description": "A blank inbox, a malformed value or an unknown query key, named — a count never paginates, so `limit` and `offset` are refused (decision 0048 §4)" } }
       }
     },
     "/api/v1/inboxes/{inbox}/await": {
@@ -68,7 +68,7 @@
           { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "minimum": 1 }, "description": "Parsed for parity with list (decision 0029 §1) but inert: the assert answer is a count, not a page" },
           { "name": "count", "in": "query", "schema": { "type": "integer", "default": 1 }, "description": "Exact match count — 0 asserts the filtered inbox is empty; the count is never clamped to one" }
         ],
-        "responses": { "200": { "description": "Assertion held" }, "400": { "description": "A blank inbox, a malformed value or an unknown query key — a misspelled filter refuses by name instead of vanishing (decision 0044 §3)" }, "409": { "description": "Assertion failed" } }
+        "responses": { "200": { "description": "Assertion held" }, "400": { "description": "A blank inbox, a malformed value or an unknown query key — a misspelled filter refuses by name instead of vanishing (decision 0044 §3); an assert never waits, so `timeout_ms` and `offset` are refused (decision 0048 §4)" }, "409": { "description": "Assertion failed" } }
       }
     },
     "/api/v1/inboxes/{inbox}/threads": {
@@ -76,14 +76,14 @@
         "summary": "Thread view of an inbox (newest thread first)",
         "description": "Mails are grouped into conversations by their References/In-Reply-To/Message-ID chains, falling back, for mail with no chain at all, to the normalized subject (leading Re/Fw/Fwd/Aw/SV/VS/Antw/WG/TR/RV/Odp/R/I/ENC/RES/Ответ/回复 markers stripped with an ASCII or full-width colon, whitespace runs collapsed, case-folded; a numbered Re[2]: stays literal). Each thread lists its mails oldest first. Capped at 200 mails.",
         "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } } ],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Thread" } } } } } }
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Thread" } } } } }, "400": { "description": "A blank inbox, or any query key — the route takes none (decision 0048 §4)" } }
       }
     },
     "/api/v1/inboxes/{inbox}/threads/{key}": {
       "get": {
         "summary": "One thread by its key (the conversation, oldest first)",
         "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "key", "in": "path", "required": true, "schema": { "type": "string" }, "description": "The thread's stable key, as returned by the threads list" } ],
-        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Thread" } } } }, "404": { "description": "Not found" } }
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Thread" } } } }, "400": { "description": "A blank inbox, or any query key — the route takes none (decision 0048 §4)" }, "404": { "description": "Not found" } }
       }
     },
     "/api/v1/inboxes/{inbox}/feed": {
@@ -91,7 +91,7 @@
         "summary": "Live inbox feed (server-sent events)",
         "description": "One `threads` event per change, carrying the full thread view (the GET /threads shape) as JSON. The first event is the snapshot; a watcher that falls behind is repaired with a recomputed view, never an error. Subscribes before the first scan, so mail landing while the client connects is pushed, not missed.",
         "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } } ],
-        "responses": { "200": { "description": "text/event-stream" } }
+        "responses": { "200": { "description": "text/event-stream" }, "400": { "description": "A blank inbox, or any query key — the route takes none; refused before the feed subscribes (decision 0048 §4)" } }
       }
     },
     "/api/v1/inboxes/{inbox}/seed": {
@@ -100,7 +100,7 @@
         "description": "Builds the fixture through the same seed constructor the MCP `swarmail_seed_email` tool uses (decision 0010). When `html` is given it is preserved verbatim under `Content-Type: text/html` and supersedes `text`; extraction (links, codes) runs at ingest. Envelope fields containing CR, LF or NUL are refused before anything is stored.",
         "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } } ],
         "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SeedRequest" } } } },
-        "responses": { "200": { "description": "The stored email" }, "400": { "description": "Refused fixture — an envelope field (to, from or subject) contains CR, LF or NUL; nothing was stored" }, "503": { "description": "`storage commit failed` — the commit refused, nothing was stored (decision 0012); during shutdown the boundary refuses before any commit with the same text (decision 0024)" } }
+        "responses": { "200": { "description": "The stored email" }, "400": { "description": "Refused fixture — an envelope field (to, from or subject) contains CR, LF or NUL — or a body data error (an unknown key, a present null, a wrong type, a missing `to`, a non-object body) as `invalid seed body: …` naming the field (decision 0048 §2); nothing was stored. Malformed JSON keeps the extractor's plain-text 400, a non-JSON media type 415 and an oversized body 413" }, "503": { "description": "`storage commit failed` — the commit refused, nothing was stored (decision 0012); during shutdown the boundary refuses before any commit with the same text (decision 0024)" } }
       }
     },
     "/api/v1/messages": {
@@ -177,10 +177,10 @@
       "get": { "summary": "Current webhook targets (the secret is redacted: null)", "responses": { "200": { "description": "OK" } }, "description": "The targets redacted (decision 0029 §5, amended by 0041 §3): every secret is null and every URL loses its userinfo (http://user:pw@host/x is shown as http://host/x; delivery still sends the credentials). Query, fragment, inbox and ca_pem are shown as stored. PUT is the only writer and an operator retains their own payload." },
       "put": {
         "summary": "Replace webhook targets. Each delivery POSTs {event:\"received\", email:{...}} with X-Swarmail-Secret; retried 4x (100ms..1.6s). http:// and https:// targets (https over TLS via reqwest + rustls, verification on; optional per-target ca_pem), dialed directly: environment proxies are ignored and redirects are not followed. The 200 echo is redacted like GET.",
-        "requestBody": { "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookTarget" } } } } },
+        "requestBody": { "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookTargetRequest" } } } } },
         "responses": {
-          "200": { "description": "OK" },
-          "400": { "description": "A target that cannot be delivered is refused before any effect (issue #47, decision 0029 §5): the body names the defect, e.g. \"webhook target 0: webhook URL must name a host\" (a scheme-forgotten localhost:9000), an unsupported scheme, an unparsable URL, a ca_pem that does not load, or a secret that is not an HTTP header value of at most 4096 octets without leading or trailing space or tab (decision 0041 §1). No refusal echoes the secret or the URL. Nothing is applied: the previous target list stays in place." }
+          "200": { "description": "The installed list, redacted like GET", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/WebhookTarget" } } } } },
+          "400": { "description": "A target that cannot be delivered is refused before any effect (issue #47, decision 0029 §5): the body names the defect, e.g. \"webhook target 0: webhook URL must name a host\" (a scheme-forgotten localhost:9000), an unsupported scheme, an unparsable URL, a blank or control-bearing inbox, a ca_pem any of whose certificates does not load into the delivery client (decision 0048 §1), or a secret that is not an HTTP header value of at most 4096 octets without leading or trailing space or tab (decision 0041 §1). A body data error — an unknown key, a present null, a wrong type, a missing url, a non-array body — is `invalid webhooks body: …` naming the path and the JSON kind (decision 0048 §2). No refusal echoes the secret, the URL or a supplied value. Nothing is applied: the previous target list stays in place. Malformed JSON keeps the extractor's plain-text 400, a non-JSON media type 415 and an oversized body 413." }
         }
       },
       "delete": { "summary": "Remove all webhook targets", "responses": { "200": { "description": "OK" } } }
@@ -227,7 +227,8 @@
       "InboxSummary": { "type": "object", "properties": { "name": { "type": "string" }, "count": { "type": "integer" } } },
       "SeedRequest": {
         "type": "object",
-        "description": "Fixture body. `html` is preserved verbatim and supersedes `text` when both are given. `to`, `from` and `subject` refuse CR, LF and NUL. An omitted optional field takes its default; a present null or non-string is refused with 422 naming the field (decision 0044 §3). The stored mail's envelope_from is the seed's from.",
+        "description": "Fixture body. `html` is preserved verbatim and supersedes `text` when both are given. `to`, `from` and `subject` refuse CR, LF and NUL. An omitted optional field takes its default; a present null, a non-string or an unknown key is refused with 400 naming the field (decisions 0044 §3, 0048 §2). The stored mail's envelope_from is the seed's from.",
+        "additionalProperties": false,
         "properties": {
           "from": { "type": "string", "description": "Defaults to fixture@swarmail.dev; refuses CR, LF and NUL" },
           "to": { "type": "string", "description": "The recipient envelope address; refuses CR, LF and NUL" },
@@ -239,8 +240,21 @@
       },
       "ChaosRule": { "type": "object", "properties": { "probability": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Percentage chance the event fires. Outside 0-100 the PUT is refused with 400 — probability must be an integer between 0 and 100 (issue #32 slice 2, decision 0025)." }, "error": { "type": "string", "description": "Optional reply line; omitted means the stage's default failure, and a present null is refused with 422 (decision 0044 §3). Omitted from answers when unset." }, "delay_ms": { "type": "integer" } } },
       "ChaosConfig": { "type": "object", "description": "A null event clears that event's rule.", "properties": { "connect": { "$ref": "#/components/schemas/ChaosRule" }, "mail_from": { "$ref": "#/components/schemas/ChaosRule" }, "rcpt": { "$ref": "#/components/schemas/ChaosRule" }, "data": { "$ref": "#/components/schemas/ChaosRule" } } },
+      "WebhookTargetRequest": {
+        "type": "object",
+        "description": "One PUT target. The key set is closed and an optional string is omitted or a string, never null (decision 0048 §2); omit `inbox` for every inbox.",
+        "additionalProperties": false,
+        "required": [ "url" ],
+        "properties": {
+          "url": { "type": "string", "description": "Must parse with an http:// or https:// scheme and a host to dial — refused at PUT otherwise (localhost:9000 is read as scheme localhost and is refused). Userinfo is sent as Basic authorization and stripped from every echo and log line" },
+          "inbox": { "type": "string", "description": "Fire only for this inbox; blank or control-bearing names are refused" },
+          "secret": { "type": "string", "description": "An HTTP header value the delivery client accepts: at most 4096 octets, no control characters but tab, no leading or trailing space or tab" },
+          "ca_pem": { "type": "string", "description": "PEM of one or more extra root CAs to trust for this target, on top of the built-in root store. Every certificate must load into the delivery client at PUT, at least one — loadability only, not a promise that a handshake succeeds (decision 0048 §1)" }
+        }
+      },
       "WebhookTarget": {
         "type": "object",
+        "description": "A target as GET and the PUT echo show it: the secret withheld (null), URL userinfo removed, an absent inbox or ca_pem null. A diagnostic, not a PUT template (decision 0048 §3).",
         "properties": {
           "url": { "type": "string", "description": "Must parse with an http:// or https:// scheme and a host to dial — refused at PUT otherwise (localhost:9000 is read as scheme localhost and is refused). Userinfo is sent as Basic authorization and stripped from every echo and log line" },
           "inbox": { "type": [ "string", "null" ] },
