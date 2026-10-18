@@ -260,7 +260,13 @@ impl Store {
 
     /// Open (or create) a persistent store backed by `data_file`: the full
     /// state is restored before the server accepts a single connection.
-    pub fn open(max_per_inbox: usize, data_file: &std::path::Path) -> rusqlite::Result<Self> {
+    /// The returned store owns the data file's single-writer lock until it
+    /// drops (decision 0033); a held file refuses with
+    /// [`persist::OpenError::InUse`].
+    pub fn open(
+        max_per_inbox: usize,
+        data_file: &std::path::Path,
+    ) -> Result<Self, persist::OpenError> {
         let persist = persist::Persist::open(data_file)?;
         let (emails, inserted, dropped) = persist.load()?;
         let mut store = Self::new(max_per_inbox);
@@ -1265,6 +1271,29 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(path.with_extension("db.lock"));
+    }
+
+    /// The store carries the data file's single-writer refusal (decision
+    /// 0033): a second `Store::open` on a held file is `InUse`, a fresh
+    /// store counts nothing for its sidecar — no inbox, no mail, zero
+    /// counters — and dropping the owner frees the file for a reopen.
+    #[test]
+    fn a_held_data_file_refuses_a_second_store_and_its_sidecar_counts_nothing() {
+        let dir = tempfile::TempDir::with_prefix("swarmail-store-in-use-").unwrap();
+        let path = dir.path().join("mail.db");
+        let first = Store::open(0, &path).unwrap();
+        assert!(dir.path().join("mail.db.lock").is_file());
+        assert!(first.inboxes().is_empty(), "the sidecar is no inbox");
+        assert!(first.list_all(&Filter::default()).is_empty());
+        assert_eq!((first.emails_inserted(), first.emails_dropped()), (0, 0));
+        let err = Store::open(0, &path)
+            .err()
+            .expect("a held data file refuses a second store");
+        assert_eq!(format!("{err:?}"), format!("InUse({path:?})"));
+        drop(first);
+        let reopened = Store::open(0, &path).expect("a dropped owner frees it");
+        assert!(reopened.inboxes().is_empty());
     }
 }
 
@@ -2065,15 +2094,25 @@ mod bounded_tests {
     /// two-orders tree a later insert prunes an earlier id before that
     /// insert's commit lands, so the earlier transaction persists an
     /// already-evicted message and the restart copy names a mail live never
-    /// held (finding 1).
-    fn assert_boundary_round(store: &Arc<Store>, round: usize, path: &std::path::Path) {
+    /// held (finding 1). The live store is the data file's one owner
+    /// (decision 0033), so its state is read first and the store dropped
+    /// before the restart opens the file — the order a real restart has.
+    fn assert_boundary_round(store: Arc<Store>, round: usize, path: &std::path::Path) {
+        let live: Vec<(Vec<String>, usize)> = ["A", "B"]
+            .into_iter()
+            .map(|inbox| {
+                let ids: Vec<String> = store
+                    .list(inbox, &Filter::default())
+                    .iter()
+                    .map(|e| e.id.clone())
+                    .collect();
+                (ids, store.count(inbox, &Filter::default()))
+            })
+            .collect();
+        let (inserted, dropped) = (store.emails_inserted(), store.emails_dropped());
+        drop(store);
         let restarted = Store::open(1, path).expect("the same data file reopens");
-        for inbox in ["A", "B"] {
-            let live: Vec<String> = store
-                .list(inbox, &Filter::default())
-                .iter()
-                .map(|e| e.id.clone())
-                .collect();
+        for (inbox, (live, count)) in ["A", "B"].into_iter().zip(live) {
             let disk: Vec<String> = restarted
                 .list(inbox, &Filter::default())
                 .iter()
@@ -2084,15 +2123,14 @@ mod bounded_tests {
                 "round {round}: live {inbox} and the restart copy are two states"
             );
             assert_eq!(
-                store.count(inbox, &Filter::default()),
+                count,
                 restarted.count(inbox, &Filter::default()),
                 "round {round}: count({inbox}) disagrees with the restart copy"
             );
-            for e in store.list(inbox, &Filter::default()) {
+            for id in &live {
                 assert!(
-                    restarted.get(&e.id).is_some(),
-                    "round {round}: live mail {id} has no restart row",
-                    id = e.id
+                    restarted.get(id).is_some(),
+                    "round {round}: live mail {id} has no restart row"
                 );
             }
             assert!(
@@ -2101,12 +2139,12 @@ mod bounded_tests {
             );
         }
         assert_eq!(
-            store.emails_inserted(),
+            inserted,
             restarted.emails_inserted(),
             "round {round}: the inserted counter disagrees with the restart copy"
         );
         assert_eq!(
-            store.emails_dropped(),
+            dropped,
             restarted.emails_dropped(),
             "round {round}: the dropped counter disagrees with the restart copy"
         );
@@ -2148,9 +2186,9 @@ mod bounded_tests {
                 store
                     .insert(email(&format!("b{round}-final"), "B", "b@x.io"))
                     .expect("the boundary probe injects no storage failures");
-                assert_boundary_round(&store, round, &path);
+                assert_boundary_round(store, round, &path);
             }
-            for suffix in ["", "-wal", "-shm"] {
+            for suffix in ["", "-wal", "-shm", ".lock"] {
                 let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
             }
         }

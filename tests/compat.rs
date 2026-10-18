@@ -846,7 +846,7 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
             .unwrap()
             .as_nanos()
     ));
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
     let srv = common::start_with(|mut c| {
@@ -920,7 +920,7 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
     let removed: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(removed, json!({"removed": 1}));
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
@@ -952,7 +952,7 @@ async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
             .unwrap()
             .as_nanos()
     ));
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
     let srv = common::start_with(|mut c| {
@@ -1072,7 +1072,7 @@ async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
         count["count"], 3,
         "a refused bulk delete must leave every mail committed: {count}"
     );
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }

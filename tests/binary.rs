@@ -317,7 +317,7 @@ async fn serve_restores_a_data_file_across_a_restart() {
     let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
@@ -551,7 +551,7 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
     let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
 }
@@ -825,6 +825,7 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
     let _ = std::fs::remove_file(&db);
     let _ = std::fs::remove_file(db.with_extension("db-wal"));
     let _ = std::fs::remove_file(db.with_extension("db-shm"));
+    let _ = std::fs::remove_file(db.with_extension("db.lock"));
 }
 
 /// SIGTERM is the signal a container manager actually sends (`docker stop`
@@ -876,9 +877,98 @@ async fn sigterm_takes_the_graceful_path_and_the_mail_survives_a_restart() {
     let status = signal_and_wait(&mut again.child, libc::SIGINT, Duration::from_secs(30)).await;
     again.reaped = true;
     assert!(status.success(), "restart SIGINT exit: {status:?}");
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-wal", "-shm", ".lock"] {
         let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
     }
+}
+
+/// One server per data file (decision 0033, issue #85): while server A
+/// owns the file, server B on the same path exits non-zero with the named
+/// refusal and never announces readiness, and A keeps serving. A SIGKILLed
+/// and reaped A frees the file for C at once with its mail intact; a
+/// gracefully stopped C frees it for D. The sidecar is never removed, and
+/// nothing sleeps or retries: readiness and process exit order every step.
+#[tokio::test]
+async fn a_second_server_on_a_held_data_file_refuses_and_a_dead_owner_frees_it() {
+    let dir = tempfile::TempDir::with_prefix("swarmail-binary-one-writer-").unwrap();
+    let db = dir.path().join("mail.db");
+    let mut a = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(a.http_addr).await;
+
+    // B: same file, its own ephemeral ports. `kill_on_drop` reaps it even
+    // if the deadline fires, so a hung B can never leak into the run.
+    let mut second = serve_with_data(&db);
+    second
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(common::HELPER_DEADLINE, second.output())
+        .await
+        .expect("a refused second server exits instead of serving")
+        .expect("spawn the second server");
+    assert!(
+        !out.status.success(),
+        "the second server must exit non-zero: {out:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let refusal = format!(
+        "the data file is already in use by another server: {}",
+        db.display()
+    );
+    assert!(stderr.contains(&refusal), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.lines().all(|line| parse_addrs(line).is_none()),
+        "the refused server announced readiness: {stdout}"
+    );
+
+    // A is untouched by the refusal: healthy, accepting, queryable.
+    let (st, body) = common::http_json(a.http_addr, "GET", "/healthz", None).await;
+    assert_eq!(st, 200, "the owner keeps serving: {body}");
+    let reply = common::smtp_send(
+        a.smtp_addr,
+        Some("onewriter"),
+        "a@x.io",
+        "b@x.io",
+        "Owned",
+        "the body",
+    )
+    .await
+    .expect("smtp send");
+    assert!(reply.starts_with("250"), "{reply}");
+    let path = "/api/v1/inboxes/onewriter/messages";
+    let (st, list) = common::http_json(a.http_addr, "GET", path, None).await;
+    assert_eq!(st, 200, "{list}");
+    assert_eq!(list["total"], 1, "the owner stores and serves: {list}");
+
+    // Kill A outright and reap it: the kernel drops the lock with the
+    // process, and the inert sidecar stays where it was.
+    tokio::time::timeout(common::HELPER_DEADLINE, a.child.kill())
+        .await
+        .expect("the killed owner is reaped")
+        .expect("kill the owner");
+    a.reaped = true;
+    assert!(dir.path().join("mail.db.lock").is_file());
+
+    let mut c = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(c.http_addr).await;
+    let (st, list) = common::http_json(c.http_addr, "GET", path, None).await;
+    assert_eq!(st, 200, "{list}");
+    assert_eq!(list["total"], 1, "the killed owner's mail survives: {list}");
+    assert_eq!(list["emails"][0]["subject"], "Owned");
+    let status = signal_and_wait(&mut c.child, libc::SIGTERM, Duration::from_secs(30)).await;
+    c.reaped = true;
+    assert!(status.success(), "SIGTERM exit: {status:?}");
+
+    // A graceful stop frees the file just the same.
+    let mut d = spawn_serve(serve_with_data(&db)).await;
+    wait_http_up(d.http_addr).await;
+    let (st, list) = common::http_json(d.http_addr, "GET", path, None).await;
+    assert_eq!(st, 200, "{list}");
+    assert_eq!(list["total"], 1, "a graceful stop frees the file: {list}");
+    let status = signal_and_wait(&mut d.child, libc::SIGINT, Duration::from_secs(30)).await;
+    d.reaped = true;
+    assert!(status.success(), "SIGINT exit: {status:?}");
 }
 
 /// The drain is held open by a body that never lands, so the second signal

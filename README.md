@@ -638,6 +638,19 @@ swarmail serve --data-file /var/lib/swarmail/mail.db   # or SWARMAIL_DATA_FILE=�
 Restored mail does not re-fire webhooks or waiters — it is
 already-delivered state, not a new delivery.
 
+**One server per data file** — a second process opening the same file
+refuses at startup (a `<data-file>.lock` advisory lock held for the
+process's lifetime). It exits non-zero with `the data file is already in
+use by another server: <path>` before binding anything (decision
+[0033](docs/decisions/0033-one-server-per-data-file.md)). The lock dies with
+the process: a stopped or killed server's file is immediately reusable, and
+no manual unlock ever exists — the `mail.db.lock` file left beside the data
+file is inert and is never deleted. A replacement started while its
+predecessor is still draining is refused until that predecessor exits;
+retrying belongs to the supervisor. Restart reloads what is on disk; it does
+not repair a file two servers already wrote together before this lock
+existed (proposed [0042](docs/decisions/0042-single-writer-lock.md)).
+
 **Memory is not globally bounded** (proposed decision
 [0038](docs/decisions/0038-store-memory-and-timestamps.md)).
 `SWARMAIL_MAX_PER_INBOX` caps messages per inbox — `0` disables it — and is

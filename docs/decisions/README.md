@@ -39,7 +39,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0030](0030-loopback-plane-bounded-results.md) | A loopback Host and a loopback Origin; 250 everywhere; the parse leaves the async workers | accepted (2026-10-16) | (Implements #49, #48) |
 | [0031](0031-sender-honest-stored-bodies.md) | The stored record is sender-honest: no body synthesis, and display-time rendering is not extraction (amends 0005) | **accepted** (operator, 2026-10-16 — "accept all"; issues #39, #54, #55, #56, #57 — landed by #68, `f39813d`) | (Issues #39, #54, #55, #56, #57) |
 | [0032](0032-emptied-inboxes-are-removed.md) | An emptied inbox is gone: one rule across delete, clear and restore | **accepted** (operator, 2026-10-16 — "accept all"; issue #54 — landed by #68, `f39813d`) | (Issue #54) |
-| [0033](0033-one-server-per-data-file.md) | One server per data file: the single-writer posture and the named two-servers hazards | **accepted** (operator, 2026-10-16 — "accept all"; the single-writer lock is in the tree; run 11 receipt) | (Run 11 receipt) |
+| [0033](0033-one-server-per-data-file.md) | One server per data file: the single-writer posture and the named two-servers hazards | **accepted** (operator, 2026-10-16 — "accept all"; run 11 receipt; §§2–4 implemented by run 19 — the `<data-file>.lock` refusal, its tests and the contract sentence land in one change; §1's restart claim is corrected by proposed 0042) | (Run 11 receipt; run 19: issue #85) |
 | [0034](0034-data-terminator-boundary.md) | Complete DATA boundaries and deliberate SMTP session transitions (amends 0022's SIZE alternative; strengthens 0028) | proposed — awaiting the operator | (Run 13: issues #73, #81, #82) |
 | [0036](0036-smtp-trickle-lifetime.md) | SMTP trickle lifetime and listener recovery: one reap at admission, health from observed polls, POP3's own idle bound, the documented trickle residual (clarifies 0027) | proposed — awaiting the operator | (Run 14: issues #77, #78, #79, #80) |
 | [0037](0037-pop3-size-accounting.md) | POP3 sizes count the normalized payload without transparency dots (amends 0028 §1) | proposed — awaiting the operator | (Run 15: issues #84, #86) |
@@ -47,6 +47,7 @@ amends it with a dated addendum, the way xbox-inference records them.
 | [0039](0039-stdio-concurrency.md) | Concurrent stdio lines preserve batch replies and recover from bad input (amends 0029 §4) | proposed — awaiting the operator | (Run 16: issues #72, #90) |
 | [0040](0040-extraction-fidelity.md) | Extraction fidelity: genuine body candidates, tokenizer-read codes, links cut after one full decode (amends 0031) | proposed — awaiting the operator | (Run 17: issues #74, #93, #94) |
 | [0041](0041-webhook-boundary.md) | Webhook boundary: header-valid secrets, direct delivery, redacted URL credentials, shared payload bytes and an observable final ledger (amends 0029 §5) | proposed — awaiting the operator | (Run 18: issues #75, #76, #97, #98) |
+| [0042](0042-single-writer-lock.md) | Single-writer startup errors and the limit of restart recovery: a typed `OpenError`, and restart reloads rather than reconciles (supplements 0033 §§2–4; amends 0033 §1) | proposed — awaiting the operator | (Run 19: issue #85) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

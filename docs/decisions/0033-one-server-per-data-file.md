@@ -11,6 +11,11 @@
   operator accepts **and** lands it in one commit (the refusal, its test,
   and the sentence together — never the sentence alone), or refuses it and
   nothing lands; the divergence risk below is then the recorded posture.
+- **Implemented:** run 19 (issue #85, 2026-10-18) lands §§2–4 as written
+  in one change — the `<data-file>.lock` refusal in `Persist::open`, its
+  inline and real-process tests, and the §4 sentence in the module doc and
+  README. The "Not yet implemented" note above is the state at filing,
+  kept as history. See the dated addendum at the end for §1.
 - **Preserves:** [0001](0001-synchronous-insert-lossless.md) (the lock is
   taken synchronously at open, before anything binds; `insert` gains no
   await and the mutation boundary is unchanged),
@@ -129,3 +134,16 @@ refusal, never before it):
   second-connection machinery by design. The rule is one **server** per
   file, and the server is the only thing that opens the file through
   `Persist`.
+
+## Addendum (2026-10-18, run 19 — issue #85)
+
+§1 said a restart "corrects" a two-server state and that counters and
+sequences "reconcile at restart". Issue #85 disproved that: two live servers
+on one file under a cap of two accepted five mails and left four rows, a
+collided sequence, and an inserted counter of three, all of which a restart
+reloads as they are. Restart reloads persisted state; it does not
+reconstruct the independent writers' event history. That §1 passage is kept
+as the historical claim and is not a current recovery promise. The
+correction, and the typed `persist::OpenError` the implementation carries,
+are recorded in [0042](0042-single-writer-lock.md) — *proposed*, awaiting
+the operator; this addendum does not accept it.
