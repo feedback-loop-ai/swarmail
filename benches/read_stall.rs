@@ -40,6 +40,11 @@
 //! 50 MiB DATA cap, `src/smtp.rs`'s max body), `--iters N` (default 40
 //! per measured page, fold and view), `--parses N` (default 100 per
 //! parse phase).
+//!
+//! Separate mode: `--smtp-roundtrips N` runs only the sequential SMTP lens
+//! (issue #83) — N measured one-command-at-a-time transactions against
+//! the real listener; `cargo bench --profile dev --bench read_stall --
+//! --smtp-roundtrips 100` is the debug profile the reproduction used.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -107,6 +112,92 @@ fn int_arg(args: &[String], flag: &str) -> Option<usize> {
         .and_then(|v| v.parse().ok())
 }
 
+/// One command line out, its complete reply back (through the final line,
+/// whose fourth octet is a space); the elapsed time is the round trip.
+async fn round_trip(
+    conn: &mut tokio::io::BufReader<tokio::net::TcpStream>,
+    out: &[u8],
+    want: &str,
+) -> Duration {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let at = Instant::now();
+    conn.get_mut().write_all(out).await.expect("smtp write");
+    loop {
+        let mut line = String::new();
+        conn.read_line(&mut line).await.expect("smtp read");
+        if line.as_bytes().get(3) != Some(&b'-') {
+            assert!(line.starts_with(want), "expected {want}, got {line:?}");
+            return at.elapsed();
+        }
+    }
+}
+
+/// **The sequential SMTP lens (issue #83)** — a client that waits for each
+/// reply before its next command, over real loopback against the real
+/// listener, with one small mail per transaction. Two writes per reply let
+/// Nagle hold the CRLF until the client's delayed ACK (~40 ms a command);
+/// one write does not. Ten warm-up transactions, then `transactions`
+/// measured ones; MAIL, RCPT, the DATA prompt and the final DATA 250 are
+/// reported separately. Recorded, never asserted: the 5 ms criterion is
+/// the operator's to read from the numbers.
+async fn smtp_roundtrips(transactions: usize) {
+    use tokio::io::AsyncBufReadExt;
+    let cfg = swarmail::config::Config {
+        smtp_listen: "127.0.0.1:0".into(),
+        http_listen: "127.0.0.1:0".into(),
+        pop3_listen: "127.0.0.1:0".into(),
+        max_per_inbox: 0,
+        data_file: None,
+        tls_cert: None,
+        tls_key: None,
+        smtp: Default::default(),
+        pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+    };
+    let srv = swarmail::run_on(&cfg).await.expect("bench server");
+    let stream = tokio::net::TcpStream::connect(srv.smtp_addr)
+        .await
+        .expect("smtp connect");
+    let mut conn = tokio::io::BufReader::new(stream);
+    let mut greeting = String::new();
+    conn.read_line(&mut greeting).await.expect("greeting");
+    round_trip(&mut conn, b"EHLO bench\r\n", "250").await;
+
+    let names = ["MAIL", "RCPT", "DATA prompt", "DATA 250"];
+    let mut samples: Vec<Vec<Duration>> = vec![Vec::new(); names.len()];
+    for i in 0..transactions + 10 {
+        let steps: [(&[u8], &str); 4] = [
+            (b"MAIL FROM:<bench@x.io>\r\n", "250"),
+            (b"RCPT TO:<rcpt@x.io>\r\n", "250"),
+            (b"DATA\r\n", "354"),
+            (b"Subject: bench\r\n\r\nbody\r\n.\r\n", "250"),
+        ];
+        for (k, (out, want)) in steps.iter().enumerate() {
+            let took = round_trip(&mut conn, out, want).await;
+            if i >= 10 {
+                samples[k].push(took);
+            }
+        }
+    }
+    println!(
+        "smtp-roundtrips: profile {}, {} measured transactions after 10 warm-up",
+        if cfg!(debug_assertions) { "debug" } else { "release" },
+        transactions
+    );
+    for (name, set) in names.iter().zip(samples) {
+        let n = set.len();
+        let mean = set.iter().sum::<Duration>() / n as u32;
+        let (p50, p99, max) = percentiles(set);
+        println!(
+            "  {name:<12} n={n} mean {:.3} ms  p50 {:.3} ms  p99 {:.3} ms  max {:.3} ms",
+            ms(mean),
+            ms(p50),
+            ms(p99),
+            ms(max)
+        );
+    }
+    srv.stop().await;
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mails = int_arg(&args, "--mails").unwrap_or(250);
@@ -119,6 +210,10 @@ fn main() {
         .build()
         .expect("current-thread runtime");
     runtime.block_on(async move {
+        if let Some(transactions) = int_arg(&args, "--smtp-roundtrips") {
+            smtp_roundtrips(transactions).await;
+            return;
+        }
         let store = Arc::new(Store::new(0));
 
         // Warm the allocator, the regex machinery and the code paths; none

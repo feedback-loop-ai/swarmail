@@ -23,10 +23,13 @@
 //! 0015 §1): the store's truth carried on the slot, answered `-ERR no such
 //! message` instead of "already deleted".
 //!
-//! An advertised octet count is the length of the bytes RETR transmits —
-//! CRLF-terminated, dot-stuffed, excluding the final `.\r\n` (RFC 1939 §11,
-//! decision 0028 §1). It is derived by running the same writer, never
-//! stored a second time: a count cannot drift from the wire.
+//! An advertised octet count is the size the client retains: the stored
+//! payload with line endings normalized to CRLF, never counting the
+//! transparency dots RETR adds and the client removes, and excluding the
+//! final `.\r\n` (RFC 1939 §11, decision 0037 amending 0028 §1). It is
+//! derived by the same traversal that writes the wire — a counting sink
+//! that skips the added dots and allocates nothing — so a count cannot
+//! drift from what RETR sends.
 //!
 //! `QUIT` reports a failed commit (`-ERR storage commit failed`, decision
 //! 0014) instead of pretending, and stays in TRANSACTION so the client may
@@ -231,8 +234,9 @@ pub async fn serve(
 }
 
 /// One maildrop entry, snapshotted oldest-first at authentication. `size`
-/// is the wire: the octets RETR transmits for this mail (decision 0028 §1),
-/// derived by running the writer — never the stored length. `gone` marks a
+/// is the unstuffed, CRLF-normalized payload the client retains after RETR
+/// (decision 0037), counted by the writer's own traversal — never the
+/// stored length. `gone` marks a
 /// slot whose delete has *committed* (decision 0015 §1): the mail is no
 /// longer in the store, so the slot may serve nothing — the store's truth
 /// carried on the slot, keeping `RSET` from resurrecting a landed delete.
@@ -375,7 +379,7 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                     // named.
                     user = None;
                     write_line(&mut write, "-ERR missing username", idle).await?;
-                } else if !inbox_exists(&store, arg) {
+                } else if !store.has_inbox(arg) {
                     user = None;
                     write_line(&mut write, "-ERR no such mailbox", idle).await?;
                 } else {
@@ -389,25 +393,18 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                     continue;
                 };
                 // Re-checked: the inbox may have been cleared since USER.
-                if !inbox_exists(&store, name) {
+                if !store.has_inbox(name) {
                     write_line(&mut write, "-ERR no such mailbox", idle).await?;
                     continue;
                 }
-                maildrop = store
-                    .list(name, &Filter::default())
-                    .into_iter()
-                    .rev()
-                    .map(|e| MaildropMsg {
-                        id: e.id.clone(),
-                        // The advertised size is the wire: the octets RETR
-                        // would transmit for this mail (decision 0028 §1),
-                        // derived by running the writer — never `e.size`,
-                        // which is a second copy of a fact the wire already
-                        // states and could drift from it.
-                        size: wire_len(&e.raw),
-                        gone: false,
-                    })
-                    .collect();
+                // The whole snapshot — list, reverse, size every mail —
+                // runs in one awaited job on the blocking pool (issue #86,
+                // the 0030 precedent): it scans every byte of the maildrop,
+                // and on the async worker it stalled every other socket.
+                // Only metadata comes back.
+                let job_store = store.clone();
+                let inbox = name.clone();
+                maildrop = Store::offload(move || snapshot(&job_store, &inbox)).await;
                 deleted.clear();
                 // The re-check above narrows the race but is not atomic
                 // with this read (0014: mutation-only boundary — 0028's
@@ -450,7 +447,10 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                         out.push_str(&format!("{} {}\r\n", num, maildrop[num - 1].size));
                     }
                     out.push_str(".\r\n");
-                    write.write_all(out.as_bytes()).await?;
+                    // One complete-buffer write under the idle bound (issue
+                    // #71, decision 0027): a peer that stops reading ends
+                    // the session silently through `?` and frees its slot.
+                    crate::smtp::bound_io(write.write_all(out.as_bytes()), idle).await?;
                 } else {
                     match arg
                         .parse::<usize>()
@@ -471,7 +471,8 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                         out.push_str(&format!("{num} {}\r\n", maildrop[num - 1].id));
                     }
                     out.push_str(".\r\n");
-                    write.write_all(out.as_bytes()).await?;
+                    // Bounded like LIST (issue #71).
+                    crate::smtp::bound_io(write.write_all(out.as_bytes()), idle).await?;
                 } else {
                     match arg
                         .parse::<usize>()
@@ -501,14 +502,15 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                         // or POP3 in another session): not fetchable.
                         None => write_line(&mut write, "-ERR no such message", idle).await?,
                         Some(email) => {
-                            // The count is the body's own length: the octets
-                            // this session is about to transmit (decision
-                            // 0028 §1) — the same writer that fills it, so
-                            // the advertisement cannot drift from the wire.
-                            let mut body = Vec::new();
-                            write_stuffed(&mut body, &email.raw);
-                            let mut out = format!("+OK {} octets\r\n", body.len()).into_bytes();
-                            out.extend_from_slice(&body);
+                            // The count is the snapshot's: the unstuffed,
+                            // normalized payload LIST and STAT advertise
+                            // (decision 0037) — the mail under an id never
+                            // changes. The reply is the one extra copy of
+                            // the mail this session holds (issue #86): the
+                            // stuffed body goes straight into it from the
+                            // live Arc, never through a second buffer.
+                            let mut out = format!("+OK {} octets\r\n", msg.size).into_bytes();
+                            write_stuffed(&mut out, &email.raw);
                             out.extend_from_slice(b".\r\n");
                             crate::smtp::bound_io(write.write_all(&out), idle).await?;
                         }
@@ -563,6 +565,13 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                 };
                 match resolve(&maildrop, &deleted, num) {
                     Err(e) => write_line(&mut write, &format!("-ERR {e}"), idle).await?,
+                    // Removed elsewhere since the snapshot: DELE answers
+                    // exactly as RETR does (decision 0028 §3, issue #86),
+                    // and adds no mark. A check, not a lock — a removal
+                    // after it is absorbed by QUIT's idempotent delete.
+                    Ok(msg) if store.get(&msg.id).is_none() => {
+                        write_line(&mut write, "-ERR no such message", idle).await?
+                    }
                     Ok(_) => {
                         deleted.insert(num);
                         write_line(&mut write, &format!("+OK message {num} deleted"), idle).await?;
@@ -648,10 +657,24 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
     }
 }
 
-/// A maildrop exists iff the inbox does: a POP3 `USER` names an existing
-/// swarmail inbox, and the first mail creates one (decision 0004).
-fn inbox_exists(store: &Store, name: &str) -> bool {
-    store.inboxes().iter().any(|(n, _)| n == name)
+/// The maildrop snapshot, oldest-first (`store.list` is newest-first),
+/// each mail sized by its unstuffed payload (decision 0037) — never
+/// `e.size`, a second copy of a fact the traversal already states. PASS
+/// runs this off the async worker (issue #86); a maildrop exists iff its
+/// inbox does (`Store::has_inbox`, decision 0004), checked by the caller.
+fn snapshot(store: &Store, inbox: &str) -> Vec<MaildropMsg> {
+    #[cfg(test)]
+    store.run_snapshot_gate();
+    store
+        .list(inbox, &Filter::default())
+        .into_iter()
+        .rev()
+        .map(|e| MaildropMsg {
+            id: e.id.clone(),
+            size: payload_len(&e.raw),
+            gone: false,
+        })
+        .collect()
 }
 
 /// The maildrop entry for a 1-based message number, or the RFC 1939 error.
@@ -704,19 +727,18 @@ fn live_numbers(maildrop: &[MaildropMsg], deleted: &BTreeSet<usize>) -> Vec<usiz
 /// One reply line, CRLF-terminated, under one idle bound (decision 0027):
 /// a peer that stops accepting replies ends the session silently through
 /// the existing `?` — a TimedOut is an ended session, not a pinned task.
+/// Text and CRLF go out in one `write_all` (issue #83): a separate 2-byte
+/// CRLF write waits on Nagle and the peer's delayed ACK, about 40 ms a
+/// reply. One application write — not a promise of one syscall or segment.
 async fn write_line<W: tokio::io::AsyncWrite + Unpin>(
     w: &mut W,
     line: &str,
     idle: Duration,
 ) -> io::Result<()> {
-    crate::smtp::bound_io(
-        async {
-            w.write_all(line.as_bytes()).await?;
-            w.write_all(b"\r\n").await
-        },
-        idle,
-    )
-    .await
+    let mut out = Vec::with_capacity(line.len() + 2);
+    out.extend_from_slice(line.as_bytes());
+    out.extend_from_slice(b"\r\n");
+    crate::smtp::bound_io(w.write_all(&out), idle).await
 }
 
 /// RFC 2449 CAPA. Plaintext listener: no STLS; no APOP (any password works).
@@ -748,20 +770,34 @@ fn write_stuffed(out: &mut Vec<u8>, raw: &[u8]) {
     write_stuffed_limited(out, raw, usize::MAX);
 }
 
-/// The wire length of a stored mail: the octets RETR transmits for it —
-/// CRLF-terminated, dot-stuffed, excluding the final `.\r\n` (RFC 1939 §11,
-/// decision 0028 §1). Derived by running the writer itself, never a
-/// mirrored walk of its rules: the count cannot drift from the wire, and
-/// no stored field ever states the length twice.
-fn wire_len(raw: &[u8]) -> u64 {
-    let mut buf = Vec::new();
-    write_stuffed(&mut buf, raw);
-    buf.len() as u64
+/// The advertised size of a stored mail: its payload as the client keeps
+/// it — CRLF-normalized, without the transparency dots RETR adds and the
+/// client strips, excluding the final `.\r\n` (RFC 1939 §11, decision 0037
+/// amending 0028 §1). The writer's own traversal with a counting sink: no
+/// mirrored walk of its rules, and no buffer — sizing a maildrop copies
+/// no mail (issue #86).
+fn payload_len(raw: &[u8]) -> u64 {
+    let mut n: u64 = 0;
+    stuff_lines(raw, usize::MAX, |bytes, dot| {
+        if !dot {
+            n += bytes.len() as u64;
+        }
+    });
+    n
 }
 
 /// The first `max_lines` lines of `raw`, dot-stuffed; the terminating "."
 /// line is the caller's.
-fn write_stuffed_limited(out: &mut Vec<u8>, raw: &[u8], mut max_lines: usize) {
+fn write_stuffed_limited(out: &mut Vec<u8>, raw: &[u8], max_lines: usize) {
+    stuff_lines(raw, max_lines, |bytes, _dot| out.extend_from_slice(bytes));
+}
+
+/// The one RFC 1939 multi-line traversal, shared by the writer and the
+/// counter: each of the first `max_lines` lines is emitted as its content
+/// and a CRLF (a bare LF and a missing final newline are normalized; a
+/// bare CR mid-line passes through), preceded by a transparency `.` —
+/// flagged `true` — when the line starts with one.
+fn stuff_lines(raw: &[u8], mut max_lines: usize, mut emit: impl FnMut(&[u8], bool)) {
     let mut start = 0;
     while start < raw.len() && max_lines > 0 {
         let end = raw[start..]
@@ -772,10 +808,10 @@ fn write_stuffed_limited(out: &mut Vec<u8>, raw: &[u8], mut max_lines: usize) {
         let line = line.strip_suffix(b"\n").unwrap_or(line);
         let line = line.strip_suffix(b"\r").unwrap_or(line);
         if line.first() == Some(&b'.') {
-            out.push(b'.');
+            emit(&b"."[..], true);
         }
-        out.extend_from_slice(line);
-        out.extend_from_slice(b"\r\n");
+        emit(line, false);
+        emit(&b"\r\n"[..], false);
         start = end;
         max_lines -= 1;
     }
@@ -1183,4 +1219,111 @@ mod tests {
             "the reap must keep tracking completions: {after_first_batch} -> {after_second_batch}"
         );
     }
+
+    /// The advertised size is the normalized payload without the added
+    /// dots (decision 0037; red on the dot-inclusive count, which says 33
+    /// for the first fixture). Literal expected sizes, not a second walk.
+    #[test]
+    fn payload_len_counts_normalized_bytes_without_transparency_dots() {
+        let dotted: &[u8] = b".123456\r\n.123456\r\n.123456789\r\n";
+        assert_eq!(payload_len(dotted), 30);
+        let mut wire = Vec::new();
+        write_stuffed(&mut wire, dotted);
+        assert_eq!(wire.len(), 33, "the wire still carries the three dots");
+        // Bare LF gains a CR; a bare CR mid-line is content.
+        assert_eq!(payload_len(b"a\nb\n"), 6);
+        assert_eq!(payload_len(b"a\rb\r\n"), 5);
+        // Mixed endings, then a missing final newline.
+        assert_eq!(payload_len(b"a\r\nb\nc"), 9);
+        assert_eq!(payload_len(b""), 0);
+        // 8-bit bytes count as themselves.
+        assert_eq!(payload_len(b"\xff\xfe\n"), 4);
+    }
+
+    /// A single-line reply is one write of text plus CRLF (issue #83; red
+    /// on the text-then-CRLF shape). POP3 adds no flush: plain TCP only.
+    #[tokio::test]
+    async fn a_reply_line_is_one_write() {
+        let mut rec = crate::smtp::Recorder::default();
+        write_line(&mut rec, "+OK", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(rec.ops, vec![crate::smtp::WriteOp::Write(b"+OK\r\n".to_vec())]);
+    }
+
+    /// A peer that stops reading a multi-line reply is cut off at the idle
+    /// deadline and its slot is admitted again (issue #71; red on the
+    /// unbounded write, whose session never finishes). One slot, a 1 KiB
+    /// receive buffer and a thousand pipelined commands whose replies far
+    /// outrun every socket buffer: the server blocks in the write, never in
+    /// a read. The session's completion is Tokio's own flag, spun against a
+    /// real deadline; its first check precedes any yield, so the wait is
+    /// always entered. The peer then finds no idle goodbye in what it got —
+    /// the write, not a read, expired.
+    async fn a_stalled_reply_frees_the_slot(command: &str) {
+        use tokio::io::AsyncReadExt;
+
+        let store = Arc::new(Store::new(0));
+        for i in 0..2000 {
+            let _ = store.insert(crate::store::email(&format!("m{i:05}"), "pop", "a@x.io"));
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        SPAWNED.with(|spawned| spawned.borrow_mut().clear());
+        let server = tokio::spawn(serve(
+            listener,
+            store,
+            Arc::new(AtomicBool::new(false)),
+            Duration::from_millis(200),
+            1,
+            std::future::pending(),
+        ));
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.set_recv_buffer_size(1024).unwrap();
+        let mut client = BufReader::new(socket.connect(addr).await.unwrap());
+        let mut line = Vec::new();
+        client.read_until(b'\n', &mut line).await.unwrap();
+        assert!(line.starts_with(b"+OK"), "{line:?}");
+        client.write_all(b"USER pop\r\nPASS x\r\n").await.unwrap();
+        for _ in 0..2 {
+            let mut line = Vec::new();
+            client.read_until(b'\n', &mut line).await.unwrap();
+            assert!(line.starts_with(b"+OK"), "{line:?}");
+        }
+        client
+            .write_all(format!("{command}\r\n").repeat(1000).as_bytes())
+            .await
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !finished_while_parked(0) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the stalled {command} writer never released its slot"
+            );
+            tokio::task::yield_now().await;
+        }
+        let _next = greeted(addr).await;
+        // A reset is as good an ending as EOF here; only the tail matters.
+        let mut got = Vec::new();
+        let _ = client.read_to_end(&mut got).await;
+        assert!(!got.ends_with(b"-ERR idle timeout\r\n"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_stalled_list_reply_frees_the_slot() {
+        a_stalled_reply_frees_the_slot("LIST").await;
+    }
+
+    #[tokio::test]
+    async fn a_stalled_uidl_reply_frees_the_slot() {
+        a_stalled_reply_frees_the_slot("UIDL").await;
+    }
 }
+
+#[cfg(test)]
+// The PASS offload proof lives in src/pop3/maildrop_tests.rs (decision 0020
+// rule 2): its cold path — the independent release thread that frees a
+// snapshot gate an inline snapshot would hold forever on the sole worker —
+// runs only while the bug is present, so it is unwritable inline.
+mod maildrop_tests;

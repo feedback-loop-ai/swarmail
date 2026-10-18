@@ -46,14 +46,17 @@ ingress:
   host: swarmail.local
   tls: []
 
-# The memory relation, documented rather than invented (decision 0026 §3):
-# the store holds the restored state resident — every mail read back from
-# the data file lives in memory — so `limits.memory` must cover the
-# restored size of the claim actually mounted, and `SWARMAIL_MAX_PER_INBOX`
-# (config, above) is the knob that bounds what can accumulate per inbox.
-# Size the limit against the claim's restored size; the chart codes no
-# override, because a constant that claims to fit operator data is a guess
-# wearing a default.
+# The memory relation, documented rather than invented (decision 0026 §3 as
+# amended by proposed 0038): the store holds all mail resident, and a data
+# file restores every persisted row before bind without applying the cap.
+# `SWARMAIL_MAX_PER_INBOX` (config, above; `0` disables it) caps messages
+# per inbox — it is not a global byte or RSS cap, and the inbox count is
+# unlimited. Resident memory covers raw, decoded and extracted fields, the
+# indexes, watcher-held mail and concurrent request buffers, plus a small
+# watcher channel per distinct awaited inbox name; the data file's size on
+# disk does not measure it. Size `limits.memory` from observed usage of the
+# workload actually run; the chart codes no override, because a constant
+# that claims to fit operator data is a guess wearing a default.
 resources:
   requests:
     cpu: 50m
