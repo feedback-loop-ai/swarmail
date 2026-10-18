@@ -10,9 +10,19 @@ COPY . .
 ENV CARGO_NET_RETRY=10
 RUN cargo build --release --locked
 RUN strip target/release/swarmail
+# scratch has no shell to mkdir with: the empty data directory is made
+# here and copied in owned by the runtime uid (issue #103).
+RUN mkdir /data-empty
 
 FROM scratch
 COPY --from=build /app/target/release/swarmail /swarmail
+# A fresh named volume mounted at /data inherits this directory's owner,
+# so uid 65532 can write `SWARMAIL_DATA_FILE=/data/swarmail.db` without a
+# root entrypoint. Persistence stays opt-in: without SWARMAIL_DATA_FILE the
+# store is memory-only and the volume is unused. A volume created by an
+# older image stays root-owned until the operator chowns it.
+COPY --from=build --chown=65532:65532 /data-empty /data
+VOLUME /data
 # The container contract (decision 0030 §1): the binary's defaults are
 # loopback, which a container's `-p` mappings could never reach — the image
 # states its binds explicitly so the published ports are real. An operator

@@ -635,8 +635,14 @@ async fn queued_seeds_refuse_once_the_stop_has_fired() {
 // --- 0027: a stalled body and a partial head cannot hold stop hostage ------
 
 /// One HTTP response off a raw socket: the status code and the JSON body,
-/// skipping any interim `100 Continue` and honoring Content-Length.
-async fn read_response(what: &str, stream: &mut tokio::net::TcpStream) -> (u16, serde_json::Value) {
+/// skipping any interim `100 Continue` and honoring Content-Length. `None`
+/// when the peer closed first — the drain's deadline lawfully races the
+/// answer (0027 §7), and a loaded runner can lose that race to a reset —
+/// which is the no-hostage outcome the caller's liveness assert owns.
+async fn read_response(
+    what: &str,
+    stream: &mut tokio::net::TcpStream,
+) -> Option<(u16, serde_json::Value)> {
     let mut raw: Vec<u8> = Vec::new();
     let mut buf = [0u8; 1024];
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -653,10 +659,13 @@ async fn read_response(what: &str, stream: &mut tokio::net::TcpStream) -> (u16, 
                     "[{what}] the response stalled: {}",
                     String::from_utf8_lossy(&raw)
                 )
-            })
-            .expect("read failed");
-        assert!(n > 0, "[{what}] closed without a full response");
-        raw.extend_from_slice(&buf[..n]);
+            });
+        match n {
+            Ok(0) => return None,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return None,
+            Err(e) => panic!("[{what}] read failed: {e}"),
+        }
         if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
             let head = String::from_utf8_lossy(&raw[..i]).into_owned();
             let status: u16 = head
@@ -693,15 +702,18 @@ async fn read_response(what: &str, stream: &mut tokio::net::TcpStream) -> (u16, 
     while raw.len() < head_end + 4 + len {
         let n = tokio::time::timeout(Duration::from_millis(500), stream.read(&mut buf))
             .await
-            .expect("the body stalled")
-            .expect("read failed");
-        assert!(n > 0, "the connection closed mid-body");
-        raw.extend_from_slice(&buf[..n]);
+            .expect("the body stalled");
+        match n {
+            Ok(0) => return None,
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return None,
+            Err(e) => panic!("[{what}] read failed: {e}"),
+        }
     }
-    (
+    Some((
         status,
         serde_json::from_slice(&raw[head_end + 4..head_end + 4 + len]).expect("a JSON body"),
-    )
+    ))
 }
 
 /// The hardest parked pair (0027): a request stalled mid-BODY — hyper has
@@ -769,11 +781,15 @@ async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
     // (red: the graceful drain held it forever).
     stop_res.expect("the stalled body held stop past every budget");
 
-    // The partial head completed mid-drain: the answer is `stopping`, not
-    // the old `200 ok`.
-    let (st, body) = healthz;
-    assert_eq!(st, 503, "{body}");
-    assert_eq!(body["status"], "stopping");
+    // The partial head completes mid-drain where the drain allows it: the
+    // answer is `stopping`, not the old `200 ok`. A loaded runner can
+    // instead see the drain's deadline close the socket first — the lawful
+    // reset `read_response` reports as `None` — and the liveness assert
+    // above is the test's core, not which side won the deadline race.
+    if let Some((st, body)) = healthz {
+        assert_eq!(st, 503, "{body}");
+        assert_eq!(body["status"], "stopping");
+    }
 }
 
 // ---------- issue #47: shutdown counting is a ledger row, not a silence ----

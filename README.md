@@ -76,7 +76,7 @@ checks); agents drive the same store over MCP; existing MailHog/Mailpit
 clients work through the shims; a human watches the inbox update itself.
 
 ```
-docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:v0.1.0
+docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main
 swarmail serve                 # or: cargo run -- serve — same ports on localhost
 swarmail mcp                   # the stdio MCP bridge
 swarmail gen-cert --domain localhost --out ./certs
@@ -220,10 +220,31 @@ the tests are):
 One binary, three ports, no config. **Docker:**
 
 ```
-docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:v0.1.0
+docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main
 ```
 
-**From source:** `cargo run -- serve` (Rust stable; everything else is vendored).
+`:main` is the continuous build of the main branch — mutable, so pin
+`:sha-<commit>` (or build locally) when you need a reproducible image.
+`:v0.1.0` was never published, and `:0.1.0` is the 2026-10-12 first
+build; the next release cut publishes both `:v<version>` and `:<version>`.
+
+**Persistence in Docker:** set `SWARMAIL_DATA_FILE` and mount a named
+volume at `/data`. The image ships `/data` owned by its runtime uid 65532,
+so a fresh named volume is writable. Images published before that change
+lack it, so build locally until the next `:main` publish:
+
+```
+docker build -t swarmail:local .
+docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 \
+  -v swarmail-data:/data -e SWARMAIL_DATA_FILE=/data/swarmail.db swarmail:local
+```
+
+A volume an older image created is owned by root; `chown 65532:65532` its
+contents once, or start from a fresh volume.
+
+**From source:** `cargo run -- serve` (Rust stable; everything else is
+vendored), or `cargo install --locked --path .` from a checkout — the
+crate is not published on crates.io.
 
 **Then loop.** This transcript is real — a stock `smtplib` delivering, the
 REST surface answering:
@@ -280,10 +301,19 @@ the chart packages the same binary with no configuration language of its own
 *proposed*):
 
 ```
-helm install swarmail oci://ghcr.io/feedback-loop-ai/charts/swarmail \
-  --version 0.1.0 --namespace swarmail --create-namespace
+git clone https://github.com/feedback-loop-ai/swarmail && cd swarmail
+helm install swarmail ./charts/swarmail --set image.tag=main \
+  --namespace swarmail --create-namespace
 helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
 ```
+
+Install from a checkout for now. The only published chart, OCI `0.1.0`,
+predates the startupProbe, the TLS settings, `networkPolicy.ingressPeers`
+and the listen configuration, and the publish guard never republishes a
+version (decision 0019). The tree's chart is `0.1.1`, prepared but not yet
+published. Its `appVersion` image, `:0.1.0`, is the 2026-10-12 build that
+predates the current server, so the command sets `image.tag=main`
+explicitly.
 
 The chart adds nothing the binary does not read — configuration is exactly
 the env contract, passed through `config: {SWARMAIL_MAX_PER_INBOX: "0"}`
