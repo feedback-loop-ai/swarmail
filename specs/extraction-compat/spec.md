@@ -5,15 +5,58 @@ This is a design, not an implementation or gate receipt. Semantic authority
 is proposed [0049](../../docs/decisions/0049-extraction-compat.md);
 acceptance remains the operator's.
 
+## Resume confirmation — 2026-10-18
+
+Run `resume-point-read-first-epic-120-2a606e73` confirms this existing
+`extraction-compat` design. Preserve signed design `4801165`, implementation
+`d350d5b` and supplied-data commit `2987ee2` on the checked-out
+`epic120-extraction-compat` branch. Add signed commits; do not recut the
+branch, rewrite history or repeat completed implementation work.
+
+Decision: 0049 — the existing [proposed decision](../../docs/decisions/0049-extraction-compat.md)
+continues to cover this feature. This confirmation adds proof detail, not
+new semantics, so no new decision is drafted. Both 0040 and 0049 are still
+proposed; the panel's description of 0040 as accepted is rejected against
+the decision file and index. Only the operator can accept them.
+
+The remaining implementation scope is T02 (#136 AC2), the two dependent
+T03/AC1 rows, and their provenance/status reconciliation and final-tree
+verification. T01 and T04–T09 remain the prior implementation's completed
+work. Its gate receipts are historical evidence, not receipts for the
+forthcoming full table. The task directory contains historical run-12
+framing only; the current intake result and explicit resume commission
+govern this confirmation. The batch-3 resume framing is unrelated.
+
+The operator-supplied, unmodified WHATWG snapshot is
+`scripts/data/html-entities.json`, fetched 2026-10-18 from
+`https://html.spec.whatwg.org/entities.json`, SHA-256
+`d741d877ac77c4194c4ad526b5b4a19aef8dfe411ab840a466891cdbb9f362e6`.
+Design inspection verified the digest, 2,231 keys, 2,125 semicolon-ended
+names, 106 legacy aliases, codepoint/character agreement and matching
+semicolon counterparts. This resolves the acquisition blocker; it does not
+make the current 71-name Rust table complete.
+
+### Resume panel rulings
+
+| Question | Ruling | Cost or rejected claim |
+|---|---|---|
+| Scope and ownership | Adopt both positions' T02 completion through the existing generator, static table and bounded decoder. | No parser redesign, substitute data or isolated hand additions of eacute/rarr. Historical stored extraction remains verbatim. |
+| Generator integrity | Adopt robustness's standard-library SHA-256 refusal before generation, with ASCII, unique-name, count and scalar checks. | Slightly more maintenance tooling than simplicity's unchanged-generator path; deliberate future snapshot updates must update the pin. No Rust hashing dependency. |
+| Independent proof | Adopt simplicity's every-mapping lookup/decode proof and robustness's codepoint-derived whole-table equality, checked against JSON characters. | Extra inline measured test code and a test-only embedded snapshot; no Python during Rust tests. Table-self tests alone are insufficient. |
+| Additional bounds | Adopt robustness's full-table no-ASCII-digit assertion and all-106 legacy cases, retaining exact window/work/expansion pins. | These are preservation checks, not new baseline defects. |
+| Snapshot identity | Reject robustness's byte-length pin as an integrity guarantee; use the actual digest at regeneration and explicit digest verification in delivery. | Cargo tests alone do not authenticate snapshot bytes; source equality also cannot detect coordinated edits of both inputs. No claim otherwise. |
+| Legacy syntax | Adopt both positions' semicolon-required contract. Reject robustness's claim that it matches browsers on every relevant link case. | HTML permits context-dependent bare matches, including some attribute cases. Swarmail deliberately leaves all bare forms literal; full browser recovery is outside this resume. |
+| Packaged tests | Adopt simplicity's exact-file Cargo include for the JSON fixture. | The package grows by the snapshot's size; no broad scripts inclusion, duplicate fixture or build-time fetching. |
+
 ## Framing and rationale
 
-Build on main `067ab91`, which contains batches 1–3 and descends from the
+Original design baseline: main `067ab91`, which contains batches 1–3 and descends from the
 review baseline `2a325c9`. Read evidence: both run-local panel positions,
 the complete #120 and #136–#139 issue snapshots including their embedded
 review evidence, and `.brokkr/state/tasks/`. That directory contains only
 historical run-12 tasks; they do not replace this commission's framing.
 
-Encoded quotes currently truncate attribute URLs, the named-entity table is
+At that baseline, encoded quotes truncate attribute URLs, the named-entity table is
 incomplete, and an unrelated MIME footer can displace the desired code.
 Unsupported compat search syntax can make assertions pass vacuously; scoped
 lists and latest disagree. Large single-message responses occupy async
@@ -21,7 +64,7 @@ workers, while numeric bodies allocate a string per extracted code. Repair
 these defects at their existing owners, preserving ingest-time extraction
 and the previous batches' storage, validation and delivery repairs.
 
-## Panel rulings
+## Original panel rulings (confirmed)
 
 | Question | Adopted ruling and rejected alternative | Cost of the ruling |
 |---|---|---|
@@ -64,6 +107,15 @@ Signs, non-ASCII digits, overflow and non-scalars stay literal; valid controls
 keep the existing policy. Preserve decode-once, the 40-character window,
 the returned statistics seam, both exact scan/byte pins, and the finite-table
 expansion bound `5 * output_bytes <= 6 * input_bytes`.
+
+The 106 bare legacy aliases remain literal in both decoder contexts. For
+every legacy name `n`, `&n` and `&n=1` remain unchanged; `&n;x` decodes
+the semicolon-ended mapping followed by `x`. Unknown `&notit;` stays
+literal: no longest-prefix recovery. This is the deliberately narrower
+contract of 0040 §5 and 0049 §2, not a claim that HTML requires semicolons
+universally. Record WHATWG's title/author, source URL/date, CC-BY-4.0 license
+URL and transformation in the generated module: the retained JSON is
+unmodified; the derived table excludes bare aliases and strips delimiters.
 
 ### MIME-relative codes and bounded collection (#137, #139)
 
@@ -126,6 +178,14 @@ not a new response/admission budget or a guarantee against pool saturation.
    data. Pin sorting, uniqueness, digest/provenance, case and expansion.
    `&#+52;` and signed hex stay literal in decoder/link input and cannot
    manufacture `4829` from `&#+52;&#+56;&#+50;&#+57;`.
+   The offline generator refuses a digest mismatch before emitting a table.
+   A Rust test independently derives all expected values from JSON
+   `codepoints`, checks `characters`, and compares the whole sorted slice
+   with `NAMED`, lookup and actual decoding. Pin 2,231 source keys, 2,125
+   mappings and 106 identical legacy counterparts; exercise the literal
+   legacy cases above, and prove no named value contains an ASCII digit.
+   A changed table value with unchanged count must fail. Rust tests require
+   neither Python nor network; the exact JSON fixture ships in the crate.
 3. **AC3 (#136 preservation):** All seven #94 rows and both exact reference
    scan/byte pins remain unchanged and green. Preserve code tokenizer work
    pins and add deterministic one-pass link-region/trim accounting over

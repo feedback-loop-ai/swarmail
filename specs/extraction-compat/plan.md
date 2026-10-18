@@ -3,34 +3,102 @@
 Implements [spec.md](spec.md) and proposed
 [0049](../../docs/decisions/0049-extraction-compat.md).
 
+## Resume implementation plan — 2026-10-18
+
+Continue from `2987ee2` on `epic120-extraction-compat`; preserve `4801165`
+and `d350d5b`. The original approach below records the batch design and
+does not instruct this run to repeat completed tasks or fetch/recreate the
+branch. Only the following T02 work, two dependent AC1 rows and supporting
+delivery reconciliation remain. Decision 0049 stays proposed and unchanged.
+The chief commits only the existing spec.md, plan.md and tasks.md.
+
+1. Verify the supplied JSON's SHA-256 against
+   `d741d877ac77c4194c4ad526b5b4a19aef8dfe411ab840a466891cdbb9f362e6`.
+   Extend `scripts/gen-entities.py` with a standard-library `hashlib` check
+   over the raw bytes before parsing or emitting output. Preserve the
+   2,125 count and codepoint/character checks; explicitly validate ASCII
+   names and uniqueness after stripping delimiters, then sort by bytes.
+   Do not silently overwrite duplicate JSON keys. Check the 2,231/106
+   source shape and legacy counterpart agreement. A mismatched input must
+   fail with no partial generated table. No new dependencies.
+2. Run `python3 -I scripts/gen-entities.py scripts/data/html-entities.json`
+   into a temporary file and replace only the generated `NAMED` block in
+   `src/extract/entities.rs`. Keep lookup and decoder behavior. Update its
+   provenance with source URL, fetch date 2026-10-18, digest, counts, source
+   path and exact command. Attribute "HTML Living Standard, named character
+   references" to WHATWG, link `https://creativecommons.org/licenses/by/4.0/`,
+   and distinguish the unmodified snapshot from the filtered/escaped Rust
+   representation. Do not widen `deny.toml`.
+3. Add inline measured `all_whatwg_entities_match_snapshot` in the existing
+   entities test owner. Embed the JSON with
+   `include_str!("../../scripts/data/html-entities.json")` and use existing
+   `serde_json`. Derive strings from integer codepoints with checked scalar
+   conversion, compare them to `characters`, select semicolon-ended keys,
+   strip delimiters and byte-sort. Compare the full expected slice to
+   `NAMED`; also check lookup and the actual decoder for every mapping,
+   including multi-scalar outputs. Assert all three counts and every bare
+   alias's identical semicolon counterpart. Keep strict order, exact case,
+   <40-character names and the 6/5 byte bound; add the no-ASCII-digit pin.
+   Use branch-stable inline assertions, not a new excluded harness or
+   production abstraction. Whole-table equality is source fidelity, not a
+   cryptographic identity check; the generator and delivery digest check
+   own the latter. Do not shell out from Rust tests.
+4. In `src/extract.rs`'s existing inline decoder tests, derive all 106
+   legacy names from the JSON and prove `&n` / `&n=1` literal and `&n;x`
+   decoded with suffix preserved. Keep `&amp`, `&notit;` and `&amp=1`
+   explicit controls. Preserve the scanner, exact work pins and decode-once
+   behavior. Extend `tests/api.rs`'s `smtp_issue_136_link_fidelity` with
+   `href="https://x.io/caf&eacute;"` -> `https://x.io/café` and HTML text
+   `https://x.io/go&rarr;` -> `https://x.io/go→`, asserting the exact ordered
+   stored array after SMTP ingest and REST readback.
+5. Add only `scripts/data/html-entities.json` to Cargo.toml's explicit
+   package include list so the embedded test compiles outside the checkout.
+   Check `cargo package --list --offline --locked` and compile/run the
+   entity proof from an isolated packaged source tree offline. This is a
+   packaging correction required by T02, not permission to add dependencies
+   or ship all maintenance scripts.
+6. Prove a same-cardinality wrong-scalar mutation fails the independent
+   test in an isolated temporary copy. Capture the interim-table failure
+   and the two new URL-row failures before replacement where possible;
+   preserve the prior baseline red receipts for completed behavior. Label
+   a controlled negative test honestly rather than asserting an unobserved
+   historical run. Compare generator output to the committed data block
+   after formatting, not the entire module containing docs/tests. Demonstrate
+   that a one-byte-altered JSON is refused with no table output.
+7. Reconcile only T02-related status/provenance in the existing tasks,
+   extraction-fidelity task, decision index/tails and release/served docs
+   where they still say the source is unavailable or the table is interim.
+   Retain dated first-run evidence, the historical-row residual and proposed
+   statuses. Run the full final-tree inventory below, then add a signed
+   implementation commit mapping #136 tests and #137–#139 preservation.
+
 ## Technical context and research
 
 Single Rust crate, mail-parser 0.11.9, regex extraction, Tokio/Axum HTTP,
-SQLite persistence and real SMTP/HTTP tests. Existing owners were inspected:
+SQLite persistence and real SMTP/HTTP tests. Original baseline research:
 `src/extract.rs` has `tag`, `markup_at`, `html_codes`, bounded `parse_ref`
 and `RefScanStats`; `smtp.rs` selects genuine bodies but loses their identity;
 `compat.rs` has shared prefix refusal, scoped candidates and `page_work`;
 `Store::offload` already carries pages. The existing held-page proof is
 `src/compat/page_work_tests.rs`, with an instance-local gate and real deadline.
-`scripts/gen-entities.py` already accepts a WHATWG snapshot and emits sorted
-semicolon-ended mappings. Reuse these owners and confirm mail-parser's
-child-ID and byte-offset accessors before coding; do not infer MIME ancestry
-from the mere presence of an alternative anywhere in the message.
+`scripts/gen-entities.py` accepts a WHATWG snapshot and emits sorted
+semicolon-ended mappings. The MIME work is now implemented by `d350d5b`;
+retain its direct-sibling rule and source ordering without revisiting it.
 
-The source snapshot is an implementation input, not evidence fabricated by
-this design. Obtain an operator-provided or permitted cached WHATWG snapshot,
-verify its digest and license, and retain it as
-`scripts/data/html-entities.json` for offline reproduction. No network build
-step or CPython substitution. Missing input blocks AC2, not a rationale to
-weaken it. Verify all mappings against that independent JSON, not just a
-table-length assertion or comparisons of a table to itself.
+The original source-input blocker is resolved by operator commit `2987ee2`.
+Design inspection verified the 145,897-byte snapshot's digest and all
+2,231 entries, including the 2,125/106 split and counterpart agreement.
+Retain that exact `scripts/data/html-entities.json` for offline reproduction.
+No network build step or CPython substitution. Verify all mappings against
+that independent JSON, not just a table-length assertion or comparisons of
+a table to itself. The remaining proof belongs to implementation.
 
 ## Constitution check
 
 Preserve synchronous insert/commit before SMTP success (0001/0014), subscribe
 before scan (0002), acceptance-order pruning (0003), ingest-only derivation
 (0005), exact-count assertions (0010), raw/body honesty (0022/0031) and
-off-worker parse/commit boundaries (0023/0030). The new decision proposes
+off-worker parse/commit boundaries (0023/0030). Existing proposed 0049 covers
 public extraction/refusal/view-order changes without editing accepted text.
 No dependency or allowlist change is planned. Keep exact 100% measured
 coverage and 0020's inline default; only cold diagnostic paths warrant
@@ -53,10 +121,14 @@ declared sibling harnesses. No mocks, probabilistic races or sleep-as-sync.
 | `README.md`, `src/static/llms.txt`, `src/static/openapi.json` | Publish cap/fresh-only scope, exact order and refusal contracts, precise offload claim and named residuals. |
 | `docs/decisions/README.md`, relevant older decision tails, current release notes | Index 0049 as proposed, add dated pointers where needed and publish behavior changes; never rewrite accepted rulings. |
 
-The chief's design artifacts are exactly spec.md, plan.md, tasks.md and
-0049. All other edits in this table belong to implementation.
+The original chief committed spec.md, plan.md, tasks.md and 0049. This
+confirmation updates only the three spec artifacts; 0049 remains the
+existing proposed decision. The table describes the original batch surface;
+the resume steps above narrow remaining edits and add Cargo.toml's exact
+fixture include. All production, test, tooling and packaging edits belong
+to implementation.
 
-## Implementation approach
+## Original implementation approach (retain completed work)
 
 1. Establish the authorized branch from fetched current main; preserve all
    three previous batches. Record baseline SHA and new regression failures.
@@ -188,9 +260,13 @@ Artifact shape validation proves neither signed delivery nor implementation.
 
 | Risk | Mitigation and accepted exposure |
 |---|---|
+| Resume repeats finished work or changes browser parsing semantics. | Limit changes to T02 and dependent AC1/provenance work; keep all bare aliases literal and explicitly document the browser difference. |
+| Both snapshot and table drift together. | Generator pins the raw-byte digest; delivery checks it separately. Rust equality tests alone are not authentication and byte length is not integrity. |
+| Embedded fixture breaks packaged tests. | Include the exact JSON path in Cargo.toml and execute the independent test from packaged sources offline. |
+| New full-table tests violate exact measured coverage. | Keep deterministic tests inline, exercise both semicolon/legacy populations, run exact 100/100/100 without exclusions or a new harness. |
 | Encoded quotes reintroduce #94 delimiter failures. | Recognize source boundaries first; per-context matchers; unchanged seven-row regression and exact counters. |
 | Tokenizer reuse becomes quadratic or drops links in suppressed HTML. | Borrow/callback source spans, monotone cursor, bounded references, one-pass trim counters; malformed-tail and source-only-link tests. |
-| Full table is fabricated or sourced differently. | Pinned JSON with actual SHA-256/license, deterministic regeneration and all-mapping comparison. Missing input remains incomplete. |
+| Full table is fabricated or sourced differently. | Supplied JSON with verified SHA-256/license, generator mismatch refusal, deterministic regeneration and independent all-mapping comparison. |
 | Shared ancestor silently suppresses mixed content. | Direct sibling check with nested-alternative negative fixture; preserve chosen body/raw bytes. |
 | Cap only reduces response size, not allocation. | Bound collector before ownership, shared across sources; occupancy/65th-value/duplicate proofs. |
 | Historical arrays and links still amplify memory. | Preserve and publish fresh-only cap and uncapped-link exposure; no global-memory claim. A link cap or migration needs separate scope. |
