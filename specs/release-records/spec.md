@@ -2,27 +2,64 @@
 
 Branch: `epic120-release-docs`  
 Date: 2026-10-19  
-Phase: design; implementation and validation remain outstanding.  
+Phase: resumed design confirmation; implementation present, fresh verification outstanding.
 Issues: epic #120, batch 6, #141, #142 and #144.
 
 Decision: 0051 — [Release prerequisites and decision provenance](../../docs/decisions/0051-release-records.md), **proposed**.
+
+## Resume ruling — 2026-10-19, re-drive 2
+
+The first design and implementation are present in signed commit
+`847892409134bee082e8a3edcdb0243eb720a361` on `epic120-release-docs`.
+The first run stopped on signing, and the operator's assistant committed its
+unchanged staged tree when signing returned. Its local green gates are prior
+evidence, not this run's verification verdict. The original design's statement
+that implementation remained outstanding is superseded by this dated note.
+
+Read both current panel positions and the intake sources below. Adopt both
+positions' recommendation to confirm this design and reuse the implementation.
+Adopt simplicity's required reconciliation of spec/task status; robustness
+called it optional, but the chief's committed handoff must distinguish work
+present from proof outstanding. The cost is one signed documentation commit.
+No unmet issue criterion was identified by the panel or this design audit;
+implementation changes only on a demonstrated gap, with a regression and a
+new signed commit. Do not redo the repairs merely to create an implementation
+diff. Keep the existing slug and proposed 0051; this confirmation introduces
+no new semantics and allocates no additional decision number.
+
+Retain the original panel rulings below. In particular, reject another chart
+gate owner, global prose crawler, automatic registry recovery and forced
+Cargo/chart version equality, at the costs recorded there. Qualify robustness's
+claim that the pinned builder closes smoked-versus-pushed drift: it fixes the
+base image, not every build input or byte identity. Retain the spec's explicit
+limit. Status-word automation for a future acceptance of 0051 remains outside
+this resume; that future change must update its current-status references.
+
+The observed version triple is Cargo/appVersion **0.1.0**, prepared chart
+**0.1.2**. Keep the original chart-0.1.1/v0.1.1 regression fixture and also
+check the present tree's mismatched tags. Helm render and real Docker smoke
+are CI-only proofs, still outstanding here; their absence locally does not
+block this design or require replacement tests. Fresh local verification,
+review and ship remain later phase obligations. This chief returns `drafted`,
+not a completed-feature or validation verdict.
 
 ## Framing and authority
 
 Read both run-local positions, `simplicity.md` and `robustness.md`, and the
 complete epic and issue bodies, including #144's operator ruling. The three
 files under `.brokkr/state/tasks/` frame earlier coverage runs, not batch 6;
-the current commission and issue files are this batch's intake. The observed
-base is main `1d45e5799c7ed1a1311fab501b3173c678d4f2c0`, a descendant of
+the current commission and issue files are this batch's intake. The original
+design base was main `1d45e5799c7ed1a1311fab501b3173c678d4f2c0`, a descendant of
 review baseline `2a325c9`. Earlier batches' repairs are requirements, not work
 to repeat or undo. Fetch/branch/commit execution is separate delivery evidence.
 
 The operator's 2026-10-19 ruling in #144 accepts 0034–0050 and 0055 as filed,
 including existing dated amendments. Record that acceptance without asking
 again, reverting implementations, or extending it to this new decision.
-0051 is the next unused number in epic #120's reservation: 0055 explicitly
-reserves 0049–0054. A design commit contains only this specification, plan,
-tasks and 0051; index/status/marker repairs belong to implementation.
+0051 was allocated within epic #120's reservation: 0055 explicitly reserves
+0049–0054. It is already committed and remains proposed. This resume's chief
+commit touches only this specification, plan and tasks; the existing decision,
+index/status/marker repairs and implementation remain in place.
 
 ## Feature and rationale
 
@@ -77,8 +114,8 @@ rendered tag and Artifact Hub image expectation from it. Chart edits require
 a strictly increased valid chart version against the entire event baseline,
 including edits earlier in a multi-commit PR. Missing required history is a
 named refusal. A chart-only preparation bump is allowed and is not a release.
-Do not bump Cargo or revert chart 0.1.1; if reconciliation changes chart files,
-prepare the next chart patch version and identify it as unpublished.
+Do not bump Cargo or revert the prepared chart 0.1.2; any later necessary
+chart edit must satisfy the same bump check and remain identified as unpublished.
 
 R4. Both ephemeral Docker quickstarts use `--rm` and a stop grace longer than
 the ten-second server drain (30 seconds). Documented named volumes persist
@@ -156,9 +193,10 @@ operator. Existing historical decisions are not globally reformatted.
 
 - **AC1 (#141):** Tag release fixtures show Docker failure/skipped/cancelled
   refuses chart admission, successful same-run prerequisites admit it, and
-  today's Cargo/appVersion 0.1.0 versus chart 0.1.1 at v0.1.1 publishes
-  neither. Preserve exact refs, both Docker tags, rate proof and republish
-  refusal; a missing/unknown image refuses the actual chart preflight.
+  the original Cargo/appVersion 0.1.0 versus chart 0.1.1 fixture at v0.1.1
+  publishes neither. The present prepared chart 0.1.2 likewise cannot publish
+  alone at v0.1.1 or v0.1.2; a v0.1.0 rerun retains republish refusal.
+  Preserve exact refs, both Docker tags, rate proof and republish refusal; a missing/unknown image refuses the actual chart preflight.
 - **AC2 (#141):** Changed/unbumped, decreased or malformed chart versions fail
   CI; valid increasing versions and unchanged charts pass. Multi-commit PR,
   push, tag, new-branch and unavailable-baseline cases are explicit tested

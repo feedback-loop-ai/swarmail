@@ -2,7 +2,28 @@
 
 See [spec](spec.md) for requirements/ACs and
 [proposed 0051](../../docs/decisions/0051-release-records.md) for release
-semantics. This plan is implementation guidance, not evidence of execution.
+semantics. This plan retains the implementation contracts and records the
+resume approach; it is not a fresh verification verdict.
+
+## Resume approach — 2026-10-19, re-drive 2
+
+Confirm commit `8478924` on the existing `epic120-release-docs` branch; do
+not recut it, rewrite it, or recreate its implementation. Only the three
+existing spec artifacts change in this chief commit. Decision 0051 remains
+committed, proposed and unchanged: no additional ruling is introduced.
+
+First reconcile requirements against the existing owners and the prior commit's
+issue/test map. Then run the final-tree local gates through implement/verify
+and hand the evidence to review. If no gap is found, implement makes no change.
+A demonstrated gap gets the smallest repair at its existing owner, the paired
+regression, and a new signed commit. The file table below is the implemented
+ownership map and the permitted repair scope, not a new list of required edits.
+
+Retain the prior regression evidence rather than replaying mutations merely
+to manufacture a diff. Fresh gate results must identify the assessed tree.
+Helm render and real Docker smoke stay CI-only: report them as outstanding
+until CI executes them, without blocking this offline design handoff. Keep
+all other CI-only proof boundaries in the authoritative house inventory.
 
 ## Technical context
 
@@ -35,34 +56,34 @@ package, release action or unpinned verify entry point is introduced.
 
 ## Research and current-tree findings
 
-- CI chart publication currently has no Docker prerequisite. Docker has the
-  special main-path skipped-rate allowance; never copy that allowance into
-  chart publication. Both retain existing gates and exact-tag guards.
-- `Chart.yaml` is 0.1.1 with appVersion 0.1.0; Cargo is 0.1.0. The chart
-  verifier hard-codes image 0.1.0. The tag mismatch must refuse, not trigger
-  an application version bump.
-- `/data` is an image VOLUME owned by uid 65532; anonymous leaks belong to
-  invocation cleanup. The builder digest is already pinned. `.dockerignore`
-  excludes only root target; smoke must observe Docker's real exclusion rules.
-- Batch 3 already documents threads' 400s and removes assert timeout. Assert
-  limit is inert. Preserve these repairs when correcting OpenAPI; do not
-  blindly apply pre-batch issue line numbers or a generic paging schema.
-- Existing `tests/store_contract_docs.rs` parses both historical status
-  header spellings and compares index rows with files. Extend that owner to
-  enumerate the other direction and replace its real-tree proposed search
-  with disposable fixtures. Both 0035 and 0055 are missing from the index.
-- 0055 reserves numbers through 0054 for epic #120; allocate 0051, not 0056.
-  Run-local tasks concern old coverage work; their branch instructions do
-  not override the current commission.
+- At `8478924`, chart publication needs Docker success explicitly and supplies
+  `needs.docker.result` to the canonical guard's require-present mode. Docker
+  needs chart verification and smoke; main's skipped-rate allowance remains
+  confined to Docker. All existing exact-ref/republish checks remain.
+- Cargo/appVersion are 0.1.0 and chart is prepared 0.1.2. The verifier derives
+  its image expectation from appVersion and validates it against Cargo.
+  The original 0.1.1 fixture remains a regression, not the current version.
+- `/data` remains a VOLUME owned by uid 65532. Quickstarts carry --rm and
+  30-second grace; recursive target exclusions and real Docker positive
+  controls are implemented. The builder digest is pinned, but smoke and
+  publication are separate builds, not identical-byte attestation.
+- OpenAPI and existing API tests now cover the documented domains/statuses
+  and oldest subject. Assert limit stays inert; runtime algorithms stay intact.
+- `tests/store_contract_docs.rs` owns bidirectional membership/status checks
+  and finite amendment fixtures. 0035, proposed 0051 and accepted 0055 are
+  indexed; the authorized acceptance and dated pointers are present.
+- Both panel positions find no implementation gap. The three files under
+  `.brokkr/state/tasks/` concern older coverage runs; their branch/landing
+  instructions do not override this resume commission and issue evidence.
 
-## Project structure and changed-file ownership
+## Project structure and implemented-file ownership
 
-| Files | Intended changes |
+| Files | Implemented responsibility / repair owner |
 |---|---|
 | `.github/workflows/ci.yml` | Acyclic release needs/conditions; chart baseline inputs/selftest; read-only Docker smoke; existing guard mode call with explicit dependency result. |
 | `bundles/self/scripts/publish-guard.sh`, `publish-guard-test.sh` | Present-image/Docker-success chart preflight and actual HTTP proof; preserve canonical ownership and public shim bytes. |
 | `scripts/chart-verify.sh` | Shared version coherence check, dynamic render/annotation expectations, event-history bump check and selftest mode, main example render. |
-| `scripts/docker-smoke.sh` (new) | Single reusable real Docker lifecycle/context proof used by CI and local operators. |
+| `scripts/docker-smoke.sh` | Single reusable real Docker lifecycle/context proof used by CI and local operators. |
 | `README.md`, `.dockerignore`, `Dockerfile` | Cleanup/main pull flags, recursive excludes, signal comment, D-register install/release/runtime corrections. |
 | `charts/swarmail/Chart.yaml`, `values.yaml` if required | Status/comment reconciliation and corresponding preparation version bump; no loss of values or probes. Artifact Hub image tracks appVersion. |
 | `CONTRIBUTING.md`, `AGENTS.md`, `docs/house-rules.md` | One gate inventory, accurate authority/status vocabulary, proposal rule, signing/license clarification. |
@@ -75,8 +96,9 @@ package, release action or unpinned verify entry point is introduced.
 | `tests/delivery_constitution.rs` and existing publish-guard wiring assertions | Pin dependency/input/guard wiring and preserve batch-5 pinned-chain checks. |
 | `docs/decisions/*.md`, index | Authorized status metadata and dated linked addenda, missing rows, proposed 0051 index/pointers. |
 
-Only the three `specs/release-records/` artifacts and proposed 0051 belong in
-the chief commit. All other paths above are future implementation scope.
+Only the three `specs/release-records/` artifacts belong in this resume
+chief commit. All paths above already have their implementation; edit them
+only for a demonstrated unmet criterion during the implementation phase.
 Positions and result/evidence files remain ignored run-local state.
 
 ## Release contracts and implementation
@@ -216,13 +238,15 @@ without rejecting historical proposed quotes in old decisions.
 Design review: read spec AC1–AC9 against tasks; run the pinned prerequisite
 helper with `SPECIFY_FEATURE_DIR=specs/release-records`. After the signed chief
 commit is HEAD, the sequence's actual pinned design check must identify these
-four committed artifacts. An uncommitted directory cannot satisfy that check.
+three committed spec artifacts and the already committed proposed 0051.
+An uncommitted directory cannot satisfy that check.
 
-Implementation proofs: execute publish-guard-test, chart-verify selftest,
-chart-verify with actual event base, Docker smoke, relevant Rust API/binary/doc
-and delivery suites. Apply the old behaviors/claims as isolated mutations and
-record the named failure plus repaired pass per issue; using current fixtures
-for review-baseline behavior avoids reverting unrelated earlier batches.
+Implementation proofs: execute publish-guard-test, chart-verify selftest and
+relevant Rust API/binary/doc and delivery suites. CI executes chart-verify
+with the actual event base and Helm, plus Docker smoke. For any new repair,
+apply the old behavior/claim as an isolated mutation and record the named
+failure plus repaired pass; using current fixtures for review-baseline
+behavior avoids reverting unrelated earlier batches.
 No test that simply repeats a new implementation is sufficient evidence.
 
 Final tree, in requested order, with `cargo fmt --all` before each check:
@@ -234,9 +258,9 @@ refused, record it and commit rather than bypassing the pin. CI owns chart,
 Docker, RustSec, release-rate-5k and the existing real port-80 bridge proof.
 Do not replace an unavailable CI proof with a green text assertion.
 
-Only signed commits on `epic120-release-docs`, cut from fetched current main
-at least 2a325c9. Implementation commit bodies name which regression proves
-which issue. Leave the final branch clean, never push. If Cargo itself is
+Only new signed commits on the existing `epic120-release-docs`, preserving
+`8478924` and its base descended from 2a325c9. Implementation commit bodies
+name which regression proves which issue. Leave the final branch clean, never push. If Cargo itself is
 refused, immediately stop, save `.brokkr/state/epic120-release-docs.patch`,
 leave uncommitted and report the block. If signing is impossible, stop rather
 than using an unsigned commit. Filesystem refusal of branch/index writes is
@@ -256,4 +280,5 @@ likewise a delivery blocker, not permission to commit elsewhere or on main.
 | Acceptance update breaks brittle tests or rewrites history | Fixture-driven status tests, existing header syntax, dated append-only corrections; retain 0047/0050 amendments verbatim. |
 | Markdown tests certify links but miss false semantics | Finite claim/pair audit and human review; test membership/status/link obligations, never claim prose truth is automated. |
 | Extra source-test branches lower exact coverage | Reuse deterministic tests, follow 0020 cold-path placement and run exact gate/selftest without exclusions. |
+| Prior green evidence mistaken for current success | Keep prior commit/test map separate from fresh verify results and CI-only execution; do not mark outstanding proofs passed. |
 | Design cannot be committed in sandbox | Retain complete artifacts and explicit failure evidence; no unsigned or alternate-repository workaround. HEAD validation remains outstanding. |

@@ -1,132 +1,102 @@
-# Ordered implementation tasks — release safety and truthful records
+# Ordered resume tasks — release safety and truthful records
 
-These tasks are unexecuted. Each includes the proof that permits checking it.
-Requirement identifiers refer to [spec.md](spec.md); implementation details and
-file ownership are in [plan.md](plan.md). Preserve the issue/test mapping in
-signed implementation commit bodies. Do not mark a blocked proof passed.
+## Status — 2026-10-19, re-drive 2
 
-- [ ] **T01 — Establish authorized base and evidence (#141/#142/#144).**
-  Fetch current main, verify 2a325c9 ancestry, use `epic120-release-docs`,
-  record the initial tree/version triple and operator #144 ruling. Re-read
-  current code for D01–D24 and amendment claims. **Proof:** Git ancestry and
-  clean-base evidence, unique 0051 allocation/reservation, itemized source
-  disposition; no copied line numbers treated as current observations.
-- [ ] **T02 — Add chart image preflight to existing pinned guard (#141,
-  AC1).** Preserve absence/exact-ref modes; add bare require-present mode
-  requiring explicit successful Docker result. **Test:** existing
-  `publish-guard-test.sh` extended against real local HTTP: success+200
-  passes; failure/skipped/cancelled/unset dependency, 404, 500, token failure,
-  refused connection, bad mode/ref/version refuse. Existing 200-republish,
-  both-tag checks and absence green twins continue passing.
-- [ ] **T03 — Wire release dependencies and preflight (#141, AC1).**
-  Docker needs chart verification/smoke; chart needs explicit Docker success
-  and all current prerequisites; feed actual result through environment;
-  guard precedes push; no read-only proof job gains package write.
-  **Test:** extend real guard proof and existing workflow/delivery pins;
-  old independent-chart wiring fails, corrected wiring passes. Actual
-  preflight fixture for current v0.1.1/Cargo 0.1.0 refuses with no publish
-  admission. Main's rate-skipped allowance stays confined to Docker.
-- [ ] **T04 — Derive chart image contract (#141, AC2).** Validate
-  appVersion=Cargo, rendered image and Artifact Hub annotation; remove
-  hard-coded 0.1.0 expectation. **Test:** real Helm renders for existing
-  profiles, coherent changed version passes, mismatched Cargo/appVersion or
-  annotation fails, old hard-coded verifier fails the changed-version twin.
-- [ ] **T05 — Add event-history bump check and selftest to chart verifier
-  (#141, AC2).** Use full event baseline and fail closed on missing history;
-  wire selftest and history check to chart CI. **Test:** real temporary Git
-  repositories cover unbumped/decreased/malformed refusal, changed/increased
-  and unchanged passing twins, multi-commit PR, push/non-ancestor before,
-  zero-before new branch, prior-release tag, shallow missing base and numeric
-  prerelease ordering. Restored baseline no-check behavior fails controls.
-- [ ] **T06 — Repair examples and context (#141, AC3; D10/D12).** Both
-  ephemeral quickstarts use --rm/30-second stop grace; document named-volume
-  cleanup; main Helm flags include Always; remove stale main workaround;
-  use recursive target exclusion; correct Dockerfile SIGTERM comment.
-  **Test:** README option pins plus actual Helm render and T07's real
-  anonymous-volume/context proof fail with the old commands/ignore file.
-- [ ] **T07 — Implement and run real Docker smoke (#141, AC3).** Add
-  reusable script and read-only CI job, unique resources/ports, non-root
-  image user, bounded protocol readiness and cleanup. **Test:** DATA 250
-  marker survives graceful restart and separately hard-kill restart on named
-  storage; named volume survives removal, anonymous volumes from both
-  quickstart forms do not; real context excludes root/tools/evals targets
-  while keeping a non-target control. Failure path cleans owned resources.
-- [ ] **T08 — Reconcile gate/process/license docs (#142, AC4;
-  D01–D05).** Link house-rules inventory, fix compile/link/seat/panel text,
-  clarify signing history, remove only proven-unused allowances and fix
-  CDLA wording. **Test:** named-file link/path audit, existing constitution
-  pins, current license tree and cargo-deny; active model routes and pinned
-  verify dispatch remain byte-equivalent except intended descriptions.
-- [ ] **T09 — Correct install/site/release claims (#142, AC4;
-  D06–D11, D17–D20).** Use dated errata for historical entity/latest/subject/
-  secret claims and #118; distinguish benchmarks from CI, remove unsupported
-  crates.io claim/volatile counts, repair chart job/status/table and suite
-  inventory/gen-cert wording. Prepare local operator handoff for closed-issue
-  corrections. **Test:** D-row audit against workflow, chart values/renders,
-  actual root test files and existing binary/compat/extraction/webhook
-  regressions. Restore each named stale claim in a targeted pin where
-  machine-checkable; prose-only historical corrections receive dated source
-  citations. No external comment or publication is sent.
-- [ ] **T10 — Document runtime limits and help (#142, AC4;
-  D12–D16/D21).** Correct help to Host+Origin, pending-accept recovery comments,
-  REST body/envelope limits, SMTP command/second-AUTH behavior and zero TLS
-  timeout. **Test:** help-output pin plus existing/new real API oversized
-  request, repeat-AUTH/non-UTF-8, TLS zero and listener-recovery proofs;
-  T07 supplies Docker evidence. No mail-server behavior is changed.
-- [ ] **T11 — Repair OpenAPI parameter/subject contract (#142, AC5;
-  D22/D24).** Correct await defaults/minimums/cap and minimum-one waiting
-  semantics; assert limit stays inert; subject uses oldest subject-bearing
-  member with actual optional shape. **Test:** extend API pins with real
-  omitted-limit, count=120→100 rows, limit=0→empty page, count=0,
-  cap/over-cap and inert-assert inputs, plus distinguishing thread fixtures;
-  old schema mutations fail and corrected twins pass.
-- [ ] **T12 — Repair OpenAPI statuses (#142, AC5; D23).** Add applicable
-  403, health 503, messages 400, clear 400/503, views 400 and body 413/415;
-  keep already-correct batch 3 entries. **Test:** each affected method's
-  observed status is present in its response map, with real requests and
-  existing degradation/commit seams at deterministic poles. Schema removal
-  mutations fail. Check every operation for guard 403; follow 0020 placement
-  based on cold paths, not seam visibility.
-- [ ] **T13 — Make decision inventory/status checks complete (#144, AC6).**
-  Extend `tests/store_contract_docs.rs`, enumerating actual files and rows
-  both ways, unique numbers/rows, valid links and matching statuses. Replace
-  real-tree proposed search with independent fixtures. **Test:** missing
-  0035/0055 row, dangling row, duplicate row/number, malformed filename and
-  each one-sided status transition refuse; complete/coherent twins pass,
-  including an all-accepted fixture and a mixed-status fixture.
-- [ ] **T14 — Record operator acceptance and current references (#144,
-  AC6/AC8).** Set 0034–0050 and 0055 current status to accepted (operator,
-  2026-10-19), add missing rows, index 0051 as proposed, update current
-  status references and directory description. Preserve historical text and
-  0047/0050 dated amendments. **Test:** T13 real-tree audit plus current
-  store/chart/listener/process status pins; compare accepted bodies before
-  and after, allowing only authorized metadata and appended addenda.
-- [ ] **T15 — Reconcile every amendment claim (#144, AC7).** Audit all
-  records using plan's starting pairs; append dated scope-correct reciprocal
-  pointers or corrections, especially 0045→0015/0018 and 0030→0018/0023.
-  Clarify 0027/0031 acceptance provenance and 0035 numbering by dated
-  addendum. Add proposed 0051 pointers to 0019/0045. **Test:** finite audited
-  pair checks verify both ends and resolving links; remove each required
-  pointer in fixtures and prove failure, repaired twin passes; original
-  missing-0045-pointers mutation fails. Review semantic scope manually.
-- [ ] **T16 — Publish proposal rule and preparation state (#144/#141,
-  AC2/AC8).** State compatible-only proposal implementation for all
-  0001–0005, accepted-ruling precedence and frozen protection; document
-  nontransactional image-first publication and deliberate rerun recovery.
-  If chart files changed, increase only chart preparation patch version and
-  note it unpublished, leaving Cargo unchanged. **Test:** focused rule/status
-  checks and accepted-text review, T04/T05 actual chart proofs, v0.1.1
-  refusal fixture and unchanged runtime/version assertions.
-- [ ] **T17 — Prove regression discrimination and final tree (#141/#142/#144,
-  AC9).** Record per-issue reviewed-behavior failure and repaired pass; finish
-  D01–D24 source/proof dispositions and all required gates in plan's order,
-  formatting before each check. **Test:** fmt, clippy, workspace tests, exact
-  coverage plus selftest, licenses, publish-guard proof, native-tls absence,
-  pinned verify compile and CI-only chart/Docker/release proofs. Missing
-  tools or execution refusal remain explicitly outstanding.
-- [ ] **T18 — Deliver signed implementation evidence.** Commit only intended
-  implementation changes with imperative subjects citing #141/#142/#144;
-  bodies name T02/T03 guard tests for #141, T11/T12 OpenAPI tests for #142
-  and T13/T15 inventory/marker tests for #144, using their final actual names.
-  **Proof:** configured GPG signature verifies, branch is correct and clean,
-  no run-local evidence is tracked, no push/PR/merge/issue action occurred.
+Implementation is present in signed commit
+`847892409134bee082e8a3edcdb0243eb720a361`. This supersedes the original
+"These tasks are unexecuted" statement. The first run's local gates were
+reported green before signing failed; the operator's assistant committed the
+unchanged staged tree. This is prior evidence, not a fresh gate verdict.
+
+The original T01–T18 implementation obligations are reconciled below rather
+than reopened. The ordered unchecked tasks now describe this resume's proof
+and delivery work. An unchecked proof does not mean its implementation is
+missing. [Spec AC1–AC9](spec.md#acceptance-criteria) remain the acceptance
+contract; [plan.md](plan.md) retains detailed ownership and proof requirements.
+0051 remains proposed; no task grants operator acceptance.
+
+## Prior implementation and evidence map
+
+The following test names and mutation evidence are recorded in `8478924`'s
+commit body and exist in the tree. Their fresh execution is due under R02–R06.
+
+| Original tasks | Present work and paired proof | Remaining evidence |
+|---|---|---|
+| T01 | Existing branch/base and operator ruling recorded; `git merge-base --is-ancestor 2a325c9 8478924` proves ancestry. | R01 checks resume identity, not a new branch cut. |
+| T02–T03 (#141) | Guard require-present mode and explicit image dependency; `publish-guard-test.sh` cases 14–16 exercise result/status poles, original v0.1.1 refusal and independent-chart wiring mutants. | Fresh guard/wiring proof. |
+| T04–T05 (#141) | Dynamic chart coherence and event-baseline bump checks; `chart-verify.sh selftest` exercises real Git histories, and verify mode renders coherent/mismatched twins. | Fresh selftest; actual event baseline and Helm render in CI. |
+| T06–T07 (#141) | Quickstart flags, recursive context exclusions and Docker smoke wired; `the_install_examples_clean_up_and_pull_what_they_name`, `ci_runs_the_chart_history_check_and_the_docker_smoke`, and real Docker lifecycle/context positive controls. | Docker execution remains CI-only and outstanding locally. |
+| T08–T10 (#142, D01–D21) | Corrected process/license/runtime/release prose and help; `the_gate_inventory_has_one_home_and_everyone_points_at_it`, `the_readme_names_every_ci_job_and_every_root_suite`, `the_license_allowlist_is_the_one_house_rules_names`, `the_corrected_release_and_runtime_claims_stay_corrected`, plus binary/protocol tests. | Fresh checks and D-register source audit; retain operator handoff for external issue corrections. |
+| T11–T12 (#142, D22–D24) | OpenAPI domain/status/subject repairs; API tests `the_published_await_and_assert_domains_match_the_wire`, `every_published_operation_lists_and_answers_the_guard_403`, `each_published_status_is_answered_on_its_operation`, `the_thread_subject_is_the_published_oldest_subject`; inline `the_served_openapi_publishes_the_await_and_assert_domains`. | Fresh real-server/schema proof. |
+| T13–T15 (#144) | Authorized statuses, complete index and dated pointers; `every_decision_file_has_exactly_one_resolving_index_row`, `the_inventory_refuses_missing_dangling_duplicate_and_malformed_entries`, `a_status_change_passes_only_when_record_and_index_move_together`, `every_audited_amendment_is_linked_on_both_sides`, `the_pointers_0045_promised_are_required`. | Fresh fixtures/real-tree audit; accepted text remains intact. |
+| T16 (#144/#141) | Compatible-proposal rule, partial-release recovery and unpublished chart 0.1.2; `house_rules_state_the_rule_for_code_under_a_proposal` and guard/chart tests. | Fresh proof, with 0051 still proposed and Cargo still 0.1.0. |
+| T17 | Prior local gates and per-issue discriminating tests reported by the first run and commit body. | Fresh final-tree inventory, pinned verify, CI-only checks and review remain due. |
+| T18 | Signed implementation commit `8478924` contains the issue/test mapping. | Preserve it unchanged; verify signatures and clean handoff for this resume. |
+
+## Ordered work
+
+- [ ] **R01 — Confirm resume identity and commit the reconciled design.**
+  Preserve `epic120-release-docs` and `8478924`; retain the existing slug and
+  proposed 0051. Commit only spec.md, plan.md and tasks.md, signed, with the
+  three issues in the subject. **Test:** ancestry and signature verification,
+  exact committed-path audit and clean tree; the pinned
+  `bundles/self/scripts/design-check.sh check .` identifies this chief's HEAD,
+  passes the required headings/checkboxes and linked proposed decision, and
+  invokes the pinned prerequisites. The final sequence check owns advancement.
+
+- [ ] **R02 — Confirm #141 against existing owners (AC1–AC3).**
+  Execute the canonical publish-guard proof and chart history selftest; review
+  workflow admission and the existing version fixtures against present Cargo/
+  appVersion 0.1.0 and chart 0.1.2. **Test:**
+  `bash scripts/publish-guard-test.sh`, `bash scripts/chart-verify.sh selftest`
+  and the delivery-constitution suite. They must refuse failed/skipped/
+  cancelled image prerequisites, missing/unknown images, the original v0.1.1
+  independent-chart regression, and invalid/unbumped history, while admitting
+  green twins. Actual Helm and Docker execution is R06, never a static pass.
+
+- [ ] **R03 — Confirm #142 and #144 (AC4–AC8).**
+  Reconcile D01–D24 against current code and dated release corrections; retain
+  all listed limitations and the existing operator handoff. Check index/status
+  membership, amendment semantics and 0051's proposed pointers. **Test:**
+  `cargo test --workspace --locked --test store_contract_docs`,
+  `cargo test --workspace --locked --test api` and the existing binary/inline
+  schema tests in the full suite. Use the named prior mutation evidence and
+  current negative fixtures; compare accepted ADR bodies with the original
+  base, allowing only authorized metadata and dated addenda. No external
+  comments or issue closure are part of this task.
+
+- [ ] **R04 — Repair only a demonstrated gap, otherwise make no change.**
+  If R02/R03 or verification exposes an unmet issue criterion, repair its
+  existing owner with a new signed commit above `8478924`. **Test:** a paired
+  regression fails the broken behavior and passes the repair, with existing
+  green controls retained and the issue/test mapping in the commit body.
+  If no gap exists, record the no-change disposition; no synthetic repair,
+  dependency, version bump or new decision is required. Recheck affected
+  proofs after any actual repair.
+
+- [ ] **R05 — Produce fresh final-tree local verification (AC9).**
+  Run the complete [house inventory](../../docs/house-rules.md#gates--part-of-every-change)
+  in the plan's required order, with formatting before checks, locked Cargo
+  invocations, exact coverage and selftest, publish-guard proof, license check
+  and fail-closed native-tls absence. **Test:** successful outputs bound to
+  the assessed tree; pinned brokkr compile and hermetic verify execute in the
+  verify seat. Prior green logs do not satisfy this task. Record unavailable
+  execution honestly; do not lower coverage or install tools in verify.
+
+- [ ] **R06 — Obtain CI-only proof (AC2–AC3/AC9; CI owner).**
+  **Test:** `scripts/chart-verify.sh` against the actual event baseline and
+  real Helm renders; `scripts/docker-smoke.sh` proves real SMTP 250 survives
+  graceful stop and hard kill under uid 65532, anonymous volumes are removed,
+  and recursive target sentinels are excluded with positive controls. Keep
+  other CI-only obligations as named in house rules, including tag-only rate
+  proof when releasing. This remains outstanding until CI runs it. Missing
+  local Helm/Docker does not block the offline phases or authorize a claim of
+  CI success; the operator's assistant obtains CI evidence before merging.
+
+- [ ] **R07 — Review and hand off the signed branch.**
+  **Test:** the required review panel rules on the final tree, hermetic ship
+  checks pass, `git verify-commit` verifies new author commits, and Git shows
+  the correct branch with a clean tree and no tracked run-local evidence.
+  Preserve append-only history and the operator's exclusive push/PR/merge/
+  issue actions. A signing failure stops delivery; it never permits an
+  unsigned commit. Report local proof and outstanding CI evidence separately.
