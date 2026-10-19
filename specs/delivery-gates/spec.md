@@ -69,7 +69,7 @@ digest remains a named verification refusal, never permission to skip or
 weaken that check. Implementation changes only demonstrated acceptance gaps,
 in new signed commits; operator acceptance of 0050 remains separate.
 
-## Clarification — 2026-10-19 second resume (controlling)
+## Clarification — 2026-10-19 second resume
 
 Run `resume-point-2-read-first-batch--206e588f` confirms the same feature,
 AC1–AC13 and proposed 0050 on `epic120-delivery-constitution` at `83107fb`.
@@ -96,6 +96,60 @@ that repair is not a claim that this seat reran those tests. Actual launch
 identity, red/green seat dispatch, evaluator results and final gates remain
 execution obligations. No feature-completion or shipping verdict follows from
 this design confirmation; only the operator can accept 0050.
+
+## Clarification — 2026-10-19 third resume (controlling)
+
+Run `resume-point-3-read-first-batch--e444e793` confirms `delivery-gates`
+on `epic120-delivery-constitution` at `ad02e3c`. The operator's ruling in
+chat on 2026-10-19 authorizes amending proposed 0050 §4 in place to the
+engine-forced shape already implemented by `ad02e3c`. The implementation
+seat makes that amendment in a new signed commit; this chief commits the
+three design artifacts. No successor decision is needed and 0050 remains
+proposed. Earlier dated entries and panel rulings remain historical evidence;
+this entry supersedes their instruction to keep 0050 unchanged.
+
+Both current panel positions and
+`.brokkr/state/epic120/resume-point-3-intake-framing.md` were read. The
+commissions under `.brokkr/state/tasks/` concern older run12 work. The
+following rulings are self-contained and control this documentation resume.
+
+| Third-resume question | Ruling and cost |
+|---|---|
+| Scope | Adopt both positions' four-document boundary: this spec, plan, tasks and proposed 0050. Reject new files, dependencies, tests, policy changes and rebuilding earlier batch repairs. Cost: existing evidence obligations remain open until reconciled. |
+| Rule shape | Adopt both positions' ABOVE-MEDIUM → OK → UNSAFE sequence and the operator ruling. Reject a separate security stop followed by an unknown-only fallback: the recorded engine refuses the latter as dead because it fires on no present valuation. Cost: engine reachability constrains the shape; a future split needs a new ruling and proof. |
+| Diagnostic precision | Adopt robustness's dated marker in 0050 §4, named pin test and preserved history, within simplicity's existing owners. The final rule ID covers both security and unknown facts; inspect recorded typed inputs to distinguish them. Cost: the ID alone cannot explain which cause applied. No new diagnostics or schema are required. |
+| Truth-table precedence | Adopt robustness's malformed-fact cases but correct its claim that absent security with any severity always selects UNSAFE. A valid above-medium severity selects ABOVE-MEDIUM first even if security is absent, null or wrong-typed. Remaining unsafe/unknown rows select UNSAFE. Cost: proof must assert first-match rule identity as well as hard-stop outcome. |
+| Commit count and ownership | Adopt simplicity's signed implementation amendment, but reject intake AC-7's exactly-one-total-commit count: the chief contract requires a signed HEAD artifact commit, and the commission assigns the decision amendment to implementation in a later signed commit. Require one chief confirmation plus one implementation amendment, without rewriting either. Cost: two commits after ad02e3c; the combined diff still contains exactly four documents. |
+| Evidence | Adopt both positions' unchanged pin, diff scope and warning-free compile checks. Reject treating the compiler sweep or prior green gates as the full evaluator/dispatch proof. Cost: prior receipts must be reconciled and remaining AC7/AC8 execution completed before shipping. |
+
+The previous implementation receipt reports actual verify red/green evidence
+and warning-free compilation after the fix, but explicitly leaves the full
+residual evaluator truth table and actual design dispatch/retry open. This
+confirmation neither reruns nor discharges those obligations.
+
+### Third-resume acceptance
+
+- **D1:** Implementation amends only 0050 §4, retains proposed status, and
+  includes an in-section marker citing the 2026-10-19 operator ruling in chat,
+  the engine's dead-rule refusal, the three-rule order, explicit allow
+  predicates, unconditional fallback and no coercion/default/inference.
+  Name the existing pin test specified in AC8. No accepted history is edited.
+- **D2:** The residual requirement, AC8, plan §4 and task T08 agree with
+  amended 0050. Preserve all dated entries and the original panel table;
+  historical rule names may remain, but no current instruction restores the
+  unknown-only rule. Review these four documents, not a repository-wide purge.
+- **D3:** The combined `git diff ad02e3c..HEAD --name-only` after implementation
+  contains exactly `docs/decisions/0050-delivery-gates.md` and
+  `specs/delivery-gates/{spec,plan,tasks}.md`. The existing policy and pin test
+  are byte-identical to `ad02e3c`; no behavior change is authorized.
+- **D4:** The unchanged delivery-constitution suite passes, the recorded
+  engine compiles without residual-policy warnings, and the full final-tree
+  house gates and existing AC1–AC13 evidence obligations are satisfied before
+  completion. Blocked or unrun proof is recorded separately from passed proof.
+- **D5:** The chief and implementation commits both verify as GPG-signed;
+  the branch remains checked out and clean, with append-only history and no
+  push, PR, merge or issue closure. Design validation checks chief's HEAD
+  before implementation advances; no validator or discovery fallback changes.
 
 ## Panel rulings
 
@@ -130,9 +184,14 @@ then stop, and prove failure counting rather than assuming it from JSON.
 
 Residual admission requires the conjunction
 `has_security_residual: false` and
-`max_residual_severity_at_most: "medium"`. Preserve specific security and
-severity hard stops and append an unknown-input stop after the allow rule.
-Do not change clean-review or protected-review semantics.
+`max_residual_severity_at_most: "medium"`. Per the operator ruling of
+2026-10-19, keep specific stops first where the engine admits them: the
+committed order is `REVIEW-RESIDUAL-ABOVE-MEDIUM` (hard stop),
+`REVIEW-RESIDUAL-OK` (the explicit conjunction permits ship), then
+`REVIEW-RESIDUAL-UNSAFE` (one final unconditional hard stop, no `when`).
+The fallback catches remaining security residuals and absent/null/malformed
+facts alike. No coercion, defaults or missing-fact inference. Preserve
+`security-hold`, clean-review routes and the protected review boundary.
 
 The gate continues to count exact integers, capture production dep-info
 before expansion, and scan canonical compiler tokens. Configuration
@@ -204,10 +263,17 @@ outside that window and the independent stalled-body deadline proof.
 8. **AC8 — #125 residual safety.** Execute the real pinned evaluator over
    each field absent, null and wrong-typed; wrong-case/unknown severities;
    every supported severity crossed with both booleans; and security-hold.
-   Only explicit false plus a valid severity at most medium selects the
-   residual shipping route. Unsafe/unknown facts stop; existing clean-review
-   behavior is preserved. Pinned compilation exits zero with no residual
-   policy-sweep warning, without suppression.
+   Include both fields absent and combinations of invalid security with
+   valid above-medium severity. Only explicit false plus a valid severity
+   at most medium selects `REVIEW-RESIDUAL-OK` → ship. Assert first-match
+   order: above-medium severity selects `REVIEW-RESIDUAL-ABOVE-MEDIUM` →
+   stop/hard; all remaining unsafe/unknown rows select unconditional
+   `REVIEW-RESIDUAL-UNSAFE` → stop/hard. Preserve clean-review and
+   security-hold behavior, with no coercion, defaults or missing-fact inference
+   (operator ruling, 2026-10-19). The unchanged structural pin
+   `tests/delivery_constitution.rs::residual_admission_requires_explicit_safe_facts_and_unknowns_stop`
+   passes but does not substitute for evaluator execution. Pinned compilation
+   exits zero with no residual policy-sweep warning, without suppression.
 9. **AC9 — #143 lifecycle and reads.** A drop-instead-of-503 mutant fails
    the synchronized handler proof unconditionally; EOF/reset never skips
    the assertion. Stop assertions derive from the 10 s server fence with

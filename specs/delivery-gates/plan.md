@@ -28,8 +28,41 @@ protocols, deterministic ordering, no sleep-as-sync and no weakened coverage.
 
 The original chief commit contained spec.md, plan.md, tasks.md and 0050.
 The resume chief commits only the three existing spec artifacts; 0050 stays
-proposed and unchanged. Code and documentation-index edits below belong to
-implementation, and on resume require an actual acceptance gap.
+proposed. For the third resume, the operator explicitly authorizes implementation
+to amend §4 in place. The original code and documentation-index work below
+is delivered background, not authorization to expand this documentation change.
+
+## Resume approach — 2026-10-19 third resume (controlling)
+
+Start from `ad02e3c` on the existing branch. The operator's 2026-10-19 chat
+ruling governs the amendment; spec D1–D5 reconcile the panel and intake.
+The next section records the second resume's approach, not current scope.
+
+1. Chief confirms the existing design in only
+   `specs/delivery-gates/{spec,plan,tasks}.md`, aligns its current residual
+   requirements, signs the commit, and runs the existing canonical design
+   check against that clean HEAD. No new semantic decision is drafted.
+2. Implementation amends `docs/decisions/0050-delivery-gates.md` §4 in place,
+   including the dated operator marker and engine refusal cause. Retain
+   proposed status and name the unchanged structural pin. Reconcile the
+   spec residual paragraph/AC8, this plan §4 and T08 with that amendment;
+   already-aligned text needs no gratuitous rewrite. Preserve dated entries.
+   Append one signed implementation commit after chief. The combined scope
+   from `ad02e3c` must be exactly the four documents, not two commits that
+   conceal executable changes. No decision-index or accepted-history edits.
+3. Prove diff scope and byte-identical policy/test, run the unmodified
+   delivery-constitution suite, and reconcile prior execution receipts.
+   The prior run explicitly left actual design dispatch/retry and the full
+   evaluator truth table open; complete those existing obligations without
+   inventing another policy evaluator or counting the compile sweep as proof.
+4. Run the complete final-tree gate inventory below, with pinned compile
+   owned by verify if this sandbox refuses brokkr. Preserve exact coverage,
+   signing and clean-tree requirements; hand off to verify/review/ship without
+   pushing or merging. A failed/unrun proof remains outstanding.
+
+The data model, dependencies, schemas and runtime contracts do not change.
+The research question is settled by the recorded engine refusal and existing
+policy/pin; no engine upgrade or alternative rule architecture is requested.
 
 ## Resume approach — 2026-10-19 second resume
 
@@ -210,13 +243,25 @@ slugs, zero slugs, unrelated HEAD commits and linked worktrees.
 
 ### 4. Require residual safety facts (#125)
 
-Add both supported predicates to REVIEW-RESIDUAL-OK. Keep the existing
-specific hard-stop ordering, then add REVIEW-RESIDUAL-UNKNOWN after the allow.
-Do not default, coerce, normalize case or infer security from severity.
-Enumerate supported levels from the pinned evaluator rather than assuming
-there are four safe combinations. Exercise every type/value row specified
-in AC8, actual clean-review routes and security-hold. Capture compiler stdout
-and stderr; no warning filter. Missing evaluator access leaves this task open.
+The behavior is already implemented by `ad02e3c`; this resume aligns
+proposed 0050 §4 and the design text under the operator ruling of 2026-10-19.
+Describe specific stops first where the engine admits them, concretely:
+`REVIEW-RESIDUAL-ABOVE-MEDIUM` → `REVIEW-RESIDUAL-OK` →
+`REVIEW-RESIDUAL-UNSAFE`. The allow requires explicit boolean
+`has_security_residual: false` and `max_residual_severity_at_most: "medium"`.
+The final rule has no `when` and stops hard for remaining security residuals
+and absent/null/malformed facts. A separate security stop ahead of the allow
+leaves an unknown-only fallback dead under the engine's present-valuation
+sweep; record that forcing cause in the dated §4 amendment.
+
+Keep policy and `residual_admission_requires_explicit_safe_facts_and_unknowns_stop`
+unchanged. Do not default, coerce, normalize case or infer security from
+severity. Enumerate supported levels from the pinned evaluator and assert
+AC8's first-match identities, including invalid security paired with
+above-medium severity. Exercise clean-review routes and security-hold.
+Capture compiler stdout and stderr without warning filters. Structural pins
+and a zero-unruled sweep do not replace the actual evaluator truth table;
+missing evaluator access leaves that proof open.
 
 ### 5. Restore tests that distinguish broken behavior (#143)
 
@@ -279,10 +324,10 @@ and only explicit declarations are structural design obligations.
 ## Quickstart and validation
 
 The initial branch was cut from current main; on resume stay on the existing
-`epic120-delivery-constitution` and append to `83107fb`. Do not recut, reset,
+`epic120-delivery-constitution` and append to `ad02e3c`. Do not recut, reset,
 amend or squash. Commit exactly the chief's three confirmation files,
 GPG-signed, subject:
-`Confirm delivery gate design (#123, #124, #125, #140, #143)`.
+`Confirm the residual documentation amendment (#123, #124, #125, #140, #143)`.
 Implementation commits map each issue to decisive test names and receipts.
 Never push, open a PR, merge or close issues from this run.
 
@@ -301,6 +346,15 @@ remain distinct from passed proofs; a baseline compile warning is not the
 post-repair warning-free result.
 
 ## Risks
+
+- **Documentation reintroduces the dead rule.** Align the four amendment
+  surfaces with the existing three-rule pin and record the engine refusal in
+  0050 §4. The final stop deliberately shares one ID for two causes; consult
+  typed journal inputs and preserve first-match precedence when diagnosing it.
+- **Confirmation is mistaken for completion.** Keep D1–D5 and all paired
+  proofs open until evidenced. Two signed commits are required by the phase
+  split; verify their combined four-document scope and distinguish structural
+  tests, compile sweep, evaluator execution and actual dispatch receipts.
 
 - **Recorded identity differs from source-pin provenance.** The operator's
   digest is present, but it identifies a different build. Verify launched

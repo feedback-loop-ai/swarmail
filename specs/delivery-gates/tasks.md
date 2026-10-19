@@ -8,6 +8,38 @@ files are in [plan.md](plan.md). The original implementation order was #140
 before pinning its gate for #123, then #124, #125 and #143. Restore every
 deliberate mutation.
 
+## Resume order — 2026-10-19 third resume (controlling)
+
+The operator ruling in chat on 2026-10-19 authorizes the documentation
+amendment to `ad02e3c`'s existing policy shape. This order supersedes older
+instructions to keep 0050 unchanged; retain their dated history. Two signed
+commits serve separate phases: chief confirmation, then implementation's
+amendment. Unchecked original tasks are proof obligations, not rebuild requests.
+
+- [ ] D01 — Commit the three existing design artifacts as chief's confirmation.
+  **Proof:** signed HEAD touches exactly `specs/delivery-gates/{spec,plan,tasks}.md`;
+  `git verify-commit HEAD` and
+  `bash bundles/self/scripts/design-check.sh check .` pass on a clean tree.
+  Proposed 0050 remains committed and unchanged in this design step. Spec D5.
+- [ ] D02 — Amend proposed 0050 §4 in place and reconcile the three artifacts.
+  **Proof:** §4 carries the dated operator ruling, dead-rule cause, ordered
+  ABOVE-MEDIUM → OK → UNSAFE shape, explicit predicates, unconditional hard
+  fallback, no coercion/default/inference and named pin. Read spec's residual
+  requirement/AC8, plan §4 and T08 together: no current instruction contradicts
+  the amendment. Preserve proposed status and dated history. Spec D1/D2.
+- [ ] D03 — Prove the amendment changes documentation alone and sign it.
+  **Proof:** combined diff from `ad02e3c` names exactly the four documents in
+  spec D3; policy and pin test are byte-identical. Both new commits verify as
+  GPG-signed, no history is rewritten and the branch is clean. Run
+  `cargo fmt --all` before checks and
+  `cargo test --test delivery_constitution --locked` unchanged. Spec D3/D5.
+- [ ] D04 — Reconcile receipts, complete remaining execution and hand off.
+  **Proof:** actual evaluator truth table and actual design dispatch/retry
+  close AC8/AC7; compiler sweep alone cannot close them. Full final-tree house
+  inventory, warning-free pinned compile and remaining AC1–AC13 proofs have
+  candidate/pin/command/verdict receipts. Record blocked or unrun work; do not
+  claim completion or shipping from design, and never push. Spec D4.
+
 ## Resume order — 2026-10-19 second resume
 
 The first resume `resume-point-read-first-epic-120-2c563256` produced
@@ -93,12 +125,18 @@ unchecked proof tasks do not request rebuilding their existing implementation.
   valid artifacts advance only after `designed`, first failure retries once,
   second stops. Exercise fallback phase accounting only if the pinned grammar
   requires it. Verify/CI run the delivery harness without recursion. AC7.
-- [ ] T08 — Require explicit residual facts and stop unknowns (#125).
-  **Proof:** pinned actual evaluator truth table covers each absent/null/wrong
-  type, unknown/wrong-case severity, all supported levels and both security
-  booleans, security-hold and unchanged clean-review paths. Only explicit safe
-  residual rows ship; compile exits zero without the residual-policy warning.
-  Retain baseline unsafe-row results as red evidence. AC8.
+- [ ] T08 — Confirm ABOVE-MEDIUM → OK → UNSAFE (#125), per the operator
+  ruling of 2026-10-19; `ad02e3c` already implements the shape.
+  **Proof:** the unchanged named structural pin in AC8 passes. The pinned
+  actual evaluator truth table covers each absent/null/wrong type,
+  unknown/wrong-case severity, all supported levels and both security
+  booleans, both fields absent, security-hold and unchanged clean-review paths.
+  Above-medium severity stops first even with invalid security; only explicit
+  false security plus valid severity at most medium ships; all other residual
+  rows reach the final unconditional UNSAFE hard stop, without coercion,
+  defaults or missing-fact inference. Compile exits zero without the residual
+  policy warning. Retain baseline unsafe-row red evidence; neither the
+  structural pin nor compiler sweep replaces evaluator execution. AC8.
 - [ ] T09 — Restore deterministic lifecycle assertions and bound helper reads
   (#143). **Proof:** handler-observed real HTTP request always asserts 503
   stopping; drop-instead-of-reply mutant fails; independent stalled-body fence
