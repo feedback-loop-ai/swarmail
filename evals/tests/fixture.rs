@@ -166,6 +166,13 @@ impl Rig {
         McpClient::connect(&self.mcp_url).await.unwrap()
     }
 
+    /// Stop and reap the rig's own Swarmail: every later send fails at
+    /// connect.
+    fn kill_swarmail(&mut self) {
+        let _ = self._swarmail.child.kill();
+        let _ = self._swarmail.child.wait();
+    }
+
     async fn stop(mut self) {
         self.fixture.take().unwrap().stop().await;
     }
@@ -688,6 +695,57 @@ async fn slow_mail_is_held_until_released_and_the_first_wait_times_out() {
     );
     let snap = rig.snapshot().await;
     assert_eq!(snap.deliveries[0].attempts.last().unwrap().code, 250);
+    rig.stop().await;
+}
+
+/// A delivery that fails after provisioning (Swarmail gone before the
+/// release) is recorded as a failed transport receipt, and the frozen
+/// snapshot replays as a harness error, never as an agent outcome.
+#[tokio::test]
+async fn a_delivery_failing_after_provisioning_replays_as_a_harness_error() {
+    let mut rig = Rig::new("slow-delivery", 1).await;
+    let prepared = rig.prepare().await;
+    assert_eq!(prepared["deliveries"][0]["status"], "held");
+    rig.kill_swarmail();
+    let (s, v) = rig
+        .app(0)
+        .post("/deliveries/release", json!({}))
+        .await
+        .unwrap();
+    assert_eq!((s, &v["released"]), (200, &json!(1)), "{v}");
+    let (s, _) = rig.admin_post("/admin/freeze", None).await;
+    assert_eq!(s, 200);
+    let snap = rig.snapshot().await;
+    let failed: Vec<_> = snap
+        .deliveries
+        .iter()
+        .filter(|d| d.status == swarmail_evals::state::DeliveryStatus::Failed)
+        .collect();
+    assert_eq!(failed.len(), 1, "{snap:?}");
+    let last = failed[0].attempts.last().unwrap();
+    assert_eq!((last.stage.as_str(), last.code), ("connect", 0));
+    let task = tasks::find("slow-delivery").unwrap();
+    let err = tasks::score(&task, &snap).unwrap_err();
+    assert!(err.contains("Failed after connect 0"), "{err}");
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state.json");
+    std::fs::write(&state, serde_json::to_vec(&snap).unwrap()).unwrap();
+    let out = common::cli()
+        .args(["check", "--task", "slow-delivery", "--state"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    let verdict: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        (
+            out.status.code(),
+            &verdict["outcome"],
+            &verdict["failure_class"]
+        ),
+        (Some(2), &json!("harness_error"), &json!("harness_error")),
+        "{}",
+        common::stderr(&out)
+    );
     rig.stop().await;
 }
 

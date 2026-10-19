@@ -912,20 +912,30 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
     };
     let (verdict, exits, snap, mut diagnostics) = match joined {
         Ok((outcome, exits, snap, diagnostics)) => {
+            // Precedence (0055 §2): infrastructure — a process error, or a
+            // snapshot that is absent or unscorable (a failed or parked
+            // fixture delivery included) — then the deadline, then the
+            // business check.
             let verdict = match (&outcome, &snap) {
                 (Err(e), _) => {
                     eprintln!("swarmail-evals: harness error: {e}");
                     Verdict::harness_error()
                 }
-                (Ok(true), _) => Verdict::fail(FailureClass::Budget),
-                (Ok(false), Some(snap)) => match tasks::score(&task, snap) {
-                    Ok(v) => v,
+                (Ok(_), None) => Verdict::harness_error(),
+                (Ok(deadline), Some(snap)) => match tasks::validate_snapshot(&task, snap) {
                     Err(e) => {
-                        eprintln!("swarmail-evals: malformed snapshot: {e}");
+                        eprintln!("swarmail-evals: harness error: unscorable snapshot: {e}");
                         Verdict::harness_error()
                     }
+                    Ok(()) if *deadline => Verdict::fail(FailureClass::Budget),
+                    Ok(()) => match tasks::score(&task, snap) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("swarmail-evals: harness error: unscorable snapshot: {e}");
+                            Verdict::harness_error()
+                        }
+                    },
                 },
-                (Ok(false), None) => Verdict::harness_error(),
             };
             (verdict, exits, snap, diagnostics)
         }

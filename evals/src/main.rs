@@ -187,7 +187,7 @@ fn main() -> ExitCode {
                         "outcome": Outcome::HarnessError,
                         "failure_class": state::FailureClass::HarnessError,
                     }));
-                    fail(format!("malformed state: {e}"))
+                    fail(format!("unscorable state (harness error): {e}"))
                 }
             }
         }
@@ -235,41 +235,24 @@ async fn matrix(
         Err(e) => return fail(e),
     };
     // Resolved once: no trial rebuilds or races the root target directory.
-    let bin = match runner::resolve_swarmail_bin() {
-        Ok(b) => b,
-        Err(e) => return fail(e),
+    // A failure still owes one harness-error row per product element
+    // (0055 §9), so it is carried into the loop rather than returned.
+    let launch = match runner::resolve_swarmail_bin() {
+        Ok(bin) => std::env::current_exe()
+            .map(|exe| (exe, bin))
+            .map_err(|e| format!("current_exe: {e}")),
+        Err(e) => Err(e),
     };
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => return fail(e),
-    };
+    if let Err(e) = &launch {
+        eprintln!("swarmail-evals: harness error for every trial: {e}");
+    }
     let (mut any_error, mut any_fail) = (false, false);
     for id in &ids {
         for spec in &specs {
             for _ in 0..trials {
-                let mut cmd = tokio::process::Command::new(&exe);
-                cmd.args(["trial", "--task", id, "--agent", &spec.label])
-                    .env(runner::SWARMAIL_BIN_ENV, &bin)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::inherit());
-                if let Some(ms) = deadline_ms {
-                    cmd.args(["--deadline-ms", &ms.to_string()]);
-                }
-                if !spec.argv.is_empty() {
-                    cmd.arg("--").args(&spec.argv);
-                }
-                let row = match cmd.output().await {
-                    Ok(out) => String::from_utf8_lossy(&out.stdout)
-                        .lines()
-                        .rev()
-                        .find(|l| !l.trim().is_empty())
-                        .and_then(|l| serde_json::from_str::<TrialResult>(l).ok())
-                        .filter(|r| r.validate().is_ok()),
-                    Err(e) => {
-                        eprintln!("swarmail-evals: cannot run a trial: {e}");
-                        None
-                    }
+                let row = match &launch {
+                    Ok((exe, bin)) => run_child(exe, bin, id, spec, deadline_ms).await,
+                    Err(_) => None,
                 };
                 let row = row.unwrap_or_else(|| {
                     runner::refused_row(
@@ -294,4 +277,39 @@ async fn matrix(
     } else {
         0
     })
+}
+
+/// One matrix element as its own `trial` child; `None` when the child
+/// could not run or printed no valid row.
+async fn run_child(
+    exe: &std::path::Path,
+    bin: &std::path::Path,
+    id: &str,
+    spec: &report::AgentSpec,
+    deadline_ms: Option<u64>,
+) -> Option<TrialResult> {
+    let mut cmd = tokio::process::Command::new(exe);
+    cmd.args(["trial", "--task", id, "--agent", &spec.label])
+        .env(runner::SWARMAIL_BIN_ENV, bin)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit());
+    if let Some(ms) = deadline_ms {
+        cmd.args(["--deadline-ms", &ms.to_string()]);
+    }
+    if !spec.argv.is_empty() {
+        cmd.arg("--").args(&spec.argv);
+    }
+    match cmd.output().await {
+        Ok(out) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .and_then(|l| serde_json::from_str::<TrialResult>(l).ok())
+            .filter(|r| r.validate().is_ok()),
+        Err(e) => {
+            eprintln!("swarmail-evals: cannot run a trial: {e}");
+            None
+        }
+    }
 }

@@ -110,6 +110,59 @@ fn the_matrix_keeps_counting_after_a_harness_error_and_exits_two() {
     assert_eq!(out.status.code(), Some(2));
 }
 
+/// An unresolvable Swarmail binary still owes one harness-error row per
+/// product element, in product order, with no trial child launched.
+#[test]
+fn a_missing_swarmail_binary_still_emits_the_whole_product() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("launched");
+    let touch = vec!["/bin/sh", "-c", "touch \"$0\"", marker.to_str().unwrap()];
+    let agents = agents_file(
+        dir.path(),
+        json!([{"label": "first", "argv": touch}, {"label": "second", "argv": touch}]),
+    );
+    let missing = dir.path().join("no-such-swarmail");
+    let out = cli()
+        .env("SWARMAIL_BIN", &missing)
+        .args([
+            "matrix",
+            "--tasks",
+            "signup,otp",
+            "--agents",
+            &agents,
+            "--trials",
+            "2",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let rows = rows(&out.stdout);
+    let got: Vec<(Option<&str>, Option<&str>)> = rows
+        .iter()
+        .map(|r| (r.task.as_deref(), r.agent.as_deref()))
+        .collect();
+    let mut want = Vec::new();
+    for task in ["signup", "otp"] {
+        for agent in ["first", "second"] {
+            want.extend([(Some(task), Some(agent)); 2]);
+        }
+    }
+    assert_eq!(got, want);
+    for r in &rows {
+        assert_eq!(r.outcome, Outcome::HarnessError);
+        assert_eq!((r.agent_exit_status, r.agent_exits.len()), (None, 0));
+    }
+    let ids: std::collections::HashSet<&str> = rows.iter().map(|r| r.trial_id.as_str()).collect();
+    assert_eq!(ids.len(), 8, "distinct trial ids");
+    assert_eq!(
+        stderr(&out).matches("no-such-swarmail").count(),
+        1,
+        "{}",
+        stderr(&out)
+    );
+    assert!(!marker.exists(), "no trial child ran");
+}
+
 #[test]
 fn the_matrix_refuses_bad_inputs_before_running_anything() {
     let dir = tempfile::tempdir().unwrap();

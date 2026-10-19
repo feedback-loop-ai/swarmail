@@ -608,7 +608,12 @@ fn validate_facts(snap: &Snapshot, who: &IdentityState) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate a snapshot against the task it claims to score.
+/// Whether a snapshot is eligible for business scoring against the task it
+/// claims to score: structurally valid, and with no fixture delivery whose
+/// final status is `failed` or `parked` (decision 0055 §2, precedence step
+/// 1). `Err` is unscorable state — a harness error, never a verdict. A
+/// `held` delivery, or one delivered after a transient refusal, is not an
+/// infrastructure failure.
 pub fn validate_snapshot(task: &Task, snap: &Snapshot) -> Result<(), String> {
     if snap.schema_version != SNAPSHOT_SCHEMA {
         return Err(format!(
@@ -648,6 +653,19 @@ pub fn validate_snapshot(task: &Task, snap: &Snapshot) -> Result<(), String> {
     }
     if !snap.deliveries.windows(2).all(|w| w[0].seq < w[1].seq) {
         return Err("delivery sequence numbers are not increasing".to_string());
+    }
+    if let Some(d) = snap
+        .deliveries
+        .iter()
+        .find(|d| matches!(d.status, DeliveryStatus::Failed | DeliveryStatus::Parked))
+    {
+        let last = d.attempts.last().map_or("no attempt".to_string(), |a| {
+            format!("{} {}", a.stage, a.code)
+        });
+        return Err(format!(
+            "fixture delivery {} ({} to {}, {:?}) ended {:?} after {last}",
+            d.seq, d.message, d.identity, d.flow, d.status
+        ));
     }
     Ok(())
 }
@@ -692,9 +710,12 @@ fn satisfied(task: &Task, snap: &Snapshot, who: &IdentityState) -> bool {
 
 /// The pure business check (decision 0055 §2, precedence steps 3–5): a
 /// satisfied predicate passes; otherwise the first relevant refused action
-/// names the class; otherwise the task's declared idle class. Steps 1–2
-/// (infrastructure, deadline) belong to the runner. `Err` is a malformed
-/// or mismatched snapshot — a harness error, never a verdict.
+/// names the class; otherwise the task's declared idle class. Step 2 (the
+/// deadline) belongs to the runner; step 1's snapshot part (a failed or
+/// parked fixture delivery) is enforced here too, through
+/// `validate_snapshot`, so `check` replay agrees with the live trial. `Err`
+/// is a malformed, mismatched or unscorable snapshot — a harness error,
+/// never a verdict.
 pub fn score(task: &Task, snap: &Snapshot) -> Result<Verdict, String> {
     validate_snapshot(task, snap)?;
     let multi_agent = task.agent_count > 1;

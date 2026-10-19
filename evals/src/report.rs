@@ -165,7 +165,10 @@ mod tests {
         assert!((hi - 1.0).abs() < 1e-12, "{hi}");
         let (lo, hi) = wilson(0, 10).unwrap();
         // The mirror image: 0 of 10 has upper bound z² / (n + z²).
-        assert!(lo.abs() < 1e-12 && (hi - 0.2775328).abs() < 1e-6, "{lo} {hi}");
+        assert!(
+            lo.abs() < 1e-12 && (hi - 0.2775328).abs() < 1e-6,
+            "{lo} {hi}"
+        );
         let (lo, hi) = wilson(5, 10).unwrap();
         assert!((lo - 0.2365931).abs() < 1e-6 && (hi - 0.7634069).abs() < 1e-6);
     }

@@ -472,3 +472,90 @@ fn each_scenario_maps_to_its_flow_and_only_retry_uses_chaos() {
         Check::ResetReuseRefused
     );
 }
+
+fn receipt(seq: u64, who: &str, status: DeliveryStatus, attempts: &[(&str, u16)]) -> Delivery {
+    Delivery {
+        status,
+        attempts: attempts
+            .iter()
+            .map(|&(stage, code)| Attempt {
+                stage: stage.into(),
+                code,
+            })
+            .collect(),
+        ..delivered(seq, who, Flow::Signup)
+    }
+}
+
+/// Precedence step 1 (0055 §2): a final failed or parked fixture delivery
+/// makes the snapshot unscorable however the business check would read —
+/// satisfied, idle, or the failed receipt a decoy's.
+#[test]
+fn a_failed_or_parked_fixture_delivery_is_unscorable() {
+    let satisfied = snap(
+        "signup",
+        vec![
+            identity("a", Role::Agent, confirmed()),
+            identity("d", Role::Decoy, Facts::default()),
+        ],
+        vec![delivered(1, "a", Flow::Signup)],
+        vec![event(3, "a", action::CONFIRM, true, None)],
+    );
+    let idle = Snapshot {
+        identities: vec![identity("a", Role::Agent, Facts::default())],
+        events: vec![],
+        ..satisfied.clone()
+    };
+    assert_eq!(tasks::score(&base(), &satisfied), Ok(Verdict::pass()));
+    assert_eq!(
+        tasks::score(&base(), &idle),
+        Ok(Verdict::fail(base().idle_class))
+    );
+    let failed = receipt(2, "d", DeliveryStatus::Failed, &[("connect", 0)]);
+    let parked = receipt(2, "a", DeliveryStatus::Parked, &[("data", 451)]);
+    let bare = receipt(2, "a", DeliveryStatus::Failed, &[]);
+    for base_snap in [&satisfied, &idle] {
+        for (bad, says) in [
+            (&failed, "Failed after connect 0"),
+            (&parked, "Parked after data 451"),
+            (&bare, "Failed after no attempt"),
+        ] {
+            let mut s = base_snap.clone();
+            s.deliveries.push(bad.clone());
+            let err = tasks::score(&base(), &s).unwrap_err();
+            assert!(err.contains(says), "{err}");
+            assert_eq!(tasks::validate_snapshot(&base(), &s), Err(err));
+        }
+    }
+}
+
+/// The rule reads the final status, never a non-250 attempt: a delivery
+/// retried to 250 is eligible, and held (unreleased) mail is scored as an
+/// ordinary business outcome.
+#[test]
+fn held_mail_and_a_retried_delivery_score_normally() {
+    let retried = snap(
+        "signup",
+        vec![identity("a", Role::Agent, confirmed())],
+        vec![receipt(
+            1,
+            "a",
+            DeliveryStatus::Delivered,
+            &[("data", 451), ("dot", 250)],
+        )],
+        vec![event(2, "a", action::CONFIRM, true, None)],
+    );
+    assert_eq!(tasks::score(&base(), &retried), Ok(Verdict::pass()));
+    let slow = tasks::find("slow-delivery").unwrap();
+    let held = Snapshot {
+        task: slow.id.clone(),
+        identities: vec![identity("a", Role::Agent, Facts::default())],
+        deliveries: vec![receipt(1, "a", DeliveryStatus::Held, &[])],
+        events: vec![],
+        ..retried.clone()
+    };
+    assert_eq!(
+        tasks::score(&slow, &held),
+        Ok(Verdict::fail(FailureClass::WaitTimeout))
+    );
+}

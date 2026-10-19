@@ -290,6 +290,28 @@ async fn helper(mode: &str) -> i32 {
                 1
             }
         }
+        "chaos_release" | "chaos_release_stall" => {
+            // After provisioning, arm DATA chaos at 100, release the held
+            // mail (the reply comes only once its attempt is recorded), then
+            // clear chaos: the release leaves a parked 451 receipt.
+            let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+            mcp.call(
+                "swarmail_set_chaos",
+                json!({"event": "data", "probability": 100}),
+            )
+            .await
+            .unwrap();
+            let (status, body) = app.post("/deliveries/release", json!({})).await.unwrap();
+            mcp.call("swarmail_clear_chaos", json!({})).await.unwrap();
+            assert_eq!((status, &body["released"]), (200, &json!(1)), "{body}");
+            std::fs::write(marker().unwrap(), b"released").unwrap();
+            if mode == "chaos_release" {
+                return 0;
+            }
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        }
         other => {
             eprintln!("unknown helper mode {other}");
             64

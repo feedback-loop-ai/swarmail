@@ -61,8 +61,13 @@ $E report --input runs.jsonl                        # or --input - for stdin
 
 `trial` exits 0 pass, 1 fail, 2 harness error. `matrix` runs the product
 sequentially, one row per trial with no retries, continues after harness
-errors and exits 2 if any occurred, else 1 if any failed, else 0. Only
-machine output goes to stdout; diagnostics go to stderr.
+errors and exits 2 if any occurred, else 1 if any failed, else 0. Once its
+inputs are valid, every `(task, agent, trial)` element gets a row: if the
+Swarmail binary cannot be resolved, each element is a `harness_error` row
+(no child is launched) and the exit is 2. Invalid inputs (an unknown task,
+zero trials, an unreadable agents file) are refused with exit 2 and no rows.
+`check` exits 0 pass, 1 fail, 2 for unscorable state. Only machine output
+goes to stdout; diagnostics go to stderr.
 
 ## The external agent contract
 
@@ -130,6 +135,16 @@ at its deadline → `fail/budget`; a satisfied app-state predicate → pass
 refused app action names the class; otherwise the task's idle class. The
 scorer reads only the frozen app snapshot — never a mailbox, transcript or
 claim.
+
+Infrastructure failure includes the snapshot itself: any fixture delivery
+(decoys included) whose *final* status is `failed` or `parked` — at
+preparation or later, say on a release — makes the trial `harness_error`
+ahead of the deadline and the business check. A delivery retried from 451
+to 250 is `delivered` and scores normally; `held` (unreleased) mail is an
+ordinary business outcome. `check` applies the same snapshot rule, so a
+retained state with a failed or parked delivery replays as `harness_error`
+(exit 2). Replay reproduces only what the snapshot records: process
+failures and deadlines are not in it.
 
 ## Honest limits
 

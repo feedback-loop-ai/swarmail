@@ -9,6 +9,7 @@ mod common;
 use common::*;
 use serde_json::Value;
 use std::process::Stdio;
+use swarmail_evals::runner::TrialResult;
 use swarmail_evals::state::FailureClass;
 use swarmail_evals::tasks::Outcome;
 
@@ -377,6 +378,81 @@ fn a_retained_snapshot_reproduces_the_verdict_and_bad_state_refuses() {
         check("signup", &forged_path),
         (Some(2), "harness_error".into())
     );
+}
+
+/// Precedence step 1 beats both the deadline and the business check: an
+/// agent leaves a parked 451 receipt after provisioning (chaos at 100 over
+/// a public release), and the trial is a harness error whether the agent
+/// exits or runs into its deadline. `check` replays the retained state to
+/// the same verdict.
+fn parked_after_provisioning(mode: &str, deadline: &str) -> TrialResult {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("released");
+    let artifacts = dir.path().join("artifacts");
+    let (row, out) = helper_trial(
+        mode,
+        &[
+            "--task",
+            "slow-delivery",
+            "--agent",
+            mode,
+            "--deadline-ms",
+            deadline,
+            "--artifacts-dir",
+            artifacts.to_str().unwrap(),
+        ],
+        &[(MARKER_ENV, marker.to_str().unwrap())],
+    );
+    assert!(marker.exists(), "{mode}: the release completed");
+    assert_eq!(
+        (row.outcome, row.failure_class),
+        (Outcome::HarnessError, Some(FailureClass::HarnessError)),
+        "{mode}: {}",
+        stderr(&out)
+    );
+    let state = retained_state(&artifacts, &row);
+    let parked: Vec<&Value> = state["deliveries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["status"] == "parked")
+        .collect();
+    assert_eq!(parked.len(), 1, "{mode}: {state}");
+    assert_eq!(
+        parked[0]["attempts"],
+        // DATA chaos answers the terminating dot with 451.
+        serde_json::json!([{"stage": "dot", "code": 451}]),
+        "{mode}"
+    );
+    let path = artifacts.join(&row.trial_id).join("state.json");
+    let replay = cli()
+        .args(["check", "--task", "slow-delivery", "--state"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&replay.stdout).unwrap();
+    assert_eq!(
+        (replay.status.code(), &v["outcome"], &v["failure_class"]),
+        (
+            Some(2),
+            &serde_json::json!("harness_error"),
+            &serde_json::json!("harness_error")
+        ),
+        "{mode}"
+    );
+    row
+}
+
+#[test]
+fn a_delivery_parked_after_provisioning_outranks_the_business_check() {
+    let row = parked_after_provisioning("chaos_release", "20000");
+    assert_eq!(row.agent_exit_status, Some(0), "the agent's real exit");
+}
+
+#[test]
+fn a_delivery_parked_after_provisioning_outranks_the_deadline() {
+    let row = parked_after_provisioning("chaos_release_stall", "8000");
+    assert_eq!(row.agent_exits[0].signal, Some(libc::SIGTERM));
 }
 
 #[test]
