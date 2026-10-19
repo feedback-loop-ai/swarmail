@@ -76,7 +76,7 @@ checks); agents drive the same store over MCP; existing MailHog/Mailpit
 clients work through the shims; a human watches the inbox update itself.
 
 ```
-docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main
+docker run --rm --stop-timeout 30 -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main
 swarmail serve                 # or: cargo run -- serve — same ports on localhost
 swarmail mcp                   # the stdio MCP bridge
 swarmail gen-cert --domain localhost --out ./certs
@@ -158,7 +158,7 @@ counting in their own rows. The cap limits attribution, never which waits
 are admitted, and the unlabeled total is the sum of all labeled rows in the
 same scrape. Dashboards that selected the old overflow label
 `inbox="_uncounted"` must move to `inbox="\n"`; `_uncounted` is now an
-ordinary inbox with its own row (proposed
+ordinary inbox with its own row (decision
 [0047](docs/decisions/0047-storage-rpc.md), issue #130).
 
 There is no auth on any surface, by design: the loopback
@@ -190,12 +190,12 @@ assert answer is a count, not a page. The inbox listing
 most 250, `0` an empty page) and an uncapped `offset`. SMTP request parsing
 runs off the async workers on the blocking pool, and so does the whole of
 every compat list and search build — scan, filter, page, snippet render and
-JSON serialization (proposed decision
+JSON serialization (decision
 [0044](docs/decisions/0044-compat-validation.md)) — and every
 single-message response: Mailpit's `/message/{id}`, `/plain` (both
 spellings), `/raw`, `/headers`, the three `latest` routes, MailHog's
 `/download` and the native `GET /api/v1/messages/{id}[/raw]` are projected,
-rendered and serialized to finished bytes on the pool (proposed decision
+rendered and serialized to finished bytes on the pool (decision
 [0049](docs/decisions/0049-extraction-compat.md)) — so a 50 MiB mail read
 through those routes cannot stall the accept loop or the await wakes it
 gates. The MCP `swarmail_seed_email` seed build, the REST list/await pages,
@@ -239,8 +239,13 @@ the tests are):
 One binary, three ports, no config. **Docker:**
 
 ```
-docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main
+docker run --rm --stop-timeout 30 -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main
 ```
+
+`--rm` takes the container's anonymous `/data` volume with it: the image
+declares `VOLUME /data`, so a run without `--rm` leaves one volume behind
+per container even after `docker rm -f`. `--stop-timeout 30` gives the
+graceful drain room (see *Stopping* below).
 
 `:main` is the continuous build of the main branch — mutable, so pin
 `:sha-<commit>` (or build locally) when you need a reproducible image.
@@ -249,17 +254,19 @@ build; the next release cut publishes both `:v<version>` and `:<version>`.
 
 **Persistence in Docker:** set `SWARMAIL_DATA_FILE` and mount a named
 volume at `/data`. The image ships `/data` owned by its runtime uid 65532,
-so a fresh named volume is writable. Images published before that change
-lack it, so build locally until the next `:main` publish:
+so a fresh named volume is writable (`:main` carries it; the 2026-10-12
+`:0.1.0` build predates it):
 
 ```
-docker build -t swarmail:local .
-docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 \
-  -v swarmail-data:/data -e SWARMAIL_DATA_FILE=/data/swarmail.db swarmail:local
+docker run --rm --stop-timeout 30 -p 1025:1025 -p 1110:1110 -p 8025:8025 \
+  -v swarmail-data:/data -e SWARMAIL_DATA_FILE=/data/swarmail.db \
+  ghcr.io/feedback-loop-ai/swarmail:main
 ```
 
-A volume an older image created is owned by root; `chown 65532:65532` its
-contents once, or start from a fresh volume.
+The named volume outlives the container — that is the point — so remove
+it yourself when the data is no longer wanted: `docker volume rm
+swarmail-data`. A volume an older image created is owned by root;
+`chown 65532:65532` its contents once, or start from a fresh volume.
 
 **From source:** `cargo run -- serve` (Rust stable; everything else is
 vendored), or `cargo install --locked --path .` from a checkout — the
@@ -300,6 +307,15 @@ $ curl "localhost:8025/api/v1/inboxes/quickstart/await?to=ada@x.io&count=1&timeo
 parse + extraction pipeline. Per-test isolation needs no config: the AUTH
 username names the inbox.
 
+**One SMTP connection serves one inbox.** A session's first successful
+AUTH fixes its inbox; a second AUTH on the same connection answers `503`
+and changes nothing (decisions 0028 and 0034). Python's `smtplib` treats that `503`
+as "already authenticated" and does not raise, so `s.login('a', 'x')`
+followed by `s.login('b', 'x')` on one `SMTP` object files *both* tests'
+mail under `a`. Open a fresh connection per inbox (a new `smtplib.SMTP`
+per test); only a successful STARTTLS resets the identity on an open
+connection.
+
 Environment knobs: `SWARMAIL_SMTP_LISTEN` (default `127.0.0.1:1025`),
 `SWARMAIL_POP3_LISTEN` (`127.0.0.1:1110`), `SWARMAIL_HTTP_LISTEN`
 (`127.0.0.1:8025` — the image and the chart set `0.0.0.0`, see the
@@ -308,20 +324,34 @@ posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
 `http://127.0.0.1:8025`),
 `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
 `SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
-Logging: `RUST_LOG` (env-filter syntax — `serve` logs to stdout, every
-other subcommand to stderr so its stdout stays protocol-clean; default
-`swarmail=info,tower_http=off`).
+Logging: `RUST_LOG` (env-filter syntax; default
+`swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
+`gen-cert` also prints its `wrote <cert> and <key>` line there — and
+write a refusal (`swarmail: <reason>`, exit 1) to stderr. Only `mcp`
+logs to stderr, because its stdout is the JSON-RPC protocol and nothing
+else (decision 0029 §4).
+
+**Stopping:** `SIGTERM` (Docker's default stop signal, and the image's
+declared `STOPSIGNAL`) or `SIGINT` starts the graceful drain, which may
+take up to its **10 s** deadline (decision 0027 §7). A bare `docker stop`
+also waits only 10 s before `SIGKILL`, so its grace meets the drain only
+at the knife's edge (0027 §8): a kill that lands there turns the drain's
+tail into crash recovery — every mail already answered `250` is
+committed, anything not yet answered is refused, so the loss is grace,
+never correctness. Give it room: run with `--stop-timeout 30` as above,
+or stop with `docker stop -t 30`. Kubernetes' default 30 s grace already
+clears the drain. A second signal during the drain exits 70 at once.
 
 ## Kubernetes (Helm)
 
 A shared namespace mailbox, an ephemeral per-run instance, an agent-sidecar —
 the chart packages the same binary with no configuration language of its own
 ([decision 0008](docs/decisions/0008-kubernetes-deployment-contract.md),
-*proposed*):
+*accepted*):
 
 ```
 git clone https://github.com/feedback-loop-ai/swarmail && cd swarmail
-helm install swarmail ./charts/swarmail --set image.tag=main \
+helm install swarmail ./charts/swarmail --set image.tag=main --set image.pullPolicy=Always \
   --namespace swarmail --create-namespace
 helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
 ```
@@ -329,10 +359,25 @@ helm test swarmail -n swarmail        # the /healthz hook, from a curl pod
 Install from a checkout for now. The only published chart, OCI `0.1.0`,
 predates the startupProbe, the TLS settings, `networkPolicy.ingressPeers`
 and the listen configuration, and the publish guard never republishes a
-version (decision 0019). The tree's chart is `0.1.1`, prepared but not yet
-published. Its `appVersion` image, `:0.1.0`, is the 2026-10-12 build that
-predates the current server, so the command sets `image.tag=main`
-explicitly.
+version (decision 0019). The tree's chart is `0.1.2`, prepared but not
+published (`0.1.1` was prepared and never published either). Its
+`appVersion` image, `:0.1.0`, is the 2026-10-12 build that predates the
+current server, so the command sets `image.tag=main` explicitly — and
+`image.pullPolicy=Always`, because `:main` moves: under the chart's default
+`IfNotPresent` a node that cached an older `:main` would keep running it.
+
+**Releases publish the image before the chart.** A `v*` tag publishes only
+when it is exactly `v<Cargo.toml version>` for the image and exactly
+`v<Chart.yaml version>` for the chart, and the chart's `appVersion` must
+equal Cargo's version; the chart job needs the image job's success and
+checks that the image it names is published. So a tag that matches only
+the chart — `v0.1.2` on today's tree, whose crate is `0.1.0` — publishes
+neither. Preparing a chart version is not a release: CI requires a chart
+version bump for every chart edit (`scripts/chart-verify.sh`), and the
+release itself is the operator's aligned tag. The two pushes are not one
+transaction: if the chart push fails after the image pushed, the image
+stays published and a rerun refuses it as a republish (decision 0019) —
+recovery is a deliberate registry act by the operator.
 
 The chart adds nothing the binary does not read — configuration is exactly
 the env contract, passed through `config: {SWARMAIL_MAX_PER_INBOX: "0"}`
@@ -342,19 +387,30 @@ POP3 are plain TCP). The contract worth knowing before you scale it — you
 cannot: the chart refuses a `replicaCount` above 1 at render time, naming
 the contract ([0008 §4](docs/decisions/0008-kubernetes-deployment-contract.md)):
 
-| Turn on | What it changes |
+| Value (default) | What it changes |
 |---|---|
-| `replicaCount` | must stay 1 — a second pod would fork the mailboxes or mount the same RWO claim twice; anything above 1 fails `helm template` |
-| `persistence.enabled` | SQLite on an RWO PVC (`/data/swarmail.db`) — the strategy is **Recreate at every setting** ([0008 §5](docs/decisions/0008-kubernetes-deployment-contract.md)): a rolling surge would run two pods behind one Service, and the store is single-replica by design ([0001](docs/decisions/0001-synchronous-insert-lossless.md)) |
-| `ingress.enabled` | the UI/API/MCP surface on your ingress class; SMTP/POP3 stay cluster-internal |
-| `serviceMonitor.enabled` | a prometheus-operator ServiceMonitor on `/metrics` — **fails closed with a named refusal** if the CRDs are absent |
-| `networkPolicy.enabled` | same-namespace ingress on the three ports only |
-| `image.tag` / `image.pullPolicy` | defaults to the chart's `appVersion` and `IfNotPresent` |
+| `replicaCount` (`1`) | must stay 1 — a second pod would fork the mailboxes or mount the same RWO claim twice; anything above 1 fails `helm template`. The strategy is **Recreate at every setting** ([0008 §5](docs/decisions/0008-kubernetes-deployment-contract.md)): a rolling surge would run two pods behind one Service, and the store is single-replica by design ([0001](docs/decisions/0001-synchronous-insert-lossless.md)) |
+| `image.repository` / `image.tag` / `image.pullPolicy` (`ghcr.io/feedback-loop-ai/swarmail` / `""` = the chart's `appVersion` / `IfNotPresent`) | the image; set `pullPolicy: Always` with a moving tag such as `main` |
+| `config` (the three binds, `0.0.0.0:1025` / `0.0.0.0:1110` / `0.0.0.0:8025`) | `SWARMAIL_*` env entries, rendered as given — the binds are stated because the binary's own defaults are loopback ([0030 §1](docs/decisions/0030-loopback-plane-bounded-results.md)); add any other knob, e.g. `SWARMAIL_MAX_PER_INBOX` (Helm merges it beside the binds) |
+| `envExtra` (`[]`) | raw env entries passed through verbatim (`valueFrom` and friends) |
+| `service.type` / `service.ports` (`ClusterIP`, `1025`/`1110`/`8025`) | the Service; the ports are the Service side, the container always listens on 1025/1110/8025 |
+| `persistence.enabled` (`false`) | SQLite on a PVC mounted at `/data` (`SWARMAIL_DATA_FILE=/data/swarmail.db`); `existingClaim` (`""`), `storageClass` (`""`), `accessModes` (`[ReadWriteOnce]`), `size` (`1Gi`) |
+| `startupProbe.periodSeconds` / `.timeoutSeconds` / `.failureThreshold` (`10` / `2` / `90`) | the restore window before the kubelet restarts the pod — period × threshold, 15 minutes by default, because the data file restores fully before the first bind ([0026 §3](docs/decisions/0026-deployment-boundary-peers-tls-sizing.md)) |
+| `probes.initialDelaySeconds` / `.periodSeconds` / `.timeoutSeconds` / `.failureThreshold` (`2` / `10` / `2` / `3`) | the liveness and readiness probes on `/healthz` |
+| `tls.enabled` / `tls.secretName` (`false` / `""`) | mounts an operator-supplied Secret's `tls.crt`/`tls.key` read-only at `/etc/swarmail/tls` and sets `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`, so SMTP offers STARTTLS; the chart mints nothing, and `enabled` without a `secretName` fails `helm template` by name ([0026 §2](docs/decisions/0026-deployment-boundary-peers-tls-sizing.md)) |
+| `ingress.enabled` (`false`) | the UI/API/MCP surface on your ingress class (`className`, `host` `swarmail.local`, `tls`, `annotations`); SMTP/POP3 stay cluster-internal |
+| `serviceMonitor.enabled` (`false`) | a prometheus-operator ServiceMonitor on `/metrics` (`interval` `30s`, `labels`) — **fails closed with a named refusal** if the CRDs are absent |
+| `networkPolicy.enabled` / `networkPolicy.ingressPeers` (`false` / `[]`) | ingress on the three ports from the same namespace only; `ingressPeers` adds `from:` peers (`namespaceSelector`, `podSelector`, `ipBlock`) verbatim to that one rule ([0026 §1](docs/decisions/0026-deployment-boundary-peers-tls-sizing.md)); the policy is Ingress-only |
+| `resources` (requests `50m` CPU / `32Mi`, limit `256Mi` memory) | size `limits.memory` from observed use: memory is not globally bounded (0038) |
+| `tests.enabled` (`true`) | the `helm test` `/healthz` hook pod |
+| `podAnnotations`, `podLabels`, `imagePullSecrets`, `nodeSelector`, `tolerations`, `affinity`, `nameOverride`, `fullnameOverride` | the usual scheduling and naming passthroughs (all empty by default) |
 
 `helm template` output is valid plain manifests — Kustomize and raw-YAML
 teams are first-class, not gated behind the chart. The chart is verified
 offline by `scripts/chart-verify.sh` (lint + both profiles + contract
-assertions), which is also the CI `chart` job.
+assertions), which the CI `chart-verify` job runs on every push and PR,
+together with its chart-version bump check; publishing is the separate,
+tag-only `chart-publish` job.
 
 ## The surfaces
 
@@ -373,7 +429,7 @@ is drained and answered `500 5.5.2 Line too long`, and the session
 continues.
 
 **The session boundaries are exact**
-([0034](docs/decisions/0034-data-terminator-boundary.md), *proposed*).
+([0034](docs/decisions/0034-data-terminator-boundary.md), *accepted*).
 DATA ends only on CRLF `.` CRLF — a `.` CRLF line behind a bare-LF line is
 payload, stored with its dot, and so is a `.` bare-LF line; a terminator
 straight after the `354` is the empty message. An over-cap message drains
@@ -384,7 +440,7 @@ needs `TO:<path>` — keyword case-insensitive, whitespace after the colon
 allowed, angle brackets required; a bracketless, inverted or glued-on path
 is `501`, `MAIL FROM:<>` is the null sender and `RCPT TO:<>` is refused.
 A path that only looks like one is `501` too
-([0046](docs/decisions/0046-smtp-pop3-edges.md), *proposed*): blank after
+([0046](docs/decisions/0046-smtp-pop3-edges.md), *accepted*): blank after
 trimming whitespace (`< >`, `<\t>`, an ideographic space), or carrying any
 control character — only the literal `<>` is null. Paths are otherwise
 opaque and kept verbatim: local names (`<alice>`) and UTF-8 addresses are
@@ -407,7 +463,16 @@ character — a PLAIN-shaped `\0user\0password` sent to LOGIN included — is
 `default`), surviving RSET and greetings; only a successful STARTTLS starts
 afresh, clearing identity and envelope. A bare `AUTH` or surplus tokens is
 `501`, an unknown mechanism `504`. Deliberately lenient: MAIL before any
-greeting is accepted, and so are greetings with no hostname.
+greeting is accepted, and so are greetings with no hostname. A second AUTH
+is the trap for clients that reuse one connection across inboxes — see
+*One SMTP connection serves one inbox* in the quickstart.
+
+**Commands are UTF-8; DATA is octets.** A command line — or an AUTH
+continuation line — whose raw bytes are not valid UTF-8 ends the session
+with **no reply**: the connection simply closes, and an open transaction is
+dropped with it (a base64 AUTH value that *decodes* to invalid UTF-8 is a
+`501`, as above). Non-ASCII mail content belongs inside DATA, which is
+stored byte for byte; a non-ASCII address in MAIL/RCPT must be UTF-8.
 
 **The listener never dies on a bad accept.** A transient `accept()` error
 flags the listener degraded and backs the loop off (1 s); the flag clears
@@ -438,7 +503,7 @@ accepted SMTP and POP3 socket sets `TCP_NODELAY` before its first byte, so a
 pipelined group's replies are not held for the client's delayed ACK.
 
 **The idle bounds are per read and per write, not a session lifetime**
-(decision 0036, proposed). One incomplete read or write is cut off at the
+(decision 0036, accepted). One incomplete read or write is cut off at the
 bound, but a peer that completes a command or a DATA line inside each
 window earns another window, indefinitely: there is no session lifetime,
 no DATA lifetime and no minimum transfer rate. At the defaults,
@@ -455,7 +520,7 @@ receives a 50 MiB RETR in full, and keeps its slot and that reply's buffer
 for as long as it takes — at the defaults, 256 such replies are about
 12.5 GiB of raw-message-scale exposure, not an RSS ceiling; a write that
 moves nothing for a whole window cuts the reader off (decision 0046,
-proposed).
+accepted).
 Progress means bytes the local socket accepted, not bytes the client's
 application consumed, so a reader that stopped is seen only once its
 socket buffers fill. Command reads keep their whole-command bound and the
@@ -479,8 +544,12 @@ exit codes are **0** graceful, **70** forced; the image declares
 advertises `STARTTLS`, the session upgrades with rustls/ring, and the
 session restarts per RFC 3207 §4.2 — plaintext pipelining before the
 handshake is discarded, every further command is TLS-only. A stalled
-handshake is dropped after `--tls-handshake-timeout-ms` (default 10 s);
-plaintext sessions answer to the per-I/O idle bounds above (5 min SMTP,
+handshake is dropped after `--tls-handshake-timeout-ms` (default 10 s).
+The value is not range-checked: `0` (or `SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS=0`)
+is accepted at startup, and then every STARTTLS handshake fails — the
+client gets `220 2.0.0 Ready to start TLS` and the connection is dropped
+before any handshake can finish, so use a positive value. Plaintext
+sessions answer to the per-I/O idle bounds above (5 min SMTP,
 10 min POP3, decisions 0027 and 0036). Without a cert the
 plaintext listener is byte-identical to the one without the flag.
 
@@ -509,7 +578,7 @@ and `envelope_from`, the SMTP `MAIL FROM` reverse path: `""` for a bounce's
 null sender `<>`, `null` only for mail stored before swarmail kept it (it is
 never backfilled from the header `From`).
 `codes` holds at most the first **64 distinct** codes, in extraction order
-(proposed decision [0049](docs/decisions/0049-extraction-compat.md)): a
+(decision [0049](docs/decisions/0049-extraction-compat.md)): a
 text part and an HTML part that are direct siblings in one
 `multipart/alternative` contribute the text's codes (the HTML's only when
 the text has none); otherwise both bodies contribute in source order, so a
@@ -522,6 +591,16 @@ parentheses, IPv6 brackets and interior commas are kept while trailing
 sentence punctuation and unmatched closers are trimmed.
 `GET /api/v1/inboxes/{inbox}/count` is the exact-count read;
 `/openapi.json` serves the whole contract (3.1).
+
+**Request bodies are capped at 2 MiB.** Every REST body — the seed, the
+webhook PUT, chaos, the shims' `DELETE /api/v1/messages` — is read through
+axum's default limit of 2,097,152 bytes. One byte more is refused before
+parsing with axum's own plain-text `413` (`text/plain`, `Failed to buffer
+the request body: length limit exceeded`), not the JSON `error` envelope,
+and nothing is stored or applied. A larger fixture goes in over SMTP,
+whose cap is 50 MiB. `POST /mcp` has the same 2,097,152-byte limit but
+answers in JSON-RPC: HTTP 413 with a null-id `-32600` naming the limit
+(see MCP below).
 
 The filters are exact about what they match. `to` is a case-insensitive
 substring of **any recipient** — the `To` and `Cc` headers *and* the SMTP
@@ -587,7 +666,7 @@ such member in a batch; an object without an `id` is a notification only
 when its `method` is a string: it runs and stays silent, whatever the
 method names. Any other `id`-less object — `{}`, `{"foo":"boo"}`,
 `{"method":1}` — is `-32600` with a null id, alone or as a batch member
-(proposed [0047](docs/decisions/0047-storage-rpc.md), issue #132).
+(decision [0047](docs/decisions/0047-storage-rpc.md), issue #132).
 `swarmail_search_emails` pages with `offset` past
 its 250 limit. The members of one batch (at most 16) run concurrently:
 sixteen waits share one wait interval rather than queueing, replies keep
@@ -606,10 +685,10 @@ Wire it up:
 `SWARMAIL_URL` (default `http://127.0.0.1:8025`). The HTTP surface is
 Streamable JSON-RPC at `POST /mcp`. A URL without a port dials HTTP's port
 80 and sends its `Host` exactly as spelled; a malformed port is refused
-(proposed [0047](docs/decisions/0047-storage-rpc.md), issue #133).
+(decision [0047](docs/decisions/0047-storage-rpc.md), issue #133).
 
-The bridge answers each line as `POST /mcp` would (proposed decision
-[0039](docs/decisions/0039-stdio-concurrency.md), amended by proposed
+The bridge answers each line as `POST /mcp` would (decision
+[0039](docs/decisions/0039-stdio-concurrency.md), updated by
 [0044](docs/decisions/0044-compat-validation.md)). A batch with requests
 gets one array line; a notification, or a batch of notifications only,
 gets nothing; a line that is valid JSON but not an object — or an `id`-less
@@ -646,8 +725,8 @@ not UTF-8 ends the session unanswered. UIDLs are the
 swarmail ids; octet counts are the payload the client keeps — every line
 CRLF-terminated, the transparency dots RETR adds not counted (RFC 1939
 §11), the terminating `.` not counted — derived from the stored payload by
-the same traversal RETR writes with, never stored a second time (proposed
-decision [0037](docs/decisions/0037-pop3-size-accounting.md), amending
+the same traversal RETR writes with, never stored a second time (decision
+[0037](docs/decisions/0037-pop3-size-accounting.md), amending
 0028 §1). DELE marks in-session and applies
 on QUIT — the update stage; a DELE of mail removed elsewhere answers
 `-ERR no such message`, like RETR; RSET unmarks; a dropped connection
@@ -888,14 +967,14 @@ file is inert and is never deleted. A replacement started while its
 predecessor is still draining is refused until that predecessor exits;
 retrying belongs to the supervisor. Restart reloads what is on disk; it does
 not repair a file two servers already wrote together before this lock
-existed (proposed [0042](docs/decisions/0042-single-writer-lock.md)).
+existed (decision [0042](docs/decisions/0042-single-writer-lock.md)).
 
 The refusal follows the *file*, not its name: besides the sidecar, the
 server holds an identity guard,
 `/tmp/swarmail-db-locks-<owner uid>/<device>-<inode>.lock`, named by the
 data file's owner, device and inode — which every symlink and hard link of
 the file shares, in any directory — so a second server reaching it through
-an alias is refused the same way (proposed
+an alias is refused the same way (decision
 [0047](docs/decisions/0047-storage-rpc.md), issue #129). The root is always
 `/tmp`, whatever `TMPDIR` says. The server never locks the SQLite database
 or its `-wal`/`-shm` files itself: on macOS and the BSDs such a lock
@@ -919,7 +998,7 @@ restarts — after a crash, SQLite looks for the `-wal` file beside the name
 it was given, so restarting through another hard link's name would miss
 the crashed server's last commits.
 
-**Memory is not globally bounded** (proposed decision
+**Memory is not globally bounded** (decision
 [0038](docs/decisions/0038-store-memory-and-timestamps.md)).
 `SWARMAIL_MAX_PER_INBOX` caps messages per inbox — `0` disables it — and is
 not a global byte or RSS cap: the inbox count is unlimited, and all
@@ -997,25 +1076,34 @@ start at [`AGENTS.md`](AGENTS.md).
 
 **Every integration test runs against real servers speaking the real
 protocol** — no mocks in the loop. The bar for a human contribution is the
-bar the machine is already held to; these are required jobs in
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml):
+bar the machine is already held to. **The gate list is
+[`docs/house-rules.md` § Gates](docs/house-rules.md#gates--part-of-every-change)** — the one
+inventory, `--locked` builds, the coverage selftest, the publish-guard proof
+and the CI-only proofs included; this README keeps no copy of it. CI
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs it as these
+jobs:
 
-| Gate | Command |
+| CI job | What it runs |
 |---|---|
-| Canonical formatting | `cargo fmt --all -- --check` |
-| Clippy, warnings as errors | `cargo clippy --workspace --all-targets --locked -- -D warnings` |
-| Full suite, ubuntu + macOS | `cargo test --workspace --locked` |
-| **Exact coverage** | `bash scripts/coverage-gate.sh` |
-| Licenses | `cargo deny check licenses` |
-| RustSec advisory audit | `rustsec/audit-check` (CI-only; the hermetic verify has no network) |
+| `quality` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the publish guard's proof, the shim digests and the design check's selftest |
+| `test` (ubuntu + macOS) | `cargo test --workspace --locked`, then the ignored port-80 bridge proof |
+| `coverage` | the coverage gate's selftest, the exact gate itself and the delivery-proof test; uploads `target/coverage/` |
+| `deny` | `cargo deny check licenses` and the fail-closed `native-tls` absence proof |
+| `dependency-audit` | the RustSec advisory audit (network-backed, CI-only) |
+| `brokkr-compile` | builds the brokkr pinned in `bundles/self/tooling.json` and runs `brokkr compile --bundle bundles/self` |
+| `chart-verify` | `scripts/chart-verify.sh`: its selftest, the chart-version bump check against history, and lint + both profiles + contract assertions |
+| `docker-smoke` | real Docker: the built image as its own uid keeps accepted mail across a graceful stop and a hard kill on a named volume, `--rm` leaks no anonymous volume, and no `target/` reaches the build context |
+| `release-rate-5k` (tags only) | `cargo test --release --locked --test rate -- --ignored --nocapture`, the 5000/5000 proof |
+| `docker`, `chart-publish` | publication only, after the jobs above succeed (main and `v*` tags for the image, `v*` tags for the chart) |
 
 The coverage gate is not a percentage to trend upwards. It demands literal
 integer equality — `covered == count` — over **lines, branches and
-functions** (today 5497/5497, 316/316, 692/692), refuses
-`#[coverage(off)]` outright so production code cannot shrink its own
-denominator, and preserves the full report under `target/coverage/` when
-red so the burn-down starts from evidence, not from a number. There is no
-threshold to lower.
+functions**: exactly 100/100/100, every missed count zero, on every run
+(the counts themselves grow with the code, so none is quoted here). It
+refuses `#[coverage(off)]` outright so production code cannot shrink its
+own denominator, and writes the full lcov report and summary under
+`target/coverage/` — kept when red, so the burn-down starts from evidence,
+not from a number. There is no threshold to lower.
 
 ```bash
 cargo test                                                    # the suite (seconds)
@@ -1032,7 +1120,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/burst.rs` | 1000 mails / 50 conns exact-count, per-inbox isolation, cap eviction, chaos rejection + recovery |
 | `tests/api.rs` | every REST route, happy + error branches |
 | `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
-| `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and proposed 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
+| `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
@@ -1043,6 +1131,9 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/pop3.rs` | the POP3 surface: every verb happy + refused, multi-line replies, deletion-on-QUIT, its own idle bound wired independently of SMTP's |
 | `tests/compat.rs` | the shims: Mailpit + MailHog envelopes, searches, deletes, 404/400 branches |
 | `tests/persistence.rs` | restart restores exact state; a racing clear never loses 250-answered mail |
+| `tests/sqlite_locks.rs` | a refused second server reaching the data file through an alias leaves the owner's SQLite locks intact — observed from a separate raw-SQLite child process (0047 §1) |
+| `tests/store_contract_docs.rs` | the store, maildrop and compat contracts as documented — README, llms.txt, the chart comment and the served schema, their numbers built from the running constants — and every decision index row agreeing with its record's status |
+| `tests/delivery_constitution.rs` | structural pins on `bundles/self/` (0050): the review-residual stops, the design sequence ending in the pinned check, the verify seat's pinned gates and shim check; and the documented install examples and CI's chart-history and docker-smoke wiring (#141) |
 | unit | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |
 
 ## Roadmap
@@ -1053,33 +1144,44 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 - [x] POP3 server; MailHog/Mailpit API compat shims
 - [x] Exact 100/100/100 coverage contract (lines, branches, functions) in the gate and CI
 - [x] MCP: HTTP + stdio, 12 tools
-- [x] Kubernetes: the Helm chart (OCI-published, decision 0008 *proposed*)
+- [x] Kubernetes: the Helm chart (OCI-published, decision 0008 *accepted*)
 - [ ] crates.io publish — the package is publish-ready (see *Publishing*);
   the operator runs `cargo publish --locked` with their token
 
 ## Publishing
 
-The crate ships to [crates.io](https://crates.io/crates/swarmail) from the
-repo root. The packaged file set is curated in `Cargo.toml` (`include`): the
-registry gets the sources, the embedded static assets, the real-protocol
-test suites, the criterion bench, both license texts and the README — not
-the delivery constitution, the brokkr seats or the CI workflow.
+The crate is **not published on crates.io** — no version has ever been
+uploaded, and nothing in CI uploads one. What ships is the container image
+(`ghcr.io/feedback-loop-ai/swarmail`) and the OCI Helm chart; from source,
+install with `cargo install --locked --path .` from a checkout. The
+package is prepared for a first upload should the operator choose to make
+one: the packaged file set is curated in `Cargo.toml` (`include`) — the
+sources, the embedded static assets, the real-protocol test suites, the
+criterion bench, the WHATWG entity snapshot, both license texts and the
+README, not the delivery constitution, the brokkr seats or the CI
+workflow.
 
 ```bash
-cargo login <token>          # an operator's crates.io token — never committed
-cargo publish --dry-run --locked   # optional: prove it before the act
-cargo publish --locked       # the act itself
+cargo publish --dry-run --locked   # proves the package builds; uploads nothing
 ```
 
-`--locked` publishes exactly the dependency graph `Cargo.lock` pins — the
-same one every gate in this repo runs against.
+An upload would be the operator's act (`cargo login <token>` with a
+never-committed token, then `cargo publish --locked`, which publishes
+exactly the dependency graph `Cargo.lock` pins); until one happens, no
+document may claim the crate is on crates.io.
 
 **Version policy:** a version bump is the operator's release act — bump
 `version` in `Cargo.toml`, refresh `Cargo.lock` (`cargo check` keeps it in
 lockstep, so `--locked` stays publishable), append
 `docs/releases/vX.Y.Z.md`, and sign the tag (see *Releases* in
-[CONTRIBUTING](CONTRIBUTING.md)). Historical release notes are frozen:
-append a new one, never edit a shipped one.
+[CONTRIBUTING](CONTRIBUTING.md)). Shipped release notes are
+**append-only, with dated errata**: what a release shipped and measured is
+never rewritten; a later correction is added as a dated *Correction* beside
+the claim (or in the notes' "Errata and provenance" section) naming its
+issue and commit, and work landed after a tag is recorded in dated
+"Unreleased" sections until the next cut. `docs/releases/v0.1.0.md` has
+been extended this way since its tag; its errata section lists each edit
+and the batch that made it.
 
 ## License
 

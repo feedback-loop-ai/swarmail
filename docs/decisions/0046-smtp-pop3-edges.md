@@ -1,6 +1,7 @@
 # 0046 — SMTP and POP3 transport progress and verbatim identities
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18.
 - **Issues:** #121, #126, #127, #128, #131; epic #120 batch 1.
 - **Design:** [spec](../../specs/smtp-pop3-edges/spec.md),

@@ -1,6 +1,7 @@
 # 0048 — Validate complete webhook roots and close native REST inputs
 
-- **Status:** proposed — acceptance belongs to the operator.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance belongs to the operator.
 - **Date:** 2026-10-18.
 - **Scope:** epic #120 batch 3, issues #122, #134, #135.
 - **Spec:** [REST and webhook validation](../../specs/rest-webhook-validation/spec.md).

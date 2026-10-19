@@ -147,3 +147,29 @@ bypass (`delete_many_async`) stays refused.
   module, a shared harvest abstraction, deliberate-broken-value CI
   matrices, and any edit to `src/store.rs`/`src/persist.rs` for these
   findings.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above, header
+addenda included, stays as the accepted historical ruling; each marker names
+a later record with that record's own verb and scope, and nothing above is
+rewritten by it.
+
+- *(Extended by [0030](0030-loopback-plane-bounded-results.md) (accepted
+  2026-10-16): §3's refusal-not-clamp posture applies to a new bound — the
+  250-item `limit`/`count` page cap, the first bound the two compat dialects
+  publish — which refuses a larger supplied value instead of clamping it.
+  This is the marker 0030's Consequences said would land upon acceptance;
+  [0045](0045-delivery-repairs.md) §7 records it, and it is appended here
+  on 2026-10-19.)*
+- *(Amended/clarified by [0045](0045-delivery-repairs.md) (accepted
+  2026-10-19): dated correction to the header's 0027 addendum, which says
+  `api::serve` races the graceful serve against a "5-second deadline". That
+  is stale: §2's stop budget and 0027 §7 both say **10 seconds**
+  (`DRAIN_DEADLINE`, busy bound 5 s plus margin 5 s), and the current HTTP
+  drain uses ten seconds. §6's continuous `main` publication keeps its
+  accepted role: both release publishers additionally require the same
+  invocation's successful rate proof, and `main` may proceed only with the
+  rate proof skipped while every ordinary prerequisite succeeds (0045 §4).
+  No stop budget, mutation ordering or protocol behavior changes.)*

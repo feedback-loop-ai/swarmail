@@ -1,6 +1,7 @@
 # 0044 — Validate requests and bound compat page work without losing provenance
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18.
 - **Scope:** run 21, issues #91, #95, #96, #99, #100.
 - **Spec:** [compat-validation](../../specs/compat-validation/spec.md).
@@ -143,3 +144,27 @@ line-feed overflow label instead of `_uncounted`, which stays an ordinary inbox.
 acceptance order; `tz` on `latest` stays a named 400 and is documented; the containing
 refusal looks past one `(`, one `-`/`!` and one `"` before the identifier check; and every
 single-message response is built on the blocking pool, not only the pages.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later records below on 2026-10-19; the text above, the
+three pointers included, stays as written, and their "proposed" is
+historical. Each marker uses the later record's own verb and scope. The
+amendments this record makes now carry dated markers in
+[0029](0029-supplied-values-are-validated-wherever-they-reach-a-wire.md),
+[0030](0030-loopback-plane-bounded-results.md),
+[0031](0031-sender-honest-stored-bodies.md) and
+[0039](0039-stdio-concurrency.md).
+
+- *(Updated by [0046](0046-smtp-pop3-edges.md) (accepted 2026-10-19): §3's
+  shared admission rule, as the 0046 pointer above describes.)*
+- *(Updated by [0047](0047-storage-rpc.md) (accepted 2026-10-19): §§1/2, as
+  the 0047 pointer above describes.)*
+- *(Clarified/extended by [0048](0048-rest-webhook-validation.md) (accepted
+  2026-10-19): §3 — count, assert, threads, single thread and feed take
+  only their own query keys, refusing unknown keys with `400` before reads
+  or subscription; assert's inert `limit` is kept. This pointer was missing
+  until 2026-10-19.)*
+- *(Updated by [0049](0049-extraction-compat.md) (accepted 2026-10-19):
+  §§4/5/7, as the 0049 pointer above describes.)*

@@ -27,3 +27,16 @@ slightly differently.
   changes are reviewed like contract changes.
 - Raw bodies remain stored (`raw`, skipped in JSON) for anything the
   extractor missed.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The text above stays
+as the accepted founding ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended by [0031](0031-sender-honest-stored-bodies.md) (accepted
+  2026-10-16): the Ruling's "nothing re-parses or regexes raw HTML at query
+  time" gains one scoped display-time carve-out (0031 §3: `snippet` and
+  `plain_response` render for display, which is not extraction). Links and
+  codes are still extracted once, at insert, and query surfaces still read
+  the stored fields.)*

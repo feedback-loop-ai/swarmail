@@ -1,6 +1,7 @@
 # 0040 — Extraction fidelity
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18
 - **Issues:** #74, #93, #94 (run 17).
 - **Amends:** [0031](0031-sender-honest-stored-bodies.md), its body-selection
@@ -139,3 +140,17 @@ attribution and digest recorded in the module and an inline test checking
 every mapping against the snapshot. The 106 legacy names without a
 semicolon stay literal, as §5 rules. The previous pointer's "outstanding"
 is superseded by this one; the status of both decisions is unchanged.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later record below on 2026-10-19; the text above, both
+0049 pointers included, stays as written, and their "proposed" and
+"unchanged" status wording is historical. Each marker uses the later
+record's own verb and scope. The amendment this record makes to 0031 now
+carries a dated marker in [0031](0031-sender-honest-stored-bodies.md).
+
+- *(Updated by [0049](0049-extraction-compat.md) (accepted 2026-10-19):
+  §§2/4 — MIME-relative code preference, bounded codes and source-aware
+  links — and extends §§5–7's full-table and numeric proof, as the two
+  pointers above describe; §8 is preserved.)*

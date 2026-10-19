@@ -96,3 +96,18 @@ dialect**:
   gates stay green. Only `policy.json`'s table and `bundle.json`'s seat
   wiring are load-bearing; `brokkr compile --bundle .` refuses a
   malformed machine.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above stays as the
+accepted historical ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended/clarified by [0045](0045-delivery-repairs.md) (accepted
+  2026-10-19): §2 — the deterministic design check owns the design verdict.
+  Chief returns `drafted`; a final exec step validates the one spec chief
+  committed at HEAD and returns `designed|fail`, with no
+  drafted-to-implement shortcut. §3 — unknown residual safety facts do not
+  authorize shipping. [0050](0050-delivery-gates.md) §§3–4 then implement
+  both.)*

@@ -7,14 +7,14 @@ guarantees are not yours to trade.** Read
 
 ## The gates
 
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-brokkr compile --bundle bundles/self
-bash scripts/coverage-gate.sh
-cargo deny check licenses
-```
+The gate list lives in one place:
+[`docs/house-rules.md` § Gates](docs/house-rules.md#gates--part-of-every-change). Run every
+command there — the `--locked` builds and tests, the pinned
+`brokkr compile --bundle bundles/self`, the exact coverage gate *and* its
+selftest, the publish guard's proof and `cargo deny check licenses` — and
+read the same section for what only CI proves (the native-tls absence
+check, the chart contract, the RustSec audit, the tag-only rate proof and
+the rest). This file keeps no copy of the list, so it cannot drift from it.
 
 - Tests speak the real protocol against real servers — `tests/common/mod.rs`
   boots them; no mocks in the loop. Extend the suite that proves the code.

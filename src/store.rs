@@ -4,7 +4,7 @@
 //! ring pruning of *oldest* mail only, and cheap waiting (broadcast
 //! watchers for `await` endpoints).
 //!
-//! Memory is not globally bounded (decision 0038, proposed). The per-inbox
+//! Memory is not globally bounded (decision 0038, accepted). The per-inbox
 //! message cap (`max_per_inbox`; zero disables it) is not a global byte or
 //! RSS cap: inbox count is unlimited, so resident memory grows with the
 //! number of inboxes times their mail. A held mail costs its raw bytes,

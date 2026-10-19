@@ -274,7 +274,138 @@ expect_refusal "unknown probe-forms value" 1 "neither 'both' nor 'bare'" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail tagish
 
-# 13. The drift pin: the workflow must reference the guard in both publish
+# 14. The chart's image preflight (proposed 0051 §1, issue #141): the chart
+#     publishes only once the image its appVersion names is published.
+#     The image job's result arrives as DOCKER_RESULT; anything but
+#     `success` refuses before the registry is asked at all.
+present() { # <docker-result|-> <ref> <expected> [probe-forms] -- the preflight call
+  local result="$1" ref="$2" expected="$3" forms="${4:-bare}"
+  if [ "$result" = - ]; then
+    env -u DOCKER_RESULT GITHUB_REF_NAME="$ref" PUBLISH_GUARD_REGISTRY="$registry" \
+      "$GUARD" "$expected" feedback-loop-ai/swarmail "$forms" require-present
+  else
+    env DOCKER_RESULT="$result" GITHUB_REF_NAME="$ref" PUBLISH_GUARD_REGISTRY="$registry" \
+      "$GUARD" "$expected" feedback-loop-ai/swarmail "$forms" require-present
+  fi
+}
+
+# 14a. Image published (200) after a successful image job: proceed, probing
+#      exactly the bare tag the chart's default image names.
+printf 'token=200\nmanifest=200\n' >"$control"
+: >"$recorded"
+expect_proceed "require-present + success + 200" -- present success v0.1.0 v0.1.0
+grep -qx "/v2/feedback-loop-ai/swarmail/manifests/0.1.0" "$recorded" \
+  || fail "require-present: the bare image tag was not probed: $(cat "$recorded")"
+if grep -q "/manifests/v0.1.0" "$recorded"; then
+  fail "require-present: probed the v-form, which the chart never names: $(cat "$recorded")"
+fi
+
+# 14b. Every other image-job result refuses, before any registry request.
+for result in failure skipped cancelled "" -; do
+  : >"$recorded"
+  expect_refusal "require-present + image job '${result}'" 1 "not 'success'" -- \
+    present "$result" v0.1.0 v0.1.0
+  [ ! -s "$recorded" ] \
+    || fail "require-present + image job '${result}': the registry was asked anyway: $(cat "$recorded")"
+done
+
+# 14c. The image is missing (404): refuse — the opposite pole of the
+#      absence probe, which would have proceeded here.
+printf 'token=200\nmanifest=404\n' >"$control"
+expect_refusal "require-present + 404" 1 "0.1.0 is not published" -- present success v0.1.0 v0.1.0
+
+# 14d. Unknown registry state refuses: 500, a failed token exchange, a
+#      refused connection.
+printf 'token=200\nmanifest=500\n' >"$control"
+expect_refusal "require-present + 500" 1 "registry state unknown" -- present success v0.1.0 v0.1.0
+printf 'token=500\nmanifest=200\n' >"$control"
+expect_refusal "require-present + token 500" 1 "registry state unknown" -- present success v0.1.0 v0.1.0
+expect_refusal "require-present + connection refused" 1 "registry state unknown" -- \
+  env DOCKER_RESULT=success GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="http://127.0.0.1:${closed_port}" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail bare require-present
+
+# 14e. Only the bare form, only a known mode, only the exact ref.
+printf 'token=200\nmanifest=200\n' >"$control"
+expect_refusal "require-present + both forms" 1 "bare tag only" -- present success v0.1.0 v0.1.0 both
+expect_refusal "unknown mode" 1 "neither 'require-absent' nor 'require-present'" -- \
+  env DOCKER_RESULT=success GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail bare present-ish
+expect_refusal "require-present + mismatched ref" 1 "ref 'v0.1.1' is not 'v0.1.0'" -- \
+  present success v0.1.1 v0.1.0
+expect_refusal "require-present + non-semver" 1 "not valid semver" -- present success vabc vabc
+
+# 14f. The explicit default mode is the absence probe, unchanged.
+printf 'token=200\nmanifest=200\n' >"$control"
+expect_refusal "require-absent + 200" 1 "already published" -- \
+  env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail both require-absent
+
+# 15. Issue #141's tree, as a fixture: Cargo and appVersion 0.1.0, chart
+#     0.1.1, tag v0.1.1. The image guard refuses (the ref is not
+#     v<Cargo version>); the chart's own absence guard alone would admit it
+#     — that was the chart-only release — and the image preflight refuses
+#     even if the image job were somehow reported green. Neither publishes.
+printf 'token=200\nmanifest=404\n' >"$control"
+expect_refusal "v0.1.1 tag: the image guard" 1 "ref 'v0.1.1' is not 'v0.1.0'" -- \
+  env GITHUB_REF_NAME=v0.1.1 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+expect_proceed "v0.1.1 tag: the chart absence guard alone admits it" -- \
+  env GITHUB_REF_NAME=v0.1.1 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.1 feedback-loop-ai/charts/swarmail bare
+printf 'token=200\nmanifest=200\n' >"$control"
+expect_refusal "v0.1.1 tag: the chart's image preflight" 1 "ref 'v0.1.1' is not 'v0.1.0'" -- \
+  present success v0.1.1 v0.1.0
+
+# 16. The release wiring (issue #141): the chart job needs the image job,
+#     requires its `success` explicitly, hands that result to the guard
+#     through env (never `${{ }}` in a run: body), and runs the image
+#     preflight and its own absence guard before `helm push`; the image job
+#     needs the chart proof and the Docker smoke. Checked on the workflow,
+#     and on mutated copies that restore the independent chart job — each
+#     must be refused.
+job_block() { # <workflow> <job> — the job's lines, up to the next job key
+  sed -n "/^  $2:\$/,\$p" "$1" | sed '1!{/^  [A-Za-z0-9_-]*:$/,$d;}'
+}
+wiring_problems() { # <workflow> — prints one line per broken wire
+  local wf="$1" chart docker
+  chart="$(job_block "$wf" chart-publish)"
+  docker="$(job_block "$wf" docker)"
+  grep -Eq '^    needs: \[(.*, )?docker(, .*)?\]$' <<<"$chart" || echo "chart-publish does not need docker"
+  grep -q "needs.docker.result == 'success'" <<<"$chart" || echo "chart-publish does not require docker's success"
+  grep -q 'DOCKER_RESULT: ${{ needs.docker.result }}' <<<"$chart" || echo "chart-publish does not hand docker's result to the guard"
+  grep -q 'run: scripts/publish-guard.sh .* bare require-present$' <<<"$chart" || echo "chart-publish never runs the image preflight"
+  local pre guard push
+  pre="$(grep -n 'bare require-present$' <<<"$chart" | head -1 | cut -d: -f1)"
+  guard="$(grep -n 'feedback-loop-ai/charts/swarmail bare$' <<<"$chart" | head -1 | cut -d: -f1)"
+  push="$(grep -n 'helm push' <<<"$chart" | head -1 | cut -d: -f1)"
+  { [ -n "$pre" ] && [ -n "$guard" ] && [ -n "$push" ] && [ "$pre" -lt "$push" ] && [ "$guard" -lt "$push" ]; } \
+    || echo "chart-publish pushes before its guards"
+  grep -Eq '^    needs: \[(.*, )?chart-verify(, .*)?\]$' <<<"$docker" || echo "docker does not need chart-verify"
+  grep -Eq '^    needs: \[(.*, )?docker-smoke(, .*)?\]$' <<<"$docker" || echo "docker does not need docker-smoke"
+  grep -q "needs.chart-verify.result == 'success'" <<<"$docker" || echo "docker does not require chart-verify's success"
+  grep -q "needs.docker-smoke.result == 'success'" <<<"$docker" || echo "docker does not require docker-smoke's success"
+}
+problems="$(wiring_problems "$WORKFLOW")"
+[ -z "$problems" ] || fail "release wiring: $problems"
+mutant="$work/ci-mutant.yml"
+mutate_expect() { # <desc> <sed-expr> <needle>
+  sed "$2" "$WORKFLOW" >"$mutant"
+  cmp -s "$mutant" "$WORKFLOW" && fail "release wiring mutant '$1' changed nothing"
+  grep -q "$3" <<<"$(wiring_problems "$mutant")" \
+    || fail "release wiring mutant '$1' was not refused (expected '$3')"
+}
+mutate_expect "chart needs without docker" \
+  '/^  chart-publish:$/,$ s/^\(    needs: \[.*\), docker\]$/\1]/' "does not need docker"
+mutate_expect "chart condition without docker success" \
+  "/^  chart-publish:\$/,\$ s/ && needs.docker.result == 'success'//" "require docker's success"
+mutate_expect "guard without the result" \
+  '/DOCKER_RESULT: ${{ needs.docker.result }}/d' "hand docker's result"
+mutate_expect "no image preflight" \
+  's/ bare require-present$/ bare/' "never runs the image preflight"
+mutate_expect "docker without chart-verify" \
+  "s/ && needs.chart-verify.result == 'success'//" "chart-verify's success"
+
+# 17. The drift pin: the workflow must reference the guard in both publish
 #     paths, or the enforcement is a comment again.
 guard_refs="$(grep -c 'scripts/publish-guard.sh' "$WORKFLOW" || true)"
 [ "${guard_refs:-0}" -ge 2 ] \

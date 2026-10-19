@@ -129,3 +129,18 @@ falsifies.
   front door.
 - **Any production Rust line, any movement of the coverage floor, any edit to
   `bundles/self/`**: the slice is CI-only; the denominator is untouched.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The text above stays
+as the accepted historical ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended/clarified by [0051](0051-release-records.md) (proposed
+  2026-10-19 — not accepted): this is a pointer to a **proposal**, not an
+  accepted amendment, and the ruling above governs until the operator rules
+  on it. 0051 §1 would make chart publication require the same run's
+  successful Docker publication and a present appVersion image, and §2
+  would keep package preparation distinct from release, qualifying the
+  independent-publication and partial-release posture recorded here. The
+  exact-ref binds and absent-tag refusals above are preserved either way.)*

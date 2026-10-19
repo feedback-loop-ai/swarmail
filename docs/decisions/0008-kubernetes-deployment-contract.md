@@ -67,3 +67,23 @@ does not have.
 - `helm template` output is a valid plain-manifest deployment for teams
   that prefer Kustomize or raw YAML; the chart is not a gate in front of
   them.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The text above stays
+as the accepted ruling; each marker names a later record with that record's
+own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended by [0018](0018-shutdown-observed-waits-and-explicit-bounds.md)
+  (accepted 2026-10-13): §4 and §5 were amended **in place** while this
+  record was still proposed (commit `6ed8e3e`) — the render-time refusal of
+  `replicaCount` above 1 and `Recreate` at every persistence setting. The
+  text above already carries that amendment; this marker records its
+  provenance.)*
+- *(Amended by [0026](0026-deployment-boundary-peers-tls-sizing.md)
+  (accepted 2026-10-14): §6's probe contract gains a startup probe on
+  `/healthz` beside liveness and readiness, sized for restore, and §1's
+  chart gains three deployment-shape values blocks; §2's "no configuration
+  surface" is untouched. 0026 says §6 is amended "in place", but §6 above
+  was never edited — dated correction: read §6 together with 0026's
+  startup probe.)*

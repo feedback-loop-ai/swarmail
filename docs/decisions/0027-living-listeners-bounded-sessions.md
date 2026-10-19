@@ -246,3 +246,26 @@ nothing here claims it. Issues #77–#80.
 that ended well gets one more idle window for its close; a POP3 reply write is bounded per
 successful socket write, each write that moves bytes renewing the window, instead of one
 deadline over the whole reply. Nothing above is rewritten by this pointer.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above — the ruling,
+the 2026-10-18 clarification and the 0046 pointer — stays as written; each
+marker names a later record with that record's own verb and scope, and
+nothing above is rewritten by it.
+
+- *(Amended by [0036](0036-smtp-trickle-lifetime.md) (accepted 2026-10-19):
+  §§1–4, §9 and Consequences, through the "Clarification — 2026-10-18
+  (controlling)" above. **Acceptance provenance:** that clarification said
+  it implemented the posture of 0036 while 0036 was proposed and claimed no
+  acceptance. 0036 is now accepted (operator, 2026-10-19), so the
+  clarification is controlling on the authority of an accepted record. Its
+  text is unchanged.)*
+- *(Amended by [0046](0046-smtp-pop3-edges.md) (accepted 2026-10-19): §4's
+  operation-level POP3 write bound and SMTP cleanup scope, as the 0046
+  pointer above describes — a failed SMTP session drops its transport with
+  no graceful close, a session that ended well gets one more idle window
+  for its close, and a POP3 reply write is bounded per successful socket
+  write instead of by one deadline over the whole reply. The pointer's
+  "proposed" is historical: 0046 is accepted.)*

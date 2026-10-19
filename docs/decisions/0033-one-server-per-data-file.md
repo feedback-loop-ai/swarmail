@@ -156,3 +156,30 @@ exclusive lock on the data file itself before SQLite opens it, so a second serve
 the same file through a symlink or a hard link is refused with §3's named refusal. The
 scope and its residuals are 0047's. Nothing above is rewritten by this pointer, and its
 status is unchanged.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above — the ruling,
+the run-19 addendum and the 0047 pointer — stays as written; each marker
+names a later record with that record's own verb and scope, and nothing
+above is rewritten by it.
+
+- *(Amended by [0042](0042-single-writer-lock.md) (accepted 2026-10-19):
+  §1's claim that a restart corrects multi-server accounting and cap
+  divergence — restart reloads persisted state and does not reconstruct
+  the independent writers' event history, as the run-19 addendum above
+  records; the public open functions return the typed
+  `persist::OpenError`. 0042 also supplements §§2–4, whose sidecar
+  mechanism, refusal, test and contract sentence stand. The addendum's
+  "*proposed*" is historical: 0042 is accepted.)*
+- *(Supplemented by [0047](0047-storage-rpc.md) (accepted 2026-10-19): §2's
+  sidecar mechanism. Dated correction to the 0047 pointer above: it
+  describes 0047's original design, an exclusive lock on the data file
+  itself, which 0047's macOS fix-up (2026-10-18) superseded before
+  acceptance. As accepted, the `<data-file>.lock` sidecar of §2 is kept
+  exactly, and a second, identity sidecar under
+  `/tmp/swarmail-db-locks-<uid>/`, named by the database's owner, device
+  and inode, is locked beside it — never the database or its SQLite
+  companions — so symlink and hard-link aliases are refused with §3's
+  named refusal (0047 §1).)*

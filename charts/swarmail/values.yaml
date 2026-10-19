@@ -47,7 +47,7 @@ ingress:
   tls: []
 
 # The memory relation, documented rather than invented (decision 0026 §3 as
-# amended by proposed 0038): the store holds all mail resident, and a data
+# amended by accepted 0038): the store holds all mail resident, and a data
 # file restores every persisted row before bind without applying the cap.
 # `SWARMAIL_MAX_PER_INBOX` (config, above; `0` disables it) caps messages
 # per inbox — it is not a global byte or RSS cap, and the inbox count is
@@ -114,7 +114,7 @@ networkPolicy:
   # policyTypes stays Ingress-only: no egress section exists to configure.
   ingressPeers: []
 
-# TLS for the SMTP/POP3 listeners, fed from an operator-supplied Secret
+# TLS for the SMTP listener (STARTTLS; POP3 stays plaintext, no STLS), fed from an operator-supplied Secret
 # named by `secretName` (decision 0026 §2). The chart mints nothing: the
 # Secret must carry the standard `tls.crt`/`tls.key` keys, mounted
 # read-only at /etc/swarmail/tls and handed to the binary through its own

@@ -1,6 +1,7 @@
 # 0049 — Source-aware extraction and consistent compat reads
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18.
 - **Issues:** #136, #137, #138, #139; epic #120 batch 4.
 - **Specification:** [extraction-compat](../../specs/extraction-compat/spec.md).

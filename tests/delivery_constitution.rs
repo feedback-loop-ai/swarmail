@@ -1,4 +1,4 @@
-//! Structural pins on the delivery constitution (`bundles/self/`), proposed
+//! Structural pins on the delivery constitution (`bundles/self/`), accepted
 //! decision 0050. These read the committed JSON and scripts; they are
 //! regression guards on the shape the repairs gave the constitution, not a
 //! substitute for the pinned engine's own evaluation (0050 §5) — the verify
@@ -205,4 +205,109 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
             "{old} still exists"
         );
     }
+}
+
+/// The lines of `text` that open a fenced command with `prefix`, each joined
+/// with its `\`-continued lines.
+fn commands(text: &str, prefix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if !line.starts_with(prefix) {
+            continue;
+        }
+        let mut command = line.trim_end_matches('\\').to_string();
+        let mut open = line.ends_with('\\');
+        while open {
+            let next = lines.next().expect("a continued command has a next line");
+            command.push_str(next.trim_end_matches('\\'));
+            open = next.ends_with('\\');
+        }
+        out.push(command);
+    }
+    out
+}
+
+/// #141: every documented `docker run` cleans up its anonymous `/data`
+/// volume (`--rm`) and gives the 10 s drain room (`--stop-timeout 30`); the
+/// `:main` Helm line pulls on every start; the stale "until the next
+/// `:main`" workaround is gone; the build context excludes `target/` at any
+/// depth; and the Dockerfile no longer calls SIGKILL Docker's default. At
+/// 2a325c9 the README's runs had no `--rm`, the Helm line kept
+/// `IfNotPresent` and `.dockerignore` matched only the root `target/`. The
+/// real-Docker proof of the same contract is `scripts/docker-smoke.sh` (CI).
+#[test]
+fn the_install_examples_clean_up_and_pull_what_they_name() {
+    let readme = read_text("README.md");
+    let runs = commands(&readme, "docker run ");
+    assert!(
+        runs.len() >= 3,
+        "the README documents its docker runs: {runs:#?}"
+    );
+    for run in &runs {
+        assert!(
+            run.contains(" --rm "),
+            "a documented run leaks its volume: {run}"
+        );
+        assert!(
+            run.contains(" --stop-timeout 30 "),
+            "a documented run keeps Docker's 10 s grace: {run}"
+        );
+    }
+    let helm = commands(&readme, "helm install swarmail ./charts/swarmail ");
+    assert!(!helm.is_empty(), "the README documents its helm install");
+    for line in &helm {
+        if line.contains("--set image.tag=main") {
+            assert!(
+                line.contains("--set image.pullPolicy=Always"),
+                "a :main install must pull on every start: {line}"
+            );
+        }
+    }
+    assert!(
+        !readme.contains("until the next `:main`"),
+        "the README keeps the expired next-:main workaround"
+    );
+
+    let ignore = read_text(".dockerignore");
+    assert!(
+        ignore.lines().any(|l| l.trim() == "**/target/"),
+        ".dockerignore must exclude target/ at every depth"
+    );
+    assert!(
+        !ignore.lines().any(|l| l.trim() == "target/"),
+        "a root-only target/ pattern is the #141 leak"
+    );
+    let dockerfile = read_text("Dockerfile");
+    assert!(
+        !dockerfile.contains("the default is SIGKILL"),
+        "the Dockerfile still calls SIGKILL Docker's default stop signal"
+    );
+}
+
+/// #141: the workflow runs the chart-bump check, its selftest and the real
+/// Docker smoke, and the smoke job is read-only. The job ordering itself is
+/// proved by the pinned publish-guard proof (its release-wiring mutants).
+#[test]
+fn ci_runs_the_chart_history_check_and_the_docker_smoke() {
+    let ci = read_text(".github/workflows/ci.yml");
+    for needle in [
+        "run: bash scripts/chart-verify.sh selftest",
+        "run: bash scripts/chart-verify.sh history",
+        "CHART_PR_BASE: ${{ github.event.pull_request.base.sha }}",
+        "CHART_PUSH_BEFORE: ${{ github.event.before }}",
+        "fetch-depth: 0",
+        "run: bash scripts/docker-smoke.sh",
+    ] {
+        assert!(ci.contains(needle), "ci.yml must carry {needle:?}");
+    }
+    let smoke = ci
+        .split("\n  docker-smoke:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  chart-publish:\n").next())
+        .expect("ci.yml has a docker-smoke job before chart-publish");
+    assert!(
+        !smoke.contains("packages: write"),
+        "the smoke job publishes nothing"
+    );
 }

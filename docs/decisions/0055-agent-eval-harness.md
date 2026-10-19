@@ -1,6 +1,7 @@
 # 0055 — Prove the agent eval harness before measuring agents
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-19.
 - **Issues:** epic #164; #148, #149, #150, Phase 0 run A.
 - **Specification:** [agent eval harness](../../specs/agent-eval-harness/spec.md).

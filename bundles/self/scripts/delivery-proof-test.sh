@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # delivery-proof-test.sh — #123's tamper boundary, proved by execution
-# (proposed decision 0050 §§1, 5). Builds real candidate fixtures — a
+# (decision 0050 §§1, 5). Builds real candidate fixtures — a
 # dependency-free crate with a lib, a bin and an integration test that runs
 # the bin — and runs the PINNED gate and the PINNED shim digests against
 # them, exactly as verify-seat.sh does (working directory = candidate):

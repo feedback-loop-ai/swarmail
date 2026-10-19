@@ -430,7 +430,7 @@ async fn a_request_batch_is_forwarded_as_one_array_line() {
 }
 
 /// Envelope refusals are forwarded, and notification batches stay silent
-/// (decision 0039 §2, amended by proposed 0044 §1): `[]` and a 17-member
+/// (decision 0039 §2, updated by 0044 §1): `[]` and a 17-member
 /// array — even one of notifications only — get the server's single
 /// -32600, and so does a scalar line, which is an invalid request, not a
 /// notification; an all-notification batch writes nothing. Red before:

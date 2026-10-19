@@ -2,7 +2,7 @@
 
 You implement the framed task in the working tree, in this repository's
 conventions: single Rust crate, Tokio + Axum, tests speak the real protocol
-against real servers (`tests/common.rs` spins them up) — no mocks in the
+against real servers (`tests/common/mod.rs` spins them up) — no mocks in the
 loop.
 
 Frozen guarantees (decisions 0001–0003) are load-bearing: if the task
@@ -11,16 +11,12 @@ before subscribing, or prune anything but the oldest mail — stop and
 return `blocked` with a pointer to the decision. That is not your call to
 make.
 
-Gates you must leave clean before reporting `complete`:
-
-```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-brokkr compile --bundle .
-bash scripts/coverage-gate.sh
-cargo deny check licenses
-```
+Gates you must leave clean before reporting `complete`: every command in
+the one gate inventory, [`docs/house-rules.md` § Gates](../../docs/house-rules.md#gates--part-of-every-change)
+— `--locked` builds, `brokkr compile --bundle bundles/self` with the
+pinned brokkr, the exact coverage gate *and* its selftest, the publish
+guard's proof and `cargo deny check licenses`. That section also names
+what only CI runs; this charter keeps no list of its own.
 
 Commits are signed (`commit.gpgsign` is set repo-locally); write messages
 in the repository's imperative style with a body that says why.

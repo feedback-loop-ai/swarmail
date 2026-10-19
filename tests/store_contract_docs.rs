@@ -1,5 +1,6 @@
-//! The store and maildrop contracts as documented (proposed decisions 0037
-//! and 0038, issues #84 and #87). #87 takes the documentation branch of
+//! The store and maildrop contracts as documented (decisions 0037 and
+//! 0038, issues #84 and #87), and the decision record's own integrity
+//! (issue #144): index membership, statuses and audited amendment links. #87 takes the documentation branch of
 //! each either/or — the watcher residue, the absent global cap and the
 //! parse-start timestamps are stated, not changed — so its red/green proof
 //! is this documentary one: the reviewed text ("bounded memory", the
@@ -17,6 +18,8 @@
 
 mod common;
 
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::path::Path;
 
 /// A repository document, verbatim.
@@ -288,7 +291,7 @@ fn the_pop3_size_rule_is_stated_alike_everywhere() {
     );
 }
 
-/// Run 21's contracts as published (proposed decision 0044, AC11): the
+/// Run 21's contracts as published (decision 0044, AC11): the
 /// widened recipient predicate, the nullable envelope sender, the renamed
 /// unread key, the wipe route's honest name, latest's limits, the bounded
 /// snippet and page budget and the unordered batch effects — stated in
@@ -407,64 +410,823 @@ fn every_index_row_matches_its_records_status() {
     assert!(disagreements.is_empty(), "{disagreements:#?}");
 }
 
-/// The comparison on disposable copies, never the real records: for each
-/// cited proposal, accepting only the record or only the index row is a
-/// disagreement naming both sides, and accepting both together passes.
-#[test]
-fn a_status_change_passes_only_when_record_and_index_move_together() {
-    let index = raw("docs/decisions/README.md");
-    let accepted_row = "| **accepted** (operator, fixture) |";
-    for file in &CITED[..4] {
-        let original = record(file);
-        let header = original
-            .lines()
-            .find(|l| l.starts_with("- **Status:** proposed"))
-            .unwrap_or_else(|| panic!("{file} is proposed in the tree"));
-        let accepted_record =
-            original.replacen(header, "- **Status:** accepted (operator, fixture)", 1);
-        let row = index
-            .lines()
-            .find(|l| l.contains(&format!("]({file})")))
-            .unwrap_or_else(|| panic!("the index must list {file}"));
-        let accepted_index = index.replacen(
-            row,
-            &row.replacen("| proposed — awaiting the operator |", accepted_row, 1),
-            1,
-        );
-        assert_ne!(accepted_index, index, "the fixture accepts {file}'s row");
-        let read = |text: &str| {
-            let text = text.to_string();
-            move |name: &str| {
-                if name == *file {
-                    text.clone()
-                } else {
-                    record(name)
-                }
-            }
-        };
+/// A decision file name's number: `NNNN-slug.md` — four ASCII digits, a
+/// hyphen and a nonempty slug of lowercase ASCII letters, digits and
+/// hyphens. Anything else is not a decision file name.
+fn decision_number(name: &str) -> Option<&str> {
+    let (number, rest) = name.split_at_checked(4)?;
+    let slug = rest.strip_prefix('-')?.strip_suffix(".md")?;
+    let slug_ok = !slug.is_empty()
+        && slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    (number.bytes().all(|b| b.is_ascii_digit()) && slug_ok).then_some(number)
+}
 
-        let record_only = status_disagreements(&index, read(&accepted_record));
+/// The entries of `docs/decisions/`, sorted.
+fn decision_dir() -> Vec<String> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/decisions");
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{} is unreadable: {e}", dir.display()))
+        .map(|entry| {
+            entry
+                .expect("a readable directory entry")
+                .file_name()
+                .into_string()
+                .expect("a UTF-8 file name")
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// The decision file a number names in a directory listing.
+fn file_of(names: &[String], number: &str) -> String {
+    names
+        .iter()
+        .find(|name| decision_number(name) == Some(number))
+        .unwrap_or_else(|| panic!("no decision file is numbered {number}"))
+        .clone()
+}
+
+/// Every membership disagreement between the index and a directory
+/// listing, in both directions: a malformed file name, two files with one
+/// number, a row that is not one link, a row labeled with another number,
+/// a file listed twice, two rows with one number, a row without a file and
+/// a file without a row. `README.md` is the index, not a decision.
+fn inventory_problems(index: &str, names: &[String]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut files: BTreeMap<&str, &str> = BTreeMap::new();
+    for name in names.iter().filter(|name| *name != "README.md") {
+        match decision_number(name) {
+            None => problems.push(format!("{name}: not a decision file name (NNNN-slug.md)")),
+            Some(number) => match files.entry(number) {
+                Entry::Occupied(first) => problems.push(format!(
+                    "{number}: two decision files, {} and {name}",
+                    first.get()
+                )),
+                Entry::Vacant(slot) => {
+                    slot.insert(name);
+                }
+            },
+        }
+    }
+    let mut rows: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut labels: BTreeMap<&str, &str> = BTreeMap::new();
+    for row in index.lines().filter(|l| l.starts_with("| [")) {
+        let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+        let link = cells
+            .get(1)
+            .and_then(|cell| cell.strip_prefix('['))
+            .and_then(|cell| cell.strip_suffix(')'))
+            .and_then(|cell| cell.split_once("]("));
+        let Some((label, file)) = link else {
+            problems.push(format!("an index row without one record link: {row}"));
+            continue;
+        };
+        if decision_number(file) != Some(label) {
+            problems.push(format!("{file}: its index row is labeled {label}"));
+        }
+        *rows.entry(file).or_default() += 1;
+        if let Some(other) = labels.insert(label, file).filter(|other| *other != file) {
+            problems.push(format!("{label}: two index rows, for {other} and {file}"));
+        }
+    }
+    for (file, count) in &rows {
+        if *count > 1 {
+            problems.push(format!("{file}: {count} index rows"));
+        }
+        if !names.iter().any(|name| name == file) {
+            problems.push(format!("{file}: an index row with no file"));
+        }
+    }
+    for file in files.values() {
+        if !rows.contains_key(file) {
+            problems.push(format!("{file}: no index row"));
+        }
+    }
+    problems
+}
+
+/// Every numbered decision file has exactly one index row, every row has a
+/// file, numbers and rows are unique, and (with
+/// `every_index_row_matches_its_records_status`) every status agrees.
+#[test]
+fn every_decision_file_has_exactly_one_resolving_index_row() {
+    let names = decision_dir();
+    let index = raw("docs/decisions/README.md");
+    let problems = inventory_problems(&index, &names);
+    assert!(problems.is_empty(), "{problems:#?}");
+    let decisions = names.iter().filter(|n| *n != "README.md").count();
+    assert_eq!(
+        index_rows(&index).len(),
+        decisions,
+        "one row per decision file"
+    );
+    let disagreements = status_disagreements(&index, record);
+    assert!(disagreements.is_empty(), "{disagreements:#?}");
+}
+
+/// The inventory check on disposable copies of the real index and listing:
+/// the old missing 0035/0055 rows, a dangling row, a duplicate row, a
+/// mislabeled row, a second file with a taken number and every malformed
+/// file name are each refused by name.
+#[test]
+fn the_inventory_refuses_missing_dangling_duplicate_and_malformed_entries() {
+    let names = decision_dir();
+    let index = raw("docs/decisions/README.md");
+    let row_of = |number: &str| {
+        let file = file_of(&names, number);
+        index
+            .lines()
+            .find(|l| l.starts_with(&format!("| [{number}]({file})")))
+            .unwrap_or_else(|| panic!("the index lists {file}"))
+            .to_string()
+    };
+    let without = |rows: &[&str]| {
+        index
+            .lines()
+            .filter(|l| !rows.contains(l))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    // The state issue #144 found: no 0035 row, and later no 0055 row.
+    let (r35, r55) = (row_of("0035"), row_of("0055"));
+    assert_eq!(
+        inventory_problems(&without(&[r35.as_str(), r55.as_str()]), &names),
+        [
+            format!("{}: no index row", file_of(&names, "0035")),
+            format!("{}: no index row", file_of(&names, "0055")),
+        ]
+    );
+
+    let dangling = format!("{index}| [0099](0099-ghost.md) | ghost | proposed | |\n");
+    assert_eq!(
+        inventory_problems(&dangling, &names),
+        ["0099-ghost.md: an index row with no file"]
+    );
+
+    let r34 = row_of("0034");
+    let duplicate = format!("{index}{r34}\n");
+    assert_eq!(
+        inventory_problems(&duplicate, &names),
+        [format!("{}: 2 index rows", file_of(&names, "0034"))]
+    );
+
+    let file36 = file_of(&names, "0036");
+    let mislabeled = index.replacen(
+        &format!("| [0036]({file36})"),
+        &format!("| [0037]({file36})"),
+        1,
+    );
+    let problems = inventory_problems(&mislabeled, &names);
+    assert!(
+        problems.contains(&format!("{file36}: its index row is labeled 0037")),
+        "{problems:#?}"
+    );
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.starts_with("0037: two index rows")),
+        "{problems:#?}"
+    );
+
+    let mut taken = names.clone();
+    taken.push("0035-a-second-record.md".into());
+    let problems = inventory_problems(&index, &taken);
+    assert_eq!(
+        problems,
+        [format!(
+            "0035: two decision files, {} and 0035-a-second-record.md",
+            file_of(&names, "0035")
+        )]
+    );
+
+    for malformed in [
+        "35-short.md",
+        "00351-long.md",
+        "0035_underscore.md",
+        "abcd-letters.md",
+        "0035-.md",
+        "0035-Upper.md",
+        "0035-text.txt",
+        "0035",
+    ] {
+        let mut listing = names.clone();
+        listing.push(malformed.into());
         assert_eq!(
-            record_only,
+            inventory_problems(&index, &listing),
             [format!(
-                "{file}: the record says accepted, the index says proposed"
+                "{malformed}: not a decision file name (NNNN-slug.md)"
             )],
-            "an accepted record under a proposed row must disagree"
-        );
-        let index_only = status_disagreements(&accepted_index, read(&original));
-        assert_eq!(
-            index_only,
-            [format!(
-                "{file}: the record says proposed, the index says accepted"
-            )],
-            "an accepted row over a proposed record must disagree"
-        );
-        let both = status_disagreements(&accepted_index, read(&accepted_record));
-        assert!(
-            both.is_empty(),
-            "accepting {file} in both places passes: {both:#?}"
+            "{malformed} is refused"
         );
     }
+}
+
+/// A disposable record with the given status header.
+fn fixture_record(status: &str) -> String {
+    format!("# fixture\n\n- **Status:** {status}\n- **Date:** 2026-10-19\n")
+}
+
+/// A disposable index with one row per (file, status cell).
+fn fixture_index(rows: &[(&str, &str)]) -> String {
+    let mut index = String::from(
+        "# Decision records\n\n| # | Decision | Status | Citation |\n|---|---|---|---|\n",
+    );
+    for (file, status) in rows {
+        index.push_str(&format!(
+            "| [{}]({file}) | fixture | {status} | |\n",
+            &file[..4]
+        ));
+    }
+    index
+}
+
+/// The status comparison on disposable fixtures, independent of today's
+/// mix of accepted and proposed records: all-accepted, all-proposed and
+/// mixed trees pass; a status change on either side alone refuses, naming
+/// both sides; the same change on both sides passes; and the founding
+/// records' `**Status**:` spelling reads the same.
+#[test]
+fn a_status_change_passes_only_when_record_and_index_move_together() {
+    const ALPHA: &str = "0001-alpha.md";
+    const BETA: &str = "0002-beta.md";
+    const ACCEPTED: &str = "accepted (operator, fixture)";
+    const PROPOSED: &str = "proposed — acceptance is the operator's.";
+    const ACCEPTED_ROW: &str = "**accepted** (operator, fixture)";
+    const PROPOSED_ROW: &str = "proposed — awaiting the operator";
+    let names: Vec<String> = ["README.md", ALPHA, BETA].map(String::from).into();
+    let check = |rows: &[(&str, &str)], alpha: &str, beta: &str| {
+        let index = fixture_index(rows);
+        let problems = inventory_problems(&index, &names);
+        assert!(problems.is_empty(), "{problems:#?}");
+        let (alpha, beta) = (alpha.to_string(), beta.to_string());
+        status_disagreements(&index, move |file| match file {
+            ALPHA => alpha.clone(),
+            BETA => beta.clone(),
+            other => panic!("the fixture has no {other}"),
+        })
+    };
+    let accepted = fixture_record(ACCEPTED);
+    let proposed = fixture_record(PROPOSED);
+
+    let all_accepted = [(ALPHA, ACCEPTED_ROW), (BETA, ACCEPTED_ROW)];
+    assert!(check(&all_accepted, &accepted, &accepted).is_empty());
+    let all_proposed = [(ALPHA, PROPOSED_ROW), (BETA, PROPOSED_ROW)];
+    assert!(check(&all_proposed, &proposed, &proposed).is_empty());
+    let mixed = [(ALPHA, ACCEPTED_ROW), (BETA, PROPOSED_ROW)];
+    assert!(check(&mixed, &accepted, &proposed).is_empty());
+
+    assert_eq!(
+        check(&mixed, &accepted, &accepted),
+        ["0002-beta.md: the record says accepted, the index says proposed"],
+        "accepting only the record refuses"
+    );
+    assert_eq!(
+        check(&all_accepted, &accepted, &proposed),
+        ["0002-beta.md: the record says proposed, the index says accepted"],
+        "accepting only the row refuses"
+    );
+    assert_eq!(
+        check(&mixed, &proposed, &proposed),
+        ["0001-alpha.md: the record says proposed, the index says accepted"],
+        "a one-sided return to proposed refuses too"
+    );
+    assert!(
+        check(&all_accepted, &accepted, &accepted).is_empty(),
+        "the coherent pair passes"
+    );
+
+    let founding = "# fixture\n\n**Status**: accepted (original design, v0.1)\n".to_string();
+    let founding_rows = [(ALPHA, "accepted (v0.1 design)"), (BETA, PROPOSED_ROW)];
+    assert!(check(&founding_rows, &founding, &proposed).is_empty());
+
+    // Membership refusals on the fixture itself: missing, dangling, duplicate.
+    let index = fixture_index(&[(ALPHA, ACCEPTED_ROW)]);
+    assert_eq!(
+        inventory_problems(&index, &names),
+        ["0002-beta.md: no index row"]
+    );
+    let index = fixture_index(&[
+        (ALPHA, ACCEPTED_ROW),
+        (BETA, PROPOSED_ROW),
+        ("0003-gamma.md", PROPOSED_ROW),
+    ]);
+    assert_eq!(
+        inventory_problems(&index, &names),
+        ["0003-gamma.md: an index row with no file"]
+    );
+    let index = fixture_index(&[
+        (ALPHA, ACCEPTED_ROW),
+        (BETA, PROPOSED_ROW),
+        (BETA, PROPOSED_ROW),
+    ]);
+    assert_eq!(
+        inventory_problems(&index, &names),
+        ["0002-beta.md: 2 index rows"]
+    );
+}
+
+/// The audited amendment relationships (issue #144, AC7): (newer, older,
+/// the newer record's header field that names the older, the verb that
+/// field uses, and the state the older record's dated marker records).
+/// The older record carries `*(<verb> by [newer](newer-file) (<state>`.
+/// A finite, test-owned list — no prose is inferred.
+const AMENDMENTS: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "0018",
+        "0008",
+        "**Amends:**",
+        "Amended",
+        "accepted 2026-10-13",
+    ),
+    (
+        "0026",
+        "0008",
+        "**Amends:**",
+        "Amended",
+        "accepted 2026-10-14",
+    ),
+    (
+        "0028",
+        "0004",
+        "**Amends:**",
+        "Amended",
+        "accepted 2026-10-16",
+    ),
+    (
+        "0031",
+        "0005",
+        "**Amends:**",
+        "Amended",
+        "accepted 2026-10-16",
+    ),
+    (
+        "0030",
+        "0018",
+        "**Extends:**",
+        "Extended",
+        "accepted 2026-10-16",
+    ),
+    (
+        "0030",
+        "0023",
+        "**Extends:**",
+        "Extended",
+        "accepted 2026-10-16",
+    ),
+    ("0034", "0022", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0034", "0028", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0035", "0020", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0036", "0027", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0037", "0028", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0038", "0021", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0038", "0026", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0039", "0029", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0040", "0031", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0041", "0029", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0042", "0033", "**Amends:**", "Amended", ACCEPTED_1019),
+    ("0043", "0030", "**Amends:**", "Amended", ACCEPTED_1019),
+    (
+        "0044",
+        "0029",
+        "**Proposes amendments to:**",
+        "Amended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0044",
+        "0030",
+        "**Proposes amendments to:**",
+        "Amended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0044",
+        "0031",
+        "**Proposes amendments to:**",
+        "Amended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0044",
+        "0039",
+        "**Proposes amendments to:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0045",
+        "0007",
+        "**Amends/clarifies:**",
+        "Amended/clarified",
+        ACCEPTED_1019,
+    ),
+    (
+        "0045",
+        "0009",
+        "**Amends/clarifies:**",
+        "Amended/clarified",
+        ACCEPTED_1019,
+    ),
+    (
+        "0045",
+        "0015",
+        "**Amends/clarifies:**",
+        "Amended/clarified",
+        ACCEPTED_1019,
+    ),
+    (
+        "0045",
+        "0018",
+        "**Amends/clarifies:**",
+        "Amended/clarified",
+        ACCEPTED_1019,
+    ),
+    (
+        "0045",
+        "0023",
+        "**Records existing amendments:**",
+        "Recorded",
+        ACCEPTED_1019,
+    ),
+    (
+        "0046",
+        "0027",
+        "**Proposes amendments to:**",
+        "Amended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0046",
+        "0028",
+        "**Proposes amendments to:**",
+        "Amended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0046",
+        "0034",
+        "**Updates proposals:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0046",
+        "0036",
+        "**Updates proposals:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0046",
+        "0044",
+        "**Updates proposals:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0046",
+        "0029",
+        "**Updates proposals:**",
+        "Strengthened",
+        ACCEPTED_1019,
+    ),
+    (
+        "0047",
+        "0033",
+        "**Supplements:**",
+        "Supplemented",
+        ACCEPTED_1019,
+    ),
+    (
+        "0047",
+        "0042",
+        "**Supplements:**",
+        "Supplemented",
+        ACCEPTED_1019,
+    ),
+    (
+        "0047",
+        "0029",
+        "**Proposes amendment to:**",
+        "Amended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0047",
+        "0039",
+        "**Updates proposals:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0047",
+        "0043",
+        "**Updates proposals:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0047",
+        "0044",
+        "**Updates proposals:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0048",
+        "0025",
+        "**Proposes amendment to:**",
+        "Amended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0048",
+        "0029",
+        "**Proposes amendment to:**",
+        "Amended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0048",
+        "0041",
+        "**Clarifies/extends:**",
+        "Clarified/extended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0048",
+        "0044",
+        "**Clarifies/extends:**",
+        "Clarified/extended",
+        ACCEPTED_1019,
+    ),
+    (
+        "0049",
+        "0040",
+        "**Updates proposed:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0049",
+        "0044",
+        "**Updates proposed:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0049",
+        "0038",
+        "**Updates proposed:**",
+        "Updated",
+        ACCEPTED_1019,
+    ),
+    (
+        "0049",
+        "0030",
+        "**Extends/clarifies accepted:**",
+        "Extended/clarified",
+        ACCEPTED_1019,
+    ),
+    (
+        "0049",
+        "0031",
+        "**Extends/clarifies accepted:**",
+        "Extended/clarified",
+        ACCEPTED_1019,
+    ),
+    ("0050", "0035", "**Refines:**", "Refined", ACCEPTED_1019),
+    ("0050", "0045", "**Refines:**", "Refined", ACCEPTED_1019),
+    (
+        "0051",
+        "0019",
+        "**Amends/clarifies:**",
+        "Amended/clarified",
+        PROPOSED_1019,
+    ),
+    (
+        "0051",
+        "0045",
+        "**Amends/clarifies:**",
+        "Amended/clarified",
+        PROPOSED_1019,
+    ),
+];
+
+/// The marker state of a relationship the operator accepted on 2026-10-19.
+const ACCEPTED_1019: &str = "accepted 2026-10-19";
+/// The marker state of a pointer to a proposal: explicitly not accepted.
+const PROPOSED_1019: &str = "proposed 2026-10-19 — not accepted";
+
+/// A header field of a whitespace-normalized record: the text after
+/// `label` up to the next field or section.
+fn header_field<'a>(text: &'a str, label: &str) -> Option<&'a str> {
+    let rest = &text[text.find(label)? + label.len()..];
+    let end = [rest.find(" - **"), rest.find(" ## ")]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
+}
+
+/// Both sides of every listed relationship. `read` maps a decision number
+/// to its record's text, so fixtures can stand in for the tree. The newer
+/// record's field must name the older; the older must carry the dated
+/// marker linking the newer; and the marker's state must be the newer
+/// record's own status, so no marker claims an acceptance the record lacks.
+fn amendment_problems(
+    pairs: &[(&str, &str, &str, &str, &str)],
+    names: &[String],
+    read: impl Fn(&str) -> String,
+) -> Vec<String> {
+    let normal = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut problems = Vec::new();
+    for &(newer, older, field, verb, state) in pairs {
+        let newer_raw = read(newer);
+        match header_field(&normal(&newer_raw), field) {
+            None => problems.push(format!("{newer} declares no {field}")),
+            Some(named) if !named.contains(older) => {
+                problems.push(format!("{newer}'s {field} does not name {older}"))
+            }
+            Some(_) => {}
+        }
+        let status = file_status(&newer_raw, newer);
+        if !state.starts_with(status) {
+            problems.push(format!(
+                "{newer} is {status}, but its marker in {older} says {state}"
+            ));
+        }
+        let marker = format!("*({verb} by [{newer}]({}) ({state}", file_of(names, newer));
+        if !normal(&read(older)).contains(&marker) {
+            problems.push(format!("{older} carries no dated marker {marker:?}"));
+        }
+    }
+    problems
+}
+
+/// Every audited relationship holds on both sides in the tree, and each
+/// side removed in turn is refused — the successor's declaration and the
+/// predecessor's dated marker alike.
+#[test]
+fn every_audited_amendment_is_linked_on_both_sides() {
+    let names = decision_dir();
+    let tree = |number: &str| record(&file_of(&names, number));
+    let problems = amendment_problems(AMENDMENTS, &names, tree);
+    assert!(problems.is_empty(), "{problems:#?}");
+
+    for (i, pair) in AMENDMENTS.iter().enumerate() {
+        let &(newer, older, field, verb, state) = pair;
+        let one = &AMENDMENTS[i..=i];
+
+        let no_declaration = |number: &str| {
+            let text = tree(number);
+            if number == newer {
+                text.replace(field, "")
+            } else {
+                text
+            }
+        };
+        let problems = amendment_problems(one, &names, no_declaration);
+        assert_eq!(
+            problems,
+            [format!("{newer} declares no {field}")],
+            "{newer} -> {older}: removing the declaration must fail"
+        );
+
+        let marker = format!("*({verb} by [{newer}]({}) ({state}", file_of(&names, newer));
+        let no_marker = |number: &str| {
+            let text = tree(number);
+            if number == older {
+                text.split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .replace(&marker, "")
+            } else {
+                text
+            }
+        };
+        let problems = amendment_problems(one, &names, no_marker);
+        assert_eq!(
+            problems,
+            [format!("{older} carries no dated marker {marker:?}")],
+            "{newer} -> {older}: removing the marker must fail"
+        );
+    }
+}
+
+/// Issue #144's original case: 0045 §§6–7 claimed pointers in 0015, 0018
+/// and 0023 that did not exist. With the 2026-10-19 marker sections cut
+/// from those three records, all three 0045 relationships are refused.
+#[test]
+fn the_pointers_0045_promised_are_required() {
+    let names = decision_dir();
+    let promised: Vec<_> = AMENDMENTS
+        .iter()
+        .copied()
+        .filter(|&(newer, older, ..)| newer == "0045" && ["0015", "0018", "0023"].contains(&older))
+        .collect();
+    assert_eq!(promised.len(), 3, "0045 -> 0015, 0018 and 0023 are audited");
+    let before = |number: &str| {
+        let text = record(&file_of(&names, number));
+        match text.split_once("## Later-decision markers — 2026-10-19") {
+            Some((head, _)) if ["0015", "0018", "0023"].contains(&number) => head.to_string(),
+            _ => text,
+        }
+    };
+    let problems = amendment_problems(&promised, &names, before);
+    assert_eq!(problems.len(), 3, "{problems:#?}");
+    for older in ["0015", "0018", "0023"] {
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with(&format!("{older} carries no dated marker"))),
+            "{older}: {problems:#?}"
+        );
+    }
+}
+
+/// A proposal stays a proposal: 0051's pointers say so, and a marker that
+/// claimed its acceptance would contradict its own status header.
+#[test]
+fn a_marker_cannot_claim_an_acceptance_the_record_lacks() {
+    let names = decision_dir();
+    let tree = |number: &str| record(&file_of(&names, number));
+    let claimed = [(
+        "0051",
+        "0019",
+        "**Amends/clarifies:**",
+        "Amended/clarified",
+        ACCEPTED_1019,
+    )];
+    let problems = amendment_problems(&claimed, &names, tree);
+    assert!(
+        problems.contains(&format!(
+            "0051 is proposed, but its marker in 0019 says {ACCEPTED_1019}"
+        )),
+        "{problems:#?}"
+    );
+}
+
+/// 0035's known limits keep their historical numbers 1, 2, 3, 5; a dated
+/// clarification maps old item 5 to the fourth item without renumbering.
+#[test]
+fn the_0035_numbering_is_clarified_not_rewritten() {
+    let text = doc("docs/decisions/0035-coverage-gate-refuses-by-effect.md");
+    states(
+        &text,
+        "0035",
+        &[
+            "5. A source file syn cannot parse refuses loudly",
+            "## Clarification — 2026-10-19 (known-limits numbering)",
+            "Read old item **5**",
+            "as the fourth sequential item",
+            "keeps its identity",
+        ],
+    );
+    refuses(&text, "0035", &["4. A source file syn cannot parse"]);
+}
+
+/// House rules state the rule for code under a proposed decision (accepted
+/// 0045 §8, issue #144 AC8), and the decision directory is described as
+/// holding both rulings and proposals.
+#[test]
+fn house_rules_state_the_rule_for_code_under_a_proposal() {
+    let rules = doc("docs/house-rules.md");
+    states(
+        &rules,
+        "docs/house-rules.md",
+        &[
+            "**Code under a proposed decision** (accepted decision 0045 §8)",
+            "A proposal is a status, not operator acceptance.",
+            "Compatible implementation — work that preserves every accepted ruling — may land while its decision is still proposed.",
+            "A change that contradicts an accepted ruling waits for operator acceptance of the decision that amends it",
+            "that holds for amendments to every one of decisions 0001–0005",
+            "Weakening a frozen guarantee is refused regardless of green tests",
+            "is not standing permission for future ones",
+        ],
+    );
+    let index = doc("docs/decisions/README.md");
+    states(
+        &index,
+        "docs/decisions/README.md",
+        &["Accepted rulings, and proposals awaiting the operator,"],
+    );
+    let agents = doc("AGENTS.md");
+    states(
+        &agents,
+        "AGENTS.md",
+        &["accepted rulings, and the proposals awaiting the operator,"],
+    );
+    refuses(
+        &index,
+        "docs/decisions/README.md",
+        &["Accepted rulings on why"],
+    );
 }
 
 /// The status parser reads every spelling the records and the index use,
@@ -480,4 +1242,244 @@ fn status_spellings_parse_and_an_unknown_one_refuses() {
     assert_eq!(file_status("x\n- **Status:** proposed\n", "t"), "proposed");
     let unknown = std::panic::catch_unwind(|| status_word(" superseded by 0099", "t"));
     assert!(unknown.is_err(), "an unknown status spelling refuses");
+}
+
+// ---------- #142: one gate list, and the corrected records ----------
+
+/// A GitHub heading anchor: lowercased, punctuation other than `-`/`_`
+/// dropped, each space a hyphen — `Gates — part of every change` is
+/// `gates--part-of-every-change`.
+fn anchor(heading: &str) -> String {
+    heading
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(*c, ' ' | '-' | '_'))
+        .map(|c| if c == ' ' { '-' } else { c })
+        .collect()
+}
+
+/// The jobs `.github/workflows/ci.yml` declares: the keys indented exactly
+/// two spaces under `jobs:`.
+fn ci_jobs() -> Vec<String> {
+    let ci = raw(".github/workflows/ci.yml");
+    let (_, declared) = ci.split_once("\njobs:\n").expect("ci.yml has a jobs map");
+    declared
+        .lines()
+        .filter_map(|l| l.strip_prefix("  "))
+        .filter(|l| !l.starts_with([' ', '#']))
+        .filter_map(|l| l.strip_suffix(':'))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The text of `text` from the heading line `from` up to the next `## `
+/// heading.
+fn section<'a>(text: &'a str, from: &str) -> &'a str {
+    let start = text
+        .find(from)
+        .unwrap_or_else(|| panic!("no section {from:?}"));
+    let rest = &text[start + from.len()..];
+    &rest[..rest.find("\n## ").unwrap_or(rest.len())]
+}
+
+/// Issue #142, D01/D03: house rules' Gates section is the one inventory,
+/// and every other document points at it by its real anchor instead of
+/// carrying a shorter list of its own. Red when a pointer goes stale (the
+/// heading renamed under it), when a pointer is replaced by a divergent
+/// unlocked list again, or when a charter compiles the repo root.
+#[test]
+fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
+    let rules = raw("docs/house-rules.md");
+    let heading = rules
+        .lines()
+        .find_map(|l| l.strip_prefix("## Gates"))
+        .map(|rest| format!("Gates{rest}"))
+        .expect("house rules carry a Gates section");
+    let link = format!("docs/house-rules.md#{}", anchor(&heading));
+    let inventory = doc_text(section(&rules, "## Gates"));
+    states(
+        &inventory,
+        "house rules' Gates",
+        &[
+            "cargo fmt --all -- --check",
+            "cargo clippy --workspace --all-targets --locked -- -D warnings",
+            "cargo test --workspace --locked",
+            "brokkr compile --bundle bundles/self",
+            "bash scripts/coverage-gate.sh selftest",
+            "bash scripts/publish-guard-test.sh",
+            "cargo deny check licenses",
+            "`native-tls` is absent",
+            "The verify seat runs",
+        ],
+    );
+    for (path, prefix) in [
+        ("README.md", ""),
+        ("CONTRIBUTING.md", ""),
+        ("AGENTS.md", ""),
+        ("agents/charters/implementer.md", "../../"),
+        ("agents/charters/review-correctness.md", "../../"),
+        ("agents/charters/reviewer.md", "../../"),
+    ] {
+        let text = raw(path);
+        let wanted = format!("({prefix}{link})");
+        assert!(text.contains(&wanted), "{path} must link {wanted}");
+        // The divergent short lists #142 found: unlocked clippy and test
+        // lines, `fmt --check` without `--all`, and the root bundle.
+        refuses(
+            &doc(path),
+            path,
+            &[
+                "cargo clippy --all-targets -- -D warnings",
+                "`cargo fmt --check`",
+                "--bundle .`",
+                "--bundle . ",
+            ],
+        );
+    }
+    refuses(
+        &doc("agents/README.md"),
+        "agents/README.md",
+        &["--bundle .`"],
+    );
+}
+
+/// D09: the README's CI table names every job ci.yml declares and its
+/// suite table every root suite under `tests/`, so a new job or suite
+/// that is not documented — or a stale name such as the old `chart` job —
+/// goes red.
+#[test]
+fn the_readme_names_every_ci_job_and_every_root_suite() {
+    let readme = raw("README.md");
+    let testing = section(&readme, "## Testing & coverage");
+    let jobs = ci_jobs();
+    assert!(jobs.len() >= 10, "ci.yml jobs were found: {jobs:?}");
+    for job in &jobs {
+        assert!(
+            testing.contains(&format!("`{job}`")),
+            "README's CI table must name the `{job}` job"
+        );
+    }
+    let mut suites = 0;
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        if name.ends_with(".rs") {
+            suites += 1;
+            assert!(
+                testing.contains(&format!("| `tests/{name}` |")),
+                "README's suite table must list tests/{name}"
+            );
+        }
+    }
+    assert!(suites >= 20, "the root suites were found");
+    refuses(
+        &doc("README.md"),
+        "README",
+        &["the CI `chart` job", "functions** (today"],
+    );
+}
+
+/// D05: `deny.toml` allows exactly what house rules' Dependencies names,
+/// with the two unused allowances #142 removed.
+#[test]
+fn the_license_allowlist_is_the_one_house_rules_names() {
+    let deny = raw("deny.toml");
+    let (_, list) = deny.split_once("allow = [").expect("deny.toml allow list");
+    let (entries, _) = list.split_once(']').unwrap();
+    let allowed: Vec<&str> = entries
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with('"'))
+        .map(|l| l.trim_end_matches(',').trim_matches('"'))
+        .collect();
+    assert!(allowed.contains(&"CDLA-Permissive-2.0"), "{allowed:?}");
+    for unused in ["Zlib", "CC-BY-4.0"] {
+        assert!(
+            !allowed.contains(&unused),
+            "{unused} is an unused allowance (#142)"
+        );
+    }
+    let rules = raw("docs/house-rules.md");
+    let deps = doc_text(section(&rules, "## Dependencies"));
+    for license in &allowed {
+        assert!(
+            deps.contains(license),
+            "house rules' Dependencies must name {license}"
+        );
+    }
+}
+
+/// Whitespace-normalized text of an excerpt.
+fn doc_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// D06–D20: the corrected sentences, each with the false one it replaced
+/// refused. The entity-table size is read from the table itself.
+#[test]
+fn the_corrected_release_and_runtime_claims_stay_corrected() {
+    let readme = doc("README.md");
+    let k8s = file_status(&record("0008-kubernetes-deployment-contract.md"), "0008");
+    states(
+        &readme,
+        "README",
+        &[
+            &format!("0008-kubernetes-deployment-contract.md), *{k8s}*"),
+            "not published on crates.io",
+            "append-only, with dated errata",
+            "`serve` and `gen-cert` log to stdout",
+            "Only `mcp` logs to stderr",
+            "exactly 100/100/100",
+            "under `target/coverage/`",
+            "2,097,152 bytes",
+            "plain-text `413`",
+            "a second AUTH on the same connection answers `503`",
+            "files *both* tests' mail under `a`",
+            "Open a fresh connection per inbox",
+            "ends the session with **no reply**",
+            "is accepted at startup, and then every STARTTLS handshake fails",
+            "**Stopping:**",
+            "knife's edge",
+            "`docker stop -t 30`",
+        ],
+    );
+    refuses(
+        &readme,
+        "README",
+        &[
+            "The crate ships to",
+            "ships to [crates.io]",
+            "release notes are frozen",
+            "every other subcommand to stderr",
+        ],
+    );
+
+    let notes = doc("docs/releases/v0.1.0.md");
+    let entities = raw("src/extract/entities.rs");
+    let (_, table) = entities
+        .split_once("static NAMED: &[(&str, &str)] = &[")
+        .expect("the entity table");
+    let (table, _) = table.split_once("\n];").unwrap();
+    let names = table.lines().filter(|l| l.starts_with("    (\"")).count();
+    states(
+        &notes,
+        "docs/releases/v0.1.0.md",
+        &[
+            "## Errata and provenance",
+            "no CI job runs `cargo bench`",
+            "71-entry subset",
+            &format!("all {} semicolon-ended WHATWG names", thousands(names)),
+            "a nonblank `?query=` is a 400",
+            "`Re[2]:` is not a marker",
+            "fixed, value-free text",
+            "`messages_unread_count` is now `messages_unread`",
+            "docker run --rm --stop-timeout 30",
+        ],
+    );
+    refuses(
+        &doc("docs/index.html"),
+        "docs/index.html",
+        &["Both run in CI."],
+    );
 }

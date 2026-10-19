@@ -1,6 +1,7 @@
 # 0042 — Single-writer startup errors and the limit of restart recovery
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18
 - **Supplements:** accepted [0033](0033-one-server-per-data-file.md) §§2–4,
   whose std sidecar mechanism, refusal, test and contract sentence stand.
@@ -98,3 +99,17 @@ The residuals that remain — old sidecar-only binaries through other aliases, w
 take no lock, live namespace replacement, single-file bind mounts, remote filesystems and
 restarting a crashed owner through another hard link's name — are named in 0047, the
 README and the persistence module.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later record below on 2026-10-19; the text above, the
+0047 pointer included, stays as written, and that pointer's "proposed" is
+historical. Each marker uses the later record's own verb and scope. The
+amendment this record makes to 0033 §1 now carries a dated marker in
+[0033](0033-one-server-per-data-file.md).
+
+- *(Supplemented by [0047](0047-storage-rpc.md) (accepted 2026-10-19):
+  §§1/5's lifetime, error and alias scope — an identity sidecar beside the
+  pathname sidecar refuses symlink and hard-link aliases between current
+  servers, as the pointer above describes.)*

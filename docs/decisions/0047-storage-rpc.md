@@ -1,6 +1,7 @@
 # 0047 — File identity, disjoint overflow and correlated RPC refusals
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18.
 - **Scope:** Epic #120 batch 2, issues #129, #130, #132, #133.
 - **Spec:** [storage-rpc](../../specs/storage-rpc/spec.md).

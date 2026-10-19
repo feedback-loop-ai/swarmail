@@ -172,3 +172,19 @@ the operator can overrule with eyes open.
 - The exact 100/100/100 coverage gate applies to every branch the reader
   adds; the RSS measurement that proved Finding 1 stays run-local evidence —
   the committed suite proves behavior, not process memory.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above, the dated
+0027 marker included, stays as the accepted historical ruling; each marker
+names a later record with that record's own verb and scope, and nothing
+above is rewritten by it.
+
+- *(Amended by [0034](0034-data-terminator-boundary.md) (accepted
+  2026-10-19): solely the rejected alternative "`SIZE=` enforcement on
+  `MAIL FROM`". A declared decimal `SIZE` above the configured cap,
+  all-digit overflow included, now answers `552` at `MAIL`, and an invalid
+  value answers `501`; the actual DATA cap stays authoritative whatever the
+  declaration (0034 §4). The bounded reader and this record's byte policy
+  are preserved (0034 §§1–2).)*
