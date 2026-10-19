@@ -152,18 +152,27 @@ fn fixture(reps: usize) -> Vec<u8> {
 /// at its exact size, and a megabyte another thread allocates *inside* the
 /// same scope — ordered by barriers, not timing — is not. Without this
 /// control a zero tally could mean an allocator that was never installed.
+///
+/// The barrier is the harness's, not the code under test, so one complete
+/// round runs disarmed before the scope opens: on macOS std's mutex and
+/// condition variable box their pthread objects on first use (64 + 48
+/// bytes), and whichever thread first touches them pays. Both participants
+/// finish that round before either enters the measured rounds, so the
+/// scope sees a prepared barrier whatever the arrival order.
 #[test]
 fn the_counter_sees_this_threads_allocations_and_no_other() {
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let other = {
         let barrier = barrier.clone();
         std::thread::spawn(move || {
+            barrier.wait(); // the disarmed preparation round
             barrier.wait();
             let big = std::hint::black_box(vec![7u8; 1 << 20]);
             barrier.wait();
             big.len()
         })
     };
+    barrier.wait(); // prepare the barrier before arming
     let (mine, tally) = observe(|| {
         let mine = std::hint::black_box(Vec::<u8>::with_capacity(1000));
         barrier.wait(); // the other thread allocates now
@@ -186,6 +195,54 @@ fn the_counter_sees_this_threads_allocations_and_no_other() {
     // Disarmed after the scope: nothing more is counted.
     let after = std::hint::black_box(vec![0u8; 64]);
     assert_eq!(TALLY.with(Cell::get), tally, "{after:?}");
+}
+
+/// What the two preparations above depend on, provable on Linux: a lazy
+/// object first touched inside a scope is counted there, and the same kind
+/// of object prepared before arming is not — while an allocation the scope
+/// itself makes still is, so the warm scope cannot pass by counting
+/// nothing. The fixtures are local `OnceLock`s holding a real 64-byte box,
+/// standing in for the pthread objects macOS boxes lazily.
+#[test]
+fn a_lazy_object_prepared_before_the_scope_is_not_counted() {
+    let cold: std::sync::OnceLock<Box<[u8; 64]>> = std::sync::OnceLock::new();
+    let warm: std::sync::OnceLock<Box<[u8; 64]>> = std::sync::OnceLock::new();
+    let first_touch = || std::hint::black_box(Box::new([5u8; 64]));
+
+    let (touched, tally) = observe(|| cold.get_or_init(first_touch)[63]);
+    assert_eq!(touched, 5);
+    assert_eq!(
+        tally,
+        Tally {
+            requests: 1,
+            requested: 64,
+            largest: 64,
+            live: 64,
+            peak: 64,
+        },
+        "a cold first touch inside the scope is counted"
+    );
+
+    warm.get_or_init(first_touch); // prepared before arming
+    let ((touched, mine), tally) = observe(|| {
+        let touched = warm.get_or_init(first_touch)[0];
+        (
+            touched,
+            std::hint::black_box(Vec::<u8>::with_capacity(1000)),
+        )
+    });
+    assert_eq!((touched, mine.capacity()), (5, 1000));
+    assert_eq!(
+        tally,
+        Tally {
+            requests: 1,
+            requested: 1000,
+            largest: 1000,
+            live: 1000,
+            peak: 1000,
+        },
+        "a prepared object costs the scope nothing; its own allocation is still seen"
+    );
 }
 
 /// A panicking scope disarms on unwind: the guard's Drop runs, and an
@@ -368,6 +425,12 @@ fn payload_len_sizes_every_mail_without_allocating() {
 /// snapshot's exact-length collect, and one id string per mail — eleven
 /// requests for eight mails, none of them body-sized. A per-mail sizing
 /// allocation makes it nineteen.
+///
+/// `snapshot` first fires the store's test-only snapshot gate, whose mutex
+/// insertion never locks; on macOS its first lock boxes a pthread mutex.
+/// That is harness setup, so the empty gate is fired once before the scope
+/// — nothing is listed or sized beforehand, and the measured snapshot is
+/// still this store's first.
 #[test]
 fn the_snapshot_sizes_its_maildrop_without_a_per_mail_allocation() {
     let store = Store::new(0);
@@ -377,6 +440,7 @@ fn the_snapshot_sizes_its_maildrop_without_a_per_mail_allocation() {
         email.raw = body.clone();
         store.insert(email).unwrap();
     }
+    store.run_snapshot_gate(); // prepare the seam's mutex, disarmed
     let (maildrop, tally) = observe(|| snapshot(&store, "snapbox"));
     assert_eq!(
         maildrop
