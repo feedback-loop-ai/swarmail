@@ -31,9 +31,11 @@ fn rules_from(policy: &Value, phase: &str, result: &str) -> Vec<Value> {
 }
 
 /// #125: the residual allow rule requires both explicit safe facts, the
-/// specific hard stops precede it, and a final unconditional hard stop
-/// catches absent, null or malformed facts. At 2a325c9 the allow rule had no
-/// `when` at all and nothing followed it.
+/// above-medium hard stop precedes it, and a final unconditional hard stop
+/// catches security residuals and absent, null or malformed facts alike. At
+/// 2a325c9 the allow rule had no `when` at all and nothing followed it. A
+/// separate security rule before the allow would leave the final stop firing
+/// on no present valuation, which the pinned engine refuses as dead.
 #[test]
 fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
     let policy = read_json("bundles/self/policy.json");
@@ -43,25 +45,21 @@ fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
         ids,
         [
             "REVIEW-RESIDUAL-ABOVE-MEDIUM",
-            "REVIEW-RESIDUAL-SECURITY",
             "REVIEW-RESIDUAL-OK",
-            "REVIEW-RESIDUAL-UNKNOWN"
+            "REVIEW-RESIDUAL-UNSAFE"
         ]
     );
     assert_eq!(
         residual[0]["when"],
         json!({"max_residual_severity_above": "medium"})
     );
-    assert_eq!(residual[1]["when"], json!({"has_security_residual": true}));
     assert_eq!(
-        residual[2]["when"],
+        residual[1]["when"],
         json!({"has_security_residual": false, "max_residual_severity_at_most": "medium"})
     );
-    assert_eq!(residual[2]["next"], "ship");
-    assert_eq!(residual[3].get("when"), None);
-    assert_eq!(residual[3]["next"], "stop");
-    assert_eq!(residual[3]["severity"], "hard");
-    for stop in [&residual[0], &residual[1]] {
+    assert_eq!(residual[1]["next"], "ship");
+    assert_eq!(residual[2].get("when"), None);
+    for stop in [&residual[0], &residual[2]] {
         assert_eq!(
             (stop["next"].as_str(), stop["severity"].as_str()),
             (Some("stop"), Some("hard"))

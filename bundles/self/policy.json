@@ -128,17 +128,6 @@
       "reason": "Residual severity above medium; not shippable."
     },
     {
-      "id": "REVIEW-RESIDUAL-SECURITY",
-      "from": "review",
-      "result": "residual",
-      "when": {
-        "has_security_residual": true
-      },
-      "next": "stop",
-      "severity": "hard",
-      "reason": "Security residuals never take the tracked-debt path."
-    },
-    {
       "id": "REVIEW-RESIDUAL-OK",
       "from": "review",
       "result": "residual",
@@ -151,12 +140,12 @@
       "reason": "Explicitly non-security residuals of an explicit severity at or below medium proceed as tracked debt."
     },
     {
-      "id": "REVIEW-RESIDUAL-UNKNOWN",
+      "id": "REVIEW-RESIDUAL-UNSAFE",
       "from": "review",
       "result": "residual",
       "next": "stop",
       "severity": "hard",
-      "reason": "Residual safety facts absent, null or malformed: unknown is never shippable, and nothing is defaulted or inferred (decision 0050 §4)."
+      "reason": "Security residuals never take the tracked-debt path, and residual safety facts absent, null or malformed are unknown, never shippable: nothing is defaulted or inferred (decision 0050 §4). One rule holds both because the engine refuses an unknown-only stop as dead behind a security rule — with every fact present, the rules above it already decide."
     },
     {
       "id": "REVIEW-CLEAN-NO-FIXES",
