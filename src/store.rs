@@ -194,9 +194,10 @@ pub struct Store {
     /// keep their shape.
     stopping: std::sync::OnceLock<tokio::sync::watch::Receiver<bool>>,
     /// Test-only seam for the pins (decision 0020): when set, the closure
-    /// runs pre-commit, *inside* the mutation boundary of `clear`/
-    /// `clear_all` — so a test can hold the boundary mid-commit
-    /// deterministically instead of winning a thread-timing lottery.
+    /// runs pre-commit in `record`, *inside* the mutation boundary of every
+    /// mutation and after its shutdown admission (0024) — so a test can
+    /// hold an admitted commit mid-flight deterministically instead of
+    /// winning a thread-timing lottery.
     /// Compiled only under test; never set in production. The closure must
     /// NOT re-enter the store: the boundary lock is held across it, so a
     /// re-entering mutation would deadlock on itself (block on a flag, or
@@ -360,6 +361,10 @@ impl Store {
                 Some("shutting down".into()),
             ));
         }
+        // Past admission, before the mirror: the one place a test can hold
+        // an admitted mutation mid-commit (issue #143).
+        #[cfg(test)]
+        self.run_pre_mirror_gate();
         if let Some(persist) = &self.persist
             && let Err(e) = write(persist)
         {
@@ -762,8 +767,6 @@ impl Store {
             .map(|l| l.value().iter().cloned().collect())
             .unwrap_or_default();
         let ids: Vec<&str> = drained_ids.iter().map(|e| e.id.as_str()).collect();
-        #[cfg(test)]
-        self.run_pre_mirror_gate();
         // COMMIT before visibility: per-id deletes — never `WHERE inbox =
         // ?`. The boundary holds the whole mutation, so a racing insert
         // cannot land between the plan and the commit; per-id deletes
@@ -788,8 +791,6 @@ impl Store {
             drained_ids.extend(entry.value().iter().cloned());
         }
         let ids: Vec<&str> = drained_ids.iter().map(|e| e.id.as_str()).collect();
-        #[cfg(test)]
-        self.run_pre_mirror_gate();
         // COMMIT: per-id deletes, for the same reason as `clear`.
         self.record("clear_all", |persist| persist.record_deletes(&ids))?;
         // APPLY, only on Ok: every drain plus the sweep's watcher release —
