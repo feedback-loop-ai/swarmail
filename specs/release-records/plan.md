@@ -5,6 +5,25 @@ See [spec](spec.md) for requirements/ACs and
 semantics. This plan retains the implementation contracts and records the
 resume approach; it is not a fresh verification verdict.
 
+## Resume approach — 2026-10-19, re-drive 3
+
+Preserve `8478924` and the committed reconciliation `3b218b0`. The only
+planned edits in this chief step are dated confirmation notes in the three
+existing artifacts. The implementation ownership map and proof contracts
+below continue unchanged; use them to investigate a demonstrated gap, not
+as a mandate to repeat completed edits. Decision 0051 stays proposed and
+untouched. The earlier resume approach remains dated history.
+
+After committing these three files with the configured signing key, audit
+the exact changed paths and clean tree, and run the canonical design check
+against HEAD. The sequence's pinned invocation owns the verdict. Downstream
+gate logs must record the actual final HEAD and distinguish prior receipts
+from freshly executed proofs. Keep R02–R07 outstanding until their owners
+produce evidence. No local Helm/Docker substitution, new tool installation,
+branch rewrite or unsigned fallback is permitted. If the signing or index
+boundary refuses, preserve the draft and report the delivery limitation;
+do not describe uncommitted artifacts as a committed design.
+
 ## Resume approach — 2026-10-19, re-drive 2
 
 Confirm commit `8478924` on the existing `epic120-release-docs` branch; do

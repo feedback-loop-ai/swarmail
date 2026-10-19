@@ -7,6 +7,34 @@ Issues: epic #120, batch 6, #141, #142 and #144.
 
 Decision: 0051 — [Release prerequisites and decision provenance](../../docs/decisions/0051-release-records.md), **proposed**.
 
+## Resume ruling — 2026-10-19, re-drive 3
+
+Run `epic-120-batch-6-of-6-re-drive-3-7b1226d5` resumes from `3b218b0`,
+which committed the preceding reconciliation above implementation `8478924`.
+Both current positions and the intake confirm the existing design; the
+earlier dated ruling below is retained as history. This confirmation changes
+no acceptance criterion, runtime contract or decision status. Keep
+`release-records` and proposed 0051; no new decision is warranted.
+
+Adopt simplicity's reuse of the existing owners and robustness's preservation
+of both commits and the prepared version triple. Neither panel identifies a
+new implementation gap. Reject speculative repairs, version changes, new
+gate owners and automatic registry recovery for the costs already ruled
+below. The current positions have no substantive feature conflict. On the
+delivery choice, robustness permits a no-op chief at `3b218b0`; choose a
+dated three-artifact confirmation to satisfy this commission's explicit
+commit requirement. Its cost is another signed documentation commit, not a
+claim that the prior artifacts were defective.
+
+Fresh evidence must name the final assessed HEAD, including this confirmation
+if committed, rather than hard-code robustness's inspected `3b218b0` as the
+future verification target. Prior gate receipts and reported signatures are
+not fresh attestations. Preserve the branch without re-cutting or rewriting;
+implementation may remain unchanged after its renewed audit. Local gates,
+signature verification, review and ship remain downstream obligations; actual
+event-baseline/Helm verification and real Docker smoke remain CI obligations.
+No unavailable proof is passed by this design, whose result is `drafted`.
+
 ## Resume ruling — 2026-10-19, re-drive 2
 
 The first design and implementation are present in signed commit

@@ -1,5 +1,22 @@
 # Ordered resume tasks — release safety and truthful records
 
+## Status — 2026-10-19, re-drive 3
+
+The preceding task reconciliation is committed in `3b218b0` above `8478924`.
+Both panel positions confirm it. Retain the prior implementation/evidence map
+and ordered R01–R07 below; no completed implementation task is reopened.
+For this resume, R01 preserves both commits and commits only this run's dated
+three-artifact confirmation. Its paired proof remains the exact-path, clean
+tree, signature and HEAD-bound design checks. A structural precheck alone
+does not complete R01's signature or final sequence obligations.
+
+R04's permitted repair must be a new signed descendant of this confirmation,
+preserving `3b218b0` as well as `8478924`. R05 evidence names the actual final
+HEAD, not the panel's earlier inspection target. All unchecked tasks remain
+proof obligations; historical green logs do not check them off. In
+particular, R06 remains the CI owner's actual event-baseline/Helm and Docker
+execution, and R07 retains signature verification and operator handoff.
+
 ## Status — 2026-10-19, re-drive 2
 
 Implementation is present in signed commit
