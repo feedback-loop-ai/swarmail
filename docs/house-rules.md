@@ -28,6 +28,17 @@ with status `proposed`; only the operator accepts one. The decisions there
 are the authority on why the code is shaped the way it is — intake seats read
 the index and the decisions their task touches before framing anything.
 
+**Code under a proposed decision** (accepted decision 0045 §8). A proposal
+is a status, not operator acceptance. Compatible implementation — work that
+preserves every accepted ruling — may land while its decision is still
+proposed. A change that contradicts an accepted ruling waits for operator
+acceptance of the decision that amends it; that holds for amendments to every
+one of decisions 0001–0005, not only the frozen first three. Weakening a
+frozen guarantee is refused regardless of green tests, even with a proposal
+beside it. The operator's acceptance of earlier proposals (for example the
+2026-10-19 acceptance of 0034–0050 and 0055) is not standing permission for
+future ones: each proposal is accepted, or not, on its own.
+
 ## Gates — part of every change
 
 Leave all of these clean before reporting success:
@@ -47,12 +58,18 @@ cargo deny check licenses              # permissive-only tree
 This is the one gate inventory: CI and the verify seat both run all of it,
 plus a fail-closed proof that `native-tls` is absent from the tree. The
 differences are listed here once (issue #104). CI also owns the Helm chart
-contract (`scripts/chart-verify.sh`), the network-backed RustSec advisory
-audit, the tag-only `release-rate-5k` proof that both publish jobs
-need, and the stdio bridge's real port-80 exchange (the ignored
-`portless_bridge_pings_port_eighty`, run with the Linux unprivileged port
-floor lowered and as root on macOS — proposed 0047 §4). The verify seat runs offline and
-installs nothing.
+contract (`scripts/chart-verify.sh`), including its chart-bump check
+against the event's baseline and that check's selftest
+(`chart-verify.sh history` and `selftest`, issue #141), the real-Docker
+image smoke (`scripts/docker-smoke.sh`: persistence across stop and kill,
+no leaked anonymous volume, no `target/` in the build context), the
+network-backed RustSec advisory audit, the tag-only `release-rate-5k`
+proof that both publish jobs need, and the stdio bridge's real port-80
+exchange (the ignored `portless_bridge_pings_port_eighty`, run with the
+Linux unprivileged port floor lowered and as root on macOS — decision
+0047 §4). A tag publishes the image before the chart: the chart job needs
+the image job's success and preflights the image it names (proposed
+0051). The verify seat runs offline and installs nothing.
 
 Tests are part of every change. Extend the suite that proves the code —
 `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` or the unit tests — and run
@@ -108,7 +125,7 @@ test lives; the axis is **cold-path presence**, not seam access:
    `*-tests.rs`): the coverage gate refuses any such file that its parent
    module does not declare under `#[cfg(test)]`. That declaration check is
    the structural half; it is not what closes the denominator. The refusals
-   are by effect (proposed 0035, refined by proposed 0050 §2): every file the
+   are by effect (decision 0035, refined by 0050 §2): every file the
    production build compiles must appear in the report, every exclusion that
    survives the compiler's expansion of a production unit *or of the
    library's test unit* refuses, each production unit's expansion must equal
@@ -116,7 +133,7 @@ test lives; the axis is **cold-path presence**, not seam access:
    workspace member or any local path package refuses.
 
 The gate scripts themselves are the pinned bundle's
-(`bundles/self/scripts/`, proposed 0050 §1): `scripts/coverage-gate.sh`,
+(`bundles/self/scripts/`, decision 0050 §1): `scripts/coverage-gate.sh`,
 `scripts/publish-guard*.sh`, `scripts/design-check.sh`, `scripts/seal-branch*.sh` and
 `.specify/scripts/bash/check-prerequisites.sh` are fixed dispatch shims the
 verify seat checks against `bundles/self/scripts/shims.sha256` and never
@@ -124,14 +141,20 @@ executes; it runs the pinned copies against the candidate.
 
 ## Dependencies
 
-`deny.toml` allowlists permissive licenses only (MIT, Apache-2.0, BSD, ISC,
-Zlib, Unicode-3.0, CC-BY-4.0 for data noted inline, and CDLA-Permissive-2.0
-for one data dependency). The CDLA-Permissive-2.0 entry covers
+`deny.toml` allowlists permissive licenses only, and only those the locked
+tree uses: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-3.0,
+and CDLA-Permissive-2.0 for one data dependency. (Zlib and CC-BY-4.0 were
+dropped as unused allowances, #142; restoring either is a reviewed widening
+like any other.) The CDLA-Permissive-2.0 entry covers
 `webpki-roots`, Mozilla's root CA bundle shipped as data. It is the only
 license under which rustls distributes the offline trust store, and it
 carries no copyleft and no field-of-use restriction. Anything outside the
 allowlist fails `cargo deny check licenses`; a new dependency needs a
 permissive license and a reason a human can defend in one sentence.
+One data file is not a dependency and so is outside that check: the
+pinned WHATWG `entities.json` snapshot, `scripts/data/html-entities.json`,
+is CC-BY-4.0 data the crate packages for the entity table's proof
+(decision 0049 §2), attributed where it is recorded.
 
 ## Commits and history
 
@@ -164,8 +187,17 @@ Three kinds of signature are on record, and they mean different things:
 - **Release tags** — signed by the operator when cutting a release
   (`CONTRIBUTING.md`, Releases); sealing never touches a tag.
 
-Historical exceptions stay as recorded where they were recorded; none is a
-standing permission. History is append-only on `main`; force-push only ever
+- **Documented historical exceptions** — the squash messages of #107
+  (`d9a66f4`), #108 (`745d6ad`) and #109 (`bacadbe`) record eleven author
+  commits as "not GPG-signed" (pinentry could not prompt in the seat's
+  environment); the squash messages of #34, #59, #62 and #66 record
+  "Unsigned" author commits the same way; and ten direct commits of
+  2026-10-13/14 sit on `main` unsigned themselves (`4f94b33` through
+  `66fab48` — `git log --first-parent --format='%G? %h' main` lists them
+  as `N`). They stay as recorded: `main` is not rewritten to re-sign them,
+  and they set no precedent.
+
+Those exceptions stay as recorded; none is a standing permission. History is append-only on `main`; force-push only ever
 touches a PR branch — sealing it, or repairing signed history the operator
 asked to re-sign.
 

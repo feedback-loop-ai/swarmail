@@ -107,3 +107,24 @@ p99 2.432 ms per 256 KiB mail; a concurrent 1 ms task saw p99 3.008 ms overshoot
 not a throughput optimization: commit-rate-bound ingest is unchanged within run-to-run noise
 (1046 → 973 mails/s on this run; the commit still happens, on a blocking-pool thread instead of
 the worker). The handoff is the entire cost of the repair.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above stays as the
+accepted historical ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Extended by [0030](0030-loopback-plane-bounded-results.md) (accepted
+  2026-10-16): §1's offload seam carries the parse leg as well as the
+  commit leg — same mechanism, same panic symmetry, no new ruling. 0030
+  declared this extension without a marker here;
+  [0045](0045-delivery-repairs.md) §7 records it, and it is appended on
+  2026-10-19. Later records name further off-worker call sites — compat
+  page construction (0044) and every compat single-message response
+  ([0049](0049-extraction-compat.md)). No record promises that every list
+  or await copy is offloaded, and none changes mutation ordering.)*
+- *(Recorded by [0045](0045-delivery-repairs.md) (accepted 2026-10-19): §7
+  records 0030's extension above as an existing amendment and asks for the
+  missing 0030 link here; this marker and the one above are that link. 0045
+  changes nothing in this record.)*

@@ -209,3 +209,20 @@ harness file** — harness execution of production lines still feeds the report.
   renames.
 - **The #2 and #3 regression tests are not written by this settlement** — it only lays the
   ground they stand on.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above stays as the
+accepted historical ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended by [0035](0035-coverage-gate-refuses-by-effect.md) (accepted
+  2026-10-19): §3's leak-check sentence only — "the leak-check fires on
+  *presence*" is reversed to the membership direction. A harness-named
+  `SF:` record refuses when its file is *not* in the production build's
+  fn-bearing set and passes when it is (0035 §4). §§1 and 3 otherwise stand:
+  no exclusion under `src/`, inline `cfg(test)` code stays measured, and the
+  tripwire (rule 6) and hidden-dir check are unchanged.
+  [0050](0050-delivery-gates.md) refines 0035's checks without changing this
+  direction.)*

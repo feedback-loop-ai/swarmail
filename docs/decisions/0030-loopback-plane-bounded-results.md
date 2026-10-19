@@ -265,3 +265,26 @@ the fan-out.
   (0023's bench discipline — no wall-clock validity assertions).
 - 0018 carries no marker for this decision yet: an `Amended by` line
   lands only upon acceptance (0028's precedent), as a landing task.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above stays as the
+accepted historical ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it. The
+landing task in the last Consequence is now done: 0018 and 0023 carry dated
+"Extended by 0030" markers (appended 2026-10-19, recorded by
+[0045](0045-delivery-repairs.md) §7).
+
+- *(Amended by [0043](0043-mcp-origin-boundary.md) (accepted 2026-10-19):
+  §2's off-loopback Origin validation and default-port Host admission. Off
+  loopback a present Origin must match the Host authority (scheme-default
+  ports normalized on both), refusing `403 cross-origin requests must match
+  the Host authority` before any effect; on loopback a portless Host means
+  port 80. The loopback Origin's explicit-port rule is unchanged.)*
+- *(Amended by [0044](0044-compat-validation.md) (accepted 2026-10-19):
+  §4's search fold short-circuits; and 0044 extends §3 with a distinct
+  MailHog response-byte bound while retaining its 250-item cap.)*
+- *(Extended/clarified by [0049](0049-extraction-compat.md) (accepted
+  2026-10-19): the off-worker work scope — every compat single-message
+  response is built off the async workers, not only the pages.)*

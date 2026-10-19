@@ -25,3 +25,15 @@ the AUTH username, so the inbox is free. A test runner sets
   operate per-inbox, so parallel runs never contend.
 - `clear_all` exists for suite teardown and is the only cross-inbox
   destructive endpoint.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The text above stays
+as the accepted founding ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended by [0028](0028-wire-octets-auth-refusals-and-the-maildrop-snapshot.md)
+  (accepted 2026-10-16): §1 and §3 gain a refusal posture, not a new
+  identity rule — the AUTH username still names the inbox, and credentials
+  that fail to name one answer `501 5.5.2` and change nothing instead of
+  silently succeeding. 0028 §2 is itself later amended by 0034 and 0046.)*

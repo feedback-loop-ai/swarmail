@@ -18,11 +18,11 @@
 //! **One server per data file** — a second process opening the same file
 //! refuses at startup. Two advisory locks are held for the process's
 //! lifetime: the `<data-file>.lock` sidecar beside the path as spelled
-//! (decision 0033 §§2–4, proposed 0042), and an identity guard,
+//! (decision 0033 §§2–4, decision 0042), and an identity guard,
 //! `/tmp/swarmail-db-locks-<owner uid>/<device>-<inode>.lock`, so the file's
 //! identity — not its name — is owned: a second server reaching it through
 //! a symlink or a hard link, in any directory, names the same guard and is
-//! refused too (proposed 0047 §1, issue #129). The root is fixed — never
+//! refused too (decision 0047 §1, issue #129). The root is fixed — never
 //! `TMPDIR`, `HOME` or the file's own directory — so every spelling meets
 //! there. Neither lock is ever on the database or its `-wal`/`-shm`/
 //! `-journal`: on Darwin and the BSDs `flock` and SQLite's POSIX record
@@ -133,7 +133,7 @@ struct State {
 /// The write-through mirror. Cheap to clone-free share: `&self` is enough.
 pub struct Persist {
     state: Mutex<State>,
-    /// The held identity guard (proposed 0047 §1) — never the data file
+    /// The held identity guard (decision 0047 §1) — never the data file
     /// itself. Declared after `state` so SQLite finishes closing and
     /// checkpointing before ownership is released.
     _identity: File,
@@ -244,7 +244,7 @@ fn acquire(path: &Path, file: &Path) -> Result<File, OpenError> {
     Ok(held)
 }
 
-/// The fixed rendezvous root of the identity guards (proposed 0047 §1):
+/// The fixed rendezvous root of the identity guards (decision 0047 §1):
 /// never `TMPDIR`, `HOME`, the working directory or the data file's own
 /// directory, so every spelling of one file — a hard link in another
 /// directory included — meets at the same guard.
@@ -252,7 +252,7 @@ fn acquire(path: &Path, file: &Path) -> Result<File, OpenError> {
 const IDENTITY_ROOT: &str = "/tmp";
 
 /// The data file's identity, read without opening an existing file
-/// (proposed 0047 §1): closing any descriptor on the database drops every
+/// (decision 0047 §1): closing any descriptor on the database drops every
 /// POSIX record lock this process's SQLite holds on it, so a refused
 /// in-process alias must never open and close one. A missing file is
 /// created exclusively — no wider than SQLite's 0644, subject to umask —
@@ -294,7 +294,7 @@ fn create_new(path: &Path, mode: u32) -> std::io::Result<Option<File>> {
     }
 }
 
-/// The identity guard (proposed 0047 §1),
+/// The identity guard (decision 0047 §1),
 /// `<root>/swarmail-db-locks-<owner uid>/<device>-<inode>.lock`, locked
 /// exclusively. The database and its `-wal`/`-shm`/`-journal` companions
 /// are never locked by us: on Darwin and the BSDs `flock` and SQLite's
@@ -380,7 +380,7 @@ fn acquire_identity(path: &Path) -> Result<File, OpenError> {
 impl Persist {
     /// Open (creating if needed) the data file and its schema — after
     /// taking its sidecar lock (decision 0033 §2) and then its identity
-    /// guard (proposed 0047 §1), so a refused second server, by the same
+    /// guard (decision 0047 §1), so a refused second server, by the same
     /// path or through an alias, never runs SQLite on the database.
     pub fn open(path: &Path) -> Result<Self, OpenError> {
         let lock = acquire(path, &lock_path(path))?;
@@ -1286,7 +1286,7 @@ mod tests {
             .expect("the failed open released the sidecar");
     }
 
-    /// The refusal follows the file, not its name (proposed 0047 §1, issue
+    /// The refusal follows the file, not its name (decision 0047 §1, issue
     /// #129; red before: both aliases opened beside the owner): a symlink,
     /// a hard link and a hard link in another directory each get their own
     /// sidecar, so only the identity guard can refuse them — in both
@@ -1336,7 +1336,7 @@ mod tests {
         )
     }
 
-    /// The identity guard comes before SQLite (proposed 0047 §1): with
+    /// The identity guard comes before SQLite (decision 0047 §1): with
     /// only the guard held, the refused open leaves the file empty — no
     /// schema, no `-wal` — and releases its sidecar; the failed SQLite open
     /// of a malformed file releases the identity guard with the sidecar.
@@ -1367,7 +1367,7 @@ mod tests {
         drop(hold_identity(&garbage).expect("the failed open released the identity guard"));
     }
 
-    /// The macOS self-lock regression (proposed 0047 §1, #129 fix-up; red
+    /// The macOS self-lock regression (decision 0047 §1, #129 fix-up; red
     /// on `794e919`, whose `flock` on the database itself refused this
     /// probe): while a server owns a live database, no lock of ours sits on
     /// the database or on SQLite's `-wal`/`-shm` — so on Darwin, where
@@ -1397,7 +1397,7 @@ mod tests {
         drop(persist);
     }
 
-    /// A missing data file's creation race (proposed 0047 §1): when a
+    /// A missing data file's creation race (decision 0047 §1): when a
     /// competing creator wins the exclusive create, the winner's identity
     /// is read from metadata — its bytes and mode untouched, no truncation.
     #[cfg(unix)]
@@ -1451,7 +1451,7 @@ mod tests {
         );
     }
 
-    /// The rendezvous (proposed 0047 §1): the owner directory is created
+    /// The rendezvous (decision 0047 §1): the owner directory is created
     /// private (0700), the guard private (0600) and keyed by device and
     /// inode alone — so a symlink and a hard link in another directory
     /// meet the held guard and are refused by their own names, a distinct
@@ -1500,7 +1500,7 @@ mod tests {
         drop(independent);
     }
 
-    /// The owner directory fails closed (proposed 0047 §1): a missing root,
+    /// The owner directory fails closed (decision 0047 §1): a missing root,
     /// a regular file, a symlink to a private directory, a directory open
     /// to others and one of another owner are each an I/O refusal naming
     /// the directory with its cause — never repaired, never replaced.
@@ -1559,7 +1559,7 @@ mod tests {
         );
     }
 
-    /// The guard entry fails closed before it is opened (proposed 0047
+    /// The guard entry fails closed before it is opened (decision 0047
     /// §1): a symlink (planted onto the database itself), a directory, a
     /// hard-linked guard and one open to others are each an I/O refusal
     /// naming the guard; the planted symlink never lets us lock the
@@ -1614,7 +1614,7 @@ mod tests {
         );
     }
 
-    /// The data file is never opened to be identified (proposed 0047 §1):
+    /// The data file is never opened to be identified (decision 0047 §1):
     /// an existing file's bytes and mode are untouched; a data path that is
     /// not a regular file is an I/O refusal naming it with its cause, not
     /// a SQLite error.
@@ -1650,7 +1650,7 @@ mod tests {
         assert_eq!(err.to_string(), format!("{}: {cause}", dir_path.display()));
     }
 
-    /// Our guards lock no SQLite file (proposed 0047 §1): a raw connection
+    /// Our guards lock no SQLite file (decision 0047 §1): a raw connection
     /// beside the owner still takes `BEGIN IMMEDIATE` and commits, the
     /// owner then commits its own write, and the owner's busy bound is the
     /// dependency's. Green on Linux before the macOS repair too — the

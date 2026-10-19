@@ -1,6 +1,7 @@
 # 0050 — Delivery verdicts bind to executed proofs
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-19
 - **Refines:** proposed [0035](0035-coverage-gate-refuses-by-effect.md) and
   [0045](0045-delivery-repairs.md) §§1–3.

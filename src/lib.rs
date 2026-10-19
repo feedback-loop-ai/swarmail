@@ -107,7 +107,10 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
 
     // One degraded flag per listening surface, created where the listeners
     // are bound (decision 0027): an accept loop sets its own on a failed
-    // accept and clears it on the next success, and /healthz reads the pair
+    // accept and clears it when it next observes a healthy accept — a poll
+    // that parks pending (decision 0036 §2: an idle recovered listener
+    // must not stay degraded waiting for a connection) or an accepted
+    // connection; the backoff pause never clears it. /healthz reads the pair
     // to answer `degraded` with the surfaces that cannot accept. Plain
     // atomics: the loop already reorders around the failure, and the flag
     // is advisory truth about a socket, not a lock domain.

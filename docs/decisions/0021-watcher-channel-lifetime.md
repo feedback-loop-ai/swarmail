@@ -113,3 +113,18 @@ not channel lifetime; 0001 on acceptance; 0003 on pruning.
   release (no drop hook; refcount/guard machinery), and idle-TTL
   eviction (nondeterministic promptness). If a later wave wants the token
   swap, it arrives with its own review.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above stays as the
+accepted historical ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended by [0038](0038-store-memory-and-timestamps.md) (accepted
+  2026-10-19): the Consequences' bounded-memory/residue claim. A distinct
+  awaited name can leave a channel after its last receiver leaves, so
+  watcher residue is unbounded in aggregate across distinct names (about
+  780 B per name observed on one build, not a ceiling); reusing a name
+  reuses its channel. The lifecycle and atomic registration above are
+  preserved (0038 §1).)*

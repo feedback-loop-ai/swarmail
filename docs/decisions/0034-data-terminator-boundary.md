@@ -1,6 +1,7 @@
 # 0034 — Complete DATA boundaries and deliberate SMTP session transitions
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18
 - **Issues:** #73, #81, #82 (run 13, epic #70).
 - **Spec:** [SMTP session boundaries](../../specs/smtp-session-boundaries/spec.md).
@@ -120,3 +121,15 @@ does not assert implementation, operator acceptance or gate completion.
 control character, is refused `501` like any other malformed path. A quoted local part
 holding `>` and a literal source route are named limitations, not supported grammar.
 AUTH names pass the shared inbox rule untrimmed.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later record below on 2026-10-19; the text above, the
+0046 pointer included, stays as written, and that pointer's "proposed" is
+historical. Each marker uses the later record's own verb and scope.
+
+- *(Updated by [0046](0046-smtp-pop3-edges.md) (accepted 2026-10-19):
+  §§3/5's path and trimmed-authcid wording, as the pointer above describes —
+  blank or control-bearing paths refuse `501`, and AUTH names pass the
+  shared inbox rule untrimmed.)*

@@ -1,5 +1,5 @@
 //! The listener contract as documented (decision 0036, issues #77–#80): the
-//! README, the dated controlling clarification of 0027 and proposed 0036
+//! README, the dated controlling clarification of 0027 and accepted 0036
 //! must state what the listeners actually do. #80 deliberately leaves the
 //! runtime unchanged, so its red/green proof is this documentary one: the
 //! reviewed text — "a trickler cannot hold a session forever", the
@@ -119,9 +119,18 @@ fn the_readme_states_the_current_listener_posture() {
 fn the_0027_clarification_controls_and_links_proposed_0036() {
     let record = doc("docs/decisions/0027-living-listeners-bounded-sessions.md");
     let heading = "## Clarification — 2026-10-18 (controlling)";
-    let (history, clarification) = record
+    let (history, rest) = record
         .split_once(heading)
         .expect("0027 must carry the dated controlling clarification");
+    // The clarification is its own section; the dated sections appended
+    // after it (pointers, acceptance provenance) are read separately.
+    let (clarification, later) = rest.split_once(" ## ").unwrap_or((rest, ""));
+    // Its acceptance provenance is appended, never written into it.
+    assert!(
+        later.contains("*(Amended by [0036](0036-smtp-trickle-lifetime.md) (accepted 2026-10-19):")
+            && later.contains("**Acceptance provenance:**"),
+        "0027 must carry 0036's dated acceptance provenance after the clarification"
+    );
     // The accepted history stays: status and the original ruling survive.
     assert!(history.contains("- **Status:** accepted"), "{history}");
     assert!(history.contains("## Decision"), "the ruling is kept");

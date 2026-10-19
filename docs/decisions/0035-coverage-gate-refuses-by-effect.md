@@ -1,6 +1,7 @@
 # 0035 — The exact coverage gate refuses by effect: the build's own file set and the compiler's canonical expansion are the inventories
 
-- **Status:** `proposed` — acceptance is the operator's. Until accepted,
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: `proposed` — acceptance is the operator's. Until accepted,
   this document records the design run 12g commits to; it amends 0020 §3's
   leak-check sentence and nothing else. 0020's own file is not edited.
 - **Date:** 2026-10-17
@@ -164,3 +165,28 @@ tree passing at exact 100/100/100 with the new checks silent; no Rust
 lexing in bash; the helper hermetic and outside the measured crate. The
 batch carries this decision `proposed`; the operator accepts or returns
 it.
+
+## Clarification — 2026-10-19 (known-limits numbering)
+
+The Known limits list above is numbered 1, 2, 3, 5: there is no item 4. The
+file landed in one commit (`bacadbe`) whose list never held an item 4, so
+the list has four items. Read old item **5** (the syn
+parse refusal and the cfg coupling of the expansion) as the fourth
+sequential item. The body is not renumbered, so an existing citation of
+"item 5" or "limit 5" keeps its identity and means that same item. This
+clarification records no new limit and changes none.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later record below on 2026-10-19; the text above stays
+as written. Each marker uses the later record's own verb and scope. The
+amendment this record makes to 0020 §3 now carries a dated marker in
+[0020](0020-concurrency-tests-and-the-coverage-gate.md).
+
+- *(Refined by [0050](0050-delivery-gates.md) (accepted 2026-10-19): the
+  coverage checks — measured, no-coverage and release-profile production
+  expansions must agree, the test expansion is scanned too, and extra
+  application workspace packages and unharvested local production
+  dependencies refuse (0050 §2). The derive-provenance and
+  uninstantiated-generic limits named above remain.)*

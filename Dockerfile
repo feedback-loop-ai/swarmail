@@ -32,8 +32,10 @@ ENV SWARMAIL_SMTP_LISTEN=0.0.0.0:1025 \
     SWARMAIL_HTTP_LISTEN=0.0.0.0:8025
 EXPOSE 1025 1110 8025
 USER 65532:65532
-# `docker stop` sends this signal — the default is SIGKILL, which would
-# skip the drain entirely. SIGTERM is the graceful path the watcher takes
-# (decision 0027).
+# `docker stop` sends this signal first — SIGTERM is also Docker's default,
+# stated here so the graceful path the watcher takes (decision 0027) is
+# part of the image contract. Docker sends SIGKILL only when the stop grace
+# expires, and its default 10 s grace is no longer than the server's own
+# 10 s drain, so the documented runs pass `--stop-timeout 30`.
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/swarmail", "serve"]

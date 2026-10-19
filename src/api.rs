@@ -37,8 +37,11 @@ pub struct AppState {
     /// it is the only state a graceful shutdown needs that the router owns.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
     /// Per-surface accept health (decision 0027), set by each loop on a
-    /// failed accept and cleared on its next success. `/healthz` names the
-    /// surfaces that cannot currently take connections.
+    /// failed accept and cleared when the loop next observes a healthy
+    /// accept: a poll that parks pending (decision 0036 §2 — an idle
+    /// recovered listener is not left degraded until a client connects) or
+    /// an accepted connection. `/healthz` names the surfaces that cannot
+    /// currently take connections.
     pub smtp_degraded: Arc<AtomicBool>,
     pub pop3_degraded: Arc<AtomicBool>,
     /// The bound HTTP port when the HTTP listener is loopback-bound — the
@@ -273,7 +276,7 @@ const AWAIT_REGISTRY_CAP: usize = 4096;
 
 /// The reserved overflow row's label: one line feed, which
 /// [`crate::model::validate_inbox`] refuses (a control, and blank), so no
-/// admissible inbox can share the row (proposed 0047 §2, issue #130 — the
+/// admissible inbox can share the row (decision 0047 §2, issue #130 — the
 /// old `_uncounted` was a legal name). It renders as `inbox="\n"`, the
 /// Prometheus escape; a literal backslash-n name renders as `inbox="\\n"`.
 const AWAIT_REGISTRY_OVERFLOW: &str = "\n";
@@ -436,7 +439,7 @@ async fn origin_guard(
 /// or out of `u16` range, an unclosed bracket, or anything but `:port`
 /// after `]` is `None` — malformed, never mistaken for omission (the
 /// absent-versus-invalid line of decision 0025, applied to ports). The
-/// stdio bridge dials by the same reading (proposed 0047 §4).
+/// stdio bridge dials by the same reading (decision 0047 §4).
 pub(crate) fn split_authority(authority: &str) -> Option<(&str, Option<u16>)> {
     let (host, port) = if authority.starts_with('[') {
         // IPv6 literal: the host runs through `]`; only `:port` may follow.
@@ -609,7 +612,7 @@ fn registry_rows(registry: &'static Registry, name: &str, kind: &str, total: u64
 }
 
 /// A cumulative registry's rows with the total summed from the very rows
-/// rendered — one lock, one snapshot (proposed 0047 §2), so a scrape's
+/// rendered — one lock, one snapshot (decision 0047 §2), so a scrape's
 /// unlabeled total always equals the sum of its labeled samples, the
 /// overflow row's included, however many waits register meanwhile.
 fn cumulative_rows(registry: &Registry, name: &str) -> String {
@@ -1606,7 +1609,7 @@ pub(crate) const MCP_BODY_LIMIT: usize = 2_097_152;
 
 /// The cause axum's extractor gives a body over [`MCP_BODY_LIMIT`]: the
 /// stdio bridge refuses an oversized body locally in these same words
-/// (proposed 0047 §4), pinned against a real 413 by the bridge's suite.
+/// (decision 0047 §4), pinned against a real 413 by the bridge's suite.
 pub(crate) const MCP_BODY_TOO_LARGE: &str =
     "Failed to buffer the request body: length limit exceeded";
 
@@ -1681,7 +1684,7 @@ mod tests {
         out
     }
 
-    /// The overflow row can be no inbox's (proposed 0047 §2, issue #130;
+    /// The overflow row can be no inbox's (decision 0047 §2, issue #130;
     /// red before: `_uncounted` was both a legal inbox and the overflow
     /// label): the sentinel is one line feed, which the shared inbox rule
     /// refuses, while `_uncounted` and the literal two-character `\n` stay
@@ -1751,7 +1754,7 @@ mod tests {
         );
     }
 
-    /// The cumulative scrape is one snapshot (proposed 0047 §2): the
+    /// The cumulative scrape is one snapshot (decision 0047 §2): the
     /// unlabeled total is summed from the rows rendered beside it, so it
     /// equals the sum of the labeled samples — the overflow's `inbox="\n"`
     /// included.
@@ -2326,6 +2329,10 @@ mod tests {
             Some(r#"{"status":"stopping"}"#),
             "{reply:?}"
         );
+        assert!(
+            openapi_documents("/healthz", "get", 503),
+            "the stopping 503 is in the published response map"
+        );
         tokio::time::timeout(DRAIN_DEADLINE, server)
             .await
             .expect("the drain ends once the probe is answered")
@@ -2400,6 +2407,15 @@ mod tests {
             body,
             serde_json::json!({"status": "degraded", "degraded": ["smtp"]}).to_string()
         );
+        // The published contract carries both observed answers (issue #142,
+        // D23): the healthy 200 and this degraded 503 are each in the
+        // operation's response map — red when the 503 entry is removed.
+        for observed in [200, code] {
+            assert!(
+                openapi_documents("/healthz", "get", observed),
+                "GET /healthz answered {observed}, which openapi.json must list"
+            );
+        }
         // The seam is thread-local and this thread runs other tests after
         // this one: leave it as it was found, so no later serve on this
         // thread inherits a phantom failure.
@@ -2520,6 +2536,82 @@ mod tests {
             err.to_string().contains("invalid digit"),
             "the shared parse sentence names the defect: {err}"
         );
+    }
+
+    /// Whether the embedded openapi.json lists `status` in the response map
+    /// of `method` on `path` — the wire tests' link from an observed answer
+    /// to the published operation (issue #142, D23).
+    fn openapi_documents(path: &str, method: &str, status: u16) -> bool {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("static/openapi.json")).expect("openapi.json");
+        doc["paths"][path][method]["responses"]
+            .get(status.to_string().as_str())
+            .is_some()
+    }
+
+    /// The await and assert page domains as published equal the parsers
+    /// and constants that apply them (issue #142, D22): await's `limit` is
+    /// the shared list page — default 100, 0 legal, capped at 250 — and its
+    /// `count` defaults to one, accepts 0 as a minimum-one wait and caps at
+    /// 250; assert's `limit` is type-checked but inert — no default, no cap,
+    /// any non-negative integer — and its exact `count` defaults to one and
+    /// keeps 0. Red on the old 50/minimum-1 values. tests/api.rs proves the
+    /// same numbers on the wire.
+    #[test]
+    fn the_served_openapi_publishes_the_await_and_assert_domains() {
+        let doc: serde_json::Value =
+            serde_json::from_str(include_str!("static/openapi.json")).expect("openapi.json");
+        let schema = |path: &str, name: &str| -> serde_json::Value {
+            doc["paths"][path]["get"]["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["name"] == name)
+                .expect("the parameter is documented")["schema"]
+                .clone()
+        };
+        let await_path = "/api/v1/inboxes/{inbox}/await";
+        let assert_path = "/api/v1/inboxes/{inbox}/assert";
+
+        let limit = schema(await_path, "limit");
+        assert_eq!(limit["default"], DEFAULT_LIST_LIMIT, "{limit}");
+        assert_eq!(limit["minimum"], 0, "{limit}");
+        assert_eq!(limit["maximum"], MAX_PAGE_SIZE, "{limit}");
+        assert_eq!(checked_page_size("limit", 0), Ok(0), "0 is a legal page");
+        let omitted: AwaitQuery = serde_urlencoded::from_str("").expect("an empty await query");
+        assert_eq!(omitted.limit, None, "an omitted limit rides the default");
+
+        let count = schema(await_path, "count");
+        assert_eq!(count["default"], omitted.min_one_count(), "{count}");
+        assert_eq!(count["minimum"], 0, "{count}");
+        assert_eq!(count["maximum"], MAX_PAGE_SIZE, "{count}");
+        let zero: AwaitQuery = serde_urlencoded::from_str("count=0").expect("count=0 parses");
+        assert_eq!(zero.min_one_count(), 1, "count=0 waits for one");
+        assert_eq!(
+            checked_page_size("count", MAX_PAGE_SIZE + 1),
+            Err(format!("count must be at most {MAX_PAGE_SIZE}"))
+        );
+
+        let inert = schema(assert_path, "limit");
+        assert_eq!(inert.get("default"), None, "no page default: {inert}");
+        assert_eq!(inert.get("maximum"), None, "no page cap: {inert}");
+        assert_eq!(inert["minimum"], 0, "the parser's unsigned domain: {inert}");
+        for accepted in ["limit=0".to_string(), format!("limit={}", usize::MAX)] {
+            serde_urlencoded::from_str::<AssertQuery>(&accepted).expect("an inert limit parses");
+        }
+        serde_urlencoded::from_str::<AssertQuery>("limit=-1").expect_err("a negative limit");
+
+        let exact = schema(assert_path, "count");
+        let omitted: AssertQuery = serde_urlencoded::from_str("").expect("an empty assert query");
+        assert_eq!(exact["default"], omitted.exact_count(), "{exact}");
+        assert_eq!(exact["minimum"], 0, "{exact}");
+        assert_eq!(
+            exact.get("maximum"),
+            None,
+            "assert's count is exempt: {exact}"
+        );
+        let zero: AssertQuery = serde_urlencoded::from_str("count=0").expect("count=0 parses");
+        assert_eq!(zero.exact_count(), 0, "0 is the negative assertion");
     }
 
     /// The count and view routes publish exactly what their parsers take

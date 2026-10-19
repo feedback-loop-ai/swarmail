@@ -98,3 +98,18 @@ first crash.
 - **Documentation only**: a documented crash loop is still a crash loop,
   and the doc is read after the first one. The probe and the relation are
   required *in addition* to the docs, never instead.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above stays as the
+accepted historical ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended by [0038](0038-store-memory-and-timestamps.md) (accepted
+  2026-10-19): §3's claim that the per-inbox knob bounds restored memory.
+  `SWARMAIL_MAX_PER_INBOX` limits message count in one inbox on insertion
+  (zero disables it); inbox count is unlimited, restore loads every
+  persisted row before bind without re-pruning under a newer cap, and the
+  data file's size on disk is not its size in RAM. The startup probe stays
+  a time budget, not a memory remedy (0038 §§2–3).)*

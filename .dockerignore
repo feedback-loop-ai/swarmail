@@ -1,4 +1,7 @@
-target/
+# Build output at any depth: a bare `target/` matches only the context root,
+# so a standalone tool's or the eval crate's target/ (tools/*/target,
+# evals/target) would otherwise enter the context (issue #141).
+**/target/
 .cargo-home/
 .git/
 .github/

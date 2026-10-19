@@ -1,6 +1,7 @@
 # 0038 — State the store's memory exposure and parse-start timestamps
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18
 - **Issue:** #87.
 - **Spec:** [Storage and maildrop repairs](../../specs/storage-maildrop/spec.md).
@@ -102,3 +103,18 @@ the compat views — scoped and global lists, searches and `latest` — share de
 `(received_ms, id)`, so a parse-start stamp that disagrees with acceptance order moves a
 mail within those views; native inbox listings, POP3 numbering, pruning and restore keep
 acceptance order.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later record below on 2026-10-19; the text above, the
+0049 pointer included, stays as written, and that pointer's "proposed" is
+historical. Each marker uses the later record's own verb and scope. The
+amendments this record makes now carry dated markers in
+[0021](0021-watcher-channel-lifetime.md) and
+[0026](0026-deployment-boundary-peers-tls-sizing.md); their earlier text is
+unchanged.
+
+- *(Updated by [0049](0049-extraction-compat.md) (accepted 2026-10-19): §4's
+  compat scoped-order exception, as the pointer above describes — every
+  compat view shares descending `(received_ms, id)`.)*

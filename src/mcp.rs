@@ -11,7 +11,7 @@
 //!
 //! The envelope follows decision 0029 §2: the JSON-RPC predicate is a
 //! *missing id* (a request has an id, a notification does not — whatever
-//! its method name), narrowed by proposed 0047 §3 to objects whose `method`
+//! its method name), narrowed by decision 0047 §3 to objects whose `method`
 //! is a string — an id-less object without one is an invalid request
 //! answered with a null id. The code taxonomy is `-32700`/`-32600`/`-32601`/
 //! `-32602`, and every argument is staged — an absent key keeps its schema
@@ -51,7 +51,7 @@ pub(crate) fn error_object(code: i64, message: &str, id: Value) -> Value {
 /// silence a notification gets.
 const NOT_AN_OBJECT: &str = "a JSON-RPC request must be an object";
 
-/// How a parsed envelope is answered (decision 0039 §2, amended by proposed
+/// How a parsed envelope is answered (decision 0039 §2, updated by
 /// 0044 §1) — the one owner of the rule both transports apply: `dispatch`
 /// refuses by it, and the stdio bridge shapes its replies and its transport
 /// errors by it, so the bridge can no longer mistake a batch for a
@@ -78,7 +78,7 @@ pub(crate) enum Envelope {
 /// predicate, shared by [`classify`] and [`handle`] so the server and the
 /// bridge owe the same replies. An object's own `id`, null included, is
 /// answered. `None` — silence — only for a notification: an object with no
-/// `id` *and* a string `method` (JSON-RPC 2.0 §4.1; proposed 0047 §3, issue
+/// `id` *and* a string `method` (JSON-RPC 2.0 §4.1; decision 0047 §3, issue
 /// #132). Any other id-less object (`{}`, a lost `method`, a numeric one)
 /// is an invalid request owed a null id, and so is anything that is not an
 /// object — a scalar, `null`, a string or a nested array (decision 0044
@@ -180,7 +180,7 @@ pub async fn dispatch(ctx: &McpContext, body: &[u8]) -> axum::response::Response
 
 /// Handle one JSON-RPC request. Returns `None` for a notification — an
 /// object with no `id` and a string `method` (decision 0029 §2 as amended
-/// by proposed 0047 §3), whatever that method names; an id-less
+/// by decision 0047 §3), whatever that method names; an id-less
 /// `notifications/initialized` and an id-less `tools/call` both get
 /// silence, while an id-less object without a string method is answered.
 pub async fn handle(ctx: &McpContext, req: &Value) -> Option<Value> {
@@ -714,7 +714,7 @@ mod tests {
                 Envelope::Silent,
             ),
             // An id-less object is silent only with a string method
-            // (proposed 0047 §3; red before: all four Silent).
+            // (decision 0047 §3; red before: all four Silent).
             (json!({"jsonrpc":"2.0"}), Envelope::Single(Value::Null)),
             (json!({}), Envelope::Single(Value::Null)),
             (json!({"foo":"boo"}), Envelope::Single(Value::Null)),

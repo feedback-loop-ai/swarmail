@@ -1,6 +1,7 @@
 # 0037 — POP3 sizes count the normalized payload without transparency dots
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18
 - **Issues:** #84 and #86, with #71/#83 constraining reply construction.
 - **Spec:** [Storage and maildrop repairs](../../specs/storage-maildrop/spec.md).

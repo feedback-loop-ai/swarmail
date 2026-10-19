@@ -162,3 +162,30 @@ decoding both pass the shared `model::validate_inbox` rule, which refuses a blan
 any Unicode control character and keeps every other name verbatim, padding included. A
 refusal still answers `501 5.5.2` or `-ERR` and changes nothing. Nothing above is
 rewritten by this pointer.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above — the ruling
+and the 0046 pointer — stays as written; each marker names a later record
+with that record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended by [0034](0034-data-terminator-boundary.md) (accepted
+  2026-10-19): strengthens the DATA boundary this record describes and
+  narrows §2's session behavior to **one successful AUTH per TLS epoch**.
+  §2's "the previous inbox (or `default`) stays" still holds for a refused
+  credential, but it no longer implies a session may AUTH again: after a
+  successful AUTH, a further AUTH answers `503` without a prompt, even for
+  identity `default`; failed attempts may retry; RSET/HELO/EHLO keep the
+  identity and a successful STARTTLS clears it (0034 §5). PLAIN requires
+  exactly three NUL-separated fields.)*
+- *(Amended by [0037](0037-pop3-size-accounting.md) (accepted 2026-10-19):
+  §1's size definition, derivation mechanism and accepted allocation cost.
+  A POP3 size counts the normalized CRLF payload **without** the
+  transparency dots RETR adds (RFC 1939 §11), so "dot-stuffed" in §1's rule
+  no longer describes the count. §§2 and 3 continue to govern.)*
+- *(Amended by [0046](0046-smtp-pop3-edges.md) (accepted 2026-10-19): §2's
+  explicit base64 → UTF-8 → trim username rule, as the 0046 pointer above
+  describes — names are no longer trimmed and pass the shared
+  `model::validate_inbox` rule verbatim. The pointer's "proposed" is
+  historical: 0046 is accepted.)*

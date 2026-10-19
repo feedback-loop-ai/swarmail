@@ -193,3 +193,19 @@ carried to every new refusal.)*
   fixes, and any edit to `src/store.rs`/`src/persist.rs`** for this
   slice — the first two are new features, the third is recorded as a
   residual with its file:line map, and the boundary ends at zero diff.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above, the dated
+0029 marker included, stays as the accepted historical ruling; each marker
+names a later record with that record's own verb and scope, and nothing
+above is rewritten by it.
+
+- *(Amended by [0048](0048-rest-webhook-validation.md) (accepted
+  2026-10-19): §4, for seed `POST` and webhook `PUT` only. Their bodies are
+  closed (seed's five keys; webhook `url`, `inbox`, `secret`, `ca_pem`),
+  optional webhook strings default only on omission while `null` and wrong
+  types refuse, and every JSON data error there is a value-free HTTP `400`
+  with the native envelope, including former `422` refusals. Other routes
+  keep their mapping, chaos's `422` included (0048 §2).)*

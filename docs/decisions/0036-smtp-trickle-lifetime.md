@@ -1,6 +1,7 @@
 # 0036 — SMTP trickle lifetime and listener recovery
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18
 - **Issues:** #77, #78, #79, #80 (run 14, epic #70).
 - **Spec:** [Listener recovery](../../specs/listener-recovery/spec.md).
@@ -130,3 +131,15 @@ starts a fresh window, so there is no whole-reply deadline. A reader whose socke
 some bytes of each next write within its window keeps its slot and its reply buffer
 indefinitely, with no minimum rate. Command reads and the cap's refusal keep their
 whole-operation bounds.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later record below on 2026-10-19; the text above, the
+0046 pointer included, stays as written, and that pointer's "proposed" is
+historical. Each marker uses the later record's own verb and scope.
+
+- *(Updated by [0046](0046-smtp-pop3-edges.md) (accepted 2026-10-19):
+  §§4/5's POP3 write scope, as the pointer above describes — POP3's 600 s
+  bound applies per successful socket write of a reply, not to the whole
+  reply.)*
