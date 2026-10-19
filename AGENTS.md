@@ -17,7 +17,9 @@ oldest-only (0003). Extraction happens at ingest, not query time (0005).
 Leave `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test`, `brokkr compile --bundle bundles/self`,
 `scripts/coverage-gate.sh` and
-`cargo deny check licenses` clean before reporting success. Never report
+`cargo deny check licenses` clean before reporting success. Commit
+unsigned, never push, and never stop for signing — the operator seals the
+branch before merge (0056). Never report
 `complete` while required work remains; never widen the dependency allowlist
 without a defensible reason.
 

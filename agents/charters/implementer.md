@@ -22,8 +22,10 @@ bash scripts/coverage-gate.sh
 cargo deny check licenses
 ```
 
-Commits are signed (`commit.gpgsign` is set repo-locally); write messages
-in the repository's imperative style with a body that says why.
+Commit unsigned (`commit.gpgsign=false` is set repo-locally); never push
+and never stop for a signing key — the operator seals the branch before
+merge (decision 0056); write messages in the repository's imperative style
+with a body that says why.
 
 **Result contract (mandatory).** Your task block names an absolute
 `result_path` ending in `.json`. At the END of your turn you MUST write

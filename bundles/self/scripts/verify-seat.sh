@@ -41,7 +41,7 @@ write_result() {
 }
 fail_now() { printf '%s\n' "$1" >> "$notes"; write_result fail; exit 0; }
 for resource in coverage-gate.sh publish-guard.sh publish-guard-test.sh design-check.sh \
-  speckit/check-prerequisites.sh speckit/common.sh coverage-fn-scan/Cargo.toml \
+  seal-branch.sh seal-branch-test.sh speckit/check-prerequisites.sh speckit/common.sh coverage-fn-scan/Cargo.toml \
   coverage-fn-scan/Cargo.lock coverage-fn-scan/src/main.rs shims.sha256 ../tooling.json; do
   [ -f "$pin_dir/$resource" ] || fail_now "verify-seat: pinned resource $pin_dir/$resource is missing; refusing before any gate runs"
 done
@@ -114,6 +114,10 @@ run "coverage gate selftest"      "bash $pin_q/coverage-gate.sh selftest"
 run "design check selftest"       "bash $pin_q/design-check.sh selftest"
 run "delivery tamper-boundary proof"  "bash $pin_q/delivery-proof-test.sh"
 run "publish guard proof"         "bash $pin_q/publish-guard-test.sh"
+# The operator's seal tool, proved keyless (decision 0056): its report and
+# refusals against scratch repositories with an empty GNUPGHOME. Its signing
+# path is the operator's evidence and never runs here.
+run "seal-branch keyless proof"   "bash $pin_q/seal-branch-test.sh"
 run "cargo deny licenses"         'cargo deny check licenses'
 # Webhook TLS (reqwest + rustls) must be the only HTTP/TLS story: native-tls
 # may never re-enter the tree. Fail closed: only the probe's own "did not
@@ -123,5 +127,5 @@ if [ "$integrity_failed" -ne 0 ]; then
   printf 'every gate passed, but wrapper integrity failed (above): not verified\n' >> "$notes"
   write_result fail; exit 0
 fi
-printf 'all gates passed from the pinned bundle (fmt, clippy, test, bundle, exact 100/100/100 coverage + selftest, design-check selftest, publish-guard proof, deny licenses, no native-tls fail-closed) with network denied; brokkr %s\n' "$launched_digest" > "$notes"
+printf 'all gates passed from the pinned bundle (fmt, clippy, test, bundle, exact 100/100/100 coverage + selftest, design-check selftest, delivery tamper-boundary proof, publish-guard proof, seal-branch keyless proof, deny licenses, no native-tls fail-closed) with network denied; brokkr %s\n' "$launched_digest" > "$notes"
 write_result pass

@@ -40,6 +40,10 @@ The review gate is constitutionally protected; security-hold is a hard
 stop. Direct commits to `main` are reserved for docs, decisions and
 repairs, and still leave every gate clean.
 
+Commit unsigned and never push from a seat; the operator seals each PR
+branch before merge with `scripts/seal-branch.sh` (decision
+[0056](docs/decisions/0056-signing-policy.md)).
+
 ## Releases
 
 Release notes live at `docs/releases/v<version>.md`; the tag is signed and

@@ -39,6 +39,9 @@ jobs:
       # them.
       - run: sha256sum --check --strict bundles/self/scripts/shims.sha256
       - run: bash scripts/design-check.sh selftest
+      # The operator's seal tool, proved keyless (decision 0056): no key is
+      # provisioned and its signing path never runs in CI.
+      - run: bash scripts/seal-branch-test.sh
 
   # The whole suite on every OS the realm supports — Linux and macOS (the
   # release notes name the two; there is no Windows runner in this realm).
