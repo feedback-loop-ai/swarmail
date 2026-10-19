@@ -1287,16 +1287,11 @@ mod tests {
     /// restored, and a later insert re-mints the inbox.
     #[test]
     fn a_delete_that_empties_an_inbox_removes_the_entry_live_and_after_reopen() {
-        let path = {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            std::env::temp_dir().join(format!(
-                "swarmail-emptied-inbox-{}-{nanos}.db",
-                std::process::id()
-            ))
-        };
+        // The data file and every sidecar (-wal, -shm, the lock) live inside
+        // the guard's directory, which goes on any exit — an assertion that
+        // fails mid-test leaves nothing in the temporary root (issue #143).
+        let dir = tempfile::TempDir::with_prefix("swarmail-emptied-inbox-").unwrap();
+        let path = dir.path().join("mail.db");
         {
             let store = Store::open(0, &path).unwrap();
             let mut rx = store.subscribe("gone");
@@ -1341,10 +1336,6 @@ mod tests {
             assert!(store.has_inbox("gone") & store.has_inbox("kept"));
             assert!(!store.has_inbox("never"));
         }
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(path.with_extension("db-shm"));
-        let _ = std::fs::remove_file(path.with_extension("db.lock"));
     }
 
     /// The store carries the data file's single-writer refusal (decision
@@ -2113,17 +2104,15 @@ mod bounded_tests {
         }
     }
 
-    /// One temp data-file path per boundary round; parallel rounds (and the
-    /// harness's own files) must never share one.
-    fn boundary_db_path(round: usize) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "swarmail-boundary-{}-{nanos}-{round}.db",
-            std::process::id()
-        ))
+    /// One temp data-file path per boundary round, inside its own scratch
+    /// directory: parallel rounds (and the harness's own files) never share
+    /// one, and the returned guard removes the file with every sidecar
+    /// (-wal, -shm, the lock) on any exit — a failing round leaves nothing
+    /// in the temporary root (issue #143).
+    fn boundary_db_path(round: usize) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::TempDir::with_prefix(format!("swarmail-boundary-{round}-")).unwrap();
+        let path = dir.path().join("mail.db");
+        (dir, path)
     }
 
     /// One boundary round: a fresh persisted store at cap 1 on a real data
@@ -2275,7 +2264,7 @@ mod bounded_tests {
         const ROUNDS: usize = 6;
         const PER_ROLE: usize = 15;
         for round in 0..ROUNDS {
-            let path = boundary_db_path(round);
+            let (_dir, path) = boundary_db_path(round);
             {
                 let store = Arc::new(Store::open(1, &path).unwrap());
                 join_with_deadline(
@@ -2298,9 +2287,6 @@ mod bounded_tests {
                     .insert(email(&format!("b{round}-final"), "B", "b@x.io"))
                     .expect("the boundary probe injects no storage failures");
                 assert_boundary_round(store, round, &path);
-            }
-            for suffix in ["", "-wal", "-shm", ".lock"] {
-                let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
             }
         }
     }

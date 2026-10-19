@@ -27,7 +27,9 @@ operator's alone.
 | `muninn` | standing overseer (no phase) | [charters/muninn.md](charters/muninn.md) |
 
 The phase machine is [`policy.json`](../policy.json); the `design`
-sequence's deterministic check is [`scripts/design-check.sh`](../scripts/design-check.sh);
+sequence's deterministic check is its final exec step, the pinned
+[`bundles/self/scripts/design-check.sh`](../bundles/self/scripts/design-check.sh)
+(only its `designed` advances; a phase-level `drafted` stops);
 the seat wiring is [`bundle.json`](../bundle.json). Panel members and
 sequence steps carry no `limits` of their own — the seat above them owns
 the budget, and the compiler refuses a declaration it would discard.

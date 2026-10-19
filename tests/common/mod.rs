@@ -46,7 +46,7 @@ pub async fn smtp_send(
     let mut line;
 
     // read greeting
-    line = read_line_named(&mut reader, "the SMTP greeting").await;
+    line = read_line_named(&mut reader, "smtp_send: the greeting").await;
     if !line.starts_with("220") {
         return Err(line.trim_end().to_string());
     }
@@ -54,7 +54,7 @@ pub async fn smtp_send(
     // EHLO (read multi-line reply)
     w.write_all(b"EHLO swarmail-test\r\n").await.unwrap();
     loop {
-        line = read_line_named(&mut reader, "the EHLO reply").await;
+        line = read_line_named(&mut reader, "smtp_send: the EHLO reply").await;
         if !line.starts_with("250-") {
             break;
         }
@@ -67,7 +67,7 @@ pub async fn smtp_send(
         w.write_all(format!("AUTH PLAIN {b64}\r\n").as_bytes())
             .await
             .unwrap();
-        line = read_line_named(&mut reader, "the AUTH PLAIN reply").await;
+        line = read_line_named(&mut reader, "smtp_send: the AUTH PLAIN reply").await;
         if !line.starts_with("235") {
             return Err(line.trim_end().to_string());
         }
@@ -75,21 +75,21 @@ pub async fn smtp_send(
 
     for cmd in [format!("MAIL FROM:<{from}>"), format!("RCPT TO:<{to}>")] {
         w.write_all(format!("{cmd}\r\n").as_bytes()).await.unwrap();
-        line = read_line_named(&mut reader, "the envelope reply").await;
+        line = read_line_named(&mut reader, "smtp_send: the envelope reply").await;
         if !line.starts_with("250") {
             return Err(line.trim_end().to_string());
         }
     }
 
     w.write_all(b"DATA\r\n").await.unwrap();
-    line = read_line_named(&mut reader, "the DATA reply").await;
+    line = read_line_named(&mut reader, "smtp_send: the DATA reply").await;
     if !line.starts_with("354") {
         return Err(line.trim_end().to_string());
     }
 
     let message = format!("From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\n\r\n{body}\r\n.\r\n");
     w.write_all(message.as_bytes()).await.unwrap();
-    line = read_line_named(&mut reader, "the accepted reply").await;
+    line = read_line_named(&mut reader, "smtp_send: the accepted reply").await;
     if !line.starts_with("250") {
         return Err(line.trim_end().to_string());
     }
@@ -115,7 +115,8 @@ impl Pop3 {
             reader: BufReader::new(r),
             writer: w,
         };
-        let greeting = c.reply().await;
+        let greeting = read_line_named(&mut c.reader, "Pop3::connect: the greeting").await;
+        let greeting = greeting.trim_end();
         assert!(
             greeting.starts_with("+OK"),
             "unexpected greeting: {greeting}"
@@ -138,7 +139,7 @@ impl Pop3 {
 
     /// Read one reply line, trimmed of its CRLF.
     pub async fn reply(&mut self) -> String {
-        read_line_named(&mut self.reader, "the POP3 reply")
+        read_line_named(&mut self.reader, "Pop3::reply: the reply line")
             .await
             .trim_end()
             .to_string()
@@ -155,9 +156,9 @@ impl Pop3 {
     pub async fn data_bytes(&mut self) -> Vec<u8> {
         let mut out = Vec::new();
         loop {
-            let mut line = Vec::new();
-            self.reader.read_until(b'\n', &mut line).await.unwrap();
-            assert!(!line.is_empty(), "connection closed mid-data");
+            let line_step = "Pop3::data_bytes: a multi-line body line";
+            let mut line = read_until_named(&mut self.reader, b'\n', line_step).await;
+            assert!(!line.is_empty(), "{line_step}: connection closed mid-data");
             let terminated = line.ends_with(b"\n");
             while line.last() == Some(&b'\n') || line.last() == Some(&b'\r') {
                 line.pop();
@@ -188,9 +189,9 @@ impl Pop3 {
     pub async fn raw_bytes(&mut self) -> Vec<u8> {
         let mut out = Vec::new();
         loop {
-            let mut line = Vec::new();
-            self.reader.read_until(b'\n', &mut line).await.unwrap();
-            assert!(!line.is_empty(), "connection closed mid-data");
+            let line_step = "Pop3::raw_bytes: a multi-line body line";
+            let line = read_until_named(&mut self.reader, b'\n', line_step).await;
+            assert!(!line.is_empty(), "{line_step}: connection closed mid-data");
             if line == b".\r\n" {
                 return out;
             }
@@ -210,18 +211,7 @@ impl Pop3 {
     /// The per-read deadline turns a session that never ends into a failed
     /// test instead of a hung one.
     pub async fn read_to_eof(&mut self) -> String {
-        let mut all = String::new();
-        loop {
-            let mut line = String::new();
-            let read =
-                tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
-                    .await
-                    .expect("the session never reached EOF");
-            match read {
-                Ok(0) | Err(_) => return all,
-                Ok(_) => all.push_str(&line),
-            }
-        }
+        read_lines_to_eof_named(&mut self.reader, "Pop3::read_to_eof: the session's EOF").await
     }
 }
 
@@ -254,7 +244,8 @@ impl SmtpConn {
 
     pub async fn connect(addr: std::net::SocketAddr) -> SmtpConn {
         let mut conn = SmtpConn::connect_raw(addr).await;
-        let greeting = conn.reply().await;
+        let greeting = read_line_named(&mut conn.reader, "SmtpConn::connect: the greeting").await;
+        let greeting = greeting.trim_end();
         assert!(greeting.starts_with("220"), "bad greeting: {greeting}");
         conn
     }
@@ -269,7 +260,7 @@ impl SmtpConn {
     /// Read one reply line (final line of multi-line replies).
     pub async fn reply(&mut self) -> String {
         loop {
-            let line = read_line_named(&mut self.reader, "the SMTP reply").await;
+            let line = read_line_named(&mut self.reader, "SmtpConn::reply: a reply line").await;
             let cont = line.starts_with("250-");
             if !cont {
                 return line.trim_end().to_string();
@@ -282,26 +273,15 @@ impl SmtpConn {
     /// closes with no goodbye. The per-read deadline turns a session that
     /// never ends into a failed test instead of a hung one.
     pub async fn read_to_eof(&mut self) -> String {
-        let mut all = String::new();
-        loop {
-            let mut line = String::new();
-            let read =
-                tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
-                    .await
-                    .expect("the session never reached EOF");
-            match read {
-                Ok(0) | Err(_) => return all,
-                Ok(_) => all.push_str(&line),
-            }
-        }
+        read_lines_to_eof_named(&mut self.reader, "SmtpConn::read_to_eof: the session's EOF").await
     }
 
     /// Read a full multi-line reply (EHLO etc.), lines joined with \n.
     pub async fn reply_multi(&mut self) -> String {
         let mut all = Vec::new();
         loop {
-            let mut line = String::new();
-            self.reader.read_line(&mut line).await.unwrap();
+            let line =
+                read_line_named(&mut self.reader, "SmtpConn::reply_multi: a reply line").await;
             let cont = line.starts_with("250-");
             all.push(line.trim_end().to_string());
             if !cont {
@@ -334,7 +314,7 @@ impl SmtpConn {
 
     /// Read the server's side to EOF (after `shutdown_write`), if it closes.
     pub async fn read_to_end(&mut self) -> Vec<u8> {
-        read_to_end_named(&mut self.reader, "the SMTP session").await
+        read_to_end_named(&mut self.reader, "SmtpConn::read_to_end: the session's EOF").await
     }
 }
 
@@ -347,7 +327,7 @@ pub async fn http_get_text(addr: std::net::SocketAddr, path: &str) -> (u16, Stri
         )
         .await
         .unwrap();
-    let buf = read_to_end_named(&mut stream, "the HTTP response").await;
+    let buf = read_to_end_named(&mut stream, "http_get_text: the HTTP response").await;
     let s = String::from_utf8_lossy(&buf);
     let status: u16 = s
         .lines()
@@ -490,7 +470,7 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
         )
         .await
         .unwrap();
-    let buf = read_to_end_named(&mut stream, "the HTTP response").await;
+    let buf = read_to_end_named(&mut stream, "http_get_parts: the HTTP response").await;
     let split = buf
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -555,6 +535,44 @@ pub(crate) async fn read_to_end_named<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
+/// [`read_line_named`]'s byte form: one `read_until` under the helper
+/// deadline, for multi-line bodies that need not be UTF-8 (issue #143).
+pub(crate) async fn read_until_named<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    byte: u8,
+    step: &'static str,
+) -> Vec<u8> {
+    let mut line = Vec::new();
+    match tokio::time::timeout(HELPER_DEADLINE, reader.read_until(byte, &mut line)).await {
+        Ok(Ok(_)) => line,
+        Ok(Err(e)) => panic!("{step}: the read failed: {e}"),
+        Err(_) => panic!("{step}: no reply within {HELPER_DEADLINE:?}"),
+    }
+}
+
+/// The per-line deadline of the line-wise read-to-EOF helpers: a session or
+/// feed that should be ending sends its next line (or its EOF) within this,
+/// or the helper fails naming its step.
+pub const EOF_LINE_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Read lines until EOF, each under [`EOF_LINE_DEADLINE`], returning the
+/// text that came. A read error ends the read like an EOF — a reset is how
+/// an aborted session can end — but silence fails, naming `step`.
+pub(crate) async fn read_lines_to_eof_named<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    step: &'static str,
+) -> String {
+    let mut all = String::new();
+    loop {
+        let mut line = String::new();
+        match tokio::time::timeout(EOF_LINE_DEADLINE, reader.read_line(&mut line)).await {
+            Ok(Ok(0)) | Ok(Err(_)) => return all,
+            Ok(Ok(_)) => all.push_str(&line),
+            Err(_) => panic!("{step}: no line or EOF within {EOF_LINE_DEADLINE:?}"),
+        }
+    }
+}
+
 /// Like `http_send_text`, but fallible at the connection level: a peer
 /// that answers nothing — zero bytes (accepted and closed) or a reset —
 /// maps to `(0, "")` (issue #102). It performs its own `read_to_end`
@@ -599,7 +617,7 @@ pub async fn http_send_text_allow_eof(
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionReset => return (0, String::new()),
         Ok(Err(e)) => panic!("http_send_text_allow_eof: read from {addr} failed: {e}"),
         Err(_) => panic!(
-            "http_send_text_allow_eof: {addr} never finished answering within {HELPER_DEADLINE:?}"
+            "http_send_text_allow_eof: the HTTP response: {addr} never finished answering within {HELPER_DEADLINE:?}"
         ),
     }
     if buf.is_empty() {
@@ -661,7 +679,7 @@ pub async fn send_with_host(
         req.push_str(b);
     }
     stream.write_all(req.as_bytes()).await.unwrap();
-    let buf = read_to_end_named(&mut stream, "the HTTP response").await;
+    let buf = read_to_end_named(&mut stream, "send_with_host: the HTTP response").await;
     let s = String::from_utf8_lossy(&buf);
     let status: u16 = s
         .lines()
@@ -702,7 +720,11 @@ pub async fn http_send_text_with_headers(
         req.push_str(b);
     }
     stream.write_all(req.as_bytes()).await.unwrap();
-    let buf = read_to_end_named(&mut stream, "the HTTP response").await;
+    let buf = read_to_end_named(
+        &mut stream,
+        "http_send_text_with_headers: the HTTP response",
+    )
+    .await;
     let s = String::from_utf8_lossy(&buf);
     let status: u16 = s
         .lines()
@@ -814,9 +836,10 @@ impl TlsSmtp {
 
     /// Read a single reply line.
     pub async fn reply_raw(&mut self) -> String {
-        let mut line = String::new();
-        self.reader.read_line(&mut line).await.unwrap();
-        line.trim_end().to_string()
+        read_line_named(&mut self.reader, "TlsSmtp::reply_raw: a reply line")
+            .await
+            .trim_end()
+            .to_string()
     }
 
     /// Read the connection to EOF and return whatever came since the last
@@ -824,26 +847,15 @@ impl TlsSmtp {
     /// closes with no goodbye. The per-read deadline turns a session that
     /// never ends into a failed test instead of a hung one.
     pub async fn read_to_eof(&mut self) -> String {
-        let mut all = String::new();
-        loop {
-            let mut line = String::new();
-            let read =
-                tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
-                    .await
-                    .expect("the session never reached EOF");
-            match read {
-                Ok(0) | Err(_) => return all,
-                Ok(_) => all.push_str(&line),
-            }
-        }
+        read_lines_to_eof_named(&mut self.reader, "TlsSmtp::read_to_eof: the session's EOF").await
     }
 
     /// Read a full multi-line reply (EHLO etc.), lines joined with \n.
     pub async fn reply_multi(&mut self) -> String {
         let mut all = Vec::new();
         loop {
-            let mut line = String::new();
-            self.reader.read_line(&mut line).await.unwrap();
+            let line =
+                read_line_named(&mut self.reader, "TlsSmtp::reply_multi: a reply line").await;
             let cont = line.starts_with("250-");
             all.push(line.trim_end().to_string());
             if !cont {
@@ -886,8 +898,7 @@ impl SseReader {
         .unwrap();
         let mut reader = BufReader::new(r);
         loop {
-            let mut line = String::new();
-            reader.read_line(&mut line).await.unwrap();
+            let line = read_line_named(&mut reader, "SseReader::open: a response head line").await;
             if line == "\r\n" || line == "\n" || line.is_empty() {
                 break;
             }
@@ -905,9 +916,12 @@ impl SseReader {
             let mut line = String::new();
             let read = tokio::time::timeout(deadline, self.reader.read_line(&mut line))
                 .await
-                .expect("timed out waiting for a feed frame")
-                .expect("feed connection closed unexpectedly");
-            assert!(read > 0, "feed connection closed before a frame arrived");
+                .expect("SseReader::next_frame: no feed frame line within 5s")
+                .expect("SseReader::next_frame: the feed connection failed");
+            assert!(
+                read > 0,
+                "SseReader::next_frame: the feed closed before a frame arrived"
+            );
             let line = line.trim_end_matches(['\r', '\n']);
             if line.is_empty() {
                 if data.is_empty() {
@@ -932,18 +946,11 @@ impl SseReader {
     /// body terminates and the socket closes. The per-read deadline turns a
     /// feed that never ends into a failed test instead of a hung one.
     pub async fn read_until_eof(&mut self) -> String {
-        let mut all = String::new();
-        loop {
-            let mut line = String::new();
-            let read =
-                tokio::time::timeout(Duration::from_secs(10), self.reader.read_line(&mut line))
-                    .await
-                    .expect("the feed never reached EOF");
-            match read {
-                Ok(0) | Err(_) => return all,
-                Ok(_) => all.push_str(&line),
-            }
-        }
+        read_lines_to_eof_named(
+            &mut self.reader,
+            "SseReader::read_until_eof: the feed's EOF",
+        )
+        .await
     }
 }
 
@@ -961,15 +968,13 @@ async fn plaintext_starttls_phase(
     let stream = TcpStream::connect(addr).await.unwrap();
     let (r, mut w) = stream.into_split();
     let mut reader = BufReader::new(r);
-    let mut line = String::new();
-    reader.read_line(&mut line).await.unwrap();
+    let mut line = read_line_named(&mut reader, "plaintext_starttls_phase: the greeting").await;
     assert!(line.starts_with("220"), "bad greeting: {line}");
 
     w.write_all(b"EHLO swarmail-tls-test\r\n").await.unwrap();
     let mut ehlo = Vec::new();
     loop {
-        line.clear();
-        reader.read_line(&mut line).await.unwrap();
+        line = read_line_named(&mut reader, "plaintext_starttls_phase: the EHLO reply").await;
         let cont = line.starts_with("250-");
         ehlo.push(line.trim_end().to_string());
         if !cont {
@@ -981,8 +986,11 @@ async fn plaintext_starttls_phase(
 
     for (cmd, want) in before {
         w.write_all(format!("{cmd}\r\n").as_bytes()).await.unwrap();
-        line.clear();
-        reader.read_line(&mut line).await.unwrap();
+        line = read_line_named(
+            &mut reader,
+            "plaintext_starttls_phase: a reply before STARTTLS",
+        )
+        .await;
         assert!(line.starts_with(want), "{cmd} before STARTTLS: {line}");
     }
 
@@ -993,8 +1001,7 @@ async fn plaintext_starttls_phase(
     }
     w.write_all(burst.as_bytes()).await.unwrap();
 
-    line.clear();
-    reader.read_line(&mut line).await.unwrap();
+    line = read_line_named(&mut reader, "plaintext_starttls_phase: the STARTTLS reply").await;
     let ready = line.trim_end().to_string();
     assert!(ready.starts_with("220"), "STARTTLS refused: {ready}");
 
@@ -1043,9 +1050,11 @@ async fn starttls_upgrading(
     pipelined: &[&str],
 ) -> TlsSmtp {
     let (tcp, _, _) = plaintext_starttls_phase(addr, before, pipelined).await;
-    let tls = tls_connector(root)
-        .connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp)
+    let handshake =
+        tls_connector(root).connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp);
+    let tls = tokio::time::timeout(HELPER_DEADLINE, handshake)
         .await
+        .expect("starttls_upgrading: no TLS handshake reply within the helper deadline")
         .expect("STARTTLS handshake");
     TlsSmtp {
         reader: BufReader::new(tls),
@@ -1069,9 +1078,13 @@ pub async fn assert_starttls_handshake_fails(
     root: CertificateDer<'static>,
 ) {
     let (tcp, _, _) = plaintext_starttls_phase(addr, &[], &[]).await;
-    let res = tls_connector(root)
-        .connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp)
-        .await;
+    let handshake =
+        tls_connector(root).connect(ServerName::try_from(server_name.to_string()).unwrap(), tcp);
+    let res = tokio::time::timeout(HELPER_DEADLINE, handshake)
+        .await
+        .expect(
+            "assert_starttls_handshake_fails: the handshake never ended within the helper deadline",
+        );
     assert!(res.is_err(), "handshake unexpectedly succeeded");
 }
 

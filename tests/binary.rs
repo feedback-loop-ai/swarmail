@@ -267,54 +267,44 @@ async fn the_in_flight_total_counts_each_request_once_and_returns_to_rest() {
     }
 }
 
-/// A concrete free loopback port: bound, then released. The caller names
-/// it in env; between the release and the server's bind nothing else in
-/// this process wants it (the three ports are distinct), so the server
-/// gets the port the env named — wide windows by construction, not a
-/// `:0` the reader would take on faith (issue #102, 0030 §1).
-fn a_free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("a free port binds")
-        .local_addr()
-        .expect("the bound addr is local")
-        .port()
-}
+/// The three bind knobs: env var, flag, and compiled default port.
+const BIND_KNOBS: [(&str, &str, u16); 3] = [
+    ("SWARMAIL_SMTP_LISTEN", "--smtp-listen", 1025),
+    ("SWARMAIL_POP3_LISTEN", "--pop3-listen", 1110),
+    ("SWARMAIL_HTTP_LISTEN", "--http-listen", 8025),
+];
 
 /// The bind knobs work in their env shape alone — no flags, the three
 /// `SWARMAIL_*_LISTEN` vars, the spelling the image and the chart use
-/// (decision 0030 §1), each naming a concrete free port. The startup line
-/// the operator sees must carry exactly those ports: an ignored `env =`
-/// wiring would bind the loopback defaults instead and go red here, where
-/// the old `127.0.0.1:0` shape read back whatever was printed and could
-/// not tell an honoured env from an ignored one.
+/// (decision 0030 §1), each `127.0.0.1:0`. The child owns its ports from
+/// the bind on — no port is chosen, released and named by the test, so a
+/// parallel test can never take one first (issue #143) — and every
+/// connection below goes to the address the ready line printed. An
+/// ignored env value binds the compiled default port instead (or fails
+/// to start when that port is busy), so each printed port must be an
+/// ephemeral one, not its default. The held-listener cases below are the
+/// other half: an env value naming an occupied port must refuse.
 #[tokio::test]
 async fn serve_takes_its_binds_from_the_environment() {
-    let (smtp_port, pop3_port, http_port) = (a_free_port(), a_free_port(), a_free_port());
     let mut cmd = Command::new(binary());
     cmd.args(["serve"]);
-    cmd.env("SWARMAIL_SMTP_LISTEN", format!("127.0.0.1:{smtp_port}"));
-    cmd.env("SWARMAIL_POP3_LISTEN", format!("127.0.0.1:{pop3_port}"));
-    cmd.env("SWARMAIL_HTTP_LISTEN", format!("127.0.0.1:{http_port}"));
+    for (var, _, _) in BIND_KNOBS {
+        cmd.env(var, "127.0.0.1:0");
+    }
     let mut serve = spawn_serve(cmd).await;
-    wait_http_up(serve.http_addr).await;
-    assert_eq!(
-        serve.smtp_addr.port(),
-        smtp_port,
-        "the env's smtp bind is honoured: {}",
-        serve.smtp_addr
-    );
-    assert_eq!(
-        serve.pop3_addr.port(),
-        pop3_port,
-        "the env's pop3 bind is honoured: {}",
-        serve.pop3_addr
-    );
-    assert_eq!(
-        serve.http_addr.port(),
-        http_port,
-        "the env's http bind is honoured: {}",
-        serve.http_addr
-    );
+    let bound = [serve.smtp_addr, serve.pop3_addr, serve.http_addr];
+    for ((var, _, default), addr) in BIND_KNOBS.into_iter().zip(bound) {
+        assert_ne!(
+            addr.port(),
+            default,
+            "{var}=127.0.0.1:0 must bind an ephemeral port, not the default: {addr}"
+        );
+    }
+    let mut smtp = common::SmtpConn::connect(serve.smtp_addr).await;
+    smtp.send("QUIT").await;
+    assert!(smtp.reply().await.starts_with("221"), "SMTP answers");
+    let mut pop3 = common::Pop3::connect(serve.pop3_addr).await;
+    assert!(pop3.cmd("QUIT").await.starts_with("+OK"), "POP3 answers");
     let (st, body) = common::http_json(serve.http_addr, "GET", "/healthz", None).await;
     assert_eq!(st, 200, "the env-bound server answers healthz: {body}");
     let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
@@ -322,16 +312,86 @@ async fn serve_takes_its_binds_from_the_environment() {
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
 
+/// One protocol's env bind names a port this test holds occupied for the
+/// whole case; the other two binds are flags on `:0`, so the only bind
+/// that can fail is the env one. The child must exit non-zero with the
+/// address-in-use reason and never print its ready line. A child that
+/// ignored the env value would bind its compiled default instead, come
+/// up, and fail this case.
+async fn assert_env_bind_refused(var: &str) {
+    let held = std::net::TcpListener::bind("127.0.0.1:0").expect("a held port binds");
+    let addr = held.local_addr().expect("the held addr is local");
+    let mut cmd = Command::new(binary());
+    cmd.arg("serve");
+    for (other, flag, _) in BIND_KNOBS {
+        if other == var {
+            cmd.env(var, addr.to_string());
+        } else {
+            cmd.args([flag, "127.0.0.1:0"]);
+        }
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
+    let mut child = cmd.spawn().expect("spawn swarmail serve");
+    let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    // Stdout to EOF, line by line: a ready line means the env value was
+    // not the bind, and fails at once rather than at the deadline.
+    let mut transcript = String::new();
+    loop {
+        let mut line = String::new();
+        let n = tokio::time::timeout(Duration::from_secs(30), stdout.read_line(&mut line))
+            .await
+            .unwrap_or_else(|_| panic!("{var}={addr}: the child neither exited nor came up"))
+            .expect("read the child's stdout");
+        if n == 0 {
+            break;
+        }
+        assert!(
+            parse_addrs(&line).is_none(),
+            "{var}={addr}: the server came up although the env named an occupied port: {line}"
+        );
+        transcript.push_str(&line);
+    }
+    let mut reason = String::new();
+    tokio::time::timeout(Duration::from_secs(30), stderr.read_to_string(&mut reason))
+        .await
+        .expect("the child's stderr closes")
+        .expect("read the child's stderr");
+    let status = tokio::time::timeout(Duration::from_secs(30), child.wait())
+        .await
+        .expect("the refused child exits")
+        .expect("the child's status");
+    assert!(
+        !status.success(),
+        "{var}={addr} must refuse: {status:?}\n{transcript}{reason}"
+    );
+    assert!(
+        reason.contains("swarmail: ") && reason.contains("in use"),
+        "{var}={addr}: the refusal says the address is in use: {reason}"
+    );
+    drop(held);
+}
+
+#[tokio::test]
+async fn an_smtp_env_bind_on_a_held_port_refuses() {
+    assert_env_bind_refused("SWARMAIL_SMTP_LISTEN").await;
+}
+
+#[tokio::test]
+async fn a_pop3_env_bind_on_a_held_port_refuses() {
+    assert_env_bind_refused("SWARMAIL_POP3_LISTEN").await;
+}
+
+#[tokio::test]
+async fn an_http_env_bind_on_a_held_port_refuses() {
+    assert_env_bind_refused("SWARMAIL_HTTP_LISTEN").await;
+}
+
 #[tokio::test]
 async fn serve_restores_a_data_file_across_a_restart() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-binary-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = tempfile::TempDir::with_prefix("swarmail-binary-").unwrap();
+    let db = dir.path().join("persist.db");
     // First run: --data-file as the flag; one real SMTP mail in.
     let mut first = spawn_serve(serve_with_data(&db)).await;
     wait_http_up(first.http_addr).await;
@@ -371,9 +431,8 @@ async fn serve_restores_a_data_file_across_a_restart() {
     let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    drop(restarted);
+    drop(dir);
 }
 
 #[tokio::test]
@@ -512,14 +571,8 @@ impl KillBurst {
 /// byte (decision 0001), so each of them is already durable.
 #[tokio::test]
 async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-binary-kill-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = tempfile::TempDir::with_prefix("swarmail-binary-kill-").unwrap();
+    let db = dir.path().join("kill.db");
     let mut serve = spawn_serve(serve_with_data(&db)).await;
     wait_http_up(serve.http_addr).await;
     let smtp_addr = serve.smtp_addr;
@@ -605,28 +658,23 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
     let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    drop(restarted);
+    drop(dir);
 }
 
-/// A unique scratch dir for cert pairs.
-fn cert_dir(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "swarmail-bincert-{name}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ))
+/// A unique scratch dir for cert pairs, removed by its guard's drop — even
+/// when the test panics (issue #143). Paths that must not exist yet (the
+/// `--out` target gen-cert creates) are placed inside it.
+fn cert_dir(name: &str) -> tempfile::TempDir {
+    tempfile::TempDir::with_prefix(format!("swarmail-bincert-{name}-")).unwrap()
 }
 
 /// The operator loop, end to end: `gen-cert` mints the pair, `serve`
 /// upgrades real clients with it, and the mail is queryable.
 #[tokio::test]
 async fn gen_cert_writes_a_pair_the_server_serves() {
-    let dir = cert_dir("e2e");
+    let scratch = cert_dir("e2e");
+    let dir = scratch.path().join("pair");
     let out = Command::new(binary())
         .args(["gen-cert", "--domain", "localhost", "--out"])
         .arg(&dir)
@@ -664,13 +712,14 @@ async fn gen_cert_writes_a_pair_the_server_serves() {
     let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(scratch);
 }
 
 /// The same TLS config through SWARMAIL_TLS_CERT / SWARMAIL_TLS_KEY.
 #[tokio::test]
 async fn serve_takes_tls_from_the_environment() {
-    let dir = cert_dir("env");
+    let scratch = cert_dir("env");
+    let dir = scratch.path().join("pair");
     let out = Command::new(binary())
         .args(["gen-cert", "--domain", "localhost", "--out"])
         .arg(&dir)
@@ -699,7 +748,7 @@ async fn serve_takes_tls_from_the_environment() {
     let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(scratch);
 }
 
 /// A malformed cert pair must not sit half-alive: the server exits non-zero
@@ -707,9 +756,8 @@ async fn serve_takes_tls_from_the_environment() {
 #[tokio::test]
 async fn serve_with_a_malformed_cert_exits_non_zero_and_says_why() {
     let dir = cert_dir("bad");
-    std::fs::create_dir_all(&dir).unwrap();
-    let cert = dir.join("cert.pem");
-    let key = dir.join("key.pem");
+    let cert = dir.path().join("cert.pem");
+    let key = dir.path().join("key.pem");
     std::fs::write(&cert, "not a certificate").unwrap();
     std::fs::write(&key, "not a key").unwrap();
 
@@ -751,13 +799,14 @@ async fn serve_with_a_malformed_cert_exits_non_zero_and_says_why() {
         .await
         .unwrap();
     assert!(stderr.contains("tls-cert"), "{stderr}");
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(dir);
 }
 
 /// gen-cert failing (the --out path is occupied by a file) exits non-zero.
 #[tokio::test]
 async fn gen_cert_to_an_occupied_target_exits_non_zero() {
-    let occupied = cert_dir("occupied");
+    let scratch = cert_dir("occupied");
+    let occupied = scratch.path().join("occupied");
     std::fs::write(&occupied, "a file, not a dir").unwrap();
     let out = Command::new(binary())
         .args(["gen-cert", "--domain", "localhost", "--out"])
@@ -767,7 +816,7 @@ async fn gen_cert_to_an_occupied_target_exits_non_zero() {
         .expect("spawn swarmail gen-cert");
     assert!(!out.status.success(), "occupied --out must fail");
     assert!(String::from_utf8_lossy(&out.stderr).contains("swarmail"));
-    let _ = std::fs::remove_file(&occupied);
+    drop(scratch);
 }
 
 // ---------- decision 0024: the same refusal under the real SIGINT ----------
@@ -784,14 +833,8 @@ async fn gen_cert_to_an_occupied_target_exits_non_zero() {
 /// never a partial row.
 #[tokio::test]
 async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-sigint-refuse-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = tempfile::TempDir::with_prefix("swarmail-sigint-refuse-").unwrap();
+    let db = dir.path().join("refuse.db");
     let mut serve = spawn_serve(serve_with_data(&db)).await;
     wait_http_up(serve.http_addr).await;
     let http_addr = serve.http_addr;
@@ -876,10 +919,8 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
     let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "restart SIGINT exit: {status:?}");
-    let _ = std::fs::remove_file(&db);
-    let _ = std::fs::remove_file(db.with_extension("db-wal"));
-    let _ = std::fs::remove_file(db.with_extension("db-shm"));
-    let _ = std::fs::remove_file(db.with_extension("db.lock"));
+    drop(restarted);
+    drop(dir);
 }
 
 /// SIGTERM is the signal a container manager actually sends (`docker stop`
@@ -889,14 +930,8 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
 /// after a restart on the same data file.
 #[tokio::test]
 async fn sigterm_takes_the_graceful_path_and_the_mail_survives_a_restart() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-sigterm-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let dir = tempfile::TempDir::with_prefix("swarmail-sigterm-").unwrap();
+    let db = dir.path().join("sigterm.db");
     let mut serve = spawn_serve(serve_with_data(&db)).await;
     wait_http_up(serve.http_addr).await;
     let reply = common::smtp_send(
@@ -931,9 +966,8 @@ async fn sigterm_takes_the_graceful_path_and_the_mail_survives_a_restart() {
     let status = signal_and_wait(&mut again.child, libc::SIGINT, Duration::from_secs(30)).await;
     again.reaped = true;
     assert!(status.success(), "restart SIGINT exit: {status:?}");
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    drop(again);
+    drop(dir);
 }
 
 /// One server per data file (decision 0033, issue #85): while server A

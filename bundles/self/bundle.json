@@ -152,7 +152,30 @@
         },
         {
           "name": "chief",
-          "agent": "chief-architect"
+          "agent": "chief-architect",
+          "results": [
+            "drafted"
+          ]
+        },
+        {
+          "name": "check",
+          "class": "gate",
+          "driver": {
+            "command": [
+              "{brokkr}",
+              "driver",
+              "exec",
+              "--",
+              "bash",
+              "./scripts/design-check.sh",
+              "{prompt_file}"
+            ]
+          },
+          "hands": {
+            "binds": [],
+            "kind": "workspace",
+            "network": false
+          }
         }
       ]
     }

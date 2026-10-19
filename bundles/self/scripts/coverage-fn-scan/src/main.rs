@@ -605,16 +605,104 @@ fn is_automatically_derived(attr: &proc_macro2::TokenTree) -> bool {
     }
 }
 
-/// `fn <name>` when the exclusion sits on a function, so a refusal names it.
+/// `fn <name>` when the exclusion sits on a function, so a refusal names it:
+/// a token lookahead past further outer attributes, visibility (`pub`,
+/// `pub(crate)`) and the fn qualifiers (`const`, `async`, `unsafe`,
+/// `extern "C"`, `default`) — not an item parser (decision 0050, #140).
 fn following_fn_name(rest: &[proc_macro2::TokenTree]) -> String {
-    match rest {
-        [proc_macro2::TokenTree::Ident(fun), proc_macro2::TokenTree::Ident(name), ..]
-            if fun == "fn" =>
-        {
+    use proc_macro2::{Delimiter, TokenTree};
+    const QUALIFIERS: [&str; 6] = ["pub", "const", "async", "unsafe", "extern", "default"];
+    let mut index = 0;
+    loop {
+        match (rest.get(index), rest.get(index + 1)) {
+            (Some(TokenTree::Punct(hash)), Some(TokenTree::Group(group)))
+                if hash.as_char() == '#' && group.delimiter() == Delimiter::Bracket =>
+            {
+                index += 2
+            }
+            (Some(TokenTree::Ident(word)), _) if QUALIFIERS.iter().any(|q| word == q) => {
+                index += 1
+            }
+            (Some(TokenTree::Group(group)), _) if group.delimiter() == Delimiter::Parenthesis => {
+                index += 1
+            }
+            (Some(TokenTree::Literal(_)), _) => index += 1,
+            _ => break,
+        }
+    }
+    match (rest.get(index), rest.get(index + 1)) {
+        (Some(TokenTree::Ident(fun)), Some(TokenTree::Ident(name))) if fun == "fn" => {
             format!(" on fn {name}")
         }
         _ => String::new(),
     }
+}
+
+/// Whether a bracket group is one of rustc's own test-harness markers. The
+/// test unit's expansion carries the harness rustc generates — the
+/// `#[rustc_test_marker]` descriptor consts and the `#[rustc_main]` entry —
+/// which rustc itself marks uninstrumented. Those names are internal
+/// (`rustc_attrs` is a nightly feature the stable build refuses), so a user
+/// cannot spell them to launder an exclusion.
+fn is_harness_marker(attr: &proc_macro2::TokenTree) -> bool {
+    match attr {
+        proc_macro2::TokenTree::Group(group)
+            if group.delimiter() == proc_macro2::Delimiter::Bracket =>
+        {
+            matches!(
+                group.stream().into_iter().next(),
+                Some(proc_macro2::TokenTree::Ident(ident))
+                    if ident == "rustc_test_marker" || ident == "rustc_main"
+            )
+        }
+        _ => false,
+    }
+}
+
+fn is_test_descriptor_marker(attr: &proc_macro2::TokenTree) -> bool {
+    match attr {
+        proc_macro2::TokenTree::Group(group)
+            if group.delimiter() == proc_macro2::Delimiter::Bracket =>
+        {
+            matches!(
+                group.stream().into_iter().next(),
+                Some(proc_macro2::TokenTree::Ident(ident)) if ident == "rustc_test_marker"
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Whether the outer attribute stack around the attribute at `attr_index`
+/// (its `#` at `hash_index`) carries a harness marker.
+fn stack_has_harness_marker(
+    tokens: &[proc_macro2::TokenTree],
+    hash_index: usize,
+    attr_index: usize,
+) -> bool {
+    use proc_macro2::{Delimiter, TokenTree};
+    let is_attr = |hash: Option<&TokenTree>, group: Option<&TokenTree>| {
+        matches!(
+            (hash, group),
+            (Some(TokenTree::Punct(p)), Some(TokenTree::Group(g)))
+                if p.as_char() == '#' && g.delimiter() == Delimiter::Bracket
+        )
+    };
+    let mut after = attr_index + 1;
+    while is_attr(tokens.get(after), tokens.get(after + 1)) {
+        if is_harness_marker(&tokens[after + 1]) {
+            return true;
+        }
+        after += 2;
+    }
+    let mut before = hash_index;
+    while before >= 2 && is_attr(tokens.get(before - 2), tokens.get(before - 1)) {
+        if is_harness_marker(&tokens[before - 1]) {
+            return true;
+        }
+        before -= 2;
+    }
+    false
 }
 
 /// The index of the minted impl's body when the item starting at `start` (just
@@ -674,7 +762,7 @@ fn scan_tokens(tokens: &[proc_macro2::TokenTree], derived: bool, scan: &mut Scan
                     None => return,
                 };
                 if let Some(kind) = exclusion_kind(attr) {
-                    if !derived {
+                    if !derived && !(!bang && stack_has_harness_marker(tokens, index, attr_index)) {
                         let line = attr.span().start().line;
                         scan.offenders.push(format!(
                             "{}:{line}: {kind}{} — a function compiled but excluded \
@@ -684,6 +772,18 @@ fn scan_tokens(tokens: &[proc_macro2::TokenTree], derived: bool, scan: &mut Scan
                         ));
                     }
                     index = attr_index + 1;
+                    continue;
+                }
+                if !bang && is_test_descriptor_marker(attr) {
+                    // rustc's generated test descriptor (`#[rustc_test_marker]
+                    // static NAME: TestDescAndFn = ...;`) wraps the test call
+                    // in its own uninstrumented closure: the item, through
+                    // its `;`, is harness, not the author's code. The test
+                    // fn it names is a separate item and is walked as usual.
+                    let end = tokens[attr_index + 1..]
+                        .iter()
+                        .position(|t| matches!(t, proc_macro2::TokenTree::Punct(p) if p.as_char() == ';'));
+                    index = end.map_or(tokens.len(), |end| attr_index + end + 2);
                     continue;
                 }
                 if is_automatically_derived(attr) {

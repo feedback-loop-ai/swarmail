@@ -1002,6 +1002,19 @@ fn build_request(
         .expect("a request of already-valid parts always builds"))
 }
 
+// Test-only observer (decision 0020 rule 4, issue #143): every request
+// `post_json` constructed on this thread, captured after construction and
+// before it is sent. It records and never shapes — the request sent is the
+// one built — so a sharing proof sees the body `post_json` really executes,
+// and a copy inserted anywhere on its path cannot hide behind a direct
+// `build_request` call. `try_clone` of a bytes body clones the reference,
+// never the bytes.
+#[cfg(test)]
+thread_local! {
+    static POSTED: core::cell::RefCell<Vec<reqwest::Request>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
 async fn post_json(
     url: &str,
     body: &Bytes,
@@ -1011,6 +1024,12 @@ async fn post_json(
     let url = parse_target_url(url)?;
     let client = client_for(ca_pem)?;
     let request = build_request(&client, url, body, secret)?;
+    #[cfg(test)]
+    POSTED.with(|posted| {
+        posted
+            .borrow_mut()
+            .push(request.try_clone().expect("a bytes body always clones"))
+    });
     // reqwest's error text ends "for url (…)"; the caller logs the redacted
     // URL beside it, so the error's own copy goes (decision 0041 §3) —
     // before the causes are read, which name the failure, not the target
@@ -1847,17 +1866,38 @@ mod delivery_tests {
 
     /// The request a delivery executes carries the shared payload itself:
     /// its body is the very allocation the dispatcher built, not a copy
-    /// (decision 0041 §4) — the source is kept alive, so a matching address
-    /// cannot be allocator reuse. Two attempts' requests share it too. The
-    /// accepted secret rides as a sensitive header with its exact bytes.
-    #[test]
-    fn a_built_request_shares_the_payload_allocation() {
+    /// (decision 0041 §4). Observed where it matters (issue #143): each
+    /// request is the one `post_json` itself constructed, captured by the
+    /// `POSTED` observer after construction and before the send, while two
+    /// real attempts are delivered to a loopback sink — so a copy inserted
+    /// anywhere in `post_json`'s path fails here, which a direct
+    /// `build_request` call could never see. The source is kept alive, so a
+    /// matching address cannot be allocator reuse. The accepted secret
+    /// rides as a sensitive header with its exact bytes.
+    #[tokio::test]
+    async fn a_built_request_shares_the_payload_allocation() {
         let payload = build_payload(&loop_tests::email());
-        let client = shared_client();
-        let url = parse_target_url("http://user:pw@127.0.0.1:9/hook").unwrap();
-        let first = build_request(&client, url.clone(), &payload, Some("s3\tcret é")).unwrap();
-        let second = build_request(&client, url, &payload, None).unwrap();
-        for request in [&first, &second] {
+        let (addr, hits, retire, sink) =
+            loop_tests::counting_sink(Some(loop_tests::FAST_REPLY)).await;
+        let url = format!("http://user:pw@{addr}/hook");
+        POSTED.with(|posted| posted.borrow_mut().clear());
+        assert_eq!(
+            post_json(&url, &payload, Some("s3\tcret é"), None).await,
+            Ok(204)
+        );
+        assert_eq!(post_json(&url, &payload, None, None).await, Ok(204));
+        assert_eq!(hits.load(Ordering::Relaxed), 2, "both attempts were sent");
+        drop(retire);
+        sink.await.unwrap();
+        let posted = POSTED.with(|posted| std::mem::take(&mut *posted.borrow_mut()));
+        assert_eq!(posted.len(), 2, "one observed request per attempt");
+        let (first, second) = (&posted[0], &posted[1]);
+        assert_eq!(
+            first.url().as_str(),
+            format!("http://{addr}/hook"),
+            "the request dials the target (reqwest moves the userinfo to a header)"
+        );
+        for request in [first, second] {
             let body = request.body().unwrap().as_bytes().unwrap();
             assert_eq!(
                 body.as_ptr(),

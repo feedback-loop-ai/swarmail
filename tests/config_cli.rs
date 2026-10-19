@@ -3,6 +3,8 @@
 //! (the brokkr rule — inline `#[cfg(test)]` mods leak `matches!` arms into the
 //! denominator as uncoverable branches).
 
+mod common;
+
 use clap::Parser;
 use std::time::Duration;
 use swarmail::config::{Cli, Command, Config, ServeArgs};
@@ -135,32 +137,132 @@ fn the_idle_defaults_are_independent_per_protocol() {
     let cfg = Config::from(&args);
     assert_eq!(cfg.smtp.idle_timeout, Duration::from_secs(300));
     assert_eq!(cfg.pop3_idle_timeout, Duration::from_secs(600));
+}
 
-    // Overriding one protocol's bound leaves the other's untouched.
-    let mut pop3_short = cfg.clone();
-    pop3_short.pop3_idle_timeout = Duration::from_millis(150);
-    assert_eq!(pop3_short.smtp.idle_timeout, Duration::from_secs(300));
-    let mut smtp_short = cfg;
-    smtp_short.smtp.idle_timeout = Duration::from_millis(150);
-    assert_eq!(smtp_short.pop3_idle_timeout, Duration::from_secs(600));
+/// The CLI's own configuration, loopback `:0` binds so parallel tests
+/// never collide, ready for one field's override.
+fn cli_config() -> Config {
+    let args = serve_args_or_panic(
+        Cli::try_parse_from([
+            "swarmail",
+            "serve",
+            "--smtp-listen",
+            "127.0.0.1:0",
+            "--pop3-listen",
+            "127.0.0.1:0",
+            "--http-listen",
+            "127.0.0.1:0",
+        ])
+        .unwrap(),
+    );
+    Config::from(&args)
+}
+
+/// A short idle bound, far below the other protocol's compiled one.
+const SHORT_IDLE: Duration = Duration::from_millis(150);
+
+/// Independent idle overrides reach the protocol they name, through the
+/// real consumer: `run_on` on the CLI's own configuration with only POP3's
+/// bound shortened. The SMTP session opens (and finishes a round trip)
+/// before the POP3 one, so SMTP's window starts first; the POP3 session is
+/// answered `-ERR idle timeout` and closed, and only then is SMTP asked
+/// again. Ignored POP3 wiring never expires (the read deadline fires);
+/// crossed wiring — POP3 reading SMTP's field, or SMTP reading POP3's —
+/// expires the wrong session, or the earlier-opened SMTP one too, and its
+/// NOOP gets no `250`. Ordering, never a wall-clock measurement, decides.
+#[tokio::test]
+async fn a_pop3_idle_override_expires_pop3_and_leaves_smtp_alone() {
+    let mut cfg = cli_config();
+    cfg.pop3_idle_timeout = SHORT_IDLE;
+    let srv = swarmail::run_on(&cfg).await.unwrap();
+    let mut smtp = common::SmtpConn::connect(srv.smtp_addr).await;
+    smtp.send("NOOP").await;
+    assert_eq!(smtp.reply().await, "250 2.0.0 OK");
+    let mut pop3 = common::Pop3::connect(srv.pop3_addr).await;
+    assert_eq!(
+        pop3.read_to_eof().await,
+        "-ERR idle timeout\r\n",
+        "POP3 expires on its own override"
+    );
+    smtp.send("NOOP").await;
+    assert_eq!(
+        smtp.reply().await,
+        "250 2.0.0 OK",
+        "SMTP keeps the CLI's compiled bound"
+    );
+    srv.stop().await;
+}
+
+/// The reciprocal: only SMTP's bound shortened on the CLI's configuration.
+/// The POP3 session opens (and answers a CAPA) first; the SMTP session is
+/// told `421 4.4.2` and closed, and the earlier POP3 session still answers.
+/// Ignored SMTP wiring never expires; crossed wiring expires POP3 instead
+/// or as well.
+#[tokio::test]
+async fn an_smtp_idle_override_expires_smtp_and_leaves_pop3_alone() {
+    let mut cfg = cli_config();
+    cfg.smtp.idle_timeout = SHORT_IDLE;
+    let srv = swarmail::run_on(&cfg).await.unwrap();
+    let mut pop3 = common::Pop3::connect(srv.pop3_addr).await;
+    assert!(pop3.cmd("CAPA").await.starts_with("+OK"));
+    assert!(!pop3.data().await.is_empty(), "the CAPA list");
+    let mut smtp = common::SmtpConn::connect(srv.smtp_addr).await;
+    assert_eq!(
+        smtp.read_to_eof().await,
+        "421 4.4.2 idle timeout, closing transmission channel\r\n",
+        "SMTP expires on its own override"
+    );
+    assert!(
+        pop3.cmd("CAPA").await.starts_with("+OK"),
+        "POP3 keeps the CLI's compiled bound"
+    );
+    srv.stop().await;
 }
 
 /// The rendered `serve --help` tells the truth about idleness (decision
-/// 0036 §4): both compiled defaults, and no claim that plaintext has no
-/// timeout (red on the pre-0027 text). Whitespace is normalized so the
-/// assertion reads the words, not clap's layout.
+/// 0036 §4): both compiled defaults, taken from the constants the
+/// listeners run with, and no claim that plaintext has no timeout (red on
+/// the pre-0027 text). It also states the HTTP plane's Host and Origin
+/// policy as the guard enforces it (decisions 0030 §2 and 0043, issue
+/// #142): loopback arms both the Host allowlist and the Origin check, and
+/// off loopback a present Origin must still match the Host authority —
+/// not the old "arms the Origin guard", which named one check and implied
+/// none off loopback. Whitespace is normalized so the assertion reads the
+/// words, not clap's layout.
 #[test]
 fn serve_help_names_both_idle_defaults() {
     let err = Cli::try_parse_from(["swarmail", "serve", "--help"]).unwrap_err();
     assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
     let help = err.render().to_string();
     let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    let minutes = |d: Duration| {
+        assert_eq!(d.as_secs() % 60, 0, "{d:?} is documented in minutes");
+        d.as_secs() / 60
+    };
     assert!(
-        help.contains("5 minutes on SMTP, 10 minutes on POP3"),
+        help.contains(&format!(
+            "{} minutes on SMTP, {} minutes on POP3",
+            minutes(swarmail::smtp::SmtpConfig::default().idle_timeout),
+            minutes(swarmail::pop3::DEFAULT_IDLE_TIMEOUT)
+        )),
         "{help}"
     );
     assert!(!help.contains("has no timeout"), "{help}");
     assert!(!help.contains("idle-timeout"), "no idle knob is exposed");
+    for phrase in [
+        "Loopback by default, which arms both the Host and the Origin checks (decision 0030 §2)",
+        "a Host must be a loopback spelling of the bound port, and so must a present Origin",
+        "Off loopback the Host allowlist is inactive, but a present Origin must match the Host authority (decision 0043)",
+    ] {
+        assert!(
+            help.contains(phrase),
+            "serve --help must state {phrase:?}: {help}"
+        );
+    }
+    assert!(
+        !help.contains("which also arms the Origin guard"),
+        "the one-check wording is gone: {help}"
+    );
 }
 
 #[test]

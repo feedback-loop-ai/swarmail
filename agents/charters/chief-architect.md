@@ -30,12 +30,18 @@ write these COMMITTED artifacts:
 never push). The position files stay uncommitted — `.brokkr/state/` is
 gitignored run-local evidence.
 
-A deterministic validation script runs immediately after you and rules
-the design attempt on the artifacts alone: files present and non-empty,
-an acceptance-criteria heading in spec.md, at least one checkbox in
-tasks.md, a risks section in plan.md — and a `proposed` decision file
-whenever the spec declares one. Leave the tree so those checks pass
-honestly.
+A deterministic validation script — the sequence's final `check` step,
+`bundles/self/scripts/design-check.sh` run from the pinned bundle — runs
+immediately after you and rules the design attempt on the artifacts
+alone. It identifies the design by your commit: HEAD must touch exactly
+one `specs/<slug>/` directory (never selected by mtime), whose spec.md,
+plan.md and tasks.md are committed, non-empty and clean in the worktree,
+with an acceptance-criteria heading in spec.md, at least one checkbox in
+tasks.md and a risks section in plan.md. A `Decision: NNNN` line in
+spec.md declares a decision, which must be one committed, clean,
+`proposed` file the spec links to; a link to an accepted decision is an
+authority, not a declaration. Leave the tree so those checks pass
+honestly, and make your design commit the last one.
 
 Result: `{"result": "drafted", "notes": "<the committed paths>"}`. Your
 result vocabulary is exactly `drafted`: the seat-level vocabulary

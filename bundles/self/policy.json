@@ -32,14 +32,15 @@
       "from": "design",
       "result": "designed",
       "next": "implement",
-      "reason": "Spec committed and structurally validated by the deterministic check; the speckit dialect's design instructions reached the council."
+      "reason": "Spec committed and structurally validated by the deterministic check (the sequence's final exec step, scripts/design-check.sh from the pinned bundle); only its 'designed' advances."
     },
     {
-      "id": "DESIGN-OK-DRAFTED",
+      "id": "DESIGN-DRAFTED-STOP",
       "from": "design",
       "result": "drafted",
-      "next": "implement",
-      "reason": "The chief sometimes names the drafted spec 'drafted' instead of 'designed'; the artifact contract (committed spec + plan + tasks passing the deterministic check) is identical, so proceed to implement."
+      "next": "stop",
+      "severity": "hard",
+      "reason": "'drafted' is the chief's intermediate step result; the deterministic check's verdict is the phase result. A phase-level 'drafted' means the check did not rule, so it never advances (decision 0050 §3)."
     },
     {
       "id": "DESIGN-FAIL-TWICE",
@@ -141,9 +142,21 @@
       "id": "REVIEW-RESIDUAL-OK",
       "from": "review",
       "result": "residual",
+      "when": {
+        "has_security_residual": false,
+        "max_residual_severity_at_most": "medium"
+      },
       "next": "ship",
       "severity": "flagged",
-      "reason": "Non-security residuals at or below medium proceed as tracked debt."
+      "reason": "Explicitly non-security residuals of an explicit severity at or below medium proceed as tracked debt."
+    },
+    {
+      "id": "REVIEW-RESIDUAL-UNKNOWN",
+      "from": "review",
+      "result": "residual",
+      "next": "stop",
+      "severity": "hard",
+      "reason": "Residual safety facts absent, null or malformed: unknown is never shippable, and nothing is defaulted or inferred (decision 0050 §4)."
     },
     {
       "id": "REVIEW-CLEAN-NO-FIXES",

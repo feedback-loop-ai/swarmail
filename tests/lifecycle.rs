@@ -177,9 +177,8 @@ async fn a_stalled_sink_cannot_hold_stop_hostage() {
 /// stop to prove the transaction never landed.
 #[tokio::test]
 async fn a_mid_transaction_session_dies_with_the_socket_and_stores_nothing() {
-    let dir = std::env::temp_dir().join(format!("swarmail-ac3-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("middata.db");
+    let dir = tempfile::TempDir::with_prefix("swarmail-ac3-").unwrap();
+    let path = dir.path().join("middata.db");
     let srv = start_with(|mut c| {
         c.data_file = Some(path.clone());
         c
@@ -218,7 +217,8 @@ async fn a_mid_transaction_session_dies_with_the_socket_and_stores_nothing() {
         "a mid-transaction session must store nothing: {:?}",
         store.inboxes()
     );
-    let _ = std::fs::remove_dir_all(dir);
+    drop(store);
+    drop(dir);
 }
 
 /// AC3's POP3 leg: a session mid-transaction dies with its socket, and its
@@ -227,9 +227,8 @@ async fn a_mid_transaction_session_dies_with_the_socket_and_stores_nothing() {
 /// the maildrop is exactly as it was (0010 exact-count discipline).
 #[tokio::test]
 async fn a_pop3_session_mid_transaction_dies_with_the_socket_and_deletes_nothing() {
-    let dir = std::env::temp_dir().join(format!("swarmail-ac3-pop3-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("pop3-midtrans.db");
+    let dir = tempfile::TempDir::with_prefix("swarmail-ac3-pop3-").unwrap();
+    let path = dir.path().join("pop3-midtrans.db");
     let srv = start_with(|mut c| {
         c.data_file = Some(path.clone());
         c
@@ -285,19 +284,29 @@ async fn a_pop3_session_mid_transaction_dies_with_the_socket_and_deletes_nothing
         1,
         "an uncommitted DELE dies with its session"
     );
-    let _ = std::fs::remove_dir_all(dir);
+    drop(store);
+    drop(dir);
 }
 
 // ---------- decision 0018: the stop budget and the waits that observe it ----------
 
-/// The stop budget (decision 0018): the SQLite busy bound (5000ms) plus a
-/// scheduling margin (5000ms) — the number every stop assertion is written
-/// against, independent of any client's wait timeout or any commit's burn.
-// The 5 s busy bound plus runner slop: a loaded macos runner once pushed
-// a queued-seed stop past 10 s (the same family as #108's margin fix),
-// so the budget is generous; the 5 s bound itself stays pinned by
-// persist.rs's pragma test.
-const STOP_BUDGET: Duration = Duration::from_secs(30);
+/// The server's own stop fence (decisions 0018 §2 and 0027 §7): the SQLite
+/// busy bound (5000ms) plus the scheduling margin (5000ms) — the value of
+/// `api::DRAIN_DEADLINE`, which ends the HTTP drain on the server's clock.
+/// The 5 s busy bound itself stays pinned by persist.rs's pragma test.
+const STOP_FENCE: Duration = Duration::from_millis(5000 + 5000);
+
+/// The deadline-observation allowance, and nothing more: the time for this
+/// test to see a `stop()` that the fence has already ended return — the
+/// joins after the drain and the wakeups that report them. It is not runner
+/// slop folded into the fence (issue #143: a 30 s "budget" once hid a fence
+/// three times 0027's), and it opens no validity window.
+const OBSERVATION_ALLOWANCE: Duration = Duration::from_secs(2);
+
+/// The bound every stop assertion is written against: the fence plus the
+/// separately named allowance to observe it, independent of any client's
+/// wait timeout or any commit's burn.
+const STOP_BUDGET: Duration = STOP_FENCE.saturating_add(OBSERVATION_ALLOWANCE);
 
 /// AC2 (0018): a parked await cannot hold stop hostage. A 60s REST wait
 /// parks on an empty inbox; the stop completes inside the budget and the
@@ -437,9 +446,8 @@ async fn an_omitted_mcp_timeout_parks_on_the_documented_default() {
 /// read of the data file shows the refused commit stored nothing.
 #[tokio::test]
 async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
-    let dir = std::env::temp_dir().join(format!("swarmail-stop-burn-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("burn.db");
+    let dir = tempfile::TempDir::with_prefix("swarmail-stop-burn-").unwrap();
+    let path = dir.path().join("burn.db");
     let srv = start_with(|mut c| {
         c.data_file = Some(path.clone());
         c
@@ -539,7 +547,7 @@ async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let _ = std::fs::remove_dir_all(dir);
+    drop(dir);
 }
 
 // ---------- decision 0024: the boundary refuses to start a commit once stopping ----------
@@ -559,9 +567,8 @@ async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
 /// three requests on the boundary before the stop fires.
 #[tokio::test]
 async fn queued_seeds_refuse_once_the_stop_has_fired() {
-    let dir = std::env::temp_dir().join(format!("swarmail-stop-refuse-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("refuse.db");
+    let dir = tempfile::TempDir::with_prefix("swarmail-stop-refuse-").unwrap();
+    let path = dir.path().join("refuse.db");
     let srv = start_with(|mut c| {
         c.data_file = Some(path.clone());
         c
@@ -629,107 +636,32 @@ async fn queued_seeds_refuse_once_the_stop_has_fired() {
         .expect("the emails table reads");
     assert_eq!(stored, 0, "the refused set stored nothing");
     drop(ro);
-    let _ = std::fs::remove_dir_all(dir);
+    drop(dir);
 }
 
-// --- 0027: a stalled body and a partial head cannot hold stop hostage ------
+// --- 0027: a stalled body cannot hold stop hostage -------------------------
 
-/// One HTTP response off a raw socket: the status code and the JSON body,
-/// skipping any interim `100 Continue` and honoring Content-Length. `None`
-/// when the peer closed first — the drain's deadline lawfully races the
-/// answer (0027 §7), and a loaded runner can lose that race to a reset —
-/// which is the no-hostage outcome the caller's liveness assert owns.
-async fn read_response(
-    what: &str,
-    stream: &mut tokio::net::TcpStream,
-) -> Option<(u16, serde_json::Value)> {
-    let mut raw: Vec<u8> = Vec::new();
-    let mut buf = [0u8; 1024];
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let head_end = loop {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no response arrived: {}",
-            String::from_utf8_lossy(&raw)
-        );
-        let n = tokio::time::timeout(Duration::from_millis(500), stream.read(&mut buf))
-            .await
-            .unwrap_or_else(|_| {
-                panic!(
-                    "[{what}] the response stalled: {}",
-                    String::from_utf8_lossy(&raw)
-                )
-            });
-        match n {
-            Ok(0) => return None,
-            Ok(n) => raw.extend_from_slice(&buf[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return None,
-            Err(e) => panic!("[{what}] read failed: {e}"),
-        }
-        if let Some(i) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-            let head = String::from_utf8_lossy(&raw[..i]).into_owned();
-            let status: u16 = head
-                .lines()
-                .next()
-                .and_then(|l| l.split_whitespace().nth(1))
-                .expect("a status line")
-                .parse()
-                .expect("status is a number");
-            if status == 100 {
-                // Interim: drop it and keep reading for the real answer.
-                raw.drain(..i + 4);
-                continue;
-            }
-            break i;
-        }
-    };
-    let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
-    let status: u16 = head
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .expect("a status line")
-        .parse()
-        .expect("status is a number");
-    let len: usize = head
-        .lines()
-        .find_map(|l| {
-            l.split_once(':')
-                .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-                .and_then(|(_, v)| v.trim().parse().ok())
-        })
-        .unwrap_or(0);
-    while raw.len() < head_end + 4 + len {
-        let n = tokio::time::timeout(Duration::from_millis(500), stream.read(&mut buf))
-            .await
-            .expect("the body stalled");
-        match n {
-            Ok(0) => return None,
-            Ok(n) => raw.extend_from_slice(&buf[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return None,
-            Err(e) => panic!("[{what}] read failed: {e}"),
-        }
-    }
-    Some((
-        status,
-        serde_json::from_slice(&raw[head_end + 4..head_end + 4 + len]).expect("a JSON body"),
-    ))
-}
-
-/// The hardest parked pair (0027): a request stalled mid-BODY — hyper has
-/// dispatched it (its 100 Continue is on the wire) and the handler waits on
-/// bytes that never come — and a connection parked mid-HEAD. The stalled
-/// body cannot hold stop hostage: the drain deadline ends the wait (red:
-/// the graceful drain held `stop()` forever, and a healthz answered `200
-/// ok` after the stop had fired). The partial head, completed inside the
-/// drain, is answered `503 stopping` on the real wire.
+/// A request stalled mid-BODY (0027 §7) — hyper has dispatched it (its 100
+/// Continue is on the wire) and the handler waits on bytes that never come
+/// — cannot hold stop hostage: the drain deadline ends the wait (red: the
+/// graceful drain held `stop()` forever). Liveness only, against the
+/// server's own fence plus the allowance to observe it.
 ///
 /// The stalled seed is deliberately never completed: hyper aborts a body
 /// that lands after the stop (the write is reset) and will not continue a
 /// dispatched body mid-drain — the boundary refusal for a seed that
 /// completes is `queued_seeds_refuse_once_the_stop_has_fired`'s proof.
+///
+/// The `503 stopping` answer is not observed here. A connection only
+/// parked mid-head when the stop fires may lawfully close unanswered (0027
+/// §2, as clarified), so a public-wire probe cannot make that answer
+/// mandatory; the unconditional proof — a real-HTTP probe known, through
+/// the owner's test-only hold, to be inside its handler at the stop, and
+/// red on EOF or reset — is
+/// `api::tests::a_healthz_inside_its_handler_at_the_stop_is_answered_503_stopping`
+/// (issue #143, decision 0020 rule 3).
 #[tokio::test]
-async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
+async fn a_stalled_body_cannot_hold_stop_hostage() {
     let srv = start().await;
     let addr = srv.http_addr;
 
@@ -750,14 +682,6 @@ async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
     .unwrap();
     a.write_all(b"{\"to").await.unwrap();
 
-    // B: a request parked mid-parse — a head with no terminator, written
-    // before A's continue is awaited, so B's connection task provably
-    // exists and is polled before the stop ever fires.
-    let mut b = tokio::net::TcpStream::connect(addr).await.unwrap();
-    b.write_all(format!("GET /healthz HTTP/1.1\r\nHost: {addr}\r\n").as_bytes())
-        .await
-        .unwrap();
-
     // The 100 Continue is observed: A's park is real, not a guess.
     let mut first = [0u8; 64];
     let n = tokio::time::timeout(Duration::from_secs(10), a.read(&mut first))
@@ -766,30 +690,15 @@ async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
         .unwrap();
     assert!(first[..n].starts_with(b"HTTP/1.1 100"), "{:?}", &first[..n]);
 
-    // Stop, and complete B's head inside the drain it opens. The budget is
-    // liveness against a hang — the fence plus ε — because a never-landing
-    // body is answered exactly at the drain deadline (0027 §7): a budget at
-    // the fence itself would race the deadline it exists to observe.
-    let (stop_res, healthz) = tokio::join!(
-        async { tokio::time::timeout(STOP_BUDGET + Duration::from_secs(5), srv.stop()).await },
-        async {
-            b.write_all(b"\r\n").await.unwrap();
-            read_response("healthz", &mut b).await
-        },
-    );
     // stop() resolves — at the drain deadline, since the body never lands
-    // (red: the graceful drain held it forever).
-    stop_res.expect("the stalled body held stop past every budget");
-
-    // The partial head completes mid-drain where the drain allows it: the
-    // answer is `stopping`, not the old `200 ok`. A loaded runner can
-    // instead see the drain's deadline close the socket first — the lawful
-    // reset `read_response` reports as `None` — and the liveness assert
-    // above is the test's core, not which side won the deadline race.
-    if let Some((st, body)) = healthz {
-        assert_eq!(st, 503, "{body}");
-        assert_eq!(body["status"], "stopping");
-    }
+    // (red: the graceful drain held it forever). A never-landing body is
+    // released exactly at the fence (0027 §7), so the bound is the fence
+    // plus the named allowance to observe it — a bound at the fence itself
+    // would race the deadline it exists to observe.
+    tokio::time::timeout(STOP_BUDGET, srv.stop())
+        .await
+        .expect("the stalled body held stop past the fence");
+    drop(a);
 }
 
 // ---------- issue #47: shutdown counting is a ledger row, not a silence ----
@@ -804,9 +713,8 @@ async fn a_stalled_body_and_a_partial_head_cannot_hold_stop_hostage() {
 /// matching count) — so no scheduling order can flake the row.
 #[tokio::test]
 async fn a_fanout_in_flight_at_the_drain_is_counted_and_never_delivered() {
-    let dir = std::env::temp_dir().join(format!("swarmail-drain-count-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("counted.db");
+    let dir = tempfile::TempDir::with_prefix("swarmail-drain-count-").unwrap();
+    let path = dir.path().join("counted.db");
     let srv = start_with(|mut c| {
         c.data_file = Some(path.clone());
         c
@@ -873,5 +781,289 @@ async fn a_fanout_in_flight_at_the_drain_is_counted_and_never_delivered() {
         .expect("the emails table reads");
     assert_eq!(stored, 1, "the commit the stop allowed is on the data file");
     drop(ro);
-    let _ = std::fs::remove_dir_all(dir);
+    drop(dir);
+}
+
+// ---------- issue #143: a silent peer fails every helper read, by name ----
+
+/// A real local peer that accepts every connection, writes `script` once
+/// (possibly nothing) and then never says another byte, holding each socket
+/// open — the wedged server the helper deadlines exist for.
+async fn silent_peer(script: &'static [u8]) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((mut socket, _)) = listener.accept().await {
+            socket.write_all(script).await.unwrap();
+            held.push(socket);
+        }
+    });
+    addr
+}
+
+/// One helper driven against its own silent peer.
+type Probe = fn(std::net::SocketAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+
+/// Run `probe` on its own thread and runtime against a fresh silent peer,
+/// capturing its panic message (or the fact that it returned). The result
+/// arrives on the channel; a probe whose deadline is gone never sends.
+fn probe_silent_peer(script: &'static [u8], probe: Probe) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async { probe(silent_peer(script).await).await })
+        }));
+        let message = match outcome {
+            Ok(()) => "the helper returned against a silent peer".to_string(),
+            Err(payload) => payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "a non-text panic".to_string()),
+        };
+        let _ = tx.send(message);
+    });
+    rx
+}
+
+/// The watchdog's allowance over the longest helper deadline: time for a
+/// deadline that has fired to be reported. A probe still silent past it has
+/// lost its deadline — the hang this test exists to turn red.
+const WATCHDOG_ALLOWANCE: Duration = Duration::from_secs(15);
+
+/// AC9 (issue #143): a server that accepts and never answers fails each
+/// helper read within its bound, the panic naming the helper and the step —
+/// never a hung suite. Every read form is driven against a real silent
+/// peer: a line, a multi-line reply, a byte-wise body line, a read-to-EOF,
+/// the line-wise EOF reads, the HTTP response, the SSE head and frame, the
+/// STARTTLS plaintext phase and the TLS handshake. The probes run in
+/// parallel on their own threads; an outer watchdog, measured from their
+/// common start, tells an expected deadline panic from a removed deadline
+/// (red: the probe never reports, and the watchdog names it).
+#[test]
+fn a_silent_peer_fails_every_helper_within_its_bound_naming_the_step() {
+    const SMTP_TO_STARTTLS_READY: &[u8] =
+        b"220 silent\r\n250-silent\r\n250-STARTTLS\r\n250 OK\r\n220 Ready\r\n";
+    let cases: Vec<(&str, &'static [u8], Probe)> = vec![
+        ("smtp_send: the greeting: no reply within", b"", |addr| {
+            Box::pin(async move {
+                let _ = common::smtp_send(addr, None, "f@x.io", "r@x.io", "s", "b").await;
+            })
+        }),
+        (
+            "SmtpConn::connect: the greeting: no reply within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    SmtpConn::connect(addr).await;
+                })
+            },
+        ),
+        (
+            "SmtpConn::reply: a reply line: no reply within",
+            b"220 hi\r\n",
+            |addr| {
+                Box::pin(async move {
+                    let mut c = SmtpConn::connect(addr).await;
+                    c.send("NOOP").await;
+                    c.reply().await;
+                })
+            },
+        ),
+        (
+            "SmtpConn::reply_multi: a reply line: no reply within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    SmtpConn::connect_raw(addr).await.reply_multi().await;
+                })
+            },
+        ),
+        (
+            "SmtpConn::read_to_end: the session's EOF: no EOF within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    SmtpConn::connect_raw(addr).await.read_to_end().await;
+                })
+            },
+        ),
+        (
+            "SmtpConn::read_to_eof: the session's EOF: no line or EOF within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    SmtpConn::connect_raw(addr).await.read_to_eof().await;
+                })
+            },
+        ),
+        (
+            "Pop3::connect: the greeting: no reply within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    common::Pop3::connect(addr).await;
+                })
+            },
+        ),
+        (
+            "Pop3::reply: the reply line: no reply within",
+            b"+OK hi\r\n",
+            |addr| {
+                Box::pin(async move {
+                    common::Pop3::connect(addr).await.cmd("STAT").await;
+                })
+            },
+        ),
+        (
+            "Pop3::data_bytes: a multi-line body line: no reply within",
+            b"+OK hi\r\n",
+            |addr| {
+                Box::pin(async move {
+                    common::Pop3::connect(addr).await.data_bytes().await;
+                })
+            },
+        ),
+        (
+            "Pop3::raw_bytes: a multi-line body line: no reply within",
+            b"+OK hi\r\n",
+            |addr| {
+                Box::pin(async move {
+                    common::Pop3::connect(addr).await.raw_bytes().await;
+                })
+            },
+        ),
+        (
+            "Pop3::read_to_eof: the session's EOF: no line or EOF within",
+            b"+OK hi\r\n",
+            |addr| {
+                Box::pin(async move {
+                    common::Pop3::connect(addr).await.read_to_eof().await;
+                })
+            },
+        ),
+        (
+            "http_get_text: the HTTP response: no EOF within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    common::http_get_text(addr, "/healthz").await;
+                })
+            },
+        ),
+        (
+            "http_get_parts: the HTTP response: no EOF within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    common::http_bytes(addr, "/healthz").await;
+                })
+            },
+        ),
+        (
+            "http_send_text_with_headers: the HTTP response: no EOF within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    common::http_json(addr, "GET", "/healthz", None).await;
+                })
+            },
+        ),
+        (
+            "send_with_host: the HTTP response: no EOF within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    common::send_with_host(addr, "GET", "/healthz", "localhost", None).await;
+                })
+            },
+        ),
+        (
+            "http_send_text_allow_eof: the HTTP response: ",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    common::http_send_text_allow_eof(addr, "GET", "/healthz", None).await;
+                })
+            },
+        ),
+        (
+            "SseReader::open: a response head line: no reply within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    common::SseReader::open(addr, "/feed").await;
+                })
+            },
+        ),
+        (
+            "SseReader::next_frame: no feed frame line within 5s",
+            b"HTTP/1.1 200 OK\r\n\r\n",
+            |addr| {
+                Box::pin(async move {
+                    common::SseReader::open(addr, "/feed")
+                        .await
+                        .next_frame()
+                        .await;
+                })
+            },
+        ),
+        (
+            "SseReader::read_until_eof: the feed's EOF: no line or EOF within",
+            b"HTTP/1.1 200 OK\r\n\r\n",
+            |addr| {
+                Box::pin(async move {
+                    common::SseReader::open(addr, "/feed")
+                        .await
+                        .read_until_eof()
+                        .await;
+                })
+            },
+        ),
+        (
+            "plaintext_starttls_phase: the greeting: no reply within",
+            b"",
+            |addr| {
+                Box::pin(async move {
+                    common::stalled_starttls(addr).await;
+                })
+            },
+        ),
+        (
+            "starttls_upgrading: no TLS handshake reply within the helper deadline",
+            SMTP_TO_STARTTLS_READY,
+            |addr| {
+                Box::pin(async move {
+                    let root = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+                        .unwrap()
+                        .cert
+                        .der()
+                        .clone();
+                    common::starttls(addr, "localhost", root).await;
+                })
+            },
+        ),
+    ];
+
+    let started = std::time::Instant::now();
+    let running: Vec<_> = cases
+        .into_iter()
+        .map(|(want, script, probe)| (want, probe_silent_peer(script, probe)))
+        .collect();
+    let watchdog = started + common::HELPER_DEADLINE + WATCHDOG_ALLOWANCE;
+    for (want, outcome) in running {
+        let left = watchdog.saturating_duration_since(std::time::Instant::now());
+        let message = outcome.recv_timeout(left).unwrap_or_else(|_| {
+            panic!("watchdog: the probe for {want:?} never failed — its read deadline is gone")
+        });
+        assert!(
+            message.contains(want),
+            "the silent peer must fail the helper naming {want:?}; it said: {message:?}"
+        );
+    }
 }
