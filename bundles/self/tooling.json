@@ -1,6 +1,8 @@
 {
   "brokkr": {
     "sha": "67a1886e5fcfa777e5bdc7eb3c153bb1fa53bbcf",
-    "version": "0.12.0"
+    "version": "0.12.0",
+    "binary_sha256": "38c698a4648f6c7032f33b25bbcddb635377b9450abb0e97fe04aade1fbf95d1",
+    "binary_provenance": "Recorded by the operator on 2026-10-19 for the binary that runs epic #120's verify seat (.brokkr/state/epic120/bin/brokkr-fixed2, brokkr 0.12.0): an operator build of brokkr-library's branch head with two since-merged fixes, NOT a build of the commit named in sha. The digest, not sha, is what verify checks."
   }
 }
