@@ -362,3 +362,254 @@ async fn the_awaited_mutation_does_not_resolve_while_its_commit_is_in_flight() {
         "the held commit fails: the refusal resolves the await, and nothing else does"
     );
 }
+
+// ---------- R11 (0018, 0024 §3): an admitted commit at stop ----------
+//
+// Moved from tests/lifecycle.rs (issue #143, re-drive 5): the integration
+// copy sequenced its stop behind the delivery metric — live during the
+// parse, before shutdown admission — and held an external SQLite writer
+// across the 5 s busy bound, so under host load the stop could land before
+// admission (refused, nothing ever lands) or the bound could expire first
+// (refused, nothing ever lands). Here the interleaving is a handshake: the
+// pre-mirror gate in `record` fires only after admission, and it holds
+// until this test releases it — no clock decides which side wins. Its home
+// is this harness (0020 rule 2): the gate is crate-private, and the step
+// deadlines below are cold diagnostics that run only while a bug is present.
+
+/// How long one wire step or one handshake may take before it is named as
+/// the step that made no progress. A diagnostic, never a validity window.
+const STEP: Duration = Duration::from_secs(10);
+
+/// The bound the stop is observed against — tests/lifecycle.rs's
+/// `STOP_BUDGET`: the server's 10 s stop fence plus the 2 s allowance to
+/// observe it.
+const STOP_BUDGET: Duration = Duration::from_secs(12);
+
+/// `fut`, bounded by [`STEP`] and named on expiry.
+async fn step<T>(what: &str, fut: impl std::future::Future<Output = T>) -> T {
+    match tokio::time::timeout(STEP, fut).await {
+        Ok(value) => value,
+        Err(_) => panic!("{what}: no progress within {STEP:?}"),
+    }
+}
+
+/// One SMTP reply, multi-line replies folded to their final line.
+async fn smtp_reply(
+    reader: &mut tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
+    what: &str,
+) -> String {
+    use tokio::io::AsyncBufReadExt;
+    loop {
+        let mut line = String::new();
+        step(what, reader.read_line(&mut line))
+            .await
+            .unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert!(line.len() >= 4, "{what}: short reply {line:?}");
+        if line.as_bytes()[3] != b'-' {
+            return line;
+        }
+    }
+}
+
+/// One SMTP command and its reply, which must carry `code`.
+async fn smtp_step(
+    reader: &mut tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    command: &str,
+    code: &str,
+) {
+    use tokio::io::AsyncWriteExt;
+    step(command, writer.write_all(command.as_bytes()))
+        .await
+        .unwrap_or_else(|e| panic!("{command}: {e}"));
+    let reply = smtp_reply(reader, command).await;
+    assert!(reply.starts_with(code), "{command}: {reply:?}");
+}
+
+/// What the data file holds, read on its own read-only connection (the
+/// live store keeps the writer identity, 0033): every mail row as (id,
+/// inbox, envelope sender, raw) and the two persisted counters.
+type DiskRow = (String, String, Option<String>, Vec<u8>);
+
+fn on_disk(path: &std::path::Path) -> (Vec<DiskRow>, String, String) {
+    let ro =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("the data file opens read-only");
+    let rows = ro
+        .prepare("SELECT id, inbox, envelope_from, raw FROM emails ORDER BY seq, rowid")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<DiskRow>>>()
+        .unwrap();
+    let counter = |key: &str| -> String {
+        ro.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .unwrap()
+    };
+    let (inserted, dropped) = (counter("emails_inserted"), counter("emails_dropped"));
+    (rows, inserted, dropped)
+}
+
+/// The test-owned release of the held commit: a predicate under a condvar,
+/// so a release before the gate is entered is never lost and a spurious
+/// wake re-waits. Dropping it releases too — an assertion failing while
+/// the gate holds must not strand the blocking thread and hang runtime
+/// teardown (`spawn_blocking` work is never aborted).
+struct HeldCommit(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+impl HeldCommit {
+    fn release(&self) {
+        let (open, wake) = &*self.0;
+        *open.lock().unwrap() = true;
+        wake.notify_all();
+    }
+}
+
+impl Drop for HeldCommit {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// R11 (0018), at the boundary 0024 §3 admits: a commit already admitted
+/// when stop fires is not cancelled — the blocking pool runs it to
+/// completion — but it does not hold stop. While the gate holds the
+/// admitted insert, the real server stops inside its budget, the client
+/// never sees `250`, both listeners refuse, and neither memory, counters,
+/// fan-out nor the data file shows the mail. Released, the commit lands
+/// exactly once, identically in memory and on disk, though the client was
+/// never told (R11: "retry is lossless").
+#[tokio::test]
+async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
+    use tokio::io::AsyncWriteExt;
+    let (dir, path) = pin_db_path("stop-burn");
+    let srv = crate::run_on(&crate::config::Config {
+        smtp_listen: "127.0.0.1:0".into(),
+        http_listen: "127.0.0.1:0".into(),
+        pop3_listen: "127.0.0.1:0".into(),
+        max_per_inbox: 0,
+        data_file: Some(path.clone()),
+        tls_cert: None,
+        tls_key: None,
+        smtp: Default::default(),
+        pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
+    })
+    .await
+    .unwrap();
+    let store = srv.store.clone();
+    // A committed incumbent, so the persisted counters exist and their
+    // deltas are exact.
+    store.insert(email("incumbent", "seed", "a@x.io")).unwrap();
+    let before = on_disk(&path);
+    assert_eq!(before.1, "1");
+
+    // The gate and its release exist before the delivery can reach it.
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let held = HeldCommit(Arc::new((
+        std::sync::Mutex::new(false),
+        std::sync::Condvar::new(),
+    )));
+    let (signal, open) = (entered.clone(), held.0.clone());
+    store.set_pre_mirror_gate(Some(Arc::new(move || {
+        signal.notify_one();
+        let (open, wake) = &*open;
+        let _open = wake
+            .wait_while(open.lock().unwrap(), |open| !*open)
+            .unwrap();
+    })));
+    // Subscribe before the send (0002): the fan-out is the completion signal.
+    let mut landed = store.subscribe("burn");
+
+    let stream = step("connect", tokio::net::TcpStream::connect(srv.smtp_addr))
+        .await
+        .unwrap();
+    let (r, mut w) = stream.into_split();
+    let mut r = tokio::io::BufReader::new(r);
+    assert!(smtp_reply(&mut r, "greeting").await.starts_with("220"));
+    smtp_step(&mut r, &mut w, "EHLO swarmail-test\r\n", "250").await;
+    // The AUTH user names the inbox "burn": the row is this test's alone.
+    let plain = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        "\u{0}burn\u{0}whatever",
+    );
+    smtp_step(&mut r, &mut w, &format!("AUTH PLAIN {plain}\r\n"), "235").await;
+    smtp_step(&mut r, &mut w, "MAIL FROM:<f@x.io>\r\n", "250").await;
+    smtp_step(&mut r, &mut w, "RCPT TO:<r@x.io>\r\n", "250").await;
+    smtp_step(&mut r, &mut w, "DATA\r\n", "354").await;
+    let message = "From: f@x.io\r\nTo: r@x.io\r\nSubject: held\r\n\r\nx\r\n.\r\n";
+    step("the message", w.write_all(message.as_bytes()))
+        .await
+        .unwrap();
+    // Admission is past exactly when the gate is entered: `record` fires
+    // it after its stopping check, under the mutation boundary.
+    step("the gate entry", entered.notified()).await;
+
+    let (smtp_addr, http_addr) = (srv.smtp_addr, srv.http_addr);
+    let started = Instant::now();
+    assert!(
+        tokio::time::timeout(STOP_BUDGET, srv.stop()).await.is_ok(),
+        "an admitted commit held stop past {STOP_BUDGET:?}"
+    );
+    assert!(started.elapsed() < STOP_BUDGET);
+
+    // The session died with the stop: EOF or reset, or a refusal — never
+    // `250`. A reply written before the stop is buffered and read here.
+    let mut tail = String::new();
+    let read = step(
+        "the DATA reply",
+        tokio::io::AsyncBufReadExt::read_line(&mut r, &mut tail),
+    )
+    .await;
+    assert!(
+        !tail.starts_with("250"),
+        "an unfinished commit was acknowledged: {tail:?} ({read:?})"
+    );
+    for addr in [smtp_addr, http_addr] {
+        assert!(
+            tokio::net::TcpStream::connect(addr).await.is_err(),
+            "{addr} still accepts connections after stop"
+        );
+    }
+
+    // Still held: nothing is visible anywhere — no mail, no counter, no
+    // fan-out, no row. None of these reads takes the mutation lock.
+    assert!(
+        store.list("burn", &Filter::default()).is_empty(),
+        "the held mail is visible in memory before its commit"
+    );
+    assert_eq!(
+        store.emails_inserted(),
+        1,
+        "the held mail was counted before its commit"
+    );
+    assert!(landed.try_recv().is_err(), "the held mail fanned out early");
+    assert_eq!(on_disk(&path), before, "the held commit half-landed");
+
+    // Released, the admitted commit runs to completion: one mail, the same
+    // in memory and on disk, counted once.
+    held.release();
+    let mail = step("the commit after release", landed.recv())
+        .await
+        .expect("the released commit fans out");
+    assert_eq!(
+        store.list("burn", &Filter::default()),
+        vec![mail.clone()],
+        "exactly one mail lands in memory"
+    );
+    let (rows, inserted, dropped) = on_disk(&path);
+    assert_eq!(rows.len(), 2, "exactly one row lands beside the incumbent");
+    assert_eq!(rows[0], before.0[0]);
+    assert_eq!(
+        rows[1],
+        (
+            mail.id.clone(),
+            "burn".to_string(),
+            Some("f@x.io".to_string()),
+            mail.raw.clone()
+        )
+    );
+    assert_eq!((inserted.as_str(), dropped.as_str()), ("2", "0"));
+    assert_eq!((store.emails_inserted(), store.emails_dropped()), (2, 0));
+    drop(store);
+    drop(dir);
+}

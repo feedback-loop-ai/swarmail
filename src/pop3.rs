@@ -570,16 +570,7 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>, idle: Duration) -> io
                         // or POP3 in another session): not fetchable.
                         None => write_line(&mut write, "-ERR no such message", idle).await?,
                         Some(email) => {
-                            // The count is the snapshot's: the unstuffed,
-                            // normalized payload LIST and STAT advertise
-                            // (decision 0037) — the mail under an id never
-                            // changes. The reply is the one extra copy of
-                            // the mail this session holds (issue #86): the
-                            // stuffed body goes straight into it from the
-                            // live Arc, never through a second buffer.
-                            let mut out = format!("+OK {} octets\r\n", msg.size).into_bytes();
-                            write_stuffed(&mut out, &email.raw);
-                            out.extend_from_slice(b".\r\n");
+                            let out = retr_reply(msg.size, &email.raw);
                             write_reply(&mut write, &out, idle).await?;
                         }
                     },
@@ -896,6 +887,20 @@ async fn write_capabilities<W: tokio::io::AsyncWrite + Unpin>(
 /// line starting with "." gets a "." stuffed in front.
 fn write_stuffed(out: &mut Vec<u8>, raw: &[u8]) {
     write_stuffed_limited(out, raw, usize::MAX);
+}
+
+/// One whole RETR reply: the status line, the stuffed mail and the final
+/// `.\r\n`. The count is the snapshot's: the unstuffed, normalized payload
+/// LIST and STAT advertise (decision 0037) — the mail under an id never
+/// changes. The reply is the one extra copy of the mail a session holds
+/// (issue #86): the stuffed body goes straight into it from the live
+/// bytes, never through a second buffer — the allocation harness
+/// (`pop3/alloc_tests.rs`, issue #143) pins exactly that.
+fn retr_reply(size: u64, raw: &[u8]) -> Vec<u8> {
+    let mut out = format!("+OK {size} octets\r\n").into_bytes();
+    write_stuffed(&mut out, raw);
+    out.extend_from_slice(b".\r\n");
+    out
 }
 
 /// The advertised size of a stored mail: its payload as the client keeps
@@ -1543,3 +1548,11 @@ mod maildrop_tests;
 // never waited on backpressure, a reader cut off mid-message — run only
 // while the schedule betrays or the whole-reply bound is back.
 mod progress_tests;
+
+// The RETR one-copy and allocation-free sizing proofs live in
+// src/pop3/alloc_tests.rs (decision 0020 rule 2, issue #143): its counting
+// allocator's diagnostics — a second body-sized buffer, a per-mail sizing
+// allocation, an allocation the counter never saw — run only while the bug
+// is present.
+#[cfg(test)]
+mod alloc_tests;

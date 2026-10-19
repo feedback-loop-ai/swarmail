@@ -9,23 +9,15 @@ use swarmail::RunningServer;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-/// A unique data-file path; parallel tests must never share one.
-fn data_file(tag: &str) -> PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    std::env::temp_dir().join(format!(
-        "swarmail-e2e-{tag}-{}-{nanos}.db",
-        std::process::id()
-    ))
-}
-
-/// Best-effort cleanup of the data file, its WAL sidecars and its lock.
-fn clean_up(db: &std::path::Path) {
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+/// A unique data-file path inside its own scratch directory; parallel tests
+/// never share one. The returned guard owns the directory: the data file,
+/// its WAL sidecars and its lock go with it on every exit, so a test that
+/// fails mid-way leaves nothing in the temporary root (issue #143). Bind
+/// it for the whole test (`let (_dir, db) = ...`), never to `_`.
+fn data_file(tag: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::TempDir::with_prefix(format!("swarmail-e2e-{tag}-")).unwrap();
+    let db = dir.path().join("mail.db");
+    (dir, db)
 }
 
 async fn serve_data_file(db: &std::path::Path) -> RunningServer {
@@ -52,8 +44,7 @@ async fn send(srv: &RunningServer, inbox: &str, subject: &str) -> String {
 
 #[tokio::test]
 async fn mail_sent_over_smtp_survives_a_full_restart() {
-    let db = data_file("restart");
-    clean_up(&db);
+    let (_dir, db) = data_file("restart");
 
     let srv = serve_data_file(&db).await;
     let smtp_id = send(&srv, "persist", "Hello persist").await;
@@ -134,13 +125,11 @@ async fn mail_sent_over_smtp_survives_a_full_restart() {
     );
 
     srv.stop().await;
-    clean_up(&db);
 }
 
 #[tokio::test]
 async fn deletes_and_clears_survive_a_restart() {
-    let db = data_file("mutations");
-    clean_up(&db);
+    let (_dir, db) = data_file("mutations");
 
     let srv = serve_data_file(&db).await;
     for subject in ["one", "two"] {
@@ -204,7 +193,6 @@ async fn deletes_and_clears_survive_a_restart() {
         "{metrics}"
     );
     srv.stop().await;
-    clean_up(&db);
 }
 
 /// One rule on every path (decision 0032, issue #54): an inbox whose mail
@@ -213,8 +201,7 @@ async fn deletes_and_clears_survive_a_restart() {
 /// an empty shell. The next insert re-mints (0004): no tombstone.
 #[tokio::test]
 async fn an_emptied_inbox_is_absent_from_the_listing_live_and_after_a_reopen() {
-    let db = data_file("emptied-listing");
-    clean_up(&db);
+    let (_dir, db) = data_file("emptied-listing");
 
     let srv = serve_data_file(&db).await;
     let gone = send(&srv, "emptied", "one").await;
@@ -322,7 +309,6 @@ async fn an_emptied_inbox_is_absent_from_the_listing_live_and_after_a_reopen() {
     assert_eq!(list["emails"][0]["id"], back.as_str());
 
     srv.stop().await;
-    clean_up(&db);
 }
 
 /// A long-lived pipelined SMTP sender: one TCP connection (nodelay), each
@@ -407,8 +393,7 @@ impl BurstSender {
 // structurally unsampleable and the test vacuously green.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_clear_racing_inserts_never_loses_a_250_answered_mail_on_restart() {
-    let db = data_file("clear-race");
-    clean_up(&db);
+    let (_dir, db) = data_file("clear-race");
 
     let srv = serve_data_file(&db).await;
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -497,13 +482,11 @@ async fn a_clear_racing_inserts_never_loses_a_250_answered_mail_on_restart() {
     // a commit can never land after the erase that memory already applied.
     // The 16-thread probe in `src/store.rs` holds that property on the wire.
     srv.stop().await;
-    clean_up(&db);
 }
 
 #[tokio::test]
 async fn counters_keep_counting_across_restarts() {
-    let db = data_file("counters");
-    clean_up(&db);
+    let (_dir, db) = data_file("counters");
 
     let srv = serve_data_file(&db).await;
     send(&srv, "box", "first").await;
@@ -554,7 +537,6 @@ async fn counters_keep_counting_across_restarts() {
         "the counter must resume without a gap: {metrics}"
     );
     srv.stop().await;
-    clean_up(&db);
 }
 
 #[tokio::test]
@@ -588,8 +570,7 @@ async fn a_broken_data_file_refuses_to_serve() {
 /// is the sustained-load one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_write_heavy_data_file_server_stays_live_and_loses_no_250_answered_mail() {
-    let db = data_file("write-heavy");
-    clean_up(&db);
+    let (_dir, db) = data_file("write-heavy");
     let srv = serve_data_file(&db).await;
 
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -681,7 +662,6 @@ async fn a_write_heavy_data_file_server_stays_live_and_loses_no_250_answered_mai
         &lost[..lost.len().min(5)]
     );
     srv.stop().await;
-    clean_up(&db);
 }
 
 /// Contract #1's SMTP wire leg (decision 0012 §3): with a second real
@@ -692,8 +672,7 @@ async fn a_write_heavy_data_file_server_stays_live_and_loses_no_250_answered_mai
 /// once the lock is released the same wire path accepts again.
 #[tokio::test]
 async fn a_blocked_commit_answers_451_and_never_claims_250() {
-    let db = data_file("refuse-smtp");
-    clean_up(&db);
+    let (_dir, db) = data_file("refuse-smtp");
 
     let srv = serve_data_file(&db).await;
     // One committed mail first: the mirror works before the lock lands.
@@ -786,7 +765,6 @@ async fn a_blocked_commit_answers_451_and_never_claims_250() {
     let retried = send(&srv, "refuse", "accepted after release").await;
     assert!(!retried.is_empty(), "the retry must be accepted with a 250");
     srv.stop().await;
-    clean_up(&db);
 }
 
 /// Contract #1's REST seed leg: the blocked commit refuses the seed with
@@ -795,8 +773,7 @@ async fn a_blocked_commit_answers_451_and_never_claims_250() {
 /// the truth instead of a `200` for an uncommitted row.
 #[tokio::test]
 async fn a_blocked_commit_refuses_the_rest_seed_with_503() {
-    let db = data_file("refuse-rest");
-    clean_up(&db);
+    let (_dir, db) = data_file("refuse-rest");
 
     let srv = serve_data_file(&db).await;
     let _lock = common::hold_write_lock(&db);
@@ -852,7 +829,6 @@ async fn a_blocked_commit_refuses_the_rest_seed_with_503() {
         "the refused seed must not reach the restart copy"
     );
     srv.stop().await;
-    clean_up(&db);
 }
 
 /// A real HTTP sink that answers 204 and captures every request head until
@@ -919,8 +895,7 @@ async fn poll_metric(addr: std::net::SocketAddr, name: &str, want: &str) {
 /// database's own.
 #[tokio::test]
 async fn a_refused_insert_is_never_exposed_as_accepted_mail() {
-    let db = data_file("refuse-insert");
-    clean_up(&db);
+    let (_dir, db) = data_file("refuse-insert");
 
     let srv = common::start_with(|mut c| {
         c.data_file = Some(db.clone());
@@ -1135,7 +1110,6 @@ async fn a_refused_insert_is_never_exposed_as_accepted_mail() {
         "a refused mail must not resurrect after restart: {list}"
     );
     srv.stop().await;
-    clean_up(&db);
 }
 
 /// Finding 3's wire leg (issue #31, decision 0014 §3): with a real
@@ -1145,8 +1119,7 @@ async fn a_refused_insert_is_never_exposed_as_accepted_mail() {
 /// Once the trigger is gone the same delete succeeds and stays gone.
 #[tokio::test]
 async fn a_failed_delete_answers_failure_and_never_resurrects() {
-    let db = data_file("refuse-delete");
-    clean_up(&db);
+    let (_dir, db) = data_file("refuse-delete");
 
     let srv = serve_data_file(&db).await;
     let doomed = send(&srv, "del", "doomed mail").await;
@@ -1240,7 +1213,6 @@ async fn a_failed_delete_answers_failure_and_never_resurrects() {
         "the recovered delete must stay deleted across a restart: {list}"
     );
     srv.stop().await;
-    clean_up(&db);
 }
 
 /// The `emails_inbox` index names on `emails`, read straight out of the
@@ -1263,8 +1235,7 @@ fn has_inbox_index(db: &std::path::Path) -> bool {
 /// recreates and maintains it on every write).
 #[tokio::test]
 async fn a_legacy_data_file_sheds_the_unused_inbox_index_and_keeps_its_mail() {
-    let db = data_file("legacy-index");
-    clean_up(&db);
+    let (_dir, db) = data_file("legacy-index");
 
     let srv = serve_data_file(&db).await;
     let id = send(&srv, "legacy", "Legacy mail").await;
@@ -1311,5 +1282,4 @@ async fn a_legacy_data_file_sheds_the_unused_inbox_index_and_keeps_its_mail() {
         .unwrap();
     assert_eq!(inserted, "1");
     drop(conn);
-    clean_up(&db);
 }

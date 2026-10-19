@@ -7,8 +7,17 @@
 //! and the corrected text passes. Historical 0027 prose above its
 //! clarification is not a failure by itself; only the controlling text is
 //! read. Whitespace is normalized so line wrapping never decides a verdict.
+//!
+//! The documented numbers — the session cap, the DATA bound, their
+//! aggregate and both idle bounds — are built from the defaults the
+//! listeners actually run with (`SmtpConfig::default()` and
+//! `pop3::DEFAULT_IDLE_TIMEOUT`), so moving a constant turns these red
+//! (issue #143). Statuses are read from the records, never pinned: the
+//! index/record agreement lives in `store_contract_docs.rs`.
 
 use std::path::Path;
+use std::time::Duration;
+use swarmail::smtp::SmtpConfig;
 
 /// A repository document, whitespace-normalized to single spaces.
 fn doc(path: &str) -> String {
@@ -19,37 +28,82 @@ fn doc(path: &str) -> String {
 }
 
 /// Every phrase is present in `text`, each failure naming the document.
-fn states(text: &str, what: &str, phrases: &[&str]) {
+fn states<S: AsRef<str>>(text: &str, what: &str, phrases: &[S]) {
     for phrase in phrases {
+        let phrase = phrase.as_ref();
         assert!(text.contains(phrase), "{what} must state: {phrase:?}");
     }
 }
 
-/// The residual and drain statements both current documents must carry.
-const RESIDUAL: &[&str] = &[
-    "no session lifetime, no DATA lifetime and no minimum transfer rate",
-    "inside each window",
-    "all 256 SMTP slots",
-    "approaching 50 MiB",
-    "about 12.5 GiB across 256 connections before allocation",
-    "not an RSS ceiling",
-    "connection refusal",
-    "only if its request reaches the handler",
-];
+/// A record's status word from its `- **Status:**` header (the spellings
+/// `store_contract_docs.rs` checks against the index).
+fn status_of(record: &str) -> &'static str {
+    let header = doc(&format!("docs/decisions/{record}"));
+    let status = header
+        .split("- **Status:** ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{record} carries no Status header"));
+    if status.starts_with("accepted") {
+        "accepted"
+    } else if status.starts_with("proposed") {
+        "proposed"
+    } else {
+        panic!("{record}: unsupported status {status:?}")
+    }
+}
+
+/// A duration in whole minutes, or in seconds when it is not one — so a
+/// bound moved off the documented minute never rounds back onto it.
+fn minutes(d: Duration) -> String {
+    if d.as_secs().is_multiple_of(60) && d.subsec_nanos() == 0 {
+        format!("{} min", d.as_secs() / 60)
+    } else {
+        format!("{d:?}")
+    }
+}
+
+/// The residual and drain statements both current documents must carry,
+/// their numbers taken from the running defaults: the SMTP session cap,
+/// the DATA bound in MiB, and their product in GiB.
+fn residual() -> Vec<String> {
+    let smtp = SmtpConfig::default();
+    let mib = smtp.max_message_size as f64 / f64::from(1 << 20);
+    let gib = smtp.max_sessions as f64 * smtp.max_message_size as f64 / f64::from(1 << 30);
+    vec![
+        "no session lifetime, no DATA lifetime and no minimum transfer rate".into(),
+        "inside each window".into(),
+        format!("all {} SMTP slots", smtp.max_sessions),
+        format!("approaching {mib} MiB"),
+        format!(
+            "about {gib} GiB across {} connections before allocation",
+            smtp.max_sessions
+        ),
+        "not an RSS ceiling".into(),
+        "connection refusal".into(),
+        "only if its request reaches the handler".into(),
+    ]
+}
 
 #[test]
 fn the_readme_states_the_current_listener_posture() {
     let readme = doc("README.md");
-    states(&readme, "README.md", RESIDUAL);
+    states(&readme, "README.md", &residual());
     states(
         &readme,
         "README.md",
         &[
-            "SMTP 5 min, POP3 10 min",
-            "per read and per write, not a session lifetime",
-            "observed waiting or succeeds",
-            "reaped right after each accept, before the cap is checked",
-            "decision 0036, proposed",
+            format!(
+                "SMTP {}, POP3 {}",
+                minutes(SmtpConfig::default().idle_timeout),
+                minutes(swarmail::pop3::DEFAULT_IDLE_TIMEOUT)
+            ),
+            "per read and per write, not a session lifetime".into(),
+            "observed waiting or succeeds".into(),
+            "reaped right after each accept, before the cap is checked".into(),
+            format!(
+                "decision 0036, {}",
+                status_of("0036-smtp-trickle-lifetime.md")
+            ),
         ],
     );
     for stale in [
@@ -71,19 +125,25 @@ fn the_0027_clarification_controls_and_links_proposed_0036() {
     // The accepted history stays: status and the original ruling survive.
     assert!(history.contains("- **Status:** accepted"), "{history}");
     assert!(history.contains("## Decision"), "the ruling is kept");
-    states(clarification, "the 0027 clarification", RESIDUAL);
+    states(clarification, "the 0027 clarification", &residual());
     states(
         clarification,
         "the 0027 clarification",
         &[
-            "[0036](0036-smtp-trickle-lifetime.md), which is **proposed**",
-            "*Superseded:* \"The flag clears on the next successful accept.\"",
-            "*Superseded:* the unconditional",
-            "*Superseded:* the cap \"checked after the top-of-loop reap\"",
-            "*Superseded:* §9's \"`config.rs` ends at zero diff\"",
-            "*Superseded:* \"it bounds silence *and* the pathological trickle\"",
-            "\"Plaintext sessions can no longer be held forever by silence, by a zero window, or by a trickler\"",
-            "SMTP keeps 300 s; POP3 uses its own 600 s",
+            // Dated, controlling text: it recorded 0036 as proposed on its
+            // date, and acceptance adds a pointer rather than rewriting it.
+            "[0036](0036-smtp-trickle-lifetime.md), which is **proposed**".to_string(),
+            "*Superseded:* \"The flag clears on the next successful accept.\"".into(),
+            "*Superseded:* the unconditional".into(),
+            "*Superseded:* the cap \"checked after the top-of-loop reap\"".into(),
+            "*Superseded:* §9's \"`config.rs` ends at zero diff\"".into(),
+            "*Superseded:* \"it bounds silence *and* the pathological trickle\"".into(),
+            "\"Plaintext sessions can no longer be held forever by silence, by a zero window, or by a trickler\"".into(),
+            format!(
+                "SMTP keeps {} s; POP3 uses its own {} s",
+                SmtpConfig::default().idle_timeout.as_secs(),
+                swarmail::pop3::DEFAULT_IDLE_TIMEOUT.as_secs()
+            ),
         ],
     );
     assert!(
@@ -95,9 +155,9 @@ fn the_0027_clarification_controls_and_links_proposed_0036() {
 /// Batch 1 of epic #120 as documented (decision 0046, issues #121, #126,
 /// #127, #128, #131): the README states the per-successful-write POP3 bound
 /// with its retention residual, the failed-session drop, `TCP_NODELAY`, the
-/// two named path limitations and the one verbatim inbox rule; 0046 is
-/// indexed as proposed and the dated pointers on 0027 and 0036 point at it
-/// without claiming its acceptance. Red before: the README promised no
+/// two named path limitations and the one verbatim inbox rule; the dated
+/// pointers on 0027 and 0036 point at 0046 as it stood when they were
+/// written (proposed). Red before: the README promised no
 /// whole-reply semantics either way and named neither path limitation.
 #[test]
 fn the_readme_and_0046_state_the_batch_one_listener_posture() {
@@ -122,13 +182,9 @@ fn the_readme_and_0046_state_the_batch_one_listener_posture() {
         !readme.contains("no one reply write may wait longer"),
         "README.md still claims a whole-write POP3 bound"
     );
-    let index = doc("docs/decisions/README.md");
-    let row = index
-        .split("| [0046](0046-smtp-pop3-edges.md) |")
-        .nth(1)
-        .expect("the decision index must list 0046");
-    let row = row.split(" | [").next().unwrap_or(row);
-    assert!(row.contains("proposed — awaiting the operator"), "{row}");
+    // 0046's index row is checked against its record, whatever the status,
+    // by `every_index_row_matches_its_records_status`; the dated pointers
+    // below are history and keep the status they were written under.
     for record in [
         "docs/decisions/0027-living-listeners-bounded-sessions.md",
         "docs/decisions/0036-smtp-trickle-lifetime.md",
@@ -146,23 +202,22 @@ fn the_readme_and_0046_state_the_batch_one_listener_posture() {
     }
 }
 
+/// 0036 states its ruling and the trickle residual's aggregate, computed
+/// from the running SMTP defaults; its status is whatever its own header
+/// says (index agreement is `store_contract_docs.rs`'s check), so the
+/// operator accepting it leaves this green.
 #[test]
-fn decision_0036_is_proposed_and_indexed() {
+fn decision_0036_states_the_ruling_and_the_aggregate() {
     let record = doc("docs/decisions/0036-smtp-trickle-lifetime.md");
+    let smtp = SmtpConfig::default();
+    let gib = smtp.max_sessions as f64 * smtp.max_message_size as f64 / f64::from(1 << 30);
+    status_of("0036-smtp-trickle-lifetime.md");
     states(
         &record,
         "0036",
         &[
-            "- **Status:** proposed — acceptance is the operator's.",
-            "Add no session lifetime, DATA lifetime or minimum DATA rate.",
-            "about 12.5 GiB aggregate",
+            "Add no session lifetime, DATA lifetime or minimum DATA rate.".to_string(),
+            format!("about {gib} GiB aggregate"),
         ],
     );
-    let index = doc("docs/decisions/README.md");
-    let row = index
-        .split("| [0036](0036-smtp-trickle-lifetime.md) |")
-        .nth(1)
-        .expect("the decision index must list 0036");
-    let row = row.split(" | [").next().unwrap_or(row);
-    assert!(row.contains("proposed — awaiting the operator"), "{row}");
 }

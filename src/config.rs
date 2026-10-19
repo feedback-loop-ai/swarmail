@@ -36,8 +36,11 @@ pub struct ServeArgs {
     pub smtp_listen: String,
 
     /// HTTP listen address (API, MCP, UI, MailHog/Mailpit compat shims).
-    /// Loopback by default, which also arms the Origin guard (decision
-    /// 0030 §2).
+    /// Loopback by default, which arms both the Host and the Origin checks
+    /// (decision 0030 §2): a Host must be a loopback spelling of the bound
+    /// port, and so must a present Origin. Off loopback the Host allowlist
+    /// is inactive, but a present Origin must match the Host authority
+    /// (decision 0043).
     #[arg(long, default_value = "127.0.0.1:8025", env = "SWARMAIL_HTTP_LISTEN")]
     pub http_listen: String,
 

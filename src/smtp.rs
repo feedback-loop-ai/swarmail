@@ -284,7 +284,7 @@ pub async fn serve(
     // (0001's honest asymmetry), and the parked `_in_flight` guard releases
     // at the abort, before the orphaned commit resolves — a shutdown-only
     // observability skew on a process that is leaving anyway.
-    // tests/lifecycle.rs::an_in_flight_commit_neither_holds_stop_nor_half_lands
+    // src/store/persist_tests.rs::an_in_flight_commit_neither_holds_stop_nor_half_lands
     // asserts the wire truth.)
     let mut sessions: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     loop {

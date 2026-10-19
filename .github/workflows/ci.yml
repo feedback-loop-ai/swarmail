@@ -33,6 +33,12 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: bash scripts/publish-guard-test.sh
+      # The gates are the pinned bundle's (proposed 0050 §1): the public
+      # scripts are fixed shims whose bytes must match the pinned digests,
+      # and the design validator's refusal arms run as the verify seat runs
+      # them.
+      - run: sha256sum --check --strict bundles/self/scripts/shims.sha256
+      - run: bash scripts/design-check.sh selftest
 
   # The whole suite on every OS the realm supports — Linux and macOS (the
   # release notes name the two; there is no Windows runner in this realm).
@@ -93,6 +99,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: bash scripts/coverage-gate.sh selftest
       - run: bash scripts/coverage-gate.sh
+      # #123's tamper boundary by execution: an `exit 0` public gate beside an
+      # uncovered line still refuses through the pinned gate (proposed 0050).
+      - run: bash bundles/self/scripts/delivery-proof-test.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:

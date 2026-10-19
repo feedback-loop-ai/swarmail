@@ -841,17 +841,10 @@ async fn cc_addresses_render_in_the_mailpit_list() {
 /// commit — and the mail survives the restart untouched.
 #[tokio::test]
 async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-e2e-refuse-shim-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    // The guard owns the data file and every sidecar: a failing assertion
+    // leaves nothing in the temporary root (issue #143).
+    let dir = tempfile::TempDir::with_prefix("swarmail-e2e-refuse-shim-").unwrap();
+    let db = dir.path().join("mail.db");
     let srv = common::start_with(|mut c| {
         c.data_file = Some(db.clone());
         c
@@ -923,9 +916,6 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
     let removed: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(removed, json!({"removed": 1}));
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }
 
 /// R10 (issue #31 finding 2, decision 0018): the shim's bulk delete runs on
@@ -947,17 +937,9 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
 /// quickly.
 #[tokio::test]
 async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-compat-offload-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    // The guard owns the data file and every sidecar (issue #143).
+    let dir = tempfile::TempDir::with_prefix("swarmail-compat-offload-").unwrap();
+    let db = dir.path().join("mail.db");
     let srv = common::start_with(|mut c| {
         c.data_file = Some(db.clone());
         c
@@ -1075,9 +1057,6 @@ async fn a_burning_bulk_delete_offloads_and_keeps_the_runtime_live() {
         count["count"], 3,
         "a refused bulk delete must leave every mail committed: {count}"
     );
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }
 
 // ---------- the bounded shim pages (decision 0030 §3) ----------

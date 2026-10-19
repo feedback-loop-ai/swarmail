@@ -859,17 +859,10 @@ async fn header_names_and_single_token_plain_auth() {
 /// memory and data file agree, so the same call can simply retry.
 #[tokio::test]
 async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-e2e-refuse-mcp-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    // The guard owns the data file and every sidecar: a failing assertion
+    // leaves nothing in the temporary root (issue #143).
+    let dir = tempfile::TempDir::with_prefix("swarmail-e2e-refuse-mcp-").unwrap();
+    let db = dir.path().join("mail.db");
     let srv = start_with(|mut c| {
         c.data_file = Some(db.clone());
         c
@@ -927,9 +920,6 @@ async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
         "the refused seed must not reach the restart copy"
     );
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }
 
 /// Finding 3's MCP leg (issue #31, decision 0014): with a real rejecting
@@ -939,17 +929,9 @@ async fn a_blocked_commit_refuses_the_mcp_seed_with_an_error_result() {
 /// shim: the refusal is the database's own.
 #[tokio::test]
 async fn a_blocked_delete_refuses_the_mcp_delete_tools_with_error_results() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-e2e-refuse-mcp-del-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    // The guard owns the data file and every sidecar (issue #143).
+    let dir = tempfile::TempDir::with_prefix("swarmail-e2e-refuse-mcp-del-").unwrap();
+    let db = dir.path().join("mail.db");
     let srv = start_with(|mut c| {
         c.data_file = Some(db.clone());
         c
@@ -1013,9 +995,6 @@ async fn a_blocked_delete_refuses_the_mcp_delete_tools_with_error_results() {
     );
     assert_eq!(list["emails"][0]["subject"], "doomed");
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }
 
 // ---------- explicit bounds and observed totals (decision 0018) ----------

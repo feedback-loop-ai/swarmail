@@ -57,7 +57,8 @@ Tests are part of every change. Extend the suite that proves the code —
 `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` or the unit tests — and run
 the suite against real servers; no mocks in the loop.
 
-The coverage floor lives in `scripts/coverage-gate.sh` — currently **100% of
+The coverage floor lives in `bundles/self/scripts/coverage-gate.sh` (run it
+through `scripts/coverage-gate.sh`) — currently **100% of
 lines, branches and functions, exact** (missed == 0, not a rounded 99.95).
 The full lcov report and summary land under `target/coverage/`. Raising it is an ordinary
 change; lowering it is refused. Attribute-based coverage exclusions
@@ -104,8 +105,21 @@ test lives; the axis is **cold-path presence**, not seam access:
    seam (fresh `Store::new` inline; per-test inboxes on the wire).
 6. **Harness names are reserved under `src/`** (`tests.rs`, `*_tests.rs`,
    `*-tests.rs`): the coverage gate refuses any such file that its parent
-   module does not declare under `#[cfg(test)]` — the one silent way to
-   shrink the measured denominator, closed structurally (decision 0020).
+   module does not declare under `#[cfg(test)]`. That declaration check is
+   the structural half; it is not what closes the denominator. The refusals
+   are by effect (proposed 0035, refined by proposed 0050 §2): every file the
+   production build compiles must appear in the report, every exclusion that
+   survives the compiler's expansion of a production unit *or of the
+   library's test unit* refuses, each production unit's expansion must equal
+   its no-coverage-cfg and release-profile expansions, and a second
+   workspace member or any local path package refuses.
+
+The gate scripts themselves are the pinned bundle's
+(`bundles/self/scripts/`, proposed 0050 §1): `scripts/coverage-gate.sh`,
+`scripts/publish-guard*.sh`, `scripts/design-check.sh` and
+`.specify/scripts/bash/check-prerequisites.sh` are fixed dispatch shims the
+verify seat checks against `bundles/self/scripts/shims.sha256` and never
+executes; it runs the pinned copies against the candidate.
 
 ## Dependencies
 

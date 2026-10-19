@@ -717,6 +717,32 @@ mod tests {
         assert_eq!(stats.bytes, 29_999_410);
     }
 
+    // The window bounds the *search*, not only its accounting (issue #143):
+    // a valid decimal reference for `A` padded with leading zeros, its `;`
+    // the 41st character after the '&', lies past the 40-character window
+    // and stays literal; one zero fewer puts the `;` 40th — the boundary —
+    // and it decodes. A decoder that still counts the window but searches
+    // past it decodes the long one too, and the output says so. Both scans
+    // examine exactly the 40-byte window.
+    #[test]
+    fn a_reference_whose_semicolon_lies_past_the_window_stays_literal() {
+        let inside = format!("&#{}65;", "0".repeat(36));
+        let past = format!("&#{}65;", "0".repeat(37));
+        assert_eq!((inside.len(), past.len()), (41, 42));
+        let (out, stats) = decode_refs_with_stats(&inside);
+        assert_eq!(out, "A", "the boundary-valid reference decodes");
+        assert_eq!((stats.scans, stats.bytes), (1, 40));
+        let (out, stats) = decode_refs_with_stats(&past);
+        assert_eq!(out, past, "past the window, the reference is literal");
+        assert_eq!((stats.scans, stats.bytes), (1, 40));
+        // The same verdicts through the html leg's real output.
+        let html = format!(r#"<a href="https://x.io/{inside}/{past}/z">go</a>"#);
+        assert_eq!(
+            extract_links(None, Some(&html)),
+            vec![format!("https://x.io/A/{past}/z")]
+        );
+    }
+
     #[test]
     fn links_are_extracted_and_trimmed() {
         let html = r#"<a href="https://x.io/verify?t=abc">click.</a> See https://x.io/docs."#;

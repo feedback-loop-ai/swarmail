@@ -970,6 +970,37 @@ pub struct AwaitResponse {
 
 // ---------- handlers ----------
 
+// Test-only (decision 0020 rule 4, the SMTP/POP3 thread-local precedent): a
+// one-shot hold on the next `/healthz` handler polled on this thread. The
+// handler that takes it reports its own entry, then parks until the stop has
+// fired — so a test knows its real-HTTP probe is inside the handler before
+// the stop, and that the handler reads the flag after it (issue #143).
+// Thread-local because the router is polled on the installing test's own
+// current-thread runtime; taking the hold consumes it, so nothing leaks to
+// a later test on the thread.
+#[cfg(test)]
+thread_local! {
+    static HEALTHZ_HOLD: core::cell::Cell<Option<tokio::sync::oneshot::Sender<()>>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// Install the hold; the receiver resolves once a handler has entered.
+#[cfg(test)]
+fn hold_next_healthz() -> tokio::sync::oneshot::Receiver<()> {
+    let (entered, observed) = tokio::sync::oneshot::channel();
+    HEALTHZ_HOLD.with(|hold| hold.set(Some(entered)));
+    observed
+}
+
+/// Take an installed hold, if any: report entry, park until the stop.
+#[cfg(test)]
+async fn healthz_hold(state: &AppState) {
+    if let Some(entered) = HEALTHZ_HOLD.with(|hold| hold.take()) {
+        entered.send(()).expect("the holding test awaits the entry");
+        shutdown_signal(state.shutdown.clone()).await;
+    }
+}
+
 /// The readiness contract (decision 0027), four states:
 ///
 /// - `200 ok` — every listener is accepting;
@@ -983,6 +1014,8 @@ pub struct AwaitResponse {
 /// bodies carry a `status` field, so a probe never has to infer state from
 /// the code alone.
 async fn healthz(State(mut state): State<AppState>) -> (StatusCode, Json<serde_json::Value>) {
+    #[cfg(test)]
+    healthz_hold(&state).await;
     if *state.shutdown.borrow_and_update() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2236,6 +2269,68 @@ mod tests {
             .expect("status is a number");
         let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
         (status, body)
+    }
+
+    /// The stopping answer on the wire, unconditionally (issue #143,
+    /// decision 0027 §2 as clarified): a real-HTTP `/healthz` that is known
+    /// to be *inside its handler* when the stop fires is answered `503
+    /// {"status":"stopping"}` before the graceful drain closes its socket.
+    /// The order is established, not hoped for: the installed hold reports
+    /// the handler's entry before the stop is sent and parks the handler
+    /// until the stop has fired, so it reads the flag after the stop. A
+    /// stop that drops the in-flight request — an EOF or a reset where the
+    /// answer belongs — fails the read or the status assertion; nothing
+    /// here is skipped. The read is bounded by the drain deadline itself,
+    /// the server's own fence: the answer must be written inside it.
+    #[tokio::test]
+    async fn a_healthz_inside_its_handler_at_the_stop_is_answered_503_stopping() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, stop_rx) = tokio::sync::watch::channel(false);
+        let mut graceful = stop_rx.clone();
+        let server = tokio::spawn(serve(
+            listener,
+            gauge_state(stop_rx, false, false),
+            async move {
+                let _ = graceful.changed().await;
+            },
+        ));
+        let entered = hold_next_healthz();
+        let mut probe = tokio::net::TcpStream::connect(addr).await.unwrap();
+        probe
+            .write_all(
+                format!("GET /healthz HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(DRAIN_DEADLINE, entered)
+            .await
+            .expect("the probe never reached the healthz handler")
+            .expect("the hold reports its entry");
+
+        stop.send(true).expect("the stop fires");
+        let mut reply = Vec::new();
+        tokio::time::timeout(DRAIN_DEADLINE, probe.read_to_end(&mut reply))
+            .await
+            .expect("no answer inside the drain deadline")
+            .expect("the in-flight probe was reset instead of answered");
+        let reply = String::from_utf8(reply).expect("an ASCII answer");
+        assert!(
+            reply.starts_with("HTTP/1.1 503 "),
+            "the in-flight probe must be answered 503: {reply:?}"
+        );
+        assert_eq!(
+            reply.split_once("\r\n\r\n").map(|(_, body)| body),
+            Some(r#"{"status":"stopping"}"#),
+            "{reply:?}"
+        );
+        tokio::time::timeout(DRAIN_DEADLINE, server)
+            .await
+            .expect("the drain ends once the probe is answered")
+            .expect("the serve task completes")
+            .expect("the serve returns cleanly");
     }
 
     /// The wire red-proof (C36.2): the SMTP accept loop, driven by its own

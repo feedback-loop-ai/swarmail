@@ -879,22 +879,22 @@ async fn a_maildrop_vanished_between_user_and_pass_is_refused_at_pass() {
     assert!(c.cmd("QUIT").await.starts_with("+OK"));
 }
 
+/// A unique data-file path inside its own scratch directory. The returned
+/// guard owns the directory, so the data file, its WAL sidecars and its
+/// lock go on every exit — a test that fails mid-way leaves nothing in the
+/// temporary root (issue #143). Bind it for the whole test, never to `_`.
+fn scratch_db(tag: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::TempDir::with_prefix(format!("swarmail-e2e-{tag}-")).unwrap();
+    let db = dir.path().join("mail.db");
+    (dir, db)
+}
+
 /// The refusal holds on a reopened store too (issue #54): an emptied
 /// maildrop leaves no row, so restore mints no entry and POP3 refuses the
 /// name across the restart — while a name that still holds mail is served.
 #[tokio::test]
 async fn a_vanished_maildrop_is_refused_after_a_reopen_too() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-e2e-pop3-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    let (_dir, db) = scratch_db("pop3-vanished");
 
     let srv = common::start_with(|mut c| {
         c.data_file = Some(db.clone());
@@ -941,10 +941,6 @@ async fn a_vanished_maildrop_is_refused_after_a_reopen_too() {
     c.login("kept").await;
     assert!(c.cmd("STAT").await.starts_with("+OK 1 "));
     assert!(c.cmd("QUIT").await.starts_with("+OK"));
-
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }
 
 #[tokio::test]
@@ -959,17 +955,7 @@ async fn an_authorization_state_quit_signs_off_without_updates() {
 
 #[tokio::test]
 async fn pop3_deletions_survive_a_restart_with_a_data_file() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-e2e-pop3-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    let (_dir, db) = scratch_db("pop3-restart");
 
     let srv = common::start_with(|mut c| {
         c.data_file = Some(db.clone());
@@ -1023,10 +1009,6 @@ async fn pop3_deletions_survive_a_restart_with_a_data_file() {
     )
     .await;
     assert_eq!(here, 200);
-
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }
 
 /// Finding 3's POP3 leg (issue #31, decision 0014): a failed commit at QUIT
@@ -1037,17 +1019,7 @@ async fn pop3_deletions_survive_a_restart_with_a_data_file() {
 /// database's own.
 #[tokio::test]
 async fn a_failed_quit_answers_err_and_keeps_the_marks() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-e2e-refuse-pop3-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    let (_dir, db) = scratch_db("refuse-pop3");
     let srv = common::start_with(|mut c| {
         c.data_file = Some(db.clone());
         c
@@ -1122,9 +1094,6 @@ async fn a_failed_quit_answers_err_and_keeps_the_marks() {
         "the retried QUIT must stay deleted across a restart: {count}"
     );
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }
 
 /// 0015 §1's partial-prefix instrument (issue #31 finding 3, AC3): a
@@ -1143,17 +1112,7 @@ async fn a_failed_quit_answers_err_and_keeps_the_marks() {
 /// 5). Red on `5b09843`, which swallowed the failure and answered `+OK`.
 #[tokio::test]
 async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-e2e-pop3-prefix-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    let (_dir, db) = scratch_db("pop3-prefix");
     let srv = common::start_with(|mut c| {
         c.data_file = Some(db.clone());
         c
@@ -1309,9 +1268,6 @@ async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
         assert_eq!(st, want, "{why}: {st}");
     }
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }
 
 /// RSET clears only the session's own unapplied marks (issue #45, decision
@@ -1323,17 +1279,7 @@ async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
 /// mere RSET.
 #[tokio::test]
 async fn rset_never_resurrects_a_committed_delete() {
-    let db = std::env::temp_dir().join(format!(
-        "swarmail-e2e-pop3-rset-{}-{}.db",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
+    let (_dir, db) = scratch_db("pop3-rset");
     let srv = common::start_with(|mut c| {
         c.data_file = Some(db.clone());
         c
@@ -1388,9 +1334,6 @@ async fn rset_never_resurrects_a_committed_delete() {
     assert_eq!(st, 200, "RSET must not delete the refused mail: {st}");
     trigger.remove();
     srv.stop().await;
-    for suffix in ["", "-wal", "-shm", ".lock"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", db.display()));
-    }
 }
 
 // --- 0027: bounded idleness and a compiled session cap --------------------
