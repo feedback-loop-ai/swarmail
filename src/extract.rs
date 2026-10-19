@@ -7,7 +7,11 @@
 //! it, codes as a digit run inside one decoded text run (decision 0040
 //! §2–§4). Both are heuristics, not a browser: a tag boundary can expose a
 //! fragment (`<b>48</b><b>2935</b>` yields `2935`), and a link is a
-//! candidate, never a validated destination. Everything here is total and
+//! candidate, never a validated destination. One tokenizer walk owns the
+//! HTML structure for both: codes read its text runs, links its quoted
+//! attribute values and everything between (decision 0049 §1). A fresh
+//! mail keeps at most [`MAX_CODES`] distinct codes (0049 §4); links are
+//! bounded only by the body. Everything here is total and
 //! linear — a hostile body is a bad body, not a panic or a scan that never
 //! ends (bounded by the 0022 body cap, applied before the parse).
 
@@ -17,11 +21,27 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
-/// An http(s) URL up to the first excluded character. The scheme matches
-/// ASCII case-insensitively (decision 0040 §4) and is spelled out byte by
-/// byte: a `(?i)` flag would also fold `ſ` (U+017F) into `s`.
+/// An http(s) URL in ordinary source, up to whitespace, a quote or an angle
+/// bracket. The scheme matches ASCII case-insensitively (decision 0040 §4)
+/// and is spelled out byte by byte: a `(?i)` flag would also fold `ſ`
+/// (U+017F) into `s`. Commas, brackets and parentheses are URL bytes here;
+/// [`trim_url`] removes the sentence punctuation and the unmatched closers
+/// a candidate ends with (issue #136).
 static URL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"[hH][tT][tT][pP][sS]?://[^\s"'<>)\]}>,]+"#).unwrap());
+    LazyLock::new(|| Regex::new(r#"[hH][tT][tT][pP][sS]?://[^\s"'<>]+"#).unwrap());
+
+/// An http(s) URL inside one quoted attribute value (decision 0049 §1): the
+/// source's own closing quote already ended the value, so a quote decoded
+/// from `&#39;` or `&quot;` is URL data a browser follows — the
+/// `O&#39;Brien` reset link stays whole (issue #136).
+static ATTR_URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[hH][tT][tT][pP][sS]?://[^\s<>]+").unwrap());
+
+/// The most distinct codes one freshly ingested mail keeps (decision 0049
+/// §4, issue #139): the first 64 in extraction order. An 8 MiB body of
+/// numbers would otherwise store a million strings and repeat them in
+/// every page and webhook payload.
+pub const MAX_CODES: usize = 64;
 
 /// ASCII digits between ASCII word boundaries (decision 0040 §2): `\d`
 /// would admit Arabic-Indic and every other Unicode digit, and pays for
@@ -130,64 +150,260 @@ fn parse_ref(s: &str, out: &mut String, stats: &mut RefScanStats) -> Option<usiz
         .strip_prefix("#x")
         .or_else(|| token.strip_prefix("#X"))
     {
-        out.push(u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)?);
+        out.push(scalar(hex, 16)?);
     } else if let Some(decimal) = token.strip_prefix('#') {
-        out.push(decimal.parse::<u32>().ok().and_then(char::from_u32)?);
+        out.push(scalar(decimal, 10)?);
     } else {
         out.push_str(entities::lookup(token)?);
     }
     Some(token_end + 1)
 }
 
+/// A numeric reference's scalar: only ASCII digits of the radix (decision
+/// 0049 §2, issue #136). `from_str_radix` alone also takes a leading `+`,
+/// so `&#+52;` decoded to `4` and four of them manufactured the code
+/// `4829`; a sign, a non-ASCII digit, an overflow or a non-scalar stays
+/// literal.
+fn scalar(digits: &str, radix: u32) -> Option<char> {
+    digits
+        .bytes()
+        .all(|byte| char::from(byte).is_digit(radix))
+        .then(|| u32::from_str_radix(digits, radix).ok())
+        .flatten()
+        .and_then(char::from_u32)
+}
+
+/// The link scan's shape for one [`extract_links`] call, observed like
+/// [`RefScanStats`]: an instance-local value the tests read, never a
+/// global. Every HTML source byte lands in exactly one of the two region
+/// counters, so they sum to the source length; the trim examines each
+/// candidate once and then removes at most its own length, so the scan
+/// stays linear whatever the punctuation (decision 0049 §1).
+#[derive(Default)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct LinkScanStats {
+    /// HTML source outside every quoted attribute value: text, markup,
+    /// comments, raw text and any unfinished tail, each decoded once.
+    ordinary_bytes: u64,
+    /// HTML source inside quoted attribute values, quotes excluded.
+    quoted_bytes: u64,
+    /// Candidate bytes the trim's one counting pass examined.
+    trim_counted: u64,
+    /// Bytes the trim removed, one step each.
+    trim_removed: u64,
+}
+
 /// Extract all http(s) URLs from the plain-text and HTML bodies, text
-/// first, in document order, exact-string deduplicated. The HTML source is
-/// reference-decoded *once, whole, before* the URL pattern cuts it
-/// (decision 0040 §4, issue #94): `&lt;https://x.io/u&gt;` is the sender's
-/// `<https://x.io/u>`, so the decoded `>` must end the link — decoding
-/// after the cut kept it inside. The decoded source is regex input only,
-/// never tokenized as HTML. The plain-text leg has no entities to decode:
-/// `&amp;` in plain text is literally `&amp;`.
+/// first, in document order, exact-string deduplicated. The plain-text leg
+/// has no entities to decode: `&amp;` in plain text is literally `&amp;`.
+///
+/// The HTML leg is cut by its source structure first and decoded after
+/// (decision 0049 §1, issue #136): the one tokenizer walk the code scan
+/// uses reports every quoted attribute value, which is decoded once and
+/// matched with quotes allowed — the source's closing quote ended it, so a
+/// decoded `'` is the link's own. Everything else — text, markup outside
+/// values, comments, raw text, an unfinished tail — is decoded once and
+/// matched as before, so `&lt;https://x.io/u&gt;` still ends at the decoded
+/// `>` (issue #94). Decoded source is regex input only, never tokenized.
 pub fn extract_links(text: Option<&str>, html: Option<&str>) -> Vec<String> {
-    let decoded = html.map(decode_refs);
+    let mut stats = LinkScanStats::default();
+    links_scanned(text, html, &mut stats)
+}
+
+fn links_scanned(text: Option<&str>, html: Option<&str>, stats: &mut LinkScanStats) -> Vec<String> {
     let mut out = Vec::new();
-    for src in [text, decoded.as_deref()].into_iter().flatten() {
-        for m in URL_RE.find_iter(src) {
-            // Trim trailing punctuation that sentence formatting glues on.
-            let mut url = m.as_str();
-            while url.ends_with(['.', ',', ';', ':', '!', '?']) {
-                url = &url[..url.len() - 1];
-            }
-            out.push(url.to_string());
-        }
+    if let Some(text) = text {
+        push_urls(&URL_RE, text, &mut out, stats);
+    }
+    if let Some(html) = html {
+        let mut regions = LinkRegions {
+            html,
+            cursor: 0,
+            out: &mut out,
+            stats,
+        };
+        walk(html, &mut TagScanStats::default(), &mut regions);
+        regions.ordinary(html.len());
     }
     dedup(out)
 }
 
-/// Extract likely verification/OTP codes: standalone runs of 4–10 ASCII
-/// digits. Text body first (most reliable); if it holds none, the HTML
-/// body's text runs (decision 0040 §2) — each run between two pieces of
-/// markup decoded and scanned on its own, so digits in adjacent cells or
-/// blocks are never joined and a code beside its sentence is still found.
-/// Digits inside `<style>`, `<script>`, `<title>`, `<head>`, `<template>`,
-/// comments or attribute values yield nothing: a stylesheet color is not a
-/// code, and an attribute is not displayed to the person the code is for.
-pub fn extract_codes(text: Option<&str>, html: Option<&str>) -> Vec<String> {
-    let from_text: Vec<String> = text
-        .map(|t| {
-            CODE_RE
-                .find_iter(t)
-                .map(|m| m.as_str().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    if !from_text.is_empty() {
-        return dedup(from_text);
-    }
-    let mut stats = TagScanStats::default();
-    dedup(html.map(|h| html_codes(h, &mut stats)).unwrap_or_default())
+#[cfg(test)]
+fn links_with_stats(text: Option<&str>, html: Option<&str>) -> (Vec<String>, LinkScanStats) {
+    let mut stats = LinkScanStats::default();
+    let links = links_scanned(text, html, &mut stats);
+    (links, stats)
 }
 
-/// The tokenizer's work for one [`html_codes`] call (decision 0040 §6),
+fn push_urls(re: &Regex, src: &str, out: &mut Vec<String>, stats: &mut LinkScanStats) {
+    for m in re.find_iter(src) {
+        out.push(trim_url(m.as_str(), stats).to_string());
+    }
+}
+
+/// The bracket pairs a URL may carry when balanced: Wikipedia's
+/// `Foo_(bar)`, an IPv6 literal's `[::1]`, a template's `{id}`.
+const OPENERS: &[u8; 3] = b"([{";
+const CLOSERS: &[u8; 3] = b")]}";
+
+/// A candidate without the sentence punctuation and unmatched closers it
+/// ends with (decision 0049 §1): `(see https://x.io/p).` keeps
+/// `https://x.io/p`, while `https://x.io/wiki/Foo_(bar)` and
+/// `http://[::1]:8080/p` stay whole. One counting pass, then each trimmed
+/// byte decrements its pair's surplus — linear, never a rescan. The scheme
+/// is never trimmed, so the candidate never empties, and only ASCII bytes
+/// are removed, so the cut is a character boundary.
+fn trim_url<'a>(url: &'a str, stats: &mut LinkScanStats) -> &'a str {
+    let bytes = url.as_bytes();
+    let mut surplus = [0i64; 3];
+    for &byte in bytes {
+        if let Some(pair) = OPENERS.iter().position(|&open| open == byte) {
+            surplus[pair] -= 1;
+        } else if let Some(pair) = CLOSERS.iter().position(|&close| close == byte) {
+            surplus[pair] += 1;
+        }
+    }
+    stats.trim_counted += bytes.len() as u64;
+    let mut end = bytes.len();
+    loop {
+        let last = bytes[end - 1];
+        if b".,;:!?".contains(&last) {
+            // Sentence punctuation glued on by formatting.
+        } else if let Some(pair) = CLOSERS
+            .iter()
+            .position(|&close| close == last)
+            .filter(|&pair| surplus[pair] > 0)
+        {
+            surplus[pair] -= 1;
+        } else {
+            return &url[..end];
+        }
+        end -= 1;
+        stats.trim_removed += 1;
+    }
+}
+
+/// The link consumer of the HTML walk: ordinary source from the cursor up
+/// to each quoted value, then the value itself.
+struct LinkRegions<'a> {
+    html: &'a str,
+    cursor: usize,
+    out: &'a mut Vec<String>,
+    stats: &'a mut LinkScanStats,
+}
+
+impl LinkRegions<'_> {
+    /// The ordinary source from the cursor to `end`, decoded once.
+    fn ordinary(&mut self, end: usize) {
+        let src = &self.html[self.cursor..end];
+        self.stats.ordinary_bytes += src.len() as u64;
+        push_urls(&URL_RE, &decode_refs(src), self.out, self.stats);
+        self.cursor = end;
+    }
+}
+
+impl Regions for LinkRegions<'_> {
+    fn text(&mut self, _run: &str, _refs: &mut RefScanStats) {}
+
+    fn value(&mut self, start: usize, end: usize) {
+        self.ordinary(start);
+        let value = &self.html[start..end];
+        self.stats.quoted_bytes += value.len() as u64;
+        push_urls(&ATTR_URL_RE, &decode_refs(value), self.out, self.stats);
+        self.cursor = end;
+    }
+}
+
+/// How the two selected bodies sit in the MIME tree (decision 0049 §3,
+/// issue #137), decided at ingest from the parsed message and never stored.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BodyOrder {
+    /// Direct children of one `multipart/alternative` — two renderings of
+    /// one message: the text's codes, and the HTML's only when the text
+    /// has none. Also the order for a mail with fewer than two bodies.
+    Alternatives,
+    /// Independent parts, the text part first in the source.
+    TextFirst,
+    /// Independent parts, the HTML part first in the source.
+    HtmlFirst,
+}
+
+/// Extract likely verification/OTP codes: standalone runs of 4–10 ASCII
+/// digits, the first [`MAX_CODES`] distinct ones in extraction order.
+///
+/// The bodies contribute as `order` says (decision 0049 §3): alternatives
+/// prefer the text — the most reliable rendering — and fall back to the
+/// HTML; independent parts both contribute in source order, so a
+/// mailing-list footer after an HTML-only mail no longer hides its code.
+/// The HTML contributes its text runs (decision 0040 §2) — each run between
+/// two pieces of markup decoded and scanned on its own, so digits in
+/// adjacent cells or blocks are never joined and a code beside its
+/// sentence is still found. Digits inside `<style>`, `<script>`,
+/// `<title>`, `<head>`, `<template>`, comments or attribute values yield
+/// nothing: a stylesheet color is not a code, and an attribute is not
+/// displayed to the person the code is for.
+pub fn extract_codes(text: Option<&str>, html: Option<&str>, order: BodyOrder) -> Vec<String> {
+    let mut codes = CodeSet::default();
+    let scan_html = |codes: &mut CodeSet| {
+        if let Some(html) = html {
+            walk(html, &mut TagScanStats::default(), codes);
+        }
+    };
+    match order {
+        BodyOrder::Alternatives => {
+            codes.scan(text.unwrap_or_default());
+            if codes.codes.is_empty() {
+                scan_html(&mut codes);
+            }
+        }
+        BodyOrder::TextFirst => {
+            codes.scan(text.unwrap_or_default());
+            scan_html(&mut codes);
+        }
+        BodyOrder::HtmlFirst => {
+            scan_html(&mut codes);
+            codes.scan(text.unwrap_or_default());
+        }
+    }
+    codes.codes
+}
+
+/// The bounded distinct collector (decision 0049 §4): a code is checked
+/// against at most [`MAX_CODES`] retained strings *before* it is copied,
+/// a duplicate takes no slot, and once full nothing more is matched or
+/// allocated — the storage never holds a 65th string, so the bound is on
+/// allocation, not a truncation after an unbounded collection.
+#[derive(Default)]
+struct CodeSet {
+    codes: Vec<String>,
+}
+
+impl CodeSet {
+    fn scan(&mut self, src: &str) {
+        let mut matches = CODE_RE.find_iter(src);
+        while self.codes.len() < MAX_CODES {
+            let Some(found) = matches.next() else {
+                return;
+            };
+            if !self.codes.iter().any(|code| code == found.as_str()) {
+                self.codes.push(found.as_str().to_string());
+            }
+        }
+    }
+}
+
+impl Regions for CodeSet {
+    /// A run is decoded whether or not the set is full: the reference
+    /// scan's work stays exactly what decision 0040 §6 pins.
+    fn text(&mut self, run: &str, refs: &mut RefScanStats) {
+        let decoded = decode_refs_scanned(run, refs);
+        self.scan(&decoded);
+    }
+
+    fn value(&mut self, _start: usize, _end: usize) {}
+}
+
+/// The tokenizer's work for one [`walk`] (decision 0040 §6),
 /// observed like [`RefScanStats`]: an instance-local value, never a
 /// global. Every source byte lands in exactly one of the three consumption
 /// counters, so they sum to the source length; `close_probes` counts the
@@ -213,8 +429,21 @@ struct TagScanStats {
 #[cfg(test)]
 fn html_codes_with_stats(html: &str) -> (Vec<String>, TagScanStats) {
     let mut stats = TagScanStats::default();
-    let codes = html_codes(html, &mut stats);
-    (codes, stats)
+    let mut codes = CodeSet::default();
+    walk(html, &mut stats, &mut codes);
+    (codes.codes, stats)
+}
+
+/// What one HTML walk reports (decision 0049 §1): the code consumer's
+/// text runs and the link consumer's quoted attribute values, both from
+/// the same lexical recognition — one owner of where a quote opens and
+/// where a tag ends, two consumers with their own suppression.
+trait Regions {
+    /// A text run outside every suppressed region, still undecoded.
+    fn text(&mut self, run: &str, refs: &mut RefScanStats);
+    /// The source byte range of one quoted attribute value, its quotes
+    /// excluded. Reported in source order as the tag is scanned.
+    fn value(&mut self, start: usize, end: usize);
 }
 
 /// The containers whose whole content is suppressed and whose nesting is
@@ -264,7 +493,11 @@ enum Kind<'a> {
 
 /// The markup that begins at `lt`: where it ends (one past its `>`) and
 /// what it is, or `None` when the source ends inside it.
-fn markup_at(bytes: &[u8], lt: usize) -> Option<(usize, Kind<'_>)> {
+fn markup_at<'a>(
+    bytes: &'a [u8],
+    lt: usize,
+    regions: &mut dyn Regions,
+) -> Option<(usize, Kind<'a>)> {
     let rest = &bytes[lt..];
     if let Some(body) = rest.strip_prefix(b"<!--") {
         // `<!-->` and `<!--->` are the abrupt closes; otherwise `-->`.
@@ -282,16 +515,17 @@ fn markup_at(bytes: &[u8], lt: usize) -> Option<(usize, Kind<'_>)> {
             let gt = rest[2..].iter().position(|&byte| byte == b'>')?;
             Some((lt + 2 + gt + 1, Kind::Other))
         }
-        b'/' => tag(bytes, lt + 2).map(|(name, end)| (end, Kind::End(name))),
-        _ => tag(bytes, lt + 1).map(|(name, end)| (end, Kind::Start(name))),
+        b'/' => tag(bytes, lt + 2, regions).map(|(name, end)| (end, Kind::End(name))),
+        _ => tag(bytes, lt + 1, regions).map(|(name, end)| (end, Kind::Start(name))),
     }
 }
 
 /// A tag's name from `start`, and the end of the tag: one past the first
 /// `>` that is not inside a quoted attribute value. A quote opens a value
 /// only after `=` and optional whitespace, so the apostrophe in
-/// `alt=don't` is a value byte; a quoted `>` never ends the tag.
-fn tag(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
+/// `alt=don't` is a value byte; a quoted `>` never ends the tag. Each
+/// closed value is reported to `regions` as soon as its quote closes.
+fn tag<'a>(bytes: &'a [u8], start: usize, regions: &mut dyn Regions) -> Option<(&'a [u8], usize)> {
     let name_len = bytes[start..].iter().position(|&byte| ends_name(byte))?;
     let mut index = start + name_len;
     let mut after_equals = false;
@@ -300,7 +534,10 @@ fn tag(bytes: &[u8], start: usize) -> Option<(&[u8], usize)> {
             b'>' => return Some((&bytes[start..start + name_len], index + 1)),
             b'=' => after_equals = true,
             quote @ (b'"' | b'\'') if after_equals => {
-                index += 1 + bytes[index + 1..].iter().position(|&byte| byte == quote)?;
+                let close =
+                    index + 1 + bytes[index + 1..].iter().position(|&byte| byte == quote)?;
+                regions.value(index + 1, close);
+                index = close;
                 after_equals = false;
             }
             byte if byte.is_ascii_whitespace() => {}
@@ -341,9 +578,10 @@ fn skip_markup(
     lt: usize,
     containers: &mut Vec<Container>,
     stats: &mut TagScanStats,
+    regions: &mut dyn Regions,
 ) -> Option<usize> {
     let len = html.len();
-    let Some((end, kind)) = markup_at(html.as_bytes(), lt) else {
+    let Some((end, kind)) = markup_at(html.as_bytes(), lt, regions) else {
         stats.markup_bytes += (len - lt) as u64;
         return None;
     };
@@ -358,7 +596,7 @@ fn skip_markup(
                     return None;
                 };
                 stats.raw_bytes += (close - end) as u64;
-                let Some((_, close_end)) = tag(html.as_bytes(), close + 2) else {
+                let Some((_, close_end)) = tag(html.as_bytes(), close + 2, regions) else {
                     stats.markup_bytes += (len - close) as u64;
                     return None;
                 };
@@ -379,13 +617,14 @@ fn skip_markup(
     Some(end)
 }
 
-/// The codes in an HTML body's text runs. Structure is recognized first,
-/// then each run outside every suppressed region is decoded once and
-/// scanned on its own — every markup boundary ends a run. Slicing happens
-/// only at ASCII `<`/`>` positions or the ends, so it never splits a UTF-8
+/// One walk over an HTML body's source structure. Structure is recognized
+/// first: each text run outside every suppressed region goes to
+/// `regions.text` — every markup boundary ends a run — and each quoted
+/// attribute value to `regions.value`. Unterminated recognized markup ends
+/// the walk; what follows is the caller's. Slicing happens only at ASCII
+/// `<`/`>`/quote positions or the ends, so it never splits a UTF-8
 /// character.
-fn html_codes(html: &str, stats: &mut TagScanStats) -> Vec<String> {
-    let mut codes = Vec::new();
+fn walk(html: &str, stats: &mut TagScanStats, regions: &mut dyn Regions) {
     let mut containers = Vec::new();
     let mut run = 0;
     let mut search = 0;
@@ -397,29 +636,29 @@ fn html_codes(html: &str, stats: &mut TagScanStats) -> Vec<String> {
         }
         stats.text_bytes += (lt - run) as u64;
         if containers.is_empty() {
-            scan_run(&html[run..lt], &mut codes, &mut stats.refs);
+            regions.text(&html[run..lt], &mut stats.refs);
         }
-        let Some(end) = skip_markup(html, lt, &mut containers, stats) else {
-            return codes;
+        let Some(end) = skip_markup(html, lt, &mut containers, stats, regions) else {
+            return;
         };
         run = end;
         search = end;
     }
     stats.text_bytes += (html.len() - run) as u64;
     if containers.is_empty() {
-        scan_run(&html[run..], &mut codes, &mut stats.refs);
+        regions.text(&html[run..], &mut stats.refs);
     }
-    codes
-}
-
-fn scan_run(run: &str, codes: &mut Vec<String>, stats: &mut RefScanStats) {
-    let decoded = decode_refs_scanned(run, stats);
-    codes.extend(CODE_RE.find_iter(&decoded).map(|m| m.as_str().to_string()));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codes for two bodies that are alternatives — the text-preferring
+    /// order every pre-0049 fixture was written against.
+    fn alt_codes(text: Option<&str>, html: Option<&str>) -> Vec<String> {
+        extract_codes(text, html, BodyOrder::Alternatives)
+    }
 
     // Inline elements are run boundaries, so a code beside its sentence is
     // found (issue #93): the renderer glued `go</a> 555555` and
@@ -427,18 +666,18 @@ mod tests {
     #[test]
     fn inline_adjacent_codes_are_their_own_runs() {
         assert_eq!(
-            extract_codes(None, Some("See <b>555555</b> soon")),
+            alt_codes(None, Some("See <b>555555</b> soon")),
             vec!["555555"]
         );
         assert_eq!(
-            extract_codes(None, Some("<p>hello</p><span>555555</span>")),
+            alt_codes(None, Some("<p>hello</p><span>555555</span>")),
             vec!["555555"]
         );
         assert_eq!(
-            extract_codes(None, Some("<a href=\"https://x.io\">go</a> 555555")),
+            alt_codes(None, Some("<a href=\"https://x.io\">go</a> 555555")),
             vec!["555555"]
         );
-        assert_eq!(extract_codes(None, Some("x<i>555555</i>y")), vec!["555555"]);
+        assert_eq!(alt_codes(None, Some("x<i>555555</i>y")), vec!["555555"]);
     }
 
     // The reference scan is bounded (the review's security HOLD): a match
@@ -489,14 +728,14 @@ mod tests {
 
     #[test]
     fn codes_prefer_text_body() {
-        let codes = extract_codes(Some("Your code is 424242."), Some("<b>11112222</b>"));
+        let codes = alt_codes(Some("Your code is 424242."), Some("<b>11112222</b>"));
         assert_eq!(codes, vec!["424242".to_string()]);
         // No code in the text: the html runs are the fallback.
         assert_eq!(
-            extract_codes(Some("no code here"), Some("<b>11112222</b>")),
+            alt_codes(Some("no code here"), Some("<b>11112222</b>")),
             vec!["11112222"]
         );
-        assert!(extract_codes(None, None).is_empty());
+        assert!(alt_codes(None, None).is_empty());
     }
 
     // ---- issue #39: entity decoding on the html leg ----
@@ -579,6 +818,40 @@ mod tests {
         assert_eq!(decode_refs("&amp;lt;"), "&lt;", "decoded once, never again");
     }
 
+    // Decision 0040 §5 / 0049 §2: the snapshot's 106 legacy names without
+    // a semicolon are not syntax here, in either context — `&n` and
+    // `&n=1` stay literal, while `&n;x` decodes the full mapping and keeps
+    // the `x`. This is deliberately narrower than the HTML tokenizer's
+    // context-dependent bare matches; unknown `&notit;` gets no
+    // longest-prefix recovery. Derived from the independent JSON.
+    #[test]
+    fn legacy_names_need_their_semicolon() {
+        let source = entities::tests::snapshot();
+        let legacy: Vec<_> = source
+            .iter()
+            .filter(|(key, _)| !key.ends_with(';'))
+            .collect();
+        assert_eq!(legacy.len(), 106);
+        for (key, entry) in legacy {
+            let value = entities::tests::mapping(key, entry);
+            assert_eq!(decode_refs(key), *key);
+            assert_eq!(decode_refs(&format!("{key}=1")), format!("{key}=1"));
+            assert_eq!(decode_refs(&format!("{key};x")), format!("{value}x"));
+            let html = format!("<a href=\"https://x.io/?a{key}=1\">go</a> https://y.io/?b{key}=2");
+            assert_eq!(
+                extract_links(None, Some(&html)),
+                vec![
+                    format!("https://x.io/?a{key}=1"),
+                    format!("https://y.io/?b{key}=2")
+                ],
+                "{key}: literal in an attribute and in text"
+            );
+        }
+        assert_eq!(decode_refs("&amp"), "&amp");
+        assert_eq!(decode_refs("&amp=1"), "&amp=1");
+        assert_eq!(decode_refs("&notit;"), "&notit;");
+    }
+
     // ---- issue #39: first-occurrence document order ----
 
     #[test]
@@ -592,10 +865,10 @@ mod tests {
 
     #[test]
     fn codes_keep_document_order() {
-        let codes = extract_codes(Some("9999 then 1111 then 9999"), None);
+        let codes = alt_codes(Some("9999 then 1111 then 9999"), None);
         assert_eq!(codes, vec!["9999".to_string(), "1111".to_string()]);
         assert_eq!(
-            extract_codes(None, Some("<p>9999</p><p>1111</p><p>9999</p>")),
+            alt_codes(None, Some("<p>9999</p><p>1111</p><p>9999</p>")),
             vec!["9999", "1111"]
         );
     }
@@ -607,10 +880,7 @@ mod tests {
                     <!-- 66667777 -->\
                     <a href=\"/reset?token=88889999\">reset</a>\
                     <p>Your code is 12345678.</p>";
-        assert_eq!(
-            extract_codes(None, Some(html)),
-            vec!["12345678".to_string()]
-        );
+        assert_eq!(alt_codes(None, Some(html)), vec!["12345678".to_string()]);
     }
 
     // ---- issue #94: decode before the URL pattern cuts ----
@@ -661,6 +931,286 @@ mod tests {
         }
     }
 
+    // ---- issue #136: source boundaries before decoding ----
+
+    // A quoted attribute value ends at its own source quote, then decodes:
+    // the encoded apostrophes MarkupSafe (`&#39;`) and Django (`&#x27;`)
+    // write, and an encoded `&quot;`, are the URL's own bytes. Red before:
+    // the whole-source decode turned them into delimiters, and every
+    // `O'Brien` link stopped at `name=O`.
+    #[test]
+    fn attribute_links_keep_encoded_quotes() {
+        let reset = "https://app.test/reset?name=O'Brien&token=abc123";
+        for (html, want) in [
+            (
+                "<a href=\"https://app.test/reset?name=O&#39;Brien&amp;token=abc123\">r</a>",
+                vec![reset],
+            ),
+            (
+                "<a href=\"https://app.test/reset?name=O&#x27;Brien&amp;token=abc123\">r</a>",
+                vec![reset],
+            ),
+            (
+                "<a href=\"https://app.test/reset?name=O'Brien&amp;token=abc123\">r</a>",
+                vec![reset],
+            ),
+            (
+                "<a href=\"https://x.io/?q=&quot;x&quot;\">q</a>",
+                vec!["https://x.io/?q=\"x\""],
+            ),
+            // The other quote style: a raw `"` inside `'...'` is data too.
+            (
+                "<a href='https://x.io/a\"b&#39;c'>q</a>",
+                vec!["https://x.io/a\"b'c"],
+            ),
+            // An encoded scheme inside a value still decodes before matching.
+            (
+                "<a href=\"https&#58;//x.io/enc\">e</a>",
+                vec!["https://x.io/enc"],
+            ),
+            // Outside a quoted value a decoded quote still ends the link:
+            // in text, in an unquoted value, in a comment.
+            ("<p>https://x.io/O&#39;Brien</p>", vec!["https://x.io/O"]),
+            ("<a href=https://x.io/O&#39;B>u</a>", vec!["https://x.io/O"]),
+            (
+                "<!-- https://x.io/c&#39;d --><p>t</p>",
+                vec!["https://x.io/c"],
+            ),
+            // Source-only links survive where codes are suppressed.
+            (
+                "<head><script>u=\"https://x.io/s\"</script></head>",
+                vec!["https://x.io/s"],
+            ),
+            (
+                "<style>a{background:url(https://x.io/bg.png)}</style>",
+                vec!["https://x.io/bg.png"],
+            ),
+            // An unfinished tail is ordinary source, matched once.
+            ("<p>a</p><a href=\"https://x.io/t", vec!["https://x.io/t"]),
+            (
+                "<a href=\"https://x.io/v&#39;w\" title",
+                vec!["https://x.io/v'w"],
+            ),
+            // A value never reaches into the next one or the text after.
+            (
+                "<a href=\"https://a.io/1\" data-x='https://b.io/2'>https://c.io/3</a>",
+                vec!["https://a.io/1", "https://b.io/2", "https://c.io/3"],
+            ),
+        ] {
+            assert_eq!(extract_links(None, Some(html)), want, "{html}");
+        }
+    }
+
+    // Commas, IPv6 literals and balanced parentheses are URL bytes; trailing
+    // sentence punctuation and unmatched closers are not. Red before: the
+    // pattern stopped at the first `)`, `]` or `,`.
+    #[test]
+    fn links_keep_balanced_url_punctuation() {
+        for (src, want) in [
+            (
+                "see https://en.wikipedia.org/wiki/Foo_(bar) now",
+                vec!["https://en.wikipedia.org/wiki/Foo_(bar)"],
+            ),
+            ("http://[::1]:8080/p", vec!["http://[::1]:8080/p"]),
+            (
+                "https://cdn.x.io/w_100,h_100/x.jpg",
+                vec!["https://cdn.x.io/w_100,h_100/x.jpg"],
+            ),
+            (
+                "(see https://en.wikipedia.org/wiki/Foo_(bar)).",
+                vec!["https://en.wikipedia.org/wiki/Foo_(bar)"],
+            ),
+            ("(see https://x.io/p).", vec!["https://x.io/p"]),
+            ("[https://x.io/b]", vec!["https://x.io/b"]),
+            ("first https://x.io/a, then", vec!["https://x.io/a"]),
+            ("https://x.io/{id}?x=1;", vec!["https://x.io/{id}?x=1"]),
+            ("https://x.io/a)b", vec!["https://x.io/a)b"]),
+            ("https://x.io/a(", vec!["https://x.io/a("]),
+            ("https://x.io/caf\u{e9}).", vec!["https://x.io/caf\u{e9}"]),
+        ] {
+            assert_eq!(extract_links(Some(src), None), want, "{src}");
+            let html = format!("<p>{src}</p><a href=\"{src}\">x</a>");
+            assert_eq!(extract_links(None, Some(&html)), want, "{html}");
+        }
+    }
+
+    // A numeric reference is ASCII digits of its radix, nothing else. Red
+    // before: `from_str_radix` took a leading `+`, so `&#+52;` was `4` and
+    // four of them manufactured the code `4829`.
+    #[test]
+    fn numeric_references_refuse_signs() {
+        for literal in [
+            "&#+52;",
+            "&#x+34;",
+            "&#X+34;",
+            "&#-52;",
+            "&#\u{664};",
+            "&#x\u{664};",
+            "&# 52;",
+        ] {
+            assert_eq!(decode_refs(literal), literal);
+        }
+        assert_eq!(decode_refs("&#52;&#x34;&#X34;"), "444");
+        assert!(alt_codes(None, Some("&#+52;&#+56;&#+50;&#+57;")).is_empty());
+        assert_eq!(alt_codes(None, Some("&#52;&#56;&#50;&#57;")), vec!["4829"]);
+        assert_eq!(
+            extract_links(None, Some("<a href=\"https://x.io/&#+52;/\">x</a>")),
+            vec!["https://x.io/&#+52;/"]
+        );
+    }
+
+    // Every HTML byte is matched in exactly one region, and the trim
+    // examines a candidate once and removes each byte once: exact counts
+    // over malformed, multibyte and long-punctuation inputs (decision 0049
+    // §1).
+    #[test]
+    fn link_regions_and_trim_cost_one_pass() {
+        let anchor = "<a href=\"https://x.io/a\">b</a>";
+        let (links, stats) = links_with_stats(None, Some(anchor));
+        assert_eq!(links, vec!["https://x.io/a"]);
+        assert_eq!(stats.quoted_bytes, 14);
+        assert_eq!(stats.ordinary_bytes, anchor.len() as u64 - 14);
+        assert_eq!((stats.trim_counted, stats.trim_removed), (14, 0));
+
+        for html in [
+            "<a href=\"x\" title='\u{e9}'>\u{65e5}</a><a b=\"",
+            "<p a=\"1\"<q b='2'>",
+            "<script>\"</script x=\"y\">",
+            "<!-- \" -->'<a c=\"&#39;\">",
+            "&lt;a href=&quot;https://x.io&quot;&gt;",
+        ] {
+            let (_, stats) = links_with_stats(None, Some(html));
+            assert_eq!(
+                stats.ordinary_bytes + stats.quoted_bytes,
+                html.len() as u64,
+                "{html}"
+            );
+        }
+
+        let dots = format!("https://x.io/{}", ".".repeat(100_000));
+        let (links, stats) = links_with_stats(Some(&dots), None);
+        assert_eq!(links, vec!["https://x.io/"]);
+        assert_eq!(stats.trim_counted, dots.len() as u64);
+        assert_eq!(stats.trim_removed, 100_000);
+
+        let closers = format!("https://x.io/{}", ")]}".repeat(50_000));
+        let (links, stats) = links_with_stats(None, Some(&closers));
+        assert_eq!(links, vec!["https://x.io/"]);
+        assert_eq!(stats.trim_removed, 150_000);
+
+        let balanced = format!("https://x.io/{}{}", "(".repeat(50_000), ")".repeat(50_000));
+        let (links, stats) = links_with_stats(Some(&balanced), None);
+        assert_eq!(links, vec![balanced.clone()]);
+        assert_eq!((stats.trim_counted, stats.trim_removed), (100_013, 0));
+    }
+
+    // ---- issue #139: the bounded code collector ----
+
+    // At most 64 distinct codes, first-occurrence order, a duplicate taking
+    // no slot — and the bound holds on the collector's own storage while
+    // it collects, not on a truncated result. Red before: every match was
+    // kept, a million for an 8 MiB numeric body.
+    #[test]
+    fn codes_cap_bounds_collection_before_allocation() {
+        let numbers = |range: std::ops::Range<u32>| -> Vec<String> {
+            range.map(|n| (1_000_000 + n).to_string()).collect()
+        };
+        assert!(alt_codes(Some("none here"), None).is_empty());
+        let sixty_four = numbers(0..64);
+        assert_eq!(alt_codes(Some(&sixty_four.join(" ")), None), sixty_four);
+        let sixty_five = numbers(0..65);
+        assert_eq!(
+            alt_codes(Some(&sixty_five.join(" ")), None),
+            sixty_five[..64]
+        );
+
+        // Duplicates around the boundary: they consume no slot, so the
+        // 64th distinct value still lands and the 65th does not.
+        let mut around = numbers(0..63);
+        around.extend([numbers(0..1)[0].clone(), numbers(0..1)[0].clone()]);
+        around.extend(numbers(63..65));
+        let kept = alt_codes(Some(&around.join(" ")), None);
+        assert_eq!(kept, numbers(0..64));
+
+        // The ten-digit maximum bounds the serialized array: 64 * 12 + 63
+        // separators + 2 brackets.
+        let ten: Vec<String> = (0..80)
+            .map(|n| (1_000_000_000u64 + n).to_string())
+            .collect();
+        let kept = alt_codes(Some(&ten.join(" ")), None);
+        assert_eq!(serde_json::to_string(&kept).unwrap().len(), 833);
+
+        // HTML runs share the one collector.
+        let html: String = numbers(0..70)
+            .iter()
+            .map(|n| format!("<p>{n}</p>"))
+            .collect();
+        assert_eq!(alt_codes(None, Some(&html)), numbers(0..64));
+
+        // Independent bodies share it too, in source order.
+        let text = numbers(0..40).join(" ");
+        let html: String = numbers(40..80)
+            .iter()
+            .map(|n| format!("<td>{n}</td>"))
+            .collect();
+        assert_eq!(
+            extract_codes(Some(&text), Some(&html), BodyOrder::TextFirst),
+            numbers(0..64)
+        );
+        let mut html_first = numbers(40..80);
+        html_first.extend(numbers(0..24));
+        assert_eq!(
+            extract_codes(Some(&text), Some(&html), BodyOrder::HtmlFirst),
+            html_first
+        );
+
+        // The storage itself never outgrows the cap across a million
+        // distinct candidates.
+        let million: String = (0..1_048_576u32)
+            .map(|n| format!("{} ", 1_000_000 + n))
+            .collect();
+        let mut set = CodeSet::default();
+        set.scan(&million);
+        set.scan(&million);
+        assert_eq!(set.codes, numbers(0..64));
+        assert!(
+            set.codes.capacity() <= MAX_CODES,
+            "{}",
+            set.codes.capacity()
+        );
+    }
+
+    // ---- issue #137: the MIME relation decides the preference ----
+
+    #[test]
+    fn only_alternatives_prefer_the_text_codes() {
+        let html = "<p>Your code is 121212</p>";
+        let footer = "-- list footer 2026";
+        assert_eq!(
+            extract_codes(Some(footer), Some(html), BodyOrder::HtmlFirst),
+            vec!["121212", "2026"]
+        );
+        assert_eq!(
+            extract_codes(Some(footer), Some(html), BodyOrder::TextFirst),
+            vec!["2026", "121212"]
+        );
+        assert_eq!(
+            extract_codes(Some(footer), Some(html), BodyOrder::Alternatives),
+            vec!["2026"]
+        );
+        // Alternatives fall back to the HTML only when the text has none.
+        assert_eq!(
+            extract_codes(Some("no code"), Some(html), BodyOrder::Alternatives),
+            vec!["121212"]
+        );
+        // The same code in both bodies is one code.
+        assert_eq!(
+            extract_codes(Some("121212"), Some(html), BodyOrder::TextFirst),
+            vec!["121212"]
+        );
+        assert!(extract_codes(None, None, BodyOrder::HtmlFirst).is_empty());
+    }
+
     #[test]
     fn links_dedupe_across_both_bodies_in_text_first_order() {
         assert_eq!(
@@ -707,7 +1257,7 @@ mod tests {
                 vec![],
             ),
         ] {
-            assert_eq!(extract_codes(None, Some(html)), want, "{html}");
+            assert_eq!(alt_codes(None, Some(html)), want, "{html}");
         }
     }
 
@@ -746,7 +1296,7 @@ mod tests {
             ("<script/>1111</script>2222", vec!["2222"]),
             ("<head/>1111</head>2222", vec!["2222"]),
         ] {
-            assert_eq!(extract_codes(None, Some(html)), want, "{html}");
+            assert_eq!(alt_codes(None, Some(html)), want, "{html}");
         }
     }
 
@@ -770,7 +1320,7 @@ mod tests {
             ("</ 1111>2222", vec!["2222"]),
             ("</>1111", vec!["1111"]),
         ] {
-            assert_eq!(extract_codes(None, Some(html)), want, "{html}");
+            assert_eq!(alt_codes(None, Some(html)), want, "{html}");
         }
     }
 
@@ -789,7 +1339,7 @@ mod tests {
             ("<", vec![]),
             ("1111<", vec!["1111"]),
         ] {
-            assert_eq!(extract_codes(None, Some(html)), want, "{html}");
+            assert_eq!(alt_codes(None, Some(html)), want, "{html}");
         }
     }
 
@@ -812,7 +1362,7 @@ mod tests {
             "1111<head>2222",
             "1111<template><p>2222</p>",
         ] {
-            assert_eq!(extract_codes(None, Some(html)), vec!["1111"], "{html}");
+            assert_eq!(alt_codes(None, Some(html)), vec!["1111"], "{html}");
         }
     }
 
@@ -831,10 +1381,10 @@ mod tests {
             ("\u{661}\u{662}\u{663}\u{664}5678", vec!["5678"]),
             ("1111&nbsp;2222", vec!["1111", "2222"]),
         ] {
-            assert_eq!(extract_codes(None, Some(html)), want, "{html}");
+            assert_eq!(alt_codes(None, Some(html)), want, "{html}");
         }
         assert!(
-            extract_codes(Some("\u{661}\u{662}\u{663}\u{664}"), None).is_empty(),
+            alt_codes(Some("\u{661}\u{662}\u{663}\u{664}"), None).is_empty(),
             "non-ASCII digits are never codes"
         );
     }
@@ -921,7 +1471,12 @@ mod tests {
                         .iter()
                         .all(|code| code.bytes().all(|byte| byte == b'1'))
                 );
-                let _ = extract_links(Some(&input), Some(&input));
+                let (_, links) = links_with_stats(Some(&input), Some(&input));
+                assert_eq!(
+                    links.ordinary_bytes + links.quoted_bytes,
+                    input.len() as u64,
+                    "{input:?}"
+                );
             }
         }
     }
@@ -940,7 +1495,7 @@ mod tests {
             );
         }
         assert_eq!(
-            extract_codes(None, Some("<a \u{e9}='x'>1111</a>")),
+            alt_codes(None, Some("<a \u{e9}='x'>1111</a>")),
             vec!["1111"]
         );
     }

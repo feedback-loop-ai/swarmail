@@ -436,6 +436,45 @@ async fn delivered_to_a_pathless_target_with_secret() {
     assert!(head.contains("\"event\":\"received\""), "{head}");
 }
 
+/// The webhook payload carries the stored, capped codes (decision 0049 §4,
+/// issue #139): a mail with 70 distinct codes is delivered with exactly the
+/// first 64 — the same array REST serves — never the uncapped scan. Red at
+/// 2a325c9: all 70 rode the payload.
+#[tokio::test]
+async fn the_webhook_payload_carries_the_capped_codes() {
+    let srv = start().await;
+    let (addr, rx, _, _hits) = http_sink(204, SINK_LIFETIME).await;
+    let targets = format!(r#"[{{"url": "http://{addr}/hook"}}]"#);
+    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200);
+    let numbers: Vec<String> = (0..70).map(|n| (3_000_000 + n).to_string()).collect();
+    smtp_send(
+        srv.smtp_addr,
+        Some("capped"),
+        "f@x.io",
+        "r@x.io",
+        "codes",
+        &numbers.join(" "),
+    )
+    .await
+    .unwrap();
+    let request = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .expect("webhook delivery timed out")
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(payload_of(&request)).unwrap();
+    assert_eq!(payload["email"]["codes"], serde_json::json!(numbers[..64]));
+    let (st, stored) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/capped/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert_eq!(stored["emails"][0]["codes"], payload["email"]["codes"]);
+}
+
 #[tokio::test]
 async fn failing_target_is_retried_four_times_not_more() {
     let srv = start().await;

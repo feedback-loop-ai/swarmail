@@ -162,17 +162,33 @@ fn field_prefix(token: &str) -> Option<&str> {
     (rest.starts_with(':') && !rest.starts_with("://")).then_some(&token[..end])
 }
 
+/// The field a token names once Mailpit's own wrappers are looked past
+/// (decision 0049 §6, issue #138): at most one leading `(`, then one
+/// exclusion marker (`-` or `!`), then one `"`, in that order. Upstream
+/// reads `-to:x` as "not to x" and strips the quotes from `"to:x"`, so
+/// these forms must refuse by name like the bare one — matching nothing,
+/// they made a ported exclusion assertion pass against any mailbox. This
+/// is recognition for the refusal only: an accepted query is never
+/// stripped, grouped or negated.
+fn wrapped_field_prefix(token: &str) -> Option<&str> {
+    let token = token.strip_prefix('(').unwrap_or(token);
+    let token = token.strip_prefix(['-', '!']).unwrap_or(token);
+    field_prefix(token.strip_prefix('"').unwrap_or(token))
+}
+
 /// Field syntax in a generic containing search refuses by name (decision
 /// 0044 §7, issue #99): every whitespace token of the trimmed query is
 /// examined, so ` to:x`, `from:alice` and `plan subject:x` refuse alike,
-/// and an unknown `foo:` cannot answer a vacuous zero either. There is no
-/// quoting grammar; explicit `kind=to|from|subject` values stay literal.
+/// and an unknown `foo:` cannot answer a vacuous zero either — nor can a
+/// wrapped `-to:x`, `!from:x`, `"to:x"` or `(to:x)` (decision 0049 §6).
+/// There is no query grammar; explicit `kind=to|from|subject` values stay
+/// literal.
 fn refuse_field_syntax(params: &SearchParams) -> Result<(), ApiError> {
     if params.kind.as_deref().unwrap_or("containing") != "containing" {
         return Ok(());
     }
     let query = params.query.as_deref().unwrap_or("").trim();
-    match query.split_whitespace().find_map(field_prefix) {
+    match query.split_whitespace().find_map(wrapped_field_prefix) {
         Some(field) => Err(bad_request(format!(
             "unsupported search prefix \"{field}:\" — Mailpit's prefix grammar is not \
              implemented; use ?kind=to|from|subject"
@@ -254,16 +270,71 @@ where
     .await
 }
 
+/// Find one mail and build its whole response on the blocking pool
+/// (decision 0049 §7, issue #139): the projection, the HTML-to-text render,
+/// the body copies and the serialization all finish inside the closure, so
+/// the async worker receives a finished `Response` — a `Json` returned for
+/// Axum to serialize later would serialize a 30 MiB body on the worker.
+/// The map guard is released by `find` before the build; no mutation lock
+/// is taken. An absent mail is the read shapes' one 404. The test gate
+/// sits between the lookup and the build, so the proof holds the build
+/// itself, not merely the lookup. Panics re-raise in the caller.
+pub(crate) async fn render_one<Find, Build>(
+    store: Arc<Store>,
+    find: Find,
+    build: Build,
+) -> Result<Response, ApiError>
+where
+    Find: FnOnce(&Store) -> Option<Arc<Email>> + Send + 'static,
+    Build: FnOnce(&Email) -> Response + Send + 'static,
+{
+    Store::offload(move || {
+        let email = find(&store)?;
+        #[cfg(test)]
+        store.run_compat_gate();
+        Some(build(&email))
+    })
+    .await
+    .ok_or_else(not_found)
+}
+
+/// [`render_one`] for a mail named by id.
+pub(crate) async fn render_by_id<Build>(
+    state: &AppState,
+    id: String,
+    build: Build,
+) -> Result<Response, ApiError>
+where
+    Build: FnOnce(&Email) -> Response + Send + 'static,
+{
+    render_one(state.store.clone(), move |store| store.get(&id), build).await
+}
+
+/// A JSON value serialized into its finished response — called inside
+/// [`render_one`]'s closure, never on the async worker.
+fn json_response(value: Value) -> Response {
+    Json(value).into_response()
+}
+
 /// Finished JSON bytes as the response — serialized once, on the pool.
 fn json_body(bytes: Vec<u8>) -> Response {
     ([(header::CONTENT_TYPE, "application/json")], bytes).into_response()
 }
 
 /// The store as one mailbox (all inboxes), or one inbox when scoped,
-/// newest first.
+/// newest first by `(received_ms, id)` — the order `latest` maximizes
+/// (decision 0049 §5, issue #138). A scoped view sorts its inbox's
+/// acceptance-ordered list into that order, so `messages?inbox=x&limit=1`
+/// is `latest?inbox=x` at a stable store: the receive stamp is sampled at
+/// parse start, and a large mail accepted after a small one can carry the
+/// older stamp. Native listings, POP3 and pruning keep acceptance order.
 fn scoped(store: &Store, inbox: Option<&str>) -> Vec<Arc<Email>> {
     match inbox {
-        Some(inbox) => store.list(inbox, &Filter::default()),
+        Some(inbox) => {
+            let mut all = store.list(inbox, &Filter::default());
+            all.sort_by(crate::store::newest_first);
+            all
+        }
         None => store.list_all(&Filter::default()),
     }
 }
@@ -365,9 +436,19 @@ fn mailpit_envelope(mailbox: usize, matches: usize, start: usize, page: &[Arc<Em
 /// `(received_ms, id)` in the requested scope — one inbox, or the whole
 /// store when none is named — found in one pass on the blocking pool. A
 /// nonblank `query` refuses by name: a filtered latest is a search and an
-/// id fetch. An empty scope is a 404 even when another inbox has mail. The
-/// winner's `Arc` is held through rendering; two calls are two snapshots.
-async fn resolve_latest(state: &AppState, raw: RawQuery) -> Result<Arc<Email>, ApiError> {
+/// id fetch. An empty scope is a 404 even when another inbox has mail. Any
+/// other key — Mailpit's `tz` included — is a named `400` (README lists
+/// it). The selection and the whole render run in one blocking-pool hop
+/// ([`render_one`]); the winner's `Arc` is held through the render, and
+/// two calls are two snapshots.
+async fn render_latest<Build>(
+    state: &AppState,
+    raw: RawQuery,
+    build: Build,
+) -> Result<Response, ApiError>
+where
+    Build: FnOnce(&Email) -> Response + Send + 'static,
+{
     let params: LatestParams = crate::api::parse_query(raw.0.as_deref().unwrap_or(""), "latest")?;
     let inbox = scope_inbox(params.inbox)?;
     if params
@@ -379,10 +460,12 @@ async fn resolve_latest(state: &AppState, raw: RawQuery) -> Result<Arc<Email>, A
             "query is not supported on latest; search with ?query=, then fetch the message by id",
         ));
     }
-    let store = state.store.clone();
-    Store::offload(move || store.latest(inbox.as_deref()))
-        .await
-        .ok_or_else(not_found)
+    render_one(
+        state.store.clone(),
+        move |store| store.latest(inbox.as_deref()),
+        build,
+    )
+    .await
 }
 
 /// The one not-found answer of the read shapes.
@@ -395,9 +478,8 @@ fn not_found() -> ApiError {
 async fn message_latest(
     State(state): State<AppState>,
     raw: RawQuery,
-) -> Result<Json<Value>, ApiError> {
-    let email = resolve_latest(&state, raw).await?;
-    Ok(Json(mailpit_message(&email)))
+) -> Result<Response, ApiError> {
+    render_latest(&state, raw, |e| json_response(mailpit_message(e))).await
 }
 
 /// GET /api/v1/message/latest/raw — the newest mail's exact source.
@@ -405,17 +487,15 @@ async fn message_latest_raw(
     State(state): State<AppState>,
     raw: RawQuery,
 ) -> Result<Response, ApiError> {
-    let email = resolve_latest(&state, raw).await?;
-    Ok(raw_response(&email))
+    render_latest(&state, raw, raw_response).await
 }
 
 /// GET /api/v1/message/latest/headers — the newest mail's header map.
 async fn message_latest_headers(
     State(state): State<AppState>,
     raw: RawQuery,
-) -> Result<Json<Value>, ApiError> {
-    let email = resolve_latest(&state, raw).await?;
-    Ok(Json(hog_headers(&email)))
+) -> Result<Response, ApiError> {
+    render_latest(&state, raw, |e| json_response(hog_headers(e))).await
 }
 
 // ---------- by id ----------
@@ -424,12 +504,8 @@ async fn message_latest_headers(
 async fn message_mailpit(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    state
-        .store
-        .get(&id)
-        .map(|e| Json(mailpit_message(&e)))
-        .ok_or_else(not_found)
+) -> Result<Response, ApiError> {
+    render_by_id(&state, id, |e| json_response(mailpit_message(e))).await
 }
 
 /// GET /api/v1/message/{id}/plain — the text body as text/plain.
@@ -437,11 +513,7 @@ async fn message_plain(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    state
-        .store
-        .get(&id)
-        .map(|e| plain_response(&e))
-        .ok_or_else(not_found)
+    render_by_id(&state, id, plain_response).await
 }
 
 /// GET /api/v1/message/{id}/raw — the full source, as MailHog serves it.
@@ -449,23 +521,15 @@ async fn message_raw(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    state
-        .store
-        .get(&id)
-        .map(|e| raw_response(&e))
-        .ok_or_else(not_found)
+    render_by_id(&state, id, raw_response).await
 }
 
 /// GET /api/v1/message/{id}/headers — just the synthesized header map.
 async fn message_headers(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, ApiError> {
-    state
-        .store
-        .get(&id)
-        .map(|e| Json(hog_headers(&e)))
-        .ok_or_else(not_found)
+) -> Result<Response, ApiError> {
+    render_by_id(&state, id, |e| json_response(hog_headers(e))).await
 }
 
 /// GET /api/v1/messages/{id}/plain — the plural path MailHog clients use.
@@ -473,11 +537,7 @@ async fn message_plain_plural(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    state
-        .store
-        .get(&id)
-        .map(|e| plain_response(&e))
-        .ok_or_else(not_found)
+    render_by_id(&state, id, plain_response).await
 }
 
 /// GET /api/v1/messages/{id}/download — MailHog's .eml attachment download.
@@ -485,11 +545,7 @@ async fn message_download(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    state
-        .store
-        .get(&id)
-        .map(|e| raw_response(&e))
-        .ok_or_else(not_found)
+    render_by_id(&state, id, raw_response).await
 }
 
 // ---------- MailHog v2 ----------
@@ -1517,6 +1573,21 @@ mod tests {
             )
         );
         assert_eq!(refused(Some("containing"), "see https://x.io/a:b"), None);
+        // Mailpit's wrappers are looked past, once each, in order (0049 §6).
+        for (token, field) in [
+            ("-to:x", Some("to")),
+            ("!from:x", Some("from")),
+            ("\"to:x\"", Some("to")),
+            ("-\"subject:x\"", Some("subject")),
+            ("(to:x)", Some("to")),
+            ("(!\"is:x", Some("is")),
+            ("-https://x.io", None),
+            ("-word", None),
+            ("--to:x", None),
+            ("\"(to:x)", None),
+        ] {
+            assert_eq!(wrapped_field_prefix(token), field, "{token}");
+        }
         // An explicit kind takes its value literally.
         assert_eq!(refused(Some("to"), "to:x"), None);
     }
