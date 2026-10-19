@@ -4,7 +4,7 @@ description: >-
   Lossless SMTP mail mock for tests and agents — per-test inboxes, chaos
   engineering, push-based awaits, native MCP, webhooks and a live UI.
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: "0.1.0"
 home: https://github.com/feedback-loop-ai/swarmail
 sources:

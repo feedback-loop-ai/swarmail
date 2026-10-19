@@ -358,3 +358,41 @@ predicate (issue #132): an object is silent only when it has no `id` key *and* a
 `method`. Any other `id`-less object is an invalid request answered `-32600` with a null
 id, over HTTP and on the stdio bridge alike. Supplied ids, null included, keep their
 behavior. Nothing above is rewritten by this pointer, and its status is unchanged.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above — the ruling
+and the 0047 pointer — stays as written; each marker names a later record
+with that record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended by [0039](0039-stdio-concurrency.md) (accepted 2026-10-19):
+  §4's scalar-only bridge answer rule — the stdio bridge runs independent
+  lines concurrently, answers batch arrays instead of treating them as
+  notifications, and survives a line that is not UTF-8. §2's HTTP envelope
+  semantics are preserved.)*
+- *(Amended by [0041](0041-webhook-boundary.md) (accepted 2026-10-19): §5's
+  secret validity (a secret must be a valid HTTP header value), redacted
+  configuration echoes (URL credentials removed) and shutdown
+  observability (an observable final ledger). Per-target budgets and the
+  tracked-commit drain are preserved. This is the pointer 0041 said belongs
+  to operator acceptance.)*
+- *(Amended by [0044](0044-compat-validation.md) (accepted 2026-10-19):
+  §§2/4/7 — every malformed body, non-object replies included, gets a
+  JSON-RPC error; batch members run concurrently; tool arguments and query
+  shapes are closed, unknown keys refusing by name before effects.)*
+- *(Strengthened by [0046](0046-smtp-pop3-edges.md) (accepted 2026-10-19):
+  the webhook filter admission this record covers — webhook inbox filters
+  use the same verbatim inbox-name predicate as every other plane, refusing
+  blank and control-bearing names before effects, and an invalid webhook
+  `PUT` preserves the installed list (0046 §6).)*
+- *(Amended by [0047](0047-storage-rpc.md) (accepted 2026-10-19): §2's
+  missing-ID notification predicate, as the 0047 pointer above describes —
+  an object is silent only when it has no `id` key *and* a string `method`.
+  The pointer's "proposed" is historical: 0047 is accepted.)*
+- *(Amended by [0048](0048-rest-webhook-validation.md) (accepted
+  2026-10-19): the preserved body-envelope posture, for seed `POST` and
+  webhook `PUT` only — their JSON data errors are value-free `400`s with
+  the native envelope. 0048 also clarifies and extends §5's delivery-stack
+  CA validation: every `ca_pem` certificate is loaded through an uncached
+  delivery-client build at `PUT`, before replacement (0048 §1).)*

@@ -1,6 +1,7 @@
 # 0045 — Delivery proofs and documentation corrections
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18
 - **Amends/clarifies:** [0007](0007-hermetic-gates-single-model.md), [0009](0009-agent-council-hybrid.md), [0015](0015-boundary-failure-contract.md) §1, [0018](0018-shutdown-observed-waits-and-explicit-bounds.md) header/§6, and the process description in house rules.
 - **Records existing amendments:** [0030](0030-loopback-plane-bounded-results.md) to 0018 and [0023](0023-off-worker-commits.md).
@@ -115,3 +116,32 @@ Implementation indexes this record as proposed and appends dated pointers to
 the relevant accepted decisions. It must not silently label this record
 accepted. No publication, tag push, dependency expansion or issue closure is
 authorized by this record.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record on 2026-10-19; the text above stays as written. Each marker uses
+the later record's own verb and scope.
+
+**Dated correction of the pointer claims (§§6–7 and the paragraph above).**
+Until 2026-10-19 the dated pointers this record says it appends did not
+exist: no decision but the index linked 0045. They now exist —
+[0015](0015-boundary-failure-contract.md) carries the §6 suffix-wording
+correction; [0018](0018-shutdown-observed-waits-and-explicit-bounds.md)
+carries the §7 ten-second correction and 0030's §3 extension marker;
+[0023](0023-off-worker-commits.md) carries 0030's §1 extension marker;
+[0007](0007-hermetic-gates-single-model.md) and
+[0009](0009-agent-council-hybrid.md) carry markers for §§1–3. None of those
+pointers was wrong to add, so no claim above is withdrawn.
+
+- *(Refined by [0050](0050-delivery-gates.md) (accepted 2026-10-19):
+  §§1–3 — one canonical pinned proof chain with checked public shims, the
+  validator's identity bound to chief's HEAD commit, and a defined
+  destination for unknown residual facts, including 0050 §4's dated
+  in-place rule order.)*
+- *(Amended/clarified by [0051](0051-release-records.md) (proposed
+  2026-10-19 — not accepted): this is a pointer to a **proposal**, not an
+  accepted amendment, and §§4–5 and 8–10 above govern until the operator
+  rules on it. 0051 would order image publication before chart publication
+  and restate §8's proposal rule in house rules; it does not extend the
+  2026-10-19 acceptance of this record to itself.)*

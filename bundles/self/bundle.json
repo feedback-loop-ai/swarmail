@@ -180,5 +180,5 @@
       ]
     }
   },
-  "description": "Swarmail's own delivery constitution: the hybrid machine — a contrarian design panel argues before any code (positions → chief → deterministic design-check), implement builds, hermetic gates verify, a split review panel judges (correctness + security, the protected phase), and ship signs. Model seats run glm-flash (spark-glm/GLM-5.3-Flash-EXL3) via the dsh driver; verify, ship and the design check are hermetic exec gates."
+  "description": "Swarmail's own delivery constitution: the hybrid machine — a contrarian design panel argues before any code (positions → chief → deterministic design-check), implement builds, hermetic gates verify, a four-member review panel judges (correctness, security, guarantees and tests, decision 0013; the protected phase), and ship signs. The work seats (intake, design, implement) run glm-flash (spark-glm/GLM-5.3-Flash-EXL3) via the dsh driver; each review member runs its own model route with a glm-flash fallback; verify, ship and the design check are hermetic exec gates."
 }

@@ -1782,7 +1782,7 @@ async fn an_idless_request_is_a_notification() {
     );
 }
 
-/// An id-less object is a notification only with a string method (proposed
+/// An id-less object is a notification only with a string method (decision
 /// 0047 §3, issue #132; red before: every case below was an empty 202):
 /// `{}`, a lost method and a numeric one each get 200, `-32600` and a null
 /// id; in a batch the malformed member keeps its null-id slot while the

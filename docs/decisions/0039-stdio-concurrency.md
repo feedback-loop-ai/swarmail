@@ -1,6 +1,7 @@
 # 0039 — Concurrent stdio lines preserve batch replies and recover from bad input
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed.
 - **Date:** 2026-10-18
 - **Amends:** [0029](0029-supplied-values-are-validated-wherever-they-reach-a-wire.md)
   §4's scalar-only bridge answer rule; preserves §2's HTTP envelope semantics.
@@ -93,3 +94,19 @@ null-id `-32600`; the bridge dials port 80 for a URL that names no port, keeping
 spelled; and a line whose body exceeds the server's 2,097,152-byte limit is refused
 locally, never posted, with `-32600` in the server's wording and the line's own ids.
 Reading and parsing a line stay unbounded, as §6 names.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later records below on 2026-10-19; the text above, the
+0047 pointer included, stays as written, and that pointer's "proposed" is
+historical. Each marker uses the later record's own verb and scope. The
+amendment of 0029 §4 that the paragraph above deferred to acceptance is now
+marked in [0029](0029-supplied-values-are-validated-wherever-they-reach-a-wire.md).
+
+- *(Updated by [0044](0044-compat-validation.md) (accepted 2026-10-19):
+  §§2–4's scalar-silence and sequential-server-batch descriptions — the
+  server answers every malformed body with a JSON-RPC error and runs batch
+  members concurrently. This pointer was missing until 2026-10-19.)*
+- *(Updated by [0047](0047-storage-rpc.md) (accepted 2026-10-19): §§1/2/6,
+  as the pointer above describes.)*

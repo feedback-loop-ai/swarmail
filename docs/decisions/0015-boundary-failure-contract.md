@@ -138,3 +138,18 @@ prose that in one place claims more than the code does:
 - Both this decision and 0012 as amended remain `proposed` — acceptance is
   the operator's. Until accepted, the tree is judged against this text only
   by this run's own review.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above stays as the
+accepted historical ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended/clarified by [0045](0045-delivery-repairs.md) (accepted
+  2026-10-19): §1's suffix wording is corrected without changing POP3. On a
+  failed `QUIT` the committed prefix deletions stay committed and the
+  failing/unprocessed suffix stays **marked** in TRANSACTION — retrying
+  `QUIT` applies the retained marks and `RSET` clears them. "The failing
+  suffix unmarked" and "idempotent over the unmarked suffix" above are
+  erroneous prose (0045 §6); this is the dated pointer 0045 §6 promised.)*

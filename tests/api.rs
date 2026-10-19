@@ -3058,3 +3058,498 @@ async fn seeded_mail_keeps_the_first_64_distinct_codes() {
     assert_eq!(st, 200);
     assert_eq!(stored["codes"], serde_json::json!(want));
 }
+
+// ---- epic #120 batch 6 (#142): the published contract against the wire ----
+
+/// The contract as the server serves it, read over the wire.
+async fn served_openapi(addr: std::net::SocketAddr) -> serde_json::Value {
+    let (st, doc) = http_json(addr, "GET", "/openapi.json", None).await;
+    assert_eq!(st, 200, "{doc}");
+    doc
+}
+
+/// One documented query parameter's schema.
+fn param_schema(doc: &serde_json::Value, path: &str, name: &str) -> serde_json::Value {
+    doc["paths"][path]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == name)
+        .unwrap_or_else(|| panic!("{path} documents {name}"))["schema"]
+        .clone()
+}
+
+/// Whether the published operation lists `status` in its response map.
+fn documents(doc: &serde_json::Value, path: &str, method: &str, status: u16) -> bool {
+    doc["paths"][path][method.to_ascii_lowercase()]["responses"]
+        .get(status.to_string())
+        .is_some()
+}
+
+/// A schema value as a page size.
+fn as_size(value: &serde_json::Value) -> usize {
+    value
+        .as_u64()
+        .unwrap_or_else(|| panic!("an integer: {value}")) as usize
+}
+
+/// A raw exchange that tolerates the server answering before it has read
+/// the whole body (the oversized legs), returning the status, the response
+/// head and the body.
+async fn raw_head_exchange(
+    addr: std::net::SocketAddr,
+    head: &str,
+    body: &[u8],
+) -> (u16, String, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let mut request = format!("{head}Host: {addr}\r\nConnection: close\r\n\r\n").into_bytes();
+    request.extend_from_slice(body);
+    let _ = stream.write_all(&request).await;
+    let mut buf = Vec::new();
+    let _ = stream.read_to_end(&mut buf).await;
+    let text = String::from_utf8_lossy(&buf).to_string();
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let status = head
+        .split(' ')
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0);
+    (status, head.to_ascii_lowercase(), body.to_string())
+}
+
+/// Issue #142 (D22): the await and assert page domains the document
+/// publishes are the ones real requests meet. Await's omitted `limit` is
+/// the published default (100: `count=120` answers 100 emails), its
+/// published minimum 0 answers `[]`, its maximum is a page and one more is
+/// refused; its `count` defaults to one, its published minimum 0 is a
+/// minimum-one wait — one email on a full inbox, a 408 on an empty one,
+/// never an instant success — and above the maximum refuses. Assert's
+/// `limit` publishes no default and no cap and is inert at every value,
+/// while a negative one is the parser's 400. Red on the old 50/minimum-1
+/// schema values.
+#[tokio::test]
+async fn the_published_await_and_assert_domains_match_the_wire() {
+    let srv = start().await;
+    let doc = served_openapi(srv.http_addr).await;
+    let await_path = "/api/v1/inboxes/{inbox}/await";
+    let assert_path = "/api/v1/inboxes/{inbox}/assert";
+    for i in 0..120 {
+        srv.store
+            .insert(swarmail::smtp::build_email(
+                format!("Subject: m{i}\r\n\r\nx").as_bytes(),
+                "pin142-await",
+                &["a@x.io".to_string()],
+                "s@x.io".into(),
+            ))
+            .unwrap();
+    }
+    let addr = srv.http_addr;
+    let get = |query: String| {
+        let path = format!("/api/v1/inboxes/pin142-await/{query}");
+        async move { http_json(addr, "GET", &path, None).await }
+    };
+    let emails = |body: &serde_json::Value| body["emails"].as_array().unwrap().len();
+
+    let limit = param_schema(&doc, await_path, "limit");
+    let (default, min, max) = (
+        as_size(&limit["default"]),
+        as_size(&limit["minimum"]),
+        as_size(&limit["maximum"]),
+    );
+    let (st, body) = get("await?count=120&timeout_ms=5000".into()).await;
+    assert_eq!((st, body["matched"].clone()), (200, 120.into()), "{body}");
+    assert_eq!(emails(&body), default, "the omitted limit is the default");
+    assert_eq!(default, 100, "count=120 answers a 100-email page");
+    let (st, body) = get(format!("await?count=120&limit={min}&timeout_ms=5000")).await;
+    assert_eq!(st, 200, "{body}");
+    assert_eq!(
+        body["emails"],
+        serde_json::json!([]),
+        "limit=0 is an empty page"
+    );
+    let (st, body) = get(format!("await?count=120&limit={max}&timeout_ms=5000")).await;
+    assert_eq!((st, emails(&body)), (200, 120), "{body}");
+    let (st, body) = get(format!("await?count=1&limit={}", max + 1)).await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(body["error"], format!("limit must be at most {max}"));
+
+    let count = param_schema(&doc, await_path, "count");
+    let (default, min, max) = (
+        as_size(&count["default"]),
+        as_size(&count["minimum"]),
+        as_size(&count["maximum"]),
+    );
+    assert_eq!(min, 0, "count=0 is accepted: {count}");
+    let (st, body) = get("await?timeout_ms=5000".into()).await;
+    assert_eq!((st, emails(&body)), (200, default), "{body}");
+    assert_eq!(body["matched"], default);
+    let (st, body) = get(format!("await?count={min}&timeout_ms=5000")).await;
+    assert_eq!(
+        (st, emails(&body)),
+        (200, 1),
+        "count=0 waits for one: {body}"
+    );
+    assert_eq!(body["matched"], 1, "{body}");
+    let empty = format!("/api/v1/inboxes/pin142-empty/await?count={min}&timeout_ms=0");
+    let (st, body) = http_json(srv.http_addr, "GET", &empty, None).await;
+    assert_eq!(st, 408, "count=0 on an empty inbox still waits: {body}");
+    assert_eq!(body["matched"], 0, "{body}");
+    let (st, body) = get(format!("await?count={}", max + 1)).await;
+    assert_eq!(st, 400, "{body}");
+    assert_eq!(body["error"], format!("count must be at most {max}"));
+
+    let inert = param_schema(&doc, assert_path, "limit");
+    assert_eq!(
+        inert.get("default"),
+        None,
+        "no invented page default: {inert}"
+    );
+    assert_eq!(inert.get("maximum"), None, "no page cap: {inert}");
+    assert_eq!(as_size(&inert["minimum"]), 0, "{inert}");
+    for limit in [
+        String::new(),
+        "&limit=0".into(),
+        "&limit=1".into(),
+        "&limit=251".into(),
+        format!("&limit={}", u64::MAX),
+    ] {
+        let (st, body) = get(format!("assert?count=120{limit}")).await;
+        assert_eq!(st, 200, "the limit is inert ({limit:?}): {body}");
+        assert_eq!(body["matched"], 120, "{body}");
+    }
+    let (st, body) = get("assert?limit=-1".into()).await;
+    assert_eq!(st, 400, "below the parser's domain: {body}");
+    let exact = param_schema(&doc, assert_path, "count");
+    let (st, body) = get("assert".into()).await;
+    assert_eq!(st, 409, "{body}");
+    assert_eq!(body["expected"], exact["default"], "{body}");
+    let negative = format!(
+        "/api/v1/inboxes/pin142-empty/assert?count={}",
+        as_size(&exact["minimum"])
+    );
+    let (st, body) = http_json(srv.http_addr, "GET", &negative, None).await;
+    assert_eq!(st, 200, "count=0 asserts an empty inbox: {body}");
+}
+
+/// Issue #142 (D23): the Host/Origin guard answers before the router on
+/// every route, so every published operation lists the shared 403 — and
+/// each one really answers it: on a loopback bind to a hostile Origin and
+/// to a rebound Host, and off loopback to an Origin that is not the Host's
+/// authority. The operation list is the served document itself, so a new
+/// operation without its 403 entry, or one the guard does not cover, is
+/// red.
+#[tokio::test]
+async fn every_published_operation_lists_and_answers_the_guard_403() {
+    let srv = start().await;
+    let off = start_off_loopback().await;
+    let doc = served_openapi(srv.http_addr).await;
+    let refusal = &doc["components"]["responses"]["GuardRefused"];
+    assert!(
+        refusal["content"]["application/json"].is_object(),
+        "{refusal}"
+    );
+    let port = srv.http_addr.port();
+    let hostile_origin = format!("http://attacker.example:{port}");
+    let rebound_host = format!("attacker.example:{port}");
+    let off_addr = dial(&off);
+    let off_host = format!("Host: 127.0.0.1:{}", off_addr.port());
+    let mut operations = 0;
+    for (template, ops) in doc["paths"].as_object().unwrap() {
+        let path = template
+            .replace("{inbox}", "guard142")
+            .replace("{id}", "nope")
+            .replace("{key}", "k");
+        for (method, op) in ops.as_object().unwrap() {
+            operations += 1;
+            let method = method.to_ascii_uppercase();
+            assert_eq!(
+                op["responses"]["403"]["$ref"], "#/components/responses/GuardRefused",
+                "{method} {template} lists the guard's 403"
+            );
+            let (st, body) = http_send_text_with_headers(
+                srv.http_addr,
+                &method,
+                &path,
+                &[("Origin", hostile_origin.as_str())],
+                None,
+            )
+            .await;
+            assert_eq!(st, 403, "{method} {path} with a hostile Origin: {body}");
+            assert!(
+                body.contains("cross-origin requests are refused on the loopback plane"),
+                "{method} {path}: {body}"
+            );
+            let (st, body) =
+                send_with_host(srv.http_addr, &method, &path, &rebound_host, None).await;
+            assert_eq!(st, 403, "{method} {path} with a rebound Host: {body}");
+            assert!(
+                body.contains("requests to the loopback plane must name a loopback Host"),
+                "{method} {path}: {body}"
+            );
+            let (st, _, body) = raw_exchange(
+                off_addr,
+                &method,
+                &path,
+                &[off_host.as_str(), "Origin: https://evil.example"],
+                "",
+            )
+            .await;
+            assert_eq!(st, 403, "{method} {path} off loopback: {body}");
+            assert!(body.contains(MISMATCH), "{method} {path}: {body}");
+        }
+    }
+    assert!(operations >= 39, "every operation was walked: {operations}");
+}
+
+/// Issue #142 (D13, D23): each status the document newly publishes is a
+/// status a real request on that very route and method answers, and the
+/// answer is in that operation's response map — a blank-inbox 400 on the
+/// compat list, the clear and the views; a malformed or over-cap compat
+/// list 400; the await's cap 400s; the clear's 503 under a real refusing
+/// trigger; and the REST bodies' 2 MiB bound — exactly 2097152 bytes
+/// accepted, one more answered with the extractor's text/plain 413 — and
+/// their 415, plus chaos's 422. Removing any entry is red.
+#[tokio::test]
+async fn each_published_status_is_answered_on_its_operation() {
+    let dir = tempfile::TempDir::with_prefix("swarmail-e2e-pin142-").unwrap();
+    let db = dir.path().join("mail.db");
+    let srv = start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let doc = served_openapi(srv.http_addr).await;
+    let clear = "/api/v1/inboxes/{inbox}/messages";
+    for (method, template, path, status) in [
+        ("GET", "/api/v1/messages", "/api/v1/messages?inbox=%20", 400),
+        ("GET", "/api/v1/messages", "/api/v1/messages?limit=251", 400),
+        ("GET", "/api/v1/messages", "/api/v1/messages?limit=x", 400),
+        ("DELETE", clear, "/api/v1/inboxes/%20/messages", 400),
+        (
+            "GET",
+            "/api/v1/inboxes/{inbox}/threads",
+            "/api/v1/inboxes/%20/threads",
+            400,
+        ),
+        (
+            "GET",
+            "/api/v1/inboxes/{inbox}/threads/{key}",
+            "/api/v1/inboxes/%20/threads/k",
+            400,
+        ),
+        (
+            "GET",
+            "/api/v1/inboxes/{inbox}/feed",
+            "/api/v1/inboxes/%20/feed",
+            400,
+        ),
+        (
+            "GET",
+            "/api/v1/inboxes/{inbox}/await",
+            "/api/v1/inboxes/pin142/await?count=251",
+            400,
+        ),
+        (
+            "GET",
+            "/api/v1/inboxes/{inbox}/await",
+            "/api/v1/inboxes/pin142/await?limit=251",
+            400,
+        ),
+    ] {
+        let (st, body) = http_send_text(srv.http_addr, method, path, None).await;
+        assert_eq!(st, status, "{method} {path}: {body}");
+        assert!(
+            documents(&doc, template, method, st),
+            "{method} {template} answered {st}, which it must publish"
+        );
+    }
+
+    // The clear's failed commit: a real rejecting trigger on the data file.
+    seed(srv.http_addr, "pin142-clear", "a@x.io").await;
+    let trigger = common::refusing_trigger(&db, "delete");
+    let (st, body) = http_json(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/inboxes/pin142-clear/messages",
+        None,
+    )
+    .await;
+    assert_eq!(st, 503, "{body}");
+    assert_eq!(body["error"], "storage commit failed");
+    assert!(documents(&doc, clear, "DELETE", st), "the clear's 503");
+    trigger.remove();
+    let (st, body) = http_json(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/inboxes/pin142-clear/messages",
+        None,
+    )
+    .await;
+    assert_eq!((st, body), (200, serde_json::json!({"removed": 1})));
+
+    // The REST body bound, on every JSON-body operation.
+    let limit = 2_097_152;
+    for (method, template, path) in [
+        (
+            "POST",
+            "/api/v1/inboxes/{inbox}/seed",
+            "/api/v1/inboxes/pin142-body/seed",
+        ),
+        ("PUT", "/api/v1/webhooks", "/api/v1/webhooks"),
+        ("PUT", "/api/v1/chaos", "/api/v1/chaos"),
+    ] {
+        let head = format!(
+            "{method} {path} HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n"
+        );
+        let (st, head, body) = raw_head_exchange(srv.http_addr, &head, b"{}").await;
+        assert_eq!(st, 415, "{path}: {body}");
+        assert!(head.contains("content-type: text/plain"), "{path}: {head}");
+        let big = vec![b' '; limit + 1];
+        let head = format!(
+            "{method} {path} HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+            big.len()
+        );
+        let (st, head, body) = raw_head_exchange(srv.http_addr, &head, &big).await;
+        assert_eq!(st, 413, "{path}: {body}");
+        assert!(head.contains("content-type: text/plain"), "{path}: {head}");
+        assert_eq!(
+            body,
+            "Failed to buffer the request body: length limit exceeded"
+        );
+        for status in [413, 415] {
+            assert!(
+                documents(&doc, template, method, status),
+                "{method} {template} publishes {status}"
+            );
+        }
+    }
+    let too_large = &doc["components"]["responses"]["BodyTooLarge"];
+    assert!(
+        too_large["content"]["text/plain"].is_object(),
+        "{too_large}"
+    );
+    assert!(
+        too_large["description"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{limit}-byte")),
+        "{too_large}"
+    );
+    // Exactly the bound is a body, not a refusal.
+    let prefix = r#"{"to": "a@x.io", "text": ""#;
+    let mut exact = prefix.to_string();
+    exact.push_str(&"x".repeat(limit - prefix.len() - 2));
+    exact.push_str(r#""}"#);
+    assert_eq!(exact.len(), limit);
+    let (st, body) = http_send_text(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/pin142-body/seed",
+        Some(&exact),
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "a {limit}-byte seed is accepted: {}",
+        &body[..80.min(body.len())]
+    );
+
+    let (st, body) = http_send_text(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data": {"probability": 100, "eror": "x"}}"#),
+    )
+    .await;
+    assert_eq!(st, 422, "{body}");
+    assert!(documents(&doc, "/api/v1/chaos", "PUT", st), "chaos's 422");
+    srv.stop().await;
+}
+
+/// Issue #142 (D24): a thread's `subject` is the oldest member's that has
+/// one, as published — never the newest mail's — and the key is absent,
+/// not null, when no member has one. The fixtures are generated per run
+/// with distinguishing subjects and explicit receive times: a two-mail
+/// chain whose reply retitles it, a chain whose subject-less root is
+/// titled only by its reply, and a lone subject-less mail.
+#[tokio::test]
+async fn the_thread_subject_is_the_published_oldest_subject() {
+    let srv = start().await;
+    let doc = served_openapi(srv.http_addr).await;
+    let subject = &doc["components"]["schemas"]["Thread"]["properties"]["subject"];
+    assert_eq!(subject["type"], "string", "optional, never null: {subject}");
+    let words = subject["description"].as_str().unwrap();
+    assert!(
+        words.contains("oldest mail in the thread that has one")
+            && !words.contains("newest mail's"),
+        "{subject}"
+    );
+    assert!(
+        words.contains("absent when no mail in the thread has a subject"),
+        "{subject}"
+    );
+    let inbox = "pin142-threads";
+    // Inserted out of receive order: the thread orders by receive time.
+    for (raw, ms) in [
+        (
+            "Message-ID: <b@pin142>\r\nIn-Reply-To: <a@pin142>\r\nSubject: Re: changed course\r\n\r\nreply",
+            2_000,
+        ),
+        (
+            "Message-ID: <a@pin142>\r\nSubject: Original plan\r\n\r\nroot",
+            1_000,
+        ),
+        (
+            "Message-ID: <d@pin142>\r\nIn-Reply-To: <c@pin142>\r\nSubject: Named later\r\n\r\nreply",
+            4_000,
+        ),
+        ("Message-ID: <c@pin142>\r\n\r\nuntitled root", 3_000),
+        ("Message-ID: <e@pin142>\r\n\r\nalone", 5_000),
+    ] {
+        let mut email = swarmail::smtp::build_email(
+            raw.as_bytes(),
+            inbox,
+            &["a@x.io".to_string()],
+            "s@x.io".into(),
+        );
+        email.received_ms = ms;
+        srv.store.insert(email).unwrap();
+    }
+    let path = format!("/api/v1/inboxes/{inbox}/threads");
+    let (st, threads) = http_json(srv.http_addr, "GET", &path, None).await;
+    assert_eq!(st, 200, "{threads}");
+    let counts: Vec<u64> = threads
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["count"].as_u64().unwrap())
+        .collect();
+    assert_eq!(counts, [1, 2, 2], "newest thread first: {threads}");
+
+    let retitled = &threads[2];
+    assert_eq!(retitled["emails"][1]["subject"], "Re: changed course");
+    assert_eq!(
+        retitled["subject"], "Original plan",
+        "the oldest, not the newest"
+    );
+    let titled_late = &threads[1];
+    assert!(
+        titled_late["emails"][0].get("subject").is_none(),
+        "the root has no subject: {titled_late}"
+    );
+    assert_eq!(
+        titled_late["subject"], "Named later",
+        "the oldest member that has a subject"
+    );
+    let untitled = threads[0].as_object().unwrap();
+    assert!(
+        !untitled.contains_key("subject"),
+        "absent, not null: {untitled:?}"
+    );
+
+    let key = retitled["key"].as_str().unwrap();
+    let (st, one) = http_json(srv.http_addr, "GET", &format!("{path}/{key}"), None).await;
+    assert_eq!((st, one["subject"].clone()), (200, "Original plan".into()));
+}

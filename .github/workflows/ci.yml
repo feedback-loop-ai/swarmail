@@ -33,7 +33,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: bash scripts/publish-guard-test.sh
-      # The gates are the pinned bundle's (proposed 0050 §1): the public
+      # The gates are the pinned bundle's (decision 0050 §1): the public
       # scripts are fixed shims whose bytes must match the pinned digests,
       # and the design validator's refusal arms run as the verify seat runs
       # them.
@@ -60,7 +60,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo test --workspace --locked
-      # The portless bridge's real port-80 exchange (issue #133, proposed
+      # The portless bridge's real port-80 exchange (issue #133, decision
       # 0047 §4) is ignored by default — binding 127.0.0.1:80 is privileged —
       # and run here explicitly: Linux lowers the unprivileged port floor
       # first; macOS has no such knob for 127.0.0.1, so it runs the test as
@@ -100,7 +100,7 @@ jobs:
       - run: bash scripts/coverage-gate.sh selftest
       - run: bash scripts/coverage-gate.sh
       # #123's tamper boundary by execution: an `exit 0` public gate beside an
-      # uncovered line still refuses through the pinned gate (proposed 0050).
+      # uncovered line still refuses through the pinned gate (decision 0050).
       - run: bash bundles/self/scripts/delivery-proof-test.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
@@ -264,9 +264,12 @@ jobs:
   # publishes. A tag needs the rate proof green; main admits only its
   # `skipped`. `packages: write` is held by this job only on those two push
   # refs: the continuous `:main` is a publication too (decisions 0018/0019).
+  # The image also waits on the chart proof and the real-Docker smoke
+  # (issue #141): the chart publication that follows it on a tag needs
+  # this job's success, so neither artifact outruns the other's proof.
   docker:
     runs-on: ubuntu-latest
-    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile, release-rate-5k]
+    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile, release-rate-5k, chart-verify, docker-smoke]
     if: >-
       !cancelled()
       && github.event_name == 'push'
@@ -276,6 +279,8 @@ jobs:
       && needs.deny.result == 'success'
       && needs.dependency-audit.result == 'success'
       && needs.brokkr-compile.result == 'success'
+      && needs.chart-verify.result == 'success'
+      && needs.docker-smoke.result == 'success'
       && ((github.ref == 'refs/heads/main' && needs.release-rate-5k.result == 'skipped')
         || (startsWith(github.ref, 'refs/tags/v') && needs.release-rate-5k.result == 'success'))
     permissions:
@@ -347,7 +352,15 @@ jobs:
   # Verification and publication are two jobs (issue #104): `chart-verify`
   # runs on every push and PR with a read-only token; only `chart-publish`,
   # tag refs only, holds `packages: write`, and it needs the chart proof,
-  # every required gate and the tag's own rate proof green.
+  # every required gate, the tag's own rate proof and the image job green.
+  #
+  # The chart-bump check (issue #141, proposed 0051 §2) rides this job: a
+  # change to any chart file since the event's baseline — the PR's base,
+  # the push's `before`, a new branch's merge-base with main, a tag's
+  # previous release tag — needs a strictly greater chart version. Full
+  # history is fetched because a missing baseline refuses; it is never
+  # read as "no change". The selftest proves the check on throwaway real
+  # repositories before the check's verdict is trusted.
   chart-verify:
     name: helm chart
     runs-on: ubuntu-latest
@@ -355,16 +368,50 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.16.3
+      - run: bash scripts/chart-verify.sh selftest
+      - name: Chart edits carry a version bump (event baseline)
+        env:
+          CHART_EVENT: ${{ github.event_name }}
+          CHART_REF: ${{ github.ref }}
+          CHART_PR_BASE: ${{ github.event.pull_request.base.sha }}
+          CHART_PUSH_BEFORE: ${{ github.event.before }}
+        run: bash scripts/chart-verify.sh history
       - run: bash scripts/chart-verify.sh
 
+  # The image as it runs (issue #141, proposed 0051 §3): a real Docker
+  # build, a 250-accepted mail read back after a graceful stop and after a
+  # hard kill on a named volume under the image's own uid, the quickstart's
+  # `--rm` leaving no anonymous volume, and no `target/` directory at any
+  # depth in the build context. Read-only; it publishes nothing.
+  docker-smoke:
+    name: docker smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: bash scripts/docker-smoke.sh
+
+  # The chart names an image (`appVersion`), so it never publishes ahead of
+  # it (issue #141, proposed 0051 §1): it needs the image job and requires
+  # its `success` explicitly, and its preflight hands that result to the
+  # guard, which also requires the appVersion image to answer 200 — a
+  # missing or unreadable image refuses. A tag whose version is not
+  # Cargo's fails the image guard, so it publishes neither artifact.
+  # NOT transactional: a chart failure after the image pushed leaves the
+  # image published; recovery is the operator's deliberate registry act
+  # (decision 0019), never an automatic delete or skip.
   chart-publish:
     name: helm chart publish (tags only)
     runs-on: ubuntu-latest
-    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile, release-rate-5k, chart-verify]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [quality, test, coverage, deny, dependency-audit, brokkr-compile, release-rate-5k, chart-verify, docker]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.docker.result == 'success'
     permissions:
       contents: read
       packages: write
@@ -379,17 +426,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # Validated before it reaches $GITHUB_OUTPUT (decision 0019 §1).
-      - name: Read the chart version (the guard binds it to the ref)
+      - name: Read the chart and image versions (appVersion must be Cargo's)
         id: chartver
         run: |
           set -euo pipefail
           version="$(sed -n 's/^version: \(.*\)/\1/p' charts/swarmail/Chart.yaml | head -1)"
+          app="$(sed -n 's/^appVersion: "\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' charts/swarmail/Chart.yaml | head -1)"
+          cargo="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
           if ! [[ "$version" =~ $semver ]]; then
             echo "REFUSAL: Chart.yaml version '$version' is not the semver publish-guard.sh accepts" >&2
             exit 1
           fi
+          if ! [[ "$app" =~ $semver ]] || [ "$app" != "$cargo" ]; then
+            echo "REFUSAL: Chart.yaml appVersion '$app' is not Cargo.toml's version '$cargo'" >&2
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+      - name: Preflight the chart's image (published, by a successful image job)
+        env:
+          APP_VERSION: ${{ steps.chartver.outputs.app }}
+          DOCKER_RESULT: ${{ needs.docker.result }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_USER: ${{ github.actor }}
+        run: scripts/publish-guard.sh "v$APP_VERSION" feedback-loop-ai/swarmail bare require-present
       - name: Guard the chart version (exact ref match; refuse a republish)
         env:
           VERSION: ${{ steps.chartver.outputs.version }}

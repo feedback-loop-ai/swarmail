@@ -43,3 +43,18 @@ supply chain (one credential, one endpoint) auditable.
 - The review gate is constitutionally protected (`protected_phase`:
   review); security-hold is a hard stop. The journal (`.forge/forge.db`)
   is the proof.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above stays as the
+accepted historical ruling; each marker names a later record with that
+record's own verb and scope, and nothing above is rewritten by it.
+
+- *(Amended/clarified by [0045](0045-delivery-repairs.md) (accepted
+  2026-10-19): §1 — pinned verification is transitive over its executable
+  local proof code; the canonical gates, their proofs and the scanner run
+  from the dispatched pinned resources, and public script paths are checked
+  compatibility shims that never select verify's proof implementation. 0045
+  calls this a restoration of the hermetic-gates ruling, not new policy;
+  [0050](0050-delivery-gates.md) §1 then implements it.)*

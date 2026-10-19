@@ -1,4 +1,4 @@
-//! A refused alias must not release the owner's SQLite locks (proposed 0047
+//! A refused alias must not release the owner's SQLite locks (decision 0047
 //! §1, #129 macOS fix-up). By POSIX, closing *any* descriptor on a file
 //! drops every record lock the process holds on it — so an alias open that
 //! opened and closed the database (as `794e919`'s data-file lock did) would

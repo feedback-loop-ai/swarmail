@@ -4,15 +4,268 @@
 # (the `chart-verify` job): the hermetic verify seat installs nothing and
 # does not run it. Every render lands in one private `mktemp -d` scratch
 # removed on exit, so two concurrent runs never share a path (issue #104).
+#
+#   usage: chart-verify.sh [verify|history|selftest]
+#   verify   (default) version coherence, then lint, render and assert.
+#   history  the chart-bump check against the CI event's baseline (issue
+#            #141, proposed 0051 §2): a change to any file under the chart
+#            needs a strictly greater chart version than the baseline's.
+#            Inputs ride the environment, never `eval`:
+#              CHART_EVENT        github.event_name (pull_request|push)
+#              CHART_REF          github.ref
+#              CHART_PR_BASE      pull_request.base.sha (pull_request)
+#              CHART_PUSH_BEFORE  event.before (push; all zeros = new branch)
+#              CHART_MAIN_REF     a new branch's merge-base partner
+#                                 (default origin/main)
+#            Missing history refuses by name; it is never "no change".
+#   selftest the coherence and history checks against throwaway real Git
+#            repositories — no Helm needed; it gates the history check.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CHART=charts/swarmail
-
-command -v helm >/dev/null || { echo "helm is required" >&2; exit 1; }
+MODE="${1:-verify}"
 
 S="$(mktemp -d "${TMPDIR:-/tmp}/chart-verify.XXXXXX")"
 trap 'rm -rf "$S"' EXIT
 export CHART_SCRATCH="$S"
+
+refuse() { echo "chart-verify: refusing: $*" >&2; return 1; }
+
+# A strict release version: semver without build metadata, the shape the
+# publish guard admits ('+' is unprovable in an OCI tag).
+valid_version() {
+  [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || return 1
+  local pre="${1#*-}" id
+  [ "$pre" = "$1" ] && return 0
+  local IFS=.
+  for id in $pre; do
+    [[ "$id" =~ ^0[0-9]+$ ]] && return 1
+  done
+  return 0
+}
+
+# Exit 0 iff $1 > $2 in semver precedence (numeric fields compare as
+# numbers — 0.1.10 > 0.1.9 — and a prerelease ranks below its release).
+version_gt() {
+  python3 - "$1" "$2" <<'PY'
+import sys
+
+def key(v):
+    core, _, pre = v.partition("-")
+    nums = tuple(int(n) for n in core.split("."))
+    if not pre:
+        return (nums, 1, ())
+    ids = tuple((0, int(i), "") if i.isdigit() else (1, 0, i) for i in pre.split("."))
+    return (nums, 0, ids)
+
+sys.exit(0 if key(sys.argv[1]) > key(sys.argv[2]) else 1)
+PY
+}
+
+# One top-level scalar of a Chart.yaml text on stdin (`version:`,
+# `appVersion:`), quotes stripped.
+chart_field() {
+  sed -n "s/^$1: *\"\{0,1\}\([^\"]*\)\"\{0,1\} *\$/\1/p" | head -1
+}
+
+# appVersion is Cargo's version, and the Artifact Hub image the chart
+# advertises is the one its default render pulls (proposed 0051 §2). The
+# chart's own version is free while a package is being prepared.
+check_coherence() { # <root>
+  local root="$1" cargo app chart image
+  cargo="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
+  app="$(chart_field appVersion <"$root/$CHART/Chart.yaml")"
+  chart="$(chart_field version <"$root/$CHART/Chart.yaml")"
+  valid_version "$chart" || refuse "Chart.yaml version '${chart}' is not a release semver" || return 1
+  valid_version "$app" || refuse "Chart.yaml appVersion '${app}' is not a release semver" || return 1
+  [ "$app" = "$cargo" ] \
+    || refuse "Chart.yaml appVersion '${app}' is not Cargo.toml's version '${cargo}'" || return 1
+  image="$(sed -n 's/^ *image: \(ghcr\.io\/feedback-loop-ai\/swarmail:.*\)$/\1/p' "$root/$CHART/Chart.yaml")"
+  [ "$image" = "ghcr.io/feedback-loop-ai/swarmail:${app}" ] \
+    || refuse "the artifacthub.io/images annotation names '${image}', not ghcr.io/feedback-loop-ai/swarmail:${app}" || return 1
+}
+
+# The event's baseline commit, or a named refusal.
+history_base() { # <repo>
+  local repo="$1" base
+  case "${CHART_EVENT:-}" in
+    pull_request)
+      base="${CHART_PR_BASE:-}"
+      [ -n "$base" ] || { refuse "pull_request event without CHART_PR_BASE"; return 1; }
+      ;;
+    push)
+      case "${CHART_REF:-}" in
+        refs/tags/v*)
+          # The nearest earlier release tag reachable from the tagged
+          # commit's parents — never a tag on the candidate itself.
+          base="$(git -C "$repo" describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null)" \
+            || { refuse "no earlier v* release tag is reachable from ${CHART_REF}'s parent (fetch tags and full history)"; return 1; }
+          ;;
+        *)
+          base="${CHART_PUSH_BEFORE:-}"
+          [ -n "$base" ] || { refuse "push event without CHART_PUSH_BEFORE"; return 1; }
+          if [[ "$base" =~ ^0+$ ]]; then
+            local main="${CHART_MAIN_REF:-origin/main}"
+            base="$(git -C "$repo" merge-base HEAD "$main" 2>/dev/null)" \
+              || { refuse "new branch: no merge-base with '${main}' (fetch full history)"; return 1; }
+          fi
+          ;;
+      esac
+      ;;
+    *) refuse "CHART_EVENT '${CHART_EVENT:-}' is neither pull_request nor push"; return 1 ;;
+  esac
+  git -C "$repo" rev-parse --verify --quiet "${base}^{commit}" >/dev/null \
+    || { refuse "baseline '${base}' is not in the history (shallow or missing; fetch full history)"; return 1; }
+  echo "$base"
+}
+
+# A chart change needs a strictly greater chart version than the
+# baseline's — the whole event's change, not just its last commit.
+check_history() { # <repo>
+  local repo="$1" base now was
+  base="$(history_base "$repo")" || return 1
+  now="$(git -C "$repo" show "HEAD:$CHART/Chart.yaml" | chart_field version)"
+  valid_version "$now" || { refuse "chart version '${now}' is not a release semver"; return 1; }
+  if git -C "$repo" diff --quiet "$base" HEAD -- "$CHART"; then
+    echo "chart-verify: history: no chart change since ${base:0:12}"
+    return 0
+  fi
+  if ! git -C "$repo" cat-file -e "${base}:$CHART/Chart.yaml" 2>/dev/null; then
+    echo "chart-verify: history: the chart is new since ${base:0:12} (version ${now})"
+    return 0
+  fi
+  was="$(git -C "$repo" show "${base}:$CHART/Chart.yaml" | chart_field version)"
+  valid_version "$was" || { refuse "baseline chart version '${was}' is not a release semver"; return 1; }
+  version_gt "$now" "$was" \
+    || { refuse "the chart changed since ${base:0:12} but its version '${now}' is not greater than '${was}' — bump charts/swarmail/Chart.yaml"; return 1; }
+  echo "chart-verify: history: chart ${was} -> ${now} since ${base:0:12}"
+}
+
+selftest() {
+  local fail=0 T="$S/selftest"
+  unset CHART_EVENT CHART_REF CHART_PR_BASE CHART_PUSH_BEFORE CHART_MAIN_REF
+  mkdir -p "$T"
+  bad() { echo "chart-verify selftest: FAIL: $*" >&2; fail=1; }
+  g() { git -C "$T/repo" -c user.name=selftest -c user.email=selftest@invalid \
+          -c commit.gpgsign=false -c tag.gpgsign=false "$@" >/dev/null 2>&1; }
+  # chart <version> <appVersion> [image] — write the fixture chart.
+  chart() {
+    mkdir -p "$T/repo/$CHART"
+    printf 'apiVersion: v2\nname: swarmail\nversion: %s\nappVersion: "%s"\nannotations:\n  artifacthub.io/images: |\n    - name: swarmail\n      image: %s\n' \
+      "$1" "$2" "${3:-ghcr.io/feedback-loop-ai/swarmail:$2}" >"$T/repo/$CHART/Chart.yaml"
+  }
+  commit() { g add -A && g commit -q --allow-empty -m "$1" && git -C "$T/repo" rev-parse HEAD; }
+  fresh() {
+    rm -rf "$T/repo"; mkdir -p "$T/repo"; g init -q -b main
+    printf '[package]\nname = "swarmail"\nversion = "%s"\n' "${1:-0.1.0}" >"$T/repo/Cargo.toml"
+  }
+  hist() { # <expect pass|fail> <desc> [needle] — env carries the event
+    local want="$1" desc="$2" needle="${3:-}" got=pass
+    check_history "$T/repo" >"$T/out" 2>"$T/err" || got=fail
+    [ "$got" = "$want" ] || bad "history: ${desc}: expected ${want}, got ${got}: $(cat "$T/err")"
+    if [ -n "$needle" ] && ! grep -qF -- "$needle" "$T/err"; then
+      bad "history: ${desc}: refusal must name '${needle}': $(cat "$T/err")"
+    fi
+  }
+  coh() { # <expect pass|fail> <desc>
+    local got=pass
+    check_coherence "$T/repo" >/dev/null 2>"$T/err" || got=fail
+    [ "$got" = "$1" ] || bad "coherence: $2: expected $1, got ${got}: $(cat "$T/err")"
+  }
+
+  # Versions: strict shape and numeric precedence.
+  for v in 0.1.0 1.20.3 0.1.10 1.0.0-rc.1 1.0.0-alpha-2; do valid_version "$v" || bad "valid version '$v' refused"; done
+  for v in 01.0.0 0.1 v0.1.0 0.1.0+build 1.0.0-01 '' 'x.y.z' '0.1.0 '; do valid_version "$v" && bad "malformed version '$v' admitted"; done
+  version_gt 0.1.10 0.1.9 || bad "0.1.10 must rank above 0.1.9"
+  version_gt 0.1.9 0.1.10 && bad "0.1.9 must not rank above 0.1.10"
+  version_gt 1.0.0 1.0.0-rc.2 || bad "a release must rank above its prerelease"
+  version_gt 1.0.0-rc.10 1.0.0-rc.9 || bad "rc.10 must rank above rc.9"
+  version_gt 1.0.0-rc.1 1.0.0-alpha || bad "rc.1 must rank above alpha"
+  version_gt 0.1.1 0.1.1 && bad "equal versions must not rank above each other"
+
+  # Coherence: appVersion is Cargo's; the annotation is appVersion's image.
+  fresh 0.1.0; chart 0.1.1 0.1.0; coh pass "chart 0.1.1 preparing over app 0.1.0"
+  fresh 0.2.0; chart 0.1.1 0.2.0; coh pass "a changed app version, coherent"
+  fresh 0.2.0; chart 0.1.1 0.1.0; coh fail "appVersion behind Cargo"
+  fresh 0.1.0; chart 0.1.1 0.1.0 ghcr.io/feedback-loop-ai/swarmail:0.0.9; coh fail "a stale annotation image"
+  fresh 0.1.0; chart 0.1 0.1.0; coh fail "a malformed chart version"
+
+  # History, pull_request: the whole PR, not its last commit.
+  fresh; chart 0.1.0 0.1.0; base="$(commit base)"
+  chart 0.1.0 0.1.0; echo "x: 1" >"$T/repo/$CHART/values.yaml"; commit "edit chart" >/dev/null
+  echo docs >"$T/repo/README.md"; commit "docs last" >/dev/null
+  CHART_EVENT=pull_request CHART_PR_BASE="$base" hist fail "an unbumped edit behind a docs commit" "not greater than '0.1.0'"
+  chart 0.1.1 0.1.0; commit bump >/dev/null
+  CHART_EVENT=pull_request CHART_PR_BASE="$base" hist pass "the same PR, bumped"
+  chart 0.1.0-rc.1 0.1.0; commit "prerelease below release" >/dev/null
+  CHART_EVENT=pull_request CHART_PR_BASE="$base" hist fail "a prerelease of the baseline version" "not greater"
+  chart 0.0.9 0.1.0; commit decrease >/dev/null
+  CHART_EVENT=pull_request CHART_PR_BASE="$base" hist fail "a decreased version" "not greater"
+  chart 0.1 0.1.0; commit malformed >/dev/null
+  CHART_EVENT=pull_request CHART_PR_BASE="$base" hist fail "a malformed version" "not a release semver"
+  CHART_EVENT=pull_request CHART_PR_BASE= hist fail "no PR base" "without CHART_PR_BASE"
+  CHART_EVENT=pull_request CHART_PR_BASE=0123456789abcdef0123456789abcdef01234567 hist fail "a PR base not in history" "not in the history"
+  CHART_EVENT=workflow_dispatch hist fail "an unknown event" "neither pull_request nor push"
+
+  # History, push: unchanged passes; a chart-only bump passes; a missing
+  # or zero-without-main before refuses; a force-push base still compares.
+  fresh; chart 0.1.0 0.1.0; base="$(commit base)"
+  echo docs >"$T/repo/README.md"; commit docs >/dev/null
+  CHART_EVENT=push CHART_REF=refs/heads/main CHART_PUSH_BEFORE="$base" hist pass "no chart change"
+  chart 0.1.1 0.1.0; commit "bump only" >/dev/null
+  CHART_EVENT=push CHART_REF=refs/heads/main CHART_PUSH_BEFORE="$base" hist pass "a bump-only chart edit"
+  CHART_EVENT=push CHART_REF=refs/heads/main CHART_PUSH_BEFORE=0123456789abcdef0123456789abcdef01234567 \
+    hist fail "a before object missing (shallow or force-pushed away)" "not in the history"
+  g checkout -q -b side "$base"; chart 0.1.0 0.1.0; echo "y: 2" >"$T/repo/$CHART/values.yaml"; side="$(commit side)"
+  g checkout -q main
+  CHART_EVENT=push CHART_REF=refs/heads/main CHART_PUSH_BEFORE="$side" hist pass "a non-ancestor before, compared whole (0.1.1 > 0.1.0)"
+  echo "x: 3" >"$T/repo/$CHART/values.yaml"; commit "unbumped after force push" >/dev/null
+  CHART_EVENT=push CHART_REF=refs/heads/main CHART_PUSH_BEFORE="$side" hist pass "a non-ancestor before with a bumped version"
+  CHART_EVENT=push CHART_REF=refs/heads/main CHART_PUSH_BEFORE="$(git -C "$T/repo" rev-parse HEAD^)" \
+    hist fail "an unbumped edit after the bump" "not greater than '0.1.1'"
+
+  # History, new branch (zero before): the merge-base with main, refused
+  # when main is unknown — zero is never "no change".
+  fresh; chart 0.1.0 0.1.0; commit base >/dev/null
+  g checkout -q -b feature; echo "z: 1" >"$T/repo/$CHART/values.yaml"; commit "unbumped on a new branch" >/dev/null
+  CHART_EVENT=push CHART_REF=refs/heads/feature CHART_PUSH_BEFORE=0000000000000000000000000000000000000000 CHART_MAIN_REF=main \
+    hist fail "a new branch with an unbumped chart" "not greater"
+  CHART_EVENT=push CHART_REF=refs/heads/feature CHART_PUSH_BEFORE=0000000000000000000000000000000000000000 CHART_MAIN_REF=origin/main \
+    hist fail "a new branch without main's history" "no merge-base"
+  chart 0.2.0 0.1.0; commit "bumped on the branch" >/dev/null
+  CHART_EVENT=push CHART_REF=refs/heads/feature CHART_PUSH_BEFORE=0000000000000000000000000000000000000000 CHART_MAIN_REF=main \
+    hist pass "a new branch with a bumped chart"
+
+  # History, tag: the nearest earlier release tag, never the candidate's
+  # own; a baseline without the chart is an addition; no tag refuses.
+  fresh; echo pre >"$T/repo/README.md"; commit "before the chart" >/dev/null
+  g tag v0.0.1
+  chart 0.1.0 0.1.0; commit "chart added" >/dev/null; g tag v0.1.0
+  CHART_EVENT=push CHART_REF=refs/tags/v0.1.0 hist pass "a chart new since the earlier release tag"
+  echo "x: 1" >"$T/repo/$CHART/values.yaml"; commit "unbumped" >/dev/null; g tag v0.1.1
+  CHART_EVENT=push CHART_REF=refs/tags/v0.1.1 hist fail "a release tag over an unbumped chart" "not greater than '0.1.0'"
+  chart 0.1.1 0.1.0; commit "bumped" >/dev/null; g tag -f v0.1.1
+  CHART_EVENT=push CHART_REF=refs/tags/v0.1.1 hist pass "a release tag over a bumped chart"
+  fresh; chart 0.1.0 0.1.0; commit only >/dev/null; echo x >"$T/repo/README.md"; commit two >/dev/null; g tag v0.1.0
+  CHART_EVENT=push CHART_REF=refs/tags/v0.1.0 hist fail "no earlier release tag" "no earlier v* release tag"
+
+  [ "$fail" -eq 0 ] || { echo "chart-verify selftest: RED" >&2; return 1; }
+  echo "chart-verify selftest: OK — versions, coherence and every event baseline"
+}
+
+case "$MODE" in
+  selftest) selftest; exit ;;
+  history) check_history . ; exit ;;
+  verify) ;;
+  *) echo "usage: chart-verify.sh [verify|history|selftest]" >&2; exit 2 ;;
+esac
+
+command -v helm >/dev/null || { echo "helm is required" >&2; exit 1; }
+
+echo "== version coherence (appVersion = Cargo; the annotation image = appVersion)"
+check_coherence .
+APP_VERSION="$(chart_field appVersion <"$CHART/Chart.yaml")"
+export APP_VERSION
 
 echo "== helm lint"
 helm lint "$CHART" >/dev/null
@@ -70,6 +323,24 @@ grep -q "replicaCount must be 1" "$S/chart-replica.err"
 echo "== render: service annotations land in metadata (finding 4, issue #31)"
 helm template swarmail "$CHART" --set service.annotations.example=probe > "$S/chart-annot.yaml"
 
+echo "== render: a changed appVersion renders its own tag (nothing hard-coded)"
+# A scratch twin of the chart with a coherent, different application
+# version: the default image must follow it (issue #141).
+cp -r "$CHART" "$S/chart-twin"
+sed -i.orig 's/^appVersion: .*/appVersion: "9.8.7"/' "$S/chart-twin/Chart.yaml"
+helm template swarmail "$S/chart-twin" > "$S/chart-twin.yaml"
+
+echo "== render: the README's :main install line, flags verbatim"
+# The flags are read off the README's helm line, never executed as shell:
+# the documented `:main` install must pull on every start (a node that
+# cached an older `:main` would otherwise keep it — issue #141).
+readme_flags="$(sed -n '/^helm install swarmail \.\/charts\/swarmail /,/^[^ ]/p' README.md \
+  | grep -o -- '--set [^ \\]*' | sed 's/^--set //')"
+grep -qx 'image.tag=main' <<<"$readme_flags" || { echo "FAIL: README's helm line no longer sets image.tag=main" >&2; exit 1; }
+set_args=()
+while IFS= read -r flag; do set_args+=(--set "$flag"); done <<<"$readme_flags"
+helm template swarmail "$CHART" "${set_args[@]}" > "$S/chart-main.yaml"
+
 python3 - <<'EOF'
 import os, yaml, sys
 
@@ -109,8 +380,15 @@ assert spec["replicas"] == 1
 assert spec["strategy"]["type"] == "Recreate"
 c = spec["template"]["spec"]["containers"][0]
 assert sorted(p["containerPort"] for p in c["ports"]) == [1025, 1110, 8025]
-assert c["image"].endswith(":0.1.0")                        # tag defaults to appVersion
+app = os.environ["APP_VERSION"]
+assert c["image"] == f"ghcr.io/feedback-loop-ai/swarmail:{app}", c["image"]  # tag defaults to appVersion
 assert c["imagePullPolicy"] == "IfNotPresent"
+twin = one(f"{S}/chart-twin.yaml", "Deployment")["spec"]["template"]["spec"]["containers"][0]
+assert twin["image"] == "ghcr.io/feedback-loop-ai/swarmail:9.8.7", twin["image"]
+# The README's `:main` line: the rolling tag, pulled on every start.
+mc = one(f"{S}/chart-main.yaml", "Deployment")["spec"]["template"]["spec"]["containers"][0]
+assert mc["image"] == "ghcr.io/feedback-loop-ai/swarmail:main", mc["image"]
+assert mc["imagePullPolicy"] == "Always", mc["imagePullPolicy"]
 assert all(k in c for k in ("livenessProbe", "readinessProbe"))
 assert all(c[k]["httpGet"] == {"path": "/healthz", "port": "http"} for k in ("livenessProbe", "readinessProbe"))
 assert c["securityContext"]["allowPrivilegeEscalation"] is False

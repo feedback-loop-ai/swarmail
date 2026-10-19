@@ -1,6 +1,7 @@
 # 0043 — Origin validation on exposed HTTP listeners
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance is the operator's.
 - **Date:** 2026-10-18
 - **Amends:** accepted [0030](0030-loopback-plane-bounded-results.md) §2:
   off-loopback Origin validation and default-port Host admission.
@@ -117,3 +118,16 @@ awaits-registry overflow label is no longer `_uncounted`, a legal inbox name, bu
 line feed, which the shared inbox rule refuses; it renders as `inbox="\n"`. Metric names
 and the 4,096-name cap are unchanged, and the cumulative total is summed from the rows of
 the same scrape.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later record below on 2026-10-19; the text above, the
+0047 pointer included, stays as written, and that pointer's "proposed" is
+historical. Each marker uses the later record's own verb and scope. The
+amendment this record makes to 0030 §2 now carries a dated marker in
+[0030](0030-loopback-plane-bounded-results.md).
+
+- *(Updated by [0047](0047-storage-rpc.md) (accepted 2026-10-19): §6's
+  overflow label, as the pointer above describes — a single line feed,
+  rendered `inbox="\n"`, instead of the legal name `_uncounted`.)*

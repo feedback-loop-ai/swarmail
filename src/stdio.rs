@@ -9,11 +9,11 @@
 //! cap, and the rule that stdout carries protocol or nothing: a notification
 //! (an id-less object with a string method) and a blank line write nothing,
 //! in both the success and the failure arm; every other line is owed the
-//! reply the shared classification names (decisions 0044 §1, proposed
+//! reply the shared classification names (decisions 0044 §1 and
 //! 0047 §3).
 //!
 //! The URL's authority is dialed with HTTP's default port 80 when it names
-//! none, and sent verbatim as the `Host` header (proposed 0047 §4, issue
+//! none, and sent verbatim as the `Host` header (decision 0047 §4, issue
 //! #133). A request body over the server's own [`MCP_BODY_LIMIT`] is
 //! refused locally, never dialed or posted: `-32600` in the server's 413
 //! wording, carrying the line's own ids — one per owed reply, the same
@@ -89,7 +89,7 @@ async fn dial(
     .map_err(|e| e.to_string())
 }
 
-/// The `host:port` to dial for a URL's authority (proposed 0047 §4, issue
+/// The `host:port` to dial for a URL's authority (decision 0047 §4, issue
 /// #133): an omitted port is HTTP's 80 — `TcpStream::connect` needs one —
 /// for a name, an IPv4 address or a bracketed IPv6 literal alike; a port
 /// that is spelled is kept, and one that is malformed refuses by name
@@ -235,7 +235,7 @@ enum Line {
 /// if it fits the server's body limit, so a notification's effect still
 /// happens even though it is answered with silence. The limit is judged on
 /// the exact bytes that would be posted — the trimmed line, delimiter
-/// excluded; equal is sent, one byte over is refused locally (proposed
+/// excluded; equal is sent, one byte over is refused locally (decision
 /// 0047 §4) after the parse, so a malformed line keeps its `-32700`.
 fn read_line(bytes: &[u8]) -> Line {
     let text = match std::str::from_utf8(bytes) {
@@ -583,7 +583,7 @@ mod tests {
         assert_eq!(refused["error"]["code"], -32000, "{refused}");
     }
 
-    /// The dial target (proposed 0047 §4, issue #133; red before: the
+    /// The dial target (decision 0047 §4, issue #133; red before: the
     /// authority was dialed as spelled, and a portless one failed with
     /// "invalid socket address"): only an omitted port becomes 80, for a
     /// name, IPv4 and a bracketed IPv6 literal; a spelled port is kept and
@@ -624,7 +624,7 @@ mod tests {
     }
 
     /// The limit is judged on the exact bytes that would be posted
-    /// (proposed 0047 §4, issue #133; red before: every size was posted):
+    /// (decision 0047 §4, issue #133; red before: every size was posted):
     /// equal is posted, one byte over is a local `-32600` in the server's
     /// own 413 words with the line's id — multibyte text counted in bytes,
     /// the delimiter and padding excluded — and a malformed line keeps its
@@ -670,7 +670,7 @@ mod tests {
     }
 
     /// The local refusal answers every position the server would have
-    /// (proposed 0047 §4): one error for a single request, an array in
+    /// (decision 0047 §4): one error for a single request, an array in
     /// member order for an admitted batch — string, null and duplicate ids
     /// kept, a malformed member's null slot kept, a notification's omitted
     /// — one null-id error for a batch refused whole, and silence for a
@@ -712,7 +712,7 @@ mod tests {
         );
     }
 
-    /// A refused line is never dialed (proposed 0047 §4): the bridge runs
+    /// A refused line is never dialed (decision 0047 §4): the bridge runs
     /// oversized lines and then one small request against a listener
     /// nobody accepts from. Its accept queue then holds exactly the small
     /// request's connection — the positive control that the queue sees a

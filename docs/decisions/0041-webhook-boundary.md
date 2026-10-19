@@ -1,6 +1,7 @@
 # 0041 — Webhook boundary: valid headers, direct delivery, shared bytes and observable loss
 
-- **Status:** proposed — acceptance belongs to the operator.
+- **Status:** accepted (operator, 2026-10-19)
+  Original draft status: proposed — acceptance belongs to the operator.
 - **Date:** 2026-10-18
 - **Amends:** [0029](0029-supplied-values-are-validated-wherever-they-reach-a-wire.md)
   §5 secret validity, redacted configuration echoes and shutdown observability.
@@ -115,3 +116,20 @@ Index this decision as proposed with the implementation documentation. Do not
 rewrite accepted 0029 or mark this accepted. A dated amendment pointer in 0029
 belongs to operator acceptance, not this design seat. This decision and the
 three specification files are the only requested design-commit paths.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit. The operator accepted
+this record and the later record below on 2026-10-19; the text above stays
+as written. The amendment pointer the paragraph above deferred to
+acceptance is now in
+[0029](0029-supplied-values-are-validated-wherever-they-reach-a-wire.md).
+Each marker uses the later record's own verb and scope.
+
+- *(Clarified/extended by [0048](0048-rest-webhook-validation.md) (accepted
+  2026-10-19): §§2/3/6/7 — every `ca_pem` certificate is loaded through an
+  uncached delivery-client build at `PUT`, webhook option strings refuse
+  `null`, redacted echoes keep their shape, and the dispatcher's final stop
+  event and exhaustion causes are observable. Retry count, backoff, budgets,
+  redaction and ledger arithmetic do not change. This pointer was missing
+  until 2026-10-19.)*

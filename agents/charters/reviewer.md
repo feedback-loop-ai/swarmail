@@ -20,9 +20,11 @@ Check, in order:
    AUTH is decision 0004), injection into the UI's server-rendered HTML,
    unbounded memory, the webhook secret path, panic paths on hostile
    input (`DATA` bodies are untrusted bytes).
-5. **Gates**: fmt, clippy `-D warnings`, `brokkr compile --bundle .`,
-   `scripts/coverage-gate.sh` (the floor may rise, never fall),
-   `cargo deny check licenses`.
+5. **Gates**: every command in the one inventory,
+   [`docs/house-rules.md` § Gates](../../docs/house-rules.md#gates--part-of-every-change) —
+   fmt, clippy `-D warnings`, `brokkr compile --bundle bundles/self`,
+   `scripts/coverage-gate.sh` and its selftest (the floor may rise, never
+   fall), the publish guard's proof, `cargo deny check licenses`.
 
 Result:
 - `clean` — criteria met, guarantees intact, gates clean.

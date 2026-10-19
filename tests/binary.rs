@@ -1120,7 +1120,7 @@ async fn subjects(serve: &Serve, inbox: &str) -> Vec<String> {
         .collect()
 }
 
-/// One server per data *file*, not per name (proposed 0047 §1, issue
+/// One server per data *file*, not per name (decision 0047 §1, issue
 /// #129; red before: the alias server started, and the two servers' mail
 /// broke the cap and lost acknowledged rows). For a symlink, a hard link
 /// and a hard link in another directory (macOS fix-up: the identity guard
@@ -1204,7 +1204,7 @@ async fn aliases_of_a_held_data_file_refuse_and_the_owners_mail_survives() {
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
 
-/// A data file `serve` creates is no wider than SQLite's own 0644 (proposed
+/// A data file `serve` creates is no wider than SQLite's own 0644 (decision
 /// 0047 §1): run under umask 000, where the plain-open default would be
 /// 0666, it is 0644 exactly — and SQLite's companions follow it.
 #[tokio::test]
@@ -1897,7 +1897,7 @@ async fn mcp_answers_bad_lines_and_keeps_serving() {
 }
 
 /// An id-less object without a string method is no notification on the
-/// bridge either (proposed 0047 §3, issue #132; red before: the bridge
+/// bridge either (decision 0047 §3, issue #132; red before: the bridge
 /// wrote nothing for it): `{"foo":"boo"}` gets exactly one `-32600` line
 /// with a null id, and the ping behind it is answered.
 #[tokio::test]
@@ -1945,7 +1945,7 @@ async fn post_mcp_raw(addr: SocketAddr, body: &[u8]) -> serde_json::Value {
 }
 
 /// An oversized request is refused by the bridge itself, with its own ids
-/// (proposed 0047 §4, issue #133; red before: the 3 MiB line got the
+/// (decision 0047 §4, issue #133; red before: the 3 MiB line got the
 /// server's null-id 413 and the 40 MiB one a `-32000` broken pipe). A 3 MiB
 /// and a 40 MiB seed with id 7 each get exactly one `-32600` line with id 7
 /// in the server's own 413 words — read from a real over-limit POST — an
@@ -2023,7 +2023,7 @@ const SERVE_ON_EIGHTY: [&str; 7] = [
     "127.0.0.1:80",
 ];
 
-/// A URL with no port dials HTTP's 80 (proposed 0047 §4, issue #133; red
+/// A URL with no port dials HTTP's 80 (decision 0047 §4, issue #133; red
 /// before: "invalid socket address"): a real bridge given
 /// `--url http://127.0.0.1` answers a ping from a real server bound on
 /// 127.0.0.1:80 — never an ephemeral-port stand-in. Ignored by default

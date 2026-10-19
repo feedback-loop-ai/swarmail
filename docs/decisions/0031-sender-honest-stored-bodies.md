@@ -120,3 +120,27 @@ ruling above stays as accepted. Issues #74, #93, #94.
   link or a stylesheet code — across every restart, and nothing re-derives
   them from the stored raw mail. A new delivery of the same raw mail gets
   the repaired values. Old rows are outside the sender-honesty claim.
+
+## Later-decision markers — 2026-10-19 (issue #144)
+
+Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
+2026-10-19 ruling accepting 0034–0050 and 0055. The text above — the ruling
+and the 2026-10-18 clarification — stays as written; each marker names a
+later record with that record's own verb and scope, and nothing above is
+rewritten by it.
+
+- *(Amended by [0040](0040-extraction-fidelity.md) (accepted 2026-10-19):
+  the body-selection interpretation (§1) and §3's extraction from rendered
+  text, and clarifies the scope of sender honesty for historical persisted
+  rows, through the "Clarification — 2026-10-18 (extraction fidelity)"
+  above. **Acceptance provenance:** that clarification cited 0040 while it
+  was proposed and claimed no acceptance. 0040 is now accepted (operator,
+  2026-10-19), so the clarification is controlling on the authority of an
+  accepted record. Its text is unchanged.)*
+- *(Amended by [0044](0044-compat-validation.md) (accepted 2026-10-19):
+  §3's snippet cost per item — a compat snippet reads at most a bounded
+  prefix of its body instead of scanning the whole body.)*
+- *(Extended/clarified by [0049](0049-extraction-compat.md) (accepted
+  2026-10-19): the display/extraction distinction — source-aware link
+  extraction and MIME-relative code preference at ingest. Stored bodies and
+  historical rows stay verbatim.)*

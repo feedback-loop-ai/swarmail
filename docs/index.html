@@ -281,10 +281,10 @@
       and hands it back with every link and OTP code already extracted.
     </p>
     <div class="install">
-      <code><span class="p">$</span> docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main</code>
-      <button class="copy-btn" data-copy="docker run -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main">copy</button>
-      <code><span class="p">$</span> helm install swarmail ./charts/swarmail --set image.tag=main   <span class="p"># from a checkout</span></code>
-      <button class="copy-btn" data-copy="helm install swarmail ./charts/swarmail --set image.tag=main">copy</button>
+      <code><span class="p">$</span> docker run --rm --stop-timeout 30 -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main</code>
+      <button class="copy-btn" data-copy="docker run --rm --stop-timeout 30 -p 1025:1025 -p 1110:1110 -p 8025:8025 ghcr.io/feedback-loop-ai/swarmail:main">copy</button>
+      <code><span class="p">$</span> helm install swarmail ./charts/swarmail --set image.tag=main --set image.pullPolicy=Always   <span class="p"># from a checkout</span></code>
+      <button class="copy-btn" data-copy="helm install swarmail ./charts/swarmail --set image.tag=main --set image.pullPolicy=Always">copy</button>
     </div>
     <div class="ports">
       <span><b>:1025</b> SMTP + STARTTLS</span>
@@ -292,8 +292,8 @@
       <span><b>:8025</b> REST · MCP · UI</span>
     </div>
     <div class="numbers" role="list">
-      <div role="listitem"><b>5000/5000</b><span>exact over 100 concurrent fresh sessions, asserted in CI</span></div>
-      <div role="listitem"><b>1.58 µs</b><span>per mail — parse + extract + insert (criterion median)</span></div>
+      <div role="listitem"><b>5000/5000</b><span>exact over 100 concurrent fresh sessions, asserted in CI on every release tag</span></div>
+      <div role="listitem"><b>1.58 µs</b><span>per mail — parse + extract + insert (criterion median, measured locally; not a CI gate)</span></div>
       <div role="listitem"><b>100/100/100</b><span>exact line · branch · function coverage, gated</span></div>
       <div role="listitem"><b>12 tools</b><span>native MCP — HTTP and stdio transports</span></div>
     </div>
@@ -410,7 +410,7 @@
           <tr><th></th><th>MailSlurper</th><th>MailCrab</th><th>Mailpit</th><th>MailDev</th><th class="us">Swarmail</th></tr>
         </thead>
         <tbody>
-          <tr><td>Burst handling</td><td>SMTP session leaks</td><td>documented message loss &gt;100/s</td><td>200–300/s</td><td>Node, untested</td><td class="us">lossless — 5000/5000 exact over 100 concurrent fresh sessions, asserted in CI</td></tr>
+          <tr><td>Burst handling</td><td>SMTP session leaks</td><td>documented message loss &gt;100/s</td><td>200–300/s</td><td>Node, untested</td><td class="us">lossless — 5000/5000 exact over 100 concurrent fresh sessions, asserted in CI on every release tag</td></tr>
           <tr><td>Wait-until-arrival</td><td><span class="no">❌ poll</span></td><td><span class="no">❌ poll</span></td><td><span class="no">❌ poll</span></td><td><span class="no">❌ poll</span></td><td class="us"><span class="yes">✅</span> await long-poll + MCP wait_for_email</td></tr>
           <tr><td>Per-test inboxes</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td class="us"><span class="yes">✅</span> AUTH username = inbox</td></tr>
           <tr><td>MCP server</td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="no">❌</span></td><td><span class="yes">✅</span> (Node)</td><td class="us"><span class="yes">✅</span> HTTP + stdio, native, 12 tools</td></tr>
@@ -423,7 +423,7 @@
     </div>
     <p class="sub" style="margin-top:16px; margin-bottom:0; font-size:13px">
       Methodology: the 5000-mail figure is <code style="font-family:var(--mono)">tests/rate.rs</code> (release, fresh SMTP session per mail —
-      the Ory Kratos courier pattern); the µs/mail figure is <code style="font-family:var(--mono)">cargo bench</code> on the pure ingest path. Both run in CI.
+      the Ory Kratos courier pattern); the µs/mail figure is <code style="font-family:var(--mono)">cargo bench</code> on the pure ingest path. Only the first is asserted in CI — the tag-only <code style="font-family:var(--mono)">release-rate-5k</code> job, which both publish jobs need; the µs/mail figure is a dated criterion median measured locally, and no CI job runs <code style="font-family:var(--mono)">cargo bench</code>.
     </p>
   </div>
 </section>
