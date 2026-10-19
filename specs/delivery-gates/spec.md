@@ -42,6 +42,9 @@ access to those ignored files.
 
 ## Clarification — 2026-10-19 resume
 
+Historical entry for the first resume; the second-resume entry below controls
+current identity and comparator facts. Its acceptance obligations still stand.
+
 Run `resume-point-read-first-epic-120-2c563256` retains this slug, AC1–AC13
 and proposed 0050. The operator reports that the previously staged tree was
 committed unchanged after signing returned. Existing signed history stays;
@@ -65,6 +68,34 @@ establish AC4/AC5/AC7/AC8 or replace AC13's final gates. An absent engine
 digest remains a named verification refusal, never permission to skip or
 weaken that check. Implementation changes only demonstrated acceptance gaps,
 in new signed commits; operator acceptance of 0050 remains separate.
+
+## Clarification — 2026-10-19 second resume (controlling)
+
+Run `resume-point-2-read-first-batch--206e588f` confirms the same feature,
+AC1–AC13 and proposed 0050 on `epic120-delivery-constitution` at `83107fb`.
+Retain `d1f9c43`, `d1dc551`, `d37533c`, `93992af` and `83107fb` unchanged.
+The chief appends one signed commit containing only this spec, plan and tasks;
+no new semantic ruling or decision is introduced. The previous dated entry
+records what was outstanding then, not a request to repeat completed repairs.
+
+| Second-resume question | Ruling and cost |
+|---|---|
+| Confirm or reconstruct | Adopt both positions' confirmation and one canonical proof owner. Reject rebuilding delivered code from unchecked task boxes, a new slug, framework, dependency or ADR. Cost: reconcile receipts and preserve every outstanding acceptance test. |
+| HEAD identity | Adopt both positions' fresh signed artifact commit: `83107fb` changes tooling only, so it cannot identify the design under the existing validator. Reject discovery fallbacks or changes to the pinned validator. Cost: one more confirmation commit; no unsigned fallback. |
+| Engine identity and provenance | Adopt both positions' distinction between authorized executable bytes and source provenance. `83107fb` records `binary_sha256` as `38c698a4648f6c7032f33b25bbcddb635377b9450abb0e97fe04aade1fbf95d1`; `binary_provenance` expressly says this operator build is not a build of the recorded `sha`. The missing-record blocker is resolved. Reject claiming source/build equivalence or replacing the record with an arbitrary PATH checksum. Cost: the seat's digest-bound build and CI's source-pin build each still need warning-free compilation; that agreement alone does not prove all engine behavior equivalent. |
+| Expansion comparator | Adopt both positions' recognition of the delivered `93992af` repair: no-coverage comparison is byte-exact; the release allowance is the narrow equal-length `if true {` to `if false {` line change. Retain `v4-coverage-bool`, `v4b-debug-bool` and the debug-assert green twin. Reject another speculative rewrite or a wider allowance. Cost: final-tree selftest evidence remains required. |
+| Comparator limit | Adopt robustness's explicit limit: a hand-written `if cfg!(debug_assertions) { ... }` can produce the same admitted release shape. No such source expression is currently present. This is expanded-source comparison with the existing compiler carve-out, not behavioral or optimized-code equivalence. Defer the proposed source-token tripwire. Cost: future use of that shape needs review; no stronger guarantee is claimed. |
+| Actual verify proof | Rule for simplicity and the existing AC4. Reject robustness's proposal to treat separate harness diagnostics plus a clean dispatched seat as proof that the actual seat records both failures on the tampered, uncovered candidate. Those executions establish different facts. Cost: the seat-invoking red fixture remains required in this batch; reconcile existing receipts first, then add a minimal signed harness repair only if evidence is missing. It is not waived as a post-shipment follow-up. |
+| Remaining scope | Adopt both positions' preservation of policy predicates, strict design identity, single-package coverage and #143 test owners. Reject bypass flags, pin changes made merely to pass, and unrelated runtime work. Cost: a blocked or unrun proof remains open even when prior local gates were green. |
+
+The operator's next authorized binary replacement must update its digest and
+honest provenance together in a signed edit; mismatch continues to refuse.
+This design seat neither supplies a replacement nor changes the tooling record.
+The comparator's prior mutant results are recorded in `93992af`; recognizing
+that repair is not a claim that this seat reran those tests. Actual launch
+identity, red/green seat dispatch, evaluator results and final gates remain
+execution obligations. No feature-completion or shipping verdict follows from
+this design confirmation; only the operator can accept 0050.
 
 ## Panel rulings
 

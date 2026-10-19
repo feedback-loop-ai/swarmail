@@ -8,32 +8,41 @@ files are in [plan.md](plan.md). The original implementation order was #140
 before pinning its gate for #123, then #124, #125 and #143. Restore every
 deliberate mutation.
 
-## Resume order — 2026-10-19
+## Resume order — 2026-10-19 second resume
 
-Run `resume-point-read-first-epic-120-2c563256` confirms this design and then
-checks the existing implementation. Only a demonstrated gap requires a fix.
+The first resume `resume-point-read-first-epic-120-2c563256` produced
+confirmation `d37533c` and comparator repair `93992af`. Current run
+`resume-point-2-read-first-batch--206e588f` confirms those artifacts after
+the operator's digest record `83107fb`, then checks the existing implementation.
+Only a demonstrated gap requires a fix. Preserve AC1–AC13 and proposed 0050.
+Prior receipts remain prior receipts until reconciled with the candidate;
+unchecked proof tasks do not request rebuilding their existing implementation.
 
 - [ ] R01 — Append the signed confirmation of the existing three artifacts.
   **Proof:** HEAD touches exactly `specs/delivery-gates/{spec,plan,tasks}.md`,
   signature verifies, tracked tree is clean, and
   `bash bundles/self/scripts/design-check.sh check .` succeeds with proposed
   0050 unchanged. This proves local artifact validation, not engine dispatch.
-- [ ] R02 — Establish the operator-recorded engine identity before verify.
-  **Proof:** missing/mismatched digest refuses by name; a trusted build receipt
-  binds the recorded source SHA to the launched digest and a signed tooling
-  record permits the actual seat to reach gates. Without it, T05/T07/T08
-  dependent executions stay open. No checksum of an arbitrary binary. AC5.
-- [ ] R03 — Probe the expansion comparator's unrelated boolean case.
-  **Proof:** a real coverage-dependent boolean fixture refuses under AC1,
-  its equivalent twin and real tree pass; if a fix is required, the original
-  comparator admits the negative fixture and the repaired comparator refuses
-  it. Reconcile this receipt with T02 before closing configuration coverage.
+- [ ] R02 — Verify the launched identity against the existing operator record.
+  **Proof:** `83107fb` supplies the digest and honest distinct-build provenance;
+  actual launch matches it and reaches gates, missing/mismatched identities
+  refuse by name, and seat/CI engines each compile without policy warnings.
+  Do not infer that this digest was built from `brokkr.sha`, replace the
+  operator record, or use an arbitrary PATH checksum as authorization. AC5.
+- [ ] R03 — Reconcile and rerun the delivered comparator proof.
+  **Proof:** existing `v4-coverage-bool` and `v4b-debug-bool` refuse, the
+  debug-assert green twin and real tree pass; reconcile `93992af`'s recorded
+  old-comparator mutant failures with final selftest receipts and T02.
+  Keep exact no-coverage comparison and the narrow release-only allowance.
 - [ ] R04 — Establish the missing actual-path evidence for T05/T07/T08.
   **Proof:** actual pinned verify on the uncovered/`exit 0` candidate returns
   fail with both integrity and coverage diagnostics, covered clean control
   passes, real design dispatch validates before advancement and demonstrates
   bounded retry, and the pinned evaluator truth table plus unsuppressed
-  compile satisfy AC8. Separate component calls do not discharge AC4.
+  compile satisfy AC8. Separate component calls do not discharge AC4, even
+  when combined with a clean seat dispatch. Reconcile existing receipts first;
+  any missing actual-seat fixture remains a batch obligation, not a deferred
+  follow-up. A minimal harness repair requires its own signed fix commit.
 - [ ] R05 — Reconcile T01–T13, run final gates and hand off to review.
   **Proof:** every claimed completion has candidate/pin/command/verdict
   receipts, required #143 mutations fail then pass after restoration, full
@@ -49,7 +58,8 @@ checks the existing implementation. Only a demonstrated gap requires a fix.
   signatures and clean baseline; no static-only engine proof. AC5/AC7/AC8.
 - [ ] T02 — Close coverage cfg/release and package-inventory bypasses (#140).
   **Proof:** real-build selftest arms v1/v2/v3/v3b/v5b refuse for their named
-  cause, clean controls pass, root identity is independent of package sorting,
+  cause, v4/v4b boolean controls refuse after `93992af`, clean controls pass,
+  root identity is independent of package sorting,
   external path closure refuses and standalone scanner workspace passes;
   original behavior passes the bypass fixtures, proving the regression.
   Preserve dep-info-before-expansion and exact real-tree counts. AC1/AC2.

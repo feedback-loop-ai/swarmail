@@ -7,8 +7,11 @@ Implements [spec.md](spec.md) and proposed
 
 Single Rust application crate; real SMTP/POP3/HTTP integration suites;
 Bash gates on a mawk host; cargo-llvm-cov and the installed coverage nightly;
-standalone syn/proc-macro2 scanner; brokkr 0.12.0 at the SHA recorded in
-`bundles/self/tooling.json`. Network-denied verify installs nothing.
+standalone syn/proc-macro2 scanner; brokkr 0.12.0 with CI's source SHA and
+the seat's separately authorized binary digest/provenance recorded in
+`bundles/self/tooling.json`. These identify different builds, explicitly;
+both must compile the bundle without residual-policy warnings.
+Network-denied verify installs nothing.
 The plan template is absent from `.specify/templates/`; this plan supplies
 the required technical context, constitution check, structure, research,
 data model, contracts and quickstart directly.
@@ -28,34 +31,41 @@ The resume chief commits only the three existing spec artifacts; 0050 stays
 proposed and unchanged. Code and documentation-index edits below belong to
 implementation, and on resume require an actual acceptance gap.
 
-## Resume approach — 2026-10-19
+## Resume approach — 2026-10-19 second resume
 
-Run `resume-point-read-first-epic-120-2c563256` starts on
-`epic120-delivery-constitution` at `d1dc551`, after design `d1f9c43`.
-Preserve both commits. The original implementation approach below is the
+The first resume, `resume-point-read-first-epic-120-2c563256`, confirmed the
+design in `d37533c` and delivered comparator repair `93992af`. This run,
+`resume-point-2-read-first-batch--206e588f`, starts on
+`epic120-delivery-constitution` at the operator's tooling commit `83107fb`.
+Preserve all history. The original implementation approach below is the
 reference for checking the delivered change, not an instruction to rebuild it.
 
 1. Commit the dated confirmation in `specs/delivery-gates/{spec,plan,tasks}.md`
    and run `bash bundles/self/scripts/design-check.sh check .` against that
    clean HEAD. Keep strict HEAD selection and the pinned prerequisite chain.
-2. Resolve the existing identity precondition through the operator's trusted
-   build evidence. The tooling record lacks `brokkr.binary_sha256`; the seat
-   refuses before gates. Only an operator-established digest for the recorded
-   source build belongs in a new signed tooling commit. A version string or
-   checksum of an arbitrary PATH binary is insufficient. If unavailable,
-   record the refusal and leave dependent proofs outstanding.
+2. Use the operator's existing `83107fb` identity record without editing it.
+   The missing-digest precondition is resolved; actual verify must compare
+   the launched bytes with that digest before gates. Preserve its explicit
+   provenance: it does not attest a build of `brokkr.sha`. Retain missing and
+   mismatched identity refusals, and require warning-free compilation from
+   the recorded seat binary and CI's source-pin build. A future authorized
+   rebuild updates digest and provenance together in a signed commit.
 3. Reconcile original tasks against actual receipts rather than ticking them
    from the implementation message. Execute the actual verify red/green
    controls, design dispatch/retry proof and pinned evaluator truth table.
    The existing delivery harness proves components separately; any necessary
    actual-seat harness repair belongs in a new signed implementation commit,
    with fixed pinned recursion prevention and no candidate skip switch.
-4. Probe `check_expansions_equivalent` with a real compiler fixture containing
-   an unrelated coverage-dependent boolean, alongside an equivalent green
-   twin and the real crate. The global textual replacement currently admits
-   more than its debug-assert explanation establishes. If the fixture is
-   admitted, remove the allowance if unnecessary, or constrain a demonstrated
-   nonsemantic exception with a failing control; never broaden normalization.
+   The second-resume ruling rejects deferring AC4's red seat fixture beyond
+   this batch: separate component failures and a clean seat run do not
+   establish the combined failing path. First locate and reconcile receipts;
+   missing evidence is an execution obligation, not automatic code churn.
+4. Retain `93992af`'s comparator and reconcile its recorded mutant proof.
+   Run the existing `v4-coverage-bool` and `v4b-debug-bool` selftest arms and
+   debug-assert green twin as part of final selftest. No-coverage outputs
+   must match exactly; release permits only the existing narrow line shape.
+   The equivalent hand-written debug-cfg block remains a documented limit,
+   not an excuse to widen normalization. No source-token tripwire is added.
 5. Run the full final-tree inventory and the issue-specific mutations, preserve
    command/candidate/pin/verdict receipts in ignored run evidence, then hand
    off to verify and review. No push, PR, merge, issue closure or history rewrite.
@@ -269,7 +279,7 @@ and only explicit declarations are structural design obligations.
 ## Quickstart and validation
 
 The initial branch was cut from current main; on resume stay on the existing
-`epic120-delivery-constitution` and append to `d1dc551`. Do not recut, reset,
+`epic120-delivery-constitution` and append to `83107fb`. Do not recut, reset,
 amend or squash. Commit exactly the chief's three confirmation files,
 GPG-signed, subject:
 `Confirm delivery gate design (#123, #124, #125, #140, #143)`.
@@ -292,12 +302,14 @@ post-repair warning-free result.
 
 ## Risks
 
-- **Missing recorded engine identity blocks verify.** Keep the digest refusal;
-  obtain operator-established build provenance before dependent execution.
-  Never label a component pass as a hermetic-seat pass.
-- **A broad boolean substitution hides configuration changes.** Require the
-  targeted real compiler negative control before closing AC1; repair only
-  the demonstrated allowance with its clean controls, retaining exact counts.
+- **Recorded identity differs from source-pin provenance.** The operator's
+  digest is present, but it identifies a different build. Verify launched
+  bytes, preserve mismatch refusal and honest provenance, and require both
+  engines' warning-free compile; do not infer general engine equivalence.
+- **The comparator allowance can be widened accidentally.** Keep `93992af`'s
+  strict no-coverage comparison, release-only shape and both boolean negative
+  controls. The hand-written debug-cfg shape remains a known limit; source
+  review must not mistake expanded-source comparison for behavior equivalence.
 - **Pinned resources unavailable after dispatch.** Confirm actual remounts
   before relocation, then exercise nested helper and tooling reads in the
   real seat. Keep candidate paths separate and missing resources fatal.
