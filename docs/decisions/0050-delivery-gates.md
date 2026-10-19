@@ -54,10 +54,28 @@ implementation details. It does not accept any earlier proposal.
    second failure stops, including an engine-required separate check phase.
 4. **Unknown residual facts have a defined destination.** The residual allow
    rule requires explicit false security and valid severity at most medium.
-   Specific unsafe rules remain first; a final unknown-residual hard stop
-   handles everything else. No coercion, defaults or missing-fact inference.
-   This strengthens the existing safe-admission intent without changing
-   clean-review routes or the protected review boundary.
+   Specific stops come first where the engine admits them, then the allow
+   rule, then one final unconditional hard stop that catches security
+   residuals and absent, null or malformed facts alike. No coercion,
+   defaults or missing-fact inference. This strengthens the existing
+   safe-admission intent without changing clean-review routes, the
+   `security-hold` stop or the protected review boundary.
+
+   *Amended in place 2026-10-19 by operator ruling in chat; still proposed.*
+   The recorded verify engine refuses to compile a separate security stop
+   ahead of the allow followed by an unknown-only fallback: with every fact
+   present the earlier rules already decide, so the fallback fires on no
+   valuation and is refused as dead. The committed order is therefore
+   `REVIEW-RESIDUAL-ABOVE-MEDIUM` (stop, hard) → `REVIEW-RESIDUAL-OK`
+   (`has_security_residual: false` and
+   `max_residual_severity_at_most: "medium"`, ship) →
+   `REVIEW-RESIDUAL-UNSAFE` (no `when`, stop, hard). First match decides: a
+   valid above-medium severity stops at ABOVE-MEDIUM even when security is
+   absent, null or wrong-typed; every other unsafe or unknown row reaches
+   UNSAFE, whose single ID covers both causes — the journal's typed inputs
+   tell them apart. The unchanged structural pin is
+   `tests/delivery_constitution.rs::residual_admission_requires_explicit_safe_facts_and_unknowns_stop`;
+   it does not replace executing the evaluator truth table (§5).
 5. **Execution is the proof.** Actual verify dispatch, actual design dispatch
    and the pinned policy evaluator are mandatory. Structural inspection and
    compiler success are useful checks but cannot replace those proofs. A
