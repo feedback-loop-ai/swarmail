@@ -1,9 +1,46 @@
 # Ordered tasks — delivery gates
 
-All tasks are initially unchecked. A planned proof is not a test receipt.
+Tasks remain unchecked until their paired proofs are reconciled. The code
+was committed in `d1dc551`; unchecked tasks do not request reimplementation.
+A planned proof or prior green-tree report is not a final-tree test receipt.
 Acceptance references point to [spec.md](spec.md); mechanisms and touched
-files are in [plan.md](plan.md). Implement #140 before pinning its gate for
-#123, then #124, #125 and #143. Restore every deliberate mutation.
+files are in [plan.md](plan.md). The original implementation order was #140
+before pinning its gate for #123, then #124, #125 and #143. Restore every
+deliberate mutation.
+
+## Resume order — 2026-10-19
+
+Run `resume-point-read-first-epic-120-2c563256` confirms this design and then
+checks the existing implementation. Only a demonstrated gap requires a fix.
+
+- [ ] R01 — Append the signed confirmation of the existing three artifacts.
+  **Proof:** HEAD touches exactly `specs/delivery-gates/{spec,plan,tasks}.md`,
+  signature verifies, tracked tree is clean, and
+  `bash bundles/self/scripts/design-check.sh check .` succeeds with proposed
+  0050 unchanged. This proves local artifact validation, not engine dispatch.
+- [ ] R02 — Establish the operator-recorded engine identity before verify.
+  **Proof:** missing/mismatched digest refuses by name; a trusted build receipt
+  binds the recorded source SHA to the launched digest and a signed tooling
+  record permits the actual seat to reach gates. Without it, T05/T07/T08
+  dependent executions stay open. No checksum of an arbitrary binary. AC5.
+- [ ] R03 — Probe the expansion comparator's unrelated boolean case.
+  **Proof:** a real coverage-dependent boolean fixture refuses under AC1,
+  its equivalent twin and real tree pass; if a fix is required, the original
+  comparator admits the negative fixture and the repaired comparator refuses
+  it. Reconcile this receipt with T02 before closing configuration coverage.
+- [ ] R04 — Establish the missing actual-path evidence for T05/T07/T08.
+  **Proof:** actual pinned verify on the uncovered/`exit 0` candidate returns
+  fail with both integrity and coverage diagnostics, covered clean control
+  passes, real design dispatch validates before advancement and demonstrates
+  bounded retry, and the pinned evaluator truth table plus unsuppressed
+  compile satisfy AC8. Separate component calls do not discharge AC4.
+- [ ] R05 — Reconcile T01–T13, run final gates and hand off to review.
+  **Proof:** every claimed completion has candidate/pin/command/verdict
+  receipts, required #143 mutations fail then pass after restoration, full
+  house inventory is green, history remains signed and the branch clean.
+  Unrun or blocked obligations remain explicit; no shipping claim here. AC13.
+
+## Original implementation and proof obligations
 
 - [ ] T01 — Establish the authorized branch, baseline and execution interfaces.
   **Proof:** main descends from `2a325c9`, includes `18374cc` or later batches;

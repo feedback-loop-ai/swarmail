@@ -2,7 +2,8 @@
 
 Epic #120, batch 5: #123, #124, #125, #140 and #143. Design baseline:
 `18374cc`, containing batches 1–4 and descending from review baseline
-`2a325c9`. This is a design commission, not evidence of implementation.
+`2a325c9`. The design was committed in `d1f9c43` and implemented in
+`d1dc551`; this resume confirms the design, not feature completion.
 
 Decision: 0050 — [proposed delivery-gates ruling](../../docs/decisions/0050-delivery-gates.md).
 Only the operator accepts decisions. Existing authorities are accepted
@@ -17,7 +18,8 @@ explicitly; it does not authorize weakening an accepted guarantee.
 
 ## Feature and rationale
 
-A successful delivery verdict must establish its advertised facts. Today
+A successful delivery verdict must establish its advertised facts. At the
+review baseline,
 verify executes mutable worktree proof scripts; design can advance from
 chief's `drafted` without executing its validator; residual review can ship
 without safety facts. Exact coverage misses several demonstrated production
@@ -37,6 +39,32 @@ Inputs read for this synthesis: both run-local panel positions;
 recognizer and existing by-effect architecture; their old landing commands
 do not supersede this run. The committed requirements below stand without
 access to those ignored files.
+
+## Clarification — 2026-10-19 resume
+
+Run `resume-point-read-first-epic-120-2c563256` retains this slug, AC1–AC13
+and proposed 0050. The operator reports that the previously staged tree was
+committed unchanged after signing returned. Existing signed history stays;
+the resume adds a signed confirmation commit touching only this spec,
+plan and tasks. No new semantic ruling or successor decision is needed.
+The original panel rulings below remain the design history; the following
+rulings reconcile both current resume positions explicitly.
+
+| Resume question | Ruling and cost |
+|---|---|
+| Confirm or redesign | Adopt both positions' confirmation of the existing design and single proof owner. Reject a new framework, spec directory, dependency or ADR. Cost: all existing acceptance obligations remain, including missing execution evidence. |
+| HEAD identity | Adopt both positions' fresh signed confirmation commit. Inspection confirms `d1dc551` touches no spec directory, resolving robustness's conditional observation. Reject branch-history discovery or validator changes. Cost: a small additional commit on resume. |
+| Engine identity | Adopt robustness's operator-established build digest precondition and simplicity's rejection of an arbitrary PATH checksum as provenance. `bundles/self/tooling.json` has SHA/version but no `binary_sha256`; verify must refuse until trusted build evidence binds the launched binary to the recorded revision. The operator records that identity in a signed commit; this design seat does not supply it. Cost: verification cannot complete on the present tooling record, even if component gates pass. |
+| Actual verify proof | Adopt simplicity's distinction between component and seat evidence. Reject robustness's assertion that the existing delivery harness already supplies the actual-seat proof: inspection shows separate integrity and coverage invocations, without invoking `verify-seat.sh`. Cost: AC4 still needs actual dispatched red and covered-control executions; a minimal harness repair is allowed if required. |
+| Expansion allowance | Adopt simplicity's targeted probe of the comparator's global `true` to `false` substitution. Existing AC1 and plan checkpoint 3 do not authorize arbitrary configuration-dependent boolean changes. Reject assuming the debug-assert comment proves the allowance safe. Cost: a real compiler negative control and, if it passes incorrectly, a narrow repair before AC1 can close. |
+| Scope of proof | Adopt both positions' named limits: structural design validation, expanded-source comparison and unwinding cleanup. Reject using those limits to waive required dispatch, evaluator or mutation tests. Cost: unexecuted proofs remain open; no new runtime shutdown or general attestation architecture is introduced. |
+
+For this resume, a design confirmation satisfies AC6's artifact identity only
+after the deterministic validator checks the committed HEAD. It does not
+establish AC4/AC5/AC7/AC8 or replace AC13's final gates. An absent engine
+digest remains a named verification refusal, never permission to skip or
+weaken that check. Implementation changes only demonstrated acceptance gaps,
+in new signed commits; operator acceptance of 0050 remains separate.
 
 ## Panel rulings
 

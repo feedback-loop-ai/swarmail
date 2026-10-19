@@ -23,8 +23,48 @@ cold diagnostic path under 0020, not merely private seam access. All seams
 are `#[cfg(test)]`, installed by tests, instance-local where possible. Real
 protocols, deterministic ordering, no sleep-as-sync and no weakened coverage.
 
-Only spec.md, plan.md, tasks.md and 0050 belong to the chief's design commit.
-All code and documentation-index edits below belong to implementation.
+The original chief commit contained spec.md, plan.md, tasks.md and 0050.
+The resume chief commits only the three existing spec artifacts; 0050 stays
+proposed and unchanged. Code and documentation-index edits below belong to
+implementation, and on resume require an actual acceptance gap.
+
+## Resume approach — 2026-10-19
+
+Run `resume-point-read-first-epic-120-2c563256` starts on
+`epic120-delivery-constitution` at `d1dc551`, after design `d1f9c43`.
+Preserve both commits. The original implementation approach below is the
+reference for checking the delivered change, not an instruction to rebuild it.
+
+1. Commit the dated confirmation in `specs/delivery-gates/{spec,plan,tasks}.md`
+   and run `bash bundles/self/scripts/design-check.sh check .` against that
+   clean HEAD. Keep strict HEAD selection and the pinned prerequisite chain.
+2. Resolve the existing identity precondition through the operator's trusted
+   build evidence. The tooling record lacks `brokkr.binary_sha256`; the seat
+   refuses before gates. Only an operator-established digest for the recorded
+   source build belongs in a new signed tooling commit. A version string or
+   checksum of an arbitrary PATH binary is insufficient. If unavailable,
+   record the refusal and leave dependent proofs outstanding.
+3. Reconcile original tasks against actual receipts rather than ticking them
+   from the implementation message. Execute the actual verify red/green
+   controls, design dispatch/retry proof and pinned evaluator truth table.
+   The existing delivery harness proves components separately; any necessary
+   actual-seat harness repair belongs in a new signed implementation commit,
+   with fixed pinned recursion prevention and no candidate skip switch.
+4. Probe `check_expansions_equivalent` with a real compiler fixture containing
+   an unrelated coverage-dependent boolean, alongside an equivalent green
+   twin and the real crate. The global textual replacement currently admits
+   more than its debug-assert explanation establishes. If the fixture is
+   admitted, remove the allowance if unnecessary, or constrain a demonstrated
+   nonsemantic exception with a failing control; never broaden normalization.
+5. Run the full final-tree inventory and the issue-specific mutations, preserve
+   command/candidate/pin/verdict receipts in ignored run evidence, then hand
+   off to verify and review. No push, PR, merge, issue closure or history rewrite.
+
+The design confirmation touches only the three paths above. Any later fixes
+use the existing file owners in the table below; the operator's engine digest
+belongs to `bundles/self/tooling.json`. No new artifact hierarchy or dependency
+is required. Original tasks remain unchecked until their paired proof is
+established; unchecked does not mean the corresponding code must be rewritten.
 
 ## Research and implementation checkpoints
 
@@ -228,10 +268,11 @@ and only explicit declarations are structural design obligations.
 
 ## Quickstart and validation
 
-Work from fetched current main on `epic120-delivery-constitution`; never
-reset existing operator work. In a writable Git environment, commit exactly
-the chief's four files, GPG-signed, subject:
-`Specify delivery gate proofs (#123, #124, #125, #140, #143)`.
+The initial branch was cut from current main; on resume stay on the existing
+`epic120-delivery-constitution` and append to `d1dc551`. Do not recut, reset,
+amend or squash. Commit exactly the chief's three confirmation files,
+GPG-signed, subject:
+`Confirm delivery gate design (#123, #124, #125, #140, #143)`.
 Implementation commits map each issue to decisive test names and receipts.
 Never push, open a PR, merge or close issues from this run.
 
@@ -251,6 +292,12 @@ post-repair warning-free result.
 
 ## Risks
 
+- **Missing recorded engine identity blocks verify.** Keep the digest refusal;
+  obtain operator-established build provenance before dependent execution.
+  Never label a component pass as a hermetic-seat pass.
+- **A broad boolean substitution hides configuration changes.** Require the
+  targeted real compiler negative control before closing AC1; repair only
+  the demonstrated allowance with its clean controls, retaining exact counts.
 - **Pinned resources unavailable after dispatch.** Confirm actual remounts
   before relocation, then exercise nested helper and tooling reads in the
   real seat. Keep candidate paths separate and missing resources fatal.
