@@ -341,25 +341,33 @@ check_package_inventory() {
 }
 
 check_expansions_equivalent() {
-  # $1: the measured expansion, $2: another configuration's, $3: its label.
-  # Equivalent when byte-identical, or when every difference is a same-shape
-  # line whose `true` became `false` — the residue of cfg!(debug_assertions)
-  # inside debug_assert!, where the code is present (and measured) in both.
-  # An item, arm or body present in only one configuration refuses: code
-  # that exists only where the gate does not measure is outside the
-  # denominator (#140, decision 0050 §2). No other normalization.
+  # $1: the measured expansion, $2: another configuration's, $3: its label,
+  # $4: "release" for the release-profile comparison. Equivalent when
+  # byte-identical. The release comparison alone also admits a line that is
+  # exactly `if true {` becoming `if false {` at the same indentation — the
+  # residue of cfg!(debug_assertions) inside debug_assert!, where the
+  # guarded code is present (and measured) in both. Any other changed
+  # boolean (a `cfg!(coverage)` value, a coverage-cfg `if`) and any item, arm
+  # or body present in only one configuration refuses: code that exists only
+  # where the gate does not measure is outside the denominator (#140,
+  # decision 0050 §2). No other normalization.
   local d status=0
   [ -s "$1" ] || refuse "coverage refusal: the expansion $1 is missing or empty"
   [ -s "$2" ] || refuse "coverage refusal: the $3 expansion $2 is missing or empty"
   d="$(diff "$1" "$2")" || status=$?
   [ "$status" -eq 0 ] && return 0
   [ "$status" -eq 1 ] || refuse "coverage refusal: the $3 expansion comparison could not run (diff exit $status)"
-  if ! printf '%s\n' "$d" | awk '
+  if [ "${4:-}" != release ] || ! printf '%s\n' "$d" | awk '
     function flush() { if (n != m) bad = 1; n = 0; m = 0 }
     /^[0-9]/ { flush(); if ($0 !~ /^[0-9]+(,[0-9]+)?c[0-9]+(,[0-9]+)?$/) bad = 1; next }
     /^< / { old[++n] = substr($0, 3); next }
     /^---$/ { next }
-    /^> / { m++; o = old[m]; gsub(/true/, "false", o); if (o != substr($0, 3)) bad = 1; next }
+    /^> / {
+      m++; o = old[m]; new = substr($0, 3)
+      if (o !~ /^[ \t]*if true \{$/) bad = 1
+      sub(/if true \{$/, "if false {", o); if (o != new) bad = 1
+      next
+    }
     { bad = 1 }
     END { flush(); exit bad }'; then
     printf '%s\n' "$d" | head -n 40 >&2
@@ -772,7 +780,7 @@ selftest() {
   expand "$root/v2-release-only" "$root/v2-measured.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
   expand "$root/v2-release-only" "$root/v2-release.rs" --lib --release -- -Zunpretty=expanded
   expect_refuse_naming 'v2-release-only: code only in the release profile refuses' 'release-profile expansion differs' \
-    check_expansions_equivalent "$root/v2-measured.rs" "$root/v2-release.rs" 'v2 release-profile'
+    check_expansions_equivalent "$root/v2-measured.rs" "$root/v2-release.rs" 'v2 release-profile' release
   # The clean twin: a debug_assert! (present, measured, in both profiles) and
   # no cfg-dependent item pass both comparisons.
   mkfx v2-green 'pub fn checked(x: i32) -> i32 { debug_assert!(x >= 0, "nonnegative"); x }'
@@ -780,7 +788,22 @@ selftest() {
   expand "$root/v2-green" "$root/v2g-plain.rs" --lib -- -Zunpretty=expanded
   expand "$root/v2-green" "$root/v2g-release.rs" --lib --release -- -Zunpretty=expanded
   expect_pass 'the clean twin passes the no-coverage-cfg comparison' check_expansions_equivalent "$root/v2g-measured.rs" "$root/v2g-plain.rs" 'v2-green no-coverage-cfg'
-  expect_pass 'the clean twin (debug_assert!) passes the release comparison' check_expansions_equivalent "$root/v2g-measured.rs" "$root/v2g-release.rs" 'v2-green release-profile'
+  expect_pass 'the clean twin (debug_assert!) passes the release comparison' check_expansions_equivalent "$root/v2g-measured.rs" "$root/v2g-release.rs" 'v2-green release-profile' release
+  # v4: a configuration-dependent boolean that is no debug_assert! residue.
+  # Both arms of the old comparator's global true->false rewrite admitted it:
+  # the measured build returns true, the shipped one false, and every line
+  # is covered. A cfg!(coverage) value refuses the no-coverage-cfg
+  # comparison, a cfg!(debug_assertions) value the release one.
+  mkfx v4-coverage-bool 'pub fn measured() -> bool { cfg!(coverage) }'
+  expand "$root/v4-coverage-bool" "$root/v4-measured.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
+  expand "$root/v4-coverage-bool" "$root/v4-plain.rs" --lib -- -Zunpretty=expanded
+  expect_refuse_naming 'v4-coverage-bool: a cfg!(coverage) value refuses the no-coverage-cfg comparison' 'no-coverage-cfg expansion differs' \
+    check_expansions_equivalent "$root/v4-measured.rs" "$root/v4-plain.rs" 'v4 no-coverage-cfg'
+  mkfx v4b-debug-bool 'pub fn debug() -> bool { cfg!(debug_assertions) }'
+  expand "$root/v4b-debug-bool" "$root/v4b-measured.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
+  expand "$root/v4b-debug-bool" "$root/v4b-release.rs" --lib --release -- -Zunpretty=expanded
+  expect_refuse_naming 'v4b-debug-bool: a cfg!(debug_assertions) value refuses the release comparison' 'release-profile expansion differs' \
+    check_expansions_equivalent "$root/v4b-measured.rs" "$root/v4b-release.rs" 'v4b release-profile' release
   # v3/v3b: production logic in a path dependency (under benches/, under
   # crates/); v5b: a workspace member `aaa` sorting before the root, beside
   # #101 D's include!. Each refuses by the package inventory, naming it; a
@@ -970,7 +993,7 @@ for i in "${!unit_selectors[@]}"; do
   expand_unit "$sel" "$run_dir/expanded-$name-nocov.rs" plain
   check_expansions_equivalent "$run_dir/expanded-$name.rs" "$run_dir/expanded-$name-nocov.rs" "$name no-coverage-cfg"
   expand_unit "$sel --release" "$run_dir/expanded-$name-release.rs" plain
-  check_expansions_equivalent "$run_dir/expanded-$name.rs" "$run_dir/expanded-$name-release.rs" "$name release-profile"
+  check_expansions_equivalent "$run_dir/expanded-$name.rs" "$run_dir/expanded-$name-release.rs" "$name release-profile" release
 done
 # The library's test unit: inline #[cfg(test)] code stays measured, so an
 # exclusion there refuses like one in production (#140).
