@@ -103,7 +103,7 @@ jobs:
       # network CI has, and the gate itself stays offline.
       - run: |
           cargo fetch --locked
-          cargo fetch --locked --manifest-path tools/coverage-fn-scan/Cargo.toml
+          cargo fetch --locked --manifest-path bundles/self/scripts/coverage-fn-scan/Cargo.toml
       - run: bash scripts/coverage-gate.sh selftest
       - run: bash scripts/coverage-gate.sh
       # #123's tamper boundary by execution: an `exit 0` public gate beside an
