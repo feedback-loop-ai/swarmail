@@ -25,11 +25,13 @@ COPY --from=build /app/target/release/swarmail /swarmail
 # older image stays root-owned until the operator chowns it.
 COPY --from=build --chown=65532:65532 /data-empty /data
 VOLUME /data
-# /tmp as on any Unix host: world-writable with the sticky bit, so the
-# identity lock's per-uid directory under it (decision 0047 §1) can be made
-# by uid 65532 and by any uid an operator runs the image as. The chart
-# mounts an emptyDir over it beside its read-only root filesystem.
-COPY --from=build --chmod=1777 /tmp-empty /tmp
+# /tmp, which scratch lacks, for the identity lock's per-uid directory
+# (decision 0047 §1). Owned by the runtime uid, as /data is, which every
+# builder honours; 1777 (world-writable, sticky, as on any Unix host) is
+# asked for too, so an operator's other --user works where the builder
+# applies --chmod to a directory. The chart mounts an emptyDir over /tmp
+# beside its read-only root filesystem.
+COPY --from=build --chown=65532:65532 --chmod=1777 /tmp-empty /tmp
 # The container contract (decision 0030 §1): the binary's defaults are
 # loopback, which a container's `-p` mappings could never reach — the image
 # states its binds explicitly so the published ports are real. An operator

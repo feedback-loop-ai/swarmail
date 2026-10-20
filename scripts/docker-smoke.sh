@@ -107,6 +107,12 @@ start() {
   local name="$1"; shift
   containers+=("$name")
   docker run -d --name "$name" -p 127.0.0.1::1025 -p 127.0.0.1::8025 "$@" "$image" >/dev/null
+  # A container that exits at startup publishes no ports; say why, from its own output.
+  sleep 1
+  if [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" != true ]; then
+    docker logs "$name" >&2 2>&1 || true
+    fail "$name exited at startup (status $(docker inspect -f '{{.State.ExitCode}}' "$name" 2>/dev/null))"
+  fi
   smtp="$(host_port "$name" 1025)" http="$(host_port "$name" 8025)"
   until_ok 60 "$name readiness (healthz + SMTP NOOP)" client ready 127.0.0.1 "$smtp" "$http"
 }
