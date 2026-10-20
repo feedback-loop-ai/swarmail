@@ -97,6 +97,13 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # The gate reads `cargo metadata --offline --locked` before it builds,
+      # so the locked dependencies must already be on disk. A cache keyed on
+      # the nightly's hash misses on every new nightly; fetch here, with the
+      # network CI has, and the gate itself stays offline.
+      - run: |
+          cargo fetch --locked
+          cargo fetch --locked --manifest-path tools/coverage-fn-scan/Cargo.toml
       - run: bash scripts/coverage-gate.sh selftest
       - run: bash scripts/coverage-gate.sh
       # #123's tamper boundary by execution: an `exit 0` public gate beside an
