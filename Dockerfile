@@ -11,8 +11,10 @@ ENV CARGO_NET_RETRY=10
 RUN cargo build --release --locked
 RUN strip target/release/swarmail
 # scratch has no shell to mkdir with: the empty data directory is made
-# here and copied in owned by the runtime uid (issue #103).
-RUN mkdir /data-empty
+# here and copied in owned by the runtime uid (issue #103), and so is an
+# empty /tmp — scratch has none, and the single-writer identity lock lives
+# under the fixed /tmp root (decision 0047 §1), so persistent startup needs it.
+RUN mkdir /data-empty /tmp-empty
 
 FROM scratch
 COPY --from=build /app/target/release/swarmail /swarmail
@@ -23,6 +25,11 @@ COPY --from=build /app/target/release/swarmail /swarmail
 # older image stays root-owned until the operator chowns it.
 COPY --from=build --chown=65532:65532 /data-empty /data
 VOLUME /data
+# /tmp as on any Unix host: world-writable with the sticky bit, so the
+# identity lock's per-uid directory under it (decision 0047 §1) can be made
+# by uid 65532 and by any uid an operator runs the image as. The chart
+# mounts an emptyDir over it beside its read-only root filesystem.
+COPY --from=build --chmod=1777 /tmp-empty /tmp
 # The container contract (decision 0030 §1): the binary's defaults are
 # loopback, which a container's `-p` mappings could never reach — the image
 # states its binds explicitly so the published ports are real. An operator

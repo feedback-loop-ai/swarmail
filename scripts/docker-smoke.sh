@@ -88,7 +88,9 @@ elif op == "send":
         sys.exit(f"DATA answered {code} {reply!r}, not 250")
 elif op == "has":
     http_port, inbox, marker = int(sys.argv[3]), sys.argv[4], sys.argv[5]
-    url = f"http://{host}:{http_port}/api/v1/inboxes/{inbox}/await?count=1&timeout_ms=0"
+    # The whole inbox, not an await: await answers only its first `count`
+    # matches, newest first, so an older mail would never be seen.
+    url = f"http://{host}:{http_port}/api/v1/inboxes/{inbox}/messages?limit=250"
     with urllib.request.urlopen(url, timeout=10) as r:
         body = json.load(r)
     subjects = [e.get("subject") for e in body.get("emails", [])]
