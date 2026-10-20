@@ -104,10 +104,18 @@ history_base() { # <repo>
         *)
           base="${CHART_PUSH_BEFORE:-}"
           [ -n "$base" ] || { refuse "push event without CHART_PUSH_BEFORE"; return 1; }
+          local main="${CHART_MAIN_REF:-origin/main}"
           if [[ "$base" =~ ^0+$ ]]; then
-            local main="${CHART_MAIN_REF:-origin/main}"
             base="$(git -C "$repo" merge-base HEAD "$main" 2>/dev/null)" \
               || { refuse "new branch: no merge-base with '${main}' (fetch full history)"; return 1; }
+          elif [ "${CHART_REF:-}" != refs/heads/main ] \
+            && ! git -C "$repo" rev-parse --verify --quiet "${base}^{commit}" >/dev/null; then
+            # A rewritten branch: a force-push left its old head out of the
+            # history (sealing re-signs every commit in place). The branch is
+            # judged from its merge-base with main, as a new branch is. main
+            # itself keeps refusing a missing before: its history only grows.
+            base="$(git -C "$repo" merge-base HEAD "$main" 2>/dev/null)" \
+              || { refuse "rewritten branch: no merge-base with '${main}' (fetch full history)"; return 1; }
           fi
           ;;
       esac
@@ -230,11 +238,17 @@ selftest() {
   g checkout -q -b feature; echo "z: 1" >"$T/repo/$CHART/values.yaml"; commit "unbumped on a new branch" >/dev/null
   CHART_EVENT=push CHART_REF=refs/heads/feature CHART_PUSH_BEFORE=0000000000000000000000000000000000000000 CHART_MAIN_REF=main \
     hist fail "a new branch with an unbumped chart" "not greater"
+  # A rewritten branch (its before force-pushed away, as sealing does):
+  # judged from the merge-base with main, never refused for the gone head.
+  CHART_EVENT=push CHART_REF=refs/heads/feature CHART_PUSH_BEFORE=0123456789abcdef0123456789abcdef01234567 CHART_MAIN_REF=main \
+    hist fail "a rewritten branch with an unbumped chart" "not greater"
   CHART_EVENT=push CHART_REF=refs/heads/feature CHART_PUSH_BEFORE=0000000000000000000000000000000000000000 CHART_MAIN_REF=origin/main \
     hist fail "a new branch without main's history" "no merge-base"
   chart 0.2.0 0.1.0; commit "bumped on the branch" >/dev/null
   CHART_EVENT=push CHART_REF=refs/heads/feature CHART_PUSH_BEFORE=0000000000000000000000000000000000000000 CHART_MAIN_REF=main \
     hist pass "a new branch with a bumped chart"
+  CHART_EVENT=push CHART_REF=refs/heads/feature CHART_PUSH_BEFORE=0123456789abcdef0123456789abcdef01234567 CHART_MAIN_REF=main \
+    hist pass "a rewritten branch with a bumped chart"
 
   # History, tag: the nearest earlier release tag, never the candidate's
   # own; a baseline without the chart is an addition; no tag refuses.
