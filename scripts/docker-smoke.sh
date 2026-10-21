@@ -88,7 +88,9 @@ elif op == "send":
         sys.exit(f"DATA answered {code} {reply!r}, not 250")
 elif op == "has":
     http_port, inbox, marker = int(sys.argv[3]), sys.argv[4], sys.argv[5]
-    url = f"http://{host}:{http_port}/api/v1/inboxes/{inbox}/await?count=1&timeout_ms=0"
+    # The whole inbox, not an await: await answers only its first `count`
+    # matches, newest first, so an older mail would never be seen.
+    url = f"http://{host}:{http_port}/api/v1/inboxes/{inbox}/messages?limit=250"
     with urllib.request.urlopen(url, timeout=10) as r:
         body = json.load(r)
     subjects = [e.get("subject") for e in body.get("emails", [])]
@@ -105,6 +107,12 @@ start() {
   local name="$1"; shift
   containers+=("$name")
   docker run -d --name "$name" -p 127.0.0.1::1025 -p 127.0.0.1::8025 "$@" "$image" >/dev/null
+  # A container that exits at startup publishes no ports; say why, from its own output.
+  sleep 1
+  if [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" != true ]; then
+    docker logs "$name" >&2 2>&1 || true
+    fail "$name exited at startup (status $(docker inspect -f '{{.State.ExitCode}}' "$name" 2>/dev/null))"
+  fi
   smtp="$(host_port "$name" 1025)" http="$(host_port "$name" 8025)"
   until_ok 60 "$name readiness (healthz + SMTP NOOP)" client ready 127.0.0.1 "$smtp" "$http"
 }
