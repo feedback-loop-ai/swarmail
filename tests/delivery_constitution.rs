@@ -151,6 +151,7 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
         "\"bash $pin_q/coverage-gate.sh selftest\"",
         "\"bash $pin_q/design-check.sh selftest\"",
         "\"bash $pin_q/publish-guard-test.sh\"",
+        "\"bash $pin_q/seal-branch-test.sh\"",
     ] {
         assert!(seat.contains(gate), "verify-seat.sh does not run {gate}");
     }
@@ -173,7 +174,9 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
             "scripts/publish-guard.sh",
             "scripts/publish-guard-test.sh",
             "scripts/design-check.sh",
-            ".specify/scripts/bash/check-prerequisites.sh"
+            ".specify/scripts/bash/check-prerequisites.sh",
+            "scripts/seal-branch.sh",
+            "scripts/seal-branch-test.sh"
         ]
     );
     for shim in &listed {

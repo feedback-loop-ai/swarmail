@@ -51,6 +51,7 @@ brokkr compile --bundle bundles/self   # the brokkr pinned in bundles/self/tooli
 bash scripts/coverage-gate.sh          # the floor may rise, never fall
 bash scripts/coverage-gate.sh selftest # the gate's verdict is untrusted without it
 bash scripts/publish-guard-test.sh     # the publish guard's proof
+bash scripts/seal-branch-test.sh       # the seal tool's keyless proof (0056)
 cargo deny check licenses              # permissive-only tree
 ```
 
@@ -133,7 +134,7 @@ test lives; the axis is **cold-path presence**, not seam access:
 
 The gate scripts themselves are the pinned bundle's
 (`bundles/self/scripts/`, decision 0050 §1): `scripts/coverage-gate.sh`,
-`scripts/publish-guard*.sh`, `scripts/design-check.sh` and
+`scripts/publish-guard*.sh`, `scripts/design-check.sh`, `scripts/seal-branch*.sh` and
 `.specify/scripts/bash/check-prerequisites.sh` are fixed dispatch shims the
 verify seat checks against `bundles/self/scripts/shims.sha256` and never
 executes; it runs the pinned copies against the candidate.
@@ -157,21 +158,35 @@ is CC-BY-4.0 data the crate packages for the entity table's proof
 
 ## Commits and history
 
-Every author commit on a PR branch is GPG-signed with the operator's key
-(`commit.gpgsign` is set repo-locally); an unsigned author commit is
-re-signed by the operator before its branch merges. There is no standing
-permission to land one unsigned: a seat that cannot reach the key stops
-and reports it, and its work is committed signed by the operator. Write
-messages in the repository's style: imperative mood, a body that says
-why, not what the diff shows.
+Author commits are unsigned until sealed (decision
+[0056](decisions/0056-signing-policy.md), *accepted*, operator, 2026-10-20).
+Seats and the operator's assistant commit unsigned (`commit.gpgsign=false`
+is set repo-locally), never push, and never stop because signing is
+unavailable — nothing signs mid-run. Write messages in the repository's
+style: imperative mood, a body that says why, not what the diff shows.
 
-Three kinds of signature are on record, and they are not interchangeable:
+The operator seals every PR branch before merge with
+`scripts/seal-branch.sh` (`--check` first; it never fetches, so fetch
+before it): each commit of the branch is re-created and signed on its own
+parents, on the same merge-base — tree, message, author and parent edges
+unchanged, committer and signature new — and the branch moves only after
+every one is verified, with a leased force-push on `--push`. Never rebase
+or squash when sealing, and never onto a newer `main`. Seal before
+updating a branch from `main`, so the merge commit GitHub creates for that
+update stays GitHub-signed and is never re-signed as the operator's.
 
-- **Signed branch authorship** — the requirement above; the PR branch keeps
-  the operator-signed author commits (epic #120's branches, for example).
-- **GitHub-signed squash merges** — the commit on `main` is signed by
-  GitHub's key, not the operator's; it vouches for the merge, not for the
-  authorship, and its message lists the branch commits it squashed.
+Three kinds of signature are on record, and they mean different things:
+
+- **Sealed branch authorship** — the operator's signature added at the end
+  by `scripts/seal-branch.sh`: the operator vouches for every author commit
+  of the PR branch. (Author commits signed at commit time before
+  2026-10-20 carry the same meaning and remain as recorded.)
+- **GitHub landing** — a squash merge, or a merge commit created on GitHub,
+  is signed by GitHub's key, not the operator's; the sealed author commits
+  remain on the PR branch.
+- **Release tags** — signed by the operator when cutting a release
+  (`CONTRIBUTING.md`, Releases); sealing never touches a tag.
+
 - **Documented historical exceptions** — the squash messages of #107
   (`d9a66f4`), #108 (`745d6ad`) and #109 (`bacadbe`) record eleven author
   commits as "not GPG-signed" (pinentry could not prompt in the seat's
@@ -182,8 +197,9 @@ Three kinds of signature are on record, and they are not interchangeable:
   as `N`). They stay as recorded: `main` is not rewritten to re-sign them,
   and they set no precedent.
 
-History is append-only on `main`; force-push only ever repairs signed
-history the operator asked to re-sign.
+Those exceptions stay as recorded; none is a standing permission. History is append-only on `main`; force-push only ever
+touches a PR branch — sealing it, or repairing signed history the operator
+asked to re-sign.
 
 ## Delivery through brokkr
 

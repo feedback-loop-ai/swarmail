@@ -19,7 +19,9 @@ Leave every gate in the one inventory,
 [`docs/house-rules.md` § Gates](docs/house-rules.md#gates--part-of-every-change), clean before
 reporting success — all of it, `--locked`, the coverage selftest and the
 publish-guard proof included; that section also names what only CI
-proves. This file keeps no copy of the list. Never report
+proves. This file keeps no copy of the list. Commit unsigned, never push,
+and never stop for signing — the operator seals the branch before merge
+(0056). Never report
 `complete` while required work remains; never widen the dependency allowlist
 without a defensible reason.
 
