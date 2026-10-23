@@ -10,7 +10,7 @@ and all inherited audit/mutation records. Only the engine advances phases.
 ## Current ordered tasks — 2026-10-23
 
 - [x] C01 — Establish current source, tool and evidence identities and full finding/AC inventory (C01, AC01–AC18). **Test:** compare HEAD/tree/clean status with preparation receipt, implementation and original handoff; hash current scripts/helpers and immutable origin separately; confirm all source issue/comment findings and AC01–AC18 remain mapped, original audit/receipt bytes intact and no baseline/journal mutation. Record every unavailable resource explicitly.
-- [ ] C02 — Finish real Helm metadata/package equivalence and chart refusal controls (C02, AC02/05/11). **Test:** verify official v3.16.3 digest; record actual show/package/selftest/verify and real Git history executions; compare both fields through helper, extracted CI bodies and package metadata for supported quoting/comments/whitespace. All specified malformed/ambiguous cases refuse with empty usable output. First-key CI and repaired/render-arm mutants fail their owning assertions, restored bytes pass. Prove optional Helm branches ran rather than relying on exit 0.
+- [x] C02 — Finish real Helm metadata/package equivalence and chart refusal controls (C02, AC02/05/11). **Test:** verify official v3.16.3 digest; record actual show/package/selftest/verify and real Git history executions; compare both fields through helper, extracted CI bodies and package metadata for supported quoting/comments/whitespace. All specified malformed/ambiguous cases refuse with empty usable output. First-key CI and repaired/render-arm mutants fail their owning assertions, restored bytes pass. Prove optional Helm branches ran rather than relying on exit 0.
 - [x] C03 — Revalidate credential, registry, SemVer and socket proof contracts (C03, AC03/05/08/10/12/13). **Test:** execute real curl/HTTP with synthetic-only credentials and argv observations; replay all corresponding inherited mutants for headers, argv, loose validator, v probe, held socket and distinct unknown arms; exact failure diagnostics and restored greens required. Preserve raw-000 reachability evidence and classification-only labeling beside independent manifest transport failure.
 - [x] C04 — Revalidate actual workflow guard dominance and propagation (C03, AC07). **Test:** run current parsed checker and relevant extracted shell bodies; replay all recorded workflow mutations, including absent/reordered/skipped/commented/softened guards, job/step continue-on-error, ignored shell failures, missing prerequisites and failed/skipped/cancelled Docker success propagation. Each fails for its own defect; restored workflow passes; continuous main/sha behavior remains accepted.
 - [x] C05 — Revalidate scope/privacy and crate attribution with actual Cargo (C04, AC01/04/06/09/14/15). **Test:** execute inherited audit assertions from a private driver copy redirecting only its output to new evidence (the original driver writes audit.json), plus separate continuation scope check; home-prefix grep exits exactly 1 empty; UI executable bytes, H comment, accepted 0019 prefix and exact 20 transformations remain preserved. Locked actual package listing/archive retains license/data/NOTICE bytes and excludes in-tree cache decoys; unanchored mutation exposes decoys and fails the package assertion, restoration passes. Verify provenance/README and green deny with no dependency/version/allowlist change.
@@ -21,30 +21,38 @@ and all inherited audit/mutation records. Only the engine advances phases.
 - [ ] C10 — Complete actual successful hermetic ship for compatible continuation and final handoff (C07, AC18). **Test:** engine ship receipt identifies the verified/reviewed current candidate and no close-out discrepancy. Final report names all required missing host/CI/external evidence concretely and keeps AC17/18.5/#186/#192 open. The coordinator alone handles task-authorized CI-green GitHub-signed squash landing; seats never push, merge or publish.
 - [ ] C11 — External obligation, only after separate release authorization: link the next real guarded GHCR 404-then-publish receipt (C06, AC17). **Test:** actual authorized workflow/jobs, ref/versions, prerequisite/rate results, redacted both-image/bare-chart probes, ordering, image success before chart preflight/push, artifact/readback digests and partial failures match the full spec checklist. This task stays EXPLICIT EXTERNAL PENDING during compatible delivery; local fixtures, host image proof and ship cannot satisfy it. Do not execute a release under this task's current authorization.
 
-## Current implementation disposition — 2026-10-23
+## Current implementation disposition — 2026-10-23, retry 504bf6f3
 
-See the dated continuation appendix in [handoff.md](handoff.md) and ignored
-`continuation/implement/` receipts. C01/C03–C07 have current paired evidence;
-all original T-task marks/text below remain historical and unchanged. C06 uses
-source-reconciled **coordinator host** build/extraction/missing-COPY/restoration
-receipts and current crate/NOTICE byte comparison, not a namespace Docker pass.
+C01–C07 have source-bound evidence. C02's specific missing Helm proof is now
+resolved by coordinator host `implement/helm-host-coordinator-full-ed8f69/`:
+actual Helm-enabled selftest, full six-scenario both-field quote/whitespace/
+comment show/package matrix, verify and CRD/replica red/restored controls.
+`retry-504bf6f3/helm-validation.json` verifies 70 evidence files, all 442
+source files and 30 command/log records at exact `ed8f69d`. The isolated
+positive-fixture Cargo/appVersion coherence correction and both driver
+identities are preserved; no live source or assertion was weakened.
+The earlier broken result remains historical in the append-only handoff.
 
-C02 remains open: supplied actual Helm receipts are useful but the full
-Helm-enabled optional-selftest and both-field quote/whitespace show/package
-matrix still lacks a receipt. A precise coordinator-only driver is ready at
-`.forge/epic192/continuation/implement/helm-request.py`. The implementation
-result is broken for this specific proof gap; no broader scope or product
-gate failure was found. External release authorization is not the cause.
+All nine house gates plus five extras/package checks pass afresh at the clean
+starting candidate, with exact 100% coverage and expected native-tls no-match.
+The fresh publish proof records all 51 workflow mutation controls; scope and
+actual CI duplicate controls also pass. The earlier 21 script mutations and
+immutable replays retain their identities and provenance. C06's reconciled
+coordinator host image proof still matches the actual current crate NOTICE.
+The final tracked delta adds only truthful handoff/task documentation.
 
-C08's local portion passes all nine house gates, exact coverage, configured
-extras, root package operations, native-tls no-match and seven distinct
-immutable replay checks. C08 stays unchecked until actual hermetic engine
-verify, and C09/C10 stay unchecked until actual fixed-provider reviews/ship.
-No nested run or claimed prior/current engine delivery substitutes for them.
-C11 / AC17 / #186 finding 18.5 remains **EXPLICIT EXTERNAL PENDING**, separately
-from the Helm request. No release, registry action or story/epic closure is
-authorized. CI-only obligations and the #184 errata-first integration remain
-listed in the handoff. No gate, AC, historical failure or unknown was waived.
+The implementation-phase result is complete; actual current engine phases
+are still required. C08 stays unchecked for hermetic engine verify, C09 for
+the four fixed independent reviews, and C10 for successful ship. No nested
+run, local proof or inherited result substitutes for those phases. CI-only
+obligations remain separately named in the handoff. Work is committed
+unsigned; no push/merge/release or decision adoption occurs in this seat.
+
+C11 / AC17 / #186 finding 18.5 remains **EXPLICIT EXTERNAL PENDING** for a
+separately authorized real guarded GHCR404-then-publish receipt. It is not
+passed or waived and does not alone block compatible delivery. Finding 18.5,
+story #186 and epic #192 remain open. Deferred #184 still integrates A's 0019
+errata before its exclusive corrected-0051 adoption. H's work is preserved.
 
 ## Historical task record — original implementation and retry
 

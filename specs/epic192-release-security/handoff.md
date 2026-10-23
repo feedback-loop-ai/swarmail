@@ -320,3 +320,112 @@ denominator, runtime policy or other candidate changed. The disposition commit
 is unsigned and never pushed; its identity is recorded in current final Git
 evidence. Coordinator-only CI-green landing remains distinct from release
 permission. AC17 / finding 18.5 / story #186 / epic #192 remain open.
+
+
+## Continuation implementation retry — Helm proof resolved, 2026-10-23
+
+This retry starts at unsigned `ed8f69dbc70116b216201dee0bb367775ec47678`,
+tree `3837178cbdbe20d363cb3b3e375a0e50160bb6aa`, with a clean worktree.
+The current triage framing is `engine`; the actual deterministic check is
+`designed` for chief `4319d8d`. Both were read before work. The earlier
+`broken` result and all dispositions above remain as actually returned.
+No executable implementation change was needed. This appendix and the
+current task disposition are the only tracked changes in this retry.
+
+### C02 / AC02, AC05, AC11: coordinator evidence now received
+
+The coordinator supplied additive evidence at
+`.forge/epic192/continuation/implement/helm-host-coordinator-full-ed8f69/`.
+Its `receipt.json` has SHA-256
+`1d181d198cc6b113842a169bd004af6e3128467b3dfa193d771effe96efae62c`.
+It binds the exact starting commit/tree and clean source archive
+`04ea33f980c9186be13a2bf78a084c435080dc3a721885bcf9c549078b612bc4`
+to official Helm v3.16.3, binary SHA-256
+`6a1dffedcf78a687aedc71a918cff0af8f0988184488dddb3615e24abc4e7f2b`.
+
+`retry-504bf6f3/validate-host.py` and `helm-validation.json` validate all
+70 supplied files against their manifest, all 442 source files against the
+candidate, the Git archive, actual extracted CI body, driver identities and
+all 30 command exits/stdout/stderr hashes. The actual Helm-enabled unchanged
+selftest exits 0; its first three observed calls are real `helm show chart`
+for the optional three-quote comparison. Its metadata, actual CI bodies,
+coherence and private real-Git history cases finish successfully. Full
+`verify` also exits 0. Six plain/single/double-quote × current/prerelease
+scenarios compare **both** fields with whitespace/comments through the owner,
+actual CI body, real Helm show and actual package inspection. Their exact
+fixture bytes and package hashes are recorded. CRD and replica-refusal
+removal controls each exit 1 at their owning assertion; restored controls
+exit 0. Thus 28 ordinary/restored commands pass and the two intended mutants
+fail. The previous first-key/repaired-refusal mutation receipts remain intact;
+the narrow actual historical CI duplicate control was executed again locally.
+
+The requested driver had left Cargo at 0.1.0 when its positive prerelease
+fixture selected another appVersion. The executed isolated driver adds only
+fixture Cargo-version alignment, preserving the real CI coherence check.
+`requested-driver.py`, `executed-driver.py` and
+`driver-fixture-coherence.patch` preserve that exact two-line adjustment;
+the executed digest is
+`8c5353c7a4d7e909178acdce4566000153cc7c8dfaa25078fd7d7a073bd45ed8`.
+The original requested driver and live Cargo/workflow/chart bytes are unchanged.
+These are **coordinator host** proofs, not namespace Helm execution, CI or
+engine verification. They resolve the concrete C02 gap that caused the
+preceding broken result; no gate or assertion was skipped or weakened.
+
+### Fresh local proofs and preserved scope
+
+New local evidence is `.forge/epic192/continuation/retry-504bf6f3/`.
+`gates-fmt.json`, `gates-coverage.json` and
+`gates-coverage-selftest.json` record all nine house gates and five additional
+checks/package operations at the clean starting candidate: every one of the
+14 commands exits 0. The engine digest matches its pin. Exact coverage is
+**12,446/12,446 lines; 724/724 branches; 1,379/1,379 functions**;
+full report: `target/coverage/run.DZdBHj/`. Coverage selftest, canonical
+publish proof, seal proof, deny, design selftest, delivery tamper proof,
+recipe/constitution tests and actual locked root package list/archive pass.
+The publish proof again produces 51 workflow mutation-red/restored-green
+controls. `native-tls.json` accepts only the expected exit-101 no-match.
+
+`focused.json` identifies fresh scope audit, actual historical CI duplicate
+red/restored control, chart selftest and chart history against real base
+`4970a512`: all exit 0. Local selftest availability is not substituted for
+the host's actual Helm branch. The original 21 script controls and seven
+immutable replay receipts retain their bytes and original provenance; no
+fresh engine dispatch is inferred from them. `summary.json` rechecks gate
+logs and inherited records, both host evidence sets and exact current
+crate/archive NOTICE equality with the coordinator's readable 0444 image
+NOTICE. The earlier image receipt stays a source-reconciled base-4970a512
+host build, not a final-HEAD rebuild or CI persistence smoke.
+
+The original audit, every inherited receipt and the historical handoff
+prefix remain byte-identical. UI executable bytes, H's first Dockerfile
+comment, accepted 0019 prefix and exact 20 privacy-only transformations are
+preserved. No dependency, version, allowlist, denominator, runtime policy,
+public shim, baseline, pin, recipe, other candidate or journal changed.
+The final documentation-only delta is recorded separately from the tested
+starting commit; no final-HEAD gate dispatch is invented.
+
+### Phase result and required downstream work
+
+The compatible **implementation phase** is now ready for engine verification.
+C02 is satisfied; C08's local portion is green. C08 remains unchecked for
+actual current hermetic engine verify; C09 remains unchecked for actual Qwen
+Max correctness, Opus security, official DeepSeek Flash guarantees and
+DashScope GLM 5.3 tests, without fallback; C10 remains unchecked for successful
+hermetic ship. This seat launches no nested run and claims none of those
+future phase results. Prior runs still never verified, reviewed or shipped.
+
+CI-only event-baseline/history, real Docker stop/kill persistence/context/
+volume smoke, network RustSec, tag-only same-run release-rate-5k and actual
+port-80 bridge remain separately required. Coordinator host receipts do not
+certify those jobs. Deferred #184 still exclusively integrates `26f6430`'s
+0019 errata before checking/applying corrected accepted-0051 adoption; that
+acceptance is settled. H ownership remains intact. This disposition is
+committed unsigned and never pushed. Coordinator-only CI-green signed-squash
+landing remains separate from any release authority.
+
+**EXPLICIT EXTERNAL PENDING:** AC17 / #186 finding 18.5 still requires the next
+separately authorized real guarded GHCR 404-then-publish receipt against the
+unchanged release checklist in spec.md. C11 remains open. No release, tag,
+publication, registry deletion, merge or story/epic closure was attempted.
+This implementation result does not close finding 18.5, story #186 or epic
+#192 and does not treat the unauthorized release act as a global blocker.
