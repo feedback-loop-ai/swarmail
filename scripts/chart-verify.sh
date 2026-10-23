@@ -5,7 +5,7 @@
 # does not run it. Every render lands in one private `mktemp -d` scratch
 # removed on exit, so two concurrent runs never share a path (issue #104).
 #
-#   usage: chart-verify.sh [verify|history|selftest]
+#   usage: chart-verify.sh [verify|history|selftest|metadata [path]]
 #   verify   (default) version coherence, then lint, render and assert.
 #   history  the chart-bump check against the CI event's baseline (issue
 #            #141, proposed 0051 §2): a change to any file under the chart
@@ -31,19 +31,6 @@ export CHART_SCRATCH="$S"
 
 refuse() { echo "chart-verify: refusing: $*" >&2; return 1; }
 
-# A strict release version: semver without build metadata, the shape the
-# publish guard admits ('+' is unprovable in an OCI tag).
-valid_version() {
-  [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] || return 1
-  local pre="${1#*-}" id
-  [ "$pre" = "$1" ] && return 0
-  local IFS=.
-  for id in $pre; do
-    [[ "$id" =~ ^0[0-9]+$ ]] && return 1
-  done
-  return 0
-}
-
 # Exit 0 iff $1 > $2 in semver precedence (numeric fields compare as
 # numbers — 0.1.10 > 0.1.9 — and a prerelease ranks below its release).
 version_gt() {
@@ -62,10 +49,52 @@ sys.exit(0 if key(sys.argv[1]) > key(sys.argv[2]) else 1)
 PY
 }
 
-# One top-level scalar of a Chart.yaml text on stdin (`version:`,
-# `appVersion:`), quotes stripped.
+# One YAML owner for CI, current coherence and historical manifests. Refuse
+# ambiguous documents before emitting either output (including quoted keys).
+chart_metadata() { # [path|-] — stdin by default
+  python3 -c '
+import re, sys, yaml
+from yaml.events import AliasEvent
+class UniqueLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for k, _ in node.value:
+            if k.tag != "tag:yaml.org,2002:str":
+                raise ValueError("metadata keys must be strings; merges unsupported")
+            key = self.construct_object(k, deep=deep)
+            if key in seen:
+                raise ValueError("duplicate metadata key: " + key)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+def valid(v):
+    if not isinstance(v, str) or not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?", v):
+        return False
+    pre = v.partition("-")[2]
+    return all(not (i.isascii() and i.isdigit() and len(i)>1 and i[0]=="0") for i in pre.split("."))
+try:
+    text = sys.stdin.read() if sys.argv[1] == "-" else open(sys.argv[1]).read()
+    for event in yaml.parse(text):
+        if isinstance(event, AliasEvent) or getattr(event, "anchor", None):
+            raise ValueError("metadata aliases/anchors unsupported")
+    data = yaml.load(text, Loader=UniqueLoader)
+    if not isinstance(data, dict):
+        raise ValueError("metadata must be one mapping")
+    for key in ("version", "appVersion"):
+        if not valid(data.get(key)):
+            raise ValueError("Chart.yaml " + key + " is not a release semver string")
+    print("version=" + data["version"])
+    print("app=" + data["appVersion"])
+except (ValueError, yaml.YAMLError, OSError) as e:
+    sys.exit("chart-verify: refusing: " + str(e))
+' "${1:--}"
+}
 chart_field() {
-  sed -n "s/^$1: *\"\{0,1\}\([^\"]*\)\"\{0,1\} *\$/\1/p" | head -1
+  local metadata
+  metadata="$(chart_metadata)" || return 1
+  case "$1" in
+    version) sed -n "s/^version=//p" <<<"$metadata" ;;
+    appVersion) sed -n "s/^app=//p" <<<"$metadata" ;;
+  esac
 }
 
 # appVersion is Cargo's version, and the Artifact Hub image the chart
@@ -74,10 +103,8 @@ chart_field() {
 check_coherence() { # <root>
   local root="$1" cargo app chart image
   cargo="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
-  app="$(chart_field appVersion <"$root/$CHART/Chart.yaml")"
-  chart="$(chart_field version <"$root/$CHART/Chart.yaml")"
-  valid_version "$chart" || refuse "Chart.yaml version '${chart}' is not a release semver" || return 1
-  valid_version "$app" || refuse "Chart.yaml appVersion '${app}' is not a release semver" || return 1
+  app="$(chart_field appVersion <"$root/$CHART/Chart.yaml")" || return 1
+  chart="$(chart_field version <"$root/$CHART/Chart.yaml")" || return 1
   [ "$app" = "$cargo" ] \
     || refuse "Chart.yaml appVersion '${app}' is not Cargo.toml's version '${cargo}'" || return 1
   image="$(sed -n 's/^ *image: \(ghcr\.io\/feedback-loop-ai\/swarmail:.*\)$/\1/p' "$root/$CHART/Chart.yaml")"
@@ -132,8 +159,7 @@ history_base() { # <repo>
 check_history() { # <repo>
   local repo="$1" base now was
   base="$(history_base "$repo")" || return 1
-  now="$(git -C "$repo" show "HEAD:$CHART/Chart.yaml" | chart_field version)"
-  valid_version "$now" || { refuse "chart version '${now}' is not a release semver"; return 1; }
+  now="$(git -C "$repo" show "HEAD:$CHART/Chart.yaml" | chart_field version)" || return 1
   if git -C "$repo" diff --quiet "$base" HEAD -- "$CHART"; then
     echo "chart-verify: history: no chart change since ${base:0:12}"
     return 0
@@ -142,8 +168,7 @@ check_history() { # <repo>
     echo "chart-verify: history: the chart is new since ${base:0:12} (version ${now})"
     return 0
   fi
-  was="$(git -C "$repo" show "${base}:$CHART/Chart.yaml" | chart_field version)"
-  valid_version "$was" || { refuse "baseline chart version '${was}' is not a release semver"; return 1; }
+  was="$(git -C "$repo" show "${base}:$CHART/Chart.yaml" | chart_field version)" || { refuse "baseline chart metadata invalid"; return 1; }
   version_gt "$now" "$was" \
     || { refuse "the chart changed since ${base:0:12} but its version '${now}' is not greater than '${was}' — bump charts/swarmail/Chart.yaml"; return 1; }
   echo "chart-verify: history: chart ${was} -> ${now} since ${base:0:12}"
@@ -175,15 +200,16 @@ selftest() {
       bad "history: ${desc}: refusal must name '${needle}': $(cat "$T/err")"
     fi
   }
-  coh() { # <expect pass|fail> <desc>
+  coh() { # <expect pass|fail> <desc> [needle]
     local got=pass
     check_coherence "$T/repo" >/dev/null 2>"$T/err" || got=fail
     [ "$got" = "$1" ] || bad "coherence: $2: expected $1, got ${got}: $(cat "$T/err")"
+    if [ -n "${3:-}" ]; then
+      grep -qF "$3" "$T/err" || bad "coherence: $2: missing diagnostic $3: $(cat "$T/err")"
+    fi
   }
 
-  # Versions: strict shape and numeric precedence.
-  for v in 0.1.0 1.20.3 0.1.10 1.0.0-rc.1 1.0.0-alpha-2; do valid_version "$v" || bad "valid version '$v' refused"; done
-  for v in 01.0.0 0.1 v0.1.0 0.1.0+build 1.0.0-01 '' 'x.y.z' '0.1.0 '; do valid_version "$v" && bad "malformed version '$v' admitted"; done
+  # Numeric precedence; strict validation is exercised through CI below.
   version_gt 0.1.10 0.1.9 || bad "0.1.10 must rank above 0.1.9"
   version_gt 0.1.9 0.1.10 && bad "0.1.9 must not rank above 0.1.10"
   version_gt 1.0.0 1.0.0-rc.2 || bad "a release must rank above its prerelease"
@@ -194,9 +220,76 @@ selftest() {
   # Coherence: appVersion is Cargo's; the annotation is appVersion's image.
   fresh 0.1.0; chart 0.1.1 0.1.0; coh pass "chart 0.1.1 preparing over app 0.1.0"
   fresh 0.2.0; chart 0.1.1 0.2.0; coh pass "a changed app version, coherent"
-  fresh 0.2.0; chart 0.1.1 0.1.0; coh fail "appVersion behind Cargo"
-  fresh 0.1.0; chart 0.1.1 0.1.0 ghcr.io/feedback-loop-ai/swarmail:0.0.9; coh fail "a stale annotation image"
-  fresh 0.1.0; chart 0.1 0.1.0; coh fail "a malformed chart version"
+  fresh 0.2.0; chart 0.1.1 0.1.0; coh fail "appVersion behind Cargo" "not Cargo.toml"
+  fresh 0.1.0; chart 0.1.1 0.1.0 ghcr.io/feedback-loop-ai/swarmail:0.0.9; coh fail "a stale annotation image" "artifacthub.io/images"
+  fresh 0.1.0; chart 0.1 0.1.0; coh fail "a malformed chart version" "version is not a release semver string"
+
+  fresh; chart 0.1.1 0.1; coh fail "a malformed appVersion" "appVersion is not a release semver string"
+
+  # Real metadata evaluator and actual workflow run bodies. Copies live only
+  # in the fixture; the script resolves its root just as it does in CI.
+  mkdir -p "$T/repo/scripts"
+  cp scripts/chart-verify.sh "$T/repo/scripts/"
+  python3 - "$T/repo" .github/workflows/ci.yml <<'PYTEST'
+import os, pathlib, subprocess, sys, yaml
+root = pathlib.Path(sys.argv[1]); workflow = yaml.safe_load(open(sys.argv[2]))
+chartfile = root / "charts/swarmail/Chart.yaml"
+blocks = {s["id"]: s["run"] for j in workflow["jobs"].values() for s in j.get("steps", []) if s.get("id") in ("ver", "chartver")}
+def run(body, ok, needle=""):
+    output = root / "output"
+    output.write_text("")
+    p = subprocess.run(["bash", "-c", body], cwd=root, env={**os.environ, "GITHUB_OUTPUT": str(output)}, capture_output=True, text=True)
+    assert (p.returncode == 0) == ok, (needle or "CI version body", p.returncode, p.stderr, body)
+    if not ok:
+        assert output.read_text() == "", "invalid metadata reached GITHUB_OUTPUT"
+        assert needle in p.stderr, (needle, p.stderr)
+    return output.read_text()
+valid = ("0.0.0", "1.0.0-0", "1.0.0-alpha.1", "1.0.0-alpha-01")
+invalid = ("01.0.0", "1.0.0-01", "1.0.0-.a", "1.0.0-a.", "1.0.0-a..b", "0.1", "x.y.z", "1.0.0+build")
+for v in valid + invalid:
+    (root / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "'+v+'"\n')
+    chartfile.write_text("version: "+v+"\nappVersion: "+v+"\n")
+    for body in blocks.values():
+        run(body, v in valid)
+(root / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "1.0.0"\n')
+# Invalid appVersion must refuse even if Cargo carries the same invalid
+# string; otherwise the equality check would disguise missing validation.
+for v in invalid:
+    (root / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "'+v+'"\n')
+    chartfile.write_text("version: 1.0.0\nappVersion: "+v+"\n")
+    run(blocks["chartver"], False, "appVersion")
+(root / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "1.0.0"\n')
+for q in ('', "'", '"'):
+    chartfile.write_text("version: "+q+"1.0.0"+q+" # comment\nappVersion: "+q+"1.0.0"+q+"\n")
+    assert run(blocks["chartver"], True) == "version=1.0.0\napp=1.0.0\n"
+    # When Helm is installed this is a real parser equivalence check.
+    import shutil
+    if shutil.which("helm"):
+        chartfile.write_text("apiVersion: v2\nname: fixture\n"+chartfile.read_text())
+        p = subprocess.run(["helm", "show", "chart", str(chartfile.parent)], capture_output=True, text=True, check=True)
+        helm = yaml.safe_load(p.stdout)
+        assert helm["version"] == helm["appVersion"] == "1.0.0"
+run("bash scripts/chart-verify.sh metadata missing-chart.yaml", False, "No such file")
+base = "version: 1.0.0\nappVersion: 1.0.0\n"
+for text, needle in [
+    (base+'"version": 2.0.0\n',"duplicate"),
+    ('"version": 2.0.0\n'+base,"duplicate"),
+    (base+'"appVersion": 2.0.0\n',"duplicate"),
+    ('"appVersion": 2.0.0\n'+base,"duplicate"),
+    ("version: 1.0.0\n", "appVersion"),
+    ("appVersion: 1.0.0\n", "version"),
+    ("version: 1.0\nappVersion: 1.0.0\n", "version"),
+    ("version: 1.0.0\nappVersion: []\n", "appVersion"),
+    ("- item\n", "mapping"),
+    (base+"---\n"+base, "single document"),
+    (base+"x: &x hi\ny: *x\n", "aliases/anchors"),
+    (base+"<<: {x: y}\n", "merges unsupported"),
+    (base+"[bad", "expected <block end>"),
+]:
+    chartfile.write_text(text)
+    run(blocks["chartver"], False, needle)
+print("chart metadata and actual CI run bodies: OK")
+PYTEST
 
   # History, pull_request: the whole PR, not its last commit.
   fresh; chart 0.1.0 0.1.0; base="$(commit base)"
@@ -232,6 +325,13 @@ selftest() {
   CHART_EVENT=push CHART_REF=refs/heads/main CHART_PUSH_BEFORE="$(git -C "$T/repo" rev-parse HEAD^)" \
     hist fail "an unbumped edit after the bump" "not greater than '0.1.1'"
 
+  CHART_EVENT=push CHART_REF=refs/heads/main CHART_PUSH_BEFORE= hist fail "no push before" "without CHART_PUSH_BEFORE"
+  CHART_EVENT=push CHART_REF=refs/heads/feature CHART_PUSH_BEFORE=0123456789abcdef0123456789abcdef01234567 CHART_MAIN_REF=missing \
+    hist fail "rewritten branch without main" "rewritten branch: no merge-base"
+  fresh; chart 0.1 0.1.0; base="$(commit malformed-baseline)"
+  chart 0.1.1 0.1.0; commit repaired >/dev/null
+  CHART_EVENT=pull_request CHART_PR_BASE="$base" hist fail "malformed baseline" "baseline chart metadata invalid"
+
   # History, new branch (zero before): the merge-base with main, refused
   # when main is unknown — zero is never "no change".
   fresh; chart 0.1.0 0.1.0; commit base >/dev/null
@@ -263,15 +363,21 @@ selftest() {
   fresh; chart 0.1.0 0.1.0; commit only >/dev/null; echo x >"$T/repo/README.md"; commit two >/dev/null; g tag v0.1.0
   CHART_EVENT=push CHART_REF=refs/tags/v0.1.0 hist fail "no earlier release tag" "no earlier v* release tag"
 
+  if bash scripts/chart-verify.sh unknown-mode >"$T/out" 2>"$T/err"; then
+    bad "unknown mode admitted"
+  else
+    [ "$?" -eq 2 ] && grep -q 'usage: chart-verify.sh' "$T/err" || bad "unknown mode diagnostic/exit"
+  fi
   [ "$fail" -eq 0 ] || { echo "chart-verify selftest: RED" >&2; return 1; }
   echo "chart-verify selftest: OK — versions, coherence and every event baseline"
 }
 
 case "$MODE" in
+  metadata) chart_metadata "${2:--}"; exit ;;
   selftest) selftest; exit ;;
   history) check_history . ; exit ;;
   verify) ;;
-  *) echo "usage: chart-verify.sh [verify|history|selftest]" >&2; exit 2 ;;
+  *) echo "usage: chart-verify.sh [verify|history|selftest|metadata [path]]" >&2; exit 2 ;;
 esac
 
 command -v helm >/dev/null || { echo "helm is required" >&2; exit 1; }

@@ -60,7 +60,7 @@ verbatim — passes against the patched guard (`selftest pass`, exit 0).
   per the tree's current practice, disclosed in the result record.
 - **Six gates** re-run at the repaired commit before any success is
   reported (`export PATH="$HOME/.cargo/bin:$PATH"`; the coverage gate with
-  `TMPDIR=/home/valentin/scratch/cov-tmp`), from a **pristine tree** — never
+  `TMPDIR=/operator-scratch/cov-tmp`), from a **pristine tree** — never
   from a worktree carrying probe residue (the run's own disclosed lesson).
 
 ## Files touched
@@ -132,7 +132,7 @@ proven red at the base:
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-cd /home/valentin/source/feedback-loop-ai/swarmail
+cd <repository-root>
 
 # red proof (arms in, repair out) — expect exactly the two refuse arms red
 bash scripts/coverage-gate.sh selftest
@@ -147,7 +147,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 brokkr compile --bundle bundles/self
-TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh
+TMPDIR=/operator-scratch/cov-tmp bash scripts/coverage-gate.sh
 cargo deny check licenses
 ```
 

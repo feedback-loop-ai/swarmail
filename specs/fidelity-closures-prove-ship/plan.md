@@ -25,7 +25,7 @@ owns (`README.md`, `CONTRIBUTING.md`, `deny.toml`,
 The environment carries two hard-won facts the plan must respect: the
 coverage gate's instrumented build filled /tmp's tmpfs once (the
 predecessor's death), so the gate runs only with the disk-backed
-`TMPDIR=/home/valentin/scratch/cov-tmp`; and commits in this environment
+`TMPDIR=/operator-scratch/cov-tmp`; and commits in this environment
 are unsigned (pinentry cannot prompt) — the operator's own implement commit
 says so in its message, and this pass's commit follows that precedent.
 
@@ -72,7 +72,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 brokkr compile --bundle bundles/self
 cargo deny check licenses
-TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh   # exact 100/100/100 — never tmpfs
+TMPDIR=/operator-scratch/cov-tmp bash scripts/coverage-gate.sh   # exact 100/100/100 — never tmpfs
 ```
 
 Targeted filters for the per-issue demonstrations (real servers, per-test
@@ -145,7 +145,7 @@ operator asks for it, the release note under `docs/releases/`.
 cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked && brokkr compile --bundle bundles/self
 cargo deny check licenses
-TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh
+TMPDIR=/operator-scratch/cov-tmp bash scripts/coverage-gate.sh
 # demonstrate per issue (spec.md's proof sites)
 cargo test --test api smtp_html_hrefs_decode_character_references
 cargo test --lib extract && cargo test --lib persist && cargo test --lib threads
@@ -158,7 +158,7 @@ cargo test --test compat && cargo test --test ui
 ## Risks
 
 - **The coverage gate fills its tmpfs again.** *Mitigation:* absolute rule
-  — the gate runs only with `TMPDIR=/home/valentin/scratch/cov-tmp`
+  — the gate runs only with `TMPDIR=/operator-scratch/cov-tmp`
   (disk-backed, 290G free); never on tmpfs; run it once and record the
   output. Any "quick local re-run" without the TMPDIR is the predecessor's
   failure mode.

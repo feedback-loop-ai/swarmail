@@ -21,8 +21,7 @@ paths only in parent-declared `src/<module>/<name>_tests.rs` harnesses.
 - [ ] 2. Run the license gate and the coverage gate, in that order, and
   record both outputs.
   **Proved by:** `cargo deny check licenses` exit 0 with only the
-  recorded CDLA-Permissive-2.0 exception (AC-G.3); `TMPDIR=/home/
-  valentin/scratch/cov-tmp bash scripts/coverage-gate.sh` reports exact
+  recorded CDLA-Permissive-2.0 exception (AC-G.3); `TMPDIR=/operator-scratch/cov-tmp bash scripts/coverage-gate.sh` reports exact
   100/100/100, missed == 0 (AC-G.2). The TMPDIR is absolute — the gate is
   never run on tmpfs, and never run twice without need.
 

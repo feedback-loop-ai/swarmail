@@ -3,7 +3,7 @@
 Ordered. Each task names the test that proves it. Red-first: the arms are
 proven at the base (`f815366`) before the repair lands. Env for every gate
 step: `export PATH="$HOME/.cargo/bin:$PATH"`; coverage gate with
-`TMPDIR=/home/valentin/scratch/cov-tmp`. Nothing here closes a GitHub issue
+`TMPDIR=/operator-scratch/cov-tmp`. Nothing here closes a GitHub issue
 or pushes.
 
 - [ ] T1 — Record the red evidence at the base: extract the verbatim stripper (`sed -n '80,155p' scripts/coverage-gate.sh`) and run the chief probe harness pattern (`.brokkr/state/tmp/chief-12b/verify_candidate.sh`) plus the panel sheet (`.brokkr/state/tmp/panel-12b/probes.sh`); confirm the five shapes (cr#, 9-hash, column-0 `r#`/`br#`, multi-line `r"…"`) erase live code and the controls (8-hash boundary, `outer"…"`, `xcr#"`, nested comments, char/literal) stay green. *Test:* harness output shows all five shapes `RED(erased)` with the forbidden attribute invisible, controls green — saved under `.brokkr/state/tmp/` as the landing note's proof.
@@ -16,7 +16,7 @@ or pushes.
 
 - [ ] T5 — Prove the comment truth (AC-5): no sentence in the function claims a bound the code does not enforce — the "capped" claim (:126–127) and the "only ends early — loud, never an over-pass" claim (:128–131) are gone, and the new decision comment states the closed prefix set, the exact run count and the tolerated over-emission direction. *Test:* `grep -n 'capped\|only ends early\|never an over-pass' scripts/coverage-gate.sh` returns no hit inside the function, and the decision comment lines match the implemented condition (reviewed against the plan's reference body).
 
-- [ ] T6 — Run the full house gate battery at the repair commit: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `brokkr compile --bundle bundles/self`, `TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh` (selftest green, exact 100/100/100, miss == 0), `cargo deny check licenses`. *Test:* all six exit 0; the gate's summary line shows the exact floor with no misses; the changed tracked file set is exactly `scripts/coverage-gate.sh` (AC-7 — `git diff --stat`).
+- [ ] T6 — Run the full house gate battery at the repair commit: `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, `brokkr compile --bundle bundles/self`, `TMPDIR=/operator-scratch/cov-tmp bash scripts/coverage-gate.sh` (selftest green, exact 100/100/100, miss == 0), `cargo deny check licenses`. *Test:* all six exit 0; the gate's summary line shows the exact floor with no misses; the changed tracked file set is exactly `scripts/coverage-gate.sh` (AC-7 — `git diff --stat`).
 
 - [ ] T7 — Re-measure the hostile line and record the landing note: ≥ 1 MiB single-line string literal through the base stripper vs the repaired one (base > 45 s, repair < 2 s on this host), plus the red-first proof from T1/T3, written to the run's landing notes under `.brokkr/state/` (gitignored). No timing assertion enters the repo (0020 §5). *Test:* the recorded numbers exist with the harness path cited; `git status` shows no new tracked files.
 

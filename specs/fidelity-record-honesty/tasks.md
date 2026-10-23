@@ -48,7 +48,7 @@ sourced.
 - [ ] 6. Verify proves the amended contract's demonstrations — the gates
   (AC-G.1–G.4 with 469), the per-issue proof sites (AC-39…57), the frozen
   three (AC-R.3) — and records the outputs; the coverage gate runs only
-  with `TMPDIR=/home/valentin/scratch/cov-tmp`, never on tmpfs, never
+  with `TMPDIR=/operator-scratch/cov-tmp`, never on tmpfs, never
   twice without need.
   **Proved by:** the contract's tasks 1–14, executed as written; the only
   changed expectation is the 469 count.

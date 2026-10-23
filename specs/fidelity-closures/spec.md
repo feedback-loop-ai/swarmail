@@ -533,7 +533,7 @@ every new branch is reachable on the green path by a direct request).
 - **AC-B.1** All gates green: `cargo fmt --all -- --check`, `cargo
   clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace --locked`, `brokkr compile --bundle
-  bundles/self`, `TMPDIR=/home/valentin/scratch/cov-tmp bash
+  bundles/self`, `TMPDIR=/operator-scratch/cov-tmp bash
   scripts/coverage-gate.sh` (exact 100/100/100, missed == 0, no
   `coverage(off)`), `cargo deny check licenses`.
 - **AC-B.2** No new `src/` file, no new test file, no new crate beyond

@@ -33,6 +33,55 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: bash scripts/publish-guard-test.sh
+      - name: Prove packaged licenses and WHATWG attribution
+        id: package-attribution
+        run: |
+          set -euo pipefail
+          python3 - <<'PACKAGE'
+          import hashlib, os, pathlib, shutil, subprocess, tarfile, tempfile, tomllib
+          root = pathlib.Path.cwd()
+          package = tomllib.loads((root / "Cargo.toml").read_text())["package"]
+          target = root / "target/package-attribution"
+          env = {**os.environ, "CARGO_TARGET_DIR": str(target)}
+          with tempfile.TemporaryDirectory(prefix="package-attribution-") as scratch:
+              repo = pathlib.Path(scratch)
+              for directory in ("src", "tests", "benches", "assets"):
+                  shutil.copytree(root / directory, repo / directory)
+              (repo / "scripts/data").mkdir(parents=True)
+              files = ("LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "scripts/data/html-entities.json")
+              for name in (*files, "Cargo.toml", "Cargo.lock", "README.md"):
+                  shutil.copy(root / name, repo / name)
+              (repo / ".gitignore").write_text(".cargo-home/\n")
+              def run(*args):
+                  return subprocess.run(args, cwd=repo, env=env, check=True, capture_output=True, text=True).stdout
+              run("git", "init", "-q")
+              run("git", "add", ".")
+              run("git", "-c", "user.name=package-proof", "-c", "user.email=package-proof@invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Prepare isolated package proof")
+              decoy = repo / ".cargo-home/registry/src/cache/decoy"
+              decoy.mkdir(parents=True)
+              for name in ("LICENSE-MIT", "LICENSE-APACHE"):
+                  (decoy / name).write_text("cache license decoy\n")
+              listed = run("cargo", "package", "--list", "--locked").splitlines()
+              assert all(name in listed for name in files), listed
+              assert not any(".cargo-home/" in name for name in listed), listed
+              manifest = (repo / "Cargo.toml").read_text()
+              (repo / "Cargo.toml").write_text(manifest.replace('"/LICENSE-MIT"', '"LICENSE-MIT"').replace('"/LICENSE-APACHE"', '"LICENSE-APACHE"'))
+              red = subprocess.run(["cargo", "package", "--list", "--locked", "--allow-dirty"], cwd=repo, env=env, capture_output=True, text=True)
+              assert ".cargo-home/" in red.stdout if red.returncode == 0 else (".cargo-home/" in red.stderr and "failed to parse manifest" in red.stderr), "unanchored mutant did not expose cache traversal"
+              print("unanchored mutation: real cache traversal observed; exit", red.returncode)
+              (repo / "Cargo.toml").write_text(manifest)
+              restored = run("cargo", "package", "--list", "--locked").splitlines()
+              assert restored == listed, "restored package differs"
+              run("cargo", "package", "--locked")
+              stem = package["name"] + "-" + package["version"]
+              with tarfile.open(target / "package" / (stem + ".crate")) as archive:
+                  for name in files:
+                      actual = archive.extractfile(stem + "/" + name).read()
+                      assert actual == (root / name).read_bytes(), name
+                      print(name, hashlib.sha256(actual).hexdigest())
+                  assert not any(".cargo-home/" in name for name in archive.getnames())
+          print("packaging: actual listing, unanchored-red/restored-green and verified archive attribution pass")
+          PACKAGE
       # The gates are the pinned bundle's (decision 0050 §1): the public
       # scripts are fixed shims whose bytes must match the pinned digests,
       # and the design validator's refusal arms run as the verify seat runs
@@ -315,10 +364,19 @@ jobs:
         run: |
           set -euo pipefail
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          semver='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
           if ! [[ "$version" =~ $semver ]]; then
             echo "REFUSAL: Cargo.toml version '$version' is not the semver publish-guard.sh accepts" >&2
             exit 1
+          fi
+          if [[ "$version" = *-* ]]; then
+            IFS=. read -r -a identifiers <<<"${version#*-}"
+            for id in "${identifiers[@]}"; do
+              if [[ "$id" =~ ^0[0-9]+$ ]]; then
+                echo "REFUSAL: numeric prerelease identifier has a leading zero" >&2
+                exit 1
+              fi
+            done
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -394,6 +452,7 @@ jobs:
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
         with:
           version: v3.16.3
+      - run: python3 -c 'import yaml'
       - run: bash scripts/chart-verify.sh selftest
       - name: Chart edits carry a version bump (event baseline)
         env:
@@ -418,6 +477,19 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - run: bash scripts/docker-smoke.sh
+      - name: Prove the image carries WHATWG attribution
+        run: |
+          set -euo pipefail
+          image="swarmail-attribution:${GITHUB_SHA}"
+          scratch="$(mktemp -d)"
+          container=""
+          trap 'if [ -n "$container" ]; then docker rm -fv "$container"; fi; docker image rm "$image"; rm -rf "$scratch"' EXIT
+          docker build --tag "$image" .
+          container="$(docker create "$image")"
+          docker cp "$container:/NOTICE" "$scratch/NOTICE"
+          test -r "$scratch/NOTICE"
+          test "$(stat -c %a "$scratch/NOTICE")" = 444
+          cmp NOTICE "$scratch/NOTICE"
 
   # The chart names an image (`appVersion`), so it never publishes ahead of
   # it (issue #141, proposed 0051 §1): it needs the image job and requires
@@ -447,24 +519,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # Validated before it reaches $GITHUB_OUTPUT (decision 0019 §1).
+      - run: python3 -c 'import yaml'
       - name: Read the chart and image versions (appVersion must be Cargo's)
         id: chartver
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^version: \(.*\)/\1/p' charts/swarmail/Chart.yaml | head -1)"
-          app="$(sed -n 's/^appVersion: "\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' charts/swarmail/Chart.yaml | head -1)"
+          metadata="$(bash scripts/chart-verify.sh metadata charts/swarmail/Chart.yaml)"
+          app="$(sed -n 's/^app=//p' <<<"$metadata")"
           cargo="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
-          if ! [[ "$version" =~ $semver ]]; then
-            echo "REFUSAL: Chart.yaml version '$version' is not the semver publish-guard.sh accepts" >&2
+          if [ "$app" != "$cargo" ]; then
+            echo "REFUSAL: Chart.yaml appVersion does not match Cargo.toml" >&2
             exit 1
           fi
-          if ! [[ "$app" =~ $semver ]] || [ "$app" != "$cargo" ]; then
-            echo "REFUSAL: Chart.yaml appVersion '$app' is not Cargo.toml's version '$cargo'" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "app=$app" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$metadata" >> "$GITHUB_OUTPUT"
       - name: Preflight the chart's image (published, by a successful image job)
         env:
           APP_VERSION: ${{ steps.chartver.outputs.app }}

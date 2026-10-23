@@ -245,8 +245,7 @@ allows zero closers, so the bare-`]` case is subsumed, not lost.
 6. **All six house gates pass at the repaired commit** — `cargo fmt --all --
    --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
    `brokkr compile --bundle bundles/self`, `scripts/coverage-gate.sh`
-   (selftest green; **exact 100/100/100, missed == 0**; `TMPDIR=/home/
-   valentin/scratch/cov-tmp`; `export PATH="$HOME/.cargo/bin:$PATH"`),
+   (selftest green; **exact 100/100/100, missed == 0**; `TMPDIR=/operator-scratch/cov-tmp`; `export PATH="$HOME/.cargo/bin:$PATH"`),
    `cargo deny check licenses`. The repair touches no Rust, so the measured
    denominator is unchanged — the verdict must come back identical.
 7. **Scope holds.** The only changed tracked file is

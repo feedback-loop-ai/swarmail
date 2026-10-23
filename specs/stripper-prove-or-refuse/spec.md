@@ -250,7 +250,7 @@ by clock (decision 0020 §5). All existing arms stay untouched and green.
    over the function finds no sentence asserting a bound the code lacks.
 6. **All six house gates pass at the repair commit**, with `export
    PATH="$HOME/.cargo/bin:$PATH"` and the coverage gate run with
-   `TMPDIR=/home/valentin/scratch/cov-tmp`: fmt, clippy `-D warnings`,
+   `TMPDIR=/operator-scratch/cov-tmp`: fmt, clippy `-D warnings`,
    `cargo test`, `brokkr compile --bundle bundles/self`,
    `scripts/coverage-gate.sh` (selftest green, **exact 100/100/100,
    miss == 0**), `cargo deny check licenses`.

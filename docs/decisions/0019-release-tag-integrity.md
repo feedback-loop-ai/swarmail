@@ -144,3 +144,16 @@ record's own verb and scope, and nothing above is rewritten by it.
   would keep package preparation distinct from release, qualifying the
   independent-publication and partial-release posture recorded here. The
   exact-ref binds and absent-tag refusals above are preserved either way.)*
+
+## Errata — 2026-10-23 (#185)
+
+The rerun claims in §2 and Consequences apply only to workflow revisions
+containing this guard. GitHub reruns execute the original run's workflow
+revision; rerunning a release predating enforcement does not gain the guard
+retroactively. Registry history can be checked by a guarded revision, but
+that does not change the workflow used by an older run.
+
+The §3 phrase “no sleeps” describes the synchronization discipline, not the
+absence of every sleep call. Fixture readiness polls an explicit predicate
+under a real deadline, sleeping between polls. Correctness never depends on
+a fixed sleep duration; sleep-as-synchronization remains forbidden.

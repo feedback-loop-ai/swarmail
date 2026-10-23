@@ -257,7 +257,7 @@ absent) and is green only when it holds on the committed tree.
   cargo clippy --workspace --all-targets -- -D warnings
   cargo test --workspace --locked
   brokkr compile --bundle bundles/self
-  TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh
+  TMPDIR=/operator-scratch/cov-tmp bash scripts/coverage-gate.sh
   cargo deny check licenses
   ```
   Red = any command fails, any test failure, or coverage below exact

@@ -42,14 +42,13 @@ fn esc(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// The one security policy for the shell (issue #56). Inline script and
-/// style stay (the script is embedded, the style is a constant above);
-/// `connect-src 'self'` keeps the SSE `EventSource` working; `default-src
-/// 'none'` refuses every other load — and the mail-body preview is a
-/// sandboxed `srcdoc` iframe that inherits this policy container, so a
-/// hostile mail rendered in it cannot beacon the codes it holds to an
-/// attacker URL. One string, one choke point: this template is the one
-/// every UI route flows through.
+/// The shell's resource policy (issue #56). Embedded inline script and style
+/// are allowed; `connect-src 'self'` permits same-origin SSE. Images may load
+/// from the same origin or data URLs, including same-origin image GETs.
+/// Other resource loads are refused by `default-src 'none'`. The sandboxed
+/// srcdoc mail preview inherits the policy, but CSP does not govern clicked
+/// link navigation: this is not a guarantee against beaconing mail contents.
+/// Every UI route uses this one policy string.
 const CSP: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:";
 
 fn page(title: &str, body: String) -> Html<String> {
