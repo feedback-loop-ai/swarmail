@@ -618,8 +618,11 @@ name). In JSON bodies an omitted optional field takes its default while a
 present `null` is refused with the field named — on the seed's `from`,
 `subject`, `text` and `html`, a webhook's `inbox`, `secret` and `ca_pem`,
 and on a chaos rule's `error` alike (only a whole chaos event set to
-`null` means "clear it"). A seed or webhook body error is a `400` with a
-JSON `error` (decision 0048); a chaos body error stays the extractor's
+`null` means "clear it"). Seed and webhook JSON data errors are `400` with
+a JSON `error` (decision 0048): unknown keys, missing fields, wrong types,
+nulls and wrong top-level shapes. Malformed JSON syntax stays the extractor's
+plain-text `400`, missing/wrong media type its plain-text `415`, and
+oversize its plain-text `413`. Chaos JSON data errors stay the extractor's
 `422`. One inbox-name rule holds on every
 surface — REST, MCP, UI, the shims, webhook inbox filters, SMTP AUTH and
 POP3 `USER`: a blank name (empty after trimming whitespace) is refused, and
@@ -655,9 +658,10 @@ Twelve tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
 `swarmail_set_chaos`, `swarmail_clear_chaos`. Every tool validates its supplied arguments at the
 envelope: a wrong-typed or malformed value — the `arguments` container
-included — refuses with a JSON-RPC `-32602` error naming the field and its
-domain, before any effect, and so does an argument key the tool does not
-publish (`{"inbx": "zz"}` can never clear `default`; every schema says
+included — refuses with JSON-RPC `-32602` in HTTP 200 for a call with an
+`id`, naming the field and its domain, before any effect, and so does an
+argument key the tool does not publish (`{"inbx": "zz"}` can never clear
+`default`; every schema says
 `additionalProperties: false`); an unknown tool name is `-32601`; a JSON
 parse failure or invalid UTF-8 is HTTP 400 `-32700`; a body over the
 2,097,152-byte limit is HTTP 413 `-32600`; a value that is not an object
@@ -672,6 +676,13 @@ its 250 limit. The members of one batch (at most 16) run concurrently:
 sixteen waits share one wait interval rather than queueing, replies keep
 member order, and the members' effects have **no** order — send dependent
 mutations as separate requests.
+
+An elapsed `swarmail_wait_for_email` timeout is a normal tool result:
+`isError: false`, with `matched`, `total` and `timed_out: true` in its text
+content. Tool failures such as `shutting down` return `isError: true`
+with an error message in text content; protocol and argument refusals use
+the JSON-RPC `error` envelope described above.
+
 Wire it up:
 
 ```jsonc
@@ -718,8 +729,14 @@ than the bridge's still answers its own null-id refusal.
 `:1110` — USER, PASS, STAT, LIST, UIDL, RETR, DELE, NOOP, RSET, TOP, CAPA,
 QUIT. The maildrop **is** a swarmail inbox: `USER proj-42` names the inbox
 exactly like SMTP AUTH does, so mail delivered over SMTP reads back over
-POP3 — including mail that arrived before the session opened. The name is
-everything after `USER` and its one space, verbatim (only the line's CRLF is
+POP3 — including mail that arrived before the session opened. The maildrop
+is a snapshot taken at successful `PASS`, not a lock: numbering stays stable,
+and new arrivals appear in the next session. Listings read the snapshot;
+`RETR`, `TOP` and `DELE` consult the live store, so mail removed elsewhere
+can remain listed but these commands answer `-ERR no such message`
+(decision [0028 §3](docs/decisions/0028-wire-octets-auth-refusals-and-the-maildrop-snapshot.md)).
+The name is everything after `USER` and its one space, verbatim (only the
+line's CRLF is
 removed, so an extra CR is part of the name and refused); a command that is
 not UTF-8 ends the session unanswered. UIDLs are the
 swarmail ids; octet counts are the payload the client keeps — every line
@@ -800,8 +817,9 @@ whitespace before it tolerated; a numbered `Re[2]:` is *not* a marker and
 stays in the fallback key — then every whitespace run collapsed to one
 space and the remainder Unicode-lowercased) as the fallback for the *chain-less* mails
 only: a reply threads by its References even when the parent id was
-never published, because absence does not authorize a subject merge. Each
-conversation carries a
+never published, because absence does not authorize a subject merge.
+Unicode lowercasing is not full case folding: `ß` and `ss` remain distinct
+in subject fallback keys. Each conversation carries a
 stable `key`: the hash of the conversation's *first* mail's anchor (its
 `Message-ID`, else its `In-Reply-To`/first `References` entry, else the
 normalized subject, else its own id). A reply — even one whose message-id

@@ -1602,3 +1602,94 @@ fn the_corrected_release_and_runtime_claims_stay_corrected() {
         &["Both run in CI."],
     );
 }
+
+// Issue #182: these claims describe existing handlers; they must not turn
+// HTTP refusals, JSON-RPC errors and normal tool results into one envelope.
+#[test]
+fn issue_182_unknown_mcp_arguments_keep_their_json_rpc_envelope() {
+    for path in ["README.md", "src/static/llms.txt"] {
+        let text = doc(path);
+        states(
+            &text,
+            path,
+            &["`-32602` in HTTP 200 for a call with an `id`"],
+        );
+        refuses(
+            &text,
+            path,
+            &["an MCP argument key (`{\"inbx\": \"zz\"}`), or an unknown key"],
+        );
+    }
+}
+
+#[test]
+fn issue_182_seed_and_webhook_data_errors_do_not_cover_extractor_refusals() {
+    for path in ["README.md", "src/static/llms.txt"] {
+        let text = doc(path);
+        states(
+            &text,
+            path,
+            &[
+                "Seed and webhook JSON data errors are `400` with a JSON `error`",
+                "Malformed JSON syntax stays the extractor's plain-text `400`",
+                "missing/wrong media type its plain-text `415`",
+                "oversize its plain-text `413`",
+                "Chaos JSON data errors stay the extractor's `422`",
+            ],
+        );
+        refuses(
+            &text,
+            path,
+            &[
+                "A seed or webhook body error is a `400` with a JSON `error`",
+                "Seed and webhook body errors are 400 with a JSON `error`",
+            ],
+        );
+    }
+}
+
+#[test]
+fn issue_182_an_elapsed_mcp_wait_is_a_normal_tool_result() {
+    for path in ["README.md", "src/static/llms.txt"] {
+        let text = doc(path);
+        states(
+            &text,
+            path,
+            &[
+                "An elapsed `swarmail_wait_for_email` timeout is a normal tool result",
+                "`isError: false`",
+                "`timed_out: true`",
+                "in its text content",
+                "`isError: true`",
+                "`shutting down`",
+            ],
+        );
+        refuses(&text, path, &["Errors are always JSON-RPC"]);
+    }
+}
+
+#[test]
+fn issue_182_thread_keys_name_the_full_case_folding_limit() {
+    states(
+        &doc("README.md"),
+        "README",
+        &["not full case folding: `ß` and `ss` remain distinct in subject fallback keys"],
+    );
+}
+
+#[test]
+fn issue_182_pop3_documents_the_snapshot_and_live_store_skew() {
+    states(
+        &doc("README.md"),
+        "README",
+        &[
+            "a snapshot taken at successful `PASS`, not a lock",
+            "numbering stays stable",
+            "new arrivals appear in the next session",
+            "Listings read the snapshot",
+            "`RETR`, `TOP` and `DELE` consult the live store",
+            "mail removed elsewhere can remain listed",
+            "`-ERR no such message`",
+        ],
+    );
+}
