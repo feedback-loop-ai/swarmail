@@ -1,24 +1,18 @@
-# Implementation plan — compat, webhook and extraction proofs
+# Implementation plan — D3 compat and webhook proofs
 
-Date: 2026-10-23. Design only. The [spec](spec.md) owns requirements; [tasks](tasks.md) pairs work with proof. Proposed [0061](../../docs/decisions/0061-compat-webhook-proof.md) separates compatible repairs from an unaccepted R4.2 amendment. R4.3/R4.4 are independently pending. No runtime, mutation or delivery-gate result is claimed by this plan.
+Date: 2026-10-23. Run `epic192-first-wave-lane-d-compat-39ce98ea`; branch `epic192/lane-d-attempt3`; starting HEAD `874b4a464dd3ffb59e4e431b5e82947c70bc93dd`. [spec.md](spec.md) owns AC1–AC14 and panel rulings; [tasks.md](tasks.md) pairs current work with proof. [0061](../../docs/decisions/0061-compat-webhook-proof.md) stays proposed. D1/D2 outcomes remain recorded. This continues inherited compatible implementation, not a new architecture or completed delivery.
 
 ## Technical context
 
-One Rust crate; Tokio/Axum servers, regex literal compilation, reqwest/rustls delivery, SQLite persistence, existing tokenizer/entity decoder. No new dependencies, features, config, schema or license allowances. Real SMTP/HTTP clients and isolated SQLite files are already available. Default tests stay inline and measured; cold watchdog paths remain in the declared src/compat/page_work_tests.rs harness under accepted 0020. Test-only observations must be request/store-local, never shared mutable global state.
+One Rust crate, Tokio/Axum, literal regex search, reqwest/rustls, SQLite and existing tokenizer/entity decoder. No new dependencies, features, schemas, config, queues or licenses. Reuse invocation/store-local observations. Inline tests remain measured; existing cold failure/watchdog paths stay in declared `src/compat/page_work_tests.rs` under 0020. No sleep synchronization or scheduler-dependent elapsed correctness ceiling.
 
-No plan template exists in the inspected .specify/templates or repository file inventory; this plan supplies the required technical context, constitution check, structure, research, data model, contracts and quickstart directly. The unrelated workspace-oriented spec template does not introduce another repository into this single-crate task.
+No plan template exists in the inspected repository inventory or `.specify/templates`; this plan supplies technical context, constitution check, structure, research, data model, contracts and quickstart directly.
 
-## Research and current evidence
+## Research and evidence identity
 
-At base 168ac299e0fe16ecdd8fa0e0218cb7bc4e0a261c:
-- src/compat.rs search_mailpit/search_hog call stage_search before page_work. search_needle is also public bench surface; preserve its signature/semantics. Mailpit errors use JSON key error with the complete existing sentence, including the Error: prefix; MailHog maps its own failed staging to bare 400.
-- render_one already wraps Find/Build in Store::offload; the existing gate runs after find. That placement alone cannot prove both callbacks remain off-worker after refactoring.
-- post_json executes its built request then formats with_causes after without_url. reqwest may transfer URL credentials into Basic auth before execution, so simply removing without_url may be an inert mutation.
-- LinkRegions::value currently applies ATTR_URL_RE to the entire decoded attribute value; trim_url removes only ASCII bytes. NAMED actually lives in src/extract/entities.rs.
-- delete_messages awaits per-id deletion and stops at first failure. Existing wire coverage uses one doomed id/first-row refusal. The emptied-entry test is a_delete_that_empties_an_inbox_removes_the_entry_live_and_after_reopen.
-- Accepted 0049 §6's ordered wrapper rule is explicit; R4.2 changes it. This plan does not infer acceptance from the unsupported-prefix intent in 0044.
+Both current positions and D3 intake agree: compatible repairs already exist. Source inspection confirms `stage_search` inside both awaited page closures, full Find/Build work inside `render_one`, and `execute_request` stripping reqwest URL metadata before bounded cause formatting. Real-client DNS/TLS fixtures and complex-needle/extracted-only/prefix wire regressions exist. NAMED lives in `src/extract/entities.rs`, not its parent module.
 
-The prior-run intake at .forge/tasks/epic192-first-wave-lane-d-compat-0b5b1027.md records actual generator execution (exit 0, 60,746 bytes, complete NAMED byte equality) and a snapshot-plus-space refusal (exit 1, zero stdout, rejected digest d2772fd6c4b6368df9b1b9510b9b750196c12dfaedc74159630bcfd535735e50). The current intake mirrors it. Chief rechecked these hashes with sha256sum, exit 0:
+The retained `implementation-identity.json` under `.forge/epic192/compat-webhook-proof/` names code commit `a09a5483f1afb114ea09c21caf748c0b246a4608`. Audit all nine hashes before reusing receipts. Provenance inputs:
 
 | Input | SHA-256 |
 |---|---|
@@ -26,125 +20,101 @@ The prior-run intake at .forge/tasks/epic192-first-wave-lane-d-compat-0b5b1027.m
 | scripts/data/html-entities.json | d741d877ac77c4194c4ad526b5b4a19aef8dfe411ab840a466891cdbb9f362e6 |
 | src/extract/entities.rs | 4334e2e8f0af1ba8a6c0a65fa0b716f51a7ee70867018e350ff0b4d154cc6335 |
 
-Reuse that actual dated receipt while inputs match; do not rerun only to rename its date. It does not prove the unexecuted wrong-table mutation or any runtime criterion. Do not claim the issue comment's fresh network download as a local receipt.
+D3 intake records fresh isolated generator exit 0 and 60,746-byte complete NAMED equality. It does not independently establish tampered-snapshot refusal or wrong-scalar evaluator failure. Preserve historical receipts with original commit, cwd, tool and timestamp. Historical workspace exit 101 and coverage exit 1 named the missing index row; parent has now repaired it. Fresh final-tree results remain required. The archive below records original failures, not current blockers or passes.
+
+The separate historical `prefix-skipped.json` used compat source digest `2ce18c7dd9e5fe38bebacd13c1443c09485a91337da9f576e33a74e6700a9dc7`, while current compat is `ae67feaa8cc8c67fd42d7f312c51563d8dbf1b9cf9c1ef11c05ad970b55af0f5`. Its red/restored-green remains historical; D08 must renew that owned-path mutation on current bytes before claiming current negative proof. This is distinct from the 13-mutant final-source summary.
 
 ## Constitution check
 
-Preserve accepted 0001–0005; ordered synchronous mutation and FULL commit; single-writer lock; subscribe-before-check even after channel closure; acceptance-order pruning; genuine source bodies and fresh-ingest extraction; historical restore verbatim. Offload is awaited, not detached, and does not promise a latency ceiling or admission budget. Search scans and response construction hold no map guard or mutation lock.
+Preserve 0001–0005, synchronous insert/queryability before SMTP 250, single-writer protection, ordered FULL commit, oldest-only pruning, subscribe-before-check including after closure, fresh-ingest extraction, raw/source bodies and verbatim historical arrays. Keep complete awaited offload and panic symmetry. No detached acceptance, webhook dependency on acceptance, rollback change or guard retained during response construction.
 
-0045 §8 allows compatible code under a proposed record, not contradictory code. Apply R4.1/R4.5 as explicit compatible lexical/punctuation clarifications; hold R4.2's normalization until its exact amendment is accepted; hold R4.3/R4.4 as instructed. Accepted bodies remain historical. New 0061 stays proposed; no index/acceptance-marker edits outside ownership. Request a parent-owned index entry if needed by the implementation's documentation checks.
+0045 §8 allows compatible work under proposed 0061; it does not authorize AC10–AC12. No dormant alternative. Only the operator accepts exact amendments. All house gates and zero-missed lines/branches/functions remain required; no exclusions, denominator change or dependency widening. Full engine route retains Qwen Max correctness, Claude Opus security, official DeepSeek Flash guarantees and DashScope GLM 5.3 tests. Provider failure stays visible; no Pro/fallback, fabricated review, security-hold waiver or policy shortcut.
 
-All mandatory house gates remain required before implementation success, with --locked wherever applicable, exact missed == 0 on lines/branches/functions, no exclusions or denominator changes. The full engine lane retains independent Qwen Max correctness, Claude Opus security, official DeepSeek Flash guarantees and DashScope GLM 5.3 tests; no fallback or Pro. No nested run, publication, push, merge, tag, issue close or external comment.
+## Project structure and edit boundaries
 
-## Project structure and touched files
-
-| Path | Responsibility / boundary |
+| Path | D3 role and allowed edits |
 |---|---|
-| specs/epic192-compat-webhook-proof/{spec,plan,tasks}.md | The three chief artifacts; later record accurate clarification/evidence without erasing pending obligations. |
-| docs/decisions/0061-compat-webhook-proof.md | Proposed R4.2 amendment, compatible clarification boundaries and separate operator residuals. |
-| src/compat.rs | Move staging into existing offload, preserve dialect mapping; local compiler/Find/Build observations if needed; R4.2 only after acceptance. |
-| src/compat/page_work_tests.rs | Strengthen actual-work placement proof, eleven real routes, compiler/runtime coordination and cold cleanup. |
-| tests/compat.rs | Complex needle wire refusal, extracted-only misses, selective persistent prefix/restart/retry, conditional R4.2 matrix. |
-| src/webhook.rs | Production execute/format owner and real-client internal fixtures; one private factoring seam only if required. |
-| tests/webhook.rs | Reuse existing real TLS/client fixtures where public access suffices. No #178 sink/budget helper work. |
-| src/extract.rs | Leading-value versus nested URL delimiters, UTF-8 suffix trim, deterministic exact-work and fidelity tests. |
-| src/smtp.rs | Only exact extraction fixtures / ingest wiring required here. No accept/drain lifecycle edits; BodyOrder link wiring waits for R4.3. |
-| tests/smtp_edges.rs | New exact extraction SMTP/REST cases if existing owned fixtures cannot house them. Existing tests/api.rs #136 runs unchanged. |
-| src/store.rs | Existing emptied-entry test comment only; G/parent owns all additional store/seam work. |
-| scripts/gen-entities.py | Proof/fix only if evidence identifies a generator defect; none currently established. |
-| src/extract/entities.rs | Temporary wrong-mapping proof input, exact restoration; no permanent edit planned/authorized by current evidence. |
-| specs/extraction-compat/{spec,plan,tasks}.md; docs/decisions/0049-extraction-compat.md | Implementation appends dated corrections/proof links, retaining historical dates and bodies; only evidence-backed task completion. |
+| specs/epic192-compat-webhook-proof/{spec,plan,tasks}.md | Chief synthesis; later current evidence/disposition. |
+| docs/decisions/0061-compat-webhook-proof.md | Reserved proposal, never acceptance. |
+| src/compat.rs | Existing awaited staging/render owners; demonstrated compatible fixes/local observations. |
+| src/webhook.rs | Sole execute/redact/format owner; deterministic real-client failure proof. |
+| tests/compat.rs | Refusal, misses, prefix/reopen/retry and fresh-ingest extraction wire proofs. |
+| tests/webhook.rs | Real delivery controls; no #178 sink/budget refactor. |
+| scripts/gen-entities.py | Generator proof/fix only if evidence requires it. |
+| src/extract.rs | NAMED regeneration/equality only; preserve inherited algorithm repairs. |
+| src/store.rs | Existing emptied-entry regression comment only; G/parent owns broader work. |
 
-No Cargo, README license, Docker notice, entity snapshot, policy, tooling, bundle, recipe, shim or shims.sha256 edits. A owns package attribution; E owns SMTP lifecycle; G owns broader store work. Send unsupported changes to parent rather than expanding ownership. The design commit itself touches only its three artifacts plus 0061, never the historical spec directory.
+Read/test but do not newly edit `src/compat/page_work_tests.rs`, `src/extract/entities.rs`, `src/smtp.rs`, `tests/smtp_edges.rs`, `tests/api.rs`, `docs/decisions/0049-extraction-compat.md` or `specs/extraction-compat/**`. Inherited compatible bytes/addenda remain. Essential edits or fresh temporary mutations there need a concrete parent request. Parent's proposed 0061 index repair is done; do not edit the index again. No other lane/worktree, baseline, recipe, gate, shim, snapshot/license or bundle edit.
 
 ## Implementation approach
 
-1. Freeze evidence identity: record base/current SHA, current authority, ownership and input hashes. Preserve prior stopped run evidence. Establish named tests and run-local receipts under .forge/epic192/compat-webhook-proof/ with commands, exit codes and hashes. No journal writes or fabricated live-phase receipts.
-2. Search: retain dialect kind/cap/scope/prefix validation order. Move stage_search into the existing page_work closure before run_search; return a fallible finished result. Mailpit preserves ApiError, MailHog retains separate bare staging refusal and named OverBudget mapping. One blocking hop carries lowering/compilation, scan, projection and serialization. Keep public search_needle and simple case-fold literal semantics.
-3. Establish a transport-reachable over-complex fixture by measuring request/encoded size and exercising the real handler; report actual size, not an assumption about the 250,000-k helper fixture. If no admitted literal reaches the existing compiler budget, report a concrete AC1 feasibility residual instead of lowering a production limit or using a parser error as the refusal.
-4. Instrument compiler placement at actual invocation, scoped to the operation; exercise it through the production search path on a current-thread runtime. A per-invocation callback/test-only wrapper may observe thread identity and coordinate hold/release. Do not add Store fields. If a store change is essential, request parent/G ownership explicitly while completing independent work.
-5. Rendering: exercise render_one's actual Find/Build callback execution with thread identity observations, and retain real-route lookup/latest/projection/render/copy/serialization evidence. Reuse existing per-store gate as coordination, not as the sole assertion. Hold actual operations, observe real SMTP greeting/health, verify completed responses and immediate queryability after an independent DATA 250. Keep cold watchdogs in the existing harness; their role is terminating a bad mutant, not measuring performance. Ensure the serialization-only mutant leaves the old gate offloaded and still fails.
-6. Webhook: begin with the existing production path. If deterministic client selection needs a seam, extract one private execute-and-format function taking client/request inside webhook.rs, called by post_json and the fixtures. Keep the boundary builder's rustls/no-proxy/no-redirect policy. A request-local reqwest resolver reports a controlled resolution failure consumed by the real connector; assert it was invoked. A loopback rustls sink uses generated certificates and a client that rejects the intended certificate; assert verification failure rather than generic TCP close. Keep informative cause strings. For negative proof, explicitly restore the original fixture URL metadata before the real formatter if Basic auth extraction otherwise makes the mutation inert.
-7. Non-candidate search: use the existing public Store insertion on an isolated test server with two extracted-only sentinels and distinct ordinary candidate controls. Assert actual stored arrays and both wire search counts. No injection endpoint or query-time extraction.
-8. Prefix proof: create a unique persistent server/database and ordered A/B/C records. Install a real SQLite trigger conditioned on B, inside tests/compat.rs; preserve A's deletion and B/C after 503 and restart. Release server/Store before reopening, retain sidecars under the temp guard, drop the trigger, retry the original list twice and verify an unrelated inbox. Mutate only lane-owned shim behavior for swallowed-error and prefix-loss proof; if a proposed mutant needs store ownership, coordinate rather than editing G's work.
-9. Extractor: retain source-boundary recognition before decode. Decode each quoted value once. Apply tolerant matching only to the leading URL after optional whitespace and ordinary delimiters to later/deeper candidates; do not accidentally apply tolerant matching to every find_iter result. Keep monotone source/candidate cursors and visit the second CSS URL. Extend trim_url by whole Unicode scalar suffix widths for U+201D/U+2019, keeping the one-counting-pass punctuation balance and byte-based counters. Preserve every encoded-quote, raw-region and exact-work control. Add all AC9 fixtures via owned SMTP/REST tests.
-10. Entity proof: run the existing independent all_whatwg_entities_match_snapshot evaluator green, replace one mapping with a wrong scalar without changing table cardinality, run it red, restore byte-identical source and rerun green. Back up only the exact file, use unconditional restoration, record hashes and check diff afterward. No blanket git reset/checkout, no second checkout, no change to snapshot or attribution.
-11. Documentation: name the map-guard hang in its existing comment. Append dated 0049 §1 and historical spec corrections only after actual proof. Keep old receipt dates and distinguish generator equality, tampered snapshot, wrong mapping and runtime verification. Do not mark whole T11/T12 done on a generator receipt alone. Preserve unresolved R4.2/R4.3/R4.4 prominently.
-12. After exact authority arrives, implement only the accepted clause: R4.2 refusal-only normalized token with original execution input untouched; R4.3 transient BodyOrder link wiring and source-order proof; R4.4 the specifically accepted conditional-comment treatment or explicit operator-accepted retention documentation. These are conditional follow-up tasks, not prerequisites for independent compatible work or authority granted here.
+1. Audit clean HEAD, inherited source/evidence identities and proposed status. Resolve mismatched receipts before reuse. Record D3 separately; no launch or invented original journal history.
+2. Preserve lowering/escaping/compilation inside each awaited page closure before scan, validation precedence and public search_needle. Admitted fixture: 60,000 ASCII k bytes (Mailpit URI 60,021; Hog 60,037). A 414/EOF/panic is not compiler-refusal proof. Run actual compiler-site current-thread proof and independently challenge each caller's placement.
+3. Preserve complete render_one lookup/latest, projection/render/copy/build and finished serialization. Actual Find/Build observations distinguish work from the old gate. Retain all eleven routes, body/type/404, released map guards, SMTP/health progress and independent DATA 250 queryability. The serialization-only mutant must retain serialization AND old gate on the pool while hoisting actual lookup/build; owning evaluator must fail.
+4. Keep execute_request as sole redaction boundary. Real reqwest consumes a per-client resolver refusal and fresh loopback untrusted certificate. Identify DNS and UnknownIssuer, retain useful bounded causes, exclude plain/encoded username/password. Fixture metadata deliberately carries original userinfo after Basic-auth construction so removing without_url tests confidentiality. Preserve functional Basic auth, verified rustls, no proxy/redirect, cache isolation/retries/budgets.
+5. Retain link/code sentinels absent from every source/raw field; assert populated arrays, both wire misses and ordinary hits. Retain ordered A/B/C real SQLite refusal on B: named 503, A gone, B/C/unrelated intact live/reopen with prior Store released; remove trigger, retry original ids to remove 2 then 0. No atomic batch or mock store.
+6. Preserve named map-guard hang comment and executable regression. Retain seven nested-URL rows, curly-scalar trimming, #136/encoded quotes, decode-once/source-only and exact-work controls. Fresh algorithm/harness defects go to parent, not an implicit ownership expansion.
+7. Execute generator and compare complete NAMED; test altered-snapshot refusal on a run-local copy (nonzero, empty stdout). Run unchanged full-mapping evaluator. Audit inherited wrong-scalar red/exact-restoration-green evidence against source/tool identities. If insufficient, request parent authority for entity-module mutation; leave proof open meanwhile. Do not regenerate an equal table or alter attribution.
+8. Audit historical negative proofs by mutation, bytes, failing assertion/exit and restored digest/green rerun. Renew owned-path mutations when evidence is absent/stale or a repair changes the path. Compilation failure is not behavioral red. Fresh unowned mutations require parent ownership. Restore exact bytes on every outcome without blanket reset or another checkout.
+9. Record each finding and rerun every required final-tree gate with pinned tooling. Complete compatible owned fixes; refer unrelated/unowned gate defects to parent with exact output. No skipping or lowered gates. Actual independent review/verify/ship follows through configured engine; this chief launches none and claims no verdict.
+10. Keep AC10–AC12 pending. R4.2 authority permits refusal-only normalization, never execution rewrite. Link order and conditional comments need separate exact rulings AND file ownership. Retain requested fixtures. No whole #190/epic completion without resolved criteria and actual delivery proof.
 
 ## Data model and contracts
 
-No persistent data model changes. Email.links/codes are existing stored ordered arrays derived once; historical rows stay verbatim. The transient Matcher remains request-owned and drops after the response; no regex cache. BodyOrder remains codes-only until R4.3 authority. Direct quoted URL values retain encoded quote characters; embedded nested quotes delimit their URLs. Ordinary comments continue to expose ordinary decoded source, including the pending Outlook case.
+No persistent change. Stored links/codes remain ordered arrays derived once, historical values verbatim. Matcher stays request-owned, no cache. BodyOrder remains codes-only. Direct URL attributes preserve encoded quotes; embedded delimiters and curly trim keep inherited behavior. Ordinary comments retain the explicitly unresolved Outlook output.
 
-Mailpit and MailHog retain distinct refusal envelopes, validation precedence, page caps and the inclusive 67,108,864-byte MailHog page budget. Proposed R4.2 changes only recognition/refusal, not execution. Shim DELETE is an ordered partial commit; a 503 does not imply rollback. Webhooks remain best effort with unchanged retries, sink budgets, direct delivery and diagnostic cause depth. Credentials remain valid internally; public URL userinfo is absent. Queries/fragments retain their existing exposure.
-
-## Failure behavior and preservation tests
-
-| Stress/failure | Behavior to preserve / evidence |
-|---|---|
-| Crash after commit before SMTP reply | Stored mail may be retried/duplicated; never acknowledge uncommitted mail. Existing persistence/hard-kill suites remain required; no durability claim for memory-only restart. |
-| Crash/reopen during failed shim batch | Exactly committed prefix absent, suffix present, retry convergent; new real SQLite/wire proof. |
-| Hanging webhook or certificate failure | Existing timeout/retries/drop ledger and best-effort loss; no awaited webhook in acceptance or store lock. Preserve existing real webhook suite. |
-| Cap under burst | Oldest acceptance-order eviction inside ordered mutation; view timestamp order never changes pruning. Preserve burst/rate suites and exact counts with cap disabled where required. |
-| Hostile DATA / chaos | Bounded byte-honest reader, complete DATA boundary, parse/extract before insert, no insertion on EOF/refusal; chaos only 0/100 in tests. Preserve SMTP edge suites; no lifecycle edits. |
-| Many simultaneous sessions | Unique inboxes, ephemeral ports, unique database dirs, per-request/store seams, no global environment mutation; no elapsed latency correctness ceiling. |
-| Historical malformed extracted rows | Restore unchanged; repairs affect fresh ingest only. No migration or hidden read-time repair. |
+Keep per-dialect errors/precedence/caps and Hog's inclusive 67,108,864-byte page budget. Shim503 can leave a committed prefix; retries converge. Webhooks remain best effort: lag, slots, shutdown and crash can lose notifications; lost replies can duplicate remote processing. No outbox or global memory/CPU bound. Query/fragment exposure is unchanged; userinfo cannot leak.
 
 ## Quickstart and validation
 
-These commands are planned, not execution receipts. Use the launcher's private target and installed pinned toolchain/engine; do not install or substitute a version-equal binary.
+These are obligations, not D3 execution receipts. Use private D3 target, assigned CPU group D48–63/16 CPUs and launcher-installed tooling. Targeted entry points:
 
-Targeted proof entry points (resolve exact individual selectors into the receipt):
 ```bash
 cargo test --locked --test compat
 cargo test --locked --test webhook
 cargo test --locked --test smtp_edges
 cargo test --locked --test api smtp_issue_136_link_fidelity
 cargo test --locked --lib compat::page_work_tests
+cargo test --locked --lib dns_failure_causes_keep_no_userinfo
+cargo test --locked --lib tls_verification_failure_causes_keep_no_userinfo
 cargo test --locked --lib extract::
 cargo test --locked --lib all_whatwg_entities_match_snapshot
 cargo test --locked --lib a_delete_that_empties_an_inbox_removes_the_entry_live_and_after_reopen
+cargo test --locked --test store_contract_docs
+python3 -I scripts/gen-entities.py scripts/data/html-entities.json
 ```
 
-Run each negative mutation separately against its owning real evaluator/wire test, restore exact bytes even on test failure, and rerun the same selector green. Capture mutation patch/hash, command, exit status, intended failing assertion, restoration digest and final diff. Compile failure alone is not a behavioral red. Never claim a mutation that did not affect sensitive input or actual work placement.
+Capture mutation patch/hash, command, behavioral red assertion/exit, restoration hash and owning evaluator green. Inventory: needle-panic, compile-worker, compile-worker-hog, leak-dns, leak-tls, links-searched, codes-searched, serialization-only, prefix-false-success, prefix-skipped, prefix-resurrected, whole-attribute-tolerance, old-curly-trim, entity-wrong-scalar, plus altered-snapshot refusal. Historical final summary has 13 mutations: audit separately retained skipped-prefix evidence instead of claiming that summary contains all 14 source mutants.
 
-Final implementation inventory:
-```bash
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
-brokkr compile --bundle bundles/self
-bash scripts/coverage-gate.sh
-bash scripts/coverage-gate.sh selftest
-bash scripts/publish-guard-test.sh
-bash scripts/seal-branch-test.sh
-cargo deny check licenses
-```
+The single gate inventory remains [house rules](../../docs/house-rules.md#gates--part-of-every-change): fmt, locked workspace clippy/tests, pinned brokkr compile, coverage/selftest, publish/seal proofs, licenses. Also configured design-check selftest, delivery tamper-boundary, recipe structural and fail-closed native-tls absence. Expected Cargo no-match text plus nonzero exit proves absence; arbitrary Cargo errors do not. Record exact commands, resolved proof/tool paths/digests, source identities, exits/logs and explicit zero missed lines/branches/functions.
 
-Configured verify additionally executes design-check selftest, delivery tamper-boundary proof, recipe structural tests and fail-closed native-tls absence proof. Only the expected cargo-tree no-match refusal establishes absence; first distinguish successful dependency resolution from arbitrary Cargo failures. The immutable baseline recipe is /home/valentin/source/feedback-loop-ai/swarmail/.forge/epic192/start-now/eight-lanes/baseline/bundles/codex-fast; launched engine is its baseline checkout's .forge/bin/brokkr. Verify executes pinned copies against the candidate and checks public shims. Record actual resolved script/binary paths and SHA-256 digests, results and logs. No assigned gate repair exists; if later explicitly assigned, both baseline and repaired candidate proofs/mutations are owed.
+Immutable baseline: `/home/valentin/source/feedback-loop-ai/swarmail/.forge/epic192/start-now/eight-lanes/baseline/bundles/codex-fast`. Verify/ship must use its actual pinned chain; historical equal-copy receipts are not D3 dispatch. If chief workspace cannot see baseline, candidate design preflight is only local; sequence deterministic pinned check owns the verdict. Never substitute version-equal engine or change baseline/shims. No candidate script repair is assigned.
 
-CI-only chart/history/selftest, Docker persistence/context/volume smoke, RustSec network audit, tag-only release-rate-5k and port-80 bridge remain separate obligations. Local tests do not establish them. Root journal and historical snapshot remain outside this seat's mutation scope. Parent integrates lanes and reruns gates; this lane never merges.
+CI-only chart/history/selftest, real Docker persistence/context/volume smoke, network RustSec, tag-only release-rate-5k and real port80 exchange remain separate. Original journal/live self-bundle/release evidence stays external, never fabricated. No release edit requires local chart/package change. No push/merge/tag/publication/comments/issue closure.
 
 ## Risks
 
 | Risk | Mitigation and remaining cost |
 |---|---|
-| R4.2 is incorrectly treated as accepted | Explicit 0061 §1 authority gate; preserve ordered recognition until ruling. Five forms remain an open defect and must be disclosed. |
-| R4.3/R4.4 disappear from scope | AC11/AC12 and conditional tasks stay open with exact fixtures and operator options; no whole-story completion. |
-| One offload changes error precedence/type | Preserve dialect validation order and test exact JSON/bare errors, cap/scope/prefix controls and public compiler behavior. |
-| Large query hits HTTP parser instead of compiler | Prove transport reaches intended compiler branch, record admitted size and exact error; report feasibility gap honestly. |
-| Placement probe travels with serialization and lies | Observe actual compile/Find/Build sites and require serialization-only offload mutant red. |
-| Holding a bad mutant deadlocks test | Non-runtime watchdog cleanup, event/thread assertions, existing cold harness; no sleep or performance ceiling. |
-| TLS/DNS fixture flakes or proves wrong arm | Generated certificates, request-local resolver, real connector, explicit failure classification and independent useful cause assertion. |
-| Credential mutation is inert after Basic auth extraction | Restore metadata containing fixture credentials deliberately before actual formatter; require exact confidentiality assertion red. |
-| Literal normalization affects execution | Gated refusal-only temporary token, original accepted query retained, literal/URL/explicit-kind controls. |
-| Nested URL fix breaks encoded quotes or linearity | Source boundaries first, decode once, leading-only tolerance, all AC9 rows, legacy pins and exact work counters. |
-| UTF-8 trim panics / undercounts | Remove full scalar widths, assert bytes and balanced/interior punctuation, restore-old-trim negative. |
-| Prefix proof only sees first-row failure | At least three ordered ids, trigger B only, live/restart assertions, retry plus unrelated inbox. |
-| Entity evidence is stale or fabricated | Match three hashes; preserve inherited date; actual independent wrong-mapping evaluator and restoration. |
-| Shared blocking pool saturation / link amplification | Keep no-lock awaited work; disclose unbounded aggregate contention and source-size link amplification. No new admission/memory guarantee. |
-| Seam edits cross G/E/A ownership or shrink coverage | Invocation-local compat/webhook seams; store comment-only; SMTP extraction-only; no coverage exclusions or packaging changes. Escalate exact extra path to parent. |
-| Proposal/artifact pass mistaken for verified shipping | Distinguish drafted, deterministic designed, runtime evidence, full gates, independent reviews and operator acceptance at handoff. |
+| Historical evidence mistaken for current success | Preserve original identity/date, audit hashes/logs, renew final-tree gates; index repair proves no gate. |
+| Old plan grants broader ownership | Current path table controls; preserve inherited source, send precise extra edits/mutations to parent. |
+| Proposal mistaken for acceptance | AC10–AC12 remain open with fixtures; exact operator provenance for each ruling. |
+| Generic400 or misplaced probe passes defect | Exact compiler refusal and actual work sites; separate caller and serialization-only mutants. |
+| DNS/TLS wrong arm or already sanitized request | Per-client resolver, generated cert, cause classification, original metadata and leak mutants. |
+| Bad mutant blocks its cleanup | Existing cold harness independent watchdog/coordination, no performance ceiling or sleep sync. |
+| Prefix proof covers no commit | Fail B after A, verify suffix/unrelated live/reopen, retry 2 then 0 and distinct mutants. |
+| Table length hides wrong mapping | Complete equality, real wrong-scalar evaluator and exact restoration; preserve snapshot/license. |
+| Pool saturation, amplification, webhook loss | Preserve bounds/ordering; disclose costs without new admission/durability promises. |
+| Store/SMTP stress regressions | Existing cap/watcher/commit/hostile-DATA/burst/rate suites; no acceptance/store algorithm edits. |
+| Unknown residual/provider failure bypasses policy | Actual reviewers/exec verdicts only; security holds and unknown/unsafe residual rules stay hard stops. |
+
+## Chief validation — D3, 2026-10-23
+
+The chief's bounded checks are recorded separately under `.forge/epic192/compat-webhook-proof/design-d3/`: current documentation-contract suite (19 tests), artifact structure/relative links, all nine inherited implementation/input digests and byte-identical historical plan archive. These are design checks, not full house-gate, coverage, independent-review or ship receipts. The immutable baseline script is not mounted inside this workspace; candidate design-check preflight after commit cannot stand in for the sequence's pinned final check. No production source changed.
+
+## Historical evidence archive — pre-D3
+
+Everything below records earlier attempts at original identities and is retained verbatim, including failed gates and then-unresolved index request. It is not a D3 instruction or fresh pass. Sections above supersede old planning/ownership and index-repair demands. Parent874b4a4 repaired the row; D3 final-tree proof remains outstanding. Old designed receipt validates only its old chief commit.
 
 ## Implementation handoff — 2026-10-23
 

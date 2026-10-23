@@ -7,11 +7,11 @@
 - **Proposes amendment to:** accepted [0049](0049-extraction-compat.md) §6, only the refusal-recognition order described in §1 below.
 - **Records compatible clarifications to:** 0049 §1, nested attribute URLs and trailing curly punctuation (§2 below).
 - **Preserves:** accepted 0001–0005, 0023, 0031, 0040, 0041, 0044, 0048 and 0049 except the explicitly proposed §6 amendment after operator acceptance.
-- **Number:** 0061 is the unused number reserved to this lane. Other lanes' reservations are not consumed.
+- **Number:** 0061 is the existing proposed number reserved to this lane, retained by D3. Other lanes' reservations are not consumed.
 
 ## Context
 
-The two design positions agree on using existing owners and proving actual work/failures. They diverge on whether R4.2's refusal normalization can be called a compatible correction. Accepted 0049 §6 explicitly checks one parenthesis, one exclusion marker and one leading double quote in that order. The issue now asks to strip every double quote first, including quotes inside field identifiers. That changes normative recognition and can change 200/zero matches to a named 400. Broad intent in 0044 §7 does not silently amend the later explicit rule.
+The original synthesis recorded a dispute over R4.2 authority. The D3 positions both agree on existing owners, actual work/failure proof and the need for an exact operator amendment; the original disagreement is not attributed to this panel. Accepted 0049 §6 explicitly checks one parenthesis, one exclusion marker and one leading double quote in that order. The issue now asks to strip every double quote first, including quotes inside field identifiers. That changes normative recognition and can change 200/zero matches to a named 400. Broad intent in 0044 §7 does not silently amend the later explicit rule.
 
 The chief therefore selects an explicit proposal. This is an additional authority-dependent obligation; all independently compatible #170/#190 work proceeds. Acceptance of this proposal belongs to the operator, not the design council, tests or recipe. Accepted 0045 §8 permits compatible work under a proposal and forbids contradictory implementation before acceptance.
 
@@ -32,7 +32,7 @@ This replaces 0049 §6's ordered single-double-quote recognition only after expl
 
 ## §2 Compatible extraction clarifications
 
-For R4.1, source quotes delimit an attribute region before its one decode. Quote-tolerant URL data applies when the URL begins that decoded value after optional whitespace. Quotes surrounding a URL embedded deeper inside CSS, JavaScript-like text, refresh content or prose are its local delimiters; later URLs must still be visited. Direct URL attributes keep encoded quotes in their URL data. This interprets the existing source-aware URL contract without changing ordinary comments, selected source bodies, HTTP(S) spelling, exact-string deduplication or text-before-HTML order. Append a dated clarification to accepted 0049 §1 with evidence; never rewrite its body.
+For R4.1, source quotes delimit an attribute region before its one decode. Quote-tolerant URL data applies when the URL begins that decoded value after optional whitespace. Quotes surrounding a URL embedded deeper inside CSS, JavaScript-like text, refresh content or prose are its local delimiters; later URLs must still be visited. Direct URL attributes keep encoded quotes in their URL data. This interprets the existing source-aware URL contract without changing ordinary comments, selected source bodies, HTTP(S) spelling, exact-string deduplication or text-before-HTML order. The inherited dated clarification under accepted 0049 §1 remains with its evidence; never rewrite its body. D3 does not own a fresh edit there.
 
 For R4.5, U+201D/U+2019 join trailing closing punctuation. Remove whole scalars, count removed bytes, preserve interior punctuation and matched brackets/parentheses. This clarifies the existing suffix-punctuation rule, not browser URL validation or broad Unicode normalization.
 
@@ -60,4 +60,8 @@ The spec's AC1–AC14 and paired tasks require real protocols, actual constructi
 
 The R4.2 rule remains pending; R4.3/R4.4 remain separately open. This attempt can deliver compatible repairs with truthful residuals under the existing engine's review/security rules; it cannot declare whole #190 or epic completion. No security hold is waived.
 
-The chief commits exactly this proposed record and the reserved spec/plan/tasks. Implementation may append owned dated corrections with actual evidence. An index entry is a parent coordination request because docs/decisions/README.md is outside this lane's edit ownership; no stale accepted body or index entry grants acceptance. Commit unsigned under accepted 0056, never push. Only deterministic design-check owns the designed verdict.
+The chief commits exactly this proposed record and the reserved spec/plan/tasks. Implementation may append owned dated corrections with actual evidence. Parent commit 874b4a4 already supplies the proposed 0061 index row. Do not edit the index again or infer acceptance from it; historical missing-row failures remain historical and final-tree gates must be rerun. Commit unsigned under accepted 0056, never push. Only deterministic design-check owns the designed verdict.
+
+## D3 continuation clarification — 2026-10-23
+
+This update retains proposed status and the exact unaccepted §1 amendment; it accepts no clause. Both current positions support preserving inherited compatible implementation and requiring discriminating evidence. AC10/R4.2, AC11/R4.3 and AC12/R4.4 remain separately open. Index repair and copied source/evidence identities supply no operator ruling, gate success or policy bypass. Current edit scope is the D3 spec/plan ownership table; earlier implementation's broader file list is historical. Required new unowned edits/mutations go to parent while independent compatible work proceeds.

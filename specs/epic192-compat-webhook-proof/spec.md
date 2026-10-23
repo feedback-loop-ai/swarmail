@@ -1,10 +1,10 @@
 # Compat, webhook and extraction proofs
 
 - **Date:** 2026-10-23
-- **Status:** Draft design; implementation and verification outstanding.
-- **Branch:** `epic192/lane-d`; base `168ac299e0fe16ecdd8fa0e0218cb7bc4e0a261c`.
+- **Status:** D3 continuation design; compatible implementation inherited, final-tree verification and protected review/ship outstanding.
+- **Branch:** `epic192/lane-d-attempt3`; D3 starting HEAD `874b4a464dd3ffb59e4e431b5e82947c70bc93dd`, following inherited `6adb026e0f3080895fb0b1963e824f2883367e88`.
 - **Stories:** [#170](https://github.com/feedback-loop-ai/swarmail/issues/170) and [#190](https://github.com/feedback-loop-ai/swarmail/issues/190), including [all five comment findings](https://github.com/feedback-loop-ai/swarmail/issues/190#issuecomment-6284803433).
-- **Run:** `epic192-first-wave-lane-d-compat-0f7ecd25`; triage result `engine`, full council and four independent review lenses.
+- **Run:** `epic192-first-wave-lane-d-compat-39ce98ea`; triage result `engine`, full council and four independent review lenses.
 - **Scope:** one candidate and one implementation stream, not epic completion.
 
 Decision: 0061 — [Refusal recognition and extraction repair boundaries](../../docs/decisions/0061-compat-webhook-proof.md), **proposed**.
@@ -21,26 +21,31 @@ The [house rules](../../docs/house-rules.md) and accepted [0001](../../docs/deci
 
 [0023](../../docs/decisions/0023-off-worker-commits.md), [0044](../../docs/decisions/0044-compat-validation.md) and [0049](../../docs/decisions/0049-extraction-compat.md) authorize awaited whole-operation offload, literal search, existing dialect refusals and complete response construction. [0041](../../docs/decisions/0041-webhook-boundary.md) and [0048](../../docs/decisions/0048-rest-webhook-validation.md) require credential-free diagnostics with informative bounded causes. [0011](../../docs/decisions/0011-shim-delete-contract.md) and the existing ordered per-id store loop retain explicit-selector deletion and its committed-prefix behavior.
 
-R4.1 narrows quote tolerance to a URL beginning a decoded attribute value; nested prose/CSS quotes delimit embedded URLs. This restores lexical ownership while preserving encoded quotes in direct URL values. R4.5 treats U+201D/U+2019 as trailing closing punctuation. Both are compatible clarifications of 0049 §1, to be recorded in a dated addendum and proposed 0061; neither changes source boundaries, ordinary comments or body order.
+R4.1 narrows quote tolerance to a URL beginning a decoded attribute value; nested prose/CSS quotes delimit embedded URLs. This restores lexical ownership while preserving encoded quotes in direct URL values. R4.5 treats U+201D/U+2019 as trailing closing punctuation. Both are compatible clarifications of 0049 §1, already inherited with its dated addendum and proposed 0061; neither changes source boundaries, ordinary comments or body order.
 
-**R4.2 requires operator authority.** Accepted 0049 §6 explicitly orders one parenthesis, one exclusion marker and one leading quote. Stripping every quote before those steps changes that rule and newly refuses previously accepted literals. The chief rejects calling it only an implementation detail. Proposed 0061 §1 requests the exact amendment; preserve current recognition until accepted. Continue every independent compatible task. This is an additional concrete authority residual identified by synthesis, not a reason to stop the whole stream.
+**R4.2 requires operator authority.** Accepted 0049 §6 explicitly orders one parenthesis, one exclusion marker and one leading quote. Stripping every quote before those steps changes that rule and newly refuses previously accepted literals. The chief rejects calling it only an implementation detail. Proposed 0061 §1 requests the exact amendment; preserve current recognition until accepted. Continue every independent compatible task. This is a retained concrete authority residual, not a reason to stop independent compatible work.
 
 **R4.3 and R4.4 remain pending as directed at launch.** Keep text-first independent-part links and ordinary conditional-comment handling now. No dormant alternative, BodyOrder link API or conditional-comment parser is introduced. Neither this design nor acceptance of the separate R4.2 clause resolves those two questions.
 
-## Panel synthesis
+## Panel synthesis — D3, 2026-10-23
 
-Both run-local positions were read: `.brokkr/state/design/positions/simplicity.md` and `robustness.md`, alongside the current intake and the prior stopped intake. They remain ignored evidence.
+Read both current run-local positions, `.brokkr/state/design/positions/simplicity.md` and `robustness.md`, and `.brokkr/state/tasks/epic192-first-wave-lane-d-compat-39ce98ea.md`. They remain ignored evidence. Unlike the original design panel, these positions agree on the architecture and all three authority boundaries. Do not carry the old panel's disputed claims forward as statements by this panel. These rulings select concrete implementation/proof boundaries rather than inventing disagreement.
 
-| Topic | Ruling: adopt, reject and reconcile | Cost of the losing option / chosen approach |
+| Topic | Adopt / reject / reconcile | Cost of the selected boundary and rejected alternative |
 |---|---|---|
-| Search placement | Adopt simplicity's one awaited existing page closure containing staging and scan/build. Reject robustness's optional second compiler handoff absent demonstrated necessity. Both require actual compilation-site proof. | One fallible closure needs careful dialect error mapping; a separate handoff would ease staging isolation but add scheduling and failure states. Pool contention remains. |
-| R4.2 authority | Adopt simplicity's normative caveat; reject robustness's treatment as an unconditional refusal correction. Draft the exact amendment in 0061. | The five bypasses stay unresolved until operator acceptance; tests and broad intent cannot override accepted ordered wording. |
-| Render proof | Adopt robustness's actual lookup/build observations and serialization-only mutant; reconcile with simplicity's direct Find/Build closure test and existing eleven-route harness. Reject more routes held only at the old gate. | More focused test instrumentation is necessary; a smaller gate-only test would continue certifying the wrong work. |
-| DNS/TLS | Adopt both real-client requirements and simplicity's optional private execute/format helper. Prefer invocation-local resolver failure over a new DNS-server framework; require real reqwest resolution and generated TLS verification refusal. | A controlled resolver proves connector/error propagation, not an operating system DNS outage. Retain that scope; no public DNS dependence. |
-| Extraction | Adopt simplicity's choice at the existing region boundary and robustness's decode-once/UTF-8/work-accounting constraints. Reject CSS/DOM parsers and global quote stripping. | Heuristic extraction and historical bad arrays remain; malformed browser recovery is not promised. |
-| Delete prefix | Adopt robustness's selective middle-id failure, restart and retry; keep simplicity's existing per-id loop and local fixtures. Reject atomic batching. | Failed requests can have committed effects; clients must retry idempotently. SQLite restart fixtures cost test time. |
-| Entity provenance | Adopt inherited generator receipt only for identical hashes, plus robustness's still-owed wrong-mapping evaluator mutation. Reject regeneration merely to create a diff. | Receipt identity must be checked; source inspection or a same-count assertion cannot replace full equality. |
-| Broader resilience | Keep robustness's crash/burst/hanging-target failure ledger as preservation constraints; adopt simplicity's refusal of unrelated refactors or new infrastructure. | Existing pool/memory pressure, best-effort webhook loss and pending semantic defects remain explicit. This stream does not claim to repair them. |
+| Existing owners | Adopt simplicity: retain `stage_search` inside each existing awaited `page_work`, complete `render_one`, `execute_request` redaction and ordered per-id deletion. Robustness agrees. Reject caches, second handoffs, executors, global budgets, outbox and #178 helpers. | Pool contention and input-proportional CPU remain; added infrastructure creates admission, cancellation and coverage obligations without closing an assigned AC. |
+| Proof depth | Adopt robustness's actual compile/lookup/build observations and distinct DNS/TLS causes; retain simplicity's local seams and fixtures. Reject generic 400, gate-only hold, formatter-only error or table-length assertion as sufficient. | The smaller proof loses: it passes defective code. The chosen proof costs isolated fixtures, mutation runs and existing cold-path harness maintenance. |
+| Failure preservation | Adopt robustness's crash, cap, watcher, hostile-DATA and webhook-loss analysis as preservation constraints. Adopt simplicity's implementation limit. Reject new recovery/storage APIs or stress framework. | Existing suites must stay green; crash-after-commit duplicate ambiguity, best-effort notification loss and aggregate contention remain. No exactly-once or global resource promise. |
+| Prefix deletion | Adopt both positions' real SQLite failure on B in A/B/C, live/reopen truth and convergent retries. Reject atomic batching and mock-store failures. | A 503 can leave A committed; clients retry idempotently. An atomic alternative changes the public mutation contract and ownership. |
+| Extraction | Adopt both positions' inherited R4.1/R4.5 repairs, encoded-quote controls, decode-once and scalar/linear-work accounting. Reject further parser/algorithm changes under table-only D3 ownership. | Historical arrays remain verbatim, extraction remains heuristic, and a fresh algorithm defect needs parent ownership. |
+| Entity evidence | Adopt complete generator equality, tampered-input refusal and real wrong-scalar evaluator evidence. Reconcile reuse with identity: audit original bytes/logs, retain dates, rerun final-tree checks. Reject generation merely to create a diff or relabeling old receipts. | An identity mismatch reopens proof; same cardinality proves nothing. Actual table owner `src/extract/entities.rs` is outside fresh D3 edit scope. |
+| Semantic authority | Adopt both positions: AC10–AC12 remain open, 0061 stays proposed. Reject quote normalization, link BodyOrder or conditional-comment handling without exact rulings. | Five quoted refusal forms, text-first links and specified conditional-comment truncation remain unresolved; compatible progress cannot close whole #190/epic192. |
+
+## D3 ownership and evidence boundary
+
+This chief changes only these three reserved design files and proposed 0061. Later compatible edits are limited to `src/compat.rs`, `src/webhook.rs`, `tests/compat.rs`, `tests/webhook.rs`, generator proof/fix in `scripts/gen-entities.py`, NAMED regeneration/equality work only in `src/extract.rs`, and the existing emptied-entry regression comment in `src/store.rs`. Existing harness/entity-module/extractor-algorithm and historical-document bytes may be read/tested and preserved, not newly edited on the authority of the old plan. Necessary broader changes, including temporary unowned source mutations, need a concrete parent ownership request; complete independent work meanwhile.
+
+Parent commit `874b4a4` already supplies the proposed 0061 index row. Do not edit the index or repeat that repair demand. Historical red workspace/coverage receipts remain historical failures. Neither the row nor matching source hashes proves D3 gates, review, acceptance or ship. Original journal absence and CI-only evidence remain external obligations.
 
 ## Acceptance Criteria
 
@@ -64,7 +69,7 @@ Insert an isolated legitimate test record with separate unique link/code sentine
 
 ### AC5 — #190 / 22.2: reproducible entity proof
 
-Retain the inherited actual generator invocation/equality and altered-snapshot refusal only after matching generator, snapshot and entity-module hashes in plan.md. The generated complete NAMED block is byte-equal; a changed snapshot exits nonzero with empty stdout. Execute `all_whatwg_entities_match_snapshot` against a same-cardinality wrong-scalar NAMED mutation: the real evaluator must fail, exact original bytes must be restored, and the evaluator must pass. No permanent table/snapshot/license change is justified by current equality. Date historical T02a/T11/T12 corrections honestly and tick only proven obligations, never whole tasks supported by only a subset of their proof.
+Execute the existing generator against the pinned snapshot and compare its complete output to the actual NAMED owner, `src/extract/entities.rs`; retain dated inherited equality and altered-snapshot receipts only after matching generator, snapshot and entity-module hashes in plan.md. The generated complete NAMED block is byte-equal; a changed snapshot exits nonzero with empty stdout. The `all_whatwg_entities_match_snapshot` proof includes a same-cardinality wrong-scalar NAMED mutation: the real evaluator fails, exact original bytes are restored, and the evaluator passes. Audit inherited actual mutation evidence against identical inputs; if it cannot be reused, request parent authority for the unowned entity-module mutation and leave that proof open until executed. No permanent table/snapshot/license change is justified by current equality. Preserve dated historical T02a/T11/T12 corrections and tick only proven obligations, never whole tasks supported by only a subset of proof; new historical-file edits require parent ownership.
 
 ### AC6 — #190 / 22.3: all response work is offloaded
 
@@ -76,11 +81,11 @@ Real shim DELETE receives at least three ordered IDs A/B/C against a real SQLite
 
 ### AC8 — #190 / 22.5: name the hang regression
 
-Only the existing emptied-entry regression comment in src/store.rs changes: name the retained map guard during entry removal as the deadlock/hang cause. Retain its live/reopen assertions and executable test. No extra store seam, timeout or algorithm change.
+Preserve the existing emptied-entry regression comment in src/store.rs; if correction is needed, only that comment may change: name the retained map guard during entry removal as the deadlock/hang cause. Retain its live/reopen assertions and executable test. No extra store seam, timeout or algorithm change.
 
 ### AC9 — #190 / R4.1: nested quoted URLs remain separate and clean
 
-Fresh SMTP ingest followed by REST readback stores exactly the ordered clean URLs for every row below. Tolerant matching applies only when a URL starts the decoded attribute value after optional whitespace; deeper URLs end at their nested quote delimiter and subsequent URLs are still visited. Preserve `attribute_links_keep_encoded_quotes`, existing #136 wire regression, encoded schemes, interior commas, balanced punctuation, source-only links, decode-once and exact linear work counters. Restoring whole-value tolerance must fail the new wire cases. Append a dated 0049 §1 clarification without changing its historical body.
+Fresh SMTP ingest followed by REST readback stores exactly the ordered clean URLs for every row below. Tolerant matching applies only when a URL starts the decoded attribute value after optional whitespace; deeper URLs end at their nested quote delimiter and subsequent URLs are still visited. Preserve `attribute_links_keep_encoded_quotes`, existing #136 wire regression, encoded schemes, interior commas, balanced punctuation, source-only links, decode-once and exact linear work counters. Restoring whole-value tolerance must fail the new wire cases. Preserve the inherited dated 0049 §1 clarification and historical body; a needed further addendum is a parent request, not a D3-owned edit.
 
 | HTML fixture | Exact links |
 |---|---|
@@ -108,16 +113,16 @@ Current links are `["https://x.io/verify?name=O","https://x.io/verify?name=O'Bri
 
 ### AC13 — #190 / R4.5: curly closing punctuation
 
-Trim trailing U+201D and U+2019 along with existing suffix punctuation, removing whole UTF-8 scalars and counting removed bytes accurately. Plain-text and HTML `“https://x.io/q”.` and `‘https://x.io/q’.` store `https://x.io/q`; mixed suffix punctuation, interior curly punctuation, IPv6 and matched parentheses retain their defined behavior. Existing exact statistics and linear work remain correct. Restoring the old trimmer must fail the regression. Choose this owned behavioral fix over the issue's README-retention alternative.
+Trim trailing U+201D and U+2019 along with existing suffix punctuation, removing whole UTF-8 scalars and counting removed bytes accurately. Plain-text and HTML `“https://x.io/q”.` and `‘https://x.io/q’.` store `https://x.io/q`; mixed suffix punctuation, interior curly punctuation, IPv6 and matched parentheses retain their defined behavior. Existing exact statistics and linear work remain correct. Restoring the old trimmer must fail the regression. Retain the inherited behavioral fix over the issue's README-retention alternative; fresh extraction-algorithm edits require parent ownership.
 
 ### AC14 — verification, evidence and honest handoff
 
 All compatible criteria require exact commands, exit results, evidence paths, source/input identities and individual mutation-red/restored-green receipts. Preserve accepted guarantees, the exact 100% line/branch/function denominator and all [house gates](../../docs/house-rules.md#gates--part-of-every-change), plus configured design selftest, tamper-boundary, recipe structural and fail-closed native-tls proofs. Use the launcher-pinned engine/toolchain and immutable baseline proofs; no version-equal substitution. All four independent review lenses remain, security holds remain hard stops, and CI-only evidence stays separate.
 
-The chief commit changes exactly this spec tree's three files and 0061. Its committed clean HEAD is the design identity. The deterministic final check alone returns designed. Implementation updates historical artifacts only with actual evidence. Report every finding's disposition, commits/files, tests, preserved rulings, proposal status and cross-lane requests. Do not claim whole #190 or epic completion while AC10–AC12 or any other obligation remains open.
+The chief commit changes exactly this spec tree's three files and 0061. Its committed clean HEAD is the design identity. The deterministic final check alone returns designed. Implementation updates owned artifacts only with actual evidence; historical-file corrections require parent ownership. Report every finding's disposition, commits/files, tests, preserved rulings, proposal status and cross-lane requests. Do not claim whole #190 or epic completion while AC10–AC12 or any other obligation remains open.
 
 
-## Implementation disposition — 2026-10-23
+## Historical implementation disposition — 2026-10-23 (pre-D3)
 
 Compatible code is committed unsigned at
 `a09a5483f1afb114ea09c21caf748c0b246a4608`. AC1–AC9/AC13 have targeted real-client/
@@ -134,3 +139,7 @@ ship, CI-only/external evidence and parent integration remain outstanding.
 Phase result: **broken**, never complete or oversized. Proposed 0061 stays
 proposed; no historical accepted body, baseline, recipe or frozen guarantee
 was weakened to advance this attempt.
+
+## D3 disposition — 2026-10-23
+
+The preceding disposition records the earlier attempt, not current index state. Parent repaired the row in `874b4a4`; historical workspace exit 101 and coverage exit 1 are not erased or turned green. This chief preserves compatible source and renews the committed design identity. AC1–AC9/AC13 have inherited targeted receipts requiring identity audit and final-tree verification. AC10–AC12 stay OPEN without three exact operator rulings. AC14 stays OPEN until actual required gates, independent review and deterministic verify/ship; no runtime success is claimed by this design. Chief result is only `drafted`; only the sequence's deterministic check can advance design.
