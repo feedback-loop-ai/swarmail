@@ -1146,8 +1146,31 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
 async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
     let srv = start().await;
 
+    // Establish two distinguishable probability-zero rules, then compare the
+    // complete REST snapshot after every refused MCP write.
+    let connect = tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event": "connect", "probability": 0, "error": "421 baseline connect", "delay_ms": 5}"#,
+    )
+    .await;
+    assert_eq!(text(&connect)["connect"]["probability"], 0, "{connect}");
+    let data = tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event": "data", "probability": 0, "error": "451 baseline data", "delay_ms": 15}"#,
+    )
+    .await;
+    assert_eq!(text(&data)["data"]["probability"], 0, "{data}");
+    let (snapshot_status, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(snapshot_status, 200, "{before}");
+
     // 256 does not become 0: it does not fit u8.
     for (args, label) in [
+        (
+            r#"{"event": "data", "probability": -1}"#,
+            "negative probability -1 refuses by name",
+        ),
         (
             r#"{"event": "data", "probability": 256}"#,
             "256 must refuse, not narrow to 0",
@@ -1192,6 +1215,9 @@ async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
             body["error"]["message"], "probability must be an integer between 0 and 100",
             "{label}: {body}"
         );
+        let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{label}: {after}");
+        assert_eq!(after, before, "{label} changed active rules");
     }
 
     // Wrong-typed delay_ms refuses by name; absent stays the honest zero.
@@ -1206,6 +1232,9 @@ async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
         body["error"]["message"], "delay_ms must be a non-negative integer",
         "{body}"
     );
+    let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(get_status, 200, "{after}");
+    assert_eq!(after, before, "a rejected delay changed active rules");
 
     // A legal value sets the rule — the pole case is already pinned by the
     // chaos tests; this is the interior.
@@ -1483,6 +1512,23 @@ async fn the_schemas_publish_the_wire_bounds() {
 
 // ---------- the validation family: #46 (arguments + envelope) ----------
 
+async fn assert_one_default_mail(addr: Http, expected_id: &str, when: &str) {
+    let (status, count) = http_json(addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(status, 200, "{when}: {count}");
+    assert_eq!(count["count"], 1, "{when}: {count}");
+    let (status, messages) = http_json(addr, "GET", "/api/v1/inboxes/default/messages", None).await;
+    assert_eq!(status, 200, "{when}: {messages}");
+    assert_eq!(
+        messages["emails"].as_array().unwrap().len(),
+        1,
+        "{when}: {messages}"
+    );
+    assert_eq!(
+        messages["emails"][0]["id"], expected_id,
+        "{when}: {messages}"
+    );
+}
+
 /// A *present* argument of the wrong JSON type — or explicit `null` —
 /// refuses -32602 with a sentence naming the field and its domain, on
 /// every tool that reads it (decision 0029 §1), and the effect never
@@ -1490,6 +1536,16 @@ async fn the_schemas_publish_the_wire_bounds() {
 #[tokio::test]
 async fn a_wrong_typed_argument_refuses_by_name() {
     let srv = start().await;
+    let (seed_status, seeded) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/default/seed",
+        Some(r#"{"to": "retained@x.io", "subject": "clear refusal witness"}"#),
+    )
+    .await;
+    assert_eq!(seed_status, 200, "{seeded}");
+    let retained_id = seeded["id"].as_str().unwrap().to_string();
+    assert_one_default_mail(srv.http_addr, &retained_id, "before malformed clear probes").await;
     let legs: &[(&str, &str, &str)] = &[
         // (tool, arguments, field named in the refusal) — one leg per wrong
         // shape: string→int, int→string, array→string, explicit null,
@@ -1510,6 +1566,15 @@ async fn a_wrong_typed_argument_refuses_by_name() {
         ("swarmail_seed_email", r#"{"to": 7}"#, "to"),
     ];
     for (name, args, field) in legs {
+        let clear_probe = *name == "swarmail_clear_inbox";
+        if clear_probe {
+            assert_one_default_mail(
+                srv.http_addr,
+                &retained_id,
+                "immediately before malformed clear",
+            )
+            .await;
+        }
         let (st, body) = rpc(
             srv.http_addr,
             "tools/call",
@@ -1519,15 +1584,29 @@ async fn a_wrong_typed_argument_refuses_by_name() {
         assert_eq!(st, 200, "{name} {args}");
         assert_eq!(body["error"]["code"], -32602, "{name} {args}: {body}");
         let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains(field), "{name} {args}: {message}");
-        assert!(message.contains("must be"), "{name} {args}: {message}");
+        if *name == "swarmail_seed_email" {
+            assert_eq!(message, "to must be a string", "{name} {args}: {message}");
+        } else {
+            assert!(message.contains(field), "{name} {args}: {message}");
+            assert!(message.contains("must be"), "{name} {args}: {message}");
+        }
+        if clear_probe {
+            assert_one_default_mail(
+                srv.http_addr,
+                &retained_id,
+                "immediately after malformed clear",
+            )
+            .await;
+        }
     }
 
-    // The refusal is not just words: `clear_inbox {"inbox": 42}` did not
-    // clear `default` — and stored nothing anywhere else either.
-    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
-    assert_eq!(st, 200);
-    assert_eq!(body["count"], 0, "a refused clear_inbox clears nothing");
+    // The seeded identity remains after every refusal, including both clear probes.
+    assert_one_default_mail(
+        srv.http_addr,
+        &retained_id,
+        "after all malformed argument probes",
+    )
+    .await;
 }
 
 /// The arguments *container* is itself a supplied value (0025 §2 through

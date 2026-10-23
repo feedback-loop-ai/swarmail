@@ -744,12 +744,12 @@ async fn await_total_is_counted_after_the_wait_in_both_arms() {
 async fn chaos_probability_out_of_domain_is_refused_and_leaves_the_rules_unchanged() {
     let srv = start().await;
 
-    // Arm a valid data rule.
+    // Install two valid, distinguishable baseline rules.
     let (st, body) = http_json(
         srv.http_addr,
         "PUT",
         "/api/v1/chaos",
-        Some(r#"{"data": {"probability": 30, "error": "451 busy", "delay_ms": 5}}"#),
+        Some(r#"{"connect": {"probability": 0, "error": "421 baseline connect", "delay_ms": 5}, "data": {"probability": 0, "error": "451 baseline data", "delay_ms": 15}}"#),
     )
     .await;
     assert_eq!(st, 200, "{body}");
@@ -764,6 +764,12 @@ async fn chaos_probability_out_of_domain_is_refused_and_leaves_the_rules_unchang
             body,
             serde_json::json!({ "error": "probability must be an integer between 0 and 100" }),
             "{probability}: {body}"
+        );
+        let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200);
+        assert_eq!(
+            after, before,
+            "probability {probability} changed active rules"
         );
     }
 
@@ -816,36 +822,60 @@ async fn chaos_wrong_typed_probability_keeps_the_extractor_envelope_and_the_rule
         srv.http_addr,
         "PUT",
         "/api/v1/chaos",
-        Some(r#"{"data": {"probability": 30}}"#),
+        Some(r#"{"connect": {"probability": 0, "error": "421 baseline connect", "delay_ms": 5}, "data": {"probability": 0, "error": "451 baseline data", "delay_ms": 15}}"#),
     )
     .await;
     assert_eq!(st, 200, "{body}");
     let (st, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
     assert_eq!(st, 200);
 
-    for (put, status) in [
-        (r#"{"data": {"probability": "high"}}"#, 422),
-        (r#"{"data": {"probability": 1.5}}"#, 422),
-        (r#"{"data": {"probability": null}}"#, 422),
-        (r#"{"data": {"probability": 256}}"#, 422),
-        ("not json", 400),
+    for (put, status, label) in [
+        (
+            r#"{"data": {"probability": -1}}"#,
+            422,
+            "negative probability",
+        ),
+        (r#"{"data": {}}"#, 422, "omitted required probability"),
+        (
+            r#"{"data": {"probability": "high"}}"#,
+            422,
+            "string probability",
+        ),
+        (
+            r#"{"data": {"probability": 1.5}}"#,
+            422,
+            "fractional probability",
+        ),
+        (
+            r#"{"data": {"probability": null}}"#,
+            422,
+            "null probability",
+        ),
+        (
+            r#"{"data": {"probability": 256}}"#,
+            422,
+            "probability beyond u8",
+        ),
+        ("not json", 400, "malformed JSON"),
     ] {
         // The extractor's rejection is plain text, never a JSON envelope —
         // no `{"error": …}` is synthesized for a malformed body — so the
         // text cousin reads it honestly; `http_json` would refuse the body
         // (and the old `{}` coercion made the envelope assertion vacuous).
         let (st, body) = http_send_text(srv.http_addr, "PUT", "/api/v1/chaos", Some(put)).await;
-        assert_eq!(st, status, "{put}: {body}");
+        assert_eq!(st, status, "{label} ({put}): {body}");
         assert!(
             body.starts_with("Failed to deserialize the JSON body")
                 || body.starts_with("Failed to parse the request body"),
-            "{put}: the rejection is the extractor's own text: {body:?}"
+            "{label}: the rejection is the extractor's own text: {body:?}"
         );
+        if label == "negative probability" || label == "omitted required probability" {
+            assert!(body.contains("probability"), "{label}: {body:?}");
+        }
+        let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200);
+        assert_eq!(before, after, "{label} changed the active rules");
     }
-
-    let (st, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
-    assert_eq!(st, 200);
-    assert_eq!(before, after, "an extractor rejection stores nothing");
 }
 
 async fn next177_registered(addr: std::net::SocketAddr, inbox: &str) -> u64 {
@@ -2414,21 +2444,60 @@ async fn an_unknown_native_query_key_refuses_by_name() {
 #[tokio::test]
 async fn null_strings_refuse_on_rest_like_mcp() {
     let srv = start().await;
-    for field in ["from", "subject", "text", "html"] {
-        for bad in ["null", "7"] {
-            let body = format!(r#"{{"to": "a@x.io", "{field}": {bad}}}"#);
-            let (st, text) = http_send_text(
-                srv.http_addr,
-                "POST",
-                "/api/v1/inboxes/nulls/seed",
-                Some(&body),
-            )
-            .await;
-            // 400, the native envelope (decision 0048 §2): a refused
-            // supplied value on seed is no longer the extractor's 422.
-            assert_eq!(st, 400, "{body}: {text}");
-            assert!(text.contains(field), "{body}: the field is named: {text}");
-        }
+    for (field, bad, expected) in [
+        (
+            "from",
+            "null",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: from: invalid type: null, expected a string at line 1 column 29",
+        ),
+        (
+            "from",
+            "7",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: from: invalid type: integer `7`, expected a string at line 1 column 26",
+        ),
+        (
+            "subject",
+            "null",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: null, expected a string at line 1 column 32",
+        ),
+        (
+            "subject",
+            "7",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: integer `7`, expected a string at line 1 column 29",
+        ),
+        (
+            "text",
+            "null",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: text: invalid type: null, expected a string at line 1 column 29",
+        ),
+        (
+            "text",
+            "7",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: text: invalid type: integer `7`, expected a string at line 1 column 26",
+        ),
+        (
+            "html",
+            "null",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: html: invalid type: null, expected a string at line 1 column 29",
+        ),
+        (
+            "html",
+            "7",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: html: invalid type: integer `7`, expected a string at line 1 column 26",
+        ),
+    ] {
+        let body = format!(r#"{{"to": "a@x.io", "{field}": {bad}}}"#);
+        let (st, response) = http_json(
+            srv.http_addr,
+            "POST",
+            "/api/v1/inboxes/nulls/seed",
+            Some(&body),
+        )
+        .await;
+        // Decision 0048 §2: decode the native 400 error and pin the complete
+        // field path and JSON kind, not Axum's generic prefix.
+        assert_eq!(st, 400, "{body}: {response}");
+        assert_eq!(response["error"], expected, "{body}: {response}");
     }
     let (_, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/nulls/count", None).await;
     assert_eq!(count["count"], 0, "no refused seed stored anything");
@@ -2451,7 +2520,10 @@ async fn null_strings_refuse_on_rest_like_mcp() {
     )
     .await;
     assert_eq!(st, 422, "{text}");
-    assert!(text.contains("error"), "{text}");
+    assert_eq!(
+        text,
+        "Failed to deserialize the JSON body into the target type: data.error: invalid type: null, expected a string at line 1 column 43"
+    );
     let (_, chaos) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
     assert!(chaos["data"].is_null(), "nothing armed: {chaos}");
 
@@ -2687,12 +2759,24 @@ async fn seed_and_webhook_data_errors_are_local_400s() {
     let (st, installed) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(prior)).await;
     assert_eq!(st, 200, "{installed}");
 
-    for (body, named) in [
-        (r#"{"to": "a@x.io", "subject": null}"#, "subject"),
-        (r#"{"to": 7}"#, "to"),
-        (r#"{"text": "x"}"#, "missing field `to`"),
-        (r#"["a@x.io"]"#, "invalid seed body"),
-        (r#""a@x.io""#, "invalid seed body"),
+    for (body, named, exact) in [
+        (
+            r#"{"to": "a@x.io", "subject": null}"#,
+            "subject",
+            Some(
+                "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: null, expected a string at line 1 column 32",
+            ),
+        ),
+        (
+            r#"{"to": 7}"#,
+            "to",
+            Some(
+                "invalid seed body: Failed to deserialize the JSON body into the target type: to: invalid type: integer `7`, expected a string at line 1 column 8",
+            ),
+        ),
+        (r#"{"text": "x"}"#, "missing field `to`", None),
+        (r#"["a@x.io"]"#, "invalid seed body", None),
+        (r#""a@x.io""#, "invalid seed body", None),
     ] {
         let (st, resp) = http_json(
             srv.http_addr,
@@ -2702,10 +2786,12 @@ async fn seed_and_webhook_data_errors_are_local_400s() {
         )
         .await;
         assert_eq!(st, 400, "{body}: {resp}");
-        assert!(
-            resp["error"].as_str().unwrap().contains(named),
-            "{body}: {resp}"
-        );
+        let error = resp["error"].as_str().unwrap();
+        if let Some(exact) = exact {
+            assert_eq!(error, exact, "{body}: {resp}");
+        } else {
+            assert!(error.contains(named), "{body}: {resp}");
+        }
     }
     let (_, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/dataerr/count", None).await;
     assert_eq!(count["count"], 0, "no refused seed stored anything");

@@ -585,11 +585,27 @@ async fn https_target_is_delivered_over_tls() {
     let targets = serde_json::json!([{
         "url": format!("https://127.0.0.1:{}/hook", addr.port()),
         "secret": "topsecret",
-        "ca_pem": ca_pem,
+        "ca_pem": ca_pem.clone(),
     }])
     .to_string();
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
+    let (get_status, listed) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(get_status, 200, "{listed}");
+    let returned_ca = listed[0]["ca_pem"]
+        .as_str()
+        .expect("GET retains public CA material");
+    assert!(ca_pem.contains('\n'), "generated PEM includes line breaks");
+    assert_eq!(
+        returned_ca.as_bytes(),
+        ca_pem.as_bytes(),
+        "ca_pem GET is byte-for-byte"
+    );
+    assert_eq!(
+        listed[0]["secret"],
+        serde_json::Value::Null,
+        "GET withholds the secret"
+    );
 
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "hooked", "x")
         .await
