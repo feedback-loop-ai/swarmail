@@ -2,6 +2,7 @@
 
 Created: 2026-10-23
 Reframed: 2026-10-23, run `finish-and-deliver-the-operator--e326f5c1`
+Reconciled: 2026-10-23, run `finish-and-deliver-the-operator--64fd181b`
 Branch: `epic192-codex-recipes`
 Status: design draft; implementation and delivery proof remain outstanding
 
@@ -31,7 +32,8 @@ No accepted historical body or other proposal's status changes here.
 ## Council synthesis
 
 Inputs are both new `.brokkr/state/design/positions/{simplicity,robustness}.md`
-positions and `.brokkr/state/tasks/finish-and-deliver-the-operator--e326f5c1.md`.
+positions for run `64fd181b` and
+`.brokkr/state/tasks/finish-and-deliver-the-operator--64fd181b.md`.
 These ignored files are run-local evidence; the following rulings are the
 committed synthesis, not an average of the positions.
 
@@ -50,21 +52,24 @@ committed synthesis, not an average of the positions.
    and core evaluation cannot prove actual selection, aggregation, pin origin,
    result consumption or clean close-out. Require execution at each distinct
    boundary. Reject a configuration-only finish even if compile is green.
-   Simplicity loses speed: paid review, refusal probes and possible delivery
-   failure remain necessary.
+   Both positions accept this obligation. The rejected shortcut would be
+   faster: paid review,
+   refusal probes and possible delivery failure remain necessary.
 4. **Rule for simplicity on proof breadth.** Reuse valid receipts and the
    exact-core harness after checking provenance. Reject a second full paid
    delivery solely for careful's effort change, and eight epic deliveries as
    bootstrap acceptance. Actual fast 1/2/4 selection and aggregation still
    need proof. The cost is explicitly unexercised live behavior for variants
    not dispatched; static assignment is never live proof.
-5. **Adopt robustness's scope and ship refusal obligations without inventing
-   mechanisms.** Current `spec_defect` reclassification is chore-only. A
-   broader fix must stop before newly sensitive implementation, and review
-   needs a supported non-shipping disposition for a known scope defect.
-   Ship's success-shaped labels cannot override dirty/head/ledger discrepancies.
-   Reject prose that assumes these refusals work. Failure costs delivery and
-   may require a new pin; this run cannot repair pinned bytes.
+5. **Adopt both positions' blocking aggregation finding.** The repaired fast
+   table returns known scope defects on all four strategies and requires
+   explicit false scope/fixes for shipping. The ship script now refuses
+   close-out discrepancies with exit 2. Those repairs do not prove member
+   validation: the declared aggregate still defaults missing scope to false
+   and writes false fixes unconditionally. Require exact-engine member-level
+   refusal evidence before delivery. If no earlier enforcement exists, stop
+   for a new pin that repairs validation/aggregation; do not edit the pin or
+   weaken the requirement. The cost is another run and delayed epic repairs.
 6. **Adopt independent review and explicit safe admission.** No fallback,
    DeepSeek Pro, scope laundering of security debt or missing-fact inference.
    Allow inherited tracked debt only with explicit non-security and valid
@@ -102,14 +107,44 @@ retries an inadequate lane, and reclassification absorbs the new evidence.
 Monotonic scope is a charter obligation, not proved by counters alone.
 
 The single Flash reviewer owns security holds as well as scope checking.
-For panels, Opus owns security holds; worst verdict wins. Chore shipping
-requires explicit `spec_defect: false` and `fixes_applied: false`. Scope
-return cannot override security or above-medium refusal. Broader/full clean
-routes check fixes; their inherited residual rules do not themselves check
-fixes or scope. Prove external tree-integrity enforcement and supported scope
-refusal there. Do not claim every lane reclassifies on `spec_defect`, invent
-result vocabulary, or lower severity to force a return. Unproved safety
-remains outstanding.
+For panels, Opus owns security holds; worst verdict wins. Every fast-lane
+ship allow requires explicit `spec_defect: false` and `fixes_applied: false`.
+Known scope defects from unchanged review return to triage on chore, feature,
+design and engine;
+residual returns also require explicit non-security, at-most-medium debt.
+Security holds and above-medium debt retain stop precedence. A clean panel
+result with actual fixes and explicit false scope takes the supported
+reverification path; inconsistent scope/fixes refuses. Neither ships directly
+nor grants reviewers write authority.
+Missing or malformed facts must not become safe by aggregation. Unknown scope
+is not inferable from a clean tree; a reviewer can commit an edit and leave
+that tree clean. Preserve witnessed scope/fixes and bind review to the verified
+candidate's HEAD and tree, as well as checking worktree/index cleanliness.
+
+## Blocking member-fact proof
+
+The declared composite's `crates/brokkr-runtime/src/bundle/aggregate.rs`
+sets `fixes_applied` to false unconditionally and joins `spec_defect` through
+`as_bool().unwrap_or(false)`. Both panel positions and chief inspected this
+source. The residual safety patch does not establish mandatory earlier
+validation of those fields. This is a source-level gap, not a claimed fresh
+end-to-end bypass reproduction.
+
+Before implementation is certified, probe the exact active executable through
+member consumption and aggregation on singleton, paired and four-member
+paths. For clean and residual results, exercise absent inputs; missing, null
+and wrong-typed scope/fixes; true scope; true fixes; contradictory members;
+and valid explicit-false controls. A clean tree alone cannot supply a missing
+scope judgment. An authoritative measured mutation fact must preserve any
+witnessed edit and its candidate identity; a read-only charter is no substitute.
+Unknowns must stop, a known scope defect must not ship, and actual fixes must
+not be erased. Preserve hold/above-medium dominance and explicit-safe debt.
+
+An earlier mandatory refusal may discharge this obligation with executed
+receipts. Otherwise report the precise source/patch/tooling repair and stop
+for an assistant-prepared new pin. No in-run pinned edit, wrapper, alternate
+engine, default inference or waived criterion is permitted. Later verification,
+protected review and ship remain outstanding while this boundary is unproved.
 
 ## Model and execution requirements
 
@@ -154,16 +189,18 @@ not confinement claims. Record credential names only.
   and full council for this engine change. Prove return-budget persistence,
   new strategy selection, first-return/repeated-oversized/third-visit stops,
   and refusal of unsafe scope growth. Demonstrate a supported non-shipping
-  disposition for a feature scope defect and its aggregation. Missing proof
-  or an admitted known defect blocks delivery.
+  disposition for scope defects on every strategy and its aggregation.
+  Missing proof or an admitted known defect blocks delivery.
 - **AC4 — Safe review.** Execute the recorded core evaluator across valid
   strategies, unknown selectors, all valid severities, true/false and
   absent/null/wrong-typed safety, scope and fixes facts. Record first-match
   rule IDs/destinations, above-medium precedence, explicit-safe debt and final
-  unsafe refusal. Investigate non-chore residual fixes facts with external
-  tree enforcement. Separately prove real aggregation: one hold dominates
-  clean members; incomplete results cannot pass. Require zero unsafe residual
-  admission or security-to-scope laundering.
+  unsafe refusal. Separately execute the member-fact matrix above on 1/2/4
+  paths, including valid controls: no omitted/malformed scope/fixes can become
+  false, witnessed defects/edits cannot disappear, and one hold dominates
+  clean members. Incomplete results cannot pass. Require zero unsafe residual
+  admission or security-to-scope laundering. A required pinned repair blocks
+  delivery until a new pin proves it; predicate tests alone cannot close AC4.
 - **AC5 — Routes and results.** Tests pin models/efforts/hands and exact
   1/2/4 reviewer cardinality. Real engine evidence proves distinct selector/
   dispatch behaviors claimed. This bootstrap receives four live,
@@ -184,17 +221,28 @@ not confinement claims. Record credential names only.
   this run's real journal at `.forge/ledger/<run>.md`, with candidate/head
   agreement, clean index/worktree and real engine close-out. Recorded-engine
   refusal probes establish that dirty tree/index, changed HEAD and empty,
-  missing or mismatched ledger cannot reach done. Establish whether injected
-  engine facts enforce these stops; labels or notes are insufficient. Restart
+  missing or mismatched ledger cannot reach done. The repaired script emits
+  shipped only for matching ledger/HEAD and a clean tree; exit 2 on a
+  discrepancy must remain a real engine refusal. Ready is preliminary, never
+  delivery success. Prove final dispatch; labels or notes are insufficient. Restart
   preserves pin, run identity, counters and attempt/result association;
   missing/partial results are incomplete, never implicit success.
 - **AC8 — Evidence and delivery.** Receipts name candidate, engine/pin,
   run/attempt, command/provider, exit/verdict and result/log location without
-  secrets. Validate core-probe provenance and input identities before reuse.
+  secrets. Validate core-probe provenance and input identities before reuse;
+  explicitly reconcile its stale tooling-record digest with the active
+  base-plus-patch identity, or rerun the existing harness. Preserve old receipts.
+  The patch helper must reject wrong HEAD, dirty tracked tree/index, invalid
+  hashes/paths and malformed/duplicate JSON before patch mutation; CI applies
+  the declared ordered bytes and runs actual engine regressions before build.
+  Its nine real-Git tests prove buffering/order/refusals, not global rollback
+  after a later apply failure or cleanliness of untracked source files.
   Commit implementation-owned evidence/task edits before final verify; later
   receipts remain ignored. Missing proof, provider/gate failure, sweep warning,
   dirty shipping tree or required pinned repair is outstanding. Preserve
-  stopped-run history; no resume, supersede or invented old journal.
+  stopped-run history and the recovered immutable audit snapshot; never
+  run/resume/operator/import that snapshot, mutate remote history, fabricate
+  old rulings or prematurely supersede any finding.
 - **AC9 — Bounded bootstrap and isolation.** No production runtime,
   dependency/allowlist, coverage-denominator or accepted-body changes. Commit
   authorized recipe work unsigned, never push/merge. Document up to eight
@@ -212,6 +260,27 @@ restrictions. Evidence is archived under `.forge/epic192/bootstrap-v1`.
 This new intake authorizes existing fast changes and freezes prepared bytes.
 Old pre-fast logs under `.forge/epic192/bootstrap-evidence` remain baseline
 only. No prior live-delivery or final-gate claim transfers to this revision.
+
+## Repaired-source clarification — 2026-10-23
+
+Stopped run `finish-and-deliver-the-operator--e326f5c1` and approved unsigned
+spec commit `8cb8bb9` also remain history. Its actual fail-open aggregation
+and ship findings are not superseded by this draft. This revision replaces
+obsolete chore-only scope and discrepancy-as-shipped descriptions with the
+prepared repairs, while retaining the new member-fact obligation above.
+
+The active binary is `.forge/bin/brokkr`, SHA-256
+`517c22680beaaf354f6ee3d01e4b964669ecd030a3ea4d9d4554d88e50c83bf0`.
+Its identity is source base `597f4868e3fb971b62e6a368a2d8aa23271f4531`
+PLUS ordered patch `bundles/self/tooling-patches/0001-preserve-review-residual-facts.patch`,
+SHA-256 `5d4da2217135c5a2ca14354ae9907623cf67ff0076b078277cb77a09ad3020b5`.
+Never certify the base alone as containing the repair or select the archived
+base executable. Detailed proof ownership and receipt limits are in the plan.
+
+The recovered `.forge/epic192/history/agents-server-forge.snapshot.db` is
+immutable audit evidence, with snapshot receipt and `ruling-index.json`
+reporting 67 runs, 24 rulings and 96 member notes. Recovery corrects the old
+missing-journal limitation; it does not accept, rerun or supersede findings.
 
 ## Preserved behavior and exclusions
 

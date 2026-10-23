@@ -5,13 +5,18 @@
 Implement [spec.md](spec.md) under accepted 0057 in the existing single Rust
 crate. Implementation is authored but uncommitted: four composed bundles,
 JSON offices/adapters/policy, Markdown charters/docs, shell proof seats, Rust
-integration regressions and CI wiring. Finish only demonstrated non-pinned
-test/document gaps. No production dependency, package, mail schema, API,
+integration regressions, a stdlib-only Python source-patch helper and CI wiring.
+Finish only demonstrated non-pinned test/document gaps. No production dependency, package, mail schema, API,
 feature flag or runtime change is needed.
 
 Use `.forge/bin/brokkr`, whose frozen tooling record identifies source
-`597f4868e3fb971b62e6a368a2d8aa23271f4531` and binary SHA-256
-`744ea1f3c459d08f5b102659541e3349182bccd91f597ce7906d49cbed431ed4`.
+base `597f4868e3fb971b62e6a368a2d8aa23271f4531` PLUS the ordered patch
+`bundles/self/tooling-patches/0001-preserve-review-residual-facts.patch`, SHA-256
+`5d4da2217135c5a2ca14354ae9907623cf67ff0076b078277cb77a09ad3020b5`,
+and binary SHA-256
+`517c22680beaaf354f6ee3d01e4b964669ecd030a3ea4d9d4554d88e50c83bf0`.
+This is explicitly patched source, never a clean-base identity. The archived
+base executable must not be selected.
 Verify bytes before execution; version 0.12.0 alone is insufficient.
 Prepared tools include Rust 1.98/stable, nightly 2026-10-22 with llvm-tools,
 cargo-llvm-cov 0.9.1, cargo-deny and locked caches. Availability is a prerequisite,
@@ -47,11 +52,14 @@ pin/run. No workaround, different engine or digest waiver.
 | `agents/review-correctness.json`, `adapters/dsh.json`, inherited offices/adapters/charters | Effort correction, route declarations and inherited contracts; frozen |
 | `recipes`, `realms.json` | Relative `recipes -> bundles` alias and standalone realm/journal; preserve prepared discovery inputs |
 | `tests/delivery_recipes.rs`, `tests/delivery_constitution.rs` | Structural regressions; extend only missing non-pinned obligations |
-| `.github/workflows/ci.yml` | Prepared four-composition compile loop; check all four are covered |
+| `bundles/self/tooling-patches/0001-preserve-review-residual-facts.patch` | Prepared aggregation repair and upstream regressions; frozen source input |
+| `scripts/apply-brokkr-patches.py`, `tests/tooling_patches.rs` | Authorized stdlib helper and nine real-Git tests; no application dependency |
+| `.github/workflows/ci.yml` | Apply exact ordered patches, run engine core/aggregation tests, build composite, compile all four compositions |
 | `README.md`, `agents/README.md`, `docs/house-rules.md`, `docs/decisions/README.md` | Authorized docs; finish non-pinned launch/evidence guidance |
 | `docs/decisions/0057-codex-delivery-recipes.md`, dated markers in `0007`, `0009`, `0013` | Commit authorized record/markers without accepted-body rewrites or invented acceptance |
 | `.forge/tasks/`, `.brokkr/state/tasks/`, both position locations, `.forge/results/`, real journal/ledger | Ignored run-local evidence; never stage or fabricate historical records |
-| `.forge/epic192/{bootstrap-v1,bootstrap-evidence,policy-probe}` | Archived history, baseline logs and independent evaluator evidence; retain provenance/limits |
+| `.forge/epic192/{bootstrap-v1,bootstrap-evidence,policy-probe,pin-repairs,assistant-review-probe,provider-smoke}` | Existing ignored receipts; retain provenance/limits |
+| `.forge/epic192/active-engine.json`, `.forge/epic192/history/` | Activation identity and immutable recovered audit snapshot/receipt/ruling index; never use the snapshot as an active journal |
 
 Implementation reviews an explicit file list including all fast additions;
 no wildcard staging substitutes for review. Chief stages only its three files.
@@ -60,68 +68,76 @@ No `src/`, Cargo manifest/lock, allowance or coverage-code changes.
 
 ## Research and current observations — 2026-10-23
 
-Chief read current framing, both positions, the decision index and
-0007/0009/0013/0017/0050/0056/0057; inspected compositions, fast policy/charters,
-tooling, recipe tests, realm/alias and design/verify/ship scripts. These are
-inspection observations, not final execution receipts.
+Chief read current `64fd181b` framing, both new positions, the decision
+index and 0007/0009/0013/0017/0050/0056/0057. Direct spot checks covered the
+fast policy, ship/check scripts, tooling and source aggregate, patch helper,
+test/CI inventory and named receipts. Binary and patch hashes match the
+identity above. These are inspection findings, not final gate or live review
+verdicts. Historical observations from `7b47790` and `8cb8bb9` remain in Git
+and stopped-run evidence; obsolete observations are not current claims.
 
-- Fast has no selector default. Chore uses Flash, feature Qwen/Opus,
-  design/engine four members. Whole design/verify/ship seats are inherited.
-- Policy bounds oversized returns and stops third-visit classification.
-  Only chore review has `spec_defect` reclassification. Broader/full residual
-  admission lacks fixes/scope predicates. Test real aggregation, external tree
-  checks and a supported feature-scope refusal. Charter monotonicity is not
-  table proof.
-- Ship records discrepancies yet emits ready/shipped labels. Determine whether
-  engine facts enforce dirty/drift and ledger/HEAD refusals in actual dispatch.
-  This is an unresolved execution boundary, not a demonstrated bypass or waiver.
-- Existing probe receipt/summary reports 16,388 cases, zero failures, exact
-  recorded resolver/core `Machine::evaluate`, explicitly core-only. Chief read
-  those reports but has not established full source/dependency provenance,
-  final-candidate binding, aggregation or live dispatch. T05–T07 retain these
-  obligations; the reported count alone proves no delivery verdict.
-- Intake reports prelaunch compile valuations of 38 for self/codex/careful
-  and 304 for fast, no unruled rows or warnings. These reports and old pre-fast
-  logs are not final-candidate proof. All four must actually compile.
-- Legacy framing/position mirrors coexist with `.forge` journals because
-  frozen charters require them. State-only `.brokkr` can affect discovery;
-  prove host dispatch/restart and standalone resolution without deleting
-  evidence, fabricating adopter configuration or editing pinned charters.
-- Frozen descriptions mention signing or old routes. 0056/0057 and actual
-  execution control. Record cosmetic fixes for a future pin; a behavior or
-  contract delivery mismatch is a blocking repair.
+| Evidence inspected | What it establishes; remaining limit |
+|---|---|
+| Current fast policy | Clean/safe-residual scope returns cover chore/feature/design/engine; all ship allows require false scope/fixes. Third triage visit and repeated oversized stop. Aggregate defaults can still erase member uncertainty. |
+| Declared composite `aggregate.rs` | `review_panel` emits false fixes unconditionally; scope joins with `as_bool().unwrap_or(false)`. An earlier mandatory validator has not been established. This is a blocking source-level finding, not a new CLI bypass claim. |
+| `assistant-review-probe/patched-release-receipt.json` | Reports four malformed residual CLI cases changing completion to stop, two valid completions, seven aggregate and 33 core tests. Exec fixtures, not live providers; scope/fixes matrix remains unproved. Existing three compiling-mutant red/restored-green evidence is reusable only with checked identities. |
+| `policy-probe/receipt.json`, `policy-inputs.sha256` | Reports 58,268 evaluations, zero failures, recorded resolver/core and source/lock provenance. Chief's checksum check matched tables/bundles/patch, failed tooling.json only. Receipt is staged/unactivated with old tooling digest and a historical missing-journal statement. Preserve it; explicitly reconcile activation via active-engine/build records and current resolved identities, or rerun the existing harness. It does not prove aggregation or dispatch. |
+| Current ship script and `pin-repairs/ship-probe-receipt.json` | Script emits shipped only on clean matching close-out, exits 2 otherwise. Earlier receipt's engine was the archived base: unchanged-script regression evidence only. Ready may carry discrepancy notes and is not completion; repeat required dispatch boundaries on the active composite. |
+| `provider-smoke/summary.json` | Qwen/GLM/official Flash returned HTTP 200; Opus CLI 2.1.309 exited 0. Availability only; no Brokkr dsh dispatch or protected review. No old Claude version is live proof. |
+| `history/snapshot-receipt.json` and intake's ruling inventory | Recovered snapshot records integrity OK and 67 runs; supplied ruling index records 24 rulings/96 notes. Read-only audit evidence; no run/resume/operator/import, remote mutation, inferred acceptance or supersession. |
+| Prepared tests/helper/CI | Twelve recipe tests include real-shell ledger controls; nine real-Git helper tests cover exact source/root, tracked cleanliness, strict JSON, safe paths, all hashes before mutation and buffered order. CI applies the helper and runs actual engine regressions. Inspection is not this revision's execution. |
 
-Historical observations from `7b47790` stay in Git and bootstrap-v1 evidence;
-they are not reasserted for this candidate. This design claims no full gate
-or live reviewer success.
+Prelaunch sweeps report 38 valuations for self/codex/careful and 304 for fast,
+zero unruled and no warnings. Final-candidate compilation still needs receipts.
+Legacy `.brokkr` framing/positions coexist with `.forge` journals under the
+frozen charters; prove canonical discovery without deleting evidence or
+inventing adopter configuration. Frozen script prose suggesting push/merge
+never overrides 0056 or this task. Cosmetic descriptions can wait for another
+pin; behavior/contract mismatches cannot be excused as prose.
 
 ## Implementation approach
 
 1. Reconcile actual pin and authorized inventory, preserving all pending work.
    Compare bytes, model/effort resolution, inheritance, helper origins, symlink
    and realm. Confirm 0057 provenance and dated markers. Report necessary
-   repairs before any completion result.
-2. Extend existing recipe/constitution suites only for uncovered obligations:
+   repairs before any completion result. First resolve the blocking member-
+   fact obligation below before expensive final gates or live provider review.
+2. Discharge the member-fact blocker first using the exact engine and disposable
+   fixtures in existing evidence locations. On singleton/paired/four-member
+   clean and residual paths, submit absent inputs, omitted/null/wrong-typed
+   scope/fixes, true scope/fixes, conflicting members and explicit-false
+   controls. Observe the mandatory validation boundary and consumed inputs,
+   aggregate and final destination. Unknowns stop; known defects cannot ship;
+   witnessed edits cannot become false, including edits committed to a clean
+   tree. Retain hold and above-medium precedence controls. If an earlier
+   validator does not refuse, report `crates/brokkr-runtime/src/bundle/aggregate.rs`
+   (or its member validator), the declared patch and tooling identity as the
+   required new-pin repair. Stop; do not alter those bytes or add a bypass.
+   Supplement actual 1/2/4 selection, missing/partial/stale/misassociated output,
+   first/repeated scope growth, all-strategy scope returns and third-visit
+   refusal. Restart must preserve run/pin/attempt/visits and use the newly ruled
+   strategy without downgrade. Selection fixtures are not live deliveries.
+3. Extend existing recipe/constitution suites only for uncovered obligations:
    fast hands/efforts/charter scope, historical self routes, Opus/Flash high,
    omitted DashScope effort, standalone realm/journal behavior and preserved
    protected gates. Use disposable wrong-value controls for demonstrated gaps,
-   never frozen originals. No locally cloned policy evaluator.
-3. Compile/discover all four with the recorded engine. Compare named/explicit
+   never frozen originals. Run the existing nine helper tests as well;
+   preserve exact-HEAD/clean tracked source, all-hashes-before-mutation and
+   verified-buffer ordering. No locally cloned policy evaluator. A later
+   patch apply failure may leave earlier patches applied: refuse that checkout
+   for build/certification; the helper does not promise rollback or attest
+   untracked files. No additional patch-management framework.
+4. Compile/discover all four with the recorded engine. Compare named/explicit
    identities and inherited script origin; resolve standalone without siblings.
    Retain raw logs/exits and inspect warnings even when compile exits zero.
-4. Validate the exact-core probe's source SHA, dependency/lock subset, resolved
-   input hashes and cases. Supplement gaps through that recorded core outside
+5. Validate the exact-core probe's base-plus-patch source, dependency/lock subset,
+   resolved input hashes and cases. Account explicitly for the stale tooling
+   digest and staged metadata using the activation/build chain; otherwise
+   rerun the same harness on the active executable. Never rewrite old receipts.
+   Supplement gaps through that recorded core outside
    application dependencies. Cover strategies, absent/null/wrong-typed selector,
    safety/scope/fixes facts, all valid severities, first-match precedence,
    clean/residual admission, holds, visit limits and unknown stops.
-5. Obtain actual engine probes for 1/2/4 selection, aggregation, consumption,
-   scope refusal and restart/counters. Reuse valid receipts or use minimally
-   scoped disposable probes without epic launches or frozen-original changes.
-   Exercise one hold among clean members, missing/partial output, unknown
-   strategy, first/repeated scope growth, third visit and feature scope defect.
-   Verify the newly ruled strategy selects subsequent work/review. If no
-   permitted proof exists, leave it outstanding. Selection probes are not
-   complete live deliveries.
 6. Prove ship refusal boundaries through the recorded engine in disposable
    contexts: dirty index/worktree, changed HEAD and empty/missing/mismatched
    ledger. Capture fact origin and final rule. Core rows or happy-path stdout
@@ -160,6 +176,14 @@ checking artifacts. It does not select the next phase. The final deterministic
 exec validates chief's HEAD. Review is read-only; the single bug reviewer or
 panel security member owns holds in its respective lane.
 
+Source provenance comprises base SHA, ordered patch paths/digests, compiler
+and executable digest. The helper validates every record/hash before mutation
+and applies those verified buffers in order. Review facts belong to each
+member before joining; missing scope/fixes cannot acquire safe aggregate
+defaults. Journals must preserve both member evidence and consumed aggregate.
+Candidate identity includes HEAD and tree across verify/review/ship; clean
+status alone cannot detect a reviewer committing an unauthorized edit.
+
 Receipts identify candidate, pin/engine, run/attempt, command/provider,
 exit/verdict and result/log location without credentials. These contents are
 not a new durable schema. Track implementation evidence before final verify;
@@ -175,6 +199,7 @@ Stay on the prepared branch. Compare the executable SHA-256 against frozen
 ```bash
 cargo test --locked --test delivery_recipes
 cargo test --locked --test delivery_constitution
+cargo test --locked --test tooling_patches
 .forge/bin/brokkr compile --bundle bundles/self
 .forge/bin/brokkr compile --bundle bundles/codex
 .forge/bin/brokkr compile --bundle bundles/codex-careful
@@ -207,14 +232,15 @@ and ceiling, not a throughput guarantee.
 |---|---|
 | Cheap classification misses sensitive work | Evidence burden, scope review, full-lane examples and bounded escalation; uncertainty stops |
 | Restart resets counters or uses stale strategy | Actual journal/restart/selection proof; no downgrade; missing proof blocks delivery |
-| Feature defect or non-chore residual fixes slip through | Supported refusal plus aggregation/tree checks; report frozen repair if absent |
+| Aggregate erases unknown scope or witnessed fixes | Blocking member-level 1/2/4 exact-engine probes before certification; preserve candidate identity, stop for new pin if no mandatory validator exists |
 | Inheritance relocates relative proof script | Inherit complete seats; prove resolved origin and exec mount; no copies |
 | Structural/core checks masquerade as execution | Separate structural, evaluator, dispatch and live receipts |
 | Ship labels conceal discrepancies | Real failure probes, fact provenance and clean close-out; new pin if broken |
 | Legacy mirrors affect host discovery | Preserve evidence; prove standalone/host restart; report path repair |
 | Provider/effort differs from declaration | Live selection receipts; no DashScope flag, fallback or Pro; outages stop |
 | Dsh cannot restrict tools natively | Honest conduct limitation, fixes facts and tree checks; drift refuses |
-| Stale receipts or checkbox edits prove wrong candidate | Validate input identity; final verify after edits; later receipts ignored |
+| Stale tooling digest or checkbox edits prove wrong candidate | Explicit activation/source/input reconciliation or rerun; preserve old receipts; final verify after edits; later receipts ignored |
+| Ordered patch application fails halfway | Refuse partial source for build; use a fresh exact checkout; no rollback or untracked cleanliness claim |
 | Frozen resource needs repair | Stop for operator-prepared new pin/run; no alternate engine |
 | Eight runs collide or exhaust resources | Separate mutable state, reserve overlaps, throttle and rerun integration; no scheduler |
 | Gates expose epic runtime defects | Preserve exact coverage/dependencies; report failure and defer scoped repair |
