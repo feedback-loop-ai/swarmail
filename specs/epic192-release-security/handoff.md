@@ -138,3 +138,39 @@ checklist. No local fixture closes the real release AC. The supplied historical
 snapshot was not mutated or used as an active journal; no historical receipt
 or supersede is inferred. Only the operator seals/lands after remaining gates
 and reviews are satisfied.
+
+## Implementation retry — 2026-10-23
+
+The retry inspected the engine triage framing and deterministic `designed`
+receipt before making any change. Starting HEAD was unsigned `6cf6142`; the
+worktree was clean. No implementation change was needed or made. Existing
+house-gate, exact-coverage and mutation evidence above remains attached to
+unchanged implementation bytes; this retry does not claim a fresh full-gate
+run or a completed engine verification/review phase.
+
+Fresh receipts are in `.forge/epic192/retry-9608e8e7/receipts.json`, with exact
+argument vectors, exits, logs, HEAD and script SHA-256 values. All three
+candidate script digests still match the table above. The following focused
+checks ran again:
+
+| Command / evidence | Exit and finding |
+|---|---|
+| `python3 .forge/epic192/implementation/audit.py` | 0; ownership, runtime/comment separation, accepted-body preservation, privacy-only edits, unchanged versions/dependencies and pinned shims pass. |
+| `bash scripts/chart-verify.sh selftest` | 0; metadata/coherence/history and actual CI-reader regressions pass. |
+| `bash bundles/self/scripts/publish-guard-test.sh` | 0; repaired candidate proof passes. |
+| `bash .forge/epic192/implementation/immutable-proof-copy/scripts/publish-guard-test.sh` | 0; distinct immutable-byte proof replay passes. |
+| `cargo package --list --locked` | 0 on the clean committed candidate. |
+| `command -v helm` | 1; Helm remains absent. |
+| `bash scripts/chart-verify.sh verify` | 1, `helm is required`; this is an unavailable proof, never a chart pass. |
+| `docker info --format '{{json .ServerVersion}}'` | 1; no daemon socket. |
+| Private `dockerd` with candidate-local data/exec/pid/socket paths, vfs, disabled bridge/iptables/IP masquerading | 1; requires root privileges. Exact argv is in the receipt; no daemon remained running. |
+| `rootlesskit --state-dir=<run-evidence>/rootlesskit-state true` | 1; child creation refuses with `fork/exec /proc/self/exe: operation not permitted`. The installed rootless alternative cannot provide the required image proof in this workspace. |
+
+This retry changes only this handoff. Required actual Helm equivalence,
+render/refusal mutations, built-image NOTICE extraction/removal/restoration,
+and the external unauthorized GHCR receipt are still outstanding. No scope
+expansion, frozen-guarantee refusal or new operator decision was discovered;
+`broken` retains its charter meaning of a specific proof gap for a later run.
+No tooling was installed, proof weakened, baseline changed, review substituted,
+release attempted or journal modified. Deferred #184 still needs `26f6430`'s
+0019 errata before its exclusively owned accepted-0051 adoption.
