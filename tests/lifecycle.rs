@@ -493,17 +493,17 @@ async fn queued_seeds_refuse_once_the_stop_has_fired() {
     let started = std::time::Instant::now();
     tokio::time::timeout(STOP_BUDGET, srv.stop())
         .await
-        .expect("queued mutations must not hold stop past one busy bound");
+        .expect("stop must meet its budget with live seed requests under a held SQLite write lock");
     assert!(
         started.elapsed() < STOP_BUDGET,
-        "stop took {:?} with three seeds queued on the boundary",
+        "stop took {:?} with three live seed requests observed under a held SQLite write lock",
         started.elapsed()
     );
 
     for seed in seeds {
         let (st, body) = tokio::time::timeout(Duration::from_secs(10), seed)
             .await
-            .expect("every queued seed must answer once the stop is underway")
+            .expect("every observed seed request must answer once the stop is underway")
             .unwrap();
         assert_eq!(st, 503, "{body}");
         assert_eq!(
