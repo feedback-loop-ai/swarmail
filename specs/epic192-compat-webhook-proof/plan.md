@@ -112,6 +112,63 @@ CI-only chart/history/selftest, real Docker persistence/context/volume smoke, ne
 
 The chief's bounded checks are recorded separately under `.forge/epic192/compat-webhook-proof/design-d3/`: current documentation-contract suite (19 tests), artifact structure/relative links, all nine inherited implementation/input digests and byte-identical historical plan archive. These are design checks, not full house-gate, coverage, independent-review or ship receipts. The immutable baseline script is not mounted inside this workspace; candidate design-check preflight after commit cannot stand in for the sequence's pinned final check. No production source changed.
 
+## D3 implementation handoff — 2026-10-23
+
+This section records the implementation phase at D3, after chief commit `ff58cb3` and parent index repair `874b4a4`. It supersedes no historical receipt or operator ruling. Compatible implementation is locally proved; whole #190 and epic192 remain open. Actual protected verify/review/ship are subsequent engine-owned phases, not verdicts supplied by this seat.
+
+The only new source diff is in `src/webhook.rs`'s inline tests: split each DNS/TLS compound `assert!(class && detail)` into two assertions. Both failure-class and useful-cause requirements remain mandatory. The first fresh coverage command actually refused four short-circuit branches: lines12564/12564, branches734/738, functions1390/1390. Its report remains `target/coverage/run.Zk4tG4/` and its exit1 receipt is `implement-d3/coverage.json`. No production implementation, coverage script, exclusion, dependency, license, budget or accepted behavior changes. The repaired source passes exact coverage: **lines12564/12564, branches730/730, functions1390/1390**, zero missed in each dimension, report `target/coverage/run.oZdZr6/{lcov.info,coverage-summary.json}`.
+
+### Current proof and findings
+
+All paths below are under `.forge/epic192/compat-webhook-proof/` unless explicitly repository-relative. `implement-d3/final-evidence.json` records final source/report digests, all exact commands/exits, log paths/hashes and environment. The nine inherited source/input hashes were audited in `implement-d3/identities.json`; only the assertion-only webhook test rewrite changes an inherited hash. Historical plan archive and receipts stay unchanged.
+
+| Finding / AC | D3 disposition and actual evidence |
+|---|---|
+| #170 2.1 / AC1 | Named complex-needle400 and MailHog bare400 wire tests pass in the full workspace run. The identical-source needle-panic behavioral101/restored0 receipt is audited, not relabeled as a fresh mutation. |
+| #170 2.2 / AC2 | Both actual compiler-site placement and held SMTP/health progress tests pass. Independent Mailpit/MailHog compile-worker behavioral101/restored0 receipts match unchanged source. No new aggregate CPU or latency bound claimed. |
+| #170 2.3 / AC3 | Real per-client DNS refusal and generated untrusted loopback TLS/UnknownIssuer tests pass, with useful causes and absent plain/encoded userinfo. Fresh `implement-d3/leak-dns.json` and `leak-tls.json` each show behavioral101, exact restoration and green0 against final assertion bytes. Basic-auth/proxy/redirect/CA/cache/retry controls pass in the workspace run. |
+| #190 22.1 / AC4 | Extracted-only link/code arrays are populated, both wire searches miss each distinct sentinel absent from raw, and ordinary candidates match. Separate unchanged-source links-searched/codes-searched mutants are audited red/restored-green. |
+| #190 22.2 / AC5 | Fresh isolated generator exit0 reproduces the complete60,746-byte NAMED block; altered snapshot exits1 with zero stdout. `implement-d3/generator.json` records commands/input hashes. Full mapping evaluator passes. Historical same-cardinality wrong-scalar101/exact-restoration0 is audited against identical generator/snapshot/table and reconstructed patch digest; no unowned source mutation or table edit performed. |
+| #190 22.3 / AC6 | Actual Find/Build thread observations and eleven-route held-response/body/type/404 checks pass, including independent DATA250/queryability and guard-release controls. Historical serialization-only mutant keeps the old gate and serializer offloaded while hoisting lookup/projection; its behavioral101/exact-restoration0 is audited at identical source. |
+| #190 22.4 / AC7 | Selective SQLite refusal on B in A/B/C produces named503, persistent committed A prefix, intact B/C/unrelated mail and convergent retries2 then0. Stale skipped-prefix evidence is replaced for current proof by fresh `implement-d3/prefix-skipped.json`: behavioral101 on live A still present, exact restoration and green0. Distinct false-success/resurrection historical mutants remain audited. |
+| #190 22.5 / AC8 | Existing emptied-entry comment names retained-map-guard same-shard deadlock/hang; its live/reopen unit regression passes. Store bytes remain unchanged. |
+| #190 R4.1 / AC9 | All seven nested-quote rows pass fresh SMTP/REST readback, together with #136/encoded-quote, source-only/decode-once and exact-work controls. Inherited compatible fix/addendum preserved; whole-attribute-tolerance historical red/restored-green audited. No new extractor algorithm edit. |
+| #190 R4.2 / AC10 | **OPEN.** Preserve accepted0049§6 ordered wrapper recognition. Refusal-only all-double-quote normalization requires exact operator acceptance of proposed0061§1. No authority supplied or inferred. |
+| #190 R4.3 / AC11 | **OPEN.** Independent MIME-part links stay accepted text-first. Operator link-order ruling and parent extraction/SMTP ownership are required before changing to source order. |
+| #190 R4.4 / AC12 | **OPEN.** Conditional comments retain ordinary-comment behavior and the specified truncated-prefix output. Operator must authorize quoted-attribute treatment or explicitly accept that named debt. Neither ruling exists. |
+| #190 R4.5 / AC13 | Inherited scalar-safe trailing U+201D/U+2019 trimming and mixed/interior/balanced punctuation/work controls pass; unchanged-source old-curly-trim historical red/restored-green audited. |
+| AC14 local implementation proof | Every required local house command and supplemental proof returns0 on the corrected source, as recorded below. Engine-owned baseline dispatch, protected reviews and ship remain outstanding. No story/epic closure claimed. |
+
+`implement-d3/historical-mutation-audit.json` verifies all13 historical receipts against original/current source, reconstructed mutant hash, behavioral failing assertion/log and restored-green log. Final proof uses11 unchanged-source historical cases plus3 fresh cases (DNS/TLS leakage and skipped prefix), covering all14 distinct source mutations. Snapshot tampering is separate. No historical receipt is rewritten or promoted to current execution. The initial long workspace response timed out at the transport while the command continued; completed per-command receipts, not the timeout, establish exits. First-run coverage1 stays recorded.
+
+### Final source gates
+
+All commands run in the D3 candidate, with offline Cargo,16 build jobs, private D3 target and CPU48–63. Each row has exact command, UTC interval, exit0 and SHA256-bound log under `implement-d3/final-gates/<name>.json`:
+
+| Receipt name | Exact command (all exit0) |
+|---|---|
+| fmt | `cargo fmt --all -- --check` |
+| clippy | `cargo clippy --workspace --all-targets --locked -- -D warnings` |
+| workspace | `cargo test --workspace --locked` |
+| compile | `brokkr compile --bundle bundles/self` |
+| coverage | `bash scripts/coverage-gate.sh` |
+| coverage-selftest | `bash scripts/coverage-gate.sh selftest` |
+| design-selftest | `bash bundles/self/scripts/design-check.sh selftest` |
+| delivery-tamper | `bash bundles/self/scripts/delivery-proof-test.sh` |
+| publish | `bash scripts/publish-guard-test.sh` |
+| seal | `bash scripts/seal-branch-test.sh` |
+| licenses | `cargo deny check licenses` |
+| recipes | `cargo test --locked --test delivery_recipes` |
+| native-tls | Python invokes `cargo tree --locked -i native-tls`; requires its nonzero exit AND exact `did not match any packages` diagnostic. Recorded Cargo exit101 proves expected absence, not arbitrary Cargo failure. |
+
+The resolved launcher-supplied `.forge/bin/brokkr` digest remains `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`. Candidate canonical proof/scanner/shim digests still equal the retained baseline identity; no proof bytes changed. These local runs use unchanged candidate copies because the immutable external baseline is not mounted in this seat. They do not claim actual engine-owned baseline verify/ship dispatch. The configured engine supplies those phases and the fixed Qwen Max/Opus/official DeepSeek Flash/GLM5.3 independent lenses; no manual replacement, provider fallback or security-hold waiver.
+
+### Preservation and remaining obligations
+
+Accepted0001–0005, synchronous Store::insert and250-queryability, subscribe-before-check, oldest-only pruning, single-writer/FULL ordered commit, ingest-only extraction, source/raw/historical truth and shim committed-prefix behavior remain intact. No dependency/allowlist, exclusion, public shim, gate, bundle, adapter, charter, baseline or unowned source edits. Proposed0061 remains proposed; parent index repair is preserved.
+
+D01–D14 local implementation tasks are proved; D15 awaits actual engine-owned verify/review/ship, and D16–D19 retain authority-dependent AC10–AC12. Original journal absence and live-self-bundle/release evidence remain external. CI-only chart/history/selftest, real-Docker persistence/context/volume smoke, network RustSec audit, tag-only release-rate-5k and real port80 exchange are unproved by these local runs. No release change requires local chart/package work. No cross-lane implementation request is newly necessary; parent/operator still own exact semantic rulings and eventual integration/seal/landing. No push, merge, rebase, tag, publication, GitHub message or issue closure occurred.
+
 ## Historical evidence archive — pre-D3
 
 Everything below records earlier attempts at original identities and is retained verbatim, including failed gates and then-unresolved index request. It is not a D3 instruction or fresh pass. Sections above supersede old planning/ownership and index-repair demands. Parent874b4a4 repaired the row; D3 final-tree proof remains outstanding. Old designed receipt validates only its old chief commit.

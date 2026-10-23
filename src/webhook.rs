@@ -2003,10 +2003,8 @@ mod delivery_tests {
         );
         let error = execute_request(&client, request).await.unwrap_err();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert!(
-            error.contains("dns error") && error.contains("fixture DNS resolution refused"),
-            "{error}"
-        );
+        assert!(error.contains("dns error"), "{error}");
+        assert!(error.contains("fixture DNS resolution refused"), "{error}");
         assert_no_fixture_userinfo(&error);
     }
 
@@ -2048,10 +2046,8 @@ mod delivery_tests {
         );
         let error = execute_request(&client, request).await.unwrap_err();
         sink.await.unwrap();
-        assert!(
-            error.contains("invalid peer certificate") && error.contains("UnknownIssuer"),
-            "{error}"
-        );
+        assert!(error.contains("invalid peer certificate"), "{error}");
+        assert!(error.contains("UnknownIssuer"), "{error}");
         assert_no_fixture_userinfo(&error);
     }
 

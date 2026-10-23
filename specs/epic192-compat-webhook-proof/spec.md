@@ -1,7 +1,7 @@
 # Compat, webhook and extraction proofs
 
 - **Date:** 2026-10-23
-- **Status:** D3 continuation design; compatible implementation inherited, final-tree verification and protected review/ship outstanding.
+- **Status:** D3 compatible implementation proved locally; operator amendments and engine-owned protected verify/review/ship outstanding.
 - **Branch:** `epic192/lane-d-attempt3`; D3 starting HEAD `874b4a464dd3ffb59e4e431b5e82947c70bc93dd`, following inherited `6adb026e0f3080895fb0b1963e824f2883367e88`.
 - **Stories:** [#170](https://github.com/feedback-loop-ai/swarmail/issues/170) and [#190](https://github.com/feedback-loop-ai/swarmail/issues/190), including [all five comment findings](https://github.com/feedback-loop-ai/swarmail/issues/190#issuecomment-6284803433).
 - **Run:** `epic192-first-wave-lane-d-compat-39ce98ea`; triage result `engine`, full council and four independent review lenses.
