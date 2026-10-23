@@ -676,11 +676,30 @@ fn registry_total(registry: &Registry) -> u64 {
 /// slower scheduling and closed a refused seed with no answer at all.
 const DRAIN_DEADLINE: Duration = Duration::from_secs(10);
 
+// Installed in an isolated current-thread runtime, consumed at serve entry
+// before any await, then owned by that invocation. No last-event global.
+#[cfg(test)]
+thread_local! {
+    static DRAIN_RECEIPT: core::cell::Cell<Option<tokio::sync::oneshot::Sender<()>>> =
+        const { core::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn observe_next_drain_deadline() -> tokio::sync::oneshot::Receiver<()> {
+    let (sent, received) = tokio::sync::oneshot::channel();
+    DRAIN_RECEIPT.with(|slot| slot.set(Some(sent)));
+    received
+}
+
 pub async fn serve(
     listener: TcpListener,
     state: AppState,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    #[cfg(test)]
+    let deadline_receipt = DRAIN_RECEIPT
+        .with(|slot| slot.take())
+        .unwrap_or_else(|| tokio::sync::oneshot::channel().0);
     // The stop watch is cloned before the router consumes the receiver:
     // the deadline race below and /healthz's stopping answer are two
     // readers of the same watch, both subscribed before the stop can fire.
@@ -700,7 +719,11 @@ pub async fn serve(
     );
     tokio::select! {
         res = &mut serve => res,
-        _ = drain => Ok(()),
+        _ = drain => {
+            #[cfg(test)]
+            let _ = deadline_receipt.send(());
+            Ok(())
+        },
     }
 }
 

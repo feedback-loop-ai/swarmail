@@ -1,7 +1,7 @@
 //! Process lifecycle: both servers answer while running and stop cleanly
 //! when asked — the same graceful path SIGINT takes in production. Every
-//! task the process owns dies with it: an open feed, a delivery held by a
-//! stalled sink, a session mid-DATA.
+//! tracked serve/dispatcher task is joined. Detached connection/blocking
+//! tails retain the runtime/process teardown limits of decisions 0024/0027.
 
 mod common;
 
@@ -446,19 +446,13 @@ async fn an_omitted_mcp_timeout_parks_on_the_documented_default() {
 
 // ---------- decision 0024: the boundary refuses to start a commit once stopping ----------
 
-/// R1–R3 (0024): under a held write lock, three concurrent seeds queue on
-/// the mutation boundary; the stop flips the store's flag and every queued
-/// mutation acquires the boundary, reads the watch and refuses without one
-/// SQLite call — so each burns a scheduling instant, not its own 5s busy
-/// bound. All three answer `503` with 0012 §2's fixed body (the wire does
-/// not fork: a stopping refusal and a busy refusal share the text, the
-/// cause is the log), `stop()` lands inside `STOP_BUDGET` — upper bound
-/// only, sequence-independent: the seed that wins the boundary first is
-/// past the check and burns its own bound, and the budget arithmetic
-/// (at most one commit in flight + ε per queued release) covers both. A
-/// fresh read of the data file shows the refused set stored nothing.
-/// The 300ms pause is sequencing, not an outcome wait: it only puts the
-/// three requests on the boundary before the stop fires.
+/// R1–R3 (0024): three seeds are observed inside the router while a real
+/// SQLite write lock prevents successful commits. Their labeled in-flight
+/// rows witness live request work, not parsing, worker admission, queue
+/// position or a passed stop check. After stop, mutations that have not
+/// passed admission refuse without SQLite; an admitted mutation can spend
+/// one busy bound. All three answer 503 with the fixed storage-refusal body,
+/// stop meets its existing budget, and the refused set stores nothing.
 #[tokio::test]
 async fn queued_seeds_refuse_once_the_stop_has_fired() {
     let dir = tempfile::TempDir::with_prefix("swarmail-stop-refuse-").unwrap();
@@ -482,8 +476,9 @@ async fn queued_seeds_refuse_once_the_stop_has_fired() {
         }));
     }
     // The seeds are inside the router, observed: each seed's own labeled
-    // row — the request is in flight and its commit is queued on the
-    // boundary. A per-inbox row can only be raised by this test's seeds; a
+    // row witnesses live request work, not a queued commit or passed stop
+    // admission. The held SQLite lock independently prevents storage.
+    // A per-inbox row can only be raised by this test's seeds; a
     // global count could be satisfied by a parallel test's scrape (issue
     // #51).
     for inbox in ["refuse-one", "refuse-two", "refuse-three"] {
@@ -498,17 +493,17 @@ async fn queued_seeds_refuse_once_the_stop_has_fired() {
     let started = std::time::Instant::now();
     tokio::time::timeout(STOP_BUDGET, srv.stop())
         .await
-        .expect("queued mutations must not hold stop past one busy bound");
+        .expect("stop must meet its budget with live seed requests under a held SQLite write lock");
     assert!(
         started.elapsed() < STOP_BUDGET,
-        "stop took {:?} with three seeds queued on the boundary",
+        "stop took {:?} with three live seed requests observed under a held SQLite write lock",
         started.elapsed()
     );
 
     for seed in seeds {
         let (st, body) = tokio::time::timeout(Duration::from_secs(10), seed)
             .await
-            .expect("every queued seed must answer once the stop is underway")
+            .expect("every observed seed request must answer once the stop is underway")
             .unwrap();
         assert_eq!(st, 503, "{body}");
         assert_eq!(
@@ -533,67 +528,12 @@ async fn queued_seeds_refuse_once_the_stop_has_fired() {
     drop(dir);
 }
 
-// --- 0027: a stalled body cannot hold stop hostage -------------------------
-
-/// A request stalled mid-BODY (0027 §7) — hyper has dispatched it (its 100
-/// Continue is on the wire) and the handler waits on bytes that never come
-/// — cannot hold stop hostage: the drain deadline ends the wait (red: the
-/// graceful drain held `stop()` forever). Liveness only, against the
-/// server's own fence plus the allowance to observe it.
-///
-/// The stalled seed is deliberately never completed: hyper aborts a body
-/// that lands after the stop (the write is reset) and will not continue a
-/// dispatched body mid-drain — the boundary refusal for a seed that
-/// completes is `queued_seeds_refuse_once_the_stop_has_fired`'s proof.
-///
-/// The `503 stopping` answer is not observed here. A connection only
-/// parked mid-head when the stop fires may lawfully close unanswered (0027
-/// §2, as clarified), so a public-wire probe cannot make that answer
-/// mandatory; the unconditional proof — a real-HTTP probe known, through
-/// the owner's test-only hold, to be inside its handler at the stop, and
-/// red on EOF or reset — is
-/// `api::tests::a_healthz_inside_its_handler_at_the_stop_is_answered_503_stopping`
-/// (issue #143, decision 0020 rule 3).
-#[tokio::test]
-async fn a_stalled_body_cannot_hold_stop_hostage() {
-    let srv = start().await;
-    let addr = srv.http_addr;
-
-    // A: a seed whose body is half-said — the head is complete, hyper asks
-    // for the body with its 100 Continue, and the last six bytes never
-    // come. The stream is held for the whole stop: an early drop would end
-    // the park and prove nothing about the deadline.
-    let mut a = tokio::net::TcpStream::connect(addr).await.unwrap();
-    a.write_all(
-        format!(
-            "POST /api/v1/inboxes/stall/seed HTTP/1.1\r\nHost: {addr}\r\n\
-             Expect: 100-continue\r\nContent-Type: application/json\r\n\
-             Content-Length: 10\r\n\r\n"
-        )
-        .as_bytes(),
-    )
-    .await
-    .unwrap();
-    a.write_all(b"{\"to").await.unwrap();
-
-    // The 100 Continue is observed: A's park is real, not a guess.
-    let mut first = [0u8; 64];
-    let n = tokio::time::timeout(Duration::from_secs(10), a.read(&mut first))
-        .await
-        .expect("hyper never asked for the body")
-        .unwrap();
-    assert!(first[..n].starts_with(b"HTTP/1.1 100"), "{:?}", &first[..n]);
-
-    // stop() resolves — at the drain deadline, since the body never lands
-    // (red: the graceful drain held it forever). A never-landing body is
-    // released exactly at the fence (0027 §7), so the bound is the fence
-    // plus the named allowance to observe it — a bound at the fence itself
-    // would race the deadline it exists to observe.
-    tokio::time::timeout(STOP_BUDGET, srv.stop())
-        .await
-        .expect("the stalled body held stop past the fence");
-    drop(a);
-}
+// 0027's real stalled-body proof now asserts the selected deadline arm:
+// src/lifecycle_tests.rs::stalled_body_selects_drain_deadline, with the
+// graceful_http_completion_emits_no_deadline negative control. Its private
+// per-serve receipt is unavailable to public-API integration targets.
+// The mandatory handler-entered 503 proof remains
+// api::tests::a_healthz_inside_its_handler_at_the_stop_is_answered_503_stopping.
 
 // ---------- issue #47: shutdown counting is a ledger row, not a silence ----
 
