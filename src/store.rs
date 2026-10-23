@@ -1285,7 +1285,9 @@ mod tests {
     /// (and POP3's `has_inbox` follows) — releasing the watcher channel
     /// with it, exactly as `clear` does via `drain_inbox`. The live store
     /// and a reopen of the same data file agree: no empty entry is
-    /// restored, and a later insert re-mints the inbox.
+    /// restored, and a later insert re-mints the inbox. This is the hang
+    /// regression: retaining a map guard while removing the emptied entry
+    /// deadlocks on that same map shard.
     #[test]
     fn a_delete_that_empties_an_inbox_removes_the_entry_live_and_after_reopen() {
         // The data file and every sidecar (-wal, -shm, the lock) live inside

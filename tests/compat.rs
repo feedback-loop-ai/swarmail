@@ -1845,3 +1845,261 @@ async fn an_over_budget_mailhog_page_refuses_by_name() {
     let snippet = body["messages"][0]["Snippet"].as_str().unwrap();
     assert_eq!(snippet.chars().count(), 203, "{snippet}");
 }
+
+/// #170: the admitted HTTP request must reach regex's named refusal,
+/// rather than panic or fail HTTP parsing. The ASCII URI is 60,021 bytes (Mailpit).
+#[tokio::test]
+async fn too_complex_needle_refuses_on_the_wire() {
+    let srv = start().await;
+    let needle = "k".repeat(60_000);
+    for (path, named) in [
+        (format!("/api/v1/search?query={needle}"), true),
+        (
+            format!("/api/v2/search?kind=containing&query={needle}"),
+            false,
+        ),
+    ] {
+        let (status, _, body) = http_raw(srv.http_addr, "GET", &path, None).await;
+        assert_eq!(
+            status,
+            400,
+            "URI bytes {}: {}",
+            path.len(),
+            String::from_utf8_lossy(&body)
+        );
+        if named {
+            let value: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["error"], "Error: the search needle is too complex");
+        } else {
+            assert!(body.is_empty(), "{}", String::from_utf8_lossy(&body));
+        }
+    }
+    srv.stop().await;
+}
+
+/// Extracted arrays are stored data, not containing-search candidates.
+/// Insert a valid historical-style record whose arrays are absent in raw.
+#[tokio::test]
+async fn extracted_only_fields_miss_both_wire_searches() {
+    let srv = start().await;
+    let id = send_raw(
+        srv.smtp_addr,
+        "only-arrays",
+        "Subject: ordinarycontrol\r\n\r\nbodycontrol",
+    )
+    .await;
+    let mut email = (*srv.store.get(&id).unwrap()).clone();
+    email.links = vec!["https://array-only.invalid/linksentinel".into()];
+    email.codes = vec!["9876543210".into()];
+    srv.store.delete(&id).unwrap();
+    srv.store.insert(email).unwrap();
+    let (_, saved) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        saved["links"],
+        json!(["https://array-only.invalid/linksentinel"])
+    );
+    assert_eq!(saved["codes"], json!(["9876543210"]));
+    for (query, count) in [
+        ("linksentinel", 0),
+        ("9876543210", 0),
+        ("ordinarycontrol", 1),
+        ("bodycontrol", 1),
+    ] {
+        for path in [
+            format!("/api/v1/search?query={query}&inbox=only-arrays"),
+            format!("/api/v2/search?kind=containing&query={query}&inbox=only-arrays"),
+        ] {
+            let (status, body) = http_json(srv.http_addr, "GET", &path, None).await;
+            assert_eq!(status, 200, "{path}: {body}");
+            assert_eq!(body["count"], count, "{path}: {body}");
+        }
+    }
+    srv.stop().await;
+}
+
+/// #190: a selective SQLite fault proves a nonempty committed prefix,
+/// with the failing and unprocessed suffix intact live and after reopen.
+#[tokio::test]
+async fn shim_delete_preserves_committed_prefix_across_reopen_and_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("prefix.db");
+    let srv = common::start_with(|mut cfg| {
+        cfg.data_file = Some(db.clone());
+        cfg
+    })
+    .await;
+    let mut ids = Vec::new();
+    for subject in ["A", "B", "C"] {
+        ids.push(
+            send_raw(
+                srv.smtp_addr,
+                "prefix",
+                &format!("Subject: {subject}\r\n\r\nbody"),
+            )
+            .await,
+        );
+    }
+    let unrelated = send_raw(srv.smtp_addr, "unrelated", "Subject: control\r\n\r\nbody").await;
+    let sql = rusqlite::Connection::open(&db).unwrap();
+    sql.execute_batch(&format!("CREATE TRIGGER refuse_middle BEFORE DELETE ON emails WHEN OLD.id = '{}' BEGIN SELECT RAISE(ABORT, 'middle only'); END;", ids[1])).unwrap();
+    let payload = json!({"ids": ids}).to_string();
+    let (status, _, raw) = http_raw(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/messages",
+        Some(("application/json", &payload)),
+    )
+    .await;
+    assert_eq!(status, 503, "a failed middle delete must refuse");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&raw).unwrap()["error"],
+        "storage commit failed"
+    );
+    for (id, want) in [
+        (&ids[0], 404),
+        (&ids[1], 200),
+        (&ids[2], 200),
+        (&unrelated, 200),
+    ] {
+        assert_eq!(
+            http_raw(srv.http_addr, "GET", &format!("/api/v1/message/{id}"), None)
+                .await
+                .0,
+            want,
+            "live {id}"
+        );
+    }
+    srv.stop().await;
+    let srv = common::start_with(|mut cfg| {
+        cfg.data_file = Some(db.clone());
+        cfg
+    })
+    .await;
+    for (id, want) in [
+        (&ids[0], 404),
+        (&ids[1], 200),
+        (&ids[2], 200),
+        (&unrelated, 200),
+    ] {
+        assert_eq!(
+            http_raw(srv.http_addr, "GET", &format!("/api/v1/message/{id}"), None)
+                .await
+                .0,
+            want,
+            "reopen {id}"
+        );
+    }
+    sql.execute_batch("DROP TRIGGER refuse_middle").unwrap();
+    for removed in [2, 0] {
+        let (status, _, raw) = http_raw(
+            srv.http_addr,
+            "DELETE",
+            "/api/v1/messages",
+            Some(("application/json", &payload)),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&raw).unwrap(),
+            json!({"removed": removed})
+        );
+    }
+    assert_eq!(
+        http_raw(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/message/{unrelated}"),
+            None
+        )
+        .await
+        .0,
+        200
+    );
+    srv.stop().await;
+}
+
+/// Every #190 R4.1 nested-quote row and R4.5 punctuation reaches fresh
+/// extraction through SMTP; 250 is followed immediately by native readback.
+#[tokio::test]
+async fn nested_attribute_urls_and_curly_suffixes_survive_fresh_ingest() {
+    let srv = start().await;
+    for (html, expected) in [
+        (
+            r#"<td style="background-image:url('https://x.io/a.png'),url('https://x.io/b.png')">x</td><a href="https://x.io/verify?t=1">Verify</a>"#,
+            vec![
+                "https://x.io/a.png",
+                "https://x.io/b.png",
+                "https://x.io/verify?t=1",
+            ],
+        ),
+        (
+            r#"<td style="background-image:url('https://cdn.x.io/hero.jpg')">"#,
+            vec!["https://cdn.x.io/hero.jpg"],
+        ),
+        (
+            r#"<td style="background-image:url(&quot;https://cdn.x.io/hero.jpg&quot;)">"#,
+            vec!["https://cdn.x.io/hero.jpg"],
+        ),
+        (
+            r#"<a onclick="location.href='https://x.io/go'">"#,
+            vec!["https://x.io/go"],
+        ),
+        (
+            r#"<meta http-equiv="refresh" content="0;url='https://x.io/r'">"#,
+            vec!["https://x.io/r"],
+        ),
+        (
+            r#"<span title="Visit 'https://x.io/t' now">"#,
+            vec!["https://x.io/t"],
+        ),
+        (
+            r#"<td background="https://x.io/hero.jpg" style="background:url('https://x.io/hero.jpg')">"#,
+            vec!["https://x.io/hero.jpg"],
+        ),
+        (
+            r#"<a href="  https://x.io/?q=&quot;x&quot;">"#,
+            vec!["https://x.io/?q=\"x\""],
+        ),
+        (
+            "<p>“https://x.io/q”. ‘https://x.io/r’.</p>",
+            vec!["https://x.io/q", "https://x.io/r"],
+        ),
+    ] {
+        let id = send_raw(
+            srv.smtp_addr,
+            "nested-links",
+            &format!("Content-Type: text/html; charset=utf-8\r\n\r\n{html}"),
+        )
+        .await;
+        let (status, email) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/messages/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(email["links"], json!(expected), "{html}: {email}");
+    }
+    let id = send_raw(
+        srv.smtp_addr,
+        "nested-links",
+        "Content-Type: text/plain; charset=utf-8\r\n\r\n“https://x.io/q”. ‘https://x.io/r’.",
+    )
+    .await;
+    let (_, email) = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(email["links"], json!(["https://x.io/q", "https://x.io/r"]));
+    srv.stop().await;
+}

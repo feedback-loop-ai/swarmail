@@ -58,6 +58,7 @@ struct Gate {
     entered: Arc<AtomicUsize>,
     open: Arc<(Mutex<bool>, Condvar)>,
     expired: Arc<AtomicBool>,
+    sites: Arc<Mutex<Vec<&'static str>>>,
 }
 
 impl Gate {
@@ -66,13 +67,23 @@ impl Gate {
             entered: Arc::new(AtomicUsize::new(0)),
             open: Arc::new((Mutex::new(false), Condvar::new())),
             expired: Arc::new(AtomicBool::new(false)),
+            sites: Arc::new(Mutex::new(Vec::new())),
         };
         let (entered, open, expired) = (
             gate.entered.clone(),
             gate.open.clone(),
             gate.expired.clone(),
         );
+        let sites = gate.sites.clone();
         store.set_compat_gate(Some(Arc::new(move || {
+            let (site, caller, actual) = RENDER_SITE
+                .with(std::cell::Cell::get)
+                .expect("serialization-only gate has no actual work observation");
+            assert_ne!(actual, caller, "{site} ran on async worker");
+            sites.lock().unwrap().push(site);
+            if site == "built" {
+                return;
+            }
             entered.fetch_add(1, Ordering::SeqCst);
             let (open, wake) = &*open;
             let (_open, wait) = wake
@@ -144,6 +155,26 @@ async fn held_single_message_builds_leave_smtp_and_health_serving() {
     assert!(greeting.starts_with("220"), "{greeting}");
     let (status, health) = get(addr, "/healthz".into()).await;
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&health));
+    // An independent DATA 250 remains immediately queryable while the
+    // held responses own Arcs, with no store guard/mutation lock retained.
+    for command in ["MAIL FROM:<f@x.io>\r\n", "RCPT TO:<r@x.io>\r\n", "DATA\r\n"] {
+        smtp.write_all(command.as_bytes()).await.unwrap();
+        let mut reply = String::new();
+        smtp.read_line(&mut reply).await.unwrap();
+        assert!(
+            reply.starts_with("250") || reply.starts_with("354"),
+            "{reply}"
+        );
+    }
+    smtp.write_all(b"Subject: independent\r\n\r\nbody\r\n.\r\n")
+        .await
+        .unwrap();
+    let mut accepted = String::new();
+    smtp.read_line(&mut accepted).await.unwrap();
+    assert!(accepted.starts_with("250"), "{accepted}");
+    let (status, count) = get(addr, "/api/v1/inboxes/default/count".into()).await;
+    assert_eq!(status, 200);
+    assert_eq!(serde_json::from_slice::<Value>(&count).unwrap()["count"], 1);
     // The lookup precedes the gate: an absent mail never waits on it.
     for missing in [
         "/api/v1/message/nope",
@@ -188,6 +219,12 @@ async fn held_single_message_builds_leave_smtp_and_health_serving() {
         }
     }
     assert!(!gate.expired.load(Ordering::SeqCst));
+    let sites = gate.sites.lock().unwrap().clone();
+    assert_eq!(
+        sites.iter().filter(|&&s| s == "lookup").count(),
+        paths.len()
+    );
+    assert_eq!(sites.iter().filter(|&&s| s == "built").count(), paths.len());
     srv.store.set_compat_gate(None);
     srv.stop().await;
 }
@@ -388,4 +425,164 @@ async fn held_compat_page_builds_leave_smtp_and_health_serving() {
     let (status, _) = get(addr, "/api/v1/messages?inbox=parked".into()).await;
     assert_eq!(status, 200);
     srv.stop().await;
+}
+
+/// The search invocation owns its compiler probe; no global or Store field.
+#[derive(Debug)]
+pub(crate) struct CompileProbe {
+    entered: tokio::sync::Notify,
+    thread: Mutex<Option<std::thread::ThreadId>>,
+    open: (Mutex<bool>, Condvar),
+    expired: AtomicBool,
+}
+
+impl CompileProbe {
+    pub(super) fn enter(&self) {
+        *self.thread.lock().unwrap() = Some(std::thread::current().id());
+        self.entered.notify_one();
+        let (open, wake) = &self.open;
+        let (_held, wait) = wake
+            .wait_timeout_while(open.lock().unwrap(), Duration::from_secs(10), |open| !*open)
+            .unwrap();
+        self.expired.store(wait.timed_out(), Ordering::SeqCst);
+    }
+}
+
+fn app_state(srv: &crate::RunningServer) -> AppState {
+    AppState {
+        store: srv.store.clone(),
+        chaos: srv.chaos.clone(),
+        webhooks: srv.webhooks.clone(),
+        started: Instant::now(),
+        shutdown: srv.shutdown.subscribe(),
+        smtp_degraded: Arc::new(AtomicBool::new(false)),
+        pop3_degraded: Arc::new(AtomicBool::new(false)),
+        http_origin_guard: Some(srv.http_addr.port()),
+    }
+}
+
+/// Exercise each production handler with an invocation-local compiler hold.
+/// Real SMTP and HTTP still progress on this same current-thread runtime.
+#[tokio::test]
+async fn needle_compilation_leaves_the_async_worker() {
+    let srv = crate::run_on(&config(None)).await.unwrap();
+    let worker = std::thread::current().id();
+    for hog in [false, true] {
+        let probe = Arc::new(CompileProbe {
+            entered: tokio::sync::Notify::new(),
+            thread: Mutex::new(None),
+            open: (Mutex::new(false), Condvar::new()),
+            expired: AtomicBool::new(false),
+        });
+        let params = SearchParams {
+            query: Some("literal".into()),
+            kind: Some("containing".into()),
+            compile_probe: Some(probe.clone()),
+            ..Default::default()
+        };
+        let state = app_state(&srv);
+        let request = tokio::spawn(async move {
+            if hog {
+                search_hog(State(state), Query(params))
+                    .await
+                    .map_err(IntoResponse::into_response)
+            } else {
+                search_mailpit(State(state), Query(params))
+                    .await
+                    .map_err(IntoResponse::into_response)
+            }
+        });
+        probe.entered.notified().await;
+        let observed = *probe.thread.lock().unwrap();
+        let (status, _) = get(srv.http_addr, "/healthz".into()).await;
+        assert_eq!(status, 200);
+        let mut smtp = BufReader::new(TcpStream::connect(srv.smtp_addr).await.unwrap());
+        let mut line = String::new();
+        smtp.read_line(&mut line).await.unwrap();
+        *probe.open.0.lock().unwrap() = true;
+        probe.open.1.notify_all();
+        assert!(line.starts_with("220"));
+        assert_ne!(observed, Some(worker), "compiler ran on async worker");
+        assert!(
+            !probe.expired.load(Ordering::SeqCst),
+            "compiler hold expired"
+        );
+        assert_eq!(request.await.unwrap().unwrap().status(), StatusCode::OK);
+    }
+    srv.stop().await;
+}
+
+/// Observe the callbacks themselves, not the between-callbacks gate. A
+/// serialization-only handoff cannot hide lookup/projection on the worker.
+#[tokio::test]
+async fn actual_lookup_and_build_leave_the_async_worker() {
+    let srv = crate::run_on(&config(None)).await.unwrap();
+    srv.store
+        .insert(crate::store::email("lookup", "lookup", "a@x.io"))
+        .unwrap();
+    let worker = std::thread::current().id();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let found = tx.clone();
+    let response = render_one(
+        srv.store.clone(),
+        move |store| {
+            found.send(("lookup", std::thread::current().id())).unwrap();
+            store.get("lookup")
+        },
+        move |email| {
+            tx.send(("projection", std::thread::current().id()))
+                .unwrap();
+            let value = mailpit_message(email);
+            json_response(value)
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    for (site, thread) in rx {
+        assert_ne!(thread, worker, "{site} ran on async worker");
+    }
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["ID"],
+        "lookup"
+    );
+    srv.stop().await;
+}
+
+/// Assertions live at Find/Build invocation sites, separately from the
+/// old gate. Every real response route exercises these observations.
+pub(super) fn observe_work_thread(site: &str, caller: std::thread::ThreadId) {
+    assert_ne!(
+        std::thread::current().id(),
+        caller,
+        "{site} ran on async worker"
+    );
+}
+
+// Transient thread-local metadata only around this Store's gate callback.
+// It is the invocation's observation, never a shared registry or policy.
+thread_local! {
+    static RENDER_SITE: std::cell::Cell<Option<(&'static str, std::thread::ThreadId, std::thread::ThreadId)>> = const { std::cell::Cell::new(None) };
+}
+
+pub(super) fn render_site(store: &Store, site: &'static str, caller: std::thread::ThreadId) {
+    RENDER_SITE.with(|slot| {
+        struct Restore<'a>(
+            &'a std::cell::Cell<
+                Option<(&'static str, std::thread::ThreadId, std::thread::ThreadId)>,
+            >,
+        );
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                self.0.set(None);
+            }
+        }
+        assert!(slot.get().is_none());
+        let _restore = Restore(slot);
+        slot.set(Some((site, caller, std::thread::current().id())));
+        store.run_compat_gate();
+    });
 }
