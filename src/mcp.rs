@@ -275,14 +275,22 @@ fn arg_str(args: &Value, key: &str) -> Result<Option<String>, (i64, String)> {
     }
 }
 
+fn map_usize_conversion(
+    key: &str,
+    result: Result<usize, std::num::TryFromIntError>,
+) -> Result<Option<usize>, (i64, String)> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(_) => Err(refusal(key, "a non-negative integer that fits usize")),
+    }
+}
+
 /// Stage an unsigned integer argument (0 and up).
 fn arg_usize(args: &Value, key: &str) -> Result<Option<usize>, (i64, String)> {
     match args.get(key) {
         None => Ok(None),
         Some(v) => match v.as_u64() {
-            Some(n) => usize::try_from(n)
-                .map(Some)
-                .map_err(|_| refusal(key, "a non-negative integer that fits usize")),
+            Some(n) => map_usize_conversion(key, usize::try_from(n)),
             None => Err(refusal(key, "a non-negative integer")),
         },
     }
@@ -839,10 +847,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn map_usize_conversion_translates_success_and_named_refusals() {
+        assert_eq!(
+            map_usize_conversion("offset", Ok(usize::MAX)),
+            Ok(Some(usize::MAX))
+        );
+        assert_eq!(map_usize_conversion("count", Ok(0)), Ok(Some(0)));
+        assert_eq!(
+            map_usize_conversion("offset", Err(u8::try_from(256_u16).unwrap_err())),
+            Err((
+                -32602,
+                "offset must be a non-negative integer that fits usize".to_string()
+            ))
+        );
+        assert_eq!(
+            map_usize_conversion("count", Err(u8::try_from(256_u16).unwrap_err())),
+            Err((
+                -32602,
+                "count must be a non-negative integer that fits usize".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn arg_usize_preserves_optional_values_and_rejects_wrong_shapes() {
+        assert_eq!(arg_usize(&json!({}), "offset"), Ok(None));
+        assert_eq!(arg_usize(&json!({"offset": 0}), "offset"), Ok(Some(0)));
+        assert_eq!(
+            arg_usize(&json!({"offset": usize::MAX}), "offset"),
+            Ok(Some(usize::MAX))
+        );
+        for invalid in [
+            json!(null),
+            json!(-1),
+            json!(1.5),
+            json!("1"),
+            json!(true),
+            json!({}),
+        ] {
+            assert_eq!(
+                arg_usize(&json!({"offset": invalid}), "offset"),
+                Err((-32602, "offset must be a non-negative integer".to_string())),
+                "{invalid}"
+            );
+        }
+    }
+
     #[cfg(target_pointer_width = "32")]
     #[test]
     fn usize_staging_accepts_max_and_refuses_overflow_on_32_bit() {
-        let max = u64::from(usize::MAX);
+        let max = u64::try_from(usize::MAX).unwrap();
         assert_eq!(
             arg_usize(&json!({"offset": max}), "offset"),
             Ok(Some(usize::MAX))
@@ -1099,7 +1154,7 @@ mod tests {
         let reply = call(
             &ctx,
             "swarmail_search_emails",
-            json!({"inbox": "paged", "offset": u64::MAX}),
+            json!({"inbox": "paged", "offset": usize::MAX}),
         )
         .await;
         assert_eq!(page(reply), (json!(3), Vec::<String>::new()));

@@ -175,3 +175,34 @@ and its saved results.json and logs were subsequently read back. No check
 is inferred from the timeout. The required implementation coverage pass,
 actual 32-bit execution, external host/CI proofs and protected review remain
 outstanding. This reproduction satisfies the baseline inspection task only.
+
+## Implementation validation — 2026-10-24
+
+The deterministic check passed on the committed design at `a4a43f4` using the
+candidate-local brokkr binary with SHA-256
+`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`. Before
+source edits, the chief's unchanged-source hashes for `src/mcp.rs` and
+`tests/mcp.rs` matched this candidate, so its canonical coverage reproduction
+was reused as the baseline refusal. The implementation preserves checked
+`usize::try_from`, extracts the concrete result mapper, adds measured inline
+controls and corrects the three target-aware fixtures.
+
+Focused host unit tests passed (10), the real-server MCP suite passed (44),
+and `store_contract_docs` passed (19). Final exact coverage is 13121/13121
+lines, 766/766 branches and 1447/1447 functions at
+`target/coverage/run.gmQPcl`; coverage selftest passed. Shim integrity, fmt,
+locked clippy and workspace tests, self-bundle compile, publish/seal proofs,
+licenses, design-check selftest, delivery tamper-boundary proof and the
+fail-closed `native-tls` absence proof passed. The per-command logs are in
+`.forge/usize-proof/`.
+
+The installed target is `i686-unknown-linux-musl` on an `x86_64` host. The
+three exact filtered commands in this plan were attempted; each exited 101
+before test execution because `musl-gcc` is absent while building native
+dependencies. They ran 0 tests and produced no binary. No actual 32-bit runtime,
+unchecked-cast behavioral red, source restoration rerun or 32-bit green is
+claimed. AC4 remains open. The engine-selected protected reviewer receipts
+are also not present in this implementer phase; no reviewer substitution is
+made. Actual 32-bit execution, protected review, macOS stderr, privileged
+port-80 and CI-owned chart/Docker/RustSec/tag-release evidence remain separate
+open obligations.

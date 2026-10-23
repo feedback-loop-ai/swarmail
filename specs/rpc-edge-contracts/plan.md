@@ -202,3 +202,24 @@ External evidence still required: supported-host macOS stderr execution, the
 privileged real port-80 exchange, CI chart/Docker/RustSec/tag-release proofs,
 and an actual 32-bit runtime. Decision 0062 remains proposed; its record and
 this implementation do not constitute operator acceptance.
+
+## Dated checked usize follow-up — 2026-10-24
+
+The follow-up in `specs/usize-proof/` repairs the exact host coverage gap with
+a concrete mapper around the production `usize::try_from` result. Staging
+semantics, defaults and named refusals remain unchanged; no storage, stdio,
+persistence, protocol, dependency, gate or decision changes were made. The
+source and fixtures are scoped to `src/mcp.rs` and `tests/mcp.rs`.
+
+Host MCP unit (10), real-server MCP (44) and store-contract documentation
+(19) tests passed. All local house gates and verify-owned proofs now pass;
+exact coverage is 13121/13121 lines, 766/766 branches and 1447/1447 functions.
+The receipts are in `.forge/usize-proof/`.
+
+Actual 32-bit execution remains open: all three specified
+`i686-unknown-linux-musl` commands exited 101 before tests because `musl-gcc`
+is unavailable. No binary or test execution resulted, and no unchecked-cast
+mutation sensitivity is claimed. The supported-host macOS stderr, privileged
+port-80, CI chart/Docker/RustSec/tag-release proofs and protected reviewer
+receipts also remain open. Decision 0062 remains proposed; accepted amended
+0047 and frozen guarantees are unchanged.

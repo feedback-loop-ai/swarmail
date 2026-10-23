@@ -1985,7 +1985,7 @@ async fn supplied_non_scalar_ids_refuse_before_tool_effects_over_http() {
 #[tokio::test]
 async fn mcp_search_offset_refuses_values_beyond_32_bit_usize() {
     let srv = start().await;
-    let max = u64::from(usize::MAX);
+    let max = u64::try_from(usize::MAX).unwrap();
     for (offset, expected_error) in [(max, false), (max + 1, true)] {
         let request = serde_json::json!({
             "jsonrpc": "2.0",
