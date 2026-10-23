@@ -78,6 +78,10 @@ pub struct ListParams {
 /// out of the query text, which this shim refuses by name).
 #[derive(Debug, Default, Deserialize)]
 pub struct SearchParams {
+    /// Invocation-local observation at the actual user-needle compiler.
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(crate) compile_probe: Option<Arc<page_work_tests::CompileProbe>>,
     pub kind: Option<String>,
     pub query: Option<String>,
     pub limit: Option<usize>,
@@ -243,9 +247,15 @@ fn stage_search(params: &SearchParams) -> Result<Matcher, ApiError> {
         })),
         // The needle keeps its call-site lowering — per request, once
         // (decision 0030 §4).
-        "containing" => search_needle(&query.to_lowercase())
-            .map(Matcher::Containing)
-            .ok_or(bad_request("Error: the search needle is too complex")),
+        "containing" => {
+            #[cfg(test)]
+            if let Some(probe) = &params.compile_probe {
+                probe.enter();
+            }
+            search_needle(&query.to_lowercase())
+                .map(Matcher::Containing)
+                .ok_or(bad_request("Error: the search needle is too complex"))
+        }
         other => Err(bad_request(format!("unknown search kind: {other}"))),
     }
 }
@@ -277,8 +287,8 @@ where
 /// Axum to serialize later would serialize a 30 MiB body on the worker.
 /// The map guard is released by `find` before the build; no mutation lock
 /// is taken. An absent mail is the read shapes' one 404. The test gate
-/// sits between the lookup and the build, so the proof holds the build
-/// itself, not merely the lookup. Panics re-raise in the caller.
+/// holds between lookup and build and observes both invocation sites and
+/// completed builds, separately from serialization. Panics re-raise in the caller.
 pub(crate) async fn render_one<Find, Build>(
     store: Arc<Store>,
     find: Find,
@@ -288,11 +298,24 @@ where
     Find: FnOnce(&Store) -> Option<Arc<Email>> + Send + 'static,
     Build: FnOnce(&Email) -> Response + Send + 'static,
 {
+    #[cfg(test)]
+    let caller = std::thread::current().id();
     Store::offload(move || {
-        let email = find(&store)?;
+        let email = {
+            #[cfg(test)]
+            page_work_tests::observe_work_thread("lookup", caller);
+            find(&store)?
+        };
         #[cfg(test)]
-        store.run_compat_gate();
-        Some(build(&email))
+        page_work_tests::render_site(&store, "lookup", caller);
+        let response = {
+            #[cfg(test)]
+            page_work_tests::observe_work_thread("build", caller);
+            build(&email)
+        };
+        #[cfg(test)]
+        page_work_tests::render_site(&store, "built", caller);
+        Some(response)
     })
     .await
     .ok_or_else(not_found)
@@ -394,19 +417,21 @@ async fn search_mailpit(
     let limit = page_limit(params.limit)?;
     let inbox = scope_inbox(params.inbox.clone())?;
     refuse_field_syntax(&params)?;
-    let matcher = stage_search(&params)?;
     let start = params.start.unwrap_or(0);
     let body = page_work(state.store.clone(), move |store| {
+        let matcher = stage_search(&params)?;
         let all = run_search(store, inbox.as_deref(), &matcher);
         // Mailpit's search envelope reports `total`/`unread` for the whole
         // mailbox — the unfiltered scope (issue #55) — while the match
         // count rides `messages_count`.
         let mailbox = mailbox_size(store, inbox.as_deref());
-        mailpit_envelope(mailbox, all.len(), start, page_of(&all, start, limit))
-            .to_string()
-            .into_bytes()
+        Ok::<_, ApiError>(
+            mailpit_envelope(mailbox, all.len(), start, page_of(&all, start, limit))
+                .to_string()
+                .into_bytes(),
+        )
     })
-    .await;
+    .await?;
     Ok(json_body(body))
 }
 
@@ -631,9 +656,10 @@ async fn search_hog(
     refuse_field_syntax(&params).map_err(HogRejection::Json)?;
     // The remaining quirks — an empty query, an unrunnable needle — are
     // upstream's bare `400` with no body.
-    let matcher = stage_search(&params).map_err(|_| HogRejection::Bare(StatusCode::BAD_REQUEST))?;
     let start = params.start.unwrap_or(0);
     let body = page_work(state.store.clone(), move |store| {
+        let matcher =
+            stage_search(&params).map_err(|_| HogRejection::Bare(StatusCode::BAD_REQUEST))?;
         let all = run_search(store, inbox.as_deref(), &matcher);
         hog_page_body(
             all.len(),
@@ -641,10 +667,10 @@ async fn search_hog(
             page_of(&all, start, limit),
             MAX_COMPAT_PAGE_BYTES,
         )
+        .map_err(|OverBudget| HogRejection::Json(page_budget_refusal()))
     })
     .await;
     body.map(json_body)
-        .map_err(|OverBudget| HogRejection::Json(page_budget_refusal()))
 }
 
 /// The page would not fit its byte budget.
@@ -973,7 +999,7 @@ fn haystacks(email: &Email) -> impl Iterator<Item = Cow<'_, str>> {
         .chain(std::iter::once_with(|| String::from_utf8_lossy(&email.raw)))
 }
 
-/// Substring hit across everything extract found plus the raw source. The
+/// Substring hit across the source fields and raw source. The
 /// search stops at its first hit (decision 0044 §7, issue #96): a later
 /// field can only repeat a yes already given, so the full raw source — the
 /// largest haystack — is reached only when every field missed. No

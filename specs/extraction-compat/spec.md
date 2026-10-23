@@ -248,3 +248,23 @@ single-writer lock, 5 s busy bound, awaits-registry cap, envelope sender,
 webhook/bridge/Origin behavior, prior validation/delivery repairs, chart
 startupProbe/knobs and publish guard. No issue closure or claim that the
 remaining epic delivery-policy findings are resolved by this batch.
+
+
+## Dated compatible correction — 2026-10-23, epic192 lane D
+
+For #190 R4.1, quote tolerance applies to a URL starting a decoded quoted
+attribute value after optional whitespace; embedded CSS/prose URLs use quote
+delimiters and successive URLs remain separate. R4.5 removes trailing U+201D
+and U+2019 as whole scalars, with byte-accurate trim counters. These compatible
+clarifications preserve 0049 §1's source-before-decode and fresh-ingest rules,
+with historical arrays unchanged. Exact SMTP/REST rows, accounting controls,
+preservation tests and red/restored-green mutations are in the
+[lane D handoff](../epic192-compat-webhook-proof/plan.md#implementation-handoff--2026-10-23).
+
+The eleven-route held-response proof observes actual lookup/build sites and
+completed responses; a serialization-only offload mutant with lookup and
+projection on the async worker fails. Generator provenance now has actual
+identical-input prior-run evidence and an independent wrong-mapping proof.
+Full-gate/delivery tasks remain open; no exact coverage or whole-story
+completion follows. Ordered prefix recognition, text-first links and ordinary
+conditional-comment behavior remain pending exact R4.2/R4.3/R4.4 rulings.

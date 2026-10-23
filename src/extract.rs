@@ -30,8 +30,8 @@ use std::sync::LazyLock;
 static URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"[hH][tT][tT][pP][sS]?://[^\s"'<>]+"#).unwrap());
 
-/// An http(s) URL inside one quoted attribute value (decision 0049 §1): the
-/// source's own closing quote already ended the value, so a quote decoded
+/// A leading http(s) URL in a quoted attribute value (decision 0049 §1):
+/// the source's own closing quote ended the value, so a quote decoded
 /// from `&#39;` or `&quot;` is URL data a browser follows — the
 /// `O&#39;Brien` reset link stays whole (issue #136).
 static ATTR_URL_RE: LazyLock<Regex> =
@@ -200,8 +200,9 @@ struct LinkScanStats {
 /// The HTML leg is cut by its source structure first and decoded after
 /// (decision 0049 §1, issue #136): the one tokenizer walk the code scan
 /// uses reports every quoted attribute value, which is decoded once and
-/// matched with quotes allowed — the source's closing quote ended it, so a
-/// decoded `'` is the link's own. Everything else — text, markup outside
+/// matched with quotes allowed for a URL beginning the value after optional
+/// whitespace. Embedded CSS/prose URLs use their inner quote delimiters.
+/// Everything else — text, markup outside
 /// values, comments, raw text, an unfinished tail — is decoded once and
 /// matched as before, so `&lt;https://x.io/u&gt;` still ends at the decoded
 /// `>` (issue #94). Decoded source is regex input only, never tokenized.
@@ -251,8 +252,8 @@ const CLOSERS: &[u8; 3] = b")]}";
 /// `https://x.io/p`, while `https://x.io/wiki/Foo_(bar)` and
 /// `http://[::1]:8080/p` stay whole. One counting pass, then each trimmed
 /// byte decrements its pair's surplus — linear, never a rescan. The scheme
-/// is never trimmed, so the candidate never empties, and only ASCII bytes
-/// are removed, so the cut is a character boundary.
+/// is never trimmed, so the candidate never empties. Curly closing quotes
+/// are removed as whole UTF-8 scalars; every cut is a character boundary.
 fn trim_url<'a>(url: &'a str, stats: &mut LinkScanStats) -> &'a str {
     let bytes = url.as_bytes();
     let mut surplus = [0i64; 3];
@@ -266,6 +267,12 @@ fn trim_url<'a>(url: &'a str, stats: &mut LinkScanStats) -> &'a str {
     stats.trim_counted += bytes.len() as u64;
     let mut end = bytes.len();
     loop {
+        let suffix = &url[..end];
+        if suffix.ends_with(['”', '’']) {
+            end -= 3;
+            stats.trim_removed += 3;
+            continue;
+        }
         let last = bytes[end - 1];
         if b".,;:!?".contains(&last) {
             // Sentence punctuation glued on by formatting.
@@ -309,7 +316,17 @@ impl Regions for LinkRegions<'_> {
         self.ordinary(start);
         let value = &self.html[start..end];
         self.stats.quoted_bytes += value.len() as u64;
-        push_urls(&ATTR_URL_RE, &decode_refs(value), self.out, self.stats);
+        let decoded = decode_refs(value);
+        let leading = decoded.trim_start();
+        // Only a URL starting the value owns its decoded quotes. Nested
+        // CSS/prose quotes delimit embedded URLs, and each is visited.
+        if let Some(first) = ATTR_URL_RE.find(leading).filter(|m| m.start() == 0) {
+            self.out
+                .push(trim_url(first.as_str(), self.stats).to_string());
+            push_urls(&URL_RE, &leading[first.end()..], self.out, self.stats);
+        } else {
+            push_urls(&URL_RE, &decoded, self.out, self.stats);
+        }
         self.cursor = end;
     }
 }
@@ -955,6 +972,27 @@ mod tests {
         ] {
             assert_eq!(extract_links(None, Some(html)), want, "{html}");
         }
+    }
+
+    #[test]
+    fn curly_suffix_trim_counts_whole_scalars() {
+        for (input, expected, removed) in [
+            ("https://x.io/q”.", "https://x.io/q", 4),
+            ("https://x.io/q’!?”,", "https://x.io/q", 9),
+            ("https://x.io/a”b’c", "https://x.io/a”b’c", 0),
+            ("http://[::1]/Foo_(bar)”", "http://[::1]/Foo_(bar)", 3),
+        ] {
+            let (links, stats) = links_with_stats(Some(input), None);
+            assert_eq!(links, vec![expected]);
+            assert_eq!(stats.trim_removed, removed);
+            assert_eq!(stats.trim_counted, input.len() as u64);
+        }
+        // A leading value may contain encoded quotes, while a trailing
+        // ordinary candidate still uses its own delimiters.
+        let html = "<a href=\" https://x.io/a&#39;b https://x.io/c&#39;d\">";
+        let (links, stats) = links_with_stats(None, Some(html));
+        assert_eq!(links, vec!["https://x.io/a'b", "https://x.io/c"]);
+        assert_eq!(stats.ordinary_bytes + stats.quoted_bytes, html.len() as u64);
     }
 
     // ---- issue #136: source boundaries before decoding ----

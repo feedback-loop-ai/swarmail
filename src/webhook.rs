@@ -1030,6 +1030,15 @@ async fn post_json(
             .borrow_mut()
             .push(request.try_clone().expect("a bytes body always clones"))
     });
+    execute_request(&client, request).await
+}
+
+/// Execute and format through one credential-redacting boundary, including
+/// DNS and TLS failures from the real connector.
+async fn execute_request(
+    client: &reqwest::Client,
+    request: reqwest::Request,
+) -> Result<u16, String> {
     // reqwest's error text ends "for url (…)"; the caller logs the redacted
     // URL beside it, so the error's own copy goes (decision 0041 §3) —
     // before the causes are read, which name the failure, not the target
@@ -1943,6 +1952,103 @@ mod delivery_tests {
             !err.contains("hunter2"),
             "no credential in the error: {err}"
         );
+    }
+
+    /// A resolver owned by one real reqwest client: no system DNS or
+    /// environment mutation, and a recognizable useful connector cause.
+    #[derive(Debug)]
+    struct RefuseDns(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl reqwest::dns::Resolve for RefuseDns {
+        fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(std::io::Error::other("fixture DNS resolution refused").into()) })
+        }
+    }
+
+    fn credential_request(client: &reqwest::Client, url: &str) -> reqwest::Request {
+        let original = reqwest::Url::parse(url).unwrap();
+        let mut request =
+            build_request(client, original.clone(), &Bytes::from_static(b"{}"), None).unwrap();
+        // The builder transfers Basic auth to a header. Also retain the
+        // original metadata here so omitting without_url is a live leak,
+        // rather than a vacuous mutant of an already credential-free URL.
+        *request.url_mut() = original;
+        request
+    }
+
+    fn assert_no_fixture_userinfo(error: &str) {
+        for sensitive in [
+            "UserSentinel",
+            "PassSentinel",
+            "User%53entinel",
+            "Pass%53entinel",
+            "@",
+        ] {
+            assert!(!error.contains(sensitive), "userinfo leaked: {error}");
+        }
+        assert!(error.starts_with("error sending request: "), "{error}");
+    }
+
+    #[tokio::test]
+    async fn dns_failure_causes_keep_no_userinfo() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = client_builder()
+            .dns_resolver(Arc::new(RefuseDns(calls.clone())))
+            .build()
+            .unwrap();
+        let request = credential_request(
+            &client,
+            "http://User%53entinel:Pass%53entinel@fixture.invalid/hook",
+        );
+        let error = execute_request(&client, request).await.unwrap_err();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(error.contains("dns error"), "{error}");
+        assert!(error.contains("fixture DNS resolution refused"), "{error}");
+        assert_no_fixture_userinfo(&error);
+    }
+
+    #[tokio::test]
+    async fn tls_verification_failure_causes_keep_no_userinfo() {
+        use chrono::Datelike;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        let today = chrono::Utc::now().date_naive();
+        let before = today.pred_opt().unwrap();
+        let after = today.succ_opt().unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["localhost".into()]).unwrap();
+        params.not_before =
+            rcgen::date_time_ymd(before.year(), before.month() as u8, before.day() as u8);
+        params.not_after =
+            rcgen::date_time_ymd(after.year(), after.month() as u8, after.day() as u8);
+        let cert = params.self_signed(&key).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from(cert.der().to_vec())],
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+            )
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sink = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            assert!(
+                acceptor.accept(stream).await.is_err(),
+                "untrusted handshake must fail"
+            );
+        });
+        let client = client_builder().build().unwrap();
+        let request = credential_request(
+            &client,
+            &format!("https://User%53entinel:Pass%53entinel@{addr}/hook"),
+        );
+        let error = execute_request(&client, request).await.unwrap_err();
+        sink.await.unwrap();
+        assert!(error.contains("invalid peer certificate"), "{error}");
+        assert!(error.contains("UnknownIssuer"), "{error}");
+        assert_no_fixture_userinfo(&error);
     }
 
     /// A ca_pem that is not a PEM certificate fails before connecting.

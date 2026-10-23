@@ -46,7 +46,7 @@ one-byte-altered copy exiting non-zero with empty stdout.
   `067ab91`; preserve previous batches and capture baseline reds. Proof:
   ancestor/branch/signature checks and the T03–T09 regression receipts
   mapped to #136–#139; no claim based solely on baseline compilation.
-- [ ] T02a (#136, AC2) Complete the existing generator's pinned-input
+- [x] T02a (#136, AC2) Complete the existing generator's pinned-input
   checks using standard-library SHA-256, ASCII/unique-name/count/scalar
   validation and source-shape checks; do not replace or fetch the supplied
   JSON. Proof: the supplied digest passes; a one-byte-altered temporary
@@ -137,3 +137,26 @@ one-byte-altered copy exiting non-zero with empty stdout.
   Proof: `git verify-commit HEAD`, branch/status and staged-path inspection;
   no unsigned commit, push, PR, merge or issue closure. Artifact validation
   and signed delivery are recorded separately from implementation gates.
+
+
+## Dated evidence correction — 2026-10-23, epic192 lane D
+
+The historical 2026-10-18 receipts above remain unchanged. T02a now closes
+from the **actual prior-run** generator/equality and altered-input refusal
+recorded in `.forge/tasks/epic192-first-wave-lane-d-compat-0b5b1027.md`, not a
+new invocation or fresh download. The generator/snapshot/table hashes still
+match the [lane D plan](../epic192-compat-webhook-proof/plan.md#research-and-current-evidence).
+Valid generation exited 0 with 60,746 bytes, complete NAMED byte equality;
+snapshot plus one ASCII space exited 1 with empty stdout, rejected SHA-256
+`d2772fd6c4b6368df9b1b9510b9b750196c12dfaedc74159630bcfd535735e50`.
+Current independent snapshot evaluator: AElig U+00C6 → U+00C7 with unchanged
+cardinality exits 101; exact original bytes restored, same evaluator exits 0.
+Receipt: `.forge/epic192/compat-webhook-proof/entity-wrong-scalar.json`.
+
+T11 remains open: full locked workspace tests and exact coverage refuse the
+unindexed proposed ADR 0061. Other required gates/proofs pass; none proves
+unexecuted exact final-tree coverage. T12 remains open: no complete clean
+delivery or independent review/ship receipt exists here. Its historical
+signing requirement is superseded by accepted 0056: current commits are
+unsigned, no pushes, operator seals before merge. This correction accepts no
+0061 or R4.2/R4.3/R4.4 amendment and rewrites no historical receipt date.

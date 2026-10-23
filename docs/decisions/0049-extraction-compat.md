@@ -106,3 +106,26 @@ needs a red/green regression; a structural design check is not that proof.
 Follow 0020 placement and 0035 coverage discipline, with no exclusions,
 dependency-policy broadening or accepted-text edits. Implementation indexes
 this proposed record and adds dated pointers; only the operator accepts it.
+
+
+## Compatible §1 clarification — 2026-10-23 (#190 R4.1/R4.5)
+
+This addendum preserves the accepted historical body. Quote tolerance applies
+when an HTTP(S) URL starts the decoded quoted attribute value after optional
+whitespace. URLs embedded deeper in CSS, assignment, refresh or prose values
+use quote delimiters, so adjacent quoted `url()` values stay separate and
+closing quotes do not become URL bytes. Direct URL attributes retain encoded
+quotes; each region decodes once. Trailing U+201D/U+2019 are closing
+punctuation: trim whole scalars and count removed bytes. Interior punctuation
+and balanced URL brackets remain. This clarifies lexical/punctuation intent;
+it adds no CSS/DOM parser and changes no body selection or historical arrays.
+The [lane D proof record](../../specs/epic192-compat-webhook-proof/plan.md#implementation-handoff--2026-10-23)
+records fresh SMTP/REST arrays, #136/encoded-quote controls, work counters and
+restored-defect negative proofs.
+
+[0061](0061-compat-webhook-proof.md) remains **proposed**. R4.2's all-quote
+refusal normalization contradicts §6's explicit order and waits for operator
+acceptance. R4.3 independent-part link order and R4.4 conditional-comment
+treatment remain separate unanswered questions. This addendum accepts none
+of them: current ordered prefix recognition, text-first links and ordinary
+comments stay. No new acceptance, waiver or supersede is inferred.
