@@ -277,13 +277,13 @@ pub async fn serve(
     // makes the wait explicit, and the abort's reach is stage-precise: a
     // session that has not crossed the DATA terminator has no commit to
     // land, so the closed socket is the only goodbye it gets; a session
-    // parked at the insert's await still lands its commit — `insert_async`
-    // offloads the whole mutation to `spawn_blocking` (src/store.rs), and
-    // an abort cannot cancel a blocking closure — so the row is stored but
-    // never acknowledged, the client's retry a duplicate, never a loss
-    // (0001's honest asymmetry), and the parked `_in_flight` guard releases
-    // at the abort, before the orphaned commit resolves — a shutdown-only
-    // observability skew on a process that is leaving anyway.
+    // parked at the insert's await can leave blocking work behind:
+    // `insert_async` offloads the whole mutation to `spawn_blocking`, which
+    // an async abort cannot cancel. Work not yet admitted at the mutation
+    // boundary may refuse after stop (0024); admitted work resolves as a
+    // whole commit or refusal, never partial. A commit without a reply can
+    // make a retry duplicate; the parked `_in_flight` guard releases at
+    // abort and does not witness that detached work's completion.
     // src/store/persist_tests.rs::an_in_flight_commit_neither_holds_stop_nor_half_lands
     // asserts the wire truth.)
     let mut sessions: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();

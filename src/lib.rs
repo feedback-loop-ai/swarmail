@@ -27,9 +27,9 @@ fn log_stopped(what: &str, res: std::io::Result<()>) {
     }
 }
 
-/// A running server: every listener bound, tasks spawned — and every task
-/// the process runs owned by this struct's tracker, the dispatcher
-/// included. Dropping it (without `stop`) aborts the lot; `stop` joins.
+/// A running server with bound listeners and owned serve/dispatcher trackers.
+/// Dropping it aborts those trackers; `stop` joins them. Detached connection
+/// tasks and blocking mutations can outlive their tracked callers.
 pub struct RunningServer {
     pub smtp_addr: std::net::SocketAddr,
     pub http_addr: std::net::SocketAddr,
@@ -40,7 +40,7 @@ pub struct RunningServer {
     pub webhooks: Arc<webhook::Webhooks>,
     shutdown: tokio::sync::watch::Sender<bool>,
     /// The drain one-shot (decision 0029 §5): sent only after the serve
-    /// tasks' awaited commits have resolved, releasing the dispatcher to
+    /// tasks have resolved, releasing the dispatcher to
     /// end its loop, sweep the ring and abort what is still in flight.
     drained: tokio::sync::watch::Sender<bool>,
     tasks: tokio::task::JoinSet<()>,
@@ -50,19 +50,13 @@ pub struct RunningServer {
 }
 
 impl RunningServer {
-    /// Ask the servers to stop and wait until every owned task — the three
-    /// serve loops and the webhook dispatcher — has returned. Nothing the
-    /// process spawned is left untracked: an SSE feed ends on the same
-    /// signal, a delivery in flight is aborted and counted, and a session
-    /// mid-transaction dies with its socket.
+    /// Signal shutdown, join the serve trackers, send drained, then join the
+    /// dispatcher (decision 0029 §5). Fan-out from mutations those serve tasks
+    /// still await is available before drained releases the dispatcher.
     ///
-    /// The sequencing is decision 0029 §5's drain: `shutdown` first; the
-    /// serve tasks join (their awaited commits resolve *inside* this join,
-    /// so every tracked commit's fan-out is already in the firehose); then
-    /// `drained`; then the dispatcher joins — it has kept consuming the
-    /// post-stop mail, counting each matching fan-out aborted, and now
-    /// sweeps the ring and aborts what is left. Counted, never silently
-    /// lost; `src/store.rs` untouched.
+    /// This does not join detached blocking work or axum connection tasks.
+    /// A late detached commit can miss the dispatcher's ledger; runtime/process
+    /// teardown owns the remaining sockets (0024 §6, 0027 §7, 0041 §6).
     pub async fn stop(self) {
         let _ = self.shutdown.send(true);
         let mut tasks = self.tasks;
@@ -119,8 +113,8 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
 
     // The dispatcher's own task set and the drain one-shot it waits for
     // (decision 0029 §5): `stop` releases it with `drained` only after the
-    // serve tasks — and the commits they await — have resolved, so a commit
-    // finishing during shutdown is counted, never silently lost.
+    // serve tasks — and the commits they still await — have resolved.
+    // Detached late work is outside this observed dispatch ledger.
     let (drained, drained_rx) = tokio::sync::watch::channel(false);
     let mut dispatcher = tokio::task::JoinSet::new();
     webhook::spawn_dispatcher(
@@ -255,8 +249,72 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
 }
 
 #[cfg(test)]
+mod lifecycle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The held tasks witness tracker ownership, not protocol/commit stages.
+    #[tokio::test]
+    async fn stop_joins_serve_before_drained_and_dispatcher_before_return() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        use tokio::sync::oneshot;
+
+        let cfg = config::Config {
+            smtp_listen: "127.0.0.1:0".into(),
+            http_listen: "127.0.0.1:0".into(),
+            pop3_listen: "127.0.0.1:0".into(),
+            max_per_inbox: 0,
+            data_file: None,
+            tls_cert: None,
+            tls_key: None,
+            smtp: Default::default(),
+            pop3_idle_timeout: pop3::DEFAULT_IDLE_TIMEOUT,
+        };
+        let mut server = run_on(&cfg).await.unwrap();
+        let (serve_entered, entered) = oneshot::channel();
+        let (serve_release, release) = oneshot::channel();
+        server.tasks.spawn(async move {
+            serve_entered.send(()).unwrap();
+            release.await.unwrap();
+        });
+        entered.await.unwrap();
+        let (dispatcher_entered, entered) = oneshot::channel();
+        let (dispatcher_release, release) = oneshot::channel();
+        server.dispatcher.spawn(async move {
+            dispatcher_entered.send(()).unwrap();
+            release.await.unwrap();
+        });
+        entered.await.unwrap();
+        let mut drained = server.drained.subscribe();
+        let mut stop = std::pin::pin!(server.stop());
+        poll_fn(|cx| {
+            assert!(stop.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert!(!*drained.borrow(), "drained preceded the serve-task join");
+        serve_release.send(()).unwrap();
+        {
+            let mut changed = std::pin::pin!(drained.changed());
+            poll_fn(|cx| {
+                assert!(stop.as_mut().poll(cx).is_pending());
+                changed.as_mut().poll(cx)
+            })
+            .await
+            .unwrap();
+        }
+        assert!(*drained.borrow());
+        poll_fn(|cx| {
+            assert!(stop.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        dispatcher_release.send(()).unwrap();
+        stop.await;
+    }
 
     /// Both branches of the server-exit logger: errors are noteworthy,
     /// clean stops are silent.

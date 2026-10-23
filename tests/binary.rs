@@ -821,16 +821,14 @@ async fn gen_cert_to_an_occupied_target_exits_non_zero() {
 
 // ---------- decision 0024: the same refusal under the real SIGINT ----------
 
-/// The process leg of the one shutdown policy (0024): the real binary, a
-/// disposable data file, the test's own connection holding `BEGIN
-/// IMMEDIATE` through exit, three concurrent seeds queued on the mutation
-/// boundary — a real SIGINT, and the process exits 0 within the budget
-/// (upper bound only, sequence-independent: the seed that wins the boundary
-/// first burns its own 5s bound, the queued ones refuse at the check in
-/// microseconds). The seeds' arrival on the boundary is observed over
-/// `/metrics`, not timed for. The restarted copy is exactly the committed
-/// set — here empty, every commit having refused against the held lock —
-/// never a partial row.
+/// The process leg of the shutdown policy (0024): the real binary, a
+/// disposable data file and a held BEGIN IMMEDIATE, with three seeds
+/// observed as live router requests by their labeled metrics. These rows
+/// do not prove parsing, worker admission, boundary queue position or a
+/// passed stop check. An admitted mutation may spend one busy bound;
+/// later admission refuses after stop. Real SIGINT exits 0 under the
+/// existing liveness guard. Restart finds the committed set empty because
+/// the held SQLite lock prevented storage, never a partial row.
 #[tokio::test]
 async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
     let dir = tempfile::TempDir::with_prefix("swarmail-sigint-refuse-").unwrap();
@@ -862,8 +860,9 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
         }));
     }
     // The seeds are inside the router, observed: each seed's own labeled
-    // row — the request is in flight and its commit is queued on the
-    // mutation boundary. A per-inbox row can only be raised by this
+    // row witnesses live request work, not body completion, worker/queue
+    // admission or a passed stop check. The held lock prevents storage.
+    // A per-inbox row can only be raised by this
     // process's seeds, never a parallel test's scrape (issue #51).
     for inbox in ["sigint-one", "sigint-two", "sigint-three"] {
         common::wait_for_metric_row(

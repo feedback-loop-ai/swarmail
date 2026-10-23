@@ -33,6 +33,24 @@ fn init_tracing(to_stderr: bool) {
     }
 }
 
+/// Eagerly poll both sources on the startup task, then invoke startup with
+/// their ownership. A spawned watcher cannot supply this ordering.
+#[cfg(unix)]
+async fn start_after_registration<S, R>(
+    mut sigint: S,
+    mut sigterm: S,
+    poll: impl Fn(&mut S, &mut std::task::Context<'_>) -> std::task::Poll<Option<()>>,
+    start: impl FnOnce(S, S) -> R,
+) -> R {
+    std::future::poll_fn(|cx| {
+        let _ = poll(&mut sigint, cx);
+        let _ = poll(&mut sigterm, cx);
+        std::task::Poll::Ready(())
+    })
+    .await;
+    start(sigint, sigterm)
+}
+
 #[tokio::main]
 async fn main() {
     match Cli::parse().command {
@@ -55,44 +73,52 @@ async fn main() {
             // the same graceful path. A second signal during the drain
             // means the operator is not waiting: the process exits 70
             // instead of outliving its drain.
+            let start =
+                |#[cfg(unix)] mut sigint: tokio::signal::unix::Signal,
+                 #[cfg(unix)] mut sigterm: tokio::signal::unix::Signal| async move {
+                    let (interrupted_tx, interrupted_rx) = tokio::sync::watch::channel(false);
+                    tokio::spawn(async move {
+                        let mut graceful = false;
+                        #[cfg(unix)]
+                        loop {
+                            tokio::select! {
+                                _ = sigint.recv() => {}
+                                _ = sigterm.recv() => {}
+                            }
+                            if graceful {
+                                tracing::warn!(
+                                    "second signal during the drain; exiting without waiting"
+                                );
+                                std::process::exit(70);
+                            }
+                            graceful = true;
+                            let _ = interrupted_tx.send(true);
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            tokio::signal::ctrl_c().await.expect("ctrl_c handler");
+                            let _ = interrupted_tx.send(true);
+                        }
+                    });
+                    (swarmail::run_on(&cfg).await, interrupted_rx)
+                };
             #[cfg(unix)]
-            let (mut sigint, mut sigterm) = {
-                use tokio::signal::unix::{SignalKind, signal};
-                let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
-                let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
-                std::future::poll_fn(|cx| {
-                    let _ = sigint.poll_recv(cx);
-                    let _ = sigterm.poll_recv(cx);
-                    std::task::Poll::Ready(())
-                })
-                .await;
-                (sigint, sigterm)
+            let (started, mut interrupted_rx) = {
+                use tokio::signal::unix::{Signal, SignalKind, signal};
+                start_after_registration(
+                    signal(SignalKind::interrupt()).expect("SIGINT handler"),
+                    signal(SignalKind::terminate()).expect("SIGTERM handler"),
+                    Signal::poll_recv,
+                    start,
+                )
+                .await
+                .await
             };
-            let (interrupted_tx, mut interrupted_rx) = tokio::sync::watch::channel(false);
-            tokio::spawn(async move {
-                let mut graceful = false;
-                #[cfg(unix)]
-                loop {
-                    tokio::select! {
-                        _ = sigint.recv() => {}
-                        _ = sigterm.recv() => {}
-                    }
-                    if graceful {
-                        tracing::warn!("second signal during the drain; exiting without waiting");
-                        std::process::exit(70);
-                    }
-                    graceful = true;
-                    let _ = interrupted_tx.send(true);
-                }
-                #[cfg(not(unix))]
-                {
-                    tokio::signal::ctrl_c().await.expect("ctrl_c handler");
-                    let _ = interrupted_tx.send(true);
-                }
-            });
+            #[cfg(not(unix))]
+            let (started, mut interrupted_rx) = start().await;
             // A server that fails to come up (bad bind, broken TLS pair)
             // exits non-zero with the reason — it must not sit half-alive.
-            match swarmail::run_on(&cfg).await {
+            match started {
                 Ok(server) => {
                     tracing::info!(
                         smtp = %server.smtp_addr,
@@ -134,5 +160,37 @@ async fn main() {
             let code = swarmail::stdio::run_stdio_bridge(&args.url).await;
             std::process::exit(code);
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    /// No real signals, global handlers or background watcher can satisfy
+    /// the continuation: both local sources must already have been polled.
+    #[tokio::test]
+    async fn signals_are_polled_before_startup() {
+        use std::cell::Cell;
+        use std::task::Poll;
+        let interrupt_polled = Cell::new(false);
+        let terminate_polled = Cell::new(false);
+        super::start_after_registration(
+            &interrupt_polled,
+            &terminate_polled,
+            |polled, _cx| {
+                polled.set(true);
+                Poll::Pending
+            },
+            |_, _| {
+                assert!(
+                    interrupt_polled.get(),
+                    "SIGINT was not polled before startup"
+                );
+                assert!(
+                    terminate_polled.get(),
+                    "SIGTERM was not polled before startup"
+                );
+            },
+        )
+        .await;
     }
 }
