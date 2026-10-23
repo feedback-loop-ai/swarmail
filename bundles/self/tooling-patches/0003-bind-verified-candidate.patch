@@ -1,0 +1,322 @@
+diff --git a/crates/brokkr-runtime/src/engine/decide.rs b/crates/brokkr-runtime/src/engine/decide.rs
+--- a/crates/brokkr-runtime/src/engine/decide.rs
++++ b/crates/brokkr-runtime/src/engine/decide.rs
+@@ -31,7 +31,11 @@
+         // Result schema (decision 0001): an object with a declared result
+         // string. Violations park with the raw evidence attached — never
+         // repaired, coerced, or handed to a model to fix.
+-        if let Some(problem) = schema_problem(seat, &raw_result) {
++        if let Some(problem) = schema_problem(seat, &raw_result).or_else(|| {
++            (phase == self.bundle.protected_phase)
++                .then(|| crate::bundle::Aggregate::review_problem(&raw_result))
++                .flatten()
++        }) {
+             self.append(
+                 EventType::TransitionDecided,
+                 json!({
+@@ -54,9 +58,49 @@
+             .expect("checked above")
+             .to_string();
+         let inputs = self.decision_inputs(state, &phase, seat, object, &result);
+-        let payload = self.ruling(&phase, &result, &inputs, object);
++        let mut payload = self.ruling(&phase, &result, &inputs, object);
++        self.bind_verified_candidate(state, &phase, &mut payload);
+         self.append(EventType::TransitionDecided, payload, None)?;
+         Ok(())
++    }
++
++    /// A successful verification binds the immutable Git candidate in the
++    /// journal, not a seat-writable sidecar. The normal policy determines
++    /// success: no particular verifier result word is assumed.
++    fn bind_verified_candidate(&self, state: &RunState, phase: &str, payload: &mut Value) {
++        if !self.bundle.seats.contains_key(phase_name::VERIFY) {
++            return;
++        }
++        let verifying = phase == phase_name::VERIFY
++            && payload["next"].as_str() == Some(self.bundle.protected_phase.as_str());
++        let judging = phase == self.bundle.protected_phase || phase == phase_name::SHIP;
++        if (!verifying && !judging) || payload["severity"] == "hard" {
++            return;
++        }
++        let candidate = verified_candidate(&self.repo);
++        let expected = state
++            .phase_results
++            .get(phase_name::VERIFY)
++            .and_then(|result| result.inputs.as_ref())
++            .and_then(|inputs| inputs.get("verified_candidate"));
++        let problem = if verifying {
++            candidate
++                .is_none()
++                .then_some("verification candidate is dirty or unreadable")
++        } else if expected.is_none() {
++            Some("verified candidate witness is missing")
++        } else if candidate.as_ref() != expected {
++            Some("candidate differs from the journaled verified HEAD/tree or is dirty")
++        } else {
++            None
++        };
++        if let Some(problem) = problem {
++            payload["next"] = Value::Null;
++            payload["severity"] = Value::Null;
++            payload["problem"] = Value::String(problem.into());
++        } else if verifying {
++            payload["inputs"]["verified_candidate"] = candidate.unwrap();
++        }
+     }
+ 
+     /// The inputs the table rules on: the seat's declared inputs, and
+@@ -304,3 +348,36 @@
+         inputs.insert(REALM_FACTS.into(), json!({ realm: Value::Object(facts) }));
+     }
+ }
++
++/// HEAD identifies its immutable tree; recording both makes the candidate
++/// receipt explicit. Every Git refusal fails closed, including status errors.
++fn verified_candidate(repo: &Path) -> Option<Value> {
++    fn clean(repo: &Path) -> bool {
++        std::process::Command::new("git")
++            .args(["status", "--porcelain", "--untracked-files=all"])
++            .current_dir(repo)
++            .output()
++            .is_ok_and(|out| out.status.success() && out.stdout.is_empty())
++    }
++    if !clean(repo) {
++        return None;
++    }
++    let head = git_head(repo)?;
++    let out = std::process::Command::new("git")
++        .args(["rev-parse", "HEAD^{tree}"])
++        .current_dir(repo)
++        .output()
++        .ok()?;
++    if !out.status.success() {
++        return None;
++    }
++    let tree = String::from_utf8(out.stdout).ok()?.trim().to_owned();
++    if tree.is_empty() || git_head(repo).as_deref() != Some(head.as_str()) || !clean(repo) {
++        return None;
++    }
++    Some(json!({"head": head, "tree": tree}))
++}
++
++#[cfg(test)]
++#[path = "candidate_binding_tests.rs"]
++mod candidate_binding_tests;
+diff --git a/crates/brokkr-core/src/policy/inputs.rs b/crates/brokkr-core/src/policy/inputs.rs
+--- a/crates/brokkr-core/src/policy/inputs.rs
++++ b/crates/brokkr-core/src/policy/inputs.rs
+@@ -64,7 +64,7 @@
+ /// 0022) closes over each table's own phases, so it is a prefix, not a
+ /// row. A projection keeps table order, which the loader's refusals
+ /// print.
+-pub(crate) const INPUTS: [Input; 16] = [
++pub(crate) const INPUTS: [Input; 17] = [
+     input(CONSECUTIVE_FAILURES, InputKind::Counter, Owner::Engine),
+     input("skip_verify", InputKind::Flag, Owner::Seat),
+     input("fixes_applied", InputKind::Flag, Owner::Seat),
+@@ -111,6 +111,7 @@
+         Owner::Seat,
+     ),
+     input(REVIEWED_HEADS, InputKind::Record, Owner::Engine),
++    input("verified_candidate", InputKind::Record, Owner::Engine),
+     // The same repository facts, keyed by realm (decision 0023).
+     input(REALM_FACTS, InputKind::Record, Owner::Engine),
+ ];
+diff --git a/crates/brokkr-runtime/src/engine/candidate_binding_tests.rs b/crates/brokkr-runtime/src/engine/candidate_binding_tests.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/brokkr-runtime/src/engine/candidate_binding_tests.rs
+@@ -0,0 +1,193 @@
++use super::*;
++use crate::engine::tests::{engine, git_commit, single_body, state};
++use brokkr_core::decision::PhaseResult;
++use brokkr_core::fold::Cursor;
++use brokkr_core::policy::Machine;
++
++fn fixture() -> (tempfile::TempDir, Engine, RunState) {
++    let (dir, mut engine) = engine(single_body(vec!["unused".into()]));
++    git_commit(&engine.repo, "verified");
++    let mut verify = engine.bundle.seats["work"].clone();
++    verify.results = vec!["checks-good".into()];
++    engine.bundle.seats.insert("verify".into(), verify);
++    engine.bundle.machine = Machine::from_table(&json!({
++        "phases":["verify","review","ship","done","stop"],
++        "initial":"verify", "terminal":["done","stop"],
++        "rules":[
++            {"id":"VERIFIED","from":"verify","result":"checks-good","next":"review","reason":"checks"},
++            {"id":"HELD","from":"review","result":"security-hold","next":"stop","severity":"hard","reason":"hold"},
++            {"id":"REVIEWED","from":"review","result":"clean","next":"ship","reason":"review"},
++            {"id":"SHIPPED","from":"ship","result":"shipped","next":"done","reason":"ship"}
++        ]
++    })).unwrap();
++    engine
++        .decide(
++            &state(Some("verify"), Cursor::RequestEffect),
++            json!({"result":"checks-good", "inputs":{"verified_candidate":{"head":"spoof"}}}),
++        )
++        .unwrap();
++    let events = engine.store.load(&engine.run_id).unwrap();
++    let decision = &events.last().unwrap().payload;
++    assert_eq!(decision["next"], "review");
++    assert_ne!(decision["inputs"]["verified_candidate"]["head"], "spoof");
++    let mut reviewed = state(Some("review"), Cursor::RequestEffect);
++    reviewed.phase_results.insert(
++        "verify".into(),
++        PhaseResult {
++            result: "checks-good".into(),
++            inputs: Some(serde_json::from_value(decision["inputs"].clone()).unwrap()),
++        },
++    );
++    (dir, engine, reviewed)
++}
++
++fn judge(engine: &mut Engine, state: &RunState) -> Value {
++    engine
++        .decide(
++            state,
++            json!({"result":"clean","inputs":{"fixes_applied":false,"spec_defect":false}}),
++        )
++        .unwrap();
++    engine
++        .store
++        .load(&engine.run_id)
++        .unwrap()
++        .last()
++        .unwrap()
++        .payload
++        .clone()
++}
++
++#[test]
++fn verified_candidate_unchanged_control_and_clean_committed_drift() {
++    let (_dir, mut engine, state) = fixture();
++    assert_eq!(judge(&mut engine, &state)["next"], "ship");
++    git_commit(&engine.repo, "unverified-clean-commit");
++    assert!(!git_dirty(&engine.repo));
++    let refused = judge(&mut engine, &state);
++    assert!(refused["next"].is_null());
++    assert!(refused["problem"]
++        .as_str()
++        .unwrap()
++        .contains("verified HEAD/tree"));
++}
++
++#[test]
++fn verified_candidate_dirty_tree_and_index_are_refused() {
++    for staged in [false, true] {
++        let (_dir, mut engine, state) = fixture();
++        std::fs::write(engine.repo.join("verified.txt"), "unverified").unwrap();
++        if staged {
++            assert!(std::process::Command::new("git")
++                .args(["add", "verified.txt"])
++                .current_dir(&engine.repo)
++                .status()
++                .unwrap()
++                .success());
++        }
++        assert!(judge(&mut engine, &state)["next"].is_null());
++    }
++}
++
++#[test]
++fn verified_candidate_missing_witness_and_ship_drift_fail_closed() {
++    let (_dir, mut engine, mut state) = fixture();
++    let witness = state.phase_results.remove("verify").unwrap();
++    assert!(judge(&mut engine, &state)["next"].is_null());
++    state.phase_results.insert("verify".into(), witness);
++    state.phase = Some("ship".into());
++    git_commit(&engine.repo, "after-review");
++    engine.decide(&state, json!({"result":"shipped"})).unwrap();
++    let events = engine.store.load(&engine.run_id).unwrap();
++    assert!(events.last().unwrap().payload["next"].is_null());
++}
++
++#[test]
++fn verification_refuses_dirty_or_unreadable_candidate_and_no_verify_stays_compatible() {
++    let (_dir, mut engine, _) = fixture();
++    std::fs::write(engine.repo.join("verified.txt"), "dirty").unwrap();
++    engine
++        .decide(
++            &state(Some("verify"), Cursor::RequestEffect),
++            json!({"result":"checks-good"}),
++        )
++        .unwrap();
++    let events = engine.store.load(&engine.run_id).unwrap();
++    assert!(events.last().unwrap().payload["next"].is_null());
++    let (_other, mut unreadable, _) = fixture();
++    std::fs::remove_dir_all(unreadable.repo.join(".git")).unwrap();
++    unreadable
++        .decide(
++            &state(Some("verify"), Cursor::RequestEffect),
++            json!({"result":"checks-good"}),
++        )
++        .unwrap();
++    let refused = unreadable.store.load(&unreadable.run_id).unwrap();
++    assert!(refused.last().unwrap().payload["next"].is_null());
++    engine.bundle.seats.remove("verify");
++    assert_eq!(
++        judge(&mut engine, &state(Some("review"), Cursor::RequestEffect))["next"],
++        "ship"
++    );
++}
++
++#[test]
++fn verified_candidate_survives_engine_restart_and_rejects_untracked_source() {
++    use brokkr_core::fold::fold;
++    use brokkr_store::Store;
++    let (dir, template, _) = fixture();
++    let path = dir.path().join("restart.db");
++    let bundle = template.bundle.clone();
++    let repo = template.repo.clone();
++    let mut live = Engine::start(
++        Store::open(&path).unwrap(),
++        bundle.clone(),
++        "candidate restart",
++        Some(repo.clone()),
++    )
++    .unwrap();
++    for (kind, payload) in [
++        (EventType::PhaseEntered, json!({"phase":"verify"})),
++        (
++            EventType::EffectRequested,
++            json!({"effect_id":"e", "seat":"verify"}),
++        ),
++        (
++            EventType::EffectStarted,
++            json!({"effect_id":"e", "attempt_id":"a"}),
++        ),
++        (
++            EventType::EffectSucceeded,
++            json!({"effect_id":"e", "attempt_id":"a", "result":{"result":"checks-good"}}),
++        ),
++    ] {
++        live.append(kind, payload, None).unwrap();
++    }
++    let verified = fold(&live.store.load(&live.run_id).unwrap()).unwrap();
++    live.decide(&verified, json!({"result":"checks-good"}))
++        .unwrap();
++    live.append(EventType::PhaseEntered, json!({"phase":"review"}), None)
++        .unwrap();
++    let id = live.run_id.clone();
++    drop(live);
++    let mut resumed = Engine::resume(Store::open(&path).unwrap(), bundle, &id, Some(repo)).unwrap();
++    let replayed = fold(&resumed.store.load(&id).unwrap()).unwrap();
++    assert!(replayed.phase_results["verify"]
++        .inputs
++        .as_ref()
++        .unwrap()
++        .contains_key("verified_candidate"));
++    assert_eq!(judge(&mut resumed, &replayed)["next"], "ship");
++    assert!(std::process::Command::new("git")
++        .args(["config", "status.showUntrackedFiles", "no"])
++        .current_dir(&resumed.repo)
++        .status()
++        .unwrap()
++        .success());
++    std::fs::write(
++        resumed.repo.join("untracked-source.rs"),
++        "fn unverified() {}\n",
++    )
++    .unwrap();
++    assert!(judge(&mut resumed, &replayed)["next"].is_null());
++}

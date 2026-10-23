@@ -1,0 +1,36 @@
+{
+  "name": "codex-careful",
+  "description": "Codex delivery with Astra robustness and chief design, Sol xhigh implementation, and the same independent Qwen Max, Opus, DeepSeek Flash and GLM 5.3 review panel.",
+  "extends": "codex",
+  "override": {
+    "bundle": [
+      "description"
+    ],
+    "seats": [
+      "intake",
+      "implement"
+    ]
+  },
+  "seats": {
+    "intake": {
+      "agent": "codex-careful-intake",
+      "class": "work",
+      "results": [
+        "resolved"
+      ]
+    },
+    "implement": {
+      "agent": "codex-careful-implementer",
+      "class": "work",
+      "results": [
+        "complete",
+        "broken",
+        "blocked"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 7200
+      }
+    }
+  }
+}

@@ -58,3 +58,12 @@ record's own verb and scope, and nothing above is rewritten by it.
   compatibility shims that never select verify's proof implementation. 0045
   calls this a restoration of the hermetic-gates ruling, not new policy;
   [0050](0050-delivery-gates.md) §1 then implements it.)*
+
+## Later-decision marker — 2026-10-23 (0057)
+
+[0057](0057-codex-delivery-recipes.md), accepted by the operator's
+2026-10-23 directive, amends the work-route restriction and adds the
+Codex recipes' independent reviewer mapping. The shared design council
+now uses Codex Sol/Astra. Hermetic exec verification/shipping, the four
+review lenses, worst-verdict aggregation and the hard security hold remain
+in force. The historical ruling above is not rewritten.

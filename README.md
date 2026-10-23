@@ -1090,7 +1090,7 @@ jobs:
 | `coverage` | the coverage gate's selftest, the exact gate itself and the delivery-proof test; uploads `target/coverage/` |
 | `deny` | `cargo deny check licenses` and the fail-closed `native-tls` absence proof |
 | `dependency-audit` | the RustSec advisory audit (network-backed, CI-only) |
-| `brokkr-compile` | builds the brokkr pinned in `bundles/self/tooling.json` and runs `brokkr compile --bundle bundles/self` |
+| `brokkr-compile` | applies the checksummed engine patches, proves review aggregation, builds the recorded brokkr, and compiles self plus all three Codex recipes |
 | `chart-verify` | `scripts/chart-verify.sh`: its selftest, the chart-version bump check against history, and lint + both profiles + contract assertions |
 | `docker-smoke` | real Docker: the built image as its own uid keeps accepted mail across a graceful stop and a hard kill on a named volume, `--rm` leaks no anonymous volume, and no `target/` reaches the build context |
 | `release-rate-5k` (tags only) | `cargo test --release --locked --test rate -- --ignored --nocapture`, the 5000/5000 proof |
@@ -1134,7 +1134,24 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/sqlite_locks.rs` | a refused second server reaching the data file through an alias leaves the owner's SQLite locks intact — observed from a separate raw-SQLite child process (0047 §1) |
 | `tests/store_contract_docs.rs` | the store, maildrop and compat contracts as documented — README, llms.txt, the chart comment and the served schema, their numbers built from the running constants — and every decision index row agreeing with its record's status |
 | `tests/delivery_constitution.rs` | structural pins on `bundles/self/` (0050): the review-residual stops, the design sequence ending in the pinned check, the verify seat's pinned gates and shim check; and the documented install examples and CI's chart-history and docker-smoke wiring (#141) |
+| `tests/delivery_recipes.rs` | Codex recipe discovery, triage routing and single/double/full review, inherited shell gates, work-seat tools, exact routes and independent review without Pro or author-model fallback (0057); [recipe tables and launch commands](bundles/README.md) |
+| `tests/tooling_patches.rs` | the actual tooling-patch helper against real Git repositories: source identity, clean state, strict records, safe paths, all checksums before mutation and ordered patch application |
 | unit | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |
+
+For triage-first bug delivery, use the [Codex recipe guide](bundles/README.md).
+Normal `brokkr tui` reads the canonical `.forge/forge.db`; isolated deliveries
+name that shared journal explicitly. Each lane needs its own Git store,
+branch, results, build and coverage outputs, and private cache overlays.
+The prepared eight-lane layout reserves 16 CPUs per lane; throttle heavy
+gates when host capacity requires it. Reserve overlapping files before launch.
+
+Keep a live lane's committed recipe baseline immutable. A candidate gate repair
+uses separate writable candidate scripts and must execute the repaired proof;
+editing the pinned baseline invalidates the run. Compilation, local dispatch
+fixtures and provider smoke prove different boundaries. Delivery still needs
+committed-candidate hermetic verification, protected independent review and
+the genuine ledger close-out. The operator seals the verified local branch
+before publication or merge; agent runs never push or merge.
 
 ## Roadmap
 

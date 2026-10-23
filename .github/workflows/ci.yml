@@ -214,7 +214,15 @@ jobs:
           repository: feedback-loop-ai/brokkr
           ref: ${{ steps.tooling.outputs.sha }}
           path: brokkr-src
+      - name: Apply the checksummed tooling patches
+        run: python3 scripts/apply-brokkr-patches.py brokkr-src
       - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+      - name: Prove the engine's review aggregation
+        working-directory: brokkr-src
+        run: |
+          cargo test --locked -p brokkr-core policy::tests
+          cargo test --locked -p brokkr-runtime --lib aggregate
+          cargo test --locked -p brokkr-runtime --lib candidate_binding_tests
       # --locked: the recorded commit's own Cargo.lock, never a fresh resolve.
       - name: Build the pinned brokkr
         working-directory: brokkr-src
@@ -230,7 +238,10 @@ jobs:
             exit 1
           fi
       - name: Compile the delivery bundle with the pinned brokkr
-        run: brokkr-src/target/release/brokkr compile --bundle bundles/self
+        run: |
+          for recipe in self codex codex-careful codex-fast; do
+            brokkr-src/target/release/brokkr compile --bundle "bundles/$recipe"
+          done
 
   # The 5k delivery-bound proof at release optimization, tag-scoped: a slow
   # release run must never block a PR or a main push, but a tag that cannot

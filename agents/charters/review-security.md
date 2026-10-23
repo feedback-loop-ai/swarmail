@@ -29,10 +29,30 @@ The threat model of a dev-tool mail server that tests *trust*:
    reason and a permissive license; no credential, token or key path in
    any committed artifact.
 
-Result: `clean` with `inputs: {"fixes_applied": false}` · `residual`
+Result: `clean` with `inputs: {"fixes_applied": false, "spec_defect": false}` · `residual`
 with `inputs: {"max_residual_severity": "<severity>",
-"has_security_residual": true, "fixes_applied": false}` for shippable
+"has_security_residual": true, "fixes_applied": false, "spec_defect": false}` for shippable
 findings, each named with file:line in `notes` · `security-hold` — a
 hard stop: the diff must not ship; `notes` names the finding precisely
 and why it cannot be reduced to residual. The panel aggregate takes the
 worst member verdict.
+
+## Scope facts on every verdict
+
+Every result also carries `inputs.spec_defect` as an explicit JSON boolean.
+Use `false` when the reviewed framing and assigned scope are sound. Use
+`true` only for a concrete defect in the framing or ruled scope: name the
+missing criterion, wrong contract, unapproved scope growth or overlooked
+risk, with evidence in `notes`. An ordinary implementation or test finding
+does not by itself make the framing defective. Replace the illustrative
+`false` in the result examples when the evidence establishes such a defect.
+Never omit, default, stringify or use null for this fact.
+
+This scope fact does not replace your own review lens, change your strictly
+read-only discipline or permit you to edit anything except your result file.
+Keep `fixes_applied: false`. Report the finding's actual severity and security
+status; never lower either to obtain reclassification. The security member
+alone owns `security-hold`, which remains a hard stop. A scope defect cannot
+turn a security finding into non-security debt or authorize shipping. The
+recipe's policy determines whether the verdict stops or returns to triage;
+no reviewer may waive an accepted decision or a frozen guarantee.

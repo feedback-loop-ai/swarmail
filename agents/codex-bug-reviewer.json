@@ -1,0 +1,10 @@
+{
+  "extends": "reviewer",
+  "models": [
+    "flash"
+  ],
+  "efforts": {
+    "flash": "high"
+  },
+  "charter": "charters/codex-bug-reviewer.md"
+}

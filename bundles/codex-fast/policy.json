@@ -1,0 +1,247 @@
+{
+  "schema": "forge.phase-machine/v1",
+  "description": "Codex triage routes bounded bug fixes directly and preserves the complete design path for risky work; verification and protected review remain mandatory on every shipping route.",
+  "phases": [
+    "triage"
+  ],
+  "initial": "triage",
+  "rules": [
+    {
+      "id": "TRIAGE-CHORE-RECLASSIFICATION-EXHAUSTED",
+      "from": "triage",
+      "result": "chore",
+      "when": {
+        "visits_triage_gte": 3
+      },
+      "next": "stop",
+      "severity": "hard",
+      "reason": "The run has returned to triage again after its one permitted reclassification; stop before another implementation, regardless of the proposed class."
+    },
+    {
+      "id": "TRIAGE-FEATURE-RECLASSIFICATION-EXHAUSTED",
+      "from": "triage",
+      "result": "feature",
+      "when": {
+        "visits_triage_gte": 3
+      },
+      "next": "stop",
+      "severity": "hard",
+      "reason": "The run has returned to triage again after its one permitted reclassification; stop before another implementation, regardless of the proposed class."
+    },
+    {
+      "id": "TRIAGE-DESIGN-RECLASSIFICATION-EXHAUSTED",
+      "from": "triage",
+      "result": "design",
+      "when": {
+        "visits_triage_gte": 3
+      },
+      "next": "stop",
+      "severity": "hard",
+      "reason": "The run has returned to triage again after its one permitted reclassification; stop before another implementation, regardless of the proposed class."
+    },
+    {
+      "id": "TRIAGE-ENGINE-RECLASSIFICATION-EXHAUSTED",
+      "from": "triage",
+      "result": "engine",
+      "when": {
+        "visits_triage_gte": 3
+      },
+      "next": "stop",
+      "severity": "hard",
+      "reason": "The run has returned to triage again after its one permitted reclassification; stop before another implementation, regardless of the proposed class."
+    },
+    {
+      "id": "TRIAGE-SMALL-BUG",
+      "from": "triage",
+      "result": "chore",
+      "next": "implement",
+      "reason": "A proved bounded bug fix enters implementation directly, then all shell gates and one independent security-capable reviewer."
+    },
+    {
+      "id": "TRIAGE-BROADER-BUG",
+      "from": "triage",
+      "result": "feature",
+      "next": "implement",
+      "reason": "A broader fix within existing contracts enters implementation directly, then all shell gates and independent correctness/security review."
+    },
+    {
+      "id": "TRIAGE-DESIGN",
+      "from": "triage",
+      "result": "design",
+      "next": "design",
+      "reason": "Architecture or contract design needs the inherited contrarian positions, chief and deterministic design check before implementation."
+    },
+    {
+      "id": "TRIAGE-ENGINE",
+      "from": "triage",
+      "result": "engine",
+      "next": "design",
+      "reason": "Security, concurrency, persistence, delivery gates and accepted-contract work keep the complete inherited design and four-reviewer path."
+    },
+    {
+      "id": "TRIAGE-ESCALATE",
+      "from": "triage",
+      "result": "escalate",
+      "next": "stop",
+      "reason": "Uncertain classification or an operator decision is a hard stop, never an implicit cheap route.",
+      "severity": "hard"
+    },
+    {
+      "id": "IMPL-OVERSIZED-EXHAUSTED",
+      "from": "implement",
+      "result": "oversized",
+      "next": "stop",
+      "reason": "The task still exceeds its ruled scope after one return to triage; stop for the operator.",
+      "when": {
+        "visits_triage_gte": 2
+      },
+      "severity": "hard"
+    },
+    {
+      "id": "IMPL-OVERSIZED",
+      "from": "implement",
+      "result": "oversized",
+      "next": "triage",
+      "reason": "The implementer discovered broader scope and returns it once for evidence-based reclassification."
+    },
+    {
+      "id": "REVIEW-CLEAN-SCOPE-RECLASSIFY",
+      "from": "review",
+      "result": "clean",
+      "next": "triage",
+      "reason": "Read-only review found that the ruled scope or framing is defective; return once to triage without shipping or weakening security/severity stops.",
+      "when": {
+        "spec_defect": true,
+        "fixes_applied": false,
+        "strategy_in": [
+          "chore",
+          "feature",
+          "design",
+          "engine"
+        ]
+      }
+    },
+    {
+      "id": "REVIEW-RESIDUAL-SCOPE-RECLASSIFY",
+      "from": "review",
+      "result": "residual",
+      "next": "triage",
+      "reason": "Read-only review found that the ruled scope or framing is defective; return once to triage without shipping or weakening security/severity stops.",
+      "when": {
+        "spec_defect": true,
+        "fixes_applied": false,
+        "has_security_residual": false,
+        "max_residual_severity_at_most": "medium",
+        "strategy_in": [
+          "chore",
+          "feature",
+          "design",
+          "engine"
+        ]
+      }
+    },
+    {
+      "id": "REVIEW-CHORE-CLEAN-NO-FIXES",
+      "from": "review",
+      "result": "clean",
+      "when": {
+        "strategy_in": [
+          "chore"
+        ],
+        "fixes_applied": false,
+        "spec_defect": false
+      },
+      "next": "ship",
+      "reason": "The single bug reviewer explicitly found the ruled scope sound and made no changes."
+    },
+    {
+      "id": "REVIEW-CHORE-CLEAN-UNKNOWN",
+      "from": "review",
+      "result": "clean",
+      "when": {
+        "strategy_in": [
+          "chore"
+        ]
+      },
+      "next": "stop",
+      "severity": "hard",
+      "reason": "A single-review clean result with missing or inconsistent scope/fixes facts is unknown, never permission to ship."
+    },
+    {
+      "id": "REVIEW-CLEAN-NO-FIXES",
+      "from": "review",
+      "result": "clean",
+      "when": {
+        "strategy_in": [
+          "feature",
+          "design",
+          "engine"
+        ],
+        "fixes_applied": false,
+        "spec_defect": false
+      },
+      "next": "ship",
+      "reason": "The broader or complete review found the verified change clean without fixes; its inherited admission is unchanged."
+    },
+    {
+      "id": "REVIEW-CHORE-RESIDUAL-OK",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "strategy_in": [
+          "chore"
+        ],
+        "fixes_applied": false,
+        "spec_defect": false,
+        "has_security_residual": false,
+        "max_residual_severity_at_most": "medium"
+      },
+      "next": "ship",
+      "severity": "flagged",
+      "reason": "Only explicitly safe, scoped, unchanged small-bug residuals of at most medium severity can use tracked debt."
+    },
+    {
+      "id": "REVIEW-RESIDUAL-OK",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "strategy_in": [
+          "feature",
+          "design",
+          "engine"
+        ],
+        "has_security_residual": false,
+        "max_residual_severity_at_most": "medium",
+        "fixes_applied": false,
+        "spec_defect": false
+      },
+      "next": "ship",
+      "severity": "flagged",
+      "reason": "Broader and complete review preserve the inherited explicit non-security, at-most-medium admission; unsafe or unknown residual facts still reach the inherited hard stop."
+    },
+    {
+      "id": "REVIEW-CLEAN",
+      "from": "review",
+      "result": "clean",
+      "next": "verify",
+      "reason": "Clean but fixes applied; re-verify before shipping.",
+      "when": {
+        "fixes_applied": true,
+        "spec_defect": false,
+        "strategy_in": [
+          "feature",
+          "design",
+          "engine"
+        ]
+      }
+    },
+    {
+      "id": "REVIEW-CLEAN-UNSAFE",
+      "from": "review",
+      "result": "clean",
+      "next": "stop",
+      "reason": "Missing, malformed or inconsistent scope/fixes facts are unknown, never permission to ship or enter a verify loop.",
+      "severity": "hard"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "extends": "review-guarantees",
+  "models": [
+    "flash"
+  ],
+  "efforts": {
+    "flash": "high"
+  }
+}

@@ -1,0 +1,167 @@
+{
+  "name": "codex-fast",
+  "description": "Triage chooses a bounded bug fix with one or two independent reviewers, or the inherited design council and four-reviewer path for risky work. Every route keeps the pinned offline verification and ship gates.",
+  "extends": "codex",
+  "policy": "policy.json",
+  "override": {
+    "bundle": [
+      "description"
+    ],
+    "table": [
+      "description",
+      "initial"
+    ],
+    "seats": [
+      "implement",
+      "review"
+    ],
+    "rules": [
+      "REVIEW-CLEAN-NO-FIXES",
+      "REVIEW-RESIDUAL-OK",
+      "REVIEW-CLEAN",
+      "REVIEW-CLEAN-UNSAFE"
+    ]
+  },
+  "remove": {
+    "seats": [
+      "intake"
+    ],
+    "rules": [
+      "INTAKE-OK"
+    ],
+    "phases": [
+      "intake"
+    ]
+  },
+  "seats": {
+    "triage": {
+      "agent": "codex-triage",
+      "class": "work",
+      "results": [
+        "chore",
+        "feature",
+        "design",
+        "engine",
+        "escalate"
+      ],
+      "limits": {
+        "max_attempts": 1,
+        "timeout_seconds": 1800
+      }
+    },
+    "implement": {
+      "results": [
+        "complete",
+        "broken",
+        "blocked",
+        "oversized"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 7200
+      },
+      "select": {
+        "on": "strategy",
+        "cases": {
+          "chore": {
+            "agent": "codex-fast-implementer",
+            "class": "work"
+          },
+          "feature": {
+            "agent": "codex-fast-implementer",
+            "class": "work"
+          },
+          "design": {
+            "agent": "codex-fast-implementer",
+            "class": "work"
+          },
+          "engine": {
+            "agent": "codex-fast-implementer",
+            "class": "work"
+          }
+        }
+      }
+    },
+    "review": {
+      "results": [
+        "clean",
+        "residual",
+        "security-hold"
+      ],
+      "inputs": [
+        "fixes_applied",
+        "has_security_residual",
+        "max_residual_severity",
+        "spec_defect"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 3600
+      },
+      "select": {
+        "on": "strategy",
+        "cases": {
+          "chore": {
+            "agent": "codex-bug-reviewer",
+            "class": "gate"
+          },
+          "feature": {
+            "aggregate": "review-panel",
+            "panel": {
+              "correctness": {
+                "agent": "codex-review-correctness",
+                "class": "gate"
+              },
+              "security": {
+                "agent": "codex-review-security",
+                "class": "gate"
+              }
+            }
+          },
+          "design": {
+            "aggregate": "review-panel",
+            "panel": {
+              "correctness": {
+                "agent": "codex-review-correctness",
+                "class": "gate"
+              },
+              "security": {
+                "agent": "codex-review-security",
+                "class": "gate"
+              },
+              "guarantees": {
+                "agent": "codex-review-guarantees",
+                "class": "gate"
+              },
+              "tests": {
+                "agent": "codex-review-tests",
+                "class": "gate"
+              }
+            }
+          },
+          "engine": {
+            "aggregate": "review-panel",
+            "panel": {
+              "correctness": {
+                "agent": "codex-review-correctness",
+                "class": "gate"
+              },
+              "security": {
+                "agent": "codex-review-security",
+                "class": "gate"
+              },
+              "guarantees": {
+                "agent": "codex-review-guarantees",
+                "class": "gate"
+              },
+              "tests": {
+                "agent": "codex-review-tests",
+                "class": "gate"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
