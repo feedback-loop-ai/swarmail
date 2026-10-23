@@ -2411,7 +2411,7 @@ mod tests {
         ));
         // Persistent misbehavior: far more failures than the probe can
         // outlive — the loop stays degraded for the whole test.
-        crate::smtp::inject_accept_errors(1000);
+        let errors = crate::smtp::inject_accept_errors(1000);
         // The flag is the sequencer, not a probe retry loop (0020 rule 5):
         // once the loop has been polled into its backoff the degradation is
         // a settled fact, so ONE probe reads it — no race to schedule
@@ -2439,12 +2439,11 @@ mod tests {
                 "GET /healthz answered {observed}, which openapi.json must list"
             );
         }
-        // The seam is thread-local and this thread runs other tests after
-        // this one: leave it as it was found, so no later serve on this
-        // thread inherits a phantom failure.
-        crate::smtp::inject_accept_errors(0);
         smtp_task.abort();
+        let _ = smtp_task.await;
         api_task.abort();
+        let _ = api_task.await;
+        drop(errors);
     }
 
     /// The served contract is pinned to the constants (decision 0025):

@@ -43,6 +43,10 @@
 use crate::store::{Filter, Store};
 use std::collections::BTreeSet;
 use std::io;
+#[cfg(test)]
+use std::marker::PhantomData;
+#[cfg(test)]
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(test)]
@@ -139,10 +143,29 @@ thread_local! {
         const { core::cell::Cell::new(0) };
 }
 
+/// Restores the prior thread-local error count when its scope ends.
+#[cfg(test)]
+#[must_use = "accept-error injections must be scoped"]
+pub(crate) struct AcceptErrorInjection {
+    previous: usize,
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for AcceptErrorInjection {
+    fn drop(&mut self) {
+        INJECTED_ACCEPT_ERRORS.with(|errors| errors.set(self.previous));
+    }
+}
+
 /// Install `count` failing accepts for the loop driven by this test.
 #[cfg(test)]
-pub(crate) fn inject_accept_errors(count: usize) {
-    INJECTED_ACCEPT_ERRORS.with(|errors| errors.set(count));
+pub(crate) fn inject_accept_errors(count: usize) -> AcceptErrorInjection {
+    let previous = INJECTED_ACCEPT_ERRORS.with(|errors| errors.replace(count));
+    AcceptErrorInjection {
+        previous,
+        _thread_bound: PhantomData,
+    }
 }
 
 /// Consume one installed accept error, if any remain.
@@ -1310,7 +1333,7 @@ mod tests {
         ));
         // Flipped before the loop is first polled, so the first accept is
         // the injected failure — the arm is branch-stable (0020 rule 1).
-        inject_accept_errors(1);
+        let errors = inject_accept_errors(1);
 
         flag_becomes(&degraded, true, "flagged degraded on the failed accept").await;
         // No peer yet: the parked retry alone is the recovery.
@@ -1323,6 +1346,8 @@ mod tests {
             "the listener never recovered: {line:?}"
         );
         server.abort();
+        let _ = server.await;
+        drop(errors);
     }
 
     /// Back-to-back failures publish no healthy moment between them: the
@@ -1344,7 +1369,7 @@ mod tests {
             256,
             std::future::pending(),
         ));
-        inject_accept_errors(2);
+        let errors = inject_accept_errors(2);
 
         // The loop has not been polled yet, so the wait is always entered.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -1366,6 +1391,8 @@ mod tests {
         client.read_until(b'\n', &mut line).await.unwrap();
         assert!(line.starts_with(b"+OK"), "{line:?}");
         server.abort();
+        let _ = server.await;
+        drop(errors);
     }
 
     /// A greeted POP3 session on a driven listener — the greeting is written
@@ -1503,6 +1530,217 @@ mod tests {
             let mut tail = Vec::new();
             assert_eq!(client.read_to_end(&mut tail).await.unwrap(), 0);
         }
+    }
+
+    #[tokio::test]
+    async fn accept_error_injection_restores_every_scope_exit() {
+        fn current() -> usize {
+            INJECTED_ACCEPT_ERRORS.with(core::cell::Cell::get)
+        }
+        fn return_early(early: bool) {
+            let _errors = inject_accept_errors(4);
+            if early {
+                return;
+            }
+            assert_eq!(current(), 4);
+        }
+
+        assert_eq!(current(), 0);
+        {
+            let _errors = inject_accept_errors(3);
+            assert_eq!(current(), 3);
+        }
+        assert_eq!(current(), 0);
+        return_early(true);
+        assert_eq!(current(), 0);
+        return_early(false);
+        assert_eq!(current(), 0);
+
+        let outer = inject_accept_errors(5);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _inner = inject_accept_errors(11);
+            panic!("controlled accept-error injection unwind");
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(current(), 5);
+        drop(outer);
+        assert_eq!(current(), 0);
+
+        let previous = inject_accept_errors(7);
+        let mut pending = Box::pin({
+            let mut injection = None;
+            std::future::poll_fn(move |_| {
+                if injection.is_none() {
+                    injection = Some(inject_accept_errors(13));
+                }
+                Poll::<()>::Pending
+            })
+        });
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        assert!(std::future::Future::poll(pending.as_mut(), &mut cx).is_pending());
+        assert_eq!(current(), 13);
+        assert!(std::future::Future::poll(pending.as_mut(), &mut cx).is_pending());
+        assert_eq!(current(), 13);
+        drop(pending);
+        assert_eq!(current(), 7);
+        drop(previous);
+        assert_eq!(current(), 0);
+
+        ERRORS_SEEN.with(|seen| seen.borrow_mut().clear());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let degraded = Arc::new(AtomicBool::new(false));
+        let (stop, mut rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(serve(
+            listener,
+            Arc::new(Store::new(0)),
+            degraded.clone(),
+            Duration::from_secs(60),
+            2,
+            async move {
+                let _ = rx.changed().await;
+            },
+        ));
+        let mut client = tokio::time::timeout(Duration::from_secs(5), greeted(addr))
+            .await
+            .expect("the same-thread listener did not greet");
+        assert!(ERRORS_SEEN.with(|seen| seen.borrow().is_empty()));
+        assert!(!degraded.load(Ordering::Relaxed));
+        client.write_all(b"QUIT\r\n").await.unwrap();
+        let goodbye = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut line = String::new();
+            client.read_line(&mut line).await.unwrap();
+            line
+        })
+        .await
+        .expect("POP3 goodbye exceeded its bound");
+        assert_eq!(goodbye, "+OK Swarmail POP3 server signing off\r\n");
+        stop.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pop3_session_keeps_its_snapshot_during_accept_error_backoff() {
+        async fn line(client: &mut BufReader<TcpStream>) -> String {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut line = String::new();
+                client.read_line(&mut line).await.unwrap();
+                line
+            })
+            .await
+            .expect("POP3 reply exceeded its bound")
+        }
+        async fn command(client: &mut BufReader<TcpStream>, value: &str) -> String {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                client.write_all(value.as_bytes()).await.unwrap();
+                line(client).await
+            })
+            .await
+            .expect("POP3 command/reply exceeded its bound")
+        }
+
+        let store = Arc::new(Store::new(0));
+        let mut seed = crate::store::email("held-pop3", "held-pop3", "recipient@example.com");
+        seed.raw = b"Subject: held\r\n\r\nheld body\r\n".to_vec();
+        let expected_size = seed.raw.len();
+        store.insert(seed).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let degraded = Arc::new(AtomicBool::new(false));
+        let probe = ListenerProbe::new();
+        let (stop, mut rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(LISTENER_PROBE.scope(
+            probe.clone(),
+            serve(
+                listener,
+                store,
+                degraded.clone(),
+                Duration::from_secs(60),
+                2,
+                async move {
+                    let _ = rx.changed().await;
+                },
+            ),
+        ));
+
+        let mut client = tokio::time::timeout(Duration::from_secs(5), greeted(addr))
+            .await
+            .expect("POP3 session did not greet");
+        assert_eq!(
+            command(&mut client, "USER held-pop3\r\n").await,
+            "+OK name is a valid mailbox\r\n"
+        );
+        assert_eq!(
+            command(&mut client, "PASS pw\r\n").await,
+            format!("+OK maildrop has 1 messages ({expected_size} octets)\r\n")
+        );
+
+        let mut entered = probe.backoff_pending.subscribe();
+        probe.accept_error.store(true, Ordering::Relaxed);
+        let mut retry = BufReader::new(
+            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+                .await
+                .expect("retry connection did not complete")
+                .unwrap(),
+        );
+        tokio::time::timeout(Duration::from_secs(5), entered.wait_for(|pending| *pending))
+            .await
+            .expect("POP3 accept loop did not enter the observed backoff")
+            .unwrap();
+        assert!(degraded.load(Ordering::Relaxed));
+        assert!(!*probe.retry_ready.borrow());
+
+        assert_eq!(
+            command(&mut client, "STAT\r\n").await,
+            format!("+OK 1 {expected_size}\r\n")
+        );
+        let listing = tokio::time::timeout(Duration::from_secs(5), async {
+            client.write_all(b"LIST\r\n").await.unwrap();
+            (
+                line(&mut client).await,
+                line(&mut client).await,
+                line(&mut client).await,
+            )
+        })
+        .await
+        .expect("POP3 LIST exceeded its bound");
+        assert!(listing.0.starts_with("+OK 1 messages"), "{:?}", listing.0);
+        assert_eq!(listing.1, format!("1 {expected_size}\r\n"));
+        assert_eq!(listing.2, ".\r\n");
+
+        let retrieved = tokio::time::timeout(Duration::from_secs(5), async {
+            client.write_all(b"RETR 1\r\n").await.unwrap();
+            let status = line(&mut client).await;
+            let mut body = String::new();
+            loop {
+                let next = line(&mut client).await;
+                if next == ".\r\n" {
+                    break;
+                }
+                body.push_str(&next);
+            }
+            (status, body)
+        })
+        .await
+        .expect("POP3 RETR exceeded its bound");
+        assert!(retrieved.0.starts_with("+OK"), "{:?}", retrieved.0);
+        assert_eq!(retrieved.1, "Subject: held\r\n\r\nheld body\r\n");
+
+        probe.retry_ready.send_replace(true);
+        assert_eq!(line(&mut retry).await, "+OK Swarmail POP3 server ready\r\n");
+        assert!(!degraded.load(Ordering::Relaxed));
+        assert_eq!(
+            command(&mut client, "QUIT\r\n").await,
+            "+OK Swarmail POP3 server signing off\r\n"
+        );
+        assert_eq!(
+            command(&mut retry, "QUIT\r\n").await,
+            "+OK Swarmail POP3 server signing off\r\n"
+        );
+        stop.send(true).unwrap();
+        server.await.unwrap().unwrap();
     }
 
     /// One probe, one actual serve owner, one JoinSet for every batch.

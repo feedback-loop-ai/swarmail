@@ -1750,7 +1750,6 @@ mod filter_tests {
     }
 }
 
-#[cfg(test)]
 // The persistence suite lives in src/store/persist_tests.rs — the harness
 // side of decision 0020: the exact gate counts production, not test prose.
 #[cfg(test)]
