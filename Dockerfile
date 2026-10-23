@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Swarmail — single static binary, scratch base. Final image ≈ binary size.
-# The builder image is digest-pinned (AC52.4): a moving `rust:1-alpine` tag
+# The builder image is digest-pinned (AC52.2): a moving `rust:1-alpine` tag
 # would let an unreviewed toolchain build the release artifact. Re-pin
 # deliberately (look the digest up, commit the change) when bumping Rust.
 FROM rust:1-alpine@sha256:0cce0a5e0e8ba67b455257a3a02a1d99005f382748789d6464460028810f1627 AS build
