@@ -867,11 +867,23 @@ async fn next177_registered(addr: std::net::SocketAddr, inbox: &str) -> u64 {
 async fn await_supplied_malformed_timeouts_are_parse_refusals_and_zero_is_a_real_deadline() {
     let srv = start().await;
     let inbox = "next177-rest-malformed";
+    // This label is exclusive to the test; only this initial scrape may
+    // treat an absent row as zero before the positive registration control.
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    let registered_before = common::metric_row_value(
+        &metrics,
+        &format!("swarmail_awaits_registered_total{{inbox=\"{inbox}\"}}"),
+    )
+    .unwrap_or(0);
     let zero = format!("/api/v1/inboxes/{inbox}/await?count=1&timeout_ms=0");
     let (st, body) = http_json(srv.http_addr, "GET", &zero, None).await;
     assert_eq!(st, 408, "{body}");
     assert_eq!(body["matched"], 0);
-    assert_eq!(next177_registered(srv.http_addr, inbox).await, 1);
+    assert_eq!(
+        next177_registered(srv.http_addr, inbox).await,
+        registered_before + 1,
+        "a legal zero-deadline wait registers exactly once"
+    );
     for value in ["-1", "invalid", "null", "1.5", "60001"] {
         let before = next177_registered(srv.http_addr, inbox).await;
         let (st, body) = http_json(
@@ -1196,16 +1208,35 @@ async fn the_list_refuses_over_the_cap_and_accepts_exactly_it() {
 #[tokio::test]
 async fn the_wait_refuses_over_the_cap_registers_no_waiter_and_accepts_the_boundary() {
     let srv = start().await;
-    // The cumulative registration is the observable (issue #102): the
-    // delta across the refused calls must stay zero — a wait that
-    // subscribed before validating would leave a permanent +1, which the
-    // released gauge cannot show (its row is gone either way).
+    // A valid nonmatching zero-deadline wait proves this label's counter is
+    // live before the refused requests are measured.
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    let registered_initial = common::metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="nocap"}"#,
+    )
+    .unwrap_or(0);
+    let (st, body) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/nocap/await?count=1&to=never%40x.io&timeout_ms=0",
+        None,
+    )
+    .await;
+    assert_eq!(st, 408, "a valid zero-deadline wait times out: {body}");
+    assert_eq!(body["matched"], 0, "{body}");
+    assert_eq!(body["emails"].as_array().map(Vec::len), Some(0), "{body}");
     let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
     let registered_before = common::metric_row_value(
         &metrics,
         r#"swarmail_awaits_registered_total{inbox="nocap"}"#,
     )
-    .unwrap_or(0);
+    .expect("the positive wait must expose the registration counter");
+    assert_eq!(
+        registered_before,
+        registered_initial + 1,
+        "the valid wait registers exactly once: {metrics}"
+    );
     for (field, query) in [
         ("count", "count=251"),
         ("limit", "limit=251"),
@@ -1230,7 +1261,7 @@ async fn the_wait_refuses_over_the_cap_registers_no_waiter_and_accepts_the_bound
         &metrics,
         r#"swarmail_awaits_registered_total{inbox="nocap"}"#,
     )
-    .unwrap_or(0);
+    .expect("the liveness control established the registration counter");
     assert_eq!(
         registered_after, registered_before,
         "a refused wait registers no waiter: {metrics}"

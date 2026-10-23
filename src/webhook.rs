@@ -2535,8 +2535,18 @@ mod validation_tests {
     /// sink share a budget; an unparseable URL falls back to the raw string.
     #[test]
     fn sink_keys_normalize_and_fall_back() {
-        let plain = sink_key(&target("http://127.0.0.1:9/hook".into()));
-        assert!(matches!(plain, SinkKey::Url(_)));
+        let upper_host_with_default_port = sink_key(&target("http://EXAMPLE.com:80/hook".into()));
+        let lowercase_host = sink_key(&target("http://example.com/hook".into()));
+        assert!(matches!(&upper_host_with_default_port, SinkKey::Url(_)));
+        assert_eq!(
+            upper_host_with_default_port, lowercase_host,
+            "different spellings of the same parsed sink share one key"
+        );
+        assert_ne!(
+            upper_host_with_default_port,
+            sink_key(&target("http://example.com/other".into())),
+            "a distinct path remains a distinct sink"
+        );
         assert!(matches!(
             sink_key(&target("not a url".into())),
             SinkKey::Raw(_)

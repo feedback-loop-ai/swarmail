@@ -1079,6 +1079,16 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
         "the wait registers exactly once: {metrics}"
     );
 
+    // Snapshot the cumulative row before this wait, in the same process
+    // and under its own label; the assertion below is a delta, not a reset
+    // assumption about the process-shared registry.
+    let (_, metrics) = common::http_get_text(addr, "/metrics").await;
+    let registered_408_before = common::metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="observed408"}"#,
+    )
+    .unwrap_or(0);
+
     // Timeout arm: a non-matching mail lands mid-wait; total counts it
     // while `matched` stays honest about the filter. The wait is spawned
     // and observed parked *before* the mail is sent — mirroring the REST
@@ -1116,13 +1126,14 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
     );
     // The second wait registered exactly once more, under its own inbox.
     let (_, metrics) = common::http_get_text(addr, "/metrics").await;
-    let registered_408 = common::metric_row_value(
+    let registered_408_after = common::metric_row_value(
         &metrics,
         r#"swarmail_awaits_registered_total{inbox="observed408"}"#,
     )
-    .unwrap_or(0);
+    .expect("the 408 wait must expose its cumulative registration row");
     assert_eq!(
-        registered_408, 1,
+        registered_408_after,
+        registered_408_before + 1,
         "one registration for the 408 arm: {metrics}"
     );
 }
@@ -1304,6 +1315,14 @@ async fn next177_registered(addr: Http, inbox: &str) -> u64 {
 }
 
 async fn next177_establish_registration(addr: Http, inbox: &str) {
+    // Allow absence only before this positive control; afterward the row is
+    // required so a renamed counter cannot turn the check into zero == zero.
+    let (_, metrics) = http_get_text(addr, "/metrics").await;
+    let registered_before = metric_row_value(
+        &metrics,
+        &format!("swarmail_awaits_registered_total{{inbox=\"{inbox}\"}}"),
+    )
+    .unwrap_or(0);
     let result = tool(
         addr,
         "swarmail_wait_for_email",
@@ -1312,7 +1331,11 @@ async fn next177_establish_registration(addr: Http, inbox: &str) {
     .await;
     assert_eq!(text(&result)["timed_out"], true);
     assert_eq!(text(&result)["matched"], 0);
-    assert_eq!(next177_registered(addr, inbox).await, 1);
+    assert_eq!(
+        next177_registered(addr, inbox).await,
+        registered_before + 1,
+        "the positive control registers exactly once"
+    );
 }
 
 /// A supplied malformed `timeout_ms` refuses by name and registers no
@@ -1575,16 +1598,13 @@ async fn the_wait_registers_no_waiter_when_staging_refuses() {
     .await
     .unwrap();
 
+    next177_establish_registration(srv.http_addr, "nowaiter").await;
+
     // The cumulative registration is the observable (issue #102): the
     // delta across the refused call must stay zero — a wait that
     // subscribed before validating would leave a permanent +1, which the
     // released gauge cannot show.
-    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    let registered_before = metric_row_value(
-        &metrics,
-        r#"swarmail_awaits_registered_total{inbox="nowaiter"}"#,
-    )
-    .unwrap_or(0);
+    let registered_before = next177_registered(srv.http_addr, "nowaiter").await;
     let (st, body) = rpc(
         srv.http_addr,
         "tools/call",
@@ -1596,11 +1616,7 @@ async fn the_wait_registers_no_waiter_when_staging_refuses() {
     assert_eq!(body["error"]["message"], "to must be a string", "{body}");
 
     let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    let registered_after = metric_row_value(
-        &metrics,
-        r#"swarmail_awaits_registered_total{inbox="nowaiter"}"#,
-    )
-    .unwrap_or(0);
+    let registered_after = next177_registered(srv.http_addr, "nowaiter").await;
     assert_eq!(
         registered_after, registered_before,
         "a refused wait registers no waiter: {metrics}"
@@ -2143,12 +2159,8 @@ async fn the_staging_refuses_over_the_cap_and_honors_the_boundary() {
     // delta across the refused call must stay zero — a wait that
     // subscribed before validating would leave a permanent +1, which the
     // released gauge cannot show.
-    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    let registered_before = metric_row_value(
-        &metrics,
-        r#"swarmail_awaits_registered_total{inbox="capbox"}"#,
-    )
-    .unwrap_or(0);
+    next177_establish_registration(srv.http_addr, "capbox").await;
+    let registered_before = next177_registered(srv.http_addr, "capbox").await;
     let (st, body) = rpc(
         srv.http_addr,
         "tools/call",
@@ -2162,11 +2174,7 @@ async fn the_staging_refuses_over_the_cap_and_honors_the_boundary() {
         "{body}"
     );
     let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    let registered_after = metric_row_value(
-        &metrics,
-        r#"swarmail_awaits_registered_total{inbox="capbox"}"#,
-    )
-    .unwrap_or(0);
+    let registered_after = next177_registered(srv.http_addr, "capbox").await;
     assert_eq!(
         registered_after, registered_before,
         "a refused wait registers no waiter: {metrics}"
