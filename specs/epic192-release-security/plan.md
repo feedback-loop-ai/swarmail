@@ -1,4 +1,4 @@
-# Implementation plan — epic192-release-security
+# Continuation plan — epic192-release-security
 
 Implements [spec.md](spec.md); ordered proof-paired work is in [tasks.md](tasks.md).
 
@@ -11,28 +11,41 @@ packages the application, licenses and pinned WHATWG snapshot; a scratch
 image embeds the generated table. Current version preparation may differ
 between chart and Cargo; this work does not bump either.
 
-No plan template exists in `.specify/templates/` at the inspected base. This
+No plan template exists in `.specify/templates/` at the continuation base. This
 plan supplies its required context, constitution check, structure, research,
 data model, contracts and quickstart directly. Research inspected the current
-scripts/workflow, Cargo includes, Dockerfile, CSP caller and entity provenance,
-not only the issue snapshots. PyYAML 6.0.3 imports in the chief workspace;
-Helm and brokkr were not found on this seat's PATH. That observation is not
-proof of CI availability, a substituted engine, or a passed gate.
+metadata owner and its optional Helm branch, actual CI callers, Dockerfile,
+Cargo includes, CSP comment, NOTICE, both panel positions, intake and inherited
+spec/plan/tasks/handoff. The original chief's missing-Helm/PATH observation is
+historical. Current coordinator receipts identify official Helm v3.16.3 and
+one successful candidate render/coherence/refusal execution; they do not prove
+all equivalence/mutations or current engine phases. Docker 29.9.2 on the host
+does not imply sandbox access. No dependency or tool installation is planned.
 
 ## Constitution check
 
 Preserve [house rules](../../docs/house-rules.md), 0001–0006, single-writer
 protection, 0020/0035's exact denominator and 0045/0050's externally pinned
-proof chain. Runtime data paths and persistent schema stay unchanged. Only
-0019's dated observational errata are planned; corrected 0051 acceptance is
-settled by the supplied ruling and adoption belongs to deferred #184. This
+proof chain. Runtime data paths and persistent schema stay unchanged. Preserve
+0019's already implemented dated observational errata; corrected 0051
+acceptance is settled by the supplied ruling and adoption belongs to deferred #184. This
 compatible repair declares no ADR. No dependency/allowlist, recipe, policy,
-bundle, adapter, shim or shim-hash edits. Canonical candidate guard/proof
-scripts are change inputs, never replacements for the live baseline proof.
+bundle configuration, adapter, shim or shim-hash edits. Canonical candidate
+guard/proof scripts are change inputs, never replacements for the live baseline proof.
 Commit unsigned under 0056 and preserve the 0057 engine route and fixed four
-review lenses; security holds remain hard stops.
+review lenses; security holds remain hard stops. The task-specific CI-green
+GitHub-signed squash landing is coordinator-owned without separate sealing;
+no seat pushes or merges, and no release act is authorized.
 
 ## Project structure and touched files
+
+Retain implementation `26f6430` on continuation base `4970a512`. The table is
+the existing ownership boundary, not an instruction to rewrite completed
+repairs. Change an implementation file only when a current proof identifies
+a defect, keep its regression in its existing owner and rerun affected controls.
+The design commit touches exactly this directory's spec/plan/tasks; handoff
+and inherited audit/receipts stay byte-identical. A later implementation seat
+may append dated current dispositions to handoff without rewriting history.
 
 | File | Implementation scope |
 |---|---|
@@ -41,24 +54,82 @@ review lenses; security holds remain hard stops.
 | `bundles/self/scripts/publish-guard.sh` | Strict release version validation, stdin Authorization, bounded fail-closed token/status handling. |
 | `bundles/self/scripts/publish-guard-test.sh` | Header-enforcing HTTP, argv observer, owned refusal socket, distinct arms, asserting 12b and workflow/mutation proofs. |
 | `src/ui.rs` | CSP comment only. |
-| `Cargo.toml`, new root `NOTICE` | Root-anchored includes and packaged attribution; preserve SPDX and all versions/dependencies. |
+| `Cargo.toml`, root `NOTICE` | Root-anchored includes and packaged attribution; preserve SPDX and all versions/dependencies. |
 | `README.md` | License sentence/link only. |
 | `Dockerfile` | Attribution copy into final image only; leave H's first comment untouched. |
 | `docs/decisions/0019-release-tag-integrity.md` | Append dated rerun/polling corrections, preserve accepted body. |
-| Existing `specs/**` | Operator-local home-path redaction only; preserve every unrelated claim. |
-| `specs/epic192-release-security/{spec,plan,tasks}.md` | This design, receipt checklist and subsequent truthful task/evidence disposition. |
+| Exact 20 historical `specs/**` paths in inherited audit | Preserve their completed privacy-only transformations and every unrelated claim. |
+| `specs/epic192-release-security/{spec,plan,tasks,handoff}.md` | This design, receipt checklist and subsequent truthful task/evidence disposition. |
 
 No other tracked file is authorized. Keep temporary fixtures and evidence in
 ignored run-private directories. Do not edit another worktree or the baseline,
 launch nested runs, create a private active journal, or mutate/import the
 historical snapshot. The canonical journal remains the root `.forge/forge.db`.
 
-## Research and implementation approach
+## Current execution sequence
+
+1. Bind the current tree and proof identities to the continuation preparation
+   receipt. Validate inherited hash applicability and preserve original
+   `implementation/audit.json` and retry records. Use new ignored evidence
+   under `.forge/epic192/continuation/`; no active journal is created here.
+   Preserve complete issue bodies in intake. Add dated findings rather than
+   modifying original dispositions; original task marks are historical only.
+2. Resolve official Helm v3.16.3 through the authorized route and verify its
+   digest against the installation receipt. Record actual invocations to show
+   the optional selftest branch ran. Execute `selftest`, `verify`, real Git
+   history fixtures and actual extracted CI version bodies. Complete supported
+   metadata equivalence using `helm show chart`, `helm package` and inspection
+   of the resulting package for both fields, comments and whitespace. Run all
+   negative fixtures, including first-key CI mutation and repaired/render-arm
+   mutations. A tool absence, syntax error or unrelated dirty check is not red.
+   If the host tool is not mounted, request these exact commands/fixtures and
+   source-bound results from the coordinator; never download a replacement.
+3. Rerun candidate guard/proof and inherited mutation matrix with synthetic
+   credentials, real HTTP, held sockets, exact diagnostic needles and restored
+   controls. Keep immutable proof replay separate. A classifier-only 000 proof
+   retains the documented installed-curl reachability limit; a new tool version
+   requires recording applicability rather than claiming real successful 000.
+4. Run the original scope assertions from a private copy of the audit driver
+   with only its output destination changed to current ignored evidence. The
+   inherited driver writes audit.json, so never invoke it against that original
+   destination. Add a separate continuation audit for the design delta and
+   preserve original driver/receipt bytes. Rerun
+   actual locked package list/archive, nested cache decoys and unanchored
+   mutation; compare notice/license/data bytes, README and provenance. Preserve
+   CSP executable bytes, H comment, accepted 0019 prefix and license policy.
+5. Request the coordinator's real image proof with exact source/build-context
+   inventory, commit/tree/dirty differences, Dockerfile/NOTICE hashes, Docker
+   version, build argv, logs/exits and image ID/digest. Extract `/NOTICE`
+   without adding a shell to scratch; show readability, mode 0444 and equality
+   with root and crate archive. Remove only the NOTICE COPY in a disposable
+   context, build and require the attribution assertion to fail specifically;
+   restore identical source, rebuild and pass. Run-unique names avoid collisions
+   even for identical source hashes. Record cleanup including anonymous volumes.
+   Keep host origin explicit; inspect applicability after any source change.
+   No socket exposure, extra privilege or private/rootless daemon attempts.
+6. Collect fresh complete house gates, configured extras, candidate proofs and
+   immutable proof origins, then actual engine hermetic verify, four fixed
+   independent reviews and successful ship through the root-owned route.
+   A replay of pinned scripts is not actual dispatch. Do not launch a nested
+   run. A changed source after proof requires affected checks again and current
+   phases against the final candidate. CI-only and external release evidence
+   remain individually named, with no fabricated pass or waived unknown.
+7. Hand off every finding/AC with current receipts and precise open items.
+   Supply `26f6430`'s 0019 errata dependency to deferred #184 before its exclusive
+   corrected-0051 adoption. Preserve the external release checklist and explicit
+   AC17 pending status even after compatible ship. Coordinator landing grants
+   no tag, release, registry write/deletion or publication permission.
+
+## Retained implementation approach
+
+The following describes the inherited implementation and its continuing proof
+contract. These mechanisms already exist in `26f6430`; imperative instructions
+apply only to a demonstrated regression or missing proof, not a second rewrite.
 
 ### 1. One chart metadata owner; independent guard validation
 
-Add a narrow `metadata` mode to the existing chart script, taking an optional
-fixture root as a data argument and emitting only validated `version=...` and
+Retain the narrow `metadata` mode in the existing chart script, taking an optional
+Chart.yaml path (or stdin) as a data argument and emitting only validated `version=...` and
 `app=...` lines. CI captures successful complete output before appending it to
 GITHUB_OUTPUT. Failure produces no usable partial output. The metadata reader
 must not lint/render Helm or require a registry; verify/history reuse it.
@@ -85,7 +156,7 @@ verification or introduce an unpinned download. Missing prerequisite or Helm
 comparison is an outstanding proof, not permission to skip it. A different
 reader requires a documented spec/plan revision and matching proofs.
 
-Restore strict SemVer in the canonical guard independently of mutable chart
+Retain strict SemVer in the canonical guard independently of mutable chart
 code: core numeric components cannot have leading zeros; prerelease identifiers
 are nonempty ASCII alphanumeric/hyphen, numeric identifiers reject leading
 zeros. Preserve named build-metadata refusal and exact ref checks. The Docker
@@ -103,7 +174,7 @@ and absence of header controls before interpolation; never dump response
 secrets. Retain URL scope/service, max-time bounds, modes and exact tag forms.
 Confirm installed curl's interface support before treating it as proven.
 
-Extend the real local fixture to reject missing/wrong Basic, bearer, Accept,
+Keep the real local fixture configured to reject missing/wrong Basic, bearer, Accept,
 service/scope and manifest paths. Use distinct synthetic exchange and bearer
 secrets. A test-only PATH observer records argument vectors and execs real
 curl, inheriting stdin unchanged; do not capture real environment/stdin or
@@ -128,7 +199,7 @@ Use distinct diagnostic needles for each arm and mutation tests for each.
 
 ### 3. Exhaustive proof in the existing owners
 
-Replace empty 12b with the meaningful stale-v scenario and consolidate 12d.
+Retain the meaningful stale-v 12b scenario and removal of redundant 12d.
 Preserve both-absent, bare-present, bare-only and require-present poles.
 Strengthen the repository-specific workflow checker around parsed jobs/steps
 or a tightly bounded supported shape, refusing unknown bypass shapes rather
@@ -152,7 +223,7 @@ that cannot be kept there without new public interfaces.
 
 ### 4. Honest prose and distributable attribution
 
-Correct only the CSP comment. Append dated 0019 errata for reruns/polling;
+Preserve the corrected CSP comment and dated 0019 errata for reruns/polling;
 keep prior paragraphs byte-identical, including historical status pointers.
 Provide deferred #184 the errata commit and integration requirement so its
 queued adoption can revalidate source hashes/applicability. No index/0051 edit.
@@ -160,15 +231,15 @@ Redact all actual home-path matches from historical specs with portable
 repository-relative paths or descriptive placeholders while preserving commands'
 meaning and evidence claims. Audit the diff beyond a zero-match grep.
 
-Add one NOTICE using `src/extract/entities.rs`'s actual provenance: WHATWG
+Keep one NOTICE using `src/extract/entities.rs`'s actual provenance: WHATWG
 (Apple, Google, Mozilla, Microsoft), CC-BY-4.0 URL, source entities URL,
 2026-10-18 snapshot SHA-256
 `d741d877ac77c4194c4ad526b5b4a19aef8dfe411ab840a466891cdbb9f362e6`,
 unmodified snapshot and the transformation to 2,125 semicolon-terminated
 NAMED entries. Verify the hash rather than transcribing an unsupported value.
 Preserve application SPDX; include `/NOTICE` and root-anchored licenses.
-README License names the component/license and links NOTICE. Copy identical
-NOTICE bytes from the builder into final image `/NOTICE` with readable mode.
+README License names the component/license and links NOTICE. Keep identical
+NOTICE bytes copied from the builder into final image `/NOTICE` with mode 0444.
 
 Run actual package listing and archive creation/inspection on clean committed
 candidate content (or a private candidate fixture), including nested
@@ -186,14 +257,22 @@ No persistent schema, runtime model or public protocol changes. Ephemeral
 records are: validated chart metadata `{version, appVersion}`; HTTP fixture
 control `{token outcome, per-tag status/transport action}` and recorded request
 paths/header verdicts; owned socket readiness; mutation receipts; and the
-operator release receipt. Secret bytes are never evidence fields.
+operator release receipt. Real secret bytes are never evidence fields; fixture
+secrets are synthetic.
+Each new ignored receipt identifies candidate commit/tree and any dirty patch,
+source/build-context manifest, invoked tools/helpers with SHA-256, exact argv,
+exit and stdout/stderr/log identity, fixture/mutant/restored bytes, the owning
+failure diagnostic and restored success. Host receipts additionally identify
+build/image/extraction and cleanup. Receipts are evidence records, not a new
+schema/service or journal. Source hashes alone cannot identify an unrecorded
+build context or certify execution.
 
 The guard's existing inputs and outputs stay: v-prefixed expected ref, OCI
 repository, both/bare forms and require-absent/present mode, environment ref
 and image result. Only 404 admits absence and only 200 with Docker success
 admits presence. All uncertainty refuses. Exact Docker both-form and chart
 bare-form naming, independent preparation and successful joint-tag equality
-remain. The new metadata operation emits validated data, never shell source.
+remain. The metadata operation emits validated data, never shell source.
 
 ## Quickstart and verification
 
@@ -239,6 +318,15 @@ spec. Handoff includes every finding, commits/paths, evidence, preserved
 rulings, no new ADR, outstanding obligations and deferred #184 integration.
 
 ## Risks
+
+| Continuation risk | Mitigation / retained cost |
+|---|---|
+| Historical checked tasks become invented current phase results | Preserve original marks/handoff; new C-tasks start unchecked and require dated source-bound evidence. Engine records alone establish verify/review/ship. |
+| Helm selftest skips the equivalence branch despite exit 0 | Bind official binary and record real show/package invocations and comparisons, plus defect-specific red/restored controls. |
+| Host image receipt is stale or context incomplete | Require complete build-context/source identity, exact image/extraction bytes, removal/restored builds and applicability review; keep AC16 open until supplied. |
+| Concurrent proofs delete each other's containers or sockets | Run-unique names, private scratch, held sockets and owned cleanup; no shared mutable fixtures. |
+| Unauthorized release is used as a global stop or false success | Continue compatible phases and retain AC17 EXPLICIT EXTERNAL PENDING; never close 18.5/#186/#192, invent a release or waive unknown residual facts. |
+| Cross-lane adoption overwrites errata | Leave #184's adoption/index untouched; pass the exact errata commit and require hash/applicability checks after integration. Preserve H's comment. |
 
 | Risk | Mitigation / retained cost |
 |---|---|

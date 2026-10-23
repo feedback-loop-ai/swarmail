@@ -1,4 +1,37 @@
-# Tasks — epic192-release-security
+# Tasks — epic192-release-security continuation
+
+Ordered current work for [spec.md](spec.md) under [plan.md](plan.md).
+Continuation run: `epic192-lane-a-continue-compatib-70aa2893`, 2026-10-23,
+starting at `4970a5125d0750613cf856b97e5e0720cc13b2e6`. Every current task
+starts unchecked. Its paired test must supply current source-bound receipts;
+old checked T-tasks do not certify this run. Preserve [handoff.md](handoff.md)
+and all inherited audit/mutation records. Only the engine advances phases.
+
+## Current ordered tasks — 2026-10-23
+
+- [ ] C01 — Establish current source, tool and evidence identities and full finding/AC inventory (C01, AC01–AC18). **Test:** compare HEAD/tree/clean status with preparation receipt, implementation and original handoff; hash current scripts/helpers and immutable origin separately; confirm all source issue/comment findings and AC01–AC18 remain mapped, original audit/receipt bytes intact and no baseline/journal mutation. Record every unavailable resource explicitly.
+- [ ] C02 — Finish real Helm metadata/package equivalence and chart refusal controls (C02, AC02/05/11). **Test:** verify official v3.16.3 digest; record actual show/package/selftest/verify and real Git history executions; compare both fields through helper, extracted CI bodies and package metadata for supported quoting/comments/whitespace. All specified malformed/ambiguous cases refuse with empty usable output. First-key CI and repaired/render-arm mutants fail their owning assertions, restored bytes pass. Prove optional Helm branches ran rather than relying on exit 0.
+- [ ] C03 — Revalidate credential, registry, SemVer and socket proof contracts (C03, AC03/05/08/10/12/13). **Test:** execute real curl/HTTP with synthetic-only credentials and argv observations; replay all corresponding inherited mutants for headers, argv, loose validator, v probe, held socket and distinct unknown arms; exact failure diagnostics and restored greens required. Preserve raw-000 reachability evidence and classification-only labeling beside independent manifest transport failure.
+- [ ] C04 — Revalidate actual workflow guard dominance and propagation (C03, AC07). **Test:** run current parsed checker and relevant extracted shell bodies; replay all recorded workflow mutations, including absent/reordered/skipped/commented/softened guards, job/step continue-on-error, ignored shell failures, missing prerequisites and failed/skipped/cancelled Docker success propagation. Each fails for its own defect; restored workflow passes; continuous main/sha behavior remains accepted.
+- [ ] C05 — Revalidate scope/privacy and crate attribution with actual Cargo (C04, AC01/04/06/09/14/15). **Test:** execute inherited audit assertions from a private driver copy redirecting only its output to new evidence (the original driver writes audit.json), plus separate continuation scope check; home-prefix grep exits exactly 1 empty; UI executable bytes, H comment, accepted 0019 prefix and exact 20 transformations remain preserved. Locked actual package listing/archive retains license/data/NOTICE bytes and excludes in-tree cache decoys; unanchored mutation exposes decoys and fails the package assertion, restoration passes. Verify provenance/README and green deny with no dependency/version/allowlist change.
+- [ ] C06 — Obtain and validate current coordinator-owned image attribution proof (C05, AC16). **Test:** exact source/context/tool/build/image-bound receipt proves actual `/NOTICE` extraction, readability, mode 0444 and equality to root and package; disposable COPY removal builds but fails the attribution assertion, restored-source rebuild passes. Verify cleanup and run-unique fixtures. Host evidence stays host evidence; missing receipt leaves this task open, without daemon/privilege workaround.
+- [ ] C07 — Append dated current finding dispositions and prepare review evidence (C01/C06, AC01–AC18). **Test:** original handoff, audit and receipts retain historical facts; every AC maps to current/inherited/host/engine/CI/external evidence with commands/exits/identities and no unsupported pass. Release checklist remains intact and AC17 / #186 18.5 is EXPLICIT EXTERNAL PENDING. Record exact #184 errata-first dependency and H ownership; no release or adoption action occurs.
+- [ ] C08 — Execute all current final-candidate gates and actual hermetic verification (C07, AC18). **Test:** complete house-rule inventory and configured design/tamper/recipe/native-tls extras pass with pinned tooling, applicable --locked and exact coverage; separately current repaired candidate guard/chart/package controls and immutable proof chain have identified receipts. Actual engine verify passes on the current candidate; replayed scripts or prior-run gates alone cannot tick this task. Enumerate CI-only missing evidence rather than imply it passed.
+- [ ] C09 — Obtain four actual independent reviews through the existing root-owned route (C07, AC18). **Test:** actual Qwen Max correctness, Opus security, official DeepSeek Flash guarantees and DashScope GLM 5.3 tests records review the candidate and disposition; no fallback, missing member, unknown-safe coercion or security-hold bypass. Resolve any required return through its owning phase and rerun affected proofs; no nested run.
+- [ ] C10 — Complete actual successful hermetic ship for compatible continuation and final handoff (C07, AC18). **Test:** engine ship receipt identifies the verified/reviewed current candidate and no close-out discrepancy. Final report names all required missing host/CI/external evidence concretely and keeps AC17/18.5/#186/#192 open. The coordinator alone handles task-authorized CI-green GitHub-signed squash landing; seats never push, merge or publish.
+- [ ] C11 — External obligation, only after separate release authorization: link the next real guarded GHCR 404-then-publish receipt (C06, AC17). **Test:** actual authorized workflow/jobs, ref/versions, prerequisite/rate results, redacted both-image/bare-chart probes, ordering, image success before chart preflight/push, artifact/readback digests and partial failures match the full spec checklist. This task stays EXPLICIT EXTERNAL PENDING during compatible delivery; local fixtures, host image proof and ship cannot satisfy it. Do not execute a release under this task's current authorization.
+
+## Historical task record — original implementation and retry
+
+The record below preserves original task text, marks and disposition. Statements
+about missing Helm/Docker or local green gates describe those executions only;
+they are not current availability, verification, review or ship conclusions.
+The coordinator Helm receipt narrows one historical gap as described in spec.md.
+The previous run stopped at event 387 before actual verify/review/ship. C01–C11
+above exclusively track this continuation and replace any inference that old
+checked marks cover current work.
+
+### Original tasks
 
 Ordered work for [spec.md](spec.md) under [plan.md](plan.md). All checkboxes
 start open: the chief's design is not implementation evidence. Mark a task
@@ -24,7 +57,7 @@ paths/digests and red/restored-green receipts. No publish, push, tag or merge.
 - [x] T16 — Hand off every finding, commits/paths, proof receipts, preserved rulings and all residuals for fixed four-lens review (AC01–AC18). **Test:** evidence table has no omitted issue/comment AC, no unstated pass and no scope expansion; no dependency/version/allowlist/shim/baseline change. Provide #184 errata integration dependency and image/release external obligations; security hold cannot be downgraded.
 - [ ] T17 — External operator/CI obligation: link actual next guarded GHCR 404-then-publish receipt and any still-missing image/CI proof (AC16, AC17, AC18). **Test:** review real run/log/artifact URLs, timestamps, exact tags/statuses/order/digests against the checklist. Leave open until that evidence exists; local fixture success and this design commit do not close the stories or epic.
 
-## Implementation disposition — 2026-10-23
+### Historical implementation disposition — 2026-10-23
 
 Paired receipts and every finding are recorded in [handoff.md](handoff.md).
 T02 and T10 have passing local metadata/CI/history/selftests and mutation

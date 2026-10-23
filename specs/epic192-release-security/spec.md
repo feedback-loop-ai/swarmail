@@ -1,6 +1,8 @@
-# Epic192 release-security
+# Epic192 release-security continuation
 
-Created: 2026-10-23. Branch: `epic192/lane-a`. Status: design draft.
+Created: 2026-10-23. Continuation clarification: 2026-10-23.
+Branch: `epic192/lane-a-continuation`. Status: continuation design draft.
+Slug: `epic192-release-security` (retain the existing feature identity).
 Stories: [#169](https://github.com/feedback-loop-ai/swarmail/issues/169),
 [#185](https://github.com/feedback-loop-ai/swarmail/issues/185),
 [#186](https://github.com/feedback-loop-ai/swarmail/issues/186), including
@@ -8,63 +10,105 @@ Stories: [#169](https://github.com/feedback-loop-ai/swarmail/issues/169),
 
 ## Feature and rationale
 
-Make the existing release safeguards enforce what their documentation says,
-prove the refusals that their tests currently miss, and distribute the WHATWG
-attribution to crate and image consumers. Correct the UI security comment and
-remove operator-local home paths from historical specifications. Release
-identity, credential confidentiality and test integrity are gate/security work;
-triage selected the full `engine` route. This stream does not close epic #192.
+Finish the compatible release/security repairs and their missing proofs,
+retaining implementation `26f6430c2c1799cbee119a5da3a8322386580d5a` from clean
+continuation base `4970a5125d0750613cf856b97e5e0720cc13b2e6`. Existing code may
+need no change. Credential confidentiality, actual workflow guard ordering,
+metadata interpretation, attribution and proof integrity still require the
+full design and four-provider review route. Small diff size does not reduce
+that risk. Compatible delivery does not close the real release obligation.
 
-The input evidence is the run's framing and both positions at
-`.brokkr/state/tasks/epic192-first-wave-lane-a-releas-bb00db91.md` and
-`.brokkr/state/design/positions/{simplicity,robustness}.md`. Those are ignored
-run-local evidence, not delivery artifacts. The finding map below retains all
-source findings even where the issue's old line numbers or file count differ.
-At inspected base `168ac299e0fe16ecdd8fa0e0218cb7bc4e0a261c`, chart readers
-use sed/head, the guard admits malformed SemVer and supplies secrets in curl
-argv, case 12b is a no-op, and intake reports 20 tracked specs with home paths.
+The prior run `epic192-first-wave-lane-a-releas-bb00db91` stopped
+`IMPL-BROKEN-TWICE` at event 387 before actual verify, independent review or
+ship. Its original base `168ac299e0fe16ecdd8fa0e0218cb7bc4e0a261c`, branch
+`epic192/lane-a`, accepted design and checked tasks are historical evidence.
+The exact original findings, AC dispositions and retry observations remain in
+[handoff.md](handoff.md), unchanged by this design. The original AC01–AC18 and
+release checklist below are retained verbatim; current obligations refine
+proof provenance and completion without waiving any criterion.
+
+Current intake and complete authoritative issue bodies are preserved in
+`.brokkr/state/tasks/epic192-lane-a-continue-compatib-70aa2893.md`; both current
+positions are `.brokkr/state/design/positions/simplicity.md` and
+`.brokkr/state/design/positions/robustness.md`. These ignored inputs remain
+uncommitted. Preserve `.forge/epic192/implementation/audit.json`, its exact
+20 privacy-only historical spec transformations and every recorded script /
+workflow mutation receipt. New evidence supplements them, never overwrites
+failure history or claims an earlier engine phase ran.
 
 ## Authority and scope
 
-This is a compatible repair, not a new semantic ruling. Strict SemVer,
-exact-ref binding, bounded fail-closed probes and proof of publish ordering
-restore [0019](../../docs/decisions/0019-release-tag-integrity.md).
-Application licensing remains [0006](../../docs/decisions/0006-dual-license.md);
-consumer attribution implements
-[0049 §2](../../docs/decisions/0049-extraction-compat.md).
-[0045](../../docs/decisions/0045-delivery-repairs.md) and
-[0050](../../docs/decisions/0050-delivery-gates.md) govern proof ownership,
-design identity and unknown residuals. No new ADR is declared; reserved 0058
-is unused. If implementation requires a new policy or contradicts an accepted
-ruling, revise this design and draft only proposed 0058 before that work;
-a proposal supplies no acceptance authority.
+This continuation restores and proves existing contracts; it changes no
+frozen guarantee, public runtime contract or accepted ruling. No new ADR is
+declared. [0019](../../docs/decisions/0019-release-tag-integrity.md) owns strict
+SemVer, exact-ref binding, bounded probes and fail-closed registry state.
+[0006](../../docs/decisions/0006-dual-license.md) preserves application SPDX;
+[0049 §2](../../docs/decisions/0049-extraction-compat.md) supplies WHATWG
+provenance. [0045](../../docs/decisions/0045-delivery-repairs.md),
+[0050](../../docs/decisions/0050-delivery-gates.md) and
+[0057](../../docs/decisions/0057-codex-delivery-recipes.md) require actual
+proof dispatch, deterministic design identity and protected independent review.
+If a discovered repair instead changes a ruling, revise this design and draft
+the next free decision as proposed; contradictory implementation awaits the
+operator's acceptance. No decision number is consumed by this design.
 
-The supplied operator ruling of 2026-10-23 explicitly accepts corrected 0051,
-including successful joint-tag equality and independent package preparation.
-The checked-in [0051 record](../../docs/decisions/0051-release-records.md) still
-awaits that adoption. Deferred #184 alone validates/applies the queued adoption
-patch after this lane's 0019 errata integration. A must neither apply it nor
-ask for acceptance again. Current Cargo/chart release versions stay unchanged.
+The operator's 2026-10-23 acceptance of corrected 0051, including successful
+joint-tag equality and independent preparation, is settled. The checked-in
+[0051 record](../../docs/decisions/0051-release-records.md) awaits adoption by
+deferred #184 alone, after integrating A's `26f6430` additive 0019 errata and
+validating source hashes/applicability. A does not apply that patch, edit the
+index or seek acceptance again. Preserve accepted historical decision bodies.
 
-Preserve 0001–0005: synchronous insert and SMTP 250 queryability,
-subscribe-before-check awaits, oldest-only pruning, per-test isolation and
-ingest extraction. Preserve single-writer protection, exact 100% measured
-coverage and security holds. No Rust behavior changes, registry transaction
-layer, retry/backoff, override, tag deletion, publication, push, merge or issue
-comment/closure is authorized. UI scope is its CSP comment only.
+Preserve 0001–0005, single-writer protection and all runtime policies:
+synchronous insert/SMTP 250 queryability, subscribe-before-check awaits,
+oldest-only pruning, per-test isolation and ingest extraction. Keep exact
+100% measured coverage, all gates and hard security holds. No Rust behavior,
+dependency/version/allowlist, baseline/pin/shim/hash, recipe or journal changes;
+no broader formatting or other candidate edits. H owns the Dockerfile's first
+criterion comment; A owns only its NOTICE packaging. Work seats commit
+unsigned and never push. The explicit task-specific CI-green GitHub-signed
+squash landing belongs to the coordinator without a separate operator seal;
+this is not a general amendment of 0056 or authority for any seat to merge.
+No release, tag, publication, registry deletion or version bump is authorized.
 
-## Panel synthesis and rulings
+## Panel synthesis and rulings — 2026-10-23
 
-| Question | Ruling and explicit cost |
+The positions agree on the architecture and required proof burden. The rulings
+below settle their competing priorities without inventing a provider dispute.
+
+| Question | Adopt / reject / reconcile, with the cost of the losing option |
 |---|---|
-| How much architecture? | Adopt simplicity's existing script owners and one NOTICE. Adopt robustness's executable adversarial proofs within those owners. Reject a new release framework, HTTP client, ledger or generic workflow interpreter. Cost: small validation duplication at separately pinned trust boundaries and the existing concurrent check/push race remain. |
-| Chart parsing | Choose simplicity's existing PyYAML facility in the chart verifier, with safe parsing and duplicate-key refusal, and robustness's Helm equivalence and actual-caller tests. Reject a second lexical reader and the conservative handwritten YAML alternative for this design. Cost: Python/PyYAML availability becomes an explicit prerequisite at the metadata call site; missing tooling refuses and must be reported, not silently replaced or downloaded. |
-| YAML ambiguity | Robustness wins over a duplicate-count-only fix. Detect duplicate keys before mapping collapse, including quoted spellings; reject unsupported merge/alias or multi-document metadata rather than selecting one value. Cost: those legal YAML representations may be refused; normal quoted/plain scalar forms remain supported and are checked against Helm. |
-| Credential transport | Adopt simplicity's stdin header transport and robustness's real HTTP header enforcement, argv observation and invalid-token tests. Reject temporary credential files and helper arguments containing secrets. Cost: curl header-stdin support must be proved and header generation must reject control characters. |
-| HTTP 000 | Adopt simplicity's narrow status-output control only if an installed-curl real response cannot reach successful-curl 000; adopt robustness's requirement to first attempt and document reachability and separately prove real manifest transport failure. A classifier-input test is explicitly not a real registry 000 receipt. Cost: two evidence classes must be maintained; no simulated client or production injection knob can replace the real transport proof. |
-| Test size | Robustness wins wherever a smaller patch cannot detect its own defect: workflow bypass mutations, all chart refusal arms and package/image extraction are required. Simplicity wins against duplicate 12b/12d counts and a general Actions evaluator. Cost: more negative fixtures and execution time, without a new framework. |
-| CSP and attribution | Adopt both positions' comment-only CSP correction and one packaged/image NOTICE. Reject policy tightening and application relicensing. Cost: clicked navigation and same-origin image GETs remain possible; distributions grow by the notice bytes. |
-| External completion | Adopt both positions' separate release/image evidence obligations. Reject counting local HTTP, Dockerfile text or a baseline proof pass as the corresponding real-release, image or candidate-proof result. Cost: full story completion may remain pending after all compatible local work lands. |
+| Restart or continue? | Adopt simplicity's existing feature directory, script owners and implementation. Adopt robustness's fresh proof requirements. Reject restarting implementation or treating old green receipts as current phase results. Cost: historical and current dispositions must coexist explicitly, and unchanged code still incurs current verification time. |
+| Minimal code versus adversarial evidence | Robustness's defect-sensitive proof standard governs whenever a smaller test cannot detect the defect. Simplicity's minimal machinery governs placement: existing proofs plus ignored private drivers. Reject unqualified selftest green, arbitrary nonzero mutants and a new evidence service. Cost: more targeted executions and receipt review, with no new product framework. |
+| Metadata ownership | Retain one duplicate-aware PyYAML owner in `scripts/chart-verify.sh` and independently pinned guard validation. Require real Helm/package and actual CI-caller equivalence for supported forms. Reject a second parser, yq and first-key fallback. Cost: explicit Python/PyYAML and Helm prerequisites, small validation duplication, and refusal of unsupported legal YAML. |
+| Workflow semantics | Retain the repository-specific checker, actual relevant shell-body executions and all workflow mutations. Reject reference-count-only assurance and a general Actions interpreter. Cost: unfamiliar workflow shapes refuse and require deliberate proof maintenance. |
+| Missing image capability | Adopt both positions' source-bound coordinator build/extraction/removal/restoration receipts, with host origin explicit. Reject Dockerfile text as proof and socket/privilege/daemon workarounds. Cost: coordination and a concrete open AC16 until actual evidence arrives; host evidence is not CI smoke. |
+| Attribution and CSP | Retain one packaged/image NOTICE, application SPDX and comment-only CSP truth. Reject relicensing, a second notice system and runtime tightening. Cost: notice distribution bytes and the disclosed clicked-navigation/same-origin-image limitations remain. |
+| Runtime robustness | Adopt robustness's invariant/risk analysis as preservation boundaries; adopt simplicity's rejection of new queues, retries, durable outbox or release state machine. Cost: SMTP ambiguity after commit, bounded webhook losses, legitimate oldest pruning and current transport/resource limits remain existing behavior. None is redefined by release proof work. |
+| Release completion | Both positions require AC17 explicitly external pending while compatible work continues. Reject both global blocking solely on an unauthorized release and fabricated closure. Cost: compatible ship cannot close finding 18.5, story #186 or epic #192. Unknown host/CI/security facts are still not waived. |
+
+## Current evidence and continuation requirements
+
+The coordinator's `.forge/epic192/continuation/helm-install-receipt.json`
+records official Helm v3.16.3, archive checksum verification and binary digest
+`6a1dffedcf78a687aedc71a918cff0af8f0988184488dddb3615e24abc4e7f2b`.
+`coordinator-chart-verify.json` in the same directory binds base `4970a512`
+and chart-script digest
+`5ff500f5031ed05bb1810013fb189a868cfc4da5b10467ee32f2a41ed8cba62e`
+to actual `verify` exit 0. It proves that execution's render/coherence/existing
+refusal checks only. It supersedes the old missing-Helm observation for that
+execution, not all equivalence/mutation obligations or current engine verify.
+Host Docker 29.9.2 availability is supplied context, not an actual image proof.
+
+| Requirement / original AC | Testable continuation requirement and present disposition |
+|---|---|
+| C01 / AC01–AC18 provenance | Preserve every original finding and AC, historical handoff/audit/receipts and complete source issue bodies. Each new disposition records current candidate commit/tree, exact commands/exits/logs, executable/helper/tool identities and proof origin. Distinguish inherited, current candidate, coordinator host, engine, CI-only and external release evidence. All current tasks start unchecked. |
+| C02 / AC02, AC05, AC11 Helm | Execute installed pinned Helm comparisons for both version and appVersion, plain/single/double quotes, comments and whitespace; actual extracted CI bodies, metadata owner and actual Helm/package metadata agree. Include current and real-Git historical fixtures. Duplicates in either order/quoted form, malformed/missing/type values, aliases/merges and multiple documents refuse before usable output. Reintroduce first-key selection and disable repaired refusal/render arms in private copies: owning assertions fail for the defect, restored bytes pass. Prove Helm-dependent branches ran; an optional branch skipped on PATH cannot satisfy this. Remaining equivalence/mutation evidence is pending. |
+| C03 / AC03, AC05, AC07, AC08, AC10, AC12, AC13 preservation | Rerun actual candidate guard/proof and all recorded defect-sensitive controls: argv secrets; dropped Basic/Bearer/Accept; loose SemVer; missing v probe; released refusal socket; distinct unknown-state arms; and guard removal/reorder/skip/softening, ignored shell failures, prerequisite loss and failed/skipped/cancelled Docker propagation. Preserve synthetic-only secrets, real HTTP, exact diagnostics, complete red/restored-green identities and existing 000 reachability evidence. Successful-request status substitution remains classification-only, paired with real manifest transport failure. Inherited successes are not current results. |
+| C04 / AC01, AC04, AC06, AC09, AC14, AC15 scope/package | Revalidate original exact audit (UI executable bytes, H comment, accepted 0019 prefix, 20 path-only transformations, unchanged versions/dependencies/allowlist). Home-prefix grep exits exactly 1 with empty output. Actual locked Cargo listing/archive and cache-decoy anchor red/restored controls retain exact root licenses/data/NOTICE. Verify WHATWG hash/transformation, README License and deny. Preserve original audit bytes even if a separate continuation audit is needed for these design edits. |
+| C05 / AC16 image | Obtain actual build-bound extraction of `/NOTICE`, readable with mode 0444, byte-identical to root and actual crate archive NOTICE. Receipt binds candidate/tree, dirty differences, complete source/build-context identity, Dockerfile/NOTICE hashes, tool/build command and image ID/digest. Removing only NOTICE COPY in a disposable build fails the attribution assertion; restored source rebuild passes. Use run-unique fixtures and prove cleanup of containers/anonymous volumes/images. No denied-capability result counts. Actual evidence is pending; request the precise host proof through the coordinator's authorized route. |
+| C06 / AC17 external release | **EXPLICIT EXTERNAL PENDING**: #186 finding 18.5 needs the next authorized real guarded GHCR 404-then-publish receipt against the unchanged checklist below. Preparation is complete historically, collection is not. Carry this exact open item in continuation disposition, release checklist and final report; do not close 18.5/story #186/epic #192 or encode it as passed/waived. |
+| C07 / AC18 delivery | Require current complete hermetic verification, separate repaired candidate proof execution, actual four fixed independent reviews and successful hermetic ship for compatible continuation. Qwen Max correctness, Opus security, official DeepSeek Flash guarantees and DashScope GLM 5.3 tests have no fallback. Only actual engine records prove phases. Preserve worst-verdict/security hold and unknown-fact refusals. Record each CI-only obligation separately; neither inherited local gates nor host receipts certify it. All current phases remain pending at design. |
 
 ## Acceptance Criteria
 
@@ -118,11 +162,17 @@ this checklist is local deliverable; actual receipt collection remains open.
 
 ## Completion boundaries
 
-All local compatible work remains required even when AC16 or AC17 awaits an
-external environment/action. The check-then-push race, registry outages
-blocking release and nontransactional partial publication remain existing
-costs. No automatic recovery is added. Chief's result is `drafted`; only the
-pinned final design check may advance design. Implementation, required gates,
-four independent reviews, image evidence and the real release receipt are not
-established by this document. Report finding-by-finding dispositions, commits,
-proof receipts, CI-only evidence, residuals and the #184 integration request.
+The chief commits only this spec, plan and tasks and returns `drafted`; the
+pinned deterministic final check alone rules design. This commit establishes
+no implementation, full verification, independent review, ship, CI or release
+result. The current ordered tasks are distinct from historical checked tasks.
+
+All compatible work and required current engine phases remain necessary.
+Missing host or CI proof must be named concretely and resolved through its
+owner; no unknown safety fact takes a clean or safe-residual shortcut. AC17
+alone does not stop progress on compatible work, and stays **EXPLICIT EXTERNAL
+PENDING** through compatible ship until a separately authorized release supplies
+it. Existing check/push races, registry outage refusal and partial publication
+remain accepted costs, with no automatic recovery or immutability promise.
+Report current phase receipts, every finding's disposition and the deferred
+#184 errata-first integration dependency without fabricating prior delivery.
