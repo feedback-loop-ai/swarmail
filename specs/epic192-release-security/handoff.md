@@ -174,3 +174,149 @@ expansion, frozen-guarantee refusal or new operator decision was discovered;
 No tooling was installed, proof weakened, baseline changed, review substituted,
 release attempted or journal modified. Deferred #184 still needs `26f6430`'s
 0019 errata before its exclusively owned accepted-0051 adoption.
+
+## Continuation implementation evidence — 2026-10-23
+
+Run `epic192-lane-a-continue-compatib-70aa2893` began implementation at clean,
+unsigned chief commit `4319d8d32dc1e2e26aa23dc55edc5748444dd0cc`, tree
+`9d4af26fd11680b980be89e5c14ffc497c22e502`. Current triage classified
+`engine`; the actual deterministic result in
+`.forge/results/6e9fae13-ed51-428b-8b7b-6249694a3b4f-check.json` is
+`designed` for that commit. These were read before work. The prior run's
+stop, retry and every original disposition above remain historical facts.
+No executable implementation change was needed or made in this continuation.
+Only this dated appendix and current C-task marks/disposition are added.
+
+New local evidence is under `.forge/epic192/continuation/implement/`.
+`identity.json` binds the clean commit/tree, engine/script identities and
+hashes of all inherited implementation/retry files. `final-audit.json`
+rechecks those inherited bytes unchanged, every coordinator manifest hash,
+source applicability and package/image notice equality. `audit.py` is a private
+copy of the original assertions with only its output redirected: its new
+`audit.json` again proves UI executable bytes, H's first Dockerfile comment,
+accepted 0019 prefix, unchanged Cargo versions/dependencies and the exact 20
+privacy-only transformations. The home-prefix Git grep again exits exactly 1
+with empty stdout/stderr. Original audit/drivers/receipts were not overwritten.
+
+### Current finding/AC disposition
+
+| Finding / AC | Current evidence and limit |
+|---|---|
+| #169 1.1 / AC01 | Fresh scope audit and locked real-server tests pass; UI executable bytes and CSP remain unchanged. The inherited comment correction is retained. |
+| #169 1.2 / AC02 | Fresh chart selftest and actual CI bodies pass. Narrow `ci-reader-duplicate-red-restored-green.json` again shows the actual old sed/head caller admits duplicate metadata and the restored caller refuses it with empty output. Source-matched coordinator Helm show/package receipts supply additional actual equivalence, but the complete Helm-enabled matrix below remains required. |
+| #169 1.3 / AC03 | Current real HTTP/argv proof passes. Replayed Basic, bearer and helper-argv secret mutants fail the credential assertion; dropped Basic/bearer/Accept mutants fail the owning positive request. Every restored evaluator passes. Synthetic credentials only. |
+| #169 1.4 / AC04 | Fresh exact 20-file transformation audit and expected-exit-1 empty Git grep pass; no historical claim beyond the original privacy edit changes. |
+| #185 17.1 / AC05 | Current guard/chart/actual CI SemVer cases pass; loose-validator mutation fails its strict-version regression, restoration passes. |
+| #185 17.2 / AC06 | Accepted 0019 body remains an identical prefix and the dated rerun correction remains. Deferred #184 still must integrate `26f6430` before validating its accepted-0051 adoption patch. |
+| #185 17.3 / AC07 | Current active-step checker again reports 51 named mutation-red/restored-green controls, including ordering, conditions, dependencies, failure softening and Docker-result propagation. Actual relevant version/publish shell bodies are exercised by their owning proof. |
+| #185 17.4 / AC08 | Current real fixture enforces Basic, Bearer, full Accept, scope/service and paths. Independent missing-header and wrong-scope controls are red, restored runs green. |
+| #185 17.5 / AC09 | Fresh accepted-prefix audit preserves dated predicate/deadline polling errata; no sleep-as-synchronization policy or runtime change. |
+| #185 17.6 / AC10 | Current stale-v case asserts both paths and exact refusal; deleting the second probe fails the owning regression and restoration passes. |
+| #186 18.1 / AC11 | Current metadata/coherence/real-Git history cases and repaired-refusal mutations pass. Coordinator actual render verify and missing-CRD mutant/restoration receipts reconcile to unchanged chart inputs. Full Helm-enabled selftest/render-control matrix remains required as described below. |
+| #186 18.2 / AC12 | Current separately named token, manifest transport, 500 and 000 controls pass, with independent red/restored classifiers. Current curl 8.18.0 again rejects raw HTTP 000 before classification; the successful-request status substitution remains classification-only, paired with real manifest transport failure. |
+| #186 18.3 / AC13 | Current held, non-listening socket lifecycle proof passes. Releasing it fails the ownership assertion; restoration passes. No daemon or privilege workaround was attempted. |
+| #186 18.4 / AC14 | Fresh actual locked Cargo listing/archive and in-tree cache-decoy controls pass. Unanchored Cargo listing exposes decoys and the package-contract assertion exits 1; anchored/restored assertions exit 0. |
+| #186 R4.1 / AC15 | Fresh root and private-fixture archives contain byte-identical root licenses/data/NOTICE; WHATWG snapshot hash is unchanged, README attribution remains, application SPDX remains MIT OR Apache-2.0 and current deny passes. |
+| #186 R4.1 / AC16 | **Coordinator host proof obtained and reconciled**, rather than a namespace Docker claim. Actual image NOTICE, mode 0444/readability and COPY-removal/restoration are proved for the frozen source; NOTICE matches both current actual crate archives. Details below; this is not CI persistence smoke or a final-HEAD image rebuild. |
+| #186 18.5 / AC17 | **EXPLICIT EXTERNAL PENDING** real guarded GHCR 404-then-publish receipt. The unchanged spec checklist remains required. No release, tag, push, publication or registry deletion is authorized or attempted. This item alone does not block compatible work and is not passed or waived. |
+| AC18 | Fresh complete local house gates, configured extras and distinct immutable replay pass. They do not certify actual engine verify, four fixed independent reviews, ship or CI. These phases remain pending; no original or current engine delivery is invented. |
+
+### Current executed commands and proof origins
+
+`gates.json` records exact argv, exits, SHA-256 logs and clean candidate
+identity for all nine house commands, plus design-check selftest, delivery
+proof, both delivery constitution/recipe suites and root locked package
+list/archive. All 14 commands exit 0. `native-tls.json` separately records
+`cargo tree --locked -i native-tls`: exit 101 with only its expected no-match
+diagnostic is accepted. Exact current candidate coverage is
+**12,446/12,446 lines; 724/724 branches; 1,379/1,379 functions**, with full
+report under `target/coverage/run.qba740/`. No coverage or license policy moves.
+
+`local-checks.json` records the current canonical candidate publish proof,
+chart selftest, chart history against actual base `4970a512`, and the copied
+mutation driver: each exits 0. `mutations.json` has 21 script/CI-body
+red/restored-green controls with mutation diffs and source/mutant hashes;
+`candidate-publish.log` separately records all 51 active-workflow controls.
+The duplicate-only actual CI reader control is separately identified above.
+`packaging.json`, `package-contract-red-restored-green.json` and
+`package-archive-hashes.json` record real Cargo executions and archive bytes.
+
+`baseline-gates.json` separately records seven successful replays of
+hash-verified, read-only immutable proof copies: coverage and selftest,
+design selftest, delivery tamper, publish, seal and shim integrity. Their
+original baseline digests are unchanged; this is local replay, not actual
+hermetic engine dispatch. Baseline coverage is the same exact count, with
+report under the path named in `baseline-coverage.log`.
+The workspace transport timed out at 300 seconds while the original command
+continued. Its 600-second command deadline subsequently interrupted the
+remaining baseline batch after coverage/selftest/design had completed. The
+unfinished tamper proof was rerun, followed by publish/seal/shim checks; all
+exit 0. The interrupted empty log remains as `baseline-tamper.interrupted.log`
+and is not counted as a verdict. Completed proofs were not discarded or
+replaced with an inferred pass.
+
+### Coordinator host evidence and exact remaining proof request
+
+All 64 copied coordinator files match
+`continuation/coordinator-proof/manifest.json`. The host archive is exact
+base `4970a512`, tree `6978abb695c16b402d27c94ab65bbcf2f25c1401`.
+At the tested implementation HEAD, 439/442 regular source files still match;
+the only differences are the chief's spec/plan/tasks. This appendix and task
+marks add documentation differences only. `final-audit.json` lists every
+current delta, with both hashes. Dockerfile, NOTICE, ignore rules, CI run
+body, Cargo source/manifests, chart inputs and all compiled inputs match.
+This reconciliation scopes applicability; it does not rename the host image
+as a later-HEAD rebuild.
+
+`coordinator-proof/docker-proof-receipt.json` and full build/CI logs identify
+actual Docker 29.9.2 builds and image
+`sha256:477bc76ba56c2f78a57d611148514502507cee699b6ae24f8c34c3405bdbf368`.
+The actual extracted readable 0444 NOTICE has SHA-256
+`dc7687601da4903f79214c6380db7e9a77864c537db1a07853441b2fd2252097`,
+identical to root and both current crate archives. The actual extracted CI
+attribution body passes, removal of only NOTICE COPY builds but fails at
+missing-file extraction, and restored source rebuild passes. Logs record
+local image/container cleanup, including `docker rm -fv`; private tags are
+removed. No registry write or sandbox Docker/socket capability is inferred.
+
+`coordinator-proof/helm-proof-receipt.json` supplies 18 selected actual host
+commands for committed/quoted/prerelease CI/Helm/package comparisons,
+duplicate-field first-key mutants/restorations and render CRD control.
+Official Helm v3.16.3's binary digest matches the installed receipt and CI
+pin. Those host receipts reconcile to unchanged helper/chart/workflow bytes.
+They do **not** demonstrate the entire currently required both-field
+plain/single/double-quote and whitespace matrix or actual execution of the
+selftest's optional Helm branch. Helm remains absent on this seat's PATH.
+
+The precise coordinator request is prepared as ignored
+`.forge/epic192/continuation/implement/helm-request.py`. Execute it from this
+candidate with the already installed official Helm on PATH, without installing
+anything. It archives the committed candidate to private fixtures, checks the
+binary digest, observes real optional selftest calls, compares helper and
+actual CI output to real Helm show/package for both fields and all three quote
+forms with whitespace/comments/current/prerelease values, and runs CRD and
+replica removal/restoration controls. It records exact bytes, commands,
+exits, source manifest, tool/helper hashes and logs in a run-unique host
+directory. No receipt for this requested execution has been supplied.
+Implementation therefore returns **broken for that concrete C02 proof gap**;
+no product gate failure, scope reclassification or frozen-guarantee refusal
+was discovered. The unauthorized external AC17 is a separate pending item,
+not the reason for this result.
+
+Current actual engine verification, Qwen Max correctness, Opus security,
+official DeepSeek Flash guarantees, DashScope GLM 5.3 tests, and successful
+hermetic ship remain subsequent engine obligations. The implementer launches
+no nested run and claims none of them. CI-only chart event-baseline/history,
+real Docker stop/kill persistence/context/volume smoke, network RustSec,
+tag-only same-run release-rate-5k and real port-80 bridge results remain
+separately required; neither local nor coordinator receipts certify those jobs.
+No story/epic closure, merge or delivery is claimed.
+
+Deferred #184 alone applies its corrected accepted-0051 adoption after
+integrating `26f6430`'s 0019 errata and validating hashes/applicability. That
+acceptance is settled and was not asked again. H's first comment remains
+untouched. No baseline, pin, shim, journal, dependency, version, allowlist,
+denominator, runtime policy or other candidate changed. The disposition commit
+is unsigned and never pushed; its identity is recorded in current final Git
+evidence. Coordinator-only CI-green landing remains distinct from release
+permission. AC17 / finding 18.5 / story #186 / epic #192 remain open.
