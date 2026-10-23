@@ -215,3 +215,12 @@ The single-poll adapter proof supplements real protocol tests. Test-only
 backoff readiness control is explicitly selected here within the allowed
 listener instrumentation; it must be absent from non-test builds. The
 historical POP3 failure remains a failure after any future green run.
+
+
+## Implementation status — 2026-10-23
+
+The local implementation and all thirteen required/supplemental gates are
+proved in [evidence.md](evidence.md). All six findings and both sibling
+reaping proofs have source-bound controls. AC12's independent reviews and
+actual hermetic verify/ship remain downstream engine obligations; no ADR
+acceptance, issue closure or whole-epic completion is claimed here.

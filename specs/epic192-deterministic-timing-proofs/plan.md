@@ -315,3 +315,14 @@ Unsigned author commits only; never push or claim whole-epic completion.
 | Stopped socket mistaken for rollback | No effect while held; exact late commit after release under 0024. |
 | Broader controls breach scope | Allowed-owner mutants only; disclose parser/filter source-control access limits. |
 | Green rerun erases red or substitutes for delivery | Immutable receipts, source/evidence map, failed-gate history and separate host/hermetic/CI labels; downstream work stays outstanding. |
+
+
+## Implementation evidence — 2026-10-23
+
+See [evidence.md](evidence.md) for source-bound execution and failure history.
+The owner constructs its ordinary backoff timer once; cfg(test) wraps that
+same timer's readiness. This preserves the planned release-then-await
+operand while ensuring the actual production timer expression is exercised.
+The first exact run exposed duplicated cfg-specific timer bindings as
+uncovered lines; the corrected run preserves the exact same denominator and
+covers it fully. No semantic ruling, budget or scope extension was needed.

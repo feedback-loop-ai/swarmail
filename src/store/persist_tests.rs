@@ -545,12 +545,14 @@ async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
     step("the gate entry", entered.notified()).await;
 
     let (smtp_addr, http_addr) = (srv.smtp_addr, srv.http_addr);
-    let started = Instant::now();
     assert!(
         tokio::time::timeout(STOP_BUDGET, srv.stop()).await.is_ok(),
         "an admitted commit held stop past {STOP_BUDGET:?}"
     );
-    assert!(started.elapsed() < STOP_BUDGET);
+    assert!(
+        !*held.0.0.lock().unwrap(),
+        "stop must finish before commit release"
+    );
 
     // The session died with the stop: EOF or reset, or a refusal — never
     // `250`. A reply written before the stop is buffered and read here.
@@ -610,6 +612,10 @@ async fn an_in_flight_commit_neither_holds_stop_nor_half_lands() {
     );
     assert_eq!((inserted.as_str(), dropped.as_str()), ("2", "0"));
     assert_eq!((store.emails_inserted(), store.emails_dropped()), (2, 0));
+    assert!(
+        landed.try_recv().is_err(),
+        "the released commit fans out exactly once"
+    );
     drop(store);
     drop(dir);
 }

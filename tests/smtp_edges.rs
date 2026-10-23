@@ -1552,59 +1552,73 @@ async fn the_101st_recipient_is_refused_and_not_appended() {
 /// test is the real helper (0004: real protocol, no mocks).
 #[tokio::test]
 async fn a_peer_that_never_sends_the_data_reply_fails_smtp_send_within_a_bound() {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let (mut sock, _) = listener.accept().await.unwrap();
-        // The pre-DATA script in one write: the client's line reader
-        // consumes it through its buffer, step by step, so no read/write
-        // choreography is needed and coalescing cannot misalign it. The
-        // script ends at RCPT's 250 — the DATA reply never comes.
-        sock.write_all(
-            b"220 mute peer\r\n\
-              250-mute\r\n\
-              250 OK\r\n\
-              250 OK\r\n\
-              250 OK\r\n",
-        )
-        .await
-        .unwrap();
-        // Then drain and never answer: the DATA command and the body land,
-        // no reply follows either of them.
-        let mut buf = [0u8; 4096];
-        loop {
-            match sock.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let (release, held) = tokio::sync::oneshot::channel::<()>();
+    let mut peer = tokio::spawn(async move {
+        let (sock, _) = listener.accept().await.unwrap();
+        let mut sock = BufReader::new(sock);
+        sock.write_all(b"220 mute peer\r\n").await.unwrap();
+        for (command, response) in [
+            ("EHLO swarmail-test\r\n", "250-mute\r\n250 OK\r\n"),
+            ("MAIL FROM:<f@x.io>\r\n", "250 OK\r\n"),
+            ("RCPT TO:<r@x.io>\r\n", "250 OK\r\n"),
+            ("DATA\r\n", ""),
+        ] {
+            let mut line = String::new();
+            sock.read_line(&mut line).await.unwrap();
+            assert_eq!(line, command);
+            sock.write_all(response.as_bytes()).await.unwrap();
         }
+        seen_tx.send(()).unwrap();
+        // Keep the transport held through the result. No 354 is sent, so
+        // smtp_send must never send its DATA body on this connection.
+        let _ = held.await;
+        let mut body = Vec::new();
+        sock.read_to_end(&mut body).await.unwrap();
+        body
     });
-
-    let started = std::time::Instant::now();
-    let task = tokio::spawn(smtp_send(addr, None, "f@x.io", "r@x.io", "wedged", "body"));
-    // The helper's own bound is HELPER_DEADLINE (the muted DATA reply
-    // times out there), so the outer wait is that deadline plus slack: the
-    // helper must fail on its own, well inside this wait — a hang fails on
-    // timeout.
-    let join = tokio::time::timeout(common::HELPER_DEADLINE + Duration::from_secs(5), task)
-        .await
-        .expect("smtp_send must fail within the bound, not hang");
+    let mut client = tokio::spawn(smtp_send(addr, None, "f@x.io", "r@x.io", "wedged", "body"));
+    let (seen, outcome) = tokio::join!(
+        tokio::time::timeout(common::HELPER_DEADLINE, seen_rx),
+        tokio::time::timeout(
+            common::HELPER_DEADLINE + Duration::from_secs(30),
+            &mut client
+        )
+    );
+    let helper_finished = outcome.is_ok();
+    if !helper_finished {
+        client.abort();
+        let _ = client.await;
+    }
+    drop(release);
+    let joined = tokio::time::timeout(Duration::from_secs(30), &mut peer).await;
+    if joined.is_err() {
+        peer.abort();
+        let _ = peer.await;
+    }
+    seen.expect("scripted peer never observed DATA")
+        .expect("DATA event was lost");
+    let body = joined
+        .expect("held DATA peer did not finish after release")
+        .unwrap();
+    assert!(body.is_empty(), "body sent before 354: {body:?}");
+    let join = outcome.expect("DATA helper timeout mechanism did not fire while the peer was held");
     let payload = join
         .expect_err("smtp_send must panic at the muted step, not return")
         .into_panic();
     let message = payload
         .downcast_ref::<String>()
-        .expect("the panic is a formatted String");
-    assert!(
-        message.contains("the DATA reply"),
-        "the step is named: {message}"
-    );
-    assert!(
-        started.elapsed() < common::HELPER_DEADLINE + Duration::from_secs(5),
-        "the failure stayed inside the bound: {:?}",
-        started.elapsed()
+        .expect("formatted timeout panic");
+    assert_eq!(
+        message,
+        &format!(
+            "smtp_send: the DATA reply: no reply within {:?}",
+            common::HELPER_DEADLINE
+        )
     );
 }
 

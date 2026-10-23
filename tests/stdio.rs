@@ -227,21 +227,48 @@ async fn reset_peer_answers_as_a_jsonrpc_error() {
 async fn a_silent_server_answers_as_a_read_timeout() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        // Accept and HOLD the stream, never reading or writing: the request
-        // starves until the injected deadline ends the wait.
-        let (_held, _) = listener.accept().await.unwrap();
-        tokio::time::sleep(Duration::from_secs(5)).await;
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<String>();
+    let (release, held) = tokio::sync::oneshot::channel::<()>();
+    let mut peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = read_request_body(&mut stream).await;
+        seen_tx.send(request).unwrap();
+        let _ = held.await;
+        drop(stream);
     });
-
-    let (code, out) = bridge_over_with_deadline(
-        &format!("http://{addr}"),
-        br#"{"jsonrpc":"2.0","id":11,"method":"initialize","params":{}}"#,
-        Duration::from_millis(150),
+    let base = format!("http://{addr}");
+    let (seen, output) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(30), seen_rx),
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            bridge_over_with_deadline(
+                &base,
+                br#"{"jsonrpc":"2.0","id":11,"method":"initialize","params":{}}"#,
+                Duration::from_millis(150),
+            )
+        )
+    );
+    // Release and join owned work even when an event/outcome failed.
+    drop(release);
+    let joined = tokio::time::timeout(Duration::from_secs(30), &mut peer).await;
+    if joined.is_err() {
+        peer.abort();
+        let _ = peer.await;
+    }
+    joined
+        .expect("silent peer did not finish after release")
+        .expect("silent peer failed");
+    let request: serde_json::Value = serde_json::from_str(
+        &seen
+            .expect("silent peer never observed the request")
+            .expect("peer lost request event"),
     )
-    .await;
+    .unwrap();
+    assert_eq!(request["id"], 11);
+    let (code, out) = output.expect("bridge did not report its read-timeout outcome");
     assert_eq!(code, 0);
     let reply: serde_json::Value = serde_json::from_str(out.trim()).expect("one reply line");
+    assert_eq!(reply["id"], 11, "{reply}");
     assert_eq!(reply["error"]["code"], -32000, "{reply}");
     assert_eq!(reply["error"]["message"], "read timeout", "{reply}");
 }
