@@ -165,7 +165,6 @@ async fn never_exiting_bridge_child_is_timed_out_killed_and_reaped() {
             .expect("fixture closed stdout")
             .unwrap();
         }
-        let pid = bridge.child.id().unwrap();
         assert!(
             bridge.child.try_wait().unwrap().is_none(),
             "fixture is still alive"
@@ -180,10 +179,18 @@ async fn never_exiting_bridge_child_is_timed_out_killed_and_reaped() {
         drop(finish);
         // Expire immediately after readiness. This tests the real helper's
         // timeout branch without spending 30 seconds or asserting a ceiling.
-        let error = bridge
-            .finish_with_deadline(Duration::ZERO)
-            .await
-            .unwrap_err();
+        let result = bridge.finish_with_deadline(Duration::ZERO).await;
+        // Tokio's id() observes completion without reaping. Check it before
+        // try_wait(), which could otherwise repair a missing helper reap;
+        // the completed handle then supplies cached status without PID reuse.
+        let completed = bridge.child.id().is_none();
+        if !completed {
+            let cleanup = kill_and_reap(&mut bridge.child).await;
+            panic!(
+                "bridge helper returned before completing child reap: {mode}; cleanup: {cleanup:?}"
+            );
+        }
+        let error = result.unwrap_err();
         assert!(error.contains("Err(Elapsed"), "{error}");
         assert!(error.contains("cleanup: Ok(ExitStatus"), "{error}");
         let status = bridge
@@ -193,16 +200,6 @@ async fn never_exiting_bridge_child_is_timed_out_killed_and_reaped() {
             .expect("already reaped status");
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(status.signal(), Some(libc::SIGKILL));
-        assert!(bridge.child.id().is_none());
-        let mut raw_status = 0;
-        assert_eq!(
-            unsafe { libc::waitpid(pid as i32, &mut raw_status, libc::WNOHANG) },
-            -1
-        );
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ECHILD)
-        );
     }
 }
 
