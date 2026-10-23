@@ -1,9 +1,9 @@
 {
   "brokkr": {
-    "sha": "597f4868e3fb971b62e6a368a2d8aa23271f4531",
+    "sha": "731189f9097308c01ae4f2b4c9caea5f41224844",
     "version": "0.12.0",
-    "binary_sha256": "e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c",
-    "binary_provenance": "Built with rustc 1.98.0 from exact base 597f4868e3fb971b62e6a368a2d8aa23271f4531 plus all three checksum-pinned ordered patches, including explicit untracked-file inspection despite Git status configuration. Exact six-file source composite49611f8d62c495467acdc4cb3f77c1e17bc5148339aaa3d48830e25214f3ac6b; Cargo manifests/lock unchanged. Release --locked --offline build, full core/runtime tests, fmt and all-targets clippy passed. Receipt .forge/epic192/engine-repair/untracked-config-release-receipt.json. Staged executable awaits root activation.",
+    "binary_sha256": "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
+    "binary_provenance": "Built with rustc 1.98.0 from exact base 731189f9097308c01ae4f2b4c9caea5f41224844 plus all three checksum-pinned ordered patches. Untracked-file-aware source composite SHA-256 c972dde7785915743fb8d7365ad5bb5efecafd29be78520911f0cb4d74a75e5b; Cargo manifest and lock hashes match the recorded receipt. Release --locked --offline build, full core/runtime tests, fmt, workspace all-targets clippy, and all four bundle compiles passed. The binary adds `run --enter` for admitted gates; codex admits verify/review, codex-fast admits none. Receipt .forge/epic192/engine-main-entry/build-receipt.json.",
     "patches": [
       {
         "path": "tooling-patches/0001-preserve-review-residual-facts.patch",
