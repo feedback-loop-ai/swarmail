@@ -1,10 +1,17 @@
 # Pin SMTP and POP3 session edges
 
-Date: 2026-10-23. Status: retry2 draft design for NEXT-188, issue #188, epic #192.
-Base: `cc30ea2`, the review-clean #177 integration candidate. Repository:
-Swarmail, one Rust crate. Reuse the implementation already committed at
-`e7d1d8142c3e24b2a817822969ab0dae6619680a`, following design `150c84a`.
-This design does not close epic #192.
+Date: 2026-10-23. Status: integrated draft design for NEXT-188, issue #188,
+epic #192. Run: `epic-192-next-188-integrated-ver-7bc38731`.
+Retain the short feature slug `session-edge-proofs` and revise its existing
+three artifacts in place.
+
+Starting candidate: `930bf534cb18e05f4c85e28eed3473297d159743`, tree
+`2ba9b8a5f1294adb6c41d8649ce60e70201525a1`. Local `origin/main` and
+merge-base: `df8630f69a390fc6a35e1dfc8c54f2f40dd7e624`. The three
+issue-188 commits above that base are `120ef3f`, `45d7a2f`, `930bf53`.
+This is local identity, not a network-freshness claim. Later receipts must
+bind their actual final candidate, including this design commit and any
+permitted repairs; this starting identity is not their verification receipt.
 
 ## Feature and rationale
 
@@ -14,7 +21,7 @@ survives, a completed DATA transaction is consumed, authentication remains
 unchanged, or deleted POP3 content stays unavailable. Each refusal therefore
 has a same-session continuation and an observable state witness. Accepted
 mail is queried by the exact ID returned by DATA, immediately and without
-polling, so the tests cannot conceal an acceptance-before-storage gap.
+polling, so waiting for eventual visibility cannot mask a missing accepted record.
 
 Triage selected full design and four reviewers because session state,
 authentication precedence, persistence refusal and listener observation need
@@ -23,9 +30,11 @@ No production defect has been reproduced by this design phase.
 
 ## Scope and accepted authority
 
-Implementation is confined to tests and test-only fixtures. Preserve #177's
-owned admission, reap, backoff and task-completion events. No production
-behavior, public interface, storage schema, dependency, policy, gate,
+Implementation is confined to the four existing test/fixture files named in
+[plan.md](plan.md). Any `src/pop3.rs` edit stays strictly inside its existing
+`#[cfg(test)] mod tests`. No extra source/support paths or sibling harness
+are permitted. Preserve the integrated base's owned admission, reap, backoff
+and task-completion events. No production behavior, public interface, storage schema, dependency, policy, gate,
 OpenAPI, metrics, MCP or unrelated product-documentation change is authorized.
 
 This is additional proof of accepted semantics, not a semantic amendment;
@@ -38,7 +47,12 @@ no new decision is declared. Authorities are accepted
 [0027's controlling clarification](../../docs/decisions/0027-living-listeners-bounded-sessions.md),
 [0028](../../docs/decisions/0028-wire-octets-auth-refusals-and-the-maildrop-snapshot.md),
 [0034](../../docs/decisions/0034-data-terminator-boundary.md) and
-[0046](../../docs/decisions/0046-smtp-pop3-edges.md).
+[0046](../../docs/decisions/0046-smtp-pop3-edges.md), plus
+[0015 as corrected by 0045](../../docs/decisions/0045-delivery-repairs.md)
+for committed POP3 prefixes and marked suffixes. Delivery authority is
+[0050](../../docs/decisions/0050-delivery-gates.md),
+[0056](../../docs/decisions/0056-signing-policy.md) and
+[0057](../../docs/decisions/0057-codex-delivery-recipes.md).
 Later acceptance markers control historical proposal wording. Accept equals
 stored, subscribe-before-check, oldest-only pruning and extraction at ingest
 remain unchanged. Stored `envelope_from`, rather than header From, proves
@@ -52,25 +66,31 @@ authority. A weakening of a frozen guarantee is refused.
 
 ## Panel synthesis and rulings
 
-Read both current run-local positions, `.brokkr/state/design/positions/simplicity.md`
-and `robustness.md`, and intake
-`.brokkr/state/tasks/epic-192-residual-lane-next-188--0658a130.md`.
-The current panel agrees on all six protocol expectations and on retaining
-full4. There is no genuine semantic conflict to average or invent. Replace
-the prior design's attributed API-adapter and serialized-JSON disagreements:
-neither current position advocates them. Rule on the alternatives explicitly:
+Read both run-local positions, `.brokkr/state/design/positions/simplicity.md`
+and `.brokkr/state/design/positions/robustness.md`, and intake
+`.brokkr/state/tasks/epic-192-next-188-integrated-ver-7bc38731.md`.
+Both positions support the existing six proofs and full review. There is no
+genuine disagreement on protocol semantics; the conflict is between this
+commission and obsolete execution directions in the inherited design.
+These rulings choose explicit alternatives rather than averaging them:
 
 | Question | Ruling and cost |
 |---|---|
-| Reimplement or reuse | Adopt simplicity's reuse of the existing candidate and spec family, supported by robustness. Reject duplicate tests, new source files and a second design family. Cost: independently audit inherited implementation and obtain fresh receipts rather than treating prior work as verified. |
-| Proof depth | Adopt robustness's same-session state transitions and immediate accepted-ID/raw/provenance witnesses, also supported by simplicity. Reject prefix-only, count-only and reconnect substitutes. Cost: longer exchanges and distinct fixtures; the cheaper alternative could conceal envelope loss or changed identity. |
-| Health ownership and JSON | Adopt both positions' POP3-local probe, one owner-observed failure and held retry readiness, with exact parsed JSON equality. Reject a new API-side adapter, manually toggled flag, polling and JSON member-order contract. Cost: local HTTP wiring and no detection of harmless object-key reorderings. |
-| Harness placement | Keep the existing stable health proof inline and measured, as both positions advise: its unconditional Drop release/abort and explicit success joins need no cold-arm migration. If a concrete failure-only arm becomes necessary, 0020 wins over a strict four-file budget; move only that proof/helper into a declared sibling harness. Cost: every inline line remains an exact-coverage obligation; a justified migration requires explicit review. |
-| Fixture architecture | Adopt simplicity's bounded raw reader, local SMTP assertion helpers, two explicit 451 scenarios and real SQLite triggers. Reject a general state enum, scenario framework, public seam or feature flag. Cost: small readable duplication and schema-coupled fixtures. |
-| Robustness boundary | Adopt robustness's failure analysis as explicit limits, not new crash/webhook/TLS/burst implementation. Reject widening this lane without a reproduced regression and re-triage. Cost: these finite traces do not establish arbitrary scheduling, exactly-once SMTP, durable webhook delivery or exhaustive transport behavior. |
-| Review and provenance | Adopt both positions' full four independent reviews and source-bound pinned verification. Reject reduced review based on test-only size and reject version-only engine identity. Cost: provider/cache/tool prerequisites can stop delivery. |
+| Reimplement or retain | Adopt simplicity's reuse of the existing tests and spec family, supported by robustness. Reject a duplicate suite or design family. Cost: audit inherited tests and obtain fresh execution evidence; source presence alone is insufficient. |
+| Proof depth | Adopt robustness's causal, same-session transitions and immediate accepted-ID/raw/provenance witnesses, also supported by simplicity. Reject prefix-only, count-only, reconnect and eventually-visible substitutes. Cost: longer explicit exchanges; the cheaper alternative could conceal envelope loss or identity mutation. |
+| Health observation | Adopt both positions' owner-local probe, subscribe-before-arm order, held retry readiness and exact parsed JSON. Reject direct flag mutation, API-side adapters, polling and serialized JSON member-order requirements. Cost: real HTTP wiring and deliberate fixture ownership; harmless key reorderings remain allowed. |
+| Harness placement | Adopt both current positions and the explicit commission: retain the stable health proof inline and measured, with unconditional release/abort and success joins. Reject the inherited optional sibling-harness escape. Cost: a necessary cold failure arm that cannot meet scope and exact coverage requires re-triage, not relocation, a coverage exclusion or weaker cleanup. This does not amend 0020's general placement rule. |
+| Fixture architecture | Adopt simplicity's existing bounded raw reader, concrete assertion helpers, two independent DATA 451 fixtures and real SQLite triggers. Reject generalized fault/state frameworks, new files, feature flags and dependencies. Cost: readable repetition and schema-coupled triggers. |
+| Robustness scope | Adopt robustness's failure analysis as proof limits and structural review obligations. Reject new crash/webhook/TLS/burst paths absent re-triage. Cost: finite traces do not prove arbitrary schedules, exactly-once SMTP, durable webhooks or global resource bounds. |
+| Candidate and delivery | Adopt both positions' current-candidate binding, full gates, pinned offline verify and four actual independent reviews. Reject stale ancestry prerequisites, old receipts and version-only binary checks. Root owns final integration/CI with no separate #177-first prerequisite. Cost: real provider/tool/cache failures leave obligations outstanding. |
 
 ### Clarification — 2026-10-23, retry2
+
+Historical entry preserved below. It records the previous run, not the
+current candidate or a current execution prerequisite. In this entry only,
+"source SHA above" refers to `e7d1d8142c3e24b2a817822969ab0dae6619680a`;
+its historical design parent/base were `150c84a`/`cc30ea2`. Its observations
+and receipts cannot satisfy this integrated run.
 
 The source already contains all six implementations. The chief independently
 resolved workspace Git HEAD to the exact source SHA above, found a clean
@@ -90,10 +110,23 @@ receipt was found in the available run-local evidence. Tasks below therefore
 require retention, validation and fresh delivery proof, not duplicate coding.
 Design preflights do not substitute for the pinned verify/check seats.
 
+### Clarification — 2026-10-23, integrated candidate
+
+The chief independently resolved the starting HEAD/tree/local base recorded
+above, inspected the clean seven-file branch diff (three specs and four
+test/fixture files), and confirmed the 129 added POP3 lines are inside the
+existing test module. The exact `.forge/bin/brokkr` digest matches the task
+and `bundles/self/tooling.json`. Both current positions and intake identify
+all six proofs as already implemented. Retain them; only a demonstrated
+fixture defect permits a narrow repair within the listed files. The previous
+stale-#177 run is historical context only. Current paths, scope and delivery
+requirements here supersede its execution instructions. No test, house gate,
+hermetic verification or independent-review pass is claimed by this entry.
+
 ## Acceptance Criteria
 
-All six criteria are mandatory. Fixed SMTP replies below include CRLF on
-the wire; the PLAIN prompt must retain its space. Use exact single-line
+All six protocol criteria and the delivery criterion are mandatory. Fixed
+SMTP replies below include CRLF on the wire; the PLAIN prompt must retain its space. Use exact single-line
 assertions for the named decisions, not prefix/substring matching.
 
 ### AC1 — Recipient-free DATA preserves the open envelope
@@ -180,6 +213,25 @@ NOOP's exact `+OK` on the same stream to expose leaked headers/body/dot
 terminators. Preserve the existing external-clear TOP proof. Out-of-range
 numbers and pending DELE marks cannot substitute for a committed-gone slot.
 
+### AC7 — Fresh integrated delivery evidence
+
+Record final candidate commit/tree/base, clean scope audit, each command,
+exit and nonzero executed counts for `smtp_edges`, `pop3`, `persistence` and
+the library health test. Every gate in the house inventory must pass,
+including exact zero missed lines, branches and functions and its selftest;
+native-tls absence must be fail-closed. Actual pinned offline verify must
+install nothing, establish binary/shim identity and execute the pinned proof
+chain, including design-check selftest and delivery tamper-boundary proof.
+Local preflights and earlier receipts do not replace that dispatch.
+
+Require actual independent final-candidate reviews: Qwen Max correctness,
+Claude Opus security, official DeepSeek Flash guarantees and DashScope
+GLM-5.3 tests. No DeepSeek Pro, model/provider fallback or synthesized receipt.
+A security hold stops delivery. After a repair, refresh affected evidence and
+reviews with explicit final-candidate binding. Missing tools/cache/provider
+results remain outstanding. Root retains integration and CI-owned checks in
+their applicable contexts; this design is not a completion claim.
+
 ## Proof discipline and delivery boundary
 
 Use real servers, isolated stores/inboxes, ephemeral ports, scoped SQLite
@@ -199,7 +251,7 @@ shim integrity checks. CI-only obligations remain explicitly CI-owned.
 
 Full4 means correctness Qwen Max, security Claude Opus, guarantees official
 DeepSeek Flash, tests DashScope GLM-5.3; never DeepSeek Pro or fallback.
-Root owns #177 publication before final integration/CI and reruns proofs on
-the integrated candidate. Author commits are unsigned; no push, merge,
-tag or registry action is authorized. Drafting is not implementation,
+Root owns final integration/CI and reruns required proofs if integration
+changes the verified candidate. No separate #177 landing prerequisite applies.
+Author commits are unsigned; no push, merge, tag or registry action is authorized. Drafting is not implementation,
 verification, operator acceptance, publication or closure of #192.
