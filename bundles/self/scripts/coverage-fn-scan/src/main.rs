@@ -562,6 +562,11 @@ struct Scan {
 
 /// The bracket group's exclusion spelling, if any: `coverage(off)` (any
 /// argument list whose first token is `off`) or the bare `no_coverage`.
+fn exclusion_ident_is(ident: &proc_macro2::Ident, expected: &str) -> bool {
+    let spelling = ident.to_string();
+    spelling.strip_prefix("r#").unwrap_or(&spelling) == expected
+}
+
 fn exclusion_kind(attr: &proc_macro2::TokenTree) -> Option<&'static str> {
     let group = match attr {
         proc_macro2::TokenTree::Group(group)
@@ -573,19 +578,27 @@ fn exclusion_kind(attr: &proc_macro2::TokenTree) -> Option<&'static str> {
     };
     let mut inner = group.stream().into_iter();
     match inner.next()? {
-        proc_macro2::TokenTree::Ident(ident) if ident == "no_coverage" => Some("no_coverage"),
-        proc_macro2::TokenTree::Ident(ident) if ident == "coverage" => match inner.next()? {
-            proc_macro2::TokenTree::Group(args)
-                if args.delimiter() == proc_macro2::Delimiter::Parenthesis =>
-            {
-                let mut arg = args.stream().into_iter();
-                match arg.next()? {
-                    proc_macro2::TokenTree::Ident(ident) if ident == "off" => Some("coverage(off)"),
-                    _ => None,
+        proc_macro2::TokenTree::Ident(ident) if exclusion_ident_is(&ident, "no_coverage") => {
+            Some("no_coverage")
+        }
+        proc_macro2::TokenTree::Ident(ident) if exclusion_ident_is(&ident, "coverage") => {
+            match inner.next()? {
+                proc_macro2::TokenTree::Group(args)
+                    if args.delimiter() == proc_macro2::Delimiter::Parenthesis =>
+                {
+                    let mut arg = args.stream().into_iter();
+                    match arg.next()? {
+                        proc_macro2::TokenTree::Ident(ident)
+                            if exclusion_ident_is(&ident, "off") =>
+                        {
+                            Some("coverage(off)")
+                        }
+                        _ => None,
+                    }
                 }
+                _ => None,
             }
-            _ => None,
-        },
+        }
         _ => None,
     }
 }
@@ -620,9 +633,7 @@ fn following_fn_name(rest: &[proc_macro2::TokenTree]) -> String {
             {
                 index += 2
             }
-            (Some(TokenTree::Ident(word)), _) if QUALIFIERS.iter().any(|q| word == q) => {
-                index += 1
-            }
+            (Some(TokenTree::Ident(word)), _) if QUALIFIERS.iter().any(|q| word == q) => index += 1,
             (Some(TokenTree::Group(group)), _) if group.delimiter() == Delimiter::Parenthesis => {
                 index += 1
             }
@@ -780,9 +791,9 @@ fn scan_tokens(tokens: &[proc_macro2::TokenTree], derived: bool, scan: &mut Scan
                     // in its own uninstrumented closure: the item, through
                     // its `;`, is harness, not the author's code. The test
                     // fn it names is a separate item and is walked as usual.
-                    let end = tokens[attr_index + 1..]
-                        .iter()
-                        .position(|t| matches!(t, proc_macro2::TokenTree::Punct(p) if p.as_char() == ';'));
+                    let end = tokens[attr_index + 1..].iter().position(
+                        |t| matches!(t, proc_macro2::TokenTree::Punct(p) if p.as_char() == ';'),
+                    );
                     index = end.map_or(tokens.len(), |end| attr_index + end + 2);
                     continue;
                 }
@@ -804,5 +815,51 @@ fn scan_tokens(tokens: &[proc_macro2::TokenTree], derived: bool, scan: &mut Scan
             }
             _ => index += 1,
         }
+    }
+}
+
+#[cfg(test)]
+mod exclusion_kind_tests {
+    use super::exclusion_kind;
+    use proc_macro2::{TokenStream, TokenTree};
+
+    fn attribute(source: &str) -> TokenTree {
+        let mut tokens = source.parse::<TokenStream>().unwrap().into_iter();
+        assert!(matches!(tokens.next(), Some(TokenTree::Punct(_))));
+        tokens.next().expect("attribute bracket group")
+    }
+
+    #[test]
+    fn matches_raw_attribute_names_and_arguments_semantically() {
+        assert_eq!(
+            exclusion_kind(&attribute("#[coverage(r#off)]")),
+            Some("coverage(off)")
+        );
+        assert_eq!(
+            exclusion_kind(&attribute("#[r#coverage(off)]")),
+            Some("coverage(off)")
+        );
+        assert_eq!(
+            exclusion_kind(&attribute("#[r#coverage(r#off)]")),
+            Some("coverage(off)")
+        );
+        assert_eq!(
+            exclusion_kind(&attribute("#[r#no_coverage]")),
+            Some("no_coverage")
+        );
+    }
+
+    #[test]
+    fn does_not_widen_exclusions_to_nearby_identifiers() {
+        assert_eq!(exclusion_kind(&attribute("#[other(r#off)]")), None);
+        assert_eq!(exclusion_kind(&attribute("#[coverage(office)]")), None);
+        assert_eq!(exclusion_kind(&attribute("#[not_coverage(off)]")), None);
+        let identifier = "coverage"
+            .parse::<TokenStream>()
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(exclusion_kind(&identifier), None);
     }
 }

@@ -25,9 +25,10 @@
 #      default — never under $TMPDIR, whose tmpfs quota turned a disk-full
 #      build into a mid-build LLVM IO failure (issue #101) — so no stale
 #      instrumented executable or profile from an earlier source graph can
-#      join the merge; an explicit CARGO_LLVM_COV_TARGET_DIR is honoured
-#      verbatim, and the EXIT trap removes only a directory the gate itself
-#      created. A free-space preflight refuses before the build, naming the
+#      join the merge; a nonempty explicit CARGO_LLVM_COV_TARGET_DIR must
+#      reserve a new leaf atomically and is retained for the caller. The EXIT
+#      trap removes only the fresh default build directory. A free-space
+#      preflight refuses before the build, naming the
 #      path, the filesystem and the escape variable. The full lcov report,
 #      the run log and a machine-readable summary are preserved in a
 #      per-run evidence directory target/coverage/run.XXXXXX — deliberately
@@ -41,8 +42,9 @@
 #      refuses (it is excluded from the report by construction, so the
 #      denominator would shrink silently); a coverage(off) exclusion that
 #      survives the compiler's canonical expansion refuses (decision 0035);
-#      and any literal coverage(off) spelling in src/ refuses pre-build —
-#      production code cannot shrink the denominator.
+#      and any literal coverage(off) spelling, including raw identifiers,
+#      in src/ refuses pre-build — production code cannot shrink the
+#      denominator.
 #   4. The measurement is nightly: cargo +<nightly> llvm-cov --workspace
 #      --locked --branch, where <nightly> is an installed toolchain that
 #      actually carries llvm-tools. An unqualified `+nightly` is refused by
@@ -92,16 +94,13 @@ refuse() {
 
 check_no_coverage_off() {
   # Attribute-based source exclusions are forbidden everywhere under src/ so
-  # production code cannot silently shrink the denominator (house-rules). A
-  # plain recursive grep: the check must run, not guess — a scan failure
-  # refuses, and no VCS plumbing (git config workarounds, index state)
-  # belongs inside a contract check.
-  # Any spelling (#140): whitespace, line breaks or punctuation such as an
-  # empty comment between `coverage`, the parenthesis and `off` — the file is
-  # read whole (-z), so a split attribute matches too. Inline #[cfg(test)]
-  # code is under src/ and is held to the same rule (decision 0035).
+  # production code cannot silently shrink the denominator. This conservative
+  # recursive grep recognizes raw identifiers as well as ordinary spelling;
+  # a scan failure refuses, and no VCS plumbing belongs inside this check.
+  # The file is read whole (-z), so split attributes still match. Inline
+  # #[cfg(test)] code is under src/ and is held to the same rule.
   local hits status=0
-  hits="$(grep -R -l -z -E --include='*.rs' 'coverage[^A-Za-z0-9_(]*\([^A-Za-z0-9_)]*off' "$1" | tr '\0' '\n')" || status=$?
+  hits="$(grep -R -l -z -E --include='*.rs' '(r#)?coverage[^A-Za-z0-9_(]*\([^A-Za-z0-9_)]*(r#)?off' "$1" | tr '\0' '\n')" || status=$?
   if [ "$status" -gt 1 ]; then
     refuse "coverage refusal: the coverage(off) check could not run (grep exit $status)"
   fi
@@ -114,11 +113,13 @@ check_no_coverage_off() {
 check_no_hidden_harness_dirs() {
   # Production source parked inside src/**/tests/, examples/ or benches/ is
   # dropped from the report by cargo-llvm-cov's default ignore regex and is
-  # invisible to the harness-name check (which sees files, not directories):
-  # the build succeeds while the exact verdict silently lies. Refuse,
-  # fail-closed, naming every file.
-  local hits
-  hits="$(find "$1" -type f -name '*.rs' \( -path '*/tests/*' -o -path '*/examples/*' -o -path '*/benches/*' \))"
+  # invisible to the harness-name check. Refuse any incomplete inventory
+  # before interpreting even one path.
+  local hits status=0
+  hits="$(find "$1" -type f -name '*.rs' \( -path '*/tests/*' -o -path '*/examples/*' -o -path '*/benches/*' \))" || {
+    status=$?
+    refuse "coverage refusal: hidden-directory inventory failed (find exit $status)"
+  }
   if [ -n "$hits" ]; then
     printf '%s\n' "$hits" >&2
     refuse 'coverage refusal: production source under a harness directory (src/**/{tests,examples,benches}/) is excluded from the report by construction — move it to a measured path'
@@ -169,76 +170,82 @@ check_harness_declarations() {
   # the coverage(off) grep: a false positive is loud and names the file; the
   # failure direction is refuse, never silently mis-count. This is a
   # refusal, not a recount — no counting stage is added and none may be.
-  local src="$1" harness_refusals=""
-  while IFS= read -r harness; do
-    local stem dir; stem="$(basename "$harness" .rs)"; dir="$(dirname "$harness")"
-    local parents=()
-    if [ "$dir" = "$src" ]; then
-      # A top-level harness file is declared by the crate root.
-      parents=("$src/lib.rs" "$src/main.rs")
-    else
-      # src/store/persist_tests.rs is declared by src/store.rs (or the
-      # conventional src/store/mod.rs fallback).
-      parents=("$dir.rs" "$dir/mod.rs")
-    fi
-    local any_decl=0 any_bad=0 details=""
-    local parent rc detail
-    for parent in "${parents[@]}"; do
-      [ -f "$parent" ] || continue
-      rc=0
-      detail="$(awk -v stem="$stem" -v harness="$harness" -v parent="$parent" '
-        BEGIN {
-          escaped = stem;
-          gsub(/[^A-Za-z0-9_]/, "\\\\&", escaped);
-        }
-        {
-          lines[NR] = $0;
-          if ($0 ~ "^[[:space:]]*mod[[:space:]]+" escaped "[[:space:]]*;") mods[++nmods] = NR;
-        }
-        END {
-          bad = 0;
-          if (nmods == 0) exit 3;  # this parent does not declare the harness
-          for (k = 1; k <= nmods; k++) {
-            m = mods[k]; guarded = 0;
-            # Walk the attribute stack above the declaration: blank and
-            # comment lines may intervene; an attribute line must be the
-            # literal guard, and a #[path = "..."] is a refusal in itself.
-            for (i = m - 1; i >= 1; i--) {
-              t = lines[i];
-              gsub(/^[[:space:]]+|[[:space:]]+$/, "", t);
-              if (t == "" || t ~ /^\/\// || t ~ /^\/\*/ || t ~ /^\*/ ) continue;
-              if (t ~ /^#/) {
-                if (t ~ /^#\[[[:space:]]*path[[:space:]]*=/) {
-                  print harness ": declared via #[path] in " parent; bad = 1;
-                } else if (t == "#[cfg(test)]") {
-                  guarded = 1;
-                }
-                continue;
-              }
-              break;
-            }
-            if (!guarded) {
-              print harness ": declared without #[cfg(test)] in " parent; bad = 1;
-            }
-          }
-          exit bad ? 1 : 0;
-        }
-      ' "$parent")" || rc=$?
-      if [ "$rc" -eq 3 ]; then continue; fi
-      any_decl=1
-      if [ "$rc" -ne 0 ]; then
-        any_bad=1
-        details="${details}${detail}
-"
+  local src="$1" harness_refusals="" harnesses status=0
+  harnesses="$(find "$src" -type f \( -name 'tests.rs' -o -name '*_tests.rs' -o -name '*-tests.rs' \) | sort)" || {
+    status=$?
+    refuse "coverage refusal: harness declaration inventory failed (find | sort exit $status)"
+  }
+  if [ -n "$harnesses" ]; then
+    while IFS= read -r harness; do
+      local stem dir; stem="$(basename "$harness" .rs)"; dir="$(dirname "$harness")"
+      local parents=()
+      if [ "$dir" = "$src" ]; then
+        # A top-level harness file is declared by the crate root.
+        parents=("$src/lib.rs" "$src/main.rs")
+      else
+        # src/store/persist_tests.rs is declared by src/store.rs (or the
+        # conventional src/store/mod.rs fallback).
+        parents=("$dir.rs" "$dir/mod.rs")
       fi
-    done
-    if [ "$any_bad" -ne 0 ]; then
-      harness_refusals="${harness_refusals}${details}"
-    elif [ "$any_decl" -eq 0 ]; then
-      harness_refusals="${harness_refusals}${harness}: not declared by any parent module under #[cfg(test)]
-"
-    fi
-  done < <(find "$src" -type f \( -name 'tests.rs' -o -name '*_tests.rs' -o -name '*-tests.rs' \) | sort)
+      local any_decl=0 any_bad=0 details=""
+      local parent rc detail
+      for parent in "${parents[@]}"; do
+        [ -f "$parent" ] || continue
+        rc=0
+        detail="$(awk -v stem="$stem" -v harness="$harness" -v parent="$parent" '
+          BEGIN {
+            escaped = stem;
+            gsub(/[^A-Za-z0-9_]/, "\\\\&", escaped);
+          }
+          {
+            lines[NR] = $0;
+            if ($0 ~ "^[[:space:]]*mod[[:space:]]+" escaped "[[:space:]]*;") mods[++nmods] = NR;
+          }
+          END {
+            bad = 0;
+            if (nmods == 0) exit 3;  # this parent does not declare the harness
+            for (k = 1; k <= nmods; k++) {
+              m = mods[k]; guarded = 0;
+              # Walk the attribute stack above the declaration: blank and
+              # comment lines may intervene; an attribute line must be the
+              # literal guard, and a #[path = "..."] is a refusal in itself.
+              for (i = m - 1; i >= 1; i--) {
+                t = lines[i];
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", t);
+                if (t == "" || t ~ /^\/\// || t ~ /^\/\*/ || t ~ /^\*/ ) continue;
+                if (t ~ /^#/) {
+                  if (t ~ /^#\[[[:space:]]*path[[:space:]]*=/) {
+                    print harness ": declared via #[path] in " parent; bad = 1;
+                  } else if (t == "#[cfg(test)]") {
+                    guarded = 1;
+                  }
+                  continue;
+                }
+                break;
+              }
+              if (!guarded) {
+                print harness ": declared without #[cfg(test)] in " parent; bad = 1;
+              }
+            }
+            exit bad ? 1 : 0;
+          }
+        ' "$parent")" || rc=$?
+        if [ "$rc" -eq 3 ]; then continue; fi
+        any_decl=1
+        if [ "$rc" -ne 0 ]; then
+          any_bad=1
+          details="${details}${detail}
+  "
+        fi
+      done
+      if [ "$any_bad" -ne 0 ]; then
+        harness_refusals="${harness_refusals}${details}"
+      elif [ "$any_decl" -eq 0 ]; then
+        harness_refusals="${harness_refusals}${harness}: not declared by any parent module under #[cfg(test)]
+  "
+      fi
+  done <<< "$harnesses"
+  fi
   if [ -n "$harness_refusals" ]; then
     printf '%s' "$harness_refusals" >&2
     refuse 'coverage refusal: harness-named file(s) under src/ must be declared by their parent module under #[cfg(test)] (decision 0020: docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md)'
@@ -417,25 +424,67 @@ check_free_space() {
 }
 
 resolve_build_dir() {
-  # The instrumented build directory, two arms (issue #101):
-  #   explicit — CARGO_LLVM_COV_TARGET_DIR is honoured verbatim: the caller
-  #     owns the directory and its cleanup, and the gate exports the value
-  #     it was given, unmodified;
-  #   default  — a fresh mktemp directory under the gitignored, disk-backed
-  #     target/coverage/, never $TMPDIR: an instrumented build is ≈ 4 GiB
-  #     and a tmpfs quota failure surfaces as a mid-build LLVM IO error, not
-  #     a refusal.
-  # Sets RESOLVED_BUILD_DIR and BUILD_DIR_OWNED (1 only when the gate
-  # created the directory — only an owned directory is trap-removed).
+  # A nonempty explicit path is the exact target, but it must be a new leaf.
+  # Parent creation is allowed; one atomic mkdir reserves the leaf. The
+  # explicit reservation remains caller-owned on success and failure.
+  # The default remains a fresh mktemp directory under disk-backed
+  # target/coverage/, never $TMPDIR. BUILD_DIR_OWNED means the EXIT cleanup
+  # may remove the directory, not merely that this call created it.
+  local requested parent parent_probe status=0
   if [ -n "${CARGO_LLVM_COV_TARGET_DIR:-}" ]; then
+    requested="$CARGO_LLVM_COV_TARGET_DIR"
+    parent_probe="$requested"
+    while [ "$parent_probe" != "/" ] && [[ "$parent_probe" == */ ]]; do
+      parent_probe="${parent_probe%/}"
+    done
+    if [[ "$parent_probe" == */* ]]; then
+      parent="${parent_probe%/*}"
+      [ -n "$parent" ] || parent="/"
+    else
+      parent="."
+    fi
+    mkdir -p -- "$parent" || {
+      status=$?
+      refuse "coverage refusal: explicit target parent could not be created ($parent; mkdir exit $status)"
+    }
+    mkdir -- "$requested" || {
+      status=$?
+      refuse "coverage refusal: explicit target must be a fresh, unused leaf ($requested; mkdir exit $status) — choose a never-created target path"
+    }
     BUILD_DIR_OWNED=0
-    mkdir -p "$CARGO_LLVM_COV_TARGET_DIR"
-    RESOLVED_BUILD_DIR="$CARGO_LLVM_COV_TARGET_DIR"
+    RESOLVED_BUILD_DIR="$requested"
   else
     BUILD_DIR_OWNED=1
-    mkdir -p target/coverage
-    RESOLVED_BUILD_DIR="$(mktemp -d "$PWD/target/coverage/build.XXXXXX")"
+    mkdir -p -- target/coverage || {
+      status=$?
+      refuse "coverage refusal: default target parent could not be created (target/coverage; mkdir exit $status)"
+    }
+    RESOLVED_BUILD_DIR="$(mktemp -d "$PWD/target/coverage/build.XXXXXX")" || {
+      status=$?
+      refuse "coverage refusal: default instrumented target could not be allocated (mktemp exit $status)"
+    }
   fi
+}
+
+cleanup_build_dir() {
+  # Explicit target reservations and their evidence belong to the caller.
+  # Only the generated default build tree is automatically removed.
+  local dir="$1" owned="$2"
+  [ "$owned" -eq 1 ] || return 0
+  rm -rf -- "$dir"
+}
+
+run_llvm_cov_clean() {
+  # The clean is a prerequisite even when this function is called from a
+  # conditional context where errexit is disabled. Preserve its diagnostics.
+  local log="$1" status=0
+  if cargo +"$coverage_toolchain" llvm-cov clean --workspace >"$log" 2>&1; then
+    return 0
+  else
+    status=$?
+  fi
+  tail -n 40 "$log" >&2 || true
+  refuse "coverage refusal: llvm-cov clean failed (exit $status) — diagnostics are at $log"
 }
 
 # --- canonical counting -----------------------------------------------------
@@ -564,6 +613,21 @@ selftest() {
       failures=$((failures + 1))
     fi
   }
+  expect_refuse_naming_without() {
+    local label="$1" needle="$2" forbidden="$3"; shift 3
+    local out status=0
+    out="$("$@" 2>&1)" || status=$?
+    if [ "$status" -eq 0 ]; then
+      printf 'coverage gate: selftest failure — %s: expected refusal, got success:\n%s\n' "$label" "$out" >&2
+      failures=$((failures + 1))
+    elif [[ "$out" != *"$needle"* ]]; then
+      printf 'coverage gate: selftest failure — %s: the refusal does not name "%s":\n%s\n' "$label" "$needle" "$out" >&2
+      failures=$((failures + 1))
+    elif [[ "$out" == *"$forbidden"* ]]; then
+      printf 'coverage gate: selftest failure — %s: the failed inventory consumed partial row "%s":\n%s\n' "$label" "$forbidden" "$out" >&2
+      failures=$((failures + 1))
+    fi
+  }
   expect_eq() {
     local label="$1" got="$2" want="$3"
     if [ "$got" != "$want" ]; then
@@ -580,6 +644,13 @@ selftest() {
   local fx="$root/co-off"; mkdir -p "$fx/src"
   printf '#[coverage(off)]\nfn hot() {}\n' > "$fx/src/lib.rs"
   expect_refuse 'coverage(off) in src is refused' check_no_coverage_off "$fx/src"
+  fx="$root/co-raw-off"; mkdir -p "$fx/src"
+  printf '#[coverage(r#off)]\nfn raw_hot() {}\n' > "$fx/src/lib.rs"
+  expect_refuse_naming 'the source grep refuses raw-off' 'attribute-based source exclusions are forbidden' check_no_coverage_off "$fx/src"
+  fx="$root/co-raw-name"; mkdir -p "$fx/src"
+  printf '#[r#coverage(off)]\nfn raw_named_hot() {}\n' > "$fx/src/lib.rs"
+  expect_refuse_naming 'the source grep refuses a raw coverage name' 'attribute-based source exclusions are forbidden' check_no_coverage_off "$fx/src"
+
   fx="$root/co-clean"; mkdir -p "$fx/src"
   printf 'fn hot() {}\n' > "$fx/src/lib.rs"
   expect_pass 'clean src passes the coverage(off) check' check_no_coverage_off "$fx/src"
@@ -592,6 +663,60 @@ selftest() {
   expect_refuse 'harness source in the report is refused' check_no_harness_leak "$root/leak.info" "$root/empty-set.txt" "$PWD"
   printf 'SF:/repo/src/api.rs\nDA:1,1\nend_of_record\n' > "$root/clean.info"
   expect_pass 'a production-only report passes the leak check' check_no_harness_leak "$root/clean.info" "$root/empty-set.txt" "$PWD"
+
+  # Failed inventories are named, preserve stderr and never consume partial rows.
+  fx="$root/decl-empty"; mkdir -p "$fx/src"
+  expect_pass 'an empty harness inventory passes' check_harness_declarations "$fx/src"
+
+  fx="$root/find-hidden"; mkdir -p "$fx/src/tests"
+  printf 'fn row_from_partial_find() {}\n' > "$fx/src/tests/partial.rs"
+  injected_find_status=42
+  injected_find_output=""
+  find() {
+    [ -z "$injected_find_output" ] || printf '%s\n' "$injected_find_output"
+    printf 'injected find failure\n' >&2
+    return "$injected_find_status"
+  }
+  expect_refuse_naming 'hidden-directory find failure has a named refusal' 'hidden-directory inventory failed' check_no_hidden_harness_dirs "$fx/src"
+  expect_refuse_naming 'hidden-directory find diagnostics are preserved' 'injected find failure' check_no_hidden_harness_dirs "$fx/src"
+  injected_find_output="$fx/src/tests/partial.rs"
+  expect_refuse_naming_without 'partial hidden-directory output is not consumed' 'hidden-directory inventory failed' "$fx/src/tests/partial.rs" check_no_hidden_harness_dirs "$fx/src"
+  conditional_hidden_inventory() {
+    if check_no_hidden_harness_dirs "$1"; then : > "$2"; fi
+  }
+  rm -f "$root/hidden-marker"
+  expect_refuse_naming 'conditional hidden-directory find failure still refuses' 'hidden-directory inventory failed' conditional_hidden_inventory "$fx/src" "$root/hidden-marker"
+  expect_eq 'conditional hidden-directory refusal has no post-check marker' "$( [ -e "$root/hidden-marker" ] && echo present || echo absent )" absent
+
+  fx="$root/find-harness"; mkdir -p "$fx/src/store"
+  printf 'fn row_from_partial_find() {}\n' > "$fx/src/store/partial_tests.rs"
+  injected_find_output=""
+  expect_refuse_naming 'harness find failure has a named refusal' 'harness declaration inventory failed' check_harness_declarations "$fx/src"
+  expect_refuse_naming 'harness find diagnostics are preserved' 'injected find failure' check_harness_declarations "$fx/src"
+  injected_find_output="$fx/src/store/partial_tests.rs"
+  expect_refuse_naming_without 'partial harness output is not interpreted' 'harness declaration inventory failed' "$fx/src/store/partial_tests.rs" check_harness_declarations "$fx/src"
+  conditional_harness_inventory() {
+    if check_harness_declarations "$1"; then : > "$2"; fi
+  }
+  rm -f "$root/harness-marker"
+  expect_refuse_naming 'conditional harness find failure still refuses' 'harness declaration inventory failed' conditional_harness_inventory "$fx/src" "$root/harness-marker"
+  expect_eq 'conditional harness refusal has no post-check marker' "$( [ -e "$root/harness-marker" ] && echo present || echo absent )" absent
+
+  unset -f find
+  injected_find_output=""
+  injected_find_status=0
+  find() {
+    printf '%s\n' "$root/partial_tests.rs"
+    return 0
+  }
+  sort() {
+    cat >/dev/null
+    printf 'injected sort failure\n' >&2
+    return 43
+  }
+  expect_refuse_naming 'harness sort failure has a named refusal' 'harness declaration inventory failed' check_harness_declarations "$fx/src"
+  expect_refuse_naming 'harness sort diagnostics are preserved' 'injected sort failure' check_harness_declarations "$fx/src"
+  unset -f find sort
 
   # 4. Production source parked in a harness directory refuses.
   fx="$root/hidden"; mkdir -p "$fx/src/tests"
@@ -652,23 +777,108 @@ selftest() {
   got="$(count_dimensions "$root/synth.info")"
   expect_eq 'canonical counting' "$got" '3 2 2 1 3 2'
 
-  # 7. Build-dir resolution (issue #101): an explicit CARGO_LLVM_COV_TARGET_DIR
-  #    verbatim and not owned (the trap never removes the caller's
-  #    directory); the default a fresh, owned directory under the
-  #    disk-backed target/coverage/ — never $TMPDIR.
-  local resolved
-  resolved="$(CARGO_LLVM_COV_TARGET_DIR="$root/explicit" resolve_build_dir; printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
-  expect_eq 'an explicit CARGO_LLVM_COV_TARGET_DIR is honoured verbatim and not owned' "$resolved" "0 $root/explicit"
-  expect_eq 'the explicit build dir is created' "$( [ -d "$root/explicit" ] && echo yes || echo no )" yes
+  # 7. Build-target reservation: explicit targets require a fresh leaf,
+  #    survive cleanup, and arbitrate cooperating callers with atomic mkdir.
+  local resolved explicit target_statuses
+  local explicit="$root/explicit parent/target with spaces"
+  resolved="$(CARGO_LLVM_COV_TARGET_DIR="$explicit" resolve_build_dir; printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
+  expect_eq 'a fresh explicit target is reserved at the exact path and caller-owned' "$resolved" "0 $explicit"
+  expect_eq 'explicit parent directories are created' "$( [ -d "$root/explicit parent" ] && echo yes || echo no )" yes
+  local trailing_explicit="$root/trailing/leaf/"
+  resolved="$(CARGO_LLVM_COV_TARGET_DIR="$trailing_explicit" resolve_build_dir; printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
+  expect_eq 'a fresh explicit target with a trailing slash is reserved exactly' "$resolved" "0 $trailing_explicit"
+  cleanup_build_dir "$trailing_explicit" 0
+
+  cleanup_build_dir "$explicit" 0
+  expect_eq 'explicit-target cleanup leaves the reservation intact' "$( [ -d "$explicit" ] && echo yes || echo no )" yes
+
+  resolve_explicit_target() { CARGO_LLVM_COV_TARGET_DIR="$1" resolve_build_dir; }
+  mkdir -p "$root/existing-empty"
+  expect_refuse_naming 'an existing empty explicit target refuses' 'fresh, unused leaf' resolve_explicit_target "$root/existing-empty"
+  mkdir -p "$root/existing-dirty"
+  printf 'keep me\n' > "$root/existing-dirty/sentinel"
+  expect_refuse_naming 'an existing dirty explicit target refuses' 'fresh, unused leaf' resolve_explicit_target "$root/existing-dirty"
+  expect_eq 'a dirty explicit target is left unchanged' "$(cat "$root/existing-dirty/sentinel")" 'keep me'
+  printf 'keep me\n' > "$root/existing-file"
+  expect_refuse_naming 'a regular-file explicit target refuses' 'fresh, unused leaf' resolve_explicit_target "$root/existing-file"
+  mkdir -p "$root/symlink-referent"
+  printf 'preserve referent\n' > "$root/symlink-referent/sentinel"
+  ln -s "$root/symlink-referent" "$root/existing-symlink"
+  expect_refuse_naming 'a symlink explicit target refuses' 'fresh, unused leaf' resolve_explicit_target "$root/existing-symlink"
+  expect_eq 'a symlink referent is preserved' "$(cat "$root/symlink-referent/sentinel")" 'preserve referent'
+  ln -s "$root/no-such-target" "$root/dangling-symlink"
+  expect_refuse_naming 'a dangling symlink explicit target refuses' 'fresh, unused leaf' resolve_explicit_target "$root/dangling-symlink"
+  expect_eq 'a dangling symlink remains present' "$( [ -L "$root/dangling-symlink" ] && echo yes || echo no )" yes
+
+  printf 'parent blocker\n' > "$root/blocked-parent"
+  expect_refuse_naming 'an uncreatable explicit parent has a named refusal' 'explicit target parent could not be created' resolve_explicit_target "$root/blocked-parent/child"
+
+  mkdir() {
+    if [ "$#" -eq 2 ] && [ "$1" = -- ] && [ "$2" = "$root/forced-leaf-failure" ]; then
+      printf 'injected leaf mkdir failure\n' >&2
+      return 42
+    fi
+    command mkdir "$@"
+  }
+  expect_refuse_naming 'an explicit leaf creation error has a named refusal' 'fresh, unused leaf' resolve_explicit_target "$root/forced-leaf-failure"
+  unset -f mkdir
+
+  local contended="$root/concurrent-target"
+  local start_one="$root/start-one" start_two="$root/start-two"
+  mkfifo "$start_one" "$start_two"
+  (
+    IFS= read -r _ < "$start_one"
+    if (
+      CARGO_LLVM_COV_TARGET_DIR="$contended" resolve_build_dir
+    ) >"$root/one.out" 2>&1; then
+      printf '0\n' > "$root/one.status"
+    else
+      printf '%s\n' "$?" > "$root/one.status"
+    fi
+  ) &
+  local one_pid=$!
+  (
+    IFS= read -r _ < "$start_two"
+    if (
+      CARGO_LLVM_COV_TARGET_DIR="$contended" resolve_build_dir
+    ) >"$root/two.out" 2>&1; then
+      printf '0\n' > "$root/two.status"
+    else
+      printf '%s\n' "$?" > "$root/two.status"
+    fi
+  ) &
+  local two_pid=$!
+  exec 3>"$start_one"
+  exec 4>"$start_two"
+  printf 'go\n' >&3
+  printf 'go\n' >&4
+  exec 3>&-
+  exec 4>&-
+  wait "$one_pid"
+  wait "$two_pid"
+  target_statuses="$(printf '%s\n' "$(cat "$root/one.status")" "$(cat "$root/two.status")" | sort | tr '\n' ' ')"
+  expect_eq 'two simultaneous explicit reservations have one winner' "$target_statuses" '0 1 '
+  expect_pass 'the concurrent loser receives the named reservation refusal' bash -c 'grep -q "fresh, unused leaf" "$1" "$2"' _ "$root/one.out" "$root/two.out"
+  expect_refuse_naming 'a retry of a retained explicit target refuses' 'fresh, unused leaf' resolve_explicit_target "$contended"
+
   mkdir -p "$root/tmpdir"
   resolved="$(unset CARGO_LLVM_COV_TARGET_DIR; TMPDIR="$root/tmpdir" resolve_build_dir; printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
   case "$resolved" in
     "1 $PWD/target/coverage/build."*)
       resolved="${resolved#1 }"
       expect_eq 'the default build dir is created' "$( [ -d "$resolved" ] && echo yes || echo no )" yes
-      rm -rf "$resolved"
+      cleanup_build_dir "$resolved" 1
+      expect_eq 'default cleanup removes its generated build dir' "$( [ -e "$resolved" ] && echo yes || echo no )" no
       ;;
     *) expect_eq 'the default build dir is owned and under target/coverage/, never TMPDIR' "$resolved" "1 $PWD/target/coverage/build.XXXXXX" ;;
+  esac
+  resolved="$(CARGO_LLVM_COV_TARGET_DIR="" TMPDIR="$root/tmpdir" resolve_build_dir; printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
+  case "$resolved" in
+    "1 $PWD/target/coverage/build."*)
+      resolved="${resolved#1 }"
+      cleanup_build_dir "$resolved" 1
+      ;;
+    *) expect_eq 'empty explicit selection uses a fresh default target' "$resolved" "1 $PWD/target/coverage/build.XXXXXX" ;;
   esac
 
   # 8. The free-space preflight refuses before the build: a floor larger
@@ -698,6 +908,41 @@ selftest() {
     }
   }
   resolve_coverage_toolchain; ensure_fn_scan
+
+  # The production clean boundary must refuse in normal and conditional
+  # callers, preserve diagnostics, and prevent every later-stage marker.
+  local clean_mode=fail
+  cargo() {
+    case "$clean_mode" in
+      fail)
+        printf 'injected llvm-cov clean failure\n' >&2
+        return 42
+        ;;
+      pass)
+        printf 'injected llvm-cov clean success\n'
+        return 0
+        ;;
+      *)
+        printf 'unexpected clean mode\n' >&2
+        return 44
+        ;;
+    esac
+  }
+  expect_refuse_naming 'llvm-cov clean failure has a named refusal' 'llvm-cov clean failed' run_llvm_cov_clean "$root/clean-failure.log"
+  expect_refuse_naming 'llvm-cov clean failure preserves its diagnostic' 'injected llvm-cov clean failure' run_llvm_cov_clean "$root/clean-failure.log"
+  conditional_clean() {
+    if run_llvm_cov_clean "$1"; then : > "$2"; fi
+  }
+  rm -f "$root/clean-marker"
+  expect_refuse_naming 'conditional llvm-cov clean failure still refuses' 'llvm-cov clean failed' conditional_clean "$root/conditional-clean-failure.log" "$root/clean-marker"
+  expect_eq 'failed clean has no post-clean measurement marker' "$( [ -e "$root/clean-marker" ] && echo present || echo absent )" absent
+  expect_refuse_naming 'clean log creation failure has a named refusal' 'llvm-cov clean failed' run_llvm_cov_clean "$root/missing-parent/clean.log"
+  clean_mode=pass
+  rm -f "$root/clean-marker"
+  expect_pass 'successful clean reaches the next production stage' conditional_clean "$root/clean-success.log" "$root/clean-marker"
+  expect_eq 'successful clean writes the post-clean marker' "$( [ -e "$root/clean-marker" ] && echo present || echo absent )" present
+  unset -f cargo
+
   local fxb="$root/fx-bypass" fxg="$root/fx-green" fxt="$root/fx-bypass-target" fxgt="$root/fx-green-target"
   mkdir -p "$fxb/src" "$fxg/src"
   printf '[package]\nname = "fxbypass"\nversion = "0.1.0"\nedition = "2021"\n' >"$fxb/Cargo.toml"
@@ -854,6 +1099,19 @@ selftest() {
   # The inner-attribute arm on its own fixture: no other offender, so
   # removing the scanner's `#!` handling turns this arm red; its inner-allow
   # twin passes. And a `pub fn` exclusion names its function.
+  mkfx raw-exclusions '#![feature(coverage_attribute)]' \
+    '#[coverage(r#off)]' 'pub fn raw_argument_hidden() {}' \
+    '#[r#coverage(off)]' 'pub fn raw_name_hidden() {}'
+  cargo generate-lockfile --offline --manifest-path "$root/raw-exclusions/Cargo.toml" >/dev/null 2>&1
+  fx_cmd "$root/raw-exclusions" raw-exclusions-codegen.log 'raw-identifier exclusion codegen' "$root/raw-exclusions-codegen.out" \
+    cargo +"$coverage_toolchain" rustc --lib --offline --locked --target-dir "$root/raw-exclusions-target" -- --emit=llvm-ir
+  expand "$root/raw-exclusions" "$root/raw-exclusions.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
+  expect_refuse_naming 'the canonical scanner refuses raw-off' 'on fn raw_argument_hidden' check_no_coverage_exclusions "$root/raw-exclusions.rs"
+  expect_refuse_naming 'the canonical scanner refuses a raw coverage name' 'on fn raw_name_hidden' check_no_coverage_exclusions "$root/raw-exclusions.rs"
+  mkfx raw-exclusions-green '#![allow(dead_code)]' 'pub fn r#off() -> &'"'"'static str { "r#coverage(r#off)" }'
+  expand "$root/raw-exclusions-green" "$root/raw-exclusions-green.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
+  expect_pass 'raw identifiers in ordinary names and string literals are not exclusions' check_no_coverage_exclusions "$root/raw-exclusions-green.rs"
+
   mkfx inner-only '#![feature(coverage_attribute)]' 'pub fn inner_only() { #![coverage(off)] }'
   expand "$root/inner-only" "$root/inner-only.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
   expect_refuse_naming 'the inner-attribute exclusion refuses on its own fixture' 'coverage(off)' check_no_coverage_exclusions "$root/inner-only.rs"
@@ -898,11 +1156,9 @@ check_harness_declarations src
 # be heard (issue #101).
 resolve_build_dir
 forge_target_dir="$RESOLVED_BUILD_DIR"
-if [ "$BUILD_DIR_OWNED" -eq 1 ]; then
-  # The EXIT trap cleans only a directory the gate itself created; a caller's
-  # explicit CARGO_LLVM_COV_TARGET_DIR is the caller's to keep.
-  trap 'rm -rf "$forge_target_dir"' EXIT
-fi
+# The cleanup helper is ownership-guarded: explicit reservations survive
+# normal and failing exits; only the generated default build tree is removed.
+trap 'cleanup_build_dir "$forge_target_dir" "$BUILD_DIR_OWNED"' EXIT
 check_free_space "$forge_target_dir" "$MIN_BUILD_FREE_KIB"
 # A unique target directory is stronger than cleaning shared coverage state:
 # no stale instrumented executable can participate in this candidate's merge.
@@ -918,8 +1174,9 @@ mkdir -p target/coverage
 run_dir="$(mktemp -d target/coverage/run.XXXXXX)"
 
 # A report is candidate-bound only when no instrumented executable or profile
-# from an earlier source graph can participate in the merge.
-cargo +"$coverage_toolchain" llvm-cov clean --workspace >/dev/null 2>&1
+# from an earlier source graph can participate in the merge. The checked
+# boundary refuses before measurement even when called conditionally.
+run_llvm_cov_clean "$run_dir/clean.log"
 
 if ! cargo +"$coverage_toolchain" llvm-cov \
   --workspace \
