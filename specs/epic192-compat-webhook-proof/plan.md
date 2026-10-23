@@ -313,3 +313,42 @@ promise. Only compatible extraction corrections land; 0061 stays proposed.
 Unsigned commits; no push, merge, tag, publication, external comment or issue
 closure. The documentation/evidence commit follows the code commit; final
 hashes and result-file path are in the engine handoff.
+
+
+## Implementation retry — 2026-10-23 (4537c5cc)
+
+The automatic `IMPL-BROKEN-RETRY` starts at unchanged clean HEAD
+`201be49d1b654bd2be569d0e3270d84cce050aea`; no parent index repair or new
+operator amendment was supplied. Re-read the triage framing, chief artifacts,
+actual deterministic `designed` result and previous handoff before proceeding.
+No new implementation is required by this retry's evidence.
+
+New receipts live under
+`.forge/epic192/compat-webhook-proof/implement-retry-4537c5cc/`:
+
+- `retained-evidence-audit.json` confirms all nine implementation/input hashes
+  still match, all 13 behavioral-red/restored-green mutation receipts match
+  their summaries and current restored source bytes, and all 17 gate-log
+  hashes match their retained receipts. These are retained executions, not
+  fresh gate/mutation passes. The inherited generator proof is not repeated.
+- `cargo test --locked --test store_contract_docs` freshly exits **101**:
+  **17 passed, 2 failed**, both naming
+  `0061-compat-webhook-proof.md: no index row`. Exact command, environment,
+  timestamps, exit and log SHA-256 are in `store-contract-docs.json`; actual
+  output is `store-contract-docs.log`.
+
+The parent integration request above is still actionable: add the one
+**proposed** 0061 index row in `docs/decisions/README.md`. That path remains
+outside this lane's edit ownership; neither delete the chief's required ADR
+nor change a gate/test to hide its missing index entry. The earlier full
+workspace/coverage refusals remain unresolved. Repeating unaffected full
+gates cannot repair the reproduced prerequisite; this retry reruns the
+owning evaluator and retains the other receipts without relabeling them.
+After parent repair, all required full gates and immutable configured
+verification still require a clean final-tree result.
+
+Return **broken** for the unresolved gate failure. This is not an oversized
+scope finding or a frozen-guarantee refusal. T14/T15 and R4.2/R4.3/R4.4
+remain open exactly as above; no whole-story, review/ship, CI-only, operator
+acceptance or publication claim is added. Existing compatible code and all
+accepted contracts remain unchanged.
