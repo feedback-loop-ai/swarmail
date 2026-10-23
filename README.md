@@ -656,12 +656,13 @@ Twelve tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`. Every tool validates its supplied arguments at the
-envelope: a wrong-typed or malformed value — the `arguments` container
-included — refuses with JSON-RPC `-32602` in HTTP 200 for a call with an
-`id`, naming the field and its domain, before any effect, and so does an
-argument key the tool does not publish (`{"inbx": "zz"}` can never clear
-`default`; every schema says
+`swarmail_set_chaos`, `swarmail_clear_chaos`. Except for the supplied
+`timeout_ms` refusal described below, every tool validates its supplied
+arguments at the envelope: a wrong-typed or malformed value — the
+`arguments` container included — returns JSON-RPC `-32602` in HTTP 200
+for a call with an `id`, naming the field and its domain, before any
+effect, and so does an argument key the tool does not publish
+(`{"inbx": "zz"}` can never clear `default`; every schema says
 `additionalProperties: false`); an unknown tool name is `-32601`; a JSON
 parse failure or invalid UTF-8 is HTTP 400 `-32700`; a body over the
 2,097,152-byte limit is HTTP 413 `-32600`; a value that is not an object
@@ -679,9 +680,12 @@ mutations as separate requests.
 
 An elapsed `swarmail_wait_for_email` timeout is a normal tool result:
 `isError: false`, with `matched`, `total` and `timed_out: true` in its text
-content. Tool failures such as `shutting down` return `isError: true`
-with an error message in text content; protocol and argument refusals use
-the JSON-RPC `error` envelope described above.
+content. On `swarmail_wait_for_email`, a supplied `timeout_ms` must be an
+integer from 0 through 60000; malformed values and values above 60000
+return an HTTP-200 tool result with `isError: true` and refusal text, not
+a JSON-RPC `error` object. Tool failures such as `shutting down` return
+`isError: true` with an error message in text content. Other protocol and
+argument refusals use a JSON-RPC `error` envelope as described above.
 
 Wire it up:
 

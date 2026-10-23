@@ -1649,22 +1649,37 @@ fn issue_182_seed_and_webhook_data_errors_do_not_cover_extractor_refusals() {
 }
 
 #[test]
-fn issue_182_an_elapsed_mcp_wait_is_a_normal_tool_result() {
+fn issue_182_mcp_wait_results_keep_distinct_envelopes() {
     for path in ["README.md", "src/static/llms.txt"] {
         let text = doc(path);
         states(
             &text,
             path,
             &[
+                "Except for the supplied `timeout_ms` refusal described below",
+                "returns JSON-RPC `-32602` in HTTP 200 for a call with an `id`",
+                "before any effect",
                 "An elapsed `swarmail_wait_for_email` timeout is a normal tool result",
                 "`isError: false`",
-                "`timed_out: true`",
-                "in its text content",
-                "`isError: true`",
+                "with `matched`, `total` and `timed_out: true`",
+                "On `swarmail_wait_for_email`, a supplied `timeout_ms`",
+                "must be an integer from 0 through 60000",
+                "malformed values and values above 60000 return an HTTP-200 tool result",
+                "with `isError: true` and refusal text",
+                "not a JSON-RPC `error` object",
+                "Other protocol and argument refusals use a JSON-RPC `error`",
                 "`shutting down`",
             ],
         );
-        refuses(&text, path, &["Errors are always JSON-RPC"]);
+        refuses(
+            &text,
+            path,
+            &[
+                "Errors are always JSON-RPC",
+                "Protocol and argument refusals use a JSON-RPC `error`",
+                "Every tool validates its supplied arguments at the envelope: a wrong-typed or malformed value",
+            ],
+        );
     }
 }
 
