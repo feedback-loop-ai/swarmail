@@ -1,7 +1,7 @@
 # RPC edge contracts — issue #180
 
 Date: 2026-10-24. Epic #192; run epic-192-next-180-luna-xhigh-del-7b62e4e5.
-Status: design draft; implementation and verification remain required.
+Status: implementation present; exact coverage, 32-bit runtime and external host/CI proofs remain required.
 
 Decision: 0062 — [RPC edge contracts](../../docs/decisions/0062-rpc-edge-contracts.md), proposed.
 

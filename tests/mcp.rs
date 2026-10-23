@@ -1877,6 +1877,137 @@ async fn malformed_objects_answer_over_http() {
     assert_eq!((st, body.as_str()), (202, ""));
 }
 
+#[tokio::test]
+async fn supplied_non_scalar_ids_refuse_before_tool_effects_over_http() {
+    let srv = start().await;
+    let invalid_ids = [
+        serde_json::json!(true),
+        serde_json::json!(false),
+        serde_json::json!({}),
+        serde_json::json!({"nested": 1}),
+        serde_json::json!([]),
+        serde_json::json!([1]),
+    ];
+    for (index, id) in invalid_ids.into_iter().enumerate() {
+        let inbox = format!("invalid-id-{index}");
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": { "name": "swarmail_seed_email",
+                        "arguments": { "inbox": inbox, "to": "a@x.io" } }
+        });
+        let (status, reply) =
+            http_json(srv.http_addr, "POST", "/mcp", Some(&request.to_string())).await;
+        assert_eq!(status, 200, "{request}: {reply}");
+        assert_eq!(reply["id"], serde_json::Value::Null, "{request}: {reply}");
+        assert_eq!(reply["error"]["code"], -32600, "{request}: {reply}");
+        assert_eq!(
+            reply["error"]["message"], "id must be a string, number, or null",
+            "{request}: {reply}"
+        );
+        let (_, list) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/{inbox}/messages"),
+            None,
+        )
+        .await;
+        assert_eq!(list["total"], 0, "{request} had a tool effect: {list}");
+    }
+
+    for id in [
+        serde_json::json!("text"),
+        serde_json::json!(7),
+        serde_json::json!(-2),
+        serde_json::json!(1.5),
+        serde_json::Value::Null,
+    ] {
+        let request = serde_json::json!({"jsonrpc":"2.0", "id":id, "method":"ping"});
+        let (status, reply) =
+            http_json(srv.http_addr, "POST", "/mcp", Some(&request.to_string())).await;
+        assert_eq!(status, 200, "{request}: {reply}");
+        assert_eq!(reply["id"], id, "{request}: {reply}");
+        assert_eq!(reply["result"], serde_json::json!({}), "{request}: {reply}");
+    }
+
+    let batch = serde_json::json!([
+        {"id": true, "method": "ping"},
+        {"id": "dup", "method": "ping"},
+        {"method": "notifications/initialized"},
+        {"id": false, "method": "tools/call", "params": {
+            "name": "swarmail_seed_email",
+            "arguments": {"inbox": "invalid-batch-id", "to": "a@x.io"}
+        }},
+        {"id": null, "method": "ping"},
+        {"id": "dup", "method": "ping"},
+        {"id": {}, "method": "ping"},
+        {"id": [], "method": "ping"}
+    ]);
+    let (status, replies) =
+        http_json(srv.http_addr, "POST", "/mcp", Some(&batch.to_string())).await;
+    assert_eq!(status, 200, "{replies}");
+    let replies = replies.as_array().expect("mixed batch replies");
+    assert_eq!(
+        replies.len(),
+        7,
+        "only the valid notification is omitted: {replies:?}"
+    );
+    assert_eq!(
+        replies
+            .iter()
+            .map(|reply| reply["id"].clone())
+            .collect::<Vec<_>>(),
+        [
+            serde_json::Value::Null,
+            serde_json::json!("dup"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::json!("dup"),
+            serde_json::Value::Null,
+            serde_json::Value::Null
+        ]
+    );
+    for index in [0, 2, 5, 6] {
+        assert_eq!(replies[index]["error"]["code"], -32600, "{replies:?}");
+    }
+    let (_, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/invalid-batch-id/messages",
+        None,
+    )
+    .await;
+    assert_eq!(list["total"], 0, "invalid batch ID ran a tool: {list}");
+}
+
+#[cfg(target_pointer_width = "32")]
+#[tokio::test]
+async fn mcp_search_offset_refuses_values_beyond_32_bit_usize() {
+    let srv = start().await;
+    let max = u64::from(usize::MAX);
+    for (offset, expected_error) in [(max, false), (max + 1, true)] {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name":"swarmail_search_emails", "arguments":{"offset":offset}}
+        });
+        let (status, reply) =
+            http_json(srv.http_addr, "POST", "/mcp", Some(&request.to_string())).await;
+        assert_eq!(status, 200, "{request}: {reply}");
+        if expected_error {
+            assert_eq!(reply["error"]["code"], -32602, "{reply}");
+            assert_eq!(
+                reply["error"]["message"], "offset must be a non-negative integer that fits usize",
+                "{reply}"
+            );
+        } else {
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+        }
+    }
+}
+
 /// Batches are answered in order and bounded (decision 0029 §2): requests
 /// get their answers, notifications their silence, and `[]` or an array
 /// over the cap is one -32600 naming the rule.

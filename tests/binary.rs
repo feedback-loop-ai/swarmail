@@ -629,6 +629,35 @@ async fn mcp_subcommand_keeps_stdout_protocol_only() {
     assert_eq!(reply["error"]["code"], -32000, "{reply}");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn mcp_read_warning_is_captured_on_stderr_only() {
+    let child = Command::new(binary())
+        .args(["mcp", "--url", "http://127.0.0.1:1"])
+        .stdin(Stdio::from(
+            std::fs::File::open("/").expect("open directory as stdin"),
+        ))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("RUST_LOG", "swarmail=warn")
+        .spawn()
+        .expect("spawn swarmail mcp with an erroring stdin");
+    let output = tokio::time::timeout(common::HELPER_DEADLINE, child.wait_with_output())
+        .await
+        .expect("mcp read-error child did not exit")
+        .expect("mcp read-error child");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "protocol stdout is empty after read failure: {output:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stdio read error"),
+        "warning must reach stderr: {stderr:?}"
+    );
+}
+
 /// A pipelined burst sender for the kill leg: each mail's command block is
 /// one write (PIPELINING), the four replies read back in order, and every
 /// observed acceptance contributes its `stored as` id. When the socket dies

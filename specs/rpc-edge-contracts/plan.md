@@ -175,3 +175,30 @@ Run-local command/exit receipts and logs are in
 300-second response timeout, but the command completed and its complete
 results.json and logs were read back through workspace. These are design-tree
 observations, not final implementation verification or CI/32-bit/host proof.
+
+## Implementation phase record — 2026-10-24
+
+The dated operator amendment to 0047 §3 and proposed 0062 index row are in
+place. `src/mcp.rs` shares scalar-ID validation between reply classification
+and pre-dispatch refusal, and stages `usize` through `usize::try_from`.
+`src/stdio.rs` rejects short declared bodies before decoding and builds the
+request with the original Host authority. Regression coverage now includes
+real HTTP/stdio invalid-ID behavior, batch positions and no-effects, a short
+response peer with recovery, exact Host construction, and a failing-stdin
+binary that observes stderr. The timeout test now resides inside its existing
+`cfg(test)` module. Baseline-red and mutation-sensitivity receipts are stored
+under `.forge/results/`.
+
+The complete locked workspace test suite, fmt, clippy, self and codex-fast
+pinned compiles, coverage selftest, publish/seal proofs, licenses, shim hashes
+and fail-closed `native-tls` proof pass. Exact coverage remains red only at
+`src/mcp.rs:285`: 13078/13079 lines and 1444/1445 functions, because the
+32-bit-only `usize` conversion error arm cannot execute on this x86_64 host.
+The installed `i686-unknown-linux-musl` target cannot compile SQLite here
+without missing `musl-gcc`; the host also lacks i686 multilib headers. No
+32-bit execution or coverage pass is claimed.
+
+External evidence still required: supported-host macOS stderr execution, the
+privileged real port-80 exchange, CI chart/Docker/RustSec/tag-release proofs,
+and an actual 32-bit runtime. Decision 0062 remains proposed; its record and
+this implementation do not constitute operator acceptance.

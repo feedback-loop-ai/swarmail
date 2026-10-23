@@ -63,6 +63,117 @@ mod common {
 }
 
 #[tokio::test]
+async fn short_http_bodies_fail_correlated_slots_and_the_bridge_recovers() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let body = read_request_body(&mut stream).await;
+            let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let response = if value.is_array() {
+                "HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\n{}"
+            } else if value["id"] == 8 {
+                let json = r#"{"jsonrpc":"2.0","id":8,"result":{}}"#;
+                return_after_write(json, &mut stream).await;
+                continue;
+            } else {
+                "HTTP/1.1 202 Accepted\r\nContent-Length: 2\r\n\r\n "
+            };
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let input = concat!(
+        "[{\"id\":4,\"method\":\"ping\"},",
+        "{\"id\":null,\"method\":\"ping\"},",
+        "{\"id\":false,\"method\":\"ping\"},",
+        "{\"method\":\"notifications/initialized\"}]\n",
+        "{\"method\":\"notifications/initialized\"}\n",
+        "{\"id\":8,\"method\":\"ping\"}\n"
+    );
+    let (code, out) = bridge_over(&format!("http://{addr}"), input.as_bytes()).await;
+    assert_eq!(code, 0);
+    peer.await.unwrap();
+    let replies = reply_lines(&out);
+    assert_eq!(
+        replies.len(),
+        2,
+        "the truncated notification is silent: {out:?}"
+    );
+    let batch = replies[0].as_array().expect("one batch error array");
+    assert_eq!(
+        batch
+            .iter()
+            .map(|reply| reply["id"].clone())
+            .collect::<Vec<_>>(),
+        [
+            serde_json::json!(4),
+            serde_json::Value::Null,
+            serde_json::Value::Null
+        ]
+    );
+    assert!(
+        batch.iter().all(|reply| reply["error"]["code"] == -32000),
+        "{batch:?}"
+    );
+    assert_eq!(replies[1]["id"], 8, "{out:?}");
+    assert_eq!(replies[1]["result"], serde_json::json!({}), "{out:?}");
+}
+
+async fn return_after_write(json: &str, stream: &mut tokio::net::TcpStream) {
+    stream
+        .write_all(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{json}",
+                json.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn invalid_id_refusal_and_valid_notification_effects_match_over_stdio() {
+    let srv = common::start().await;
+    let base = format!("http://{}", srv.http_addr);
+    let (code, refused) = bridge_over(
+        &base,
+        br#"{"id":true,"method":"tools/call","params":{"name":"swarmail_seed_email","arguments":{"inbox":"bad-id","to":"a@x.io"}}}"#,
+    )
+    .await;
+    assert_eq!(code, 0);
+    let reply = reply_lines(&refused);
+    assert_eq!(reply.len(), 1, "{refused:?}");
+    assert_eq!(reply[0]["error"]["code"], -32600, "{refused:?}");
+    assert_eq!(reply[0]["id"], serde_json::Value::Null, "{refused:?}");
+
+    let (code, notification) = bridge_over(
+        &base,
+        br#"{"method":"tools/call","params":{"name":"swarmail_seed_email","arguments":{"inbox":"good-id","to":"a@x.io"}}}"#,
+    )
+    .await;
+    assert_eq!(code, 0);
+    assert!(
+        notification.is_empty(),
+        "valid notification is silent: {notification:?}"
+    );
+
+    for (inbox, count) in [("bad-id", 0), ("good-id", 1)] {
+        let request = format!(
+            r#"{{"id":"read-{inbox}","method":"tools/call","params":{{"name":"swarmail_search_emails","arguments":{{"inbox":"{inbox}"}}}}}}"#
+        );
+        let (code, output) = bridge_over(&base, request.as_bytes()).await;
+        assert_eq!(code, 0);
+        let replies = reply_lines(&output);
+        let data: serde_json::Value =
+            serde_json::from_str(replies[0]["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(data["total"], count, "{inbox}: {data}");
+    }
+}
+
+#[tokio::test]
 async fn bridge_forwards_jsonrpc_and_exits_zero_at_eof() {
     let srv = common::start().await;
     let base = format!("http://{}", srv.http_addr);

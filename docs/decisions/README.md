@@ -66,6 +66,7 @@ them. What may land while a decision is still proposed is stated in
 | [0057](0057-codex-delivery-recipes.md) | Codex triages and authors; fast bugs use one or two independent reviewers, risky work the full panel; up to eight isolated runs | accepted (operator directive, 2026-10-23) | (Codex-led recipes before epic #192; GLM 5.3 test review; Flash only) |
 | [0058](0058-codex-review-routing.md) | Exact operator-directed Codex review routing and fast-feature dispatch fallback (amends 0057) | accepted (operator, 2026-10-24) | (operator directive, 2026-10-24) |
 | [0061](0061-compat-webhook-proof.md) | Compat refusal recognition and extraction repair boundaries | proposed — awaiting the operator | (#170/#190, lane D) |
+| [0062](0062-rpc-edge-contracts.md) | RPC edge contracts and the supplied ID ruling | proposed — awaiting the operator | (Epic #192, issue #180) |
 | [0073](0073-matrix-cancellation.md) | Matrix cancellation stops admission and waits for owned cleanup with complete schema-1 accounting | proposed — awaiting the operator | (Epic #192, issue #194) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
