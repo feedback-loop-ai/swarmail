@@ -2,6 +2,15 @@
 
 Implements [spec.md](spec.md); ordered proof obligations are in [tasks.md](tasks.md).
 
+## Retry2 execution posture
+
+Retain source `e7d1d8142c3e24b2a817822969ab0dae6619680a`; it already
+implements AC1–AC6. No duplicate implementation is planned. This chief
+commit revises only spec.md, plan.md and tasks.md in this directory.
+Implementation work now means auditing the existing tests, running them and
+retaining them unless a demonstrated fixture defect needs a narrow test-only
+repair. A runtime regression returns to triage/full panel before repair.
+
 ## Technical context
 
 One Rust crate using the existing locked Tokio/Axum stack, serde_json,
@@ -43,10 +52,10 @@ selected under the existing delivery policy; this document dispatches none.
 
 | File | Implementation scope |
 |---|---|
-| `tests/smtp_edges.rs` | Extend sequencing and valid transaction-AUTH tests; add focused DATA-chaos, SQLite DATA-refusal and PLAIN-cancellation flows (AC1, AC3–AC5). |
-| `tests/pop3.rs` | Extend existing selective partial-QUIT/RSET flows with TOP/refusal/NOOP and exact surviving-content witnesses (AC6). |
-| `tests/common/mod.rs` | Add at most the needed bounded, untrimmed single SMTP reply reader; reuse existing server, raw HTTP and SQLite trigger helpers. Preserve all #177 helper timeout ownership. |
-| `src/pop3.rs` | Only cfg(test) health proof and minimal local helper/wiring using its private ListenerProbe (AC2); optional cfg(test) declaration for the cold-path alternative below. |
+| `tests/smtp_edges.rs` | Retain sequencing and valid transaction-AUTH tests and focused DATA-chaos, SQLite DATA-refusal and PLAIN-cancellation flows (AC1, AC3–AC5). |
+| `tests/pop3.rs` | Retain existing selective partial-QUIT/RSET flows with TOP/refusal/NOOP and exact surviving-content witnesses (AC6). |
+| `tests/common/mod.rs` | Retain the existing bounded, untrimmed single SMTP reply reader; reuse existing server, raw HTTP and SQLite trigger helpers. Preserve all #177 helper timeout ownership. |
+| `src/pop3.rs` | Retain only the existing cfg(test) health proof and local helper/wiring using its private ListenerProbe (AC2); optional cfg(test) declaration for the cold-path alternative below. |
 | `src/pop3/health_tests.rs` | Conditional, narrow alternative only when concrete failure-safe cleanup/diagnostics contain a cold arm. Do not create merely for private seam access. |
 
 `tests/persistence.rs`, `src/smtp.rs`, store/persist/API runtime code,
@@ -55,6 +64,10 @@ product documentation are read-only preservation references. No new test
 framework or public fixture API is needed.
 
 ## Research and evidence baseline
+
+The following gaps describe the historical pre-implementation base, not the
+current candidate. The source commit closes them with the tests mapped in
+[tasks.md](tasks.md); that source inspection does not establish passing gates.
 
 At `cc30ea2`, `sequencing_errors_need_mail_then_rcpt` checks only a 503 prefix
 and stops. The DATA arm restores a recipient-free envelope but consumes a
@@ -69,7 +82,7 @@ handler case sets flags. AC2 must connect the actual POP3 accept failure to
 the actual HTTP router. The owner-held readiness from #177 closes the
 sampling window without repeated injections or deadline spinning.
 
-These are inspected coverage gaps, not observed production regressions or
+These were inspected coverage gaps, not observed production regressions or
 baseline-red claims. Do not fabricate red evidence. A failure in a new test
 must first be classified as fixture error, placement/coverage error or a
 concrete production defect before proceeding under the spec's scope rule.
@@ -96,32 +109,35 @@ failure, use the narrow harness allowed above. EOF is not task completion.
 
 ## Contracts and implementation approach
 
-1. Add an untrimmed SMTP single-line reader delegating to existing
+Audit and execute the existing implementation below; do not repeat these
+changes. Only a proven fixture defect justifies a narrow test-only edit.
+
+1. Retain an untrimmed SMTP single-line reader delegating to existing
    `read_line_named`, without altering reply/reply_multi callers. Use it for
    exact prompt and fixed SMTP reply bytes. Drive DATA explicitly where an
    exact 354 and final acceptance/refusal matter. Parse the entire success
    prefix plus one nonempty ID, then fetch `/api/v1/messages/<id>` and its
    `/raw` immediately; assert 200, exact metadata/raw and inbox membership.
    Account for `SmtpConn::send` appending CRLF and dot transparency once.
-2. Extend AC1 in its current sequencing test. For AC3 use two explicit tests:
+2. Retain AC1 in its current sequencing test. For AC3 use two explicit tests:
    acknowledged HTTP DATA-chaos configuration at probability 100, delay 0;
    and a tempfile persistent server with `refusing_trigger(db, "insert")`.
    Assert empty pre-recovery membership, remove the cause, continue on the
    same socket with a distinct envelope and witness exactly the accepted ID.
    Reuse trigger remove/Drop; do not replace commit failure with a busy timer.
-3. Add AC4 with a dedicated store, literal prompt/cancel/NOOP, default mail,
-   later valid AUTH and named mail. Repair AC5 with `base64_of` over known
+3. Retain AC4 with a dedicated store, literal prompt/cancel/NOOP, default mail,
+   later valid AUTH and named mail. Retain AC5 with `base64_of` over known
    three-field credentials and real inventory comparisons; keep malformed
    input tests separate. Successful AUTH after AC5 is unnecessary duplication
    of AC4; original delivery and unchanged inventory prove its own contract.
-4. Extend existing partial-QUIT and `rset_never_resurrects_a_committed_delete`
-   tests for AC6. Add marked TOP before QUIT and gone TOP before/after RSET,
+4. Retain existing partial-QUIT and `rset_never_resurrects_a_committed_delete`
+   tests for AC6. Keep marked TOP before QUIT and gone TOP before/after RSET,
    exact partial-QUIT error and a NOOP after every refusal. Preserve existing
    HTTP/disk witnesses and exact suffix content; the external-clear test
    remains a separate current-store-absence path.
-5. Add `pop3_degradation_reaches_http_healthz` beside the POP3 probe. Bind
+5. Retain `pop3_degradation_reaches_http_healthz` beside the POP3 probe. Bind
    real POP3 and HTTP listeners, fresh store/shared POP3 flag, false SMTP
-   flag and live shutdown watch. Complete POP3 greeting/NOOP and healthy
+   flag and live shutdown watch. Complete POP3 greeting/USER/PASS/NOOP and healthy
    HTTP request first. Hold retry_ready false, arm accept_error, offer a
    connection, await backoff_pending, then GET health. Compare status 503
    and complete parsed JSON equality; do not pin member order or dynamic
@@ -135,6 +151,21 @@ No certificate fixture is needed for these plaintext loopback proofs.
 
 ## Quickstart and verification
 
+Before any execution receipt, resolve HEAD in the actual workspace and prove
+its ancestry through the source SHA, design parent and #177 base. Record the
+candidate commit/tree, diff and command exits. Git resolved successfully in
+this chief workspace; earlier panel failures do not establish later visibility.
+Do not modify Git metadata or certify a different tree to bypass a failure.
+Check `recipes` remains the tracked `bundles` symlink. Verify the binary
+against tooling.json (not version alone), then invoke this exact executable:
+
+```bash
+/home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-188-retry2/.forge/bin/brokkr compile --bundle bundles/self
+```
+
+Its required SHA256 is
+`e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`.
+Keep network disabled (`CARGO_NET_OFFLINE=true`) and install nothing.
 Run targeted tests and record nonzero executed-test counts:
 
 ```bash
@@ -182,5 +213,21 @@ rate obligations in their proper contexts. No seat publishes or tags.
 | SQLite refusal reaches wrong stage | Real insert trigger and DATA terminator, exact cause, distinct same-session recovery; preserve existing restart proofs. |
 | Partial QUIT proves only pending marks | Selective later-ID refusal yields committed prefix; HTTP/disk absence and RSET/TOP prove no resurrection. |
 | Scope expands into runtime repair | Preserve real failing evidence and return to triage/full panel; do not silently change the contract. |
+| Candidate or tool identity is unavailable in another seat | Resolve Git objects and exact binary digest in that execution environment before certifying any tree; missing tools/caches/providers remain blockers, never substituted passes. |
 | #177 integration invalidates proof | Root-owned landing before final CI and rerun on integrated tree; retain event ownership changes. |
 | Tests overclaim broader robustness | No new crash durability, exactly-once SMTP, webhook delivery, cap-concurrency or availability promise; existing tests retain those boundaries. |
+
+## Failure-model limits retained from robustness
+
+A commit may survive a lost SMTP acknowledgement; retry can duplicate mail,
+and cancelling a session does not roll back an admitted blocking commit.
+Fresh HTTP reads prove immediate visibility, not crash durability; existing
+restart and CI stop/kill proofs retain that responsibility. Webhooks remain
+best-effort after storage with no durable replay or acceptance backpressure.
+Oldest-only pruning may legitimately evict earlier accepted mail, so these
+witnesses use isolated stores and sufficient capacity. Existing hostile-byte,
+cap/burst and TLS proofs remain intact; the string DATA helper is not a
+byte-fuzzer, and these plaintext scenarios add no certificate fixture.
+Subscribe-before-check and ingest-time extraction remain preserved boundaries.
+Failure Drop cleanup releases/aborts; only the successful path explicitly
+joins, so no failure-path join receipt or global lifetime bound is claimed.

@@ -1,8 +1,10 @@
 # Pin SMTP and POP3 session edges
 
-Date: 2026-10-23. Status: draft design for NEXT-188, issue #188, epic #192.
+Date: 2026-10-23. Status: retry2 draft design for NEXT-188, issue #188, epic #192.
 Base: `cc30ea2`, the review-clean #177 integration candidate. Repository:
-Swarmail, one Rust crate. This design does not close epic #192.
+Swarmail, one Rust crate. Reuse the implementation already committed at
+`e7d1d8142c3e24b2a817822969ab0dae6619680a`, following design `150c84a`.
+This design does not close epic #192.
 
 ## Feature and rationale
 
@@ -50,19 +52,43 @@ authority. A weakening of a frozen guarantee is refused.
 
 ## Panel synthesis and rulings
 
-Read both run-local positions, `simplicity.md` and `robustness.md`, and the
-intake `epic-192-residual-lane-next-188--4fa4a704.md`. Their six substantive
-expectations agree; do not manufacture a semantic disagreement. Resolve
-the implementation choices as follows:
+Read both current run-local positions, `.brokkr/state/design/positions/simplicity.md`
+and `robustness.md`, and intake
+`.brokkr/state/tasks/epic-192-residual-lane-next-188--0658a130.md`.
+The current panel agrees on all six protocol expectations and on retaining
+full4. There is no genuine semantic conflict to average or invent. Replace
+the prior design's attributed API-adapter and serialized-JSON disagreements:
+neither current position advocates them. Rule on the alternatives explicitly:
 
 | Question | Ruling and cost |
 |---|---|
-| Proof depth | Adopt robustness's state-transition and immediate accepted-ID witnesses, also explicitly supported by simplicity. Reject string-only, count-only and new-connection substitutes. Cost: longer real exchanges and explicit envelope/raw/inventory assertions. |
-| Health-test owner | Adopt simplicity's POP3-owner placement and existing task-scoped held-backoff probe. Decline robustness's optional API-side adapter: it widens seam visibility without improving this proof. Cost of owner placement: a small local HTTP test helper/wiring may be needed. |
-| Health body | Adopt robustness's exact JSON value. Do not create a JSON member-order contract from simplicity's serialized-body suggestion. Require HTTP 503 and exactly the two specified members; different semantic JSON, extra keys or the wrong listener fail. Cost: harmless serialization order changes are not detected. |
-| Harness placement | Adopt inline measured stable assertions from both. A concrete failure-only cleanup/diagnostic arm permits only the narrow declared health harness; a four-file budget cannot override 0020. Cost: document the actual cold path and keep its production execution covered. Seam access alone is insufficient. |
-| Fixture architecture | Adopt simplicity's existing clients, two explicit 451 scenarios and real SQLite guards. Reject a general fault framework, scenario enum, public seam or feature flag. Cost: small, readable duplication. |
-| Broader robustness audit | Retain robustness's failure analysis as limits, not new crash/webhook/TLS/burst work. Preserve existing proofs. Cost: these six traces make no new durability, availability, arbitrary scheduling or exhaustive protocol guarantee. |
+| Reimplement or reuse | Adopt simplicity's reuse of the existing candidate and spec family, supported by robustness. Reject duplicate tests, new source files and a second design family. Cost: independently audit inherited implementation and obtain fresh receipts rather than treating prior work as verified. |
+| Proof depth | Adopt robustness's same-session state transitions and immediate accepted-ID/raw/provenance witnesses, also supported by simplicity. Reject prefix-only, count-only and reconnect substitutes. Cost: longer exchanges and distinct fixtures; the cheaper alternative could conceal envelope loss or changed identity. |
+| Health ownership and JSON | Adopt both positions' POP3-local probe, one owner-observed failure and held retry readiness, with exact parsed JSON equality. Reject a new API-side adapter, manually toggled flag, polling and JSON member-order contract. Cost: local HTTP wiring and no detection of harmless object-key reorderings. |
+| Harness placement | Keep the existing stable health proof inline and measured, as both positions advise: its unconditional Drop release/abort and explicit success joins need no cold-arm migration. If a concrete failure-only arm becomes necessary, 0020 wins over a strict four-file budget; move only that proof/helper into a declared sibling harness. Cost: every inline line remains an exact-coverage obligation; a justified migration requires explicit review. |
+| Fixture architecture | Adopt simplicity's bounded raw reader, local SMTP assertion helpers, two explicit 451 scenarios and real SQLite triggers. Reject a general state enum, scenario framework, public seam or feature flag. Cost: small readable duplication and schema-coupled fixtures. |
+| Robustness boundary | Adopt robustness's failure analysis as explicit limits, not new crash/webhook/TLS/burst implementation. Reject widening this lane without a reproduced regression and re-triage. Cost: these finite traces do not establish arbitrary scheduling, exactly-once SMTP, durable webhook delivery or exhaustive transport behavior. |
+| Review and provenance | Adopt both positions' full four independent reviews and source-bound pinned verification. Reject reduced review based on test-only size and reject version-only engine identity. Cost: provider/cache/tool prerequisites can stop delivery. |
+
+### Clarification — 2026-10-23, retry2
+
+The source already contains all six implementations. The chief independently
+resolved workspace Git HEAD to the exact source SHA above, found a clean
+starting worktree, and inspected its four-file diff (405 additions, 30
+deletions); `src/pop3.rs` additions are inside its existing cfg(test) module.
+The source's parent is `150c84a`, whose parent is `cc30ea2`. The earlier
+panel/intake alternate-object visibility failure remains historical evidence;
+it did not recur in this chief workspace and is not a current observed block.
+Every later verification environment must still resolve and bind its own
+candidate; this observation is not a hermetic verification receipt.
+
+The chief also checked the tracked `recipes -> bundles` symlink (mode
+120000), and the candidate `.forge/bin/brokkr` digest
+`e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`
+against tooling.json; it reports 0.12.0. No prior completed gate or four-review
+receipt was found in the available run-local evidence. Tasks below therefore
+require retention, validation and fresh delivery proof, not duplicate coding.
+Design preflights do not substitute for the pinned verify/check seats.
 
 ## Acceptance Criteria
 
@@ -83,11 +109,11 @@ header and envelope senders so a header-only assertion cannot pass.
 ### AC2 — Real POP3 degradation reaches HTTP health
 
 Run the actual POP3 listener and HTTP router sharing the POP3 degraded flag;
-keep SMTP's flag false and shutdown inactive. Establish a real POP3 greeting
-and NOOP and healthy HTTP `/healthz` 200 with status `ok`. Arm one accept
-error on that POP3 owner's probe, wake its accept with a real connection,
+keep SMTP's flag false and shutdown inactive. Establish a real POP3 greeting,
+USER/PASS and NOOP and healthy HTTP `/healthz` 200 with status `ok`.
+Subscribe to the backoff event before arming one accept error on that POP3 owner's probe, wake its accept with a real connection,
 and observe its backoff pending while retry readiness remains held. A real
-HTTP GET must return 503 and exactly the JSON value
+HTTP GET must return `HTTP/1.1 503 Service Unavailable` and exactly the JSON value
 `{"status":"degraded","degraded":["pop3"]}`. Manually setting a degraded
 flag, direct handler calls, SMTP substitution, or another listener's event
 cannot satisfy this criterion. Release the hold and stop/join owned tasks;
@@ -104,13 +130,12 @@ produces `451 4.3.0 storage commit failed`. Keep payloads below the size cap.
 After each 451, on that same socket, RCPT and DATA each return
 `503 5.5.1 Error: need MAIL command`, then NOOP returns `250 2.0.0 OK`.
 Before recovery, HTTP lists the isolated target inbox as exactly empty;
-no refused mail is queryable. If an existing fixture retains a sentinel,
-assert its exact unchanged ID/content instead of an empty set. Remove the
+no refused mail is queryable. The existing fixtures use no sentinel. Remove the
 actual fault, start a fresh envelope on the same connection, and accept
 distinct content with fresh sender and recipients. Immediately fetch the
 returned accepted ID/raw over HTTP and assert exact inbox, envelope sender,
-recipient vector, payload and ID membership (singleton unless a declared
-sentinel exists). Refused recipients/content must not leak into recovery.
+recipient vector, payload and singleton ID membership. Refused
+recipients/content must not leak into recovery.
 MAIL-stage chaos, 552, synthetic commit failures and reconnects do not count.
 
 ### AC4 — PLAIN prompt cancellation returns to the command loop
@@ -172,7 +197,7 @@ selftest, publish/seal proofs and fail-closed native-tls absence. Hermetic
 verify remains offline, installs nothing and runs pinned proof code with
 shim integrity checks. CI-only obligations remain explicitly CI-owned.
 
-Full4 means correctness Qwen Max, security Opus, guarantees official
+Full4 means correctness Qwen Max, security Claude Opus, guarantees official
 DeepSeek Flash, tests DashScope GLM-5.3; never DeepSeek Pro or fallback.
 Root owns #177 publication before final integration/CI and reruns proofs on
 the integrated candidate. Author commits are unsigned; no push, merge,
