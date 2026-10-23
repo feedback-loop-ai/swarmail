@@ -1,6 +1,6 @@
 {
   "schema": "forge.phase-machine/v1",
-  "description": "The realm's phase machine: intake frames, a contrarian design panel argues before any code, implement builds, hermetic gates verify, a four-member review panel judges (correctness, security, guarantees and tests, decision 0013; the protected phase), ship signs. Design and review are model seats; verify, ship and the design check are deterministic exec drivers — the hybrid. security-hold is a hard stop, security residuals never take the tracked-debt path.",
+  "description": "The realm's phase machine: intake frames, a contrarian design panel argues before any code, implement builds, hermetic gates verify, a four-member review panel judges (correctness, security, guarantees and tests, decision 0013; the protected phase), ship records the ledger. Design and review are model seats; verify, ship and the design check are deterministic exec drivers \u2014 the hybrid. security-hold is a hard stop, security residuals never take the tracked-debt path.",
   "phases": [
     "intake",
     "design",
@@ -40,7 +40,7 @@
       "result": "drafted",
       "next": "stop",
       "severity": "hard",
-      "reason": "'drafted' is the chief's intermediate step result; the deterministic check's verdict is the phase result. A phase-level 'drafted' means the check did not rule, so it never advances (decision 0050 §3)."
+      "reason": "'drafted' is the chief's intermediate step result; the deterministic check's verdict is the phase result. A phase-level 'drafted' means the check did not rule, so it never advances (decision 0050 \u00a73)."
     },
     {
       "id": "DESIGN-FAIL-TWICE",
@@ -133,7 +133,9 @@
       "result": "residual",
       "when": {
         "has_security_residual": false,
-        "max_residual_severity_at_most": "medium"
+        "max_residual_severity_at_most": "medium",
+        "spec_defect": false,
+        "fixes_applied": false
       },
       "next": "ship",
       "severity": "flagged",
@@ -145,14 +147,15 @@
       "result": "residual",
       "next": "stop",
       "severity": "hard",
-      "reason": "Security residuals never take the tracked-debt path, and residual safety facts absent, null or malformed are unknown, never shippable: nothing is defaulted or inferred (decision 0050 §4). One rule holds both because the engine refuses an unknown-only stop as dead behind a security rule — with every fact present, the rules above it already decide."
+      "reason": "Security residuals never take the tracked-debt path, and residual safety facts absent, null or malformed are unknown, never shippable: nothing is defaulted or inferred (decision 0050 \u00a74). One rule holds both because the engine refuses an unknown-only stop as dead behind a security rule \u2014 with every fact present, the rules above it already decide."
     },
     {
       "id": "REVIEW-CLEAN-NO-FIXES",
       "from": "review",
       "result": "clean",
       "when": {
-        "fixes_applied": false
+        "fixes_applied": false,
+        "spec_defect": false
       },
       "next": "ship",
       "reason": "Clean with no code changed; verification evidence stands."
@@ -162,7 +165,19 @@
       "from": "review",
       "result": "clean",
       "next": "verify",
-      "reason": "Clean but fixes applied; re-verify before shipping."
+      "reason": "Clean but fixes applied; re-verify before shipping.",
+      "when": {
+        "fixes_applied": true,
+        "spec_defect": false
+      }
+    },
+    {
+      "id": "REVIEW-CLEAN-UNSAFE",
+      "from": "review",
+      "result": "clean",
+      "next": "stop",
+      "severity": "hard",
+      "reason": "Missing, malformed or inconsistent scope/fixes facts cannot authorize shipping or reverification (0057). Explicit scope defects require reframing."
     },
     {
       "id": "SHIP-DRIFT",

@@ -111,3 +111,12 @@ record's own verb and scope, and nothing above is rewritten by it.
   drafted-to-implement shortcut. §3 — unknown residual safety facts do not
   authorize shipping. [0050](0050-delivery-gates.md) §§3–4 then implement
   both.)*
+
+## Later-decision marker — 2026-10-23 (0057)
+
+[0057](0057-codex-delivery-recipes.md), accepted by the operator's
+2026-10-23 directives, adds triage-first Codex bug delivery: isolated and
+broader understood fixes may proceed directly to implementation with one
+or two independent reviewers; risky/design work keeps the design council
+and full panel. All lanes retain the hermetic verification and protected
+review boundary. The historical design ruling above remains as recorded.

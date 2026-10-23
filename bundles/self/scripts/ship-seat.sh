@@ -23,14 +23,16 @@ notes="$(dirname "$result_path")/ship-notes.$$"; trap 'rm -f "$notes"' EXIT
 write_result() { awk -v result="$1" '
   function json(text,out,i,byte,c){for(i=1;i<=length(text);i++){c=substr(text,i,1);if(c=="\\")out=out "\\\\";else if(c=="\"")out=out "\\\"";else{for(byte=1;byte<32&&c!=sprintf("%c",byte);byte++){}out=out (byte<32?sprintf("\\u%04x",byte):c)}}return out}
   BEGIN{printf "{\"result\": \"%s\", \"notes\": \"",result}{if(NR>1)printf "\\n";printf "%s",json($0)}END{print "\"}"}' "$notes" > "$result_path"; }
-ledger=".brokkr/state/ledger/$run_id.md"
+ledger=".forge/ledger/$run_id.md"
 if [ "$rule_id" != "SHIP-READY" ]; then
   [ -n "$journal" ] || { echo "ship-seat: prompt lacks journal path" >&2; exit 2; }
   dirty="$(git status --porcelain 2>&1 || true)"
-  output="$("$brokkr" ledger --run "$run_id" --db "$journal" --repo . 2>&1)"; status=$?
+  output="$("$brokkr" ledger --run "$run_id" --db "$journal" 2>&1)"; status=$?
   [ "$status" -eq 0 ] || { printf 'ship-seat: ledger generation failed: %s\n' "$output" >&2; exit "$status"; }
+  mkdir -p "$(dirname "$ledger")" || exit 2
+  printf '%s\n' "$output" > "$ledger" || exit 2
   if [ -n "$dirty" ]; then printf 'ledger written to %s; worktree discrepancy before close-out: %s' "$ledger" "$dirty" > "$notes"
-  else printf 'ledger written to %s; review the recorded commits and evidence, then push and merge' "$ledger" > "$notes"; fi
+  else printf 'ledger written to %s; operator: review the recorded commits and evidence, then seal the branch before publication and merge' "$ledger" > "$notes"; fi
   write_result ready; exit 0
 fi
 dirty="$(git status --porcelain 2>&1 || true)"; head="$(git rev-parse HEAD 2>&1 || true)"
@@ -39,5 +41,11 @@ if [ ! -f "$ledger" ]; then printf 'close-out discrepancy: ledger %s is missing'
 elif [ -n "$dirty" ] && [ "$head" != "$recorded" ]; then printf 'close-out discrepancies: worktree is dirty (%s); HEAD is %s but ledger records %s' "$dirty" "$head" "$recorded" > "$notes"
 elif [ -n "$dirty" ]; then printf 'close-out discrepancy: worktree is dirty (%s); HEAD still matches ledger at %s' "$dirty" "$head" > "$notes"
 elif [ "$head" != "$recorded" ]; then printf 'close-out discrepancy: HEAD is %s but ledger records %s; worktree is clean' "$head" "$recorded" > "$notes"
-else printf 'close-out confirmed at %s with a clean worktree; ledger %s records the delivery; review, push, and merge next' "$head" "$ledger" > "$notes"; fi
-write_result shipped
+else
+  printf 'close-out confirmed at %s with a clean worktree; ledger %s records the delivery; operator review and branch sealing precede publication and merge (0056)' "$head" "$ledger" > "$notes"
+  write_result shipped
+  exit 0
+fi
+cat "$notes" >&2
+printf '\n' >&2
+exit 2

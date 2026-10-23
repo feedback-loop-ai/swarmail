@@ -243,3 +243,14 @@ proofs. Eight is a subsequent target/ceiling, not a bootstrap success claim.
 | History import becomes false discharge | Preserve snapshot/remote and stopped attempts; no inferred acceptance/supersession |
 | Eight runs collide/exhaust resources | Isolate writable state, shared canonical journal, reservations and throttling; no early launch |
 | Gates expose epic runtime defects | Retain failures and exact floor; repair only in later scoped lanes |
+
+
+## Implementation evidence boundary
+
+The run's [task evidence](tasks.md#implementation-evidence--run-bbd50333)
+records the audited matching receipts and fresh final-engine dispatch controls.
+Only implementation-owned checks are marked there. The implementation commit
+keeps actual committed-candidate hermetic verify, protected four-provider
+review and genuine ship pending. Their later ignored receipts must prove the
+outcome without editing the candidate. Compile/selection fixtures and provider
+smoke do not grant a delivery verdict.

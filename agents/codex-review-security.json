@@ -1,0 +1,9 @@
+{
+  "extends": "review-security",
+  "models": [
+    "opus"
+  ],
+  "efforts": {
+    "opus": "high"
+  }
+}

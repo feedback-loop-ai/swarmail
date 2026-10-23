@@ -33,7 +33,22 @@ sequence's deterministic check is its final exec step, the pinned
 the seat wiring is [`bundles/self/bundle.json`](../bundles/self/bundle.json). Panel members and
 sequence steps carry no `limits` of their own — the seat above them owns
 the budget, and the compiler refuses a declaration it would discard.
-The retired starter reviewer seat (`reviewer.json` + its charter) is
-still in the library but wired nowhere: no seat or panel member in
-`bundles/self/bundle.json` names it. Decision 0009 is accepted; removing
-the two files is a separate library change, not a wiring change.
+The single-seat reviewer (`reviewer.json` + its charter) remains unwired
+in `bundles/self/bundle.json`. It now supplies the base checks for the
+`codex-bug-reviewer` overlay on the fast recipe's small-bug route, with
+an explicit read-only/result contract and scope-defect reporting.
+
+Decision [0057](../docs/decisions/0057-codex-delivery-recipes.md) adds
+`codex-*` office overlays, preserving these charters while selecting the
+operator's Codex work models and independent external reviewers. The shared
+design council now uses those Codex offices. See the
+[recipe tables](../bundles/README.md) for exact chains, efforts and launch
+commands. The `self` intake/implement and review offices above retain their
+original chains; the Codex recipes use singleton reviewer chains with no
+fallback and never select DeepSeek Pro.
+
+`codex-fast` adds `codex-triage`, `codex-fast-implementer` and
+`codex-bug-reviewer`: triage records scope, the implementer returns broader
+work for reclassification, and the single reviewer owns correctness and
+security together. Broader fixes use the existing correctness/security
+offices; full design and engine work retain all four review lenses.

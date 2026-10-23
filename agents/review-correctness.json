@@ -4,8 +4,5 @@
   "models": [
     "qwen-max",
     "glm-flash"
-  ],
-  "efforts": {
-    "qwen-max": "high"
-  }
+  ]
 }

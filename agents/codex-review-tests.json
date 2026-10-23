@@ -1,0 +1,6 @@
+{
+  "extends": "review-tests",
+  "models": [
+    "glm53"
+  ]
+}

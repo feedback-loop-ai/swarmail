@@ -32,7 +32,8 @@
       "inputs": [
         "fixes_applied",
         "has_security_residual",
-        "max_residual_severity"
+        "max_residual_severity",
+        "spec_defect"
       ],
       "limits": {
         "max_attempts": 3,
@@ -143,16 +144,16 @@
           "aggregate": "unanimous-pass",
           "panel": {
             "simplicity": {
-              "agent": "position-simplicity"
+              "agent": "codex-position-simplicity"
             },
             "robustness": {
-              "agent": "position-robustness"
+              "agent": "codex-position-robustness"
             }
           }
         },
         {
           "name": "chief",
-          "agent": "chief-architect",
+          "agent": "codex-chief-architect",
           "results": [
             "drafted"
           ]
@@ -180,5 +181,5 @@
       ]
     }
   },
-  "description": "Swarmail's own delivery constitution: the hybrid machine — a contrarian design panel argues before any code (positions → chief → deterministic design-check), implement builds, hermetic gates verify, a four-member review panel judges (correctness, security, guarantees and tests, decision 0013; the protected phase), and ship signs. The work seats (intake, design, implement) run glm-flash (spark-glm/GLM-5.3-Flash-EXL3) via the dsh driver; each review member runs its own model route with a glm-flash fallback; verify, ship and the design check are hermetic exec gates."
+  "description": "Swarmail's own delivery constitution: the hybrid machine \u2014 a contrarian design panel argues before any code (positions \u2192 chief \u2192 deterministic design-check), implement builds, hermetic gates verify, a four-member review panel judges (correctness, security, guarantees and tests, decision 0013; the protected phase), and ship records the ledger. The default intake and implement seats use glm-flash; the shared design council uses Codex Sol/Astra (0057); each review member runs its own model route with a glm-flash fallback; verify, ship and the design check are hermetic exec gates."
 }

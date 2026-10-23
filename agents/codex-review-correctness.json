@@ -1,0 +1,6 @@
+{
+  "extends": "review-correctness",
+  "models": [
+    "qwen-max"
+  ]
+}

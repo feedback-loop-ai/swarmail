@@ -84,3 +84,12 @@ keep the marginal attempt survivable.
   the panel's job is independence, not sympathy.
 - 0007's title keeps its historical meaning; this document is the
   index's pointer for the judging axis from 2026-10-13 onward.
+
+## Later-decision marker — 2026-10-23 (0057)
+
+[0057](0057-codex-delivery-recipes.md), accepted by the operator's
+2026-10-23 directive, amends the work-route restriction and adds the
+Codex recipes' independent reviewer mapping. The shared design council
+now uses Codex Sol/Astra. Hermetic exec verification/shipping, the four
+review lenses, worst-verdict aggregation and the hard security hold remain
+in force. The historical ruling above is not rewritten.

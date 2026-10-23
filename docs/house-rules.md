@@ -5,7 +5,8 @@ integration tests under `tests/` speak the real protocol against real servers.
 The delivery constitution lives in `bundles/self/` (`bundle.json` +
 `policy.json`) and is compiled by brokkr (`brokkr compile --bundle
 bundles/self`); the journal is `.brokkr/state/forge.db` (append-only, gitignored).
-The constitution is a bundle directory and not the repo root so the run's
+New recipe runs use `.forge/forge.db` (0057); the earlier journal path
+remains historical evidence and must not be fabricated. The constitution is a bundle directory and not the repo root so the run's
 own journal writes and git objects stay outside the pinned manifest — a
 root-level bundle pins its whole directory and could never survive a
 resume.
@@ -203,16 +204,24 @@ asked to re-sign.
 
 ## Delivery through brokkr
 
-Every feature lands through a brokkr run: `brokkr run` drives
+Every feature lands through a brokkr run. The default full route drives
 intake → design → implement → verify → review → ship (decision 0009,
 *accepted*: the realm runs the speckit dialect, a contrarian design
 panel argues before any code, a chief commits the spec, a deterministic
 check rules the artifacts, and review is a four-member panel —
 correctness and security among them, decision 0013); the review gate is constitutionally protected and
 security-hold is a hard stop. `verify` and `ship` are hermetic exec
-seats — a shell proves what a model claims. The work axis (intake,
-design, implement) is pinned to `spark-glm/GLM-5.3-Flash-EXL3`
-(`glm-flash`) only; the review panel is one independent model route per
-member — `qwen-max`, `opus`, `astra`, `fable`, each falling back to
-`glm-flash` (decision 0013). Adding a route is a decision document, not
-an edit.
+seats — a shell proves what a model claims. Decision
+[0057](decisions/0057-codex-delivery-recipes.md) adds the operator-directed
+Codex recipes: Sol intake and implementation, a shared Sol/Astra design
+council, and independent Qwen Max, Opus, official DeepSeek Flash and
+DashScope GLM 5.3 reviewers, without model fallbacks. `codex-fast` triages
+first: isolated bugs go directly to implementation and one reviewer,
+broader understood fixes get two reviewers, and risky/design work keeps
+the design council and four reviewers. Every lane retains all shell gates,
+protected review and the hard security hold. The `self` bundle
+retains GLM intake/implementation and its original `qwen-max`, `opus`,
+`astra`, `fable` review chains from decision 0013; its shared design now
+uses Codex. Adding a route is a decision document, not an undocumented
+edit. Up to eight isolated delivery runs may execute concurrently under
+0057; no run pushes or merges.

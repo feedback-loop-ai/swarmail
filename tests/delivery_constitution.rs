@@ -55,7 +55,7 @@ fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
     );
     assert_eq!(
         residual[1]["when"],
-        json!({"has_security_residual": false, "max_residual_severity_at_most": "medium"})
+        json!({"has_security_residual": false, "max_residual_severity_at_most": "medium", "spec_defect": false, "fixes_applied": false})
     );
     assert_eq!(residual[1]["next"], "ship");
     assert_eq!(residual[2].get("when"), None);

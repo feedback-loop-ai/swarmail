@@ -1,8 +1,22 @@
 {
   "brokkr": {
-    "sha": "67a1886e5fcfa777e5bdc7eb3c153bb1fa53bbcf",
+    "sha": "597f4868e3fb971b62e6a368a2d8aa23271f4531",
     "version": "0.12.0",
-    "binary_sha256": "38c698a4648f6c7032f33b25bbcddb635377b9450abb0e97fe04aade1fbf95d1",
-    "binary_provenance": "Recorded by the operator on 2026-10-19 for the binary that runs epic #120's verify seat (.brokkr/state/epic120/bin/brokkr-fixed2, brokkr 0.12.0): an operator build of brokkr-library's branch head with two since-merged fixes, NOT a build of the commit named in sha. The digest, not sha, is what verify checks."
+    "binary_sha256": "e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c",
+    "binary_provenance": "Built with rustc 1.98.0 from exact base 597f4868e3fb971b62e6a368a2d8aa23271f4531 plus all three checksum-pinned ordered patches, including explicit untracked-file inspection despite Git status configuration. Exact six-file source composite49611f8d62c495467acdc4cb3f77c1e17bc5148339aaa3d48830e25214f3ac6b; Cargo manifests/lock unchanged. Release --locked --offline build, full core/runtime tests, fmt and all-targets clippy passed. Receipt .forge/epic192/engine-repair/untracked-config-release-receipt.json. Staged executable awaits root activation.",
+    "patches": [
+      {
+        "path": "tooling-patches/0001-preserve-review-residual-facts.patch",
+        "sha256": "5d4da2217135c5a2ca14354ae9907623cf67ff0076b078277cb77a09ad3020b5"
+      },
+      {
+        "path": "tooling-patches/0002-preserve-review-scope-and-fixes.patch",
+        "sha256": "361272eff344a5d5e05b832281407a99c3f1a77fc1fbc5216e19fb4ce7487173"
+      },
+      {
+        "path": "tooling-patches/0003-bind-verified-candidate.patch",
+        "sha256": "4098228e7649d1bda8961bb491aa29d982b462c420470e265f8b9acf0a148d96"
+      }
+    ]
   }
 }
