@@ -3,6 +3,7 @@
 Created: 2026-10-23
 Reframed: 2026-10-23, run `finish-and-deliver-the-operator--e326f5c1`
 Reconciled: 2026-10-23, run `finish-and-deliver-the-operator--64fd181b`
+Reconciled: 2026-10-23, run `finish-and-deliver-the-operator--bbd50333`
 Branch: `epic192-codex-recipes`
 Status: design draft; implementation and delivery proof remain outstanding
 
@@ -32,8 +33,8 @@ No accepted historical body or other proposal's status changes here.
 ## Council synthesis
 
 Inputs are both new `.brokkr/state/design/positions/{simplicity,robustness}.md`
-positions for run `64fd181b` and
-`.brokkr/state/tasks/finish-and-deliver-the-operator--64fd181b.md`.
+positions for run `bbd50333` and
+`.brokkr/state/tasks/finish-and-deliver-the-operator--bbd50333.md`.
 These ignored files are run-local evidence; the following rulings are the
 committed synthesis, not an average of the positions.
 
@@ -53,23 +54,23 @@ committed synthesis, not an average of the positions.
    result consumption or clean close-out. Require execution at each distinct
    boundary. Reject a configuration-only finish even if compile is green.
    Both positions accept this obligation. The rejected shortcut would be
-   faster: paid review,
-   refusal probes and possible delivery failure remain necessary.
+   faster; paid review, refusal probes and possible delivery failure remain
+   necessary. Neither position requests universal extra paid deliveries.
 4. **Rule for simplicity on proof breadth.** Reuse valid receipts and the
    exact-core harness after checking provenance. Reject a second full paid
    delivery solely for careful's effort change, and eight epic deliveries as
-   bootstrap acceptance. Actual fast 1/2/4 selection and aggregation still
-   need proof. The cost is explicitly unexercised live behavior for variants
+   bootstrap acceptance. Actual fast 1/2/4 selection and aggregation require
+   matched evidence, including existing final-binary fixtures. The cost is explicitly unexercised live behavior for variants
    not dispatched; static assignment is never live proof.
-5. **Adopt both positions' blocking aggregation finding.** The repaired fast
-   table returns known scope defects on all four strategies and requires
-   explicit false scope/fixes for shipping. The ship script now refuses
-   close-out discrepancies with exit 2. Those repairs do not prove member
-   validation: the declared aggregate still defaults missing scope to false
-   and writes false fixes unconditionally. Require exact-engine member-level
-   refusal evidence before delivery. If no earlier enforcement exists, stop
-   for a new pin that repairs validation/aggregation; do not edit the pin or
-   weaken the requirement. The cost is another run and delayed epic repairs.
+5. **Adopt robustness's fact and candidate boundaries in their existing owners.**
+   Patch 0002 now preserves unknown scope/fixes and witnessed true flags;
+   patch 0003 binds verification to journal-owned HEAD/tree and rejects
+   inconsistent clean results at singleton consumption too. The previous
+   source-level blocker is historical, not the present implementation.
+   Reconcile matching final-engine evidence before reuse; require remaining
+   dispatch proofs. Reject a second evaluator, candidate sidecar or late shell
+   repair of admitted facts. The cost is provenance work and another stopped
+   bootstrap if a necessary pinned defect is demonstrated.
 6. **Adopt independent review and explicit safe admission.** No fallback,
    DeepSeek Pro, scope laundering of security debt or missing-fact inference.
    Allow inherited tracked debt only with explicit non-security and valid
@@ -107,44 +108,54 @@ retries an inadequate lane, and reclassification absorbs the new evidence.
 Monotonic scope is a charter obligation, not proved by counters alone.
 
 The single Flash reviewer owns security holds as well as scope checking.
-For panels, Opus owns security holds; worst verdict wins. Every fast-lane
-ship allow requires explicit `spec_defect: false` and `fixes_applied: false`.
-Known scope defects from unchanged review return to triage on chore, feature,
-design and engine;
-residual returns also require explicit non-security, at-most-medium debt.
-Security holds and above-medium debt retain stop precedence. A clean panel
-result with actual fixes and explicit false scope takes the supported
-reverification path; inconsistent scope/fixes refuses. Neither ships directly
-nor grants reviewers write authority.
+For panels, Opus owns security holds; worst verdict wins. Every review-to-ship
+allow in self, codex, careful and fast requires explicit `spec_defect: false`
+and `fixes_applied: false`.
+Known scope defects from unchanged fast review return to triage on chore,
+feature, design and engine; self/codex/careful refuse a known scope defect
+without inventing a triage transition. Residual returns also require explicit
+non-security, at-most-medium debt.
+Security holds and above-medium debt retain stop precedence. A clean result
+with known true fixes and explicit false scope can select the
+supported reverification rule (full recipes and fast feature/design/engine,
+not fast chore), subject to candidate binding. A committed reviewer edit
+violates that binding even if the result reports false fixes and Git is clean.
+The rule neither grants write authority nor bypasses the measured witness.
 Missing or malformed facts must not become safe by aggregation. Unknown scope
 is not inferable from a clean tree; a reviewer can commit an edit and leave
 that tree clean. Preserve witnessed scope/fixes and bind review to the verified
 candidate's HEAD and tree, as well as checking worktree/index cleanliness.
 
-## Blocking member-fact proof
+## Fact preservation and candidate identity
 
-The declared composite's `crates/brokkr-runtime/src/bundle/aggregate.rs`
-sets `fixes_applied` to false unconditionally and joins `spec_defect` through
-`as_bool().unwrap_or(false)`. Both panel positions and chief inspected this
-source. The residual safety patch does not establish mandatory earlier
-validation of those fields. This is a source-level gap, not a claimed fresh
-end-to-end bypass reproduction.
+Scope and fixes are optional booleans: a witnessed true dominates false and
+unknown; otherwise unknown prevents a false aggregate. Missing, null and
+wrong-typed fields cannot manufacture permission. Residual security/severity
+unknowns remain unknown, witnessed security and high severity survive joins,
+and explicit clean results carrying security or above-none debt refuse even
+in singleton review. Explicit non-security residuals of valid at-most-medium
+severity remain allowed with false scope and false fixes. Zero unsafe admission
+must not silently become a new zero-debt contract.
 
-Before implementation is certified, probe the exact active executable through
-member consumption and aggregation on singleton, paired and four-member
-paths. For clean and residual results, exercise absent inputs; missing, null
-and wrong-typed scope/fixes; true scope; true fixes; contradictory members;
-and valid explicit-false controls. A clean tree alone cannot supply a missing
-scope judgment. An authoritative measured mutation fact must preserve any
-witnessed edit and its candidate identity; a read-only charter is no substitute.
-Unknowns must stop, a known scope defect must not ship, and actual fixes must
-not be erased. Preserve hold/above-medium dominance and explicit-safe debt.
+Actual advancing verification records `verified_candidate` with HEAD and tree
+in engine-owned journal inputs. Protected review and ship compare against
+that witness, refusing missing/spoofed witnesses, committed reviewer drift,
+dirty index/worktree, unreadable Git and untracked files, including when
+`status.showUntrackedFiles=no`. Restart retains the witness. Preserve the
+existing gate HEAD-span refusal as an additional boundary. Neither a seat
+receipt, a read-only charter nor a clean status can replace measured identity.
+The candidate protection applies to these recipes with a verify phase; exec
+fixtures lacking verification do not prove this boundary.
 
-An earlier mandatory refusal may discharge this obligation with executed
-receipts. Otherwise report the precise source/patch/tooling repair and stop
-for an assistant-prepared new pin. No in-run pinned edit, wrapper, alternate
-engine, default inference or waived criterion is permitted. Later verification,
-protected review and ship remain outstanding while this boundary is unproved.
+The current evidence is bounded: 124 final-binary CLI member cases and twelve
+verify/review candidate controls execute no providers; 102,110 exact-core
+policy evaluations prove evaluator behavior, not dispatch. Reuse only after
+matching source, binary and relevant inputs. Remaining 1/2/4 selection,
+restart/result-association and final-engine ship obligations must be resolved
+before delivery, with positive controls and refusals at the owning boundary.
+Do not repeat unchanged proofs merely to spend time or call fixtures product
+delivery. A demonstrated required pinned repair stops this run for a new pin;
+no alternate executable, digest waiver, hidden source edit or wrapper bypass.
 
 ## Model and execution requirements
 
@@ -179,7 +190,7 @@ not confinement claims. Record credential names only.
   paths, old-run scope exclusions or fabricated acceptance remain.
 - **AC2 — Frozen composition.** All current authorized bootstrap bytes are
   reviewed and later committed unsigned. Bundle/agent/adapter/charter/policy/
-  tooling bytes match this run's pin. Digest-matched `.forge/bin/brokkr`
+  script/tooling bytes match this run's pin. Digest-matched `.forge/bin/brokkr`
   actually compiles self, codex, careful and fast with zero unruled valuations
   and no sweep warnings. Named discovery agrees with explicit composition;
   complete design/verify/ship origin remains self. A needed pin repair stops
@@ -190,16 +201,19 @@ not confinement claims. Record credential names only.
   new strategy selection, first-return/repeated-oversized/third-visit stops,
   and refusal of unsafe scope growth. Demonstrate a supported non-shipping
   disposition for scope defects on every strategy and its aggregation.
-  Missing proof or an admitted known defect blocks delivery.
+  Fast returns known scope defects on all four strategies; full non-triage
+  recipes refuse them. Missing proof or an admitted known defect blocks delivery.
 - **AC4 — Safe review.** Execute the recorded core evaluator across valid
   strategies, unknown selectors, all valid severities, true/false and
   absent/null/wrong-typed safety, scope and fixes facts. Record first-match
   rule IDs/destinations, above-medium precedence, explicit-safe debt and final
-  unsafe refusal. Separately execute the member-fact matrix above on 1/2/4
-  paths, including valid controls: no omitted/malformed scope/fixes can become
-  false, witnessed defects/edits cannot disappear, and one hold dominates
-  clean members. Incomplete results cannot pass. Require zero unsafe residual
-  admission or security-to-scope laundering. A required pinned repair blocks
+  unsafe refusal. Match or execute the 1/2/4 clean/residual member matrix:
+  absent inputs, missing/null/wrong-typed scope/fixes, true scope/fixes,
+  conflicting members and explicit-false controls. No omitted/malformed facts
+  can become false, witnessed defects/edits cannot disappear, and one hold dominates
+  clean members. Explicit clean security or above-none residuals refuse,
+  including singleton results. Incomplete results cannot pass. Require zero
+  unsafe residual admission or security-to-scope laundering. A required pinned repair blocks
   delivery until a new pin proves it; predicate tests alone cannot close AC4.
 - **AC5 — Routes and results.** Tests pin models/efforts/hands and exact
   1/2/4 reviewer cardinality. Real engine evidence proves distinct selector/
@@ -220,18 +234,25 @@ not confinement claims. Record credential names only.
 - **AC7 — Ship and restart.** Actual ship renders a nonempty ledger from
   this run's real journal at `.forge/ledger/<run>.md`, with candidate/head
   agreement, clean index/worktree and real engine close-out. Recorded-engine
-  refusal probes establish that dirty tree/index, changed HEAD and empty,
-  missing or mismatched ledger cannot reach done. The repaired script emits
-  shipped only for matching ledger/HEAD and a clean tree; exit 2 on a
+  refusal probes establish that dirty tree/index, changed HEAD/tree, hidden
+  untracked files and empty, missing or mismatched ledger cannot reach done,
+  alongside an unchanged successful control. The older ship receipt is not
+  final-engine evidence. Engine binding and shell close-out have separate
+  owners. The repaired script emits shipped only for matching ledger/HEAD
+  and a clean tree; exit 2 on a
   discrepancy must remain a real engine refusal. Ready is preliminary, never
-  delivery success. Prove final dispatch; labels or notes are insufficient. Restart
-  preserves pin, run identity, counters and attempt/result association;
-  missing/partial results are incomplete, never implicit success.
+  delivery success. Prove final dispatch; labels or notes are insufficient.
+  Restart preserves pin, run identity, counters, attempt/result association and the
+  journal-owned verified HEAD/tree witness. Missing/spoofed witnesses and
+  dirty/untracked/unreadable Git refuse; committed reviewer edits refuse even
+  with clean status. Missing/partial/stale/misassociated results never advance.
 - **AC8 — Evidence and delivery.** Receipts name candidate, engine/pin,
   run/attempt, command/provider, exit/verdict and result/log location without
   secrets. Validate core-probe provenance and input identities before reuse;
-  explicitly reconcile its stale tooling-record digest with the active
-  base-plus-patch identity, or rerun the existing harness. Preserve old receipts.
+  match the current three-patch build/activation chain, resolved tables and
+  evidence hashes, or rerun the existing harness for changed inputs. The
+  refreshed policy receipt matches current identity; old counts and digest
+  complaints are historical. Preserve old receipts and source baseline reds.
   The patch helper must reject wrong HEAD, dirty tracked tree/index, invalid
   hashes/paths and malformed/duplicate JSON before patch mutation; CI applies
   the declared ordered bytes and runs actual engine regressions before build.
@@ -241,15 +262,21 @@ not confinement claims. Record credential names only.
   receipts remain ignored. Missing proof, provider/gate failure, sweep warning,
   dirty shipping tree or required pinned repair is outstanding. Preserve
   stopped-run history and the recovered immutable audit snapshot; never
-  run/resume/operator/import that snapshot, mutate remote history, fabricate
-  old rulings or prematurely supersede any finding.
+  resume or mutate that snapshot, mutate remote history, fabricate old rulings
+  or supersede any finding without matching evidence and authority. Verified
+  export/import already adopted 67 recovered runs and three stopped bootstraps
+  (70 before this run); import is not acceptance, resume or discharge.
 - **AC9 — Bounded bootstrap and isolation.** No production runtime,
   dependency/allowlist, coverage-denominator or accepted-body changes. Commit
   authorized recipe work unsigned, never push/merge. Document up to eight
-  isolated branches/worktrees/journals/evidence/writable targets/cache overlays,
-  ports/inboxes/data files, overlap reservations and integration gates. Reserved
-  wave1 and A–H batches wait until recipes are reviewable. Chief launches none;
-  eight concurrent successes require eight receipts, not directories.
+  isolated Git stores/branches/worktrees/results/evidence/build/coverage/cache
+  overlays, ports/inboxes/data and reserved 16-CPU groups. All future lanes
+  share canonical `.forge/forge.db`, visible in ordinary `brokkr tui`; no
+  relocation or alias of an open journal/WAL. Reserve overlapping files and
+  rerun integration gates. Reserved wave1/A–H launches wait until bootstrap
+  actually completes. Their committed recipe baseline stays immutable; later
+  gate repairs use separate writable candidate scripts and execute repaired
+  proofs. Eight successes require eight actual outcomes, not directories.
 
 ## Historical clarification — 2026-10-23
 
@@ -265,22 +292,39 @@ only. No prior live-delivery or final-gate claim transfers to this revision.
 
 Stopped run `finish-and-deliver-the-operator--e326f5c1` and approved unsigned
 spec commit `8cb8bb9` also remain history. Its actual fail-open aggregation
-and ship findings are not superseded by this draft. This revision replaces
-obsolete chore-only scope and discrepancy-as-shipped descriptions with the
-prepared repairs, while retaining the new member-fact obligation above.
+and ship findings are not superseded by a draft. The next stopped run
+`finish-and-deliver-the-operator--64fd181b` committed `cdbd579` and its design
+check passed; that run identified the scope/fixes gap in the then-active
+one-patch composite. The one-patch binary identity and blocker in that dated
+revision describe historical inputs, not the current engine. Their full
+bytes and findings remain in Git and the retained run evidence.
 
-The active binary is `.forge/bin/brokkr`, SHA-256
-`517c22680beaaf354f6ee3d01e4b964669ecd030a3ea4d9d4554d88e50c83bf0`.
-Its identity is source base `597f4868e3fb971b62e6a368a2d8aa23271f4531`
-PLUS ordered patch `bundles/self/tooling-patches/0001-preserve-review-residual-facts.patch`,
-SHA-256 `5d4da2217135c5a2ca14354ae9907623cf67ff0076b078277cb77a09ad3020b5`.
-Never certify the base alone as containing the repair or select the archived
-base executable. Detailed proof ownership and receipt limits are in the plan.
+## Final-composite clarification — 2026-10-23
 
-The recovered `.forge/epic192/history/agents-server-forge.snapshot.db` is
-immutable audit evidence, with snapshot receipt and `ruling-index.json`
-reporting 67 runs, 24 rulings and 96 member notes. Recovery corrects the old
-missing-journal limitation; it does not accept, rerun or supersede findings.
+This new run `finish-and-deliver-the-operator--bbd50333` uses executable
+`.forge/bin/brokkr`, SHA-256
+`e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`.
+Source identity is exact base `597f4868e3fb971b62e6a368a2d8aa23271f4531`
+PLUS the ordered checksum-pinned 0001 residual-facts, 0002 scope/fixes and
+clean-inconsistency, and 0003 verified-candidate patches in
+`bundles/self/tooling.json`. Composite diff SHA-256 is
+`49611f8d62c495467acdc4cb3f77c1e17bc5148339aaa3d48830e25214f3ac6b`.
+Never describe it as a clean-base build or select an archived executable
+because version 0.12.0 matches. The normal PATH engine must match too.
+The plan records all patch digests and evidence limits. The build receipt's
+staged-not-activated wording predates `.forge/epic192/active-engine.json`;
+that later record activates the same bytes. Preserve both, without changing
+pinned provenance prose during this run.
+
+The recovered `.forge/epic192/history/agents-server-forge.snapshot.db` stays
+immutable, as does the remote original. Verified adoption and re-export
+retain byte-identical streams/manifests. The 67 recovered runs plus three
+stopped bootstraps total 70 before this run; this chief has not recounted the
+journal. Counts are context, never proof of discharged findings. The later
+canonical-journal clarification in 0057 governs earlier per-lane-journal
+wording. Recorded corrected-0051 acceptance and the specific 0047 JSON-RPC ID
+amendment in `.forge/epic192/operator-rulings.json` remain later-lane adoption/
+implementation, with no publication authority and no bootstrap runtime work.
 
 ## Preserved behavior and exclusions
 
