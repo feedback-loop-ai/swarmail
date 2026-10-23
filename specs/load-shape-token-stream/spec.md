@@ -257,7 +257,7 @@ review):
    walk already uses.
 5. **All six house gates pass at the repair commit**, with `export
    PATH="$HOME/.cargo/bin:$PATH"` and the coverage gate run with
-   `TMPDIR=/home/valentin/scratch/cov-tmp`: fmt, clippy `-D warnings`,
+   `TMPDIR=/operator-scratch/cov-tmp`: fmt, clippy `-D warnings`,
    `cargo test`, `brokkr compile --bundle bundles/self`,
    `scripts/coverage-gate.sh` (selftest green, **exact 100/100/100,
    miss == 0**), `cargo deny check licenses`.

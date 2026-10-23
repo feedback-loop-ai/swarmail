@@ -279,7 +279,7 @@ only:
   `brokkr compile --bundle bundles/self` all exit 0; the suite is 470
   tests. *Proof:* the commands themselves — run this session at
   `791f83d` (470 passed, 0 failed, 1 ignored).
-- **AC-G.2** `TMPDIR=/home/valentin/scratch/cov-tmp bash
+- **AC-G.2** `TMPDIR=/operator-scratch/cov-tmp bash
   scripts/coverage-gate.sh` reports exact 100/100/100, missed == 0, no
   `coverage(off)`. The TMPDIR is absolute — the gate is never run on
   tmpfs, and never run twice without need (red line 10). *Proof:*

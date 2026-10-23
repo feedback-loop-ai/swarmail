@@ -15,7 +15,7 @@ set's mechanics, and the risks. The design (WHAT/WHY) is
   commits is two count-neutral assertion tightenings inside existing
   tests (A4, A5). Everything else is sentences in owning artifacts.
 - **The gates are the proof vehicle**, with the coverage gate's
-  `TMPDIR=/home/valentin/scratch/cov-tmp` mandatory (the gate dies on
+  `TMPDIR=/operator-scratch/cov-tmp` mandatory (the gate dies on
   `/tmp` tmpfs — run 11's predecessor stopped on exactly this). No mocks:
   every proving test speaks the real protocol against a real server.
 
@@ -86,7 +86,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked          # 470 passed, 0 failed, 1 ignored
 brokkr compile --bundle bundles/self
-TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh   # exact 100/100/100
+TMPDIR=/operator-scratch/cov-tmp bash scripts/coverage-gate.sh   # exact 100/100/100
 cargo deny check licenses
 ```
 

@@ -848,6 +848,16 @@ async fn chaos_wrong_typed_probability_keeps_the_extractor_envelope_and_the_rule
     assert_eq!(before, after, "an extractor rejection stores nothing");
 }
 
+async fn next177_registered(addr: std::net::SocketAddr, inbox: &str) -> u64 {
+    let (st, metrics) = http_get_text(addr, "/metrics").await;
+    assert_eq!(st, 200);
+    common::metric_row_value(
+        &metrics,
+        &format!("swarmail_awaits_registered_total{{inbox=\"{inbox}\"}}"),
+    )
+    .expect("the exclusive inbox must have an attributable cumulative row")
+}
+
 /// Supplied malformed `timeout_ms` values keep REST's parse-time 400 — the
 /// query layer refuses before the handler runs, so no waiter is ever
 /// registered — while `0` is a legal, real zero deadline: an immediate 408
@@ -856,35 +866,47 @@ async fn chaos_wrong_typed_probability_keeps_the_extractor_envelope_and_the_rule
 #[tokio::test]
 async fn await_supplied_malformed_timeouts_are_parse_refusals_and_zero_is_a_real_deadline() {
     let srv = start().await;
-    for value in ["-1", "invalid", "null", "1.5"] {
+    let inbox = "next177-rest-malformed";
+    let zero = format!("/api/v1/inboxes/{inbox}/await?count=1&timeout_ms=0");
+    let (st, body) = http_json(srv.http_addr, "GET", &zero, None).await;
+    assert_eq!(st, 408, "{body}");
+    assert_eq!(body["matched"], 0);
+    assert_eq!(next177_registered(srv.http_addr, inbox).await, 1);
+    for value in ["-1", "invalid", "null", "1.5", "60001"] {
+        let before = next177_registered(srv.http_addr, inbox).await;
         let (st, body) = http_json(
             srv.http_addr,
             "GET",
-            &format!("/api/v1/inboxes/malformed/await?count=1&timeout_ms={value}"),
+            &format!("/api/v1/inboxes/{inbox}/await?count=1&timeout_ms={value}"),
             None,
         )
         .await;
         assert_eq!(st, 400, "{value}: {body}");
         assert!(
-            body["error"].as_str().unwrap().contains("await"),
+            body["error"]
+                .as_str()
+                .unwrap()
+                .contains(if value == "60001" { "60000" } else { "await" }),
             "{value}: {body}"
         );
+        assert_eq!(
+            next177_registered(srv.http_addr, inbox).await,
+            before,
+            "refusal registered: {value}"
+        );
     }
-
-    let started = std::time::Instant::now();
-    let (st, body) = http_json(
-        srv.http_addr,
-        "GET",
-        "/api/v1/inboxes/zero-deadline/await?count=1&to=nobody@x.io&timeout_ms=0",
-        None,
-    )
-    .await;
+    let before = next177_registered(srv.http_addr, inbox).await;
+    let (st, body) = http_json(srv.http_addr, "GET", &zero, None).await;
     assert_eq!(st, 408, "{body}");
-    assert_eq!(body["matched"], 0, "{body}");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "timeout_ms=0 must answer its own deadline at once: {:?}",
-        started.elapsed()
+    assert_eq!(body["matched"], 0);
+    assert_eq!(next177_registered(srv.http_addr, inbox).await, before + 1);
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    assert_eq!(
+        common::metric_row_value(
+            &metrics,
+            &format!("swarmail_awaits_active{{inbox=\"{inbox}\"}}")
+        ),
+        None
     );
 }
 
@@ -893,62 +915,50 @@ async fn await_supplied_malformed_timeouts_are_parse_refusals_and_zero_is_a_real
 /// layer handed every flattened field over as a string and serde refused
 /// the integer, so `since_ms` was refused on both while list accepted it.
 /// The flat struct (decision 0029 §1) makes the parameter set explicit — a
-/// past `since_ms` is an inclusive filter, a future one is a real filter
-/// the wait can time out and the assert can conflict on, and a malformed
+/// fixture-derived `since_ms` includes equality and excludes the next stamp
+/// on list, await and assert; a malformed
 /// value keeps the parse refusal naming the field (decision 0025).
 #[tokio::test]
 async fn await_and_assert_parse_since_ms_exactly_as_list_does() {
     let srv = start().await;
-    seed(srv.http_addr, "flt", "user@example.com").await;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock is set")
-        .as_millis() as i64;
-
-    // A `since_ms` in the past is inclusive: the mail matches, on both.
-    let past = now - 10_000;
-    let (st, body) = http_json(
-        srv.http_addr,
-        "GET",
-        &format!("/api/v1/inboxes/flt/await?count=1&to=user@example.com&since_ms={past}"),
-        None,
-    )
-    .await;
-    assert_eq!(st, 200, "{body}");
-    assert_eq!(body["matched"], 1, "{body}");
-    let (st, body) = http_json(
-        srv.http_addr,
-        "GET",
-        &format!("/api/v1/inboxes/flt/assert?count=1&to=user@example.com&since_ms={past}"),
-        None,
-    )
-    .await;
-    assert_eq!(st, 200, "{body}");
-    assert_eq!(body["matched"], 1, "{body}");
-
-    // A `since_ms` in the future excludes the mail — the filter is live,
-    // not decoration: the wait can time out on it, the assert conflicts.
-    let future = now + 600_000;
-    let (st, body) = http_json(
-        srv.http_addr,
-        "GET",
-        &format!(
-            "/api/v1/inboxes/flt/await?count=1&to=user@example.com&since_ms={future}&timeout_ms=200"
-        ),
-        None,
-    )
-    .await;
-    assert_eq!(st, 408, "{body}");
-    assert_eq!(body["matched"], 0, "{body}");
-    let (st, body) = http_json(
-        srv.http_addr,
-        "GET",
-        &format!("/api/v1/inboxes/flt/assert?count=1&to=user@example.com&since_ms={future}"),
-        None,
-    )
-    .await;
-    assert_eq!(st, 409, "{body}");
-    assert_eq!(body["matched"], 0, "{body}");
+    let fixture = seed(srv.http_addr, "flt", "user@example.com").await;
+    let stamp = fixture["received_ms"]
+        .as_i64()
+        .expect("seed's actual parse-start stamp");
+    let id = fixture["id"].as_str().unwrap();
+    let after = stamp.checked_add(1).unwrap();
+    for (boundary, matched) in [(stamp, 1), (after, 0)] {
+        let (st, list) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/flt/messages?to=user@example.com&since_ms={boundary}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, 200);
+        assert_eq!(list["total"], matched);
+        let emails = list["emails"].as_array().unwrap();
+        assert_eq!(emails.len(), matched as usize);
+        if matched == 1 {
+            assert_eq!(emails[0]["id"], id);
+        }
+        let (st, body) = http_json(srv.http_addr, "GET",
+            &format!("/api/v1/inboxes/flt/await?count=1&to=user@example.com&since_ms={boundary}&timeout_ms=0"), None).await;
+        assert_eq!(st, if matched == 1 { 200 } else { 408 }, "{body}");
+        assert_eq!(body["matched"], matched);
+        if matched == 1 {
+            assert_eq!(body["emails"][0]["id"], id);
+        }
+        let (st, body) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/flt/assert?count=1&to=user@example.com&since_ms={boundary}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, if matched == 1 { 200 } else { 409 }, "{body}");
+        assert_eq!(body["matched"], matched);
+    }
 
     // A malformed `since_ms` is a supplied value: refused at the parse —
     // the plane's own refusal class, the same words a malformed
@@ -980,7 +990,7 @@ async fn await_and_assert_parse_since_ms_exactly_as_list_does() {
     let (st, body) = http_json(
         srv.http_addr,
         "GET",
-        &format!("/api/v1/inboxes/flt/await?count=2&limit=1&to=user@example.com&since_ms={past}"),
+        "/api/v1/inboxes/flt/await?count=2&limit=1&to=user@example.com",
         None,
     )
     .await;
@@ -3552,4 +3562,75 @@ async fn the_thread_subject_is_the_published_oldest_subject() {
     let key = retitled["key"].as_str().unwrap();
     let (st, one) = http_json(srv.http_addr, "GET", &format!("{path}/{key}"), None).await;
     assert_eq!((st, one["subject"].clone()), (200, "Original plan".into()));
+}
+
+/// Supplemental public-router proof: complete request data lets a single
+/// synchronous poll distinguish explicit zero from a defaulted/positive wait.
+/// The network test above separately retains the real HTTP contract.
+#[tokio::test]
+async fn zero_timeout_finishes_on_the_first_router_poll() {
+    use axum::{body::Body, http::Request};
+    use std::{
+        future::Future,
+        sync::{Arc, atomic::AtomicBool},
+        task::{Context, Poll},
+    };
+    use swarmail::{
+        api::{self, AppState},
+        chaos::Chaos,
+        store::Store,
+        webhook::Webhooks,
+    };
+
+    async fn call<S>(mut service: S, request: Request<Body>) -> Result<S::Response, S::Error>
+    where
+        S: axum::ServiceExt<Request<Body>>,
+    {
+        std::future::poll_fn(|cx| service.poll_ready(cx)).await?;
+        service.call(request).await
+    }
+
+    for (name, query, ready) in [
+        ("router-zero", "&timeout_ms=0", true),
+        ("router-default", "", false),
+        ("router-positive", "&timeout_ms=60000", false),
+    ] {
+        let (stop, rx) = tokio::sync::watch::channel(false);
+        let state = AppState {
+            store: Arc::new(Store::new(0)),
+            chaos: Arc::new(Chaos::default()),
+            webhooks: Arc::new(Webhooks::default()),
+            started: std::time::Instant::now(),
+            shutdown: rx,
+            smtp_degraded: Arc::new(AtomicBool::new(false)),
+            pop3_degraded: Arc::new(AtomicBool::new(false)),
+            http_origin_guard: None,
+        };
+        let req = Request::builder()
+            .uri(format!("/api/v1/inboxes/{name}/await?count=1{query}"))
+            .body(Body::empty())
+            .unwrap();
+        let mut request = std::pin::pin!(call(api::router(state), req));
+        let observed = request.as_mut().poll(&mut Context::from_waker(
+            futures_util::task::noop_waker_ref(),
+        ));
+        assert_eq!(observed.is_ready(), ready, "first router poll: {name}");
+        let response = match observed {
+            Poll::Ready(response) => response.unwrap(),
+            Poll::Pending => {
+                stop.send(true).unwrap();
+                request.await.unwrap()
+            }
+        };
+        assert_eq!(response.status().as_u16(), if ready { 408 } else { 503 });
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if ready {
+            assert_eq!(body["matched"], 0);
+        } else {
+            assert_eq!(body["error"], "shutting down");
+        }
+    }
 }

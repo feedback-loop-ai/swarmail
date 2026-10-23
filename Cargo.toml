@@ -20,8 +20,8 @@ categories = ["email", "development-tools::testing"]
 # matches nothing — cargo matches patterns against paths without the `./`
 # prefix, so `./LICENSE-MIT` silently packaged no license text at all —
 # while a bare `README.md` would also sweep in agents/README.md.
-# `LICENSE-MIT` / `LICENSE-APACHE` are basename-unique (decision 0006
-# keeps these names), so the bare file names match exactly.
+# Root anchors keep nested cache license basenames out of the package.
+# NOTICE identifies the separately licensed WHATWG data and derived table.
 # Cargo.lock ships so `--locked` publishes the exact dependency graph CI
 # gates against.
 include = [
@@ -31,8 +31,9 @@ include = [
     "assets/**", # the README references assets/logo.svg; crates.io renders the README from the package
     # the WHATWG snapshot the entity table's inline proof embeds (decision 0049 §2) — this one file, not scripts/
     "scripts/data/html-entities.json",
-    "LICENSE-MIT",
-    "LICENSE-APACHE",
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+    "/NOTICE",
 ]
 
 [dependencies]

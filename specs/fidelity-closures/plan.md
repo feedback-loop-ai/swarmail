@@ -191,7 +191,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 brokkr compile --bundle bundles/self
-TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh   # exact 100/100/100
+TMPDIR=/operator-scratch/cov-tmp bash scripts/coverage-gate.sh   # exact 100/100/100
 cargo deny check licenses
 ```
 

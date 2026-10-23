@@ -1005,23 +1005,21 @@ async fn a_blocked_delete_refuses_the_mcp_delete_tools_with_error_results() {
 #[tokio::test]
 async fn wait_over_the_cap_is_refused_without_parking() {
     let srv = start().await;
-    let started = std::time::Instant::now();
-    let (st, body) = rpc(
-        srv.http_addr,
-        "tools/call",
-        r#"{"name": "swarmail_wait_for_email", "arguments": {"inbox": "cap", "count": 1, "timeout_ms": 60001}}"#,
-    )
-    .await;
+    let inbox = "next177-mcp-cap";
+    next177_establish_registration(srv.http_addr, inbox).await;
+    let before = next177_registered(srv.http_addr, inbox).await;
+    let (st, body) = rpc(srv.http_addr, "tools/call", &format!(
+        r#"{{"name":"swarmail_wait_for_email","arguments":{{"inbox":"{inbox}","count":1,"timeout_ms":60001}}}}"#)).await;
     assert_eq!(st, 200);
     assert_eq!(body["result"]["isError"], true, "{body}");
     assert_eq!(
         body["result"]["content"][0]["text"],
         "timeout_ms must be at most 60000"
     );
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "the cap refusal must not park: {:?}",
-        started.elapsed()
+    assert_eq!(
+        next177_registered(srv.http_addr, inbox).await,
+        before,
+        "cap refusal registered a wait"
     );
 }
 
@@ -1295,6 +1293,28 @@ async fn a_refused_set_chaos_never_stores_its_rule() {
     );
 }
 
+async fn next177_registered(addr: Http, inbox: &str) -> u64 {
+    let (st, metrics) = http_get_text(addr, "/metrics").await;
+    assert_eq!(st, 200);
+    metric_row_value(
+        &metrics,
+        &format!("swarmail_awaits_registered_total{{inbox=\"{inbox}\"}}"),
+    )
+    .expect("the exclusive inbox must have an attributable cumulative row")
+}
+
+async fn next177_establish_registration(addr: Http, inbox: &str) {
+    let result = tool(
+        addr,
+        "swarmail_wait_for_email",
+        &format!(r#"{{"inbox":"{inbox}","to":"never@x.io","timeout_ms":0}}"#),
+    )
+    .await;
+    assert_eq!(text(&result)["timed_out"], true);
+    assert_eq!(text(&result)["matched"], 0);
+    assert_eq!(next177_registered(addr, inbox).await, 1);
+}
+
 /// A supplied malformed `timeout_ms` refuses by name and registers no
 /// waiter (decision 0025): against an inbox that already holds a matching
 /// message, the refusal answers immediately — never the Found shape a
@@ -1313,13 +1333,14 @@ async fn a_supplied_malformed_timeout_refuses_and_registers_no_waiter() {
     .await
     .unwrap();
 
+    next177_establish_registration(srv.http_addr, "malformed-wait").await;
     for (value, label) in [
         (r#""invalid""#, "a string is not an integer"),
         ("-1", "a negative is over no bound — it is unparseable"),
         ("1.5", "a float would be a narrowing cast"),
         ("null", "null is supplied: the key is present"),
     ] {
-        let started = std::time::Instant::now();
+        let before = next177_registered(srv.http_addr, "malformed-wait").await;
         let (st, body) = rpc(
             srv.http_addr,
             "tools/call",
@@ -1335,10 +1356,10 @@ async fn a_supplied_malformed_timeout_refuses_and_registers_no_waiter() {
             "timeout_ms must be an integer between 0 and 60000",
             "{label}: {body}"
         );
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(2),
-            "{label}: the refusal must answer immediately, not after a wait: {:?}",
-            started.elapsed()
+        assert_eq!(
+            next177_registered(srv.http_addr, "malformed-wait").await,
+            before,
+            "{label}: a refusal must not register a wait"
         );
     }
 
@@ -1358,19 +1379,24 @@ async fn a_supplied_malformed_timeout_refuses_and_registers_no_waiter() {
 #[tokio::test]
 async fn wait_zero_timeout_is_a_real_zero_deadline() {
     let srv = start().await;
-    let started = std::time::Instant::now();
+    next177_establish_registration(srv.http_addr, "zero-wait").await;
+    let before = next177_registered(srv.http_addr, "zero-wait").await;
     let result = tool(
         srv.http_addr,
         "swarmail_wait_for_email",
-        r#"{"inbox": "zero-wait", "to": "nobody@x.io", "timeout_ms": 0}"#,
+        r#"{"inbox":"zero-wait","to":"nobody@x.io","timeout_ms":0}"#,
     )
     .await;
     assert_eq!(text(&result)["timed_out"], true, "{result}");
     assert_eq!(text(&result)["matched"], 0, "{result}");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "timeout_ms=0 must answer at once: {:?}",
-        started.elapsed()
+    assert_eq!(
+        next177_registered(srv.http_addr, "zero-wait").await,
+        before + 1
+    );
+    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+    assert_eq!(
+        metric_row_value(&metrics, r#"swarmail_awaits_active{inbox="zero-wait"}"#),
+        None
     );
 }
 
@@ -2397,4 +2423,65 @@ async fn a_batched_wait_is_satisfied_by_its_batched_seed() {
     let waited = text(&reply[0]["result"]);
     assert_eq!(waited["matched"], 1, "{reply}");
     assert!(waited.get("timed_out").is_none(), "{reply}");
+}
+
+/// Poll the real dispatch with fully available bytes, alongside wire tests.
+#[tokio::test]
+async fn zero_timeout_finishes_on_the_first_dispatch_poll() {
+    use std::{
+        future::Future,
+        sync::Arc,
+        task::{Context, Poll},
+    };
+    use swarmail::{
+        chaos::Chaos,
+        mcp::{self, McpContext},
+        store::Store,
+    };
+
+    for (name, timeout, ready) in [
+        ("dispatch-zero", Some(0), true),
+        ("dispatch-default", None, false),
+        ("dispatch-positive", Some(60000), false),
+    ] {
+        let (stop, shutdown) = tokio::sync::watch::channel(false);
+        let ctx = McpContext {
+            store: Arc::new(Store::new(0)),
+            chaos: Arc::new(Chaos::default()),
+            shutdown,
+        };
+        let mut args = serde_json::json!({"inbox": name, "count": 1});
+        if let Some(timeout) = timeout {
+            args["timeout_ms"] = timeout.into();
+        }
+        let bytes = serde_json::to_vec(&serde_json::json!({"jsonrpc":"2.0", "id": 177,
+            "method":"tools/call", "params":{"name":"swarmail_wait_for_email", "arguments":args}}))
+        .unwrap();
+        let mut request = std::pin::pin!(mcp::dispatch(&ctx, &bytes));
+        let observed = request.as_mut().poll(&mut Context::from_waker(
+            futures_util::task::noop_waker_ref(),
+        ));
+        assert_eq!(observed.is_ready(), ready, "first dispatch poll: {name}");
+        let response = match observed {
+            Poll::Ready(response) => response,
+            Poll::Pending => {
+                stop.send(true).unwrap();
+                request.await
+            }
+        };
+        assert_eq!(response.status().as_u16(), 200);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["id"], 177);
+        if ready {
+            let result = text(&body["result"]);
+            assert_eq!(result["timed_out"], true);
+            assert_eq!(result["matched"], 0);
+        } else {
+            assert_eq!(body["result"]["isError"], true);
+            assert_eq!(body["result"]["content"][0]["text"], "shutting down");
+        }
+    }
 }

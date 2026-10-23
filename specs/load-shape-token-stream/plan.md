@@ -45,7 +45,7 @@ the red-proof battery at verbatim `bcc7510` showing all five shapes laundering
   gitignored; commit cites #101/#102 and closes nothing; commit is unsigned
   per the tree's current practice, disclosed in the result record.
 - **Six gates** (`export PATH="$HOME/.cargo/bin:$PATH"`; coverage gate with
-  `TMPDIR=/home/valentin/scratch/cov-tmp`) re-run at the repair commit
+  `TMPDIR=/operator-scratch/cov-tmp`) re-run at the repair commit
   before reporting success.
 
 ## Project structure — every file the batch touches

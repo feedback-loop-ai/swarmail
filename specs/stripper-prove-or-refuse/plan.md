@@ -32,7 +32,7 @@ with a negative start clamps to 1 — the hazard behind probe I. The base is
   the selftest stays fail-closed; the `SF:` cross-check still binds the
   stripper's tolerated over-emission direction.
 - **Six gates** (`export PATH="$HOME/.cargo/bin:$PATH"`; coverage gate with
-  `TMPDIR=/home/valentin/scratch/cov-tmp`) re-run at the repair commit before
+  `TMPDIR=/operator-scratch/cov-tmp`) re-run at the repair commit before
   reporting success.
 
 ## Project structure — every file the batch touches

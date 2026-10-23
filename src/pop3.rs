@@ -44,8 +44,6 @@ use crate::store::{Filter, Store};
 use std::collections::BTreeSet;
 use std::io;
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(test)]
 use std::task::Poll;
@@ -75,15 +73,65 @@ pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Total POP3 sessions served, for the debug log correlation id.
 static SESSIONS: AtomicU64 = AtomicU64::new(0);
 
-/// Test-only: sessions reaped by the accept loop's harvest. Its only reader
-/// is the inline probe that installs it (decision 0020 rule 4) — the probe
-/// drives the real `serve`, and the counter must track completed sessions
-/// across successive connection batches or the deadline expires red.
+// Installed around exactly one serve future; captured once at entry so
+// another listener on the same runtime can never supply observation credit.
 #[cfg(test)]
-static REAPED: AtomicUsize = AtomicUsize::new(0);
+tokio::task_local! { static LISTENER_PROBE: Arc<ListenerProbe>; }
+
+#[cfg(test)]
+struct ListenerProbe {
+    reaped: tokio::sync::watch::Sender<usize>,
+    spawned: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
+    parked: AtomicBool,
+    accept_error: AtomicBool,
+    backoff_pending: tokio::sync::watch::Sender<bool>,
+    retry_ready: tokio::sync::watch::Sender<bool>,
+}
+
+#[cfg(test)]
+impl ListenerProbe {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            reaped: tokio::sync::watch::channel(0).0,
+            spawned: std::sync::Mutex::new(Vec::new()),
+            parked: AtomicBool::new(false),
+            accept_error: AtomicBool::new(false),
+            backoff_pending: tokio::sync::watch::channel(false).0,
+            retry_ready: tokio::sync::watch::channel(false).0,
+        })
+    }
+
+    async fn reaped_until(&self, count: usize) -> usize {
+        let mut rx = self.reaped.subscribe();
+        while *rx.borrow_and_update() < count {
+            rx.changed().await.unwrap();
+        }
+        *rx.borrow()
+    }
+}
+
+// Only an installed test operand can hold retry readiness. Release builds
+// retain the ordinary timer at the same select and the same shutdown owner.
+#[cfg(test)]
+async fn observed_backoff(probe: Option<&ListenerProbe>, timer: tokio::time::Sleep) {
+    use std::future::Future;
+    if let Some(probe) = probe {
+        let mut rx = probe.retry_ready.subscribe();
+        let mut ready = std::pin::pin!(rx.wait_for(|ready| *ready));
+        std::future::poll_fn(|cx| {
+            let polled = ready.as_mut().poll(cx);
+            if polled.is_pending() {
+                probe.backoff_pending.send_replace(true);
+            }
+            polled.map(|result| drop(result.unwrap()))
+        })
+        .await;
+    }
+    timer.await;
+}
 
 // Test-only: counted, one-shot accept errors (decision 0020 rule 4, the
-// `REAPED` precedent; the SMTP sibling's seam). Thread-local because the
+// owner-local probe precedent; the SMTP sibling's seam). Thread-local because the
 // loop is polled on the injecting test's own current-thread runtime.
 #[cfg(test)]
 thread_local! {
@@ -176,6 +224,8 @@ pub async fn serve(
     max_sessions: usize,
     shutdown: impl std::future::Future<Output = ()> + Send,
 ) -> io::Result<()> {
+    #[cfg(test)]
+    let probe = LISTENER_PROBE.try_with(Arc::clone).ok();
     let mut shutdown = std::pin::pin!(shutdown);
     // Every session is owned by this loop: ready completions are reaped at
     // admission — after each successful accept, right before the cap check
@@ -195,7 +245,8 @@ pub async fn serve(
         let accepted = tokio::select! {
             res = std::future::poll_fn(|cx| {
                 #[cfg(test)]
-                if take_injected_accept_error() {
+                if probe.as_ref().is_some_and(|p| p.accept_error.swap(false, Ordering::Relaxed))
+                    | take_injected_accept_error() {
                     return Poll::Ready(Err(io::Error::new(
                         io::ErrorKind::ConnectionAborted,
                         "injected accept error",
@@ -203,7 +254,12 @@ pub async fn serve(
                 }
                 let polled = listener.poll_accept(cx);
                 #[cfg(test)]
-                PARKED.with(|parked| parked.set(polled.is_pending()));
+                {
+                    PARKED.with(|parked| parked.set(polled.is_pending()));
+                    if let Some(probe) = &probe {
+                        probe.parked.store(polled.is_pending(), Ordering::Relaxed);
+                    }
+                }
                 if polled.is_pending() {
                     degraded.store(false, Ordering::Relaxed);
                 }
@@ -231,13 +287,16 @@ pub async fn serve(
                 #[cfg(test)]
                 ERRORS_SEEN.with(|seen| seen.borrow_mut().push(was_degraded));
                 tracing::warn!(error = %e, "pop3 accept failed; retrying after the backoff");
+                let backoff = tokio::time::sleep(crate::smtp::ACCEPT_BACKOFF);
+                #[cfg(test)]
+                let backoff = observed_backoff(probe.as_deref(), backoff);
                 tokio::select! {
                     _ = &mut shutdown => {
                         sessions.abort_all();
                         while sessions.join_next().await.is_some() {}
                         return Ok(());
                     }
-                    _ = tokio::time::sleep(crate::smtp::ACCEPT_BACKOFF) => {}
+                    _ = backoff => {}
                 }
                 continue;
             }
@@ -256,7 +315,9 @@ pub async fn serve(
         // accept was parked — frees its slot for this very peer.
         while sessions.try_join_next().is_some() {
             #[cfg(test)]
-            REAPED.fetch_add(1, Ordering::Relaxed);
+            if let Some(probe) = &probe {
+                probe.reaped.send_modify(|count| *count += 1);
+            }
         }
         // Bounded sessions (decision 0027): the cap is checked against the
         // live set right after the reap. A refusal is wire-honest and
@@ -285,7 +346,12 @@ pub async fn serve(
             }
         });
         #[cfg(test)]
-        SPAWNED.with(|spawned| spawned.borrow_mut().push(handle));
+        {
+            if let Some(probe) = &probe {
+                probe.spawned.lock().unwrap().push(handle.clone());
+            }
+            SPAWNED.with(|spawned| spawned.borrow_mut().push(handle));
+        }
     }
 }
 
@@ -1179,7 +1245,10 @@ mod tests {
         let mut client = BufReader::new(TcpStream::connect(addr).await.unwrap());
         let mut line = Vec::new();
         client.read_until(b'\n', &mut line).await.unwrap();
-        assert_eq!(line, b"+OK Swarmail POP3 server ready\r\n");
+        assert_eq!(
+            line, b"+OK Swarmail POP3 server ready\r\n",
+            "first offered peer must be admitted"
+        );
         client
     }
 
@@ -1252,104 +1321,195 @@ mod tests {
         server.abort();
     }
 
-    /// A stop arriving inside a backoff pause resolves the loop well inside
-    /// that pause — the shutdown is raced against the backoff, never
-    /// stacked behind it (the SMTP sibling's proof, on the POP3 arm). A
-    /// live session holds a slot when the stop lands, so the drain inside
-    /// the shutdown arm joins a genuinely aborted task — the shape a stop
-    /// interrupts a *busy* degraded listener, not an idle one.
+    /// Stop must drain the actual owner while retry readiness is held.
+    /// A second case releases readiness and exercises retry and its timer.
     #[tokio::test]
     async fn a_stop_inside_a_backoff_resolves_well_inside_it() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let degraded = Arc::new(AtomicBool::new(false));
-        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-        let server = tokio::spawn(serve(
-            listener,
-            Arc::new(Store::new(0)),
-            degraded.clone(),
-            Duration::from_secs(60),
-            256,
-            async move {
-                let mut stop_rx = stop_rx;
-                let _ = stop_rx.changed().await;
-            },
-        ));
-        // The greeting is written by the session task, so reading it proves
-        // the session is spawned — and it stays spawned, parked on a read
-        // this test never answers.
-        let mut client = BufReader::new(TcpStream::connect(addr).await.unwrap());
-        let mut line = Vec::new();
-        client.read_until(b'\n', &mut line).await.unwrap();
-        assert!(
-            line.starts_with(b"+OK "),
-            "greeting proves the spawn: {line:?}"
-        );
-        inject_accept_errors(1);
-        // The loop is parked inside the accept (nothing wakes it) — the
-        // seam is consumed on the accept's next *poll*, so a second
-        // connection is the poke: its handshake fires the accept's waker,
-        // the poll re-checks the seam first, and the error wins before the
-        // accept is ever awaited. Branch-stable, no sleep.
-        let _poke = TcpStream::connect(addr).await.unwrap();
-        // The flag is set in the same poll that enters the backoff select,
-        // so observing it means the loop is parked there — the stop lands
-        // mid-pause, not before it.
-        flag_becomes(&degraded, true, "entered the backoff").await;
-        let _ = stop_tx.send(true);
-        let outcome = tokio::time::timeout(Duration::from_millis(500), server).await;
-        let res = outcome.expect("the stop did not resolve inside the backoff");
-        assert!(res.is_ok(), "the raced stop must exit cleanly: {res:?}");
-    }
-
-    /// The accept loop reaps completed sessions: each offered connection is
-    /// one loop iteration, and each iteration's harvest joins every session
-    /// completed so far — so a completed entry is reaped by a later accept
-    /// instead of accumulating in the set. Polled against a real deadline
-    /// (never a sleep): with the harvest gone the counter never advances and
-    /// the deadline expires red. Returns the counter so a second batch can
-    /// prove the reap keeps tracking completions.
-    async fn reap_completed_sessions_until(count: usize) -> usize {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(serve(
-            listener,
-            Arc::new(Store::new(0)),
-            Arc::new(AtomicBool::new(false)),
-            Duration::from_secs(60),
-            256,
-            std::future::pending(),
-        ));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let reaped = loop {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the accept loop never reaped {count} completed session(s)"
-            );
-            // EOF on arrival: the session ends, the next accept reaps it.
-            drop(TcpStream::connect(addr).await.unwrap());
-            let reaped = REAPED.load(Ordering::Relaxed);
-            if reaped >= count {
-                break reaped;
+        use tokio::io::AsyncReadExt;
+        for release_before_stop in [false, true] {
+            let (addr, probe, stop, server) = observed_listener().await;
+            let mut client = greeted(addr).await;
+            probe.accept_error.store(true, Ordering::Relaxed);
+            let mut poke = BufReader::new(TcpStream::connect(addr).await.unwrap());
+            let mut entered = probe.backoff_pending.subscribe();
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                entered.wait_for(|entered| *entered),
+            )
+            .await
+            .expect("owner never polled held backoff Pending")
+            .unwrap();
+            assert!(!*probe.retry_ready.borrow());
+            assert!(!probe.spawned.lock().unwrap()[0].is_finished());
+            if release_before_stop {
+                probe.retry_ready.send_replace(true);
+                let mut line = String::new();
+                poke.read_line(&mut line).await.unwrap();
+                assert!(line.starts_with("+OK "));
             }
-            tokio::task::yield_now().await;
-        };
-        server.abort();
-        reaped
+            stop.send(true).unwrap();
+            let stopped = tokio::time::timeout(Duration::from_secs(30), async {
+                while !server.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            // Failure cleanup releases the latch and aborts/joins this
+            // owner before asserting the stop-before-release observation.
+            let readiness_at_stop = *probe.retry_ready.borrow();
+            probe.retry_ready.send_replace(true);
+            server.abort();
+            let outcome = server.await;
+            stopped.expect("stop did not finish before retry release");
+            outcome.unwrap().unwrap();
+            assert_eq!(readiness_at_stop, release_before_stop);
+            assert!(
+                probe
+                    .spawned
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|handle| handle.is_finished())
+            );
+            let mut tail = Vec::new();
+            assert_eq!(client.read_to_end(&mut tail).await.unwrap(), 0);
+        }
     }
 
-    /// Completed connection entries do not accumulate across successive
-    /// batches: the first batch is reaped, and the second advances the
-    /// counter beyond it — the harvest is continuous, not a shutdown-only
-    /// drain (red on the join-in-shutdown-arm-only shape, which never reaps).
+    /// One probe, one actual serve owner, one JoinSet for every batch.
+    async fn observed_listener() -> (
+        std::net::SocketAddr,
+        Arc<ListenerProbe>,
+        tokio::sync::watch::Sender<bool>,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let probe = ListenerProbe::new();
+        let (stop, mut rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(LISTENER_PROBE.scope(
+            probe.clone(),
+            serve(
+                listener,
+                Arc::new(Store::new(0)),
+                Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(60),
+                2,
+                async move {
+                    let _ = rx.changed().await;
+                },
+            ),
+        ));
+        (addr, probe, stop, server)
+    }
+
+    async fn owner_quit(client: &mut BufReader<TcpStream>, index: usize, probe: &ListenerProbe) {
+        client.write_all(b"QUIT\r\n").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !(probe.spawned.lock().unwrap()[index].is_finished()
+                & probe.parked.load(Ordering::Relaxed))
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("owner session never finished while its accept was parked");
+        let mut line = String::new();
+        client.read_line(&mut line).await.unwrap();
+        assert_eq!(line, "+OK Swarmail POP3 server signing off\r\n");
+    }
+
+    /// Both waits are deliberately polled Pending before any completion,
+    /// then Ready after harvest by this owner's single offered admission.
     #[tokio::test]
     async fn the_accept_loop_reaps_completed_sessions_across_batches() {
-        let after_first_batch = reap_completed_sessions_until(1).await;
-        assert!(after_first_batch >= 1, "{after_first_batch}");
-        let after_second_batch = reap_completed_sessions_until(after_first_batch + 1).await;
+        use std::future::Future;
+        use tokio::io::AsyncReadExt;
+        let (addr, probe, stop, server) = observed_listener().await;
+        let mut first = greeted(addr).await;
+        let mut second = greeted(addr).await;
+        let mut refused = TcpStream::connect(addr).await.unwrap();
+        let mut wire = Vec::new();
+        refused.read_to_end(&mut wire).await.unwrap();
+        assert_eq!(wire, b"-ERR too many connections\r\n");
+        assert_eq!(
+            *probe.reaped.borrow(),
+            0,
+            "live sessions must not be harvested"
+        );
+        let mut first_wait = std::pin::pin!(probe.reaped_until(1));
         assert!(
-            after_second_batch > after_first_batch,
-            "the reap must keep tracking completions: {after_first_batch} -> {after_second_batch}"
+            first_wait
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(
+                    futures_util::task::noop_waker_ref()
+                ))
+                .is_pending()
+        );
+
+        // A second real owner harvests while the first is held full. This
+        // must not satisfy even part of the first owner's pending wait.
+        let (other_addr, other, other_stop, other_server) = observed_listener().await;
+        let mut unrelated = greeted(other_addr).await;
+        owner_quit(&mut unrelated, 0, &other).await;
+        let _other_live = greeted(other_addr).await;
+        assert_eq!(
+            *other.reaped.borrow(),
+            1,
+            "isolation owner must harvest its completed session at admission"
+        );
+        assert_eq!(
+            *probe.reaped.borrow(),
+            0,
+            "unrelated owner supplied harvest credit"
+        );
+        assert!(
+            first_wait
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(
+                    futures_util::task::noop_waker_ref()
+                ))
+                .is_pending()
+        );
+        other_stop.send(true).unwrap();
+        other_server.await.unwrap().unwrap();
+
+        owner_quit(&mut first, 0, &probe).await;
+        let mut third = greeted(addr).await;
+        assert_eq!(
+            *probe.reaped.borrow(),
+            1,
+            "first admission must harvest exactly one"
+        );
+        assert_eq!(first_wait.await, 1);
+
+        let mut second_wait = std::pin::pin!(probe.reaped_until(3));
+        assert!(
+            second_wait
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(
+                    futures_util::task::noop_waker_ref()
+                ))
+                .is_pending()
+        );
+        owner_quit(&mut second, 1, &probe).await;
+        owner_quit(&mut third, 2, &probe).await;
+        let _fourth = greeted(addr).await;
+        assert_eq!(
+            *probe.reaped.borrow(),
+            3,
+            "second admission must harvest both completions"
+        );
+        assert_eq!(second_wait.await, 3);
+        stop.send(true).unwrap();
+        server.await.unwrap().unwrap();
+        assert!(
+            probe
+                .spawned
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|handle| handle.is_finished())
         );
     }
 

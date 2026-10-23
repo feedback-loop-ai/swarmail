@@ -18,6 +18,7 @@ RUN mkdir /data-empty /tmp-empty
 
 FROM scratch
 COPY --from=build /app/target/release/swarmail /swarmail
+COPY --from=build --chmod=0444 /app/NOTICE /NOTICE
 # A fresh named volume mounted at /data inherits this directory's owner,
 # so uid 65532 can write `SWARMAIL_DATA_FILE=/data/swarmail.db` without a
 # root entrypoint. Persistence stays opt-in: without SWARMAIL_DATA_FILE the

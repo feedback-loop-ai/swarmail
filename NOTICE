@@ -1,0 +1,17 @@
+Swarmail application code is licensed under MIT OR Apache-2.0.
+
+WHATWG HTML named character references
+Copyright WHATWG (Apple, Google, Mozilla, Microsoft).
+Licensed under the Creative Commons Attribution 4.0 International License:
+https://creativecommons.org/licenses/by/4.0/
+Source: https://html.spec.whatwg.org/entities.json
+
+The unmodified snapshot at scripts/data/html-entities.json was fetched on
+2026-10-18. SHA-256:
+d741d877ac77c4194c4ad526b5b4a19aef8dfe411ab840a466891cdbb9f362e6
+
+The NAMED table embedded in the binary and image is derived from that data:
+retain the 2,125 semicolon-terminated keys, strip the & and ; delimiters,
+sort names by bytes, and represent each mapping's code points as Rust string
+escapes. The other 106 legacy keys are omitted; mappings are unchanged.
+Attribution applies to both the packaged snapshot and this derived table.

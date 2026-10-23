@@ -30,39 +30,66 @@ out="$work/out" err="$work/err"
 server_pid=""
 cleanup() {
   [ -n "$server_pid" ] && kill "$server_pid" 2>/dev/null
+  [ -n "$server_pid" ] && wait "$server_pid" 2>/dev/null || true
   rm -rf "$work"
 }
 trap cleanup EXIT
 
 : >"$recorded"
+printf 'feedback-loop-ai/swarmail\n' >"$work/expected-repo"
 printf 'token=200\nmanifest=404\n' >"$control"
 
 # The fixture: binds an ephemeral port, writes the port file only once the
 # socket is listening, and re-reads the control file per request so one
 # server serves every pole deterministically.
 cat >"$work/server.py" <<'PY'
+import base64
 import json
+import socket
 import sys
+from urllib.parse import urlparse, parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-control_path, recorded_path, port_path = sys.argv[1:4]
+control_path, recorded_path, port_path, expected_path = sys.argv[1:5]
+
+basic = "Basic " + base64.b64encode(b"test-user:exchange-secret").decode()
+accept = "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
+holder = socket.socket()
+holder.bind(("127.0.0.1", 0))  # Owned, deliberately never listening.
 
 class Fixture(BaseHTTPRequestHandler):
+    def reply(self, code, body=b""):
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _record(self):
         with open(recorded_path, "a") as f:
             f.write(self.path + "\n")
 
     def do_GET(self):
+        if self.path == "/held":
+            self.reply(200 if holder.fileno() >= 0 else 500, b"held")
+            return
         self._record()
+        expected_repo = open(expected_path).read().strip()
         with open(control_path) as f:
             control = dict(line.split("=", 1) for line in f.read().splitlines() if "=" in line)
         if self.path.startswith("/token"):
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            if (parsed.path != "/token" or query.get("service") != ["ghcr.io"]
+                or query.get("scope") != [f"repository:{expected_repo}:pull"]
+                or self.headers.get("Authorization") != basic):
+                self.reply(403)
+                return
             if control.get("token", "200") != "200":
                 self.send_response(int(control["token"]))
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            body = json.dumps({"token": "test-token"}).encode()
+            body = control.get("tokenbody", json.dumps({"token": "bearer-secret"})).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -70,6 +97,17 @@ class Fixture(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if self.path.startswith("/v2/"):
+            if (self.headers.get("Authorization") != "Bearer bearer-secret" or self.headers.get("Accept") != accept
+                or not self.path.startswith("/v2/"+expected_repo+"/manifests/")):
+                self.reply(403)
+                return
+            if control.get("manifest") == "close":
+                self.close_connection = True
+                return
+            if control.get("manifest") == "raw000":
+                self.connection.sendall(b"HTTP/1.1 000 Unknown\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                self.close_connection = True
+                return
             tag = self.path.rsplit("/", 1)[-1]
             if f"manifest:{tag}" in control:
                 self.send_response(int(control[f"manifest:{tag}"]))
@@ -87,11 +125,11 @@ class Fixture(BaseHTTPRequestHandler):
 
 server = ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
 with open(port_path, "w") as f:
-    f.write(str(server.server_address[1]))
+    f.write(str(server.server_address[1])+" "+str(holder.getsockname()[1]))
 server.serve_forever()
 PY
 
-python3 "$work/server.py" "$control" "$recorded" "$portfile" &
+python3 "$work/server.py" "$control" "$recorded" "$portfile" "$work/expected-repo" &
 server_pid=$!
 
 # Readiness over a real deadline — a poll with an expiry, never a fixed
@@ -104,13 +142,50 @@ until [ -s "$portfile" ]; do
   fi
   sleep 0.05
 done
-port="$(cat "$portfile")"
+read -r port closed_port <"$portfile" || true
 registry="http://127.0.0.1:${port}"
-export GH_TOKEN=test-token GH_USER=test-user
+export GH_TOKEN=exchange-secret GH_USER=test-user
+# Test observer delegates to installed curl, preserving stdin and real exit
+# codes. Only the successful-response status classifier control is synthetic.
+export REAL_CURL="$(command -v curl)" ARGV_RECORD="$work/argv"
+mkdir "$work/bin"
+cat >"$work/bin/curl" <<'OBSERVER'
+#!/usr/bin/env python3
+import json, os, subprocess, sys
+args = sys.argv[1:]
+with open(os.environ["ARGV_RECORD"], "a") as f:
+    f.write(json.dumps(args)+"\n")
+if os.environ.get("ZERO_CLASSIFY") == "1" and any("/manifests/" in a for a in args):
+    p = subprocess.run([os.environ["REAL_CURL"], *args], stdout=subprocess.PIPE)
+    if p.returncode:
+        sys.stdout.buffer.write(p.stdout)
+        sys.exit(p.returncode)
+    assert p.stdout == b"404", p.stdout
+    sys.stdout.write("000")
+else:
+    os.execv(os.environ["REAL_CURL"], [os.environ["REAL_CURL"], *args])
+OBSERVER
+chmod +x "$work/bin/curl"
+export REAL_PYTHON="$(command -v python3)"
+printf '#!%s\n' "$REAL_PYTHON" >"$work/bin/python3"
+cat >>"$work/bin/python3" <<'HELPER'
+import json, os, sys
+with open(os.environ["ARGV_RECORD"], "a") as f:
+    f.write(json.dumps(sys.argv[1:])+"\n")
+os.execv(os.environ["REAL_PYTHON"], [os.environ["REAL_PYTHON"], *sys.argv[1:]])
+HELPER
+chmod +x "$work/bin/python3"
+export PATH="$work/bin:$PATH"
 
 fail() { echo "publish-guard-test: FAIL: $*" >&2; exit 1; }
 
-attempt() { "$@" >"$out" 2>"$err"; }
+attempt() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in feedback-loop-ai/*) printf '%s\n' "$arg" >"$work/expected-repo" ;; esac
+  done
+  "$@" >"$out" 2>"$err"
+}
 
 expect_proceed() { # <desc> -- <cmd...>
   local desc="$1"; shift; [ "$1" = "--" ] && shift
@@ -136,24 +211,12 @@ expect_refusal() { # <desc> <expected-exit> <needle...> -- <cmd...>
   done
 }
 
-# The refused pole: a port we just held and released, verified closed —
-# immediate, not a service we hope is down.
-closed_port="$(python3 - <<'PY'
-import socket
-
-holder = socket.socket()
-holder.bind(("127.0.0.1", 0))
-port = holder.getsockname()[1]
-holder.close()
-probe = socket.socket()
-probe.settimeout(2)
-refused = probe.connect_ex(("127.0.0.1", port)) != 0
-probe.close()
-if not refused:
-    raise SystemExit(f"port {port} is unexpectedly accepting")
-print(port)
-PY
-)"
+# Lifetime checks surround each refused connection; the child owns a bound
+# non-listening socket until cleanup joins it. No released-port reuse.
+assert_holder() {
+  [ "$(curl -fsS --max-time 5 "$registry/held")" = held ] || fail "refusal socket ownership lost"
+}
+assert_holder
 
 # 1. Degenerate input fails closed: no arguments, no publish.
 expect_refusal "no arguments" 1 "usage" -- "$GUARD"
@@ -206,20 +269,22 @@ expect_refusal "probe 200" 1 "already published" -- \
 
 # 9. Probe answers 500: registry state unknown — refuse, never publish.
 printf 'token=200\nmanifest=500\n' >"$control"
-expect_refusal "probe 500" 1 "registry state unknown" -- \
+expect_refusal "probe 500" 1 "HTTP 500" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 
 # 10. Token exchange fails (HTTP 500): registry state unknown — refuse.
 printf 'token=500\nmanifest=404\n' >"$control"
-expect_refusal "token exchange 500" 1 "registry state unknown" -- \
+expect_refusal "token exchange 500" 1 "token exchange failed" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 
 # 11. Connection refused (closed port): registry state unknown — refuse.
-expect_refusal "connection refused" 1 "registry state unknown" -- \
+expect_refusal "connection refused" 1 "token exchange failed" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="http://127.0.0.1:${closed_port}" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+
+assert_holder
 
 # 12. The chart call site: helm push writes the chart version verbatim
 #     (bare, no v-prefix option), so the guard probes exactly that — and
@@ -237,23 +302,18 @@ fi
 
 # 12b. A stale v-form tag refuses the docker publish even with the bare
 #      form absent (the release writes both forms; either existing blocks).
-printf 'token=200\nmanifest=404\n' >"$control"
-python3 - "$control" <<'PY'
-import sys
-
-# The fixture keys on the path only; teach it to answer per-tag-form.
-path = sys.argv[1]
-PY
+printf 'token=200\nmanifest:0.1.0=404\nmanifest:v0.1.0=200\n' >"$control"
+: >"$recorded"
+expect_refusal "stale v-form with bare absent" 1 "v0.1.0 is already published" -- \
+  env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+for tag in 0.1.0 v0.1.0; do
+  grep -qx "/v2/feedback-loop-ai/swarmail/manifests/$tag" "$recorded" || fail "12b: missing $tag probe"
+done
 
 # 12c. The bare form already published also refuses (the push writes both).
 printf 'token=200\nmanifest:0.1.0=200\nmanifest:v0.1.0=404\n' >"$control"
 expect_refusal "bare form already published" 1 "0.1.0 is already published" -- \
-  env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
-  "$GUARD" v0.1.0 feedback-loop-ai/swarmail
-
-# 12d. The v-form already published refuses too.
-printf 'token=200\nmanifest:0.1.0=404\nmanifest:v0.1.0=200\n' >"$control"
-expect_refusal "v-form already published" 1 "v0.1.0 is already published" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 
@@ -280,6 +340,7 @@ expect_refusal "unknown probe-forms value" 1 "neither 'both' nor 'bare'" -- \
 #     `success` refuses before the registry is asked at all.
 present() { # <docker-result|-> <ref> <expected> [probe-forms] -- the preflight call
   local result="$1" ref="$2" expected="$3" forms="${4:-bare}"
+  printf 'feedback-loop-ai/swarmail\n' >"$work/expected-repo"
   if [ "$result" = - ]; then
     env -u DOCKER_RESULT GITHUB_REF_NAME="$ref" PUBLISH_GUARD_REGISTRY="$registry" \
       "$GUARD" "$expected" feedback-loop-ai/swarmail "$forms" require-present
@@ -320,9 +381,12 @@ printf 'token=200\nmanifest=500\n' >"$control"
 expect_refusal "require-present + 500" 1 "registry state unknown" -- present success v0.1.0 v0.1.0
 printf 'token=500\nmanifest=200\n' >"$control"
 expect_refusal "require-present + token 500" 1 "registry state unknown" -- present success v0.1.0 v0.1.0
+assert_holder
 expect_refusal "require-present + connection refused" 1 "registry state unknown" -- \
   env DOCKER_RESULT=success GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="http://127.0.0.1:${closed_port}" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail bare require-present
+
+assert_holder
 
 # 14e. Only the bare form, only a known mode, only the exact ref.
 printf 'token=200\nmanifest=200\n' >"$control"
@@ -356,62 +420,147 @@ printf 'token=200\nmanifest=200\n' >"$control"
 expect_refusal "v0.1.1 tag: the chart's image preflight" 1 "ref 'v0.1.1' is not 'v0.1.0'" -- \
   present success v0.1.1 v0.1.0
 
-# 16. The release wiring (issue #141): the chart job needs the image job,
-#     requires its `success` explicitly, hands that result to the guard
-#     through env (never `${{ }}` in a run: body), and runs the image
-#     preflight and its own absence guard before `helm push`; the image job
-#     needs the chart proof and the Docker smoke. Checked on the workflow,
-#     and on mutated copies that restore the independent chart job — each
-#     must be refused.
-job_block() { # <workflow> <job> — the job's lines, up to the next job key
-  sed -n "/^  $2:\$/,\$p" "$1" | sed '1!{/^  [A-Za-z0-9_-]*:$/,$d;}'
-}
-wiring_problems() { # <workflow> — prints one line per broken wire
-  local wf="$1" chart docker
-  chart="$(job_block "$wf" chart-publish)"
-  docker="$(job_block "$wf" docker)"
-  grep -Eq '^    needs: \[(.*, )?docker(, .*)?\]$' <<<"$chart" || echo "chart-publish does not need docker"
-  grep -q "needs.docker.result == 'success'" <<<"$chart" || echo "chart-publish does not require docker's success"
-  grep -q 'DOCKER_RESULT: ${{ needs.docker.result }}' <<<"$chart" || echo "chart-publish does not hand docker's result to the guard"
-  grep -q 'run: scripts/publish-guard.sh .* bare require-present$' <<<"$chart" || echo "chart-publish never runs the image preflight"
-  local pre guard push
-  pre="$(grep -n 'bare require-present$' <<<"$chart" | head -1 | cut -d: -f1)"
-  guard="$(grep -n 'feedback-loop-ai/charts/swarmail bare$' <<<"$chart" | head -1 | cut -d: -f1)"
-  push="$(grep -n 'helm push' <<<"$chart" | head -1 | cut -d: -f1)"
-  { [ -n "$pre" ] && [ -n "$guard" ] && [ -n "$push" ] && [ "$pre" -lt "$push" ] && [ "$guard" -lt "$push" ]; } \
-    || echo "chart-publish pushes before its guards"
-  grep -Eq '^    needs: \[(.*, )?chart-verify(, .*)?\]$' <<<"$docker" || echo "docker does not need chart-verify"
-  grep -Eq '^    needs: \[(.*, )?docker-smoke(, .*)?\]$' <<<"$docker" || echo "docker does not need docker-smoke"
-  grep -q "needs.chart-verify.result == 'success'" <<<"$docker" || echo "docker does not require chart-verify's success"
-  grep -q "needs.docker-smoke.result == 'success'" <<<"$docker" || echo "docker does not require docker-smoke's success"
-}
-problems="$(wiring_problems "$WORKFLOW")"
-[ -z "$problems" ] || fail "release wiring: $problems"
-mutant="$work/ci-mutant.yml"
-mutate_expect() { # <desc> <sed-expr> <needle>
-  sed "$2" "$WORKFLOW" >"$mutant"
-  cmp -s "$mutant" "$WORKFLOW" && fail "release wiring mutant '$1' changed nothing"
-  grep -q "$3" <<<"$(wiring_problems "$mutant")" \
-    || fail "release wiring mutant '$1' was not refused (expected '$3')"
-}
-mutate_expect "chart needs without docker" \
-  '/^  chart-publish:$/,$ s/^\(    needs: \[.*\), docker\]$/\1]/' "does not need docker"
-mutate_expect "chart condition without docker success" \
-  "/^  chart-publish:\$/,\$ s/ && needs.docker.result == 'success'//" "require docker's success"
-mutate_expect "guard without the result" \
-  '/DOCKER_RESULT: ${{ needs.docker.result }}/d' "hand docker's result"
-mutate_expect "no image preflight" \
-  's/ bare require-present$/ bare/' "never runs the image preflight"
-mutate_expect "docker without chart-verify" \
-  "s/ && needs.chart-verify.result == 'success'//" "chart-verify's success"
+# Distinct unknown-state proofs. A real token success followed by a closed
+# manifest connection exercises transport failure, separate from HTTP errors.
+printf 'token=200\nmanifest=close\n' >"$control"
+expect_refusal "manifest transport" 1 "manifest query failed" -- \
+  env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+# Installed-curl reachability experiment: an HTTP 000 status line is invalid,
+# so curl must fail before classification. This is not successful HTTP 000.
+printf 'token=200\nmanifest=raw000\n' >"$control"
+expect_refusal "raw 000 transport" 1 "manifest query failed" -- \
+  env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+echo "raw HTTP-000 experiment: $(curl --version | head -1); $(cat "$err")"
+printf 'token=200\nmanifest=404\n' >"$control"
+expect_refusal "000 classifier only after real authenticated 404" 1 "HTTP 000" -- \
+  env ZERO_CLASSIFY=1 GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
+  "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 
-# 17. The drift pin: the workflow must reference the guard in both publish
-#     paths, or the enforcement is a comment again.
-guard_refs="$(grep -c 'scripts/publish-guard.sh' "$WORKFLOW" || true)"
-[ "${guard_refs:-0}" -ge 2 ] \
-  || fail "drift pin: $WORKFLOW references the guard ${guard_refs} times; both publish paths must call it"
-call_sites="$(grep -c 'run: scripts/publish-guard.sh' "$WORKFLOW" || true)"
-[ "${call_sites:-0}" -ge 2 ] \
-  || fail "drift pin: $WORKFLOW invokes the guard from ${call_sites} run: steps; both publish paths must call it"
+for v in 01.0.0 1.0.0-01 1.0.0-.a 1.0.0-a. 1.0.0-a..b 1.0.0- 1.0 '1.0.0-!'; do
+  expect_refusal "strict semver $v" 1 "not valid semver" -- \
+    env GITHUB_REF_NAME="v$v" PUBLISH_GUARD_REGISTRY="$registry" "$GUARD" "v$v" feedback-loop-ai/swarmail
+done
+for v in 0.0.0 1.0.0-0 1.0.0-alpha.1 1.0.0-alpha-01; do
+  expect_proceed "valid semver $v" -- \
+    env GITHUB_REF_NAME="v$v" PUBLISH_GUARD_REGISTRY="$registry" "$GUARD" "v$v" feedback-loop-ai/swarmail
+done
+for body in '{}' '{"token":null}' '{"token":12}' '{"token":[]}' '{"token":""}' '{"token":"bad\r\nInjected: yes"}' '{"token":"bad\u0000"}' '{"token":"two words"}' 'bad-json'; do
+  printf 'token=200\nmanifest=404\ntokenbody=%s\n' "$body" >"$control"
+  : >"$recorded"
+  expect_refusal "invalid bearer response" 1 "token exchange failed" -- \
+    env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+  ! grep -q '/manifests/' "$recorded" || fail "invalid token reached manifest"
+done
+# Only synthetic credentials were used; record a verdict, never secret bytes.
+python3 - "$ARGV_RECORD" <<'ARGS'
+import base64, json, sys
+secret = ("exchange-secret", "bearer-secret", base64.b64encode(b"test-user:exchange-secret").decode())
+for line in open(sys.argv[1]):
+    assert not any(s in arg for arg in json.loads(line) for s in secret), "credential entered curl argv"
+print("credential-free argv (real curl and Python helpers), HTTP headers and distinct failures: OK")
+ARGS
 
-echo "publish-guard-test: OK — all poles green (refusals fire, the 404 arms proceed, both tag forms are probed, the workflow is wired)"
+# Repository-specific workflow contract. Parsed active steps, exact supported
+# conditions and run bodies fail closed on unknown bypass shapes. This is not
+# a general Actions expression evaluator. Mutants use this very checker.
+python3 - "$WORKFLOW" <<'WIRING'
+import copy, hashlib, re, sys, yaml
+workflow = yaml.safe_load(open(sys.argv[1]))
+ordinary = {"quality", "test", "coverage", "deny", "dependency-audit", "brokkr-compile"}
+def normalized(s):
+    return re.sub(r"\s+", "", s or "")
+tag = "startsWith(github.ref, 'refs/tags/v')"
+docker_if = "!cancelled() && github.event_name == 'push' " + " ".join("&& needs."+n+".result == 'success'" for n in ("quality", "test", "coverage", "deny", "dependency-audit", "brokkr-compile", "chart-verify", "docker-smoke")) + " && ((github.ref == 'refs/heads/main' && needs.release-rate-5k.result == 'skipped') || ("+tag+" && needs.release-rate-5k.result == 'success'))"
+chart_if = "github.event_name == 'push' && "+tag+" && needs.docker.result == 'success'"
+image_guard = 'scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/swarmail'
+preflight = 'scripts/publish-guard.sh "v$APP_VERSION" feedback-loop-ai/swarmail bare require-present'
+chart_guard = 'scripts/publish-guard.sh "v$VERSION" feedback-loop-ai/charts/swarmail bare'
+helm_push = 'helm package charts/swarmail\nhelm push swarmail-*.tgz oci://ghcr.io/feedback-loop-ai/charts'
+def check(w):
+    jobs = w["jobs"]
+    for name, extra, cond in (("docker", {"chart-verify", "docker-smoke", "release-rate-5k"}, docker_if), ("chart-publish", {"docker", "chart-verify", "release-rate-5k"}, chart_if)):
+        j = jobs[name]
+        assert set(j["needs"]) == ordinary | extra, name+": prerequisites"
+        assert normalized(j["if"]) == normalized(cond), name+": admission condition"
+        assert "continue-on-error" not in j, name+": job continue-on-error"
+        # A changed default shell can ignore failure; retain the default
+        # failure-propagating bash behavior at every publish boundary.
+        assert "defaults" not in j and "defaults" not in w, name+": shell defaults"
+        steps = j["steps"]
+        for step in steps:
+            assert "continue-on-error" not in step, name+": step continue-on-error"
+            assert "shell" not in step, name+": custom shell"
+        def one_run(body, cond=None):
+            matches = [(i,s) for i,s in enumerate(steps) if s.get("run", "").strip() == body]
+            assert len(matches) == 1, name+": required run body"
+            i, step = matches[0]
+            assert normalized(step.get("if")) == normalized(cond), name+": guard/push condition"
+            return i, step
+        if name == "docker":
+            guard, gs = one_run(image_guard, tag)
+            release = [(i,s) for i,s in enumerate(steps) if "docker/build-push-action@" in s.get("uses", "") and "swarmail:v" in s.get("with",{}).get("tags", "")]
+            assert len(release) == 1, "docker: release push"
+            push, step = release[0]
+            assert guard < push, "docker: guard order"
+            assert normalized(step.get("if")) == normalized(tag), "docker: publish condition"
+            assert step["with"]["push"] is True, "docker: release push enabled"
+            assert step["with"]["tags"].strip() == "ghcr.io/feedback-loop-ai/swarmail:v${{ steps.ver.outputs.version }}\nghcr.io/feedback-loop-ai/swarmail:${{ steps.ver.outputs.version }}", "docker: both release forms"
+            assert gs.get("env", {}).get("VERSION") == "${{ steps.ver.outputs.version }}", "docker: version input"
+            continuous = [s for s in steps if "swarmail:main" in s.get("with",{}).get("tags", "")]
+            assert len(continuous) == 1 and continuous[0].get("if") == "github.ref == 'refs/heads/main'", "docker: continuous condition"
+            assert continuous[0]["with"]["tags"].strip() == "ghcr.io/feedback-loop-ai/swarmail:main\nghcr.io/feedback-loop-ai/swarmail:sha-${{ github.sha }}", "docker: continuous tags"
+            assert continuous[0]["with"]["push"] is True, "docker: continuous push"
+        else:
+            pre, ps = one_run(preflight)
+            guard, _ = one_run(chart_guard)
+            push, _ = one_run(helm_push)
+            assert pre < guard < push, "chart: guard order"
+            assert ps.get("env", {}).get("DOCKER_RESULT") == "${{ needs.docker.result }}", "chart: docker result input"
+            assert ps.get("env", {}).get("APP_VERSION") == "${{ steps.chartver.outputs.app }}", "chart: app input"
+    return True
+check(workflow)
+count = 0
+def mutant(desc, mutate):
+    global count
+    w = copy.deepcopy(workflow)
+    mutate(w)
+    assert w != workflow, "no-op mutant: "+desc
+    encoded = yaml.safe_dump(w, sort_keys=False)
+    try:
+        check(yaml.safe_load(encoded))
+    except (AssertionError, KeyError, TypeError) as error:
+        count += 1
+        check(workflow)
+        print("workflow mutation red/restored-green: %s; sha256=%s; refusal=%s" % (desc, hashlib.sha256(encoded.encode()).hexdigest(), error))
+    else:
+        raise AssertionError("workflow mutation admitted: "+desc)
+def step(w, job, body):
+    return next(s for s in w["jobs"][job]["steps"] if s.get("run", "").strip() == body)
+for job, body in (("docker", image_guard), ("chart-publish", preflight), ("chart-publish", chart_guard)):
+    mutant(job+body+" removed", lambda w: w["jobs"][job]["steps"].remove(step(w,job,body)))
+    mutant(job+body+" commented", lambda w: step(w,job,body).update(run="# "+body))
+    mutant(job+body+" ignored", lambda w: step(w,job,body).update(run=body+" || true"))
+    mutant(job+body+" skipped", lambda w: step(w,job,body).update({"if":"false"}))
+    mutant(job+body+" softened", lambda w: step(w,job,body).update({"continue-on-error": True}))
+    mutant(job+body+" moved", lambda w: w["jobs"][job]["steps"].append(w["jobs"][job]["steps"].pop(w["jobs"][job]["steps"].index(step(w,job,body)))))
+for job in ("docker", "chart-publish"):
+    mutant(job+" job softened", lambda w: w["jobs"][job].update({"continue-on-error": True}))
+    mutant(job+" if always", lambda w: w["jobs"][job].update({"if":"always()"}))
+    mutant(job+" if false", lambda w: w["jobs"][job].update({"if":"false"}))
+    for prerequisite in workflow["jobs"][job]["needs"]:
+        mutant(job+" missing "+prerequisite, lambda w: w["jobs"][job]["needs"].remove(prerequisite))
+mutant("dropped docker success", lambda w: w["jobs"]["chart-publish"].update({"if":chart_if.replace(" && needs.docker.result == 'success'", "")}))
+mutant("dropped docker result", lambda w: step(w,"chart-publish",preflight)["env"].pop("DOCKER_RESULT"))
+mutant("ignored helm failure", lambda w: step(w,"chart-publish",helm_push).update(run=helm_push+" || true"))
+for job in ("docker", "chart-publish"):
+    for i, s in enumerate(workflow["jobs"][job]["steps"]):
+        if "docker/build-push-action@" in s.get("uses", "") or s.get("run", "").strip() == helm_push:
+            mutant(job+" publish softened", lambda w: w["jobs"][job]["steps"][i].update({"continue-on-error":True}))
+            mutant(job+" publish condition bypass", lambda w: w["jobs"][job]["steps"][i].update({"if":"always()"}))
+check(workflow)
+print("workflow active-step checker: %d mutation-red / restored-green receipts" % count)
+WIRING
+
+echo "publish-guard-test: OK — real HTTP, credential-free argv, strict versions and guarded publication"

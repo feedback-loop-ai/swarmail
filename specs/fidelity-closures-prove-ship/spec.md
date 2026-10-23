@@ -190,7 +190,7 @@ what the later phases may not move:
    selector refusals; no checked-in certificate fixtures.
 10. **The gate stays exact and disk-backed:** missed == 0 on lines,
     branches and functions; no `coverage(off)`; no harness trickery; the
-    instrumented run's `TMPDIR` is `/home/valentin/scratch/cov-tmp` —
+    instrumented run's `TMPDIR` is `/operator-scratch/cov-tmp` —
     never tmpfs again.
 11. **Review findings are line- and sentence-level.** "Over-built" names a
     line to delete; it does not re-argue the design. The do-not-redo rule
@@ -211,7 +211,7 @@ the coverage gate's `TMPDIR` rule is absolute (AC-G.2).
   `cargo test --workspace --locked` and
   `brokkr compile --bundle bundles/self` all exit 0; the suite is 470
   tests. *Proof:* the commands themselves.
-- **AC-G.2** `TMPDIR=/home/valentin/scratch/cov-tmp bash
+- **AC-G.2** `TMPDIR=/operator-scratch/cov-tmp bash
   scripts/coverage-gate.sh` reports exact 100/100/100 — lines, branches
   and functions, missed == 0 — with no `coverage(off)` anywhere in `src/`.
   *Proof:* the gate's own output, run with the disk-backed `TMPDIR`,

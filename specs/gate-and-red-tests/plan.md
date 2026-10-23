@@ -254,6 +254,6 @@ A–G against the current gate; the `0..4`→`0..5` flip; each reintroduced
 defect of AC-9..AC-13; the wedged-peer deadline; the reverted POP3 shape;
 and the before/after `$TMPDIR` listing of AC-3. During development the
 gate runs with a disk-backed `TMPDIR`
-(`TMPDIR=/home/valentin/scratch/cov-tmp`); post-repair acceptance is the
+(`TMPDIR=/operator-scratch/cov-tmp`); post-repair acceptance is the
 gate passing with the default resolution under `target/` — no TMPDIR
 instruction anywhere.

@@ -38,7 +38,7 @@ the test that proves it. Base: `05ed2b8`, tree pristine
 - [ ] **T4 — Prove the six house gates at the repaired tree, from pristine
   status.** `cargo fmt --all -- --check`; `cargo clippy --all-targets -- -D
   warnings`; `cargo test`; `brokkr compile --bundle bundles/self`;
-  `TMPDIR=/home/valentin/scratch/cov-tmp bash scripts/coverage-gate.sh`;
+  `TMPDIR=/operator-scratch/cov-tmp bash scripts/coverage-gate.sh`;
   `cargo deny check licenses`. **Proved by:** all six exit 0; the coverage
   gate reports **exact 100/100/100, missed == 0** with the same counts as the
   base run (no Rust changed — the measured denominator must be identical);

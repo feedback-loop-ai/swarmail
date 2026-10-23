@@ -73,7 +73,7 @@ record. Run at the repository root with `.brokkr/state/env.sh` sourced.
 - [ ] 11. `brokkr compile --bundle bundles/self` — the constitution
   compiles against the amended record.
   **Proved by:** exit 0.
-- [ ] 12. `TMPDIR=/home/valentin/scratch/cov-tmp bash
+- [ ] 12. `TMPDIR=/operator-scratch/cov-tmp bash
   scripts/coverage-gate.sh` — exact 100/100/100, missed == 0. The
   `TMPDIR` is mandatory: never run the disk-bound gate on `/tmp` tmpfs.
   **Proved by:** the gate's own verdict; a red here is an environment
