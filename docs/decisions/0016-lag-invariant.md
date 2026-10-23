@@ -141,3 +141,38 @@ the contract's most load-bearing constant is *enforced* by nothing:
 - This decision, and 0014/0015 as amended, remain `proposed` — acceptance is
   the operator's. Until accepted, the tree is judged against this text only
   by this run's own review.
+
+## Factual correction marker — 2026-10-24 (NEXT-183, findings 15.1–15.2)
+
+This marker corrects factual claims in Context item 3, Decision §§2–4, and
+Consequences above. The accepted status and historical text remain as
+recorded; this is not a new ruling, amendment, or operator acceptance.
+
+### Insert interval (15.1; §2)
+
+The claim that memory is a subset of disk at every instant for insert, and
+that no reader can see an id absent from disk, is false during capped
+eviction. At cap 1, the live and disk mail-id sets initially both contain A;
+inserting B commits B and deletion of A in one transaction before memory
+applies that eviction. In the interval after commit and before apply, the
+disk mail-id set is `{B}` and the memory set is `{A}`. This preserves
+commit-before-new-visibility: B is not exposed before its commit, and A was
+previously committed. Successful completion mirrors the planned eviction;
+ordinary refusal applies nothing. Separate memory updates and readers that do
+not take the mutation mutex do not establish a whole-store snapshot. This
+counterexample and its limits are recorded in
+[0014](0014-one-ordered-mutation-boundary.md)'s NEXT-183 marker. The
+unqualified subset and no-missing-disk-id wording above is historical error.
+
+### Busy-handler scope (15.2; Context item 3, §§3–4)
+
+`busy_timeout=5000` configures SQLite's busy handler for lock-contention
+waits and retries only. It is not a deadline for ENOSPC, EDQUOT, read-only
+errors, arbitrary I/O, fsync, mutex or blocking-pool waiting, scheduling, a
+whole transaction, request, or shutdown. A conflict need not consume the full
+threshold. The tripwire proves the configured PRAGMA value, not an
+elapsed-time bound. Accordingly, the statements above that a full-disk
+refusal follows the same bounded stall, or that the tripwire enforces a
+refusal-time bound, are incorrect. Returned storage errors still use the
+existing fixed refusal mapping. See the NEXT-183 marker in
+[0015](0015-boundary-failure-contract.md).

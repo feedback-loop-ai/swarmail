@@ -667,9 +667,9 @@ async fn a_write_heavy_data_file_server_stays_live_and_loses_no_250_answered_mai
 /// Contract #1's SMTP wire leg (decision 0012 §3): with a second real
 /// connection holding the writer lock, the next DATA's commit fails and
 /// the reply is the fixed `451 4.3.0 storage commit failed` line — never a
-/// `250`. The memory truth stands (the refused mail is queryable over
-/// REST), the restart copy taken without the lock does not contain it, and
-/// once the lock is released the same wire path accepts again.
+/// `250`. The refused mail is absent from the live inbox and restart
+/// copy, while the previously committed mail remains in both. After the lock
+/// is released, this test confirms the same wire path accepts a later mail.
 #[tokio::test]
 async fn a_blocked_commit_answers_451_and_never_claims_250() {
     let (_dir, db) = data_file("refuse-smtp");
@@ -768,9 +768,9 @@ async fn a_blocked_commit_answers_451_and_never_claims_250() {
 }
 
 /// Contract #1's REST seed leg: the blocked commit refuses the seed with
-/// the fixed `503` + `storage commit failed` body, the memory truth still
-/// stands, and the restart copy stays empty — the seed's caller is told
-/// the truth instead of a `200` for an uncommitted row.
+/// the fixed `503` + `storage commit failed` body. The live list is empty,
+/// the await times out with `matched=0`, and the restart copy is empty. This
+/// test does not retry after the lock is released.
 #[tokio::test]
 async fn a_blocked_commit_refuses_the_rest_seed_with_503() {
     let (_dir, db) = data_file("refuse-rest");
