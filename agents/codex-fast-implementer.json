@@ -1,10 +1,10 @@
 {
   "extends": "implementer",
   "models": [
-    "sol"
+    "luna"
   ],
   "efforts": {
-    "sol": "high"
+    "luna": "xhigh"
   },
   "hands": {
     "kind": "workspace",

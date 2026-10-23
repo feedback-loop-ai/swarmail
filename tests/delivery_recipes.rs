@@ -348,6 +348,22 @@ fn fast_strategy_selectors_have_no_fallback_and_keep_one_two_or_four_reviewers()
 }
 
 #[test]
+fn fast_implementation_uses_luna_at_xhigh_without_provider_fallback() {
+    let implementer = office("codex-fast-implementer");
+    assert_eq!(implementer["extends"], "implementer");
+    assert_eq!(implementer["models"], json!(["luna"]));
+    assert_eq!(implementer["efforts"]["luna"], "xhigh");
+    assert_eq!(
+        read_json("adapters/codex.json")["models"]["luna"],
+        "gpt-6-luna"
+    );
+    assert_eq!(
+        read_json("adapters/codex.json")["efforts"],
+        json!(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+    );
+}
+
+#[test]
 fn fast_recipe_preserves_shell_proofs_design_origin_and_hard_review_refusals() {
     let recipe = read_json("bundles/codex-fast/bundle.json");
     for seat in ["design", "verify", "ship"] {

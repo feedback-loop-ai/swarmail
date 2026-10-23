@@ -62,6 +62,7 @@ they are useful when the operator has already ruled that path necessary:
 | Model key | Concrete model        | Provider                   |
 +-----------+-----------------------+----------------------------+
 | sol       | gpt-6.1-sol           | Codex CLI                  |
+| luna      | gpt-6-luna            | Codex CLI                  |
 | astra     | gpt-6-astra           | Codex CLI                  |
 | qwen-max  | dashscope/qwen3.8-max | DashScope through dsh      |
 | opus      | claude-opus-5-5       | Claude CLI                 |
@@ -81,6 +82,10 @@ The dsh adapter does not claim native tool confinement: those reviewers'
 read-only conduct is a charter obligation, and the delivery gates detect tree
 changes. A security hold remains a hard stop, and unknown residual safety
 facts never authorize shipping.
+
+The `codex-fast` implementation seat uses GPT-6 Luna at xhigh effort. Its
+triage seat stays on Sol / medium; strategy selection and reviewer routes are
+unchanged.
 
 Codex work offices inherit the original intake, design and implementation
 charters. Their declared workspace hands put writes through the engine's
