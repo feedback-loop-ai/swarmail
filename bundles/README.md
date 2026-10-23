@@ -62,6 +62,7 @@ they are useful when the operator has already ruled that path necessary:
 | Model key | Concrete model        | Provider                   |
 +-----------+-----------------------+----------------------------+
 | sol       | gpt-6.1-sol           | Codex CLI                  |
+| luna      | gpt-6-luna            | Codex CLI                  |
 | astra     | gpt-6-astra           | Codex CLI                  |
 | qwen-max  | dashscope/qwen3.8-max | DashScope through dsh      |
 | opus      | claude-opus-5-5       | Claude CLI                 |
@@ -82,6 +83,10 @@ read-only conduct is a charter obligation, and the delivery gates detect tree
 changes. A security hold remains a hard stop, and unknown residual safety
 facts never authorize shipping.
 
+The `codex-fast` implementation seat uses GPT-6 Luna at xhigh effort. Its
+triage seat stays on Sol / medium; strategy selection and reviewer routes are
+unchanged.
+
 Codex work offices inherit the original intake, design and implementation
 charters. Their declared workspace hands put writes through the engine's
 boxed workspace tool under the realm's namespace boundary; the native Codex
@@ -101,6 +106,12 @@ Rust toolchains, cached locked dependencies and provider credentials already
 available. The local recorded build is staged at `.forge/bin/brokkr`; put that
 directory first on `PATH` rather than selecting another executable merely
 because it reports the same version. Compile the recipes before delivery:
+
+Before each isolated run, stage the digest-matched binary in that candidate's
+own `.forge/bin/brokkr` and verify it against `bundles/self/tooling.json`.
+Pass its absolute path to boxed checks; a sibling worktree's binary or the
+launcher `PATH` is not visible inside the candidate. Treat a missing or
+mismatched binary as a setup block and resolve it before provider dispatch.
 
 The source identity includes the ordered checksummed tooling patches.
 Apply them with `python3 scripts/apply-brokkr-patches.py <clean-source>`

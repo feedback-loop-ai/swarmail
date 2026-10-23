@@ -135,3 +135,20 @@ retaining their original event bytes and run IDs. Keep the recovered source
 snapshot and remote original unchanged. Importing history does not resume,
 supersede or discharge its rulings. Do not relocate or alias an open SQLite
 journal or its WAL files.
+
+## Operator clarification — fast implementation model (2026-10-24)
+
+The operator directed that the `codex-fast` implementation seat use GPT-6
+Luna (`luna`) at `xhigh` effort. Triage stays on Sol / medium. This does not
+change the chore, feature, design or engine selectors, the independent
+reviewer assignments, the protected review, or any deterministic gate.
+
+## Operator clarification — candidate-local engine preflight (2026-10-24)
+
+Every isolated candidate must contain the digest-matched recorded engine at
+its own `.forge/bin/brokkr` before a delivery run starts. The operator's
+launch procedure verifies the digest from `bundles/self/tooling.json` and
+passes the absolute path to boxed checks. A sibling worktree's binary or the
+host `PATH` does not satisfy this requirement. Missing or mismatched binaries
+are setup blocks to resolve before provider dispatch, not implementation
+failures to retry.

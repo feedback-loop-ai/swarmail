@@ -213,9 +213,10 @@ correctness and security among them, decision 0013); the review gate is constitu
 security-hold is a hard stop. `verify` and `ship` are hermetic exec
 seats — a shell proves what a model claims. Decision
 [0057](decisions/0057-codex-delivery-recipes.md) adds the operator-directed
-Codex recipes: Sol intake and implementation, a shared Sol/Astra design
-council, and independent Qwen Max, Opus, official DeepSeek Flash and
-DashScope GLM 5.3 reviewers, without model fallbacks. `codex-fast` triages
+Codex recipes: Sol intake and standard implementation, a shared Sol/Astra
+design council, and independent Qwen Max, Opus, official DeepSeek Flash and
+DashScope GLM 5.3 reviewers, without model fallbacks. `codex-fast` uses GPT-6
+Luna at xhigh for implementation and triages
 first: isolated bugs go directly to implementation and one reviewer,
 broader understood fixes get two reviewers, and risky/design work keeps
 the design council and four reviewers. Every lane retains all shell gates,
