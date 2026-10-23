@@ -107,6 +107,12 @@ available. The local recorded build is staged at `.forge/bin/brokkr`; put that
 directory first on `PATH` rather than selecting another executable merely
 because it reports the same version. Compile the recipes before delivery:
 
+Before each isolated run, stage the digest-matched binary in that candidate's
+own `.forge/bin/brokkr` and verify it against `bundles/self/tooling.json`.
+Pass its absolute path to boxed checks; a sibling worktree's binary or the
+launcher `PATH` is not visible inside the candidate. Treat a missing or
+mismatched binary as a setup block and resolve it before provider dispatch.
+
 The source identity includes the ordered checksummed tooling patches.
 Apply them with `python3 scripts/apply-brokkr-patches.py <clean-source>`
 before building the recorded source commit with its locked dependencies.
