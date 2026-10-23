@@ -1040,6 +1040,135 @@ fn find_body_start(raw: &[u8]) -> usize {
 mod tests {
     use super::*;
 
+    /// The real POP3 owner, its held backoff and the real HTTP router share
+    /// one health flag. All assertions are stable positive observations;
+    /// no failure-only diagnostic/cleanup arm needs a 0020 harness.
+    #[tokio::test]
+    async fn pop3_degradation_reaches_http_healthz() {
+        use tokio::io::AsyncReadExt;
+
+        // Always release and abort on drop, including assertion unwind or
+        // the whole-scenario deadline. Success explicitly stops and joins.
+        struct Cleanup {
+            probe: Arc<ListenerProbe>,
+            pop3: tokio::task::AbortHandle,
+            http: tokio::task::AbortHandle,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                self.probe.retry_ready.send_replace(true);
+                self.pop3.abort();
+                self.http.abort();
+            }
+        }
+        async fn health(addr: std::net::SocketAddr) -> (String, serde_json::Value) {
+            let mut client = TcpStream::connect(addr).await.unwrap();
+            client
+                .write_all(
+                    format!("GET /healthz HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut bytes = Vec::new();
+            client.read_to_end(&mut bytes).await.unwrap();
+            let reply = String::from_utf8(bytes).unwrap();
+            let (head, body) = reply.split_once("\r\n\r\n").unwrap();
+            (
+                head.lines().next().unwrap().to_string(),
+                serde_json::from_str(body).unwrap(),
+            )
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http_addr = http_listener.local_addr().unwrap();
+        let store = Arc::new(Store::new(0));
+        store
+            .insert(crate::store::email("health-message", "health", "a@x.io"))
+            .unwrap();
+        let probe = ListenerProbe::new();
+        let degraded = Arc::new(AtomicBool::new(false));
+        let (stop, mut pop3_stop) = tokio::sync::watch::channel(false);
+        let mut http_stop = pop3_stop.clone();
+        let state = crate::api::AppState {
+            store: store.clone(),
+            chaos: Arc::new(crate::chaos::Chaos::default()),
+            webhooks: Arc::new(crate::webhook::Webhooks::default()),
+            started: std::time::Instant::now(),
+            shutdown: pop3_stop.clone(),
+            smtp_degraded: Arc::new(AtomicBool::new(false)),
+            pop3_degraded: degraded.clone(),
+            http_origin_guard: Some(http_addr.port()),
+        };
+        let mut pop3 = tokio::spawn(LISTENER_PROBE.scope(
+            probe.clone(),
+            serve(
+                listener,
+                store,
+                degraded,
+                Duration::from_secs(60),
+                2,
+                async move {
+                    pop3_stop.changed().await.unwrap();
+                },
+            ),
+        ));
+        let mut http = tokio::spawn(crate::api::serve(http_listener, state, async move {
+            http_stop.changed().await.unwrap();
+        }));
+        let cleanup = Cleanup {
+            probe: probe.clone(),
+            pop3: pop3.abort_handle(),
+            http: http.abort_handle(),
+        };
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut client = BufReader::new(TcpStream::connect(addr).await.unwrap());
+            let mut line = String::new();
+            client.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "+OK Swarmail POP3 server ready\r\n");
+            client.write_all(b"USER health\r\n").await.unwrap();
+            line.clear();
+            client.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "+OK name is a valid mailbox\r\n");
+            client.write_all(b"PASS x\r\n").await.unwrap();
+            line.clear();
+            client.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "+OK maildrop has 1 messages (0 octets)\r\n");
+            client.write_all(b"NOOP\r\n").await.unwrap();
+            line.clear();
+            client.read_line(&mut line).await.unwrap();
+            assert_eq!(line, "+OK\r\n");
+            let (status, baseline) = health(http_addr).await;
+            assert_eq!(status, "HTTP/1.1 200 OK");
+            assert_eq!(baseline["status"], "ok");
+            assert!(baseline.get("degraded").is_none());
+
+            let mut entered = probe.backoff_pending.subscribe();
+            assert!(!*probe.retry_ready.borrow());
+            probe.accept_error.store(true, Ordering::Relaxed);
+            // A real connection wakes this owner's pending accept poll.
+            let poke = TcpStream::connect(addr).await.unwrap();
+            entered.wait_for(|pending| *pending).await.unwrap();
+            let (status, body) = health(http_addr).await;
+            assert_eq!(status, "HTTP/1.1 503 Service Unavailable");
+            assert_eq!(
+                body,
+                serde_json::json!({"status":"degraded","degraded":["pop3"]})
+            );
+            drop(poke);
+            drop(client);
+            probe.retry_ready.send_replace(true);
+            stop.send(true).unwrap();
+            (&mut pop3).await.unwrap().unwrap();
+            (&mut http).await.unwrap().unwrap();
+        })
+        .await
+        .expect("POP3 health scenario must finish, including owned task joins");
+        drop(cleanup);
+    }
+
     /// A peer that resets the connection mid-session ends it with a logged
     /// error, not a panic: one clean round-trip, then an abrupt close with
     /// response bytes still unread — the kernel answers that with a RST.

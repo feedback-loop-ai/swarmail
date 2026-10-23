@@ -257,6 +257,12 @@ impl SmtpConn {
             .unwrap();
     }
 
+    /// Read exactly one wire line, preserving spaces and CRLF (including
+    /// the empty AUTH PLAIN continuation prompt). Uses the owned read bound.
+    pub async fn reply_raw(&mut self) -> String {
+        read_line_named(&mut self.reader, "SmtpConn::reply_raw: a reply line").await
+    }
+
     /// Read one reply line (final line of multi-line replies).
     pub async fn reply(&mut self) -> String {
         loop {

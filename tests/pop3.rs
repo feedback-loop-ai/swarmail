@@ -1132,19 +1132,16 @@ async fn a_failed_quit_prefix_commits_and_the_retry_signs_off() {
     c.login("quitprefix").await;
     assert!(c.cmd("DELE 1").await.starts_with("+OK"));
     assert!(c.cmd("DELE 2").await.starts_with("+OK"));
+    assert_eq!(c.cmd("TOP 1 1").await, "-ERR message already deleted");
+    assert_eq!(c.cmd("NOOP").await, "+OK");
 
     let trigger = common::refusing_trigger_except(&db, &refused);
 
     // The mid-loop failure: `-ERR storage commit failed`, never a sign-off.
     let reply = c.cmd("QUIT").await;
-    assert!(
-        reply.starts_with("-ERR"),
-        "a mid-loop QUIT failure must not sign off: {reply}"
-    );
-    assert!(
-        reply.contains("storage commit failed"),
-        "the -ERR must name the cause: {reply}"
-    );
+    assert_eq!(reply, "-ERR storage commit failed");
+    assert_eq!(c.cmd("TOP 1 1").await, "-ERR no such message");
+    assert_eq!(c.cmd("NOOP").await, "+OK");
 
     // The session stays in TRANSACTION: transaction-state commands still
     // answer (a sign-off would have closed the stream), and the session's
@@ -1295,9 +1292,13 @@ async fn rset_never_resurrects_a_committed_delete() {
     c.login("rsetgone").await;
     assert!(c.cmd("DELE 1").await.starts_with("+OK"));
     assert!(c.cmd("DELE 2").await.starts_with("+OK"));
+    assert_eq!(c.cmd("TOP 1 1").await, "-ERR message already deleted");
+    assert_eq!(c.cmd("NOOP").await, "+OK");
 
     let trigger = common::refusing_trigger_except(&db, &refused);
-    assert!(c.cmd("QUIT").await.starts_with("-ERR"), "mid-loop failure");
+    assert_eq!(c.cmd("QUIT").await, "-ERR storage commit failed");
+    assert_eq!(c.cmd("TOP 1 1").await, "-ERR no such message");
+    assert_eq!(c.cmd("NOOP").await, "+OK");
 
     // RSET clears the session's own marks — including the one whose delete
     // failed — so the summary counts the refused mail and the bystander.
@@ -1307,6 +1308,8 @@ async fn rset_never_resurrects_a_committed_delete() {
         format!("+OK maildrop has 2 messages ({} octets)", n2 + n3)
     );
     // The gone slot stays gone: the number is not resurrectable.
+    assert_eq!(c.cmd("TOP 1 1").await, "-ERR no such message");
+    assert_eq!(c.cmd("NOOP").await, "+OK");
     assert_eq!(c.cmd("RETR 1").await, "-ERR no such message");
     assert_eq!(c.cmd("DELE 1").await, "-ERR no such message");
     // The suffix is truly unmarked: it serves again.

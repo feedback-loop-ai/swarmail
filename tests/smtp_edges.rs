@@ -4,7 +4,7 @@
 mod common;
 
 use base64::Engine as _;
-use common::{SmtpConn, http_json, smtp_send, start, start_smtp};
+use common::{SmtpConn, http_bytes, http_json, list_all_ids, smtp_send, start, start_smtp};
 use std::time::Duration;
 use swarmail::smtp::SmtpConfig;
 
@@ -237,14 +237,35 @@ async fn sequencing_errors_need_mail_then_rcpt() {
     let mut c = SmtpConn::connect(srv.smtp_addr).await;
     c.send("EHLO t").await;
     c.reply().await;
-
     c.send("RCPT TO:<a@x.io>").await;
-    assert!(c.reply().await.starts_with("503"));
-
-    c.send("MAIL FROM:<a@x.io>").await;
-    assert!(c.reply().await.starts_with("250"));
+    assert_eq!(
+        c.reply_raw().await,
+        "503 5.5.1 Error: need MAIL command\r\n"
+    );
+    c.send("MAIL FROM:<original@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.0 OK\r\n");
     c.send("DATA").await;
-    assert!(c.reply().await.starts_with("503"));
+    assert_eq!(
+        c.reply_raw().await,
+        "503 5.5.1 Error: need RCPT command\r\n"
+    );
+
+    // No fresh MAIL, greeting or RSET: only the preserved envelope can win.
+    c.send("RCPT TO:<survivor@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.5 OK\r\n");
+    let raw = "From: header@x.io\r\nSubject: preserved\r\n\r\noriginal envelope";
+    let reply = exact_data(&mut c, raw).await;
+    accepted_witness(
+        srv.http_addr,
+        "default",
+        &reply,
+        "original@x.io",
+        &["survivor@x.io"],
+        raw,
+    )
+    .await;
+    drop(c);
+    srv.stop().await;
 }
 
 #[tokio::test]
@@ -1064,23 +1085,37 @@ async fn auth_during_a_transaction_is_refused() {
     let mut c = SmtpConn::connect(srv.smtp_addr).await;
     c.send("EHLO t").await;
     c.reply().await;
-    c.send("MAIL FROM:<a@x.io>").await;
-    assert!(c.reply().await.starts_with("250"));
-    c.send("AUTH PLAIN AG90aGVyYm94A===").await;
-    assert_eq!(
-        c.reply().await,
-        "503 5.5.1 Error: MAIL transaction in progress"
-    );
-    // The transaction survived, with the inbox AUTH did not touch.
-    c.send("RCPT TO:<r@x.io>").await;
-    assert!(c.reply().await.starts_with("250"));
-    assert!(c.data("Subject: mid\r\n\r\nx").await.starts_with("250"));
-    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    c.send("MAIL FROM:<original@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.0 OK\r\n");
+    let (st, before) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
     assert_eq!(st, 200);
-    assert_eq!(body["count"], 1);
-    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/otherbox/count", None).await;
-    assert_eq!(st, 200, "the refused AUTH never created its inbox");
-    assert_eq!(body["count"], 0);
+    // Well-formed authzid NUL authcid NUL password; malformed-base64
+    // refusal is covered separately and cannot prove this precedence.
+    c.send(&format!("AUTH PLAIN {}", base64_of("\0otherbox\0password")))
+        .await;
+    assert_eq!(
+        c.reply_raw().await,
+        "503 5.5.1 Error: MAIL transaction in progress\r\n"
+    );
+    let (st, after) = http_json(srv.http_addr, "GET", "/api/v1/inboxes", None).await;
+    assert_eq!(st, 200);
+    assert_eq!(after, before, "refused AUTH must not create an inbox");
+    c.send("RCPT TO:<original-recipient@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.5 OK\r\n");
+    let raw = "From: header@x.io\r\nSubject: original identity\r\n\r\ntransaction survived";
+    let reply = exact_data(&mut c, raw).await;
+    accepted_witness(
+        srv.http_addr,
+        "default",
+        &reply,
+        "original@x.io",
+        &["original-recipient@x.io"],
+        raw,
+    )
+    .await;
+    assert!(list_all_ids(srv.http_addr, "otherbox").await.is_empty());
+    drop(c);
+    srv.stop().await;
 }
 
 /// DATA with no current MAIL at all answers `503 5.5.1 Error: need MAIL
@@ -2327,4 +2362,206 @@ async fn auth_control_names_refuse_without_identity_change() {
         ]),
         "no control-bearing inbox exists, and no password is listed"
     );
+}
+
+// These helpers preserve every wire byte and fetch the returned ID once,
+// immediately: eventual visibility or a count alone cannot satisfy 0001.
+async fn exact_data(c: &mut SmtpConn, raw: &str) -> String {
+    c.send("DATA").await;
+    assert_eq!(
+        c.reply_raw().await,
+        "354 End data with <CR><LF>.<CR><LF>\r\n"
+    );
+    c.send(raw).await;
+    c.send(".").await;
+    c.reply_raw().await
+}
+
+async fn accepted_witness(
+    addr: std::net::SocketAddr,
+    inbox: &str,
+    reply: &str,
+    sender: &str,
+    recipients: &[&str],
+    raw: &str,
+) -> String {
+    let id = reply
+        .strip_prefix("250 2.0.0 OK: stored as ")
+        .unwrap()
+        .strip_suffix("\r\n")
+        .unwrap();
+    assert!(!id.is_empty());
+    assert!(
+        !id.chars().any(char::is_whitespace),
+        "one ID, no extra reply: {reply:?}"
+    );
+    let (st, mail) = http_json(addr, "GET", &format!("/api/v1/messages/{id}"), None).await;
+    assert_eq!(st, 200, "accepted means immediately queryable");
+    assert_eq!(mail["id"], id);
+    assert_eq!(mail["inbox"], inbox);
+    assert_eq!(mail["envelope_from"], sender);
+    assert_eq!(mail["recipients"], serde_json::json!(recipients));
+    let (st, bytes) = http_bytes(addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(st, 200);
+    assert_eq!(bytes, format!("{raw}\r\n").as_bytes());
+    assert_eq!(list_all_ids(addr, inbox).await, [id.to_string()].into());
+    id.to_string()
+}
+
+#[tokio::test]
+async fn plain_prompt_cancellation_preserves_identity_and_auth_retry() {
+    let srv = start().await;
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("EHLO t").await;
+    c.reply().await;
+    c.send("AUTH PLAIN").await;
+    assert_eq!(c.reply_raw().await, "334 \r\n");
+    c.send("*").await;
+    assert_eq!(c.reply_raw().await, "501 5.5.2 Credentials refused\r\n");
+    c.send("NOOP").await;
+    assert_eq!(c.reply_raw().await, "250 2.0.0 OK\r\n");
+    c.send("MAIL FROM:<cancelled@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.0 OK\r\n");
+    c.send("RCPT TO:<default-recipient@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.5 OK\r\n");
+    let raw = "From: header@x.io\r\nSubject: cancelled auth\r\n\r\ndefault identity";
+    let reply = exact_data(&mut c, raw).await;
+    let default_id = accepted_witness(
+        srv.http_addr,
+        "default",
+        &reply,
+        "cancelled@x.io",
+        &["default-recipient@x.io"],
+        raw,
+    )
+    .await;
+    assert!(list_all_ids(srv.http_addr, "aftercancel").await.is_empty());
+
+    c.send(&format!(
+        "AUTH PLAIN {}",
+        base64_of("\0aftercancel\0password")
+    ))
+    .await;
+    assert_eq!(c.reply_raw().await, "235 2.7.0 Accepted\r\n");
+    c.send("MAIL FROM:<authenticated@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.0 OK\r\n");
+    c.send("RCPT TO:<named-recipient@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.5 OK\r\n");
+    let raw = "From: header@x.io\r\nSubject: retried auth\r\n\r\nnamed identity";
+    let reply = exact_data(&mut c, raw).await;
+    let named_id = accepted_witness(
+        srv.http_addr,
+        "aftercancel",
+        &reply,
+        "authenticated@x.io",
+        &["named-recipient@x.io"],
+        raw,
+    )
+    .await;
+    assert_ne!(default_id, named_id);
+    assert_eq!(
+        list_all_ids(srv.http_addr, "default").await,
+        [default_id].into()
+    );
+    drop(c);
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn data_chaos_451_consumes_the_transaction_and_allows_recovery() {
+    let srv = start().await;
+    let (st, _) = http_json(
+        srv.http_addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data":{"probability":100,"delay_ms":0}}"#),
+    )
+    .await;
+    assert_eq!(st, 200);
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("MAIL FROM:<refused@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.0 OK\r\n");
+    c.send("RCPT TO:<refused-recipient@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.5 OK\r\n");
+    assert_eq!(
+        exact_data(&mut c, "Subject: chaos refused\r\n\r\nnot accepted").await,
+        "451 4.3.0 chaos\r\n"
+    );
+    consumed_after_451(&mut c).await;
+    assert!(list_all_ids(srv.http_addr, "default").await.is_empty());
+    let (st, _) = http_json(srv.http_addr, "DELETE", "/api/v1/chaos", None).await;
+    assert_eq!(st, 200);
+    c.send("MAIL FROM:<recovered@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.0 OK\r\n");
+    c.send("RCPT TO:<recovered-recipient@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.5 OK\r\n");
+    let raw = "From: header@x.io\r\nSubject: chaos recovery\r\n\r\naccepted recovery";
+    let reply = exact_data(&mut c, raw).await;
+    accepted_witness(
+        srv.http_addr,
+        "default",
+        &reply,
+        "recovered@x.io",
+        &["recovered-recipient@x.io"],
+        raw,
+    )
+    .await;
+    drop(c);
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn data_storage_451_consumes_the_transaction_and_allows_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("data-451.db");
+    let srv = common::start_with(|mut cfg| {
+        cfg.data_file = Some(db.clone());
+        cfg
+    })
+    .await;
+    let trigger = common::refusing_trigger(&db, "insert");
+    let mut c = SmtpConn::connect(srv.smtp_addr).await;
+    c.send("MAIL FROM:<refused@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.0 OK\r\n");
+    c.send("RCPT TO:<refused-recipient@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.5 OK\r\n");
+    assert_eq!(
+        exact_data(&mut c, "Subject: storage refused\r\n\r\nnot committed").await,
+        "451 4.3.0 storage commit failed\r\n"
+    );
+    consumed_after_451(&mut c).await;
+    assert!(list_all_ids(srv.http_addr, "default").await.is_empty());
+    trigger.remove();
+    c.send("MAIL FROM:<committed@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.0 OK\r\n");
+    c.send("RCPT TO:<committed-recipient@x.io>").await;
+    assert_eq!(c.reply_raw().await, "250 2.1.5 OK\r\n");
+    let raw = "From: header@x.io\r\nSubject: storage recovery\r\n\r\naccepted commit";
+    let reply = exact_data(&mut c, raw).await;
+    accepted_witness(
+        srv.http_addr,
+        "default",
+        &reply,
+        "committed@x.io",
+        &["committed-recipient@x.io"],
+        raw,
+    )
+    .await;
+    drop(c);
+    srv.stop().await;
+}
+
+async fn consumed_after_451(c: &mut SmtpConn) {
+    c.send("RCPT TO:<stale@x.io>").await;
+    assert_eq!(
+        c.reply_raw().await,
+        "503 5.5.1 Error: need MAIL command\r\n"
+    );
+    c.send("DATA").await;
+    assert_eq!(
+        c.reply_raw().await,
+        "503 5.5.1 Error: need MAIL command\r\n"
+    );
+    c.send("NOOP").await;
+    assert_eq!(c.reply_raw().await, "250 2.0.0 OK\r\n");
 }
