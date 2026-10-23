@@ -115,3 +115,22 @@ Trim trailing U+201D and U+2019 along with existing suffix punctuation, removing
 All compatible criteria require exact commands, exit results, evidence paths, source/input identities and individual mutation-red/restored-green receipts. Preserve accepted guarantees, the exact 100% line/branch/function denominator and all [house gates](../../docs/house-rules.md#gates--part-of-every-change), plus configured design selftest, tamper-boundary, recipe structural and fail-closed native-tls proofs. Use the launcher-pinned engine/toolchain and immutable baseline proofs; no version-equal substitution. All four independent review lenses remain, security holds remain hard stops, and CI-only evidence stays separate.
 
 The chief commit changes exactly this spec tree's three files and 0061. Its committed clean HEAD is the design identity. The deterministic final check alone returns designed. Implementation updates historical artifacts only with actual evidence. Report every finding's disposition, commits/files, tests, preserved rulings, proposal status and cross-lane requests. Do not claim whole #190 or epic completion while AC10–AC12 or any other obligation remains open.
+
+
+## Implementation disposition — 2026-10-23
+
+Compatible code is committed unsigned at
+`a09a5483f1afb114ea09c21caf748c0b246a4608`. AC1–AC9/AC13 have targeted real-client/
+runtime and restored-defect proof receipts; AC5 also retains identical-input
+inherited generator evidence. The [finding-by-finding handoff](plan.md#implementation-handoff--2026-10-23)
+records source identities, commands/exits, mutation/restoration receipts and
+paths. No targeted proof becomes whole-story or exact-coverage completion.
+
+AC10–AC12 remain OPEN pending separate R4.2/R4.3/R4.4 operator rulings. AC14
+remains OPEN: required workspace tests and instrumented coverage refuse the
+missing proposed-0061 index row in parent-owned docs/decisions/README.md.
+Other house gates/selftests pass; exact coverage, independent verify/review/
+ship, CI-only/external evidence and parent integration remain outstanding.
+Phase result: **broken**, never complete or oversized. Proposed 0061 stays
+proposed; no historical accepted body, baseline, recipe or frozen guarantee
+was weakened to advance this attempt.

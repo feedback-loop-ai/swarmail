@@ -145,3 +145,171 @@ CI-only chart/history/selftest, Docker persistence/context/volume smoke, RustSec
 | Shared blocking pool saturation / link amplification | Keep no-lock awaited work; disclose unbounded aggregate contention and source-size link amplification. No new admission/memory guarantee. |
 | Seam edits cross G/E/A ownership or shrink coverage | Invocation-local compat/webhook seams; store comment-only; SMTP extraction-only; no coverage exclusions or packaging changes. Escalate exact extra path to parent. |
 | Proposal/artifact pass mistaken for verified shipping | Distinguish drafted, deterministic designed, runtime evidence, full gates, independent reviews and operator acceptance at handoff. |
+
+## Implementation handoff — 2026-10-23
+
+Compatible code commit: `a09a5483f1afb114ea09c21caf748c0b246a4608`, unsigned
+(`%G? = N`). Chief identity remains `c498682`; deterministic design check
+returned `designed` in
+`.forge/results/6c006808-b705-4b58-9051-3c3cbf9f38ec-check.json`.
+This implementation returns **broken**: required full gates refuse the
+parent-owned decision-index omission. This is neither oversized scope nor
+a frozen-guarantee refusal. No successful verify/review/ship receipt or
+whole #190/epic completion is claimed.
+
+### Finding-by-finding disposition
+
+| Finding / AC | Implementation and actual proof | Remaining obligation |
+|---|---|---|
+| #170 2.1 / AC1 | `too_complex_needle_refuses_on_the_wire`: 60,000 ASCII k characters; URI bytes 60,021 Mailpit / 60,037 MailHog. Exact Mailpit JSON 400 `Error: the search needle is too complex`, Hog bare 400. Existing empty/kind/prefix/literal controls stay green. Actual `.expect()` mutation fails this wire evaluator. The earlier 250,000-character probe got HTTP 414 and is explicitly not compiler-refusal evidence. | Full delivery gates. |
+| #170 2.2 / AC2 | Both production handlers lower/escape/compile inside the awaited existing page offload, before scan/build. `needle_compilation_leaves_the_async_worker` observes actual compiler-site entry on a current-thread runtime while real SMTP/health progress. Separate Mailpit and MailHog worker-compilation mutations fail. | No new aggregate CPU/admission bound claimed. |
+| #170 2.3 / AC3 | Real reqwest connector consumes per-client resolver refusal and loopback TLS verification failure (`UnknownIssuer`, not TCP refusal). Fresh certificate validity derives from the run's date. Shared production `execute_request` formats informative bounded causes after `without_url`. Distinct raw/percent-encoded username/password sentinels and userinfo are absent. Tests restore original URL metadata after Basic-auth construction so omitted redaction really leaks; independent DNS/TLS mutations fail. Existing webhook suite green. | DNS proof is controlled resolver failure through reqwest, not OS/public-DNS outage. No confidentiality residual identified by these tests; independent review remains. |
+| #190 22.1 / AC4 | `extracted_only_fields_miss_both_wire_searches`: populated link/code arrays absent from every source/raw field. Both real shims miss each sentinel and hit ordinary subject/body controls. Independent links/codes-haystack mutations fail the respective assertion. | Full delivery gates. |
+| #190 22.2 / AC5 | Reuse actual prior generator equality (60,746 bytes, exit 0) and altered-snapshot refusal (exit 1, empty stdout) only after three identical-input hash checks. Independent evaluator catches same-count AElig U+00C6→U+00C7; exact source restored to SHA-256 `4334e2e8f0af1ba8a6c0a65fa0b716f51a7ee70867018e350ff0b4d154cc6335`, same evaluator green. | Historical T02a now checked with dated provenance. T11/T12 stay open; no fresh-download claim. |
+| #190 22.3 / AC6 | Eleven real response routes report actual lookup and completed build observations via scoped per-store gate metadata, separate from the old hold. Direct Find/Build callback proof also observes actual thread. Full body/content-type/404 controls, SMTP/health progress and an independent DATA 250/immediate queryability pass. Mutant moves real Mailpit lookup/projection to the worker while actual JSON serialization AND old gate remain on the pool; held-route evaluator fails, restoration passes. | Full delivery gates; no Store field, feature flag or map guard retained during build. |
+| #190 22.4 / AC7 | Real A/B/C DELETE with SQLite trigger refusing B alone: named HTTP 503, A absent, B/C and unrelated inbox present live and after releasing old Store/reopening. Remove trigger; original-selector retries remove 2 then 0. False-success and committed-prefix resurrection mutations fail wire/live evaluator; complete restart/retry evaluator restores green. | Existing ordered per-id mutation unchanged. |
+| #190 22.5 / AC8 | Existing store regression comment names retained-map-guard entry-removal deadlock/hang; unchanged executable live/reopen test passes. | Store production code untouched; G's ownership preserved. |
+| #190 R4.1 / AC9 | All seven issue rows plus leading encoded-quote control pass fresh SMTP→REST exact arrays in `nested_attribute_urls_and_curly_suffixes_survive_fresh_ingest`. Leading-value tolerance; embedded candidates use ordinary quote delimiters and second CSS URL survives. Old whole-value tolerance fails the wire evaluator. Encoded quotes, unchanged #136, decode and exact work controls pass. | Compatible clarification appended under 0049 §1; full delivery gates. |
+| #190 R4.2 / AC10 | Existing ordered wrapper recognition preserved; chief's explicit authority finding recorded in proposed 0061 §1. | OPEN: exact operator amendment. Five quote-first/interior-quote forms are not claimed fixed or tested as refused. |
+| #190 R4.3 / AC11 | Text-first independent-part links and codes-only BodyOrder unchanged; exact fixture/order alternatives retained in spec. | OPEN: operator link-order ruling; no source-order link wiring. |
+| #190 R4.4 / AC12 | Ordinary comments, including specified Outlook truncation, unchanged; complete fixture/options retained in spec. | OPEN: exact repair or accepted-retention ruling; no inferred acceptance. |
+| #190 R4.5 / AC13 | Remove U+201D/U+2019 as whole scalars. Exact removed-byte controls 4/9/0/3, interior curly quotes, IPv6/balanced parentheses; fresh plain/HTML SMTP readback. Old trimmer fails the wire evaluator, restoration passes. | Compatible clarification appended under 0049 §1; full delivery gates. |
+| AC14 | Every required command attempted; actual results below. | OPEN: full suite and coverage failure, independent phases and CI-only/external evidence. |
+
+### Evidence and identities
+
+Run-local root: `.forge/epic192/compat-webhook-proof/`. Each `gate-*.json`
+records exact argv, cwd, relevant environment, UTC start/end, exit, log path
+and log SHA-256. `implementation-identity.json` binds source hashes to the
+code commit. `mutations-summary.json` validates all **13** final-commit
+mutation receipts: original == restored source digest, behavioral exit 101,
+restored evaluator exit 0. Each named mutation has `.patch`, `.json`,
+`-red.log` and `-restored.log`; compile errors explicitly do not count as
+behavioral red. `mutate.py` and `gates.py` are the actual executed drivers.
+An earlier group reached the workspace-command watchdog after five cases;
+it restored source, and every authoritative receipt was rerun in the final
+group. The interrupted group is not claimed as a completed pass.
+
+The inherited generator receipt remains in
+`.forge/tasks/epic192-first-wave-lane-d-compat-0b5b1027.md` and current triage.
+Its date/provenance remains historical; no rerun was used to invent a date.
+Three current input hashes still equal the Research table above.
+
+`baseline-identity.json` records the immutable source root, exact SHA-256
+and byte equality of proof chain/scanner/resources, actually compared through
+the host's read-only view. All compared pairs equal. Workspace hands do not
+mount the external baseline: local commands execute unchanged byte-identical
+candidate copies, using the exact paths recorded below. Installed
+`.forge/bin/brokkr` is byte-identical to the launched baseline binary,
+SHA-256 `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`;
+no version-equal replacement. No proof/bundle/policy/recipe/shim bytes changed.
+These are local implementation proofs, not fabricated engine-owned baseline
+verify/ship dispatch receipts.
+
+Final compatible-source suites: `cargo test --locked --lib` → **0, 328
+passed** (`lib-final.log`), `cargo test --locked --test compat` → **0, 32
+passed** (`compat-final.log`). Final fmt/clippy → 0. Those source bytes equal
+the code commit; every final mutation restores the same bytes.
+
+
+### Mandatory gate and preservation receipts
+
+| Command | Exit | Receipt and log under run-local root |
+|---|---:|---|
+| `cargo fmt --all -- --check` | 0 | `gate-fmt.json`, `gate-fmt.log` |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 | `gate-clippy.json`, `gate-clippy.log` |
+| `cargo test --workspace --locked` | 101 | `gate-workspace.json`, `gate-workspace.log` |
+| `.forge/bin/brokkr compile --bundle bundles/self` | 0 | `gate-compile.json`, `gate-compile.log` |
+| `bash scripts/coverage-gate.sh` | 1 | `gate-coverage.json`, `gate-coverage.log` |
+| `bash scripts/coverage-gate.sh selftest` | 0 | `gate-coverage-selftest.json`, `gate-coverage-selftest.log` |
+| `bash bundles/self/scripts/design-check.sh selftest` | 0 | `gate-design-selftest.json`, `gate-design-selftest.log` |
+| `bash bundles/self/scripts/delivery-proof-test.sh` | 0 | `gate-delivery-tamper.json`, `gate-delivery-tamper.log` |
+| `bash scripts/publish-guard-test.sh` | 0 | `gate-publish.json`, `gate-publish.log` |
+| `bash scripts/seal-branch-test.sh` | 0 | `gate-seal.json`, `gate-seal.log` |
+| `cargo deny check licenses` | 0 | `gate-licenses.json`, `gate-licenses.log` |
+| `cargo test --locked --test delivery_recipes` | 0 | `gate-recipes.json`, `gate-recipes.log` |
+| `Fail-closed cargo tree --locked -i native-tls shell probe (exact argv in receipt)` | 0 | `gate-native-tls.json`, `gate-native-tls.log` |
+| `cargo test --locked --test api smtp_issue_136_link_fidelity` | 0 | `gate-api136.json`, `gate-api136.log` |
+| `cargo test --locked --test webhook` | 0 | `gate-webhook.json`, `gate-webhook.log` |
+| `cargo test --locked --test smtp_edges` | 0 | `gate-smtp-edges.json`, `gate-smtp-edges.log` |
+| `cargo test --locked --lib a_delete_that_empties_an_inbox_removes_the_entry_live_and_after_reopen` | 0 | `gate-store-hang.json`, `gate-store-hang.log` |
+
+The two full-suite failures are precisely
+`store_contract_docs::every_decision_file_has_exactly_one_resolving_index_row`
+and `store_contract_docs::the_inventory_refuses_missing_dangling_duplicate_and_malformed_entries`:
+`0061-compat-webhook-proof.md: no index row`. Coverage's instrumented suite
+hits the same failure; the gate exits 1 and preserves
+`target/coverage/run.C721ey/run.log`. It produces **no trusted exact 100%
+verdict or zero-missed-lines/branches/functions proof**. No test was skipped
+and no denominator/gate was lowered. Instrumentation uses the installed
+`nightly-2026-10-22`; ordinary Cargo uses launcher-mounted rustc 1.98.0.
+Offline gates use the private target and 16 build jobs, per receipts.
+
+Native-TLS absence is the expected nonzero Cargo no-match refusal,
+`package ID specification native-tls did not match any packages`. The shell
+probe accepts only that text with nonzero Cargo exit, not arbitrary failure.
+Bundle compile exits 0: 76 policy valuations, zero unruled, no policy-sweep
+warning. Selftests confirm refusal/pass arms; seal proof reports seven cases
+and ten mutants, keyless. No operator-key signing proof is inferred.
+
+### Discriminating final-commit mutations
+
+| Mutation / receipt basename | Owning evaluator | Red → restored exit |
+|---|---|---|
+| `needle-panic` | `cargo test --locked --test compat too_complex_needle_refuses_on_the_wire` | 101 → 0 |
+| `compile-worker` | `cargo test --locked --lib compat::page_work_tests::needle_compilation_leaves_the_async_worker` | 101 → 0 |
+| `compile-worker-hog` | `cargo test --locked --lib compat::page_work_tests::needle_compilation_leaves_the_async_worker` | 101 → 0 |
+| `leak-dns` | `cargo test --locked --lib dns_failure_causes_keep_no_userinfo` | 101 → 0 |
+| `leak-tls` | `cargo test --locked --lib tls_verification_failure_causes_keep_no_userinfo` | 101 → 0 |
+| `links-searched` | `cargo test --locked --test compat extracted_only_fields_miss_both_wire_searches` | 101 → 0 |
+| `codes-searched` | `cargo test --locked --test compat extracted_only_fields_miss_both_wire_searches` | 101 → 0 |
+| `serialization-only` | `cargo test --locked --lib compat::page_work_tests::held_single_message_builds_leave_smtp_and_health_serving` | 101 → 0 |
+| `prefix-false-success` | `cargo test --locked --test compat shim_delete_preserves_committed_prefix_across_reopen_and_retry` | 101 → 0 |
+| `prefix-resurrected` | `cargo test --locked --test compat shim_delete_preserves_committed_prefix_across_reopen_and_retry` | 101 → 0 |
+| `whole-attribute-tolerance` | `cargo test --locked --test compat nested_attribute_urls_and_curly_suffixes_survive_fresh_ingest` | 101 → 0 |
+| `old-curly-trim` | `cargo test --locked --test compat nested_attribute_urls_and_curly_suffixes_survive_fresh_ingest` | 101 → 0 |
+| `entity-wrong-scalar` | `cargo test --locked --lib all_whatwg_entities_match_snapshot` | 101 → 0 |
+
+
+### Parent integration and remaining obligations
+
+`docs/decisions/README.md` is outside lane D's ownership; the chief explicitly
+requested a parent-owned index row. Add exactly one resolving row for
+`0061-compat-webhook-proof.md`, retaining **proposed** status, for example:
+
+```markdown
+| [0061](0061-compat-webhook-proof.md) | Compat refusal recognition and extraction repair boundaries | proposed — awaiting the operator | (#170/#190, lane D) |
+```
+
+Then rerun both documentation tests, every full house gate including exact
+coverage/selftest, and the immutable configured verify chain on the final
+integrated candidate. Only the operator can accept 0061 §1 or rule separately
+on R4.3/R4.4. R4.2 is not silently reclassified as an implementation detail.
+All three criteria remain open, owned follow-up work, never waived or closed.
+
+Four configured independent review lenses and deterministic verify/ship
+remain engine-owned and outstanding. No reviewer was invoked/substituted by
+this seat; no security hold is overridden. CI-only chart verification/history/
+selftest, Docker persistence/context/anonymous-volume smoke, RustSec advisory
+audit, tag-only release-rate-5k and real port-80 exchange are unproved here.
+No release edit calls for a local chart-bump proof. Historical snapshot and
+canonical active journal are unchanged; no import/supersede/release receipt.
+
+Changed code paths: src/compat.rs, src/compat/page_work_tests.rs,
+src/extract.rs, src/webhook.rs, tests/compat.rs, src/store.rs (comment only).
+Documentation: this spec tree, the three historical extraction-compat files,
+and the dated 0049 addendum. No SMTP lifecycle, Store algorithm, entity data,
+package attribution, Cargo/dependency/license, Docker, #178 helper or gate/
+recipe work. A/E/G ownership stays intact; parent owns index/integration.
+
+Accepted 0001–0005 remain: synchronous insert/queryability before SMTP 250,
+subscribe-before-check awaits, oldest-only pruning and fresh-ingest
+extraction. Existing single-writer/FULL commit, source-body/raw truth,
+verbatim historical arrays, linear scan accounting, code cap, partial shim
+committed prefix, no-proxy/no-redirect rustls verification and error contracts
+remain. Uncapped link amplification, aggregate blocking-pool contention and
+best-effort webhook loss stay existing costs, with no new resource/delivery
+promise. Only compatible extraction corrections land; 0061 stays proposed.
+Unsigned commits; no push, merge, tag, publication, external comment or issue
+closure. The documentation/evidence commit follows the code commit; final
+hashes and result-file path are in the engine handoff.

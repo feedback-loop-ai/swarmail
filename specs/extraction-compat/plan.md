@@ -275,3 +275,16 @@ Artifact shape validation proves neither signed delivery nor implementation.
 | Serialization occurs after offload or aliases retain inline work. | Finished responses inside closure, enumerate aliases, actual construction seam and inline negative control. |
 | Blocking-pool contention delays SMTP acceptance. | Reuse awaited pool without store locks; progress proof establishes worker availability, not global latency/admission bounds. |
 | Proposal or design validator is mistaken for shipped work. | Keep 0049 proposed, checkboxes unchecked until evidence, separate artifact/gate/commit receipts and disclose environment blockers. |
+
+
+## Dated implementation evidence — 2026-10-23, epic192 lane D
+
+The [lane D handoff](../epic192-compat-webhook-proof/plan.md#implementation-handoff--2026-10-23)
+records finding-by-finding proofs, commands/exits, mutations, committed paths
+and residuals. Original dates/receipts above remain historical. T02a has actual
+identical-input generator equality and tampered-input refusal evidence; no
+generator, entity snapshot or table repair was needed. T11/T12 stay open:
+proposed ADR 0061 lacks a parent-owned index row, causing the full suite and
+instrumented coverage run to refuse. Accepted 0056 governs unsigned commits.
+No pending semantics, exact coverage, independent review, release, historical
+journal supersede or CI-only proof is claimed by this correction.
