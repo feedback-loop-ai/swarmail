@@ -52,6 +52,56 @@ const CLEANUP_WAIT_PENDING_ENV: &str = "EVAL_TEST_CLEANUP_WAIT_PENDING";
 const CLEANUP_WAIT_BYPASS_ENV: &str = "EVAL_TEST_CLEANUP_WAIT_BYPASS";
 #[cfg(test)]
 const PRE_HANDLER_HOLD_ENV: &str = "EVAL_TEST_PRE_HANDLER_HOLD_DIR";
+#[cfg(test)]
+const PIDS_ENV_FOR_TESTS: &str = "EVAL_TEST_RUNNER_PIDS";
+#[cfg(test)]
+const FAULT_RELEASE_ENV: &str = "EVAL_TEST_RUNNER_FAULT_RELEASE";
+#[cfg(test)]
+const CLEANUP_BUDGET_HOLD_ENV: &str = "EVAL_TEST_CLEANUP_BUDGET_HOLD_DIR";
+#[cfg(test)]
+const CLEANUP_BUDGET_RELEASE_ENV: &str = "EVAL_TEST_CLEANUP_BUDGET_RELEASE";
+#[cfg(test)]
+const CLEANUP_BUDGET_LOG_ENV: &str = "EVAL_TEST_CLEANUP_BUDGET_LOG";
+#[cfg(test)]
+const CLEANUP_OBSERVE_ERROR_ENV: &str = "EVAL_TEST_CLEANUP_OBSERVE_ERROR";
+#[cfg(test)]
+const CLEANUP_FORCE_EXPIRY_ENV: &str = "EVAL_TEST_CLEANUP_FORCE_EXPIRY";
+#[cfg(test)]
+const RUNNER_SIGNAL_LOG_ENV: &str = "EVAL_TEST_RUNNER_SIGNAL_LOG";
+#[cfg(all(test, target_os = "linux"))]
+static CLEANUP_OBSERVATION_TARGET: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(0);
+#[cfg(test)]
+static CLEANUP_TEST_EVENT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn cleanup_test_event(event: &str) {
+    use std::io::Write as _;
+    let _guard = CLEANUP_TEST_EVENT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(path) = std::env::var_os(CLEANUP_BUDGET_LOG_ENV)
+        && let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    {
+        let _ = writeln!(file, "{event}");
+    }
+}
+
+#[cfg(test)]
+fn runner_signal_event(event: &str) {
+    use std::io::Write as _;
+    if let Some(path) = std::env::var_os(RUNNER_SIGNAL_LOG_ENV)
+        && let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    {
+        let _ = writeln!(file, "{event}");
+    }
+}
 /// The built-in agent labels.
 pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 
@@ -249,6 +299,21 @@ fn proc_identity(pid: i32) -> Option<ProcIdentity> {
 }
 
 fn group_members(group: &OwnedGroup) -> Result<Vec<ProcIdentity>, String> {
+    #[cfg(all(test, target_os = "linux"))]
+    if CLEANUP_OBSERVATION_TARGET
+        .compare_exchange(
+            group.pid,
+            0,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_ok()
+    {
+        return Err(format!(
+            "cannot inspect owned process group {}: injected observation error",
+            group.pgid
+        ));
+    }
     #[cfg(target_os = "linux")]
     {
         let entries =
@@ -360,6 +425,16 @@ fn signal_owned_group(group: &OwnedGroup, sig: i32) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
+fn cleanup_timeout_error(group: &OwnedGroup, running: usize) -> String {
+    format!(
+        "cleanup timed out for process group {} ({} running member(s), direct child reaped: {})",
+        group.pgid,
+        running,
+        group.status().is_some()
+    )
+}
+
 impl OwnedGroup {
     fn status(&self) -> Option<Result<ExitStatus, String>> {
         self.status.borrow().clone()
@@ -414,9 +489,49 @@ impl OwnedGroup {
         let started = tokio::time::Instant::now();
         let term_deadline = started + TERM_GRACE;
         let final_deadline = started + TERM_GRACE + KILL_WINDOW;
+        #[cfg(test)]
+        {
+            cleanup_test_event(&format!(
+                "budget:{}:{}:{}",
+                self.pid,
+                TERM_GRACE.as_millis(),
+                (TERM_GRACE + KILL_WINDOW).as_millis()
+            ));
+            if let Some(dir) = std::env::var_os(CLEANUP_BUDGET_HOLD_ENV) {
+                let dir = std::path::PathBuf::from(dir);
+                if dir.join("arm").exists() {
+                    std::fs::create_dir_all(&dir)
+                        .map_err(|e| format!("cleanup budget hold directory: {e}"))?;
+                    std::fs::write(dir.join(format!("entered-{}", self.pid)), b"budget created")
+                        .map_err(|e| format!("cleanup budget marker: {e}"))?;
+                    let release = std::env::var_os(CLEANUP_BUDGET_RELEASE_ENV)
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| dir.join("release"));
+                    while !release.exists() {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                }
+            }
+        }
         let mut signal_errors = Vec::new();
         if let Err(e) = signal_owned_group(&self, libc::SIGTERM) {
             signal_errors.push(e);
+        }
+        #[cfg(test)]
+        cleanup_test_event(&format!("term:{}", self.pid));
+        #[cfg(all(test, target_os = "linux"))]
+        if std::env::var_os(CLEANUP_OBSERVE_ERROR_ENV).is_some() {
+            let members = group_members(&self)?;
+            if !members.is_empty() {
+                CLEANUP_OBSERVATION_TARGET.store(self.pid, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        #[cfg(all(test, target_os = "linux"))]
+        if std::env::var_os(CLEANUP_FORCE_EXPIRY_ENV).is_some() {
+            let members = group_members(&self)?;
+            if !members.is_empty() {
+                return Err(cleanup_timeout_error(&self, members.len()));
+            }
         }
         loop {
             let members = group_members(&self)?;
@@ -1157,6 +1272,19 @@ async fn run_body(
         #[cfg(test)]
         match std::env::var(FAULT_ENV).as_deref() {
             Ok("panic") => panic!("injected runner fault"),
+            Ok("panic_after_agent_readiness") => {
+                if let Some(path) = std::env::var_os(PIDS_ENV_FOR_TESTS).map(PathBuf::from) {
+                    while !path.is_file() {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                }
+                if let Some(release) = std::env::var_os(FAULT_RELEASE_ENV).map(PathBuf::from) {
+                    while !release.exists() {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                }
+                panic!("injected runner fault after agent readiness");
+            }
             Ok("server_death") => {
                 let _ = signal_owned_group(&trial.servers[0].group, libc::SIGKILL);
             }
@@ -1348,8 +1476,16 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
     };
     let joined = tokio::select! {
         biased;
-        _ = term.recv() => None,
-        _ = int.recv() => None,
+        _ = term.recv() => {
+            #[cfg(test)]
+            runner_signal_event("term");
+            None
+        },
+        _ = int.recv() => {
+            #[cfg(test)]
+            runner_signal_event("int");
+            None
+        },
         joined = &mut body => Some(joined),
     };
     let Some(joined) = joined else {
@@ -1442,8 +1578,16 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
         tokio::select! {
             biased;
             result = &mut cleanup => break result,
-            _ = term.recv() => interrupted_during_cleanup = true,
-            _ = int.recv() => interrupted_during_cleanup = true,
+            _ = term.recv() => {
+                interrupted_during_cleanup = true;
+                #[cfg(test)]
+                runner_signal_event("term-cleanup");
+            },
+            _ = int.recv() => {
+                interrupted_during_cleanup = true;
+                #[cfg(test)]
+                runner_signal_event("int-cleanup");
+            },
         }
     };
     if let Err(e) = cleanup_result {
@@ -1490,13 +1634,16 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
 #[cfg(all(test, target_os = "linux"))]
 mod test_probes {
     use super::*;
-    use std::os::unix::process::ExitStatusExt;
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
     use std::process::Command;
 
     const PROBE_ENV: &str = "EVAL_TEST_RUNNER_PROBE";
     const SCRIPT_ENV: &str = "EVAL_TEST_RUNNER_SCRIPT";
     const PIDS_ENV: &str = "EVAL_TEST_RUNNER_PIDS";
     const BIN_ENV: &str = "EVAL_TEST_RUNNER_BIN";
+    const GUARD_FAILURE_ENV: &str = "EVAL_TEST_RUNNER_GUARD_FINISH_DIR";
+    const GUARD_FAILURE_READY: &str = "guard-failure-ready";
+    const GUARD_FAILURE_RELEASE: &str = "guard-failure-release";
 
     #[derive(Clone, Debug)]
     struct ProcessIdentity {
@@ -1566,6 +1713,116 @@ mod test_probes {
         println!("{}", serde_json::to_string(&row).unwrap());
     }
 
+    #[test]
+    fn runner_guard_finish_failure_entrypoint() {
+        let Ok(dir) = std::env::var(GUARD_FAILURE_ENV) else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let ready = dir.join(GUARD_FAILURE_READY);
+        let release = dir.join(GUARD_FAILURE_RELEASE);
+        let script = "sleep 1000 & child=$!; printf '%s %s\n' \"$$\" \"$child\" > \"$EVAL_TEST_GUARD_PIDS\"; exit 0";
+        let pids = dir.join("guard-owned-pids");
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .env("EVAL_TEST_GUARD_PIDS", &pids)
+            .process_group(0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let owner = identity(child.id() as i32).expect("guard fixture leader identity");
+        let pid_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !pids.is_file() {
+            assert!(
+                std::time::Instant::now() < pid_deadline,
+                "guard fixture readiness"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pids: Vec<i32> = std::fs::read_to_string(&pids)
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        assert_eq!(pids.len(), 2);
+        let direct = identity(pids[0]).expect("direct child identity before wait");
+        let survivor = identity(pids[1]).expect("unreaped group member identity");
+        let status = child.wait().unwrap();
+        assert!(status.success());
+        std::fs::write(&ready, b"direct child waited; survivor retained").unwrap();
+        let release_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !release.exists() {
+            assert!(
+                std::time::Instant::now() < release_deadline,
+                "parent acknowledges identities"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut probe = Probe {
+            child: Some(child),
+            owner,
+            release,
+            pending: dir.join("unused-pending"),
+            owned: vec![direct, survivor],
+        };
+        let error = probe
+            .finish()
+            .expect_err("guard must reject an unresolved owned process");
+        assert!(error.contains("unresolved owned identities"), "{error}");
+        panic!("intentional guard finish rejection: {error}");
+    }
+
+    #[test]
+    fn runner_guard_finish_rejection_fails_in_isolated_process_and_rescues() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runner::test_probes::runner_guard_finish_failure_entrypoint",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(GUARD_FAILURE_ENV, dir.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        eventually("isolated guard failure identities", || {
+            dir.path().join(GUARD_FAILURE_READY).is_file()
+        });
+        let pids: Vec<i32> = std::fs::read_to_string(dir.path().join("guard-owned-pids"))
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        let survivor = identity(pids[1]).expect("guard fixture descendant remains live");
+        assert!(
+            alive(&survivor),
+            "the parent sees the unresolved descendant"
+        );
+        std::fs::write(dir.path().join(GUARD_FAILURE_RELEASE), b"release").unwrap();
+        let output = child.wait_with_output().unwrap();
+        let transcript = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !output.status.success(),
+            "intentional failure returned success: {transcript}"
+        );
+        assert!(
+            transcript.contains("intentional guard finish rejection"),
+            "{transcript}"
+        );
+        eventually(
+            "isolated failure teardown reaps its retained identities",
+            || !alive(&survivor),
+        );
+    }
+
     struct Probe {
         child: Option<std::process::Child>,
         owner: ProcessIdentity,
@@ -1601,6 +1858,29 @@ mod test_probes {
         fn wait(&mut self) -> std::process::ExitStatus {
             self.wait_for(Duration::from_secs(30))
                 .unwrap_or_else(|| panic!("runner probe exceeded its 30-second wait deadline"))
+        }
+
+        fn finish(&mut self) -> Result<(), String> {
+            let child = self
+                .child
+                .as_mut()
+                .ok_or_else(|| "runner probe child handle was already removed".to_string())?;
+            match child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) => return Err("runner probe still requires owner rescue".into()),
+                Err(e) => return Err(format!("cannot reap runner probe child: {e}")),
+            }
+            let survivors: Vec<_> = self
+                .owned
+                .iter()
+                .filter(|identity| alive(identity))
+                .collect();
+            if !survivors.is_empty() {
+                return Err(format!(
+                    "runner probe has unresolved owned identities: {survivors:?}"
+                ));
+            }
+            Ok(())
         }
 
         fn returned_after_owned_cleanup(&mut self) -> bool {
@@ -1765,6 +2045,7 @@ wait "$child"
         let pending = dir.join("cleanup-wait-pending");
         let bin = resolve_swarmail_bin().expect("root Swarmail binary resolves");
         let output = std::fs::File::create(dir.join("probe.stdout")).unwrap();
+        let stderr = std::fs::File::create(dir.join("probe.stderr")).unwrap();
         let mut cmd = Command::new(std::env::current_exe().unwrap());
         cmd.args([
             "--exact",
@@ -1778,6 +2059,10 @@ wait "$child"
         .env(BIN_ENV, &bin)
         .env(SWARMAIL_BIN_ENV, &bin)
         .env(CLEANUP_WAIT_PENDING_ENV, &pending)
+        .env(CLEANUP_BUDGET_HOLD_ENV, dir.join("cleanup-budget"))
+        .env(CLEANUP_BUDGET_RELEASE_ENV, dir.join("release"))
+        .env(CLEANUP_BUDGET_LOG_ENV, dir.join("cleanup-budgets.log"))
+        .env(RUNNER_SIGNAL_LOG_ENV, dir.join("signals.log"))
         .env(
             "EVAL_TEST_RUNNER_EXECUTABLE",
             std::env::current_exe()
@@ -1789,9 +2074,22 @@ wait "$child"
                 .join(env!("CARGO_PKG_NAME")),
         )
         .stdout(output)
-        .stderr(std::process::Stdio::inherit());
-        if let Some(fault) = fault {
-            cmd.env(FAULT_ENV, fault);
+        .stderr(stderr);
+        match fault {
+            Some("observation_error") => {
+                cmd.env(FAULT_ENV, "panic_after_agent_readiness")
+                    .env(FAULT_RELEASE_ENV, dir.join("fault-release"))
+                    .env(CLEANUP_OBSERVE_ERROR_ENV, "1");
+            }
+            Some("forced_expiry") => {
+                cmd.env(FAULT_ENV, "panic_after_agent_readiness")
+                    .env(FAULT_RELEASE_ENV, dir.join("fault-release"))
+                    .env(CLEANUP_FORCE_EXPIRY_ENV, "1");
+            }
+            Some(fault) => {
+                cmd.env(FAULT_ENV, fault);
+            }
+            None => {}
         }
         if hold {
             cmd.env(CLEANUP_HOLD_ENV, &hold_dir);
@@ -1818,8 +2116,9 @@ wait "$child"
             }
             if let Some(status) = probe.child.as_mut().unwrap().try_wait().unwrap() {
                 panic!(
-                    "runner probe exited before agent readiness ({status}); stdout={}",
-                    std::fs::read_to_string(dir.join("probe.stdout")).unwrap_or_default()
+                    "runner probe exited before agent readiness ({status}); stdout={}; stderr={}",
+                    std::fs::read_to_string(dir.join("probe.stdout")).unwrap_or_default(),
+                    std::fs::read_to_string(dir.join("probe.stderr")).unwrap_or_default()
                 );
             }
             false
@@ -1866,6 +2165,10 @@ wait "$child"
             identity(leader.pid).is_none(),
             "the runner reaped its direct agent child before returning: {leader:?}"
         );
+        assert!(
+            probe.finish().is_ok(),
+            "positive cleanup needs no guard rescue"
+        );
     }
 
     #[test]
@@ -1908,12 +2211,169 @@ wait "$child"
                 "the same completion predicate fails while owned work remains live"
             );
             assert!(probe.owned.iter().any(alive));
+            assert!(
+                probe.finish().is_err(),
+                "the completion predicate must reject live owned work"
+            );
             probe.release();
             assert!(
                 probe.cleanup_owned(),
                 "negative-control owned work is torn down"
             );
             assert!(probe.owned.iter().all(|id| !alive(id)));
+            assert!(probe.finish().is_ok(), "explicit expected rescue completed");
+        }
+    }
+
+    #[test]
+    fn mixed_signals_after_cleanup_budget_creation_keep_one_owner_and_fixed_budgets() {
+        let dir = tempfile::tempdir().unwrap();
+        let budget_hold = dir.path().join("cleanup-budget");
+        std::fs::create_dir_all(&budget_hold).unwrap();
+        std::fs::write(budget_hold.join("arm"), b"arm").unwrap();
+        let mut probe = launch_probe_with_controls(dir.path(), Some("panic"), false, false, true);
+        probe.record_owned_from_tree();
+
+        let budget_log = dir.path().join("cleanup-budgets.log");
+        eventually("one post-creation budget per owned group", || {
+            std::fs::read_to_string(&budget_log).is_ok_and(|contents| {
+                contents
+                    .lines()
+                    .filter(|line| line.starts_with("budget:"))
+                    .count()
+                    >= 3
+            })
+        });
+        let entered = std::fs::read_dir(&budget_hold)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("entered-"))
+            .count();
+        let budget_ids: Vec<_> = std::fs::read_to_string(&budget_log)
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("budget:"))
+            .map(str::to_owned)
+            .collect();
+        assert!(
+            entered >= 3,
+            "all cleanup owners reached the post-budget hold: {entered}"
+        );
+        assert!(budget_ids.len() >= 3);
+        let owners: std::collections::HashSet<_> = budget_ids
+            .iter()
+            .map(|line| line.split(':').nth(1).unwrap())
+            .collect();
+        assert_eq!(
+            owners.len(),
+            budget_ids.len(),
+            "each group has one cleanup instance"
+        );
+        assert!(
+            probe.pending.is_file(),
+            "the awaited cleanup join is actually Pending"
+        );
+        assert!(
+            probe.owned.iter().any(alive),
+            "real owned work remains live"
+        );
+        let fixed_budgets = budget_ids.clone();
+        let signal_log = dir.path().join("signals.log");
+        for (index, signal) in [libc::SIGTERM, libc::SIGINT, libc::SIGTERM]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(unsafe { libc::kill(probe.pid(), signal) }, 0);
+            eventually("cleanup signal acknowledgement", || {
+                std::fs::read_to_string(&signal_log)
+                    .is_ok_and(|contents| contents.lines().count() == index + 1)
+            });
+            let current = std::fs::read_to_string(&budget_log).unwrap();
+            assert_eq!(
+                current
+                    .lines()
+                    .filter(|line| line.starts_with("budget:"))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+                fixed_budgets,
+                "signals cannot renew any cleanup deadline or owner"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&signal_log)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["term-cleanup", "int-cleanup", "term-cleanup"]
+        );
+        assert!(probe.child.as_mut().unwrap().try_wait().unwrap().is_none());
+        probe.release();
+        assert!(probe.wait().success());
+        assert_runner_returned_after_cleanup(&mut probe);
+        let final_log = std::fs::read_to_string(&budget_log).unwrap();
+        assert_eq!(
+            final_log
+                .lines()
+                .filter(|line| line.starts_with("budget:"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+            fixed_budgets
+        );
+        assert_eq!(
+            final_log
+                .lines()
+                .filter(|line| line.starts_with("term:"))
+                .count(),
+            fixed_budgets.len(),
+            "each owned group receives one TERM action; log={final_log}"
+        );
+    }
+
+    #[test]
+    fn cleanup_observation_error_and_forced_expiry_fail_with_live_owned_processes() {
+        for (fault, expected) in [
+            ("observation_error", "injected observation error"),
+            ("forced_expiry", "cleanup timed out for process group"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut probe = launch_probe_with_controls(dir.path(), Some(fault), false, false, true);
+            probe.record_owned_from_tree();
+            let direct_agent = probe.owned.first().unwrap().clone();
+            std::fs::write(dir.path().join("fault-release"), b"release").unwrap();
+            eventually("the actual cleanup join to become Pending", || {
+                probe.pending.is_file()
+            });
+            let status = probe.wait_for(Duration::from_secs(12));
+            assert!(
+                status.is_some_and(|status| status.success()),
+                "cleanup probe did not finish; stdout={}; stderr={}; owned={:?}",
+                std::fs::read_to_string(dir.path().join("probe.stdout")).unwrap_or_default(),
+                std::fs::read_to_string(dir.path().join("probe.stderr")).unwrap_or_default(),
+                probe
+                    .owned
+                    .iter()
+                    .map(|id| (id.pid, identity(id.pid)))
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                identity(direct_agent.pid).is_none(),
+                "direct agent child was reaped: {direct_agent:?}"
+            );
+            assert!(
+                probe.owned.iter().any(alive),
+                "the test observed a real surviving owned process"
+            );
+            assert!(
+                probe.finish().is_err(),
+                "checked teardown refuses the surviving owned process"
+            );
+            let stderr = std::fs::read_to_string(dir.path().join("probe.stderr")).unwrap();
+            assert!(stderr.contains(expected), "{stderr}");
+            assert!(
+                probe.cleanup_owned(),
+                "the test guard safely terminates the retained group"
+            );
+            assert!(probe.owned.iter().all(|identity| !alive(identity)));
         }
     }
 
@@ -1931,10 +2391,15 @@ wait "$child"
             || !alive(&leader) && alive(&descendant),
         );
         assert!(
+            probe.finish().is_err(),
+            "the guard rejects its live descendant"
+        );
+        assert!(
             probe.cleanup_owned(),
             "the known group member permits safe cleanup"
         );
         assert!(!alive(&descendant));
+        assert!(probe.finish().is_ok(), "explicit owner rescue completed");
     }
 
     #[test]
@@ -1989,5 +2454,6 @@ wait "$child"
         let status = probe.wait();
         assert_eq!(status.signal(), Some(libc::SIGTERM));
         assert!(!dir.path().join("agent-pids").exists());
+        assert!(probe.finish().is_ok());
     }
 }

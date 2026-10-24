@@ -269,19 +269,65 @@ fn normal_trial_binary_ignores_the_former_runner_fault_control() {
         assert!(!stderr(&out).contains("injected runner fault"));
     }
     let dir = tempfile::tempdir().unwrap();
-    let (row, out) = helper_trial(
-        "echo",
-        &["--task", "signup", "--agent", "echo"],
-        &[
-            ("EVAL_TEST_CLEANUP_WAIT_BYPASS", "1"),
-            (
-                "EVAL_TEST_CLEANUP_WAIT_PENDING",
-                dir.path().join("must-not-be-created").to_str().unwrap(),
-            ),
-        ],
-    );
+    let controls = [
+        ("EVAL_TEST_CLEANUP_WAIT_BYPASS", "1".to_string()),
+        (
+            "EVAL_TEST_CLEANUP_HOLD_DIR",
+            dir.path().join("cleanup-hold").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_PRE_HANDLER_HOLD_DIR",
+            dir.path().join("pre-handler-hold").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_RUNNER_EXECUTABLE",
+            dir.path().join("runner-exe").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_CLEANUP_WAIT_PENDING",
+            dir.path().join("must-not-be-created").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_RUNNER_PIDS",
+            dir.path().join("agent-pids").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_RUNNER_FAULT_RELEASE",
+            dir.path().join("fault-release").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_CLEANUP_BUDGET_HOLD_DIR",
+            dir.path().join("budget-hold").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_CLEANUP_BUDGET_RELEASE",
+            dir.path().join("budget-release").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_CLEANUP_BUDGET_LOG",
+            dir.path().join("budget-log").display().to_string(),
+        ),
+        ("EVAL_TEST_CLEANUP_OBSERVE_ERROR", "1".to_string()),
+        ("EVAL_TEST_CLEANUP_FORCE_EXPIRY", "1".to_string()),
+        (
+            "EVAL_TEST_RUNNER_SIGNAL_LOG",
+            dir.path().join("signal-log").display().to_string(),
+        ),
+    ];
+    let env = controls
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect::<Vec<_>>();
+    let (row, out) = helper_trial("echo", &["--task", "signup", "--agent", "echo"], &env);
     assert_ne!(row.outcome, Outcome::HarnessError, "{}", stderr(&out));
-    assert!(!dir.path().join("must-not-be-created").exists());
+    for (name, value) in &controls {
+        if value != "1" {
+            assert!(
+                !std::path::Path::new(value).exists(),
+                "normal binary ignored test-only control {name}"
+            );
+        }
+    }
 }
 
 #[test]

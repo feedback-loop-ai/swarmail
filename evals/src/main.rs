@@ -257,6 +257,97 @@ const MATRIX_ADMISSION_HOLD_ENV: &str = "EVAL_TEST_MATRIX_ADMISSION_HOLD_DIR";
 const MATRIX_FINAL_HOLD_ENV: &str = "EVAL_TEST_MATRIX_FINAL_HOLD_DIR";
 #[cfg(test)]
 const MATRIX_COMMIT_HOLD_ENV: &str = "EVAL_TEST_MATRIX_COMMIT_HOLD_DIR";
+#[cfg(test)]
+const MATRIX_PENDING_HOLD_ENV: &str = "EVAL_TEST_MATRIX_PENDING_HOLD_DIR";
+#[cfg(test)]
+const MATRIX_PENDING_HOLD_AT_ENV: &str = "EVAL_TEST_MATRIX_PENDING_HOLD_AT";
+#[cfg(test)]
+const MATRIX_SPAWN_HOLD_ENV: &str = "EVAL_TEST_MATRIX_SPAWN_HOLD_DIR";
+#[cfg(test)]
+const MATRIX_SIGNAL_LOG_ENV: &str = "EVAL_TEST_MATRIX_SIGNAL_LOG";
+#[cfg(test)]
+const MATRIX_TRIAL_START_ENV: &str = "EVAL_TEST_MATRIX_TRIAL_START";
+#[cfg(test)]
+const MATRIX_SIGNAL_OBSERVED_ENV: &str = "EVAL_TEST_MATRIX_SIGNAL_OBSERVED";
+#[cfg(test)]
+const MATRIX_OUTPUT_ACK_PENDING_ENV: &str = "EVAL_TEST_MATRIX_OUTPUT_ACK_PENDING";
+#[cfg(test)]
+const MATRIX_OUTPUT_TIMEOUT_ENV: &str = "EVAL_TEST_MATRIX_OUTPUT_TIMEOUT";
+#[cfg(test)]
+const MATRIX_EOF_TIMEOUT_ENV: &str = "EVAL_TEST_MATRIX_EOF_TIMEOUT";
+#[cfg(test)]
+const MATRIX_CHILD_REAPED_ENV: &str = "EVAL_TEST_MATRIX_CHILD_REAPED";
+#[cfg(test)]
+const MATRIX_TRIALS_ENV: &str = "EVAL_TEST_MATRIX_TRIALS";
+#[cfg(test)]
+static MATRIX_PENDING_CHECKS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn matrix_test_event(env: &str, event: &str) {
+    use std::io::Write as _;
+    if let Some(path) = std::env::var_os(env)
+        && let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    {
+        let _ = writeln!(file, "{event}");
+    }
+}
+
+#[cfg(test)]
+fn matrix_test_monotonic_nanos() -> u128 {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: CLOCK_MONOTONIC writes the initialized timespec on success.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut value) };
+    assert_eq!(
+        result, 0,
+        "CLOCK_MONOTONIC is available to the Linux test harness"
+    );
+    (value.tv_sec as u128) * 1_000_000_000 + value.tv_nsec as u128
+}
+
+#[cfg(test)]
+async fn matrix_pending_test_hold() {
+    let Some(dir) = std::env::var_os(MATRIX_PENDING_HOLD_ENV).map(PathBuf::from) else {
+        return;
+    };
+    let check = MATRIX_PENDING_CHECKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    if std::env::var(MATRIX_PENDING_HOLD_AT_ENV)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        != Some(check)
+    {
+        return;
+    }
+    if std::fs::create_dir_all(&dir).is_err()
+        || std::fs::write(dir.join("entered"), check.to_string()).is_err()
+    {
+        return;
+    }
+    while !dir.join("release").exists() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[cfg(test)]
+async fn matrix_spawn_test_hold() {
+    let Some(dir) = std::env::var_os(MATRIX_SPAWN_HOLD_ENV).map(PathBuf::from) else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err()
+        || std::fs::write(dir.join("entered"), b"child retained after spawn").is_err()
+    {
+        return;
+    }
+    while !dir.join("release").exists() {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
 
 #[cfg(test)]
 async fn matrix_test_hold(
@@ -294,6 +385,8 @@ async fn pending_matrix_signal(
     term: &mut tokio::signal::unix::Signal,
     int: &mut tokio::signal::unix::Signal,
 ) -> Option<i32> {
+    #[cfg(test)]
+    matrix_pending_test_hold().await;
     tokio::select! {
         biased;
         _ = term.recv() => Some(libc::SIGTERM),
@@ -374,7 +467,28 @@ async fn write_row(
     }
     let mut bytes = serde_json::to_vec(row).expect("trial result serializes");
     bytes.push(b'\n');
+    #[cfg(test)]
     let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
+    #[cfg(not(test))]
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    #[cfg(test)]
+    let mut ack_pending_recorded = false;
+    #[cfg(test)]
+    let ack_pending = std::future::poll_fn(|cx| {
+        let result = std::pin::Pin::new(&mut ack_rx).poll(cx);
+        if result.is_pending() && !ack_pending_recorded {
+            matrix_test_event(
+                MATRIX_OUTPUT_ACK_PENDING_ENV,
+                "writer acknowledgement is pending",
+            );
+            ack_pending_recorded = true;
+        }
+        result
+    });
+    #[cfg(test)]
+    tokio::pin!(ack_pending);
+    #[cfg(not(test))]
+    let mut ack_pending = ack_rx;
     let mut message = Some(OutputMessage { bytes, ack: ack_tx });
     loop {
         match writer
@@ -400,13 +514,25 @@ async fn write_row(
     loop {
         tokio::select! {
             biased;
-            _ = term.recv() => *interrupted = true,
-            _ = int.recv() => *interrupted = true,
-            result = &mut ack_rx => {
+            _ = term.recv() => {
+                *interrupted = true;
+                #[cfg(test)]
+                matrix_test_event(MATRIX_SIGNAL_LOG_ENV, "write-term");
+            },
+            _ = int.recv() => {
+                *interrupted = true;
+                #[cfg(test)]
+                matrix_test_event(MATRIX_SIGNAL_LOG_ENV, "write-int");
+            },
+            result = &mut ack_pending => {
                 result.map_err(|_| "stdout writer vanished".to_string())??;
                 return Ok(None);
             }
-            _ = tokio::time::sleep_until(deadline) => return Err("stdout made no progress for five seconds".into()),
+            _ = tokio::time::sleep_until(deadline) => {
+                #[cfg(test)]
+                matrix_test_event(MATRIX_OUTPUT_TIMEOUT_ENV, "stdout made no progress for five seconds");
+                return Err("stdout made no progress for five seconds".into());
+            },
         }
     }
 }
@@ -491,6 +617,10 @@ async fn run_child(
     int: &mut tokio::signal::unix::Signal,
 ) -> ChildRun {
     let started = Instant::now();
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os(MATRIX_TRIAL_START_ENV) {
+        let _ = std::fs::write(path, matrix_test_monotonic_nanos().to_string());
+    }
     let mut cmd = Command::new(exe);
     #[cfg(test)]
     let bypass_wait = std::env::var_os("EVAL_TEST_MATRIX_BYPASS_WAIT").is_some();
@@ -521,6 +651,8 @@ async fn run_child(
             };
         }
     };
+    #[cfg(test)]
+    matrix_spawn_test_hold().await;
     let pid = child.id().expect("spawned trial has a PID");
     let stdout = child.stdout.take().expect("stdout is piped");
     let mut reader = tokio::spawn(capture_stdout(stdout));
@@ -560,6 +692,13 @@ async fn run_child(
             biased;
             _ = term.recv() => {
                 interrupted = true;
+                #[cfg(test)]
+                {
+                    matrix_test_event(MATRIX_SIGNAL_LOG_ENV, if forwarded { "term-repeat" } else { "term-forward" });
+                    if let Some(path) = std::env::var_os(MATRIX_SIGNAL_OBSERVED_ENV) {
+                        let _ = std::fs::write(path, matrix_test_monotonic_nanos().to_string());
+                    }
+                }
                 if !forwarded { forwarded = true; if let Err(e) = signal_trial(pid) { failure = Some(e); } }
                 #[cfg(test)]
                 if bypass_wait {
@@ -568,6 +707,13 @@ async fn run_child(
             }
             _ = int.recv() => {
                 interrupted = true;
+                #[cfg(test)]
+                {
+                    matrix_test_event(MATRIX_SIGNAL_LOG_ENV, if forwarded { "int-repeat" } else { "int-forward" });
+                    if let Some(path) = std::env::var_os(MATRIX_SIGNAL_OBSERVED_ENV) {
+                        let _ = std::fs::write(path, matrix_test_monotonic_nanos().to_string());
+                    }
+                }
                 if !forwarded { forwarded = true; if let Err(e) = signal_trial(pid) { failure = Some(e); } }
                 #[cfg(test)]
                 if bypass_wait {
@@ -580,6 +726,10 @@ async fn run_child(
             },
         }
     };
+    #[cfg(test)]
+    if status.is_some() {
+        matrix_test_event(MATRIX_CHILD_REAPED_ENV, "trial process wait completed");
+    }
     let captured = if status.is_some() {
         let deadline = tokio::time::Instant::now() + MATRIX_OUTPUT_EOF_BOUND;
         loop {
@@ -593,6 +743,8 @@ async fn run_child(
                     Err(e) => { failure = Some(format!("trial stdout reader failed: {e}")); None }
                 },
                 _ = tokio::time::sleep_until(deadline) => {
+                    #[cfg(test)]
+                    matrix_test_event(MATRIX_EOF_TIMEOUT_ENV, "trial stdout remained open more than five seconds after child exit");
                     failure = Some("trial stdout remained open more than five seconds after child exit".into());
                     reader.abort();
                     let _ = reader.await;
@@ -1009,11 +1161,15 @@ mod tests {
             .split(',')
             .map(str::to_owned)
             .collect();
+        let trials = std::env::var(MATRIX_TRIALS_ENV)
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
-        let exit = runtime.block_on(matrix(ids, agents, 1, None));
+        let exit = runtime.block_on(matrix(ids, agents, trials, None));
         assert_eq!(exit, ExitCode::from(2));
     }
 
@@ -1095,6 +1251,29 @@ mod tests {
         fn wait(&mut self) -> std::process::ExitStatus {
             self.wait_for(Duration::from_secs(30))
                 .unwrap_or_else(|| panic!("matrix probe exceeded its 30-second wait deadline"))
+        }
+
+        fn finish(&mut self) -> Result<(), String> {
+            let child = self
+                .child
+                .as_mut()
+                .ok_or_else(|| "matrix probe child handle was already removed".to_string())?;
+            match child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) => return Err("matrix probe still requires owner rescue".into()),
+                Err(error) => return Err(format!("cannot reap matrix probe child: {error}")),
+            }
+            let survivors: Vec<_> = self
+                .owned
+                .iter()
+                .filter(|identity| matrix_identity_alive(identity))
+                .collect();
+            if !survivors.is_empty() {
+                return Err(format!(
+                    "matrix probe left owned identities running: {survivors:?}"
+                ));
+            }
+            Ok(())
         }
 
         fn record_identity(&mut self, identity: MatrixIdentity) {
@@ -1276,6 +1455,17 @@ mod tests {
         )
     }
 
+    #[derive(Default)]
+    struct MatrixProbeControls {
+        hold_before_trap: bool,
+        pending_hold_at: Option<usize>,
+        spawn_hold: bool,
+        trials: Option<u32>,
+        missing_trial_executable: bool,
+        pipe_stdout: bool,
+        pipe_stderr: bool,
+    }
+
     fn matrix_probe_with_pre_trap(
         dir: &std::path::Path,
         bypass_wait: bool,
@@ -1284,6 +1474,29 @@ mod tests {
         trial_mode: &str,
         tasks: &str,
         hold_before_trap: bool,
+    ) -> MatrixProbe {
+        matrix_probe_config(
+            dir,
+            bypass_wait,
+            signal_setup_fail,
+            hold_stage,
+            trial_mode,
+            tasks,
+            MatrixProbeControls {
+                hold_before_trap,
+                ..MatrixProbeControls::default()
+            },
+        )
+    }
+
+    fn matrix_probe_config(
+        dir: &std::path::Path,
+        bypass_wait: bool,
+        signal_setup_fail: bool,
+        hold_stage: Option<&str>,
+        trial_mode: &str,
+        tasks: &str,
+        controls: MatrixProbeControls,
     ) -> MatrixProbe {
         use std::os::unix::fs::PermissionsExt;
         use std::process::Command;
@@ -1318,7 +1531,13 @@ interrupt() {
   exit 0
 }
 trap interrupt TERM INT
+if [ -n "${EVAL_TEST_MATRIX_LAUNCH_LOG:-}" ]; then printf '%s\n' "$task" >> "$EVAL_TEST_MATRIX_LAUNCH_LOG"; fi
 mv "$tmp" "$ready"
+if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = holder ]; then
+  sleep 1000 2>/dev/null &
+  printf '%s\n' "$!" > "$EVAL_TEST_MATRIX_HOLDER_PID"
+  exit 0
+fi
 if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = complete ]; then
   printf '{"schema_version":1,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"pass","failure_class":null,"wall_time_ms":1,"agent_exit_status":0,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"
   exit 0
@@ -1358,17 +1577,50 @@ while :; do :; done
         .env(MATRIX_CLEANUP_ENTERED_ENV, &cleanup)
         .env(MATRIX_RELEASE_ENV, &release)
         .env(MATRIX_TRIAL_PID_ENV, dir.join("trial.pid"))
+        .env(MATRIX_SIGNAL_LOG_ENV, dir.join("signals.log"))
+        .env(MATRIX_TRIAL_START_ENV, dir.join("trial-start.ns"))
+        .env(MATRIX_SIGNAL_OBSERVED_ENV, dir.join("signal-observed.ns"))
+        .env(MATRIX_EOF_TIMEOUT_ENV, dir.join("eof-timeout"))
+        .env(MATRIX_CHILD_REAPED_ENV, dir.join("trial-reaped"))
+        .env(MATRIX_OUTPUT_TIMEOUT_ENV, dir.join("output-timeout"))
+        .env(
+            MATRIX_OUTPUT_ACK_PENDING_ENV,
+            dir.join("output-ack-pending"),
+        )
+        .env("EVAL_TEST_MATRIX_LAUNCH_LOG", dir.join("launches.log"))
+        .env("EVAL_TEST_MATRIX_HOLDER_PID", dir.join("holder.pid"))
         .env(runner::SWARMAIL_BIN_ENV, "/bin/true")
         .env("EVAL_TEST_MATRIX_RELEASE", &release)
-        .stdout(stdout)
-        .stderr(Stdio::null());
+        .stdout(if controls.pipe_stdout {
+            Stdio::piped()
+        } else {
+            Stdio::from(stdout)
+        })
+        .stderr(if controls.pipe_stderr {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
+        if let Some(trials) = controls.trials {
+            cmd.env(MATRIX_TRIALS_ENV, trials.to_string());
+        }
+        if let Some(at) = controls.pending_hold_at {
+            cmd.env(MATRIX_PENDING_HOLD_ENV, dir.join("pending"));
+            cmd.env(MATRIX_PENDING_HOLD_AT_ENV, at.to_string());
+        }
+        if controls.spawn_hold {
+            cmd.env(MATRIX_SPAWN_HOLD_ENV, dir.join("spawned"));
+        }
+        if controls.missing_trial_executable {
+            cmd.env(MATRIX_TRIAL_EXE_ENV, dir.join("missing-trial"));
+        }
         if bypass_wait {
             cmd.env("EVAL_TEST_MATRIX_BYPASS_WAIT", "1");
         }
         if signal_setup_fail {
             cmd.env("EVAL_TEST_MATRIX_SIGNAL_SETUP_FAIL", "1");
         }
-        if hold_before_trap {
+        if controls.hold_before_trap {
             cmd.env(MATRIX_PRE_TRAP_HOLD_ENV, &pre_trap_dir);
         }
         if let Some(hold) = hold.as_ref() {
@@ -1451,11 +1703,56 @@ while :; do :; done
                 matrix_identity_alive(&active),
                 "the negative control exits while owned work is still held"
             );
+            assert!(
+                matrix.finish().is_err(),
+                "the checked guard rejects the live owned trial before rescue"
+            );
             matrix.release();
             assert!(matrix.wait().success());
             eventually("the released negative-control trial to stop", || {
                 !matrix_identity_alive(&active)
             });
+            let start_ns: u128 = std::fs::read_to_string(dir.path().join("trial-start.ns"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            let signal_ns: u128 = std::fs::read_to_string(dir.path().join("signal-observed.ns"))
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!(
+                signal_ns >= start_ns,
+                "the observed signal follows trial start"
+            );
+            let lower_ms = ((signal_ns - start_ns) / 1_000_000) as u64;
+            let stdout = std::fs::read_to_string(dir.path().join("stdout.log")).unwrap();
+            let rows = stdout
+                .lines()
+                .filter_map(|line| {
+                    let json = line.get(line.find('{')?..)?;
+                    serde_json::from_str::<TrialResult>(json).ok()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                rows.len(),
+                2,
+                "active and unstarted slots are emitted: {stdout}"
+            );
+            assert_eq!(rows[0].outcome, Outcome::HarnessError);
+            assert_eq!(rows[0].agent_exit_status, None);
+            assert!(rows[0].agent_exits.is_empty());
+            assert!(rows[0].wall_time_ms > 0);
+            assert!(
+                rows[0].wall_time_ms + 1 >= lower_ms && rows[0].wall_time_ms <= lower_ms + 1_000,
+                "active row time is bracketed by the trial-start and signal events: lower={lower_ms}ms, row={}ms",
+                rows[0].wall_time_ms
+            );
+            assert_eq!(rows[1].outcome, Outcome::HarnessError);
+            assert_eq!(rows[1].wall_time_ms, 0);
+            assert_eq!(rows[1].agent_exit_status, None);
+            assert!(rows[1].agent_exits.is_empty());
+            assert_ne!(rows[0].trial_id, rows[1].trial_id);
+            assert!(matrix.finish().is_ok(), "negative-control owner was reaped");
         } else {
             eventually("the child's actual wait future returning Pending", || {
                 pending.is_file()
@@ -1493,6 +1790,10 @@ while :; do :; done
             assert!(rows[0].agent_exits.is_empty());
             assert_eq!(rows[1].outcome, Outcome::HarnessError);
             assert_eq!(rows[1].wall_time_ms, 0);
+            assert_eq!(rows[1].agent_exit_status, None);
+            assert!(rows[1].agent_exits.is_empty());
+            assert_ne!(rows[0].trial_id, rows[1].trial_id);
+            assert!(matrix.finish().is_ok(), "wait-fenced owner was reaped");
         }
     }
 
@@ -1653,6 +1954,399 @@ while :; do :; done
             finished.starts_with(&committed),
             "the committed final row remains an immutable byte prefix"
         );
+    }
+
+    #[test]
+    fn pending_matrix_decisions_observe_queued_signals_and_retain_spawned_children() {
+        let before_spawn = tempfile::tempdir().unwrap();
+        let mut probe = matrix_probe_config(
+            before_spawn.path(),
+            false,
+            false,
+            None,
+            "complete",
+            "signup,otp",
+            MatrixProbeControls {
+                pending_hold_at: Some(2),
+                ..MatrixProbeControls::default()
+            },
+        );
+        let pending = before_spawn.path().join("pending");
+        eventually("the pending check before spawn", || {
+            pending.join("entered").is_file()
+        });
+        unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        std::fs::write(pending.join("release"), b"release").unwrap();
+        assert!(probe.wait().success());
+        assert!(!before_spawn.path().join("launches.log").exists());
+        let rows = matrix_probe_rows(before_spawn.path());
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| {
+            row.outcome == Outcome::HarnessError
+                && row.wall_time_ms == 0
+                && row.agent_exit_status.is_none()
+                && row.agent_exits.is_empty()
+        }));
+        assert!(rows.iter().all(|row| !row.trial_id.is_empty()));
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.trial_id.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            2
+        );
+
+        let between_rows = tempfile::tempdir().unwrap();
+        let mut probe = matrix_probe_config(
+            between_rows.path(),
+            false,
+            false,
+            None,
+            "complete",
+            "signup,otp",
+            MatrixProbeControls {
+                pending_hold_at: Some(5),
+                ..MatrixProbeControls::default()
+            },
+        );
+        let pending = between_rows.path().join("pending");
+        eventually("the production between-row pending check", || {
+            pending.join("entered").is_file()
+        });
+        let launches = std::fs::read_to_string(between_rows.path().join("launches.log")).unwrap();
+        assert_eq!(launches.lines().collect::<Vec<_>>(), ["signup"]);
+        unsafe { libc::kill(probe.pid(), libc::SIGINT) };
+        std::fs::write(pending.join("release"), b"release").unwrap();
+        assert!(probe.wait().success());
+        let rows = matrix_probe_rows(between_rows.path());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].outcome, Outcome::Pass);
+        assert_eq!(rows[1].outcome, Outcome::HarnessError);
+        assert_eq!(rows[1].wall_time_ms, 0);
+        assert_eq!(
+            std::fs::read_to_string(between_rows.path().join("launches.log"))
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["signup"]
+        );
+
+        let before_enqueue = tempfile::tempdir().unwrap();
+        let mut probe = matrix_probe_config(
+            before_enqueue.path(),
+            false,
+            false,
+            None,
+            "complete",
+            "signup,otp",
+            MatrixProbeControls {
+                pending_hold_at: Some(4),
+                ..MatrixProbeControls::default()
+            },
+        );
+        let pending = before_enqueue.path().join("pending");
+        eventually("the pending check before enqueue", || {
+            pending.join("entered").is_file()
+        });
+        unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        std::fs::write(pending.join("release"), b"release").unwrap();
+        assert!(probe.wait().success());
+        let rows = matrix_probe_rows(before_enqueue.path());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].outcome, Outcome::HarnessError);
+        assert_eq!(rows[0].agent_exit_status, Some(0));
+        assert_eq!(rows[1].outcome, Outcome::HarnessError);
+        assert_eq!(rows[1].wall_time_ms, 0);
+        assert_eq!(
+            std::fs::read_to_string(before_enqueue.path().join("launches.log"))
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["signup"]
+        );
+
+        let issued = tempfile::tempdir().unwrap();
+        let mut probe = matrix_probe_config(
+            issued.path(),
+            false,
+            false,
+            None,
+            "held",
+            "signup,otp",
+            MatrixProbeControls {
+                spawn_hold: true,
+                ..MatrixProbeControls::default()
+            },
+        );
+        let spawned = issued.path().join("spawned");
+        eventually("the already-issued child hold", || {
+            spawned.join("entered").is_file()
+        });
+        probe.record_ready_identity(&issued.path().join("trial.pid"));
+        let active = probe.owned.last().unwrap().clone();
+        assert!(matrix_identity_alive(&active));
+        unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        std::fs::write(spawned.join("release"), b"release").unwrap();
+        let cleanup = issued.path().join("cleanup-entered");
+        eventually(
+            "the retained child to receive forwarded termination",
+            || cleanup.is_file(),
+        );
+        let pending_wait = issued.path().join("wait-pending");
+        eventually("the retained child wait to remain pending", || {
+            pending_wait.is_file()
+        });
+        assert!(probe.try_wait().is_none());
+        assert!(matrix_identity_alive(&active));
+        probe.release();
+        assert!(probe.wait().success());
+        assert!(!matrix_identity_alive(&active));
+        let rows = matrix_probe_rows(issued.path());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].outcome, Outcome::HarnessError);
+        assert_eq!(rows[1].wall_time_ms, 0);
+        assert_eq!(
+            std::fs::read_to_string(issued.path().join("launches.log"))
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["signup"]
+        );
+    }
+
+    #[test]
+    fn mixed_signals_during_matrix_cleanup_do_not_bypass_the_retained_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = matrix_probe(dir.path(), false, false, None, "held", "signup,otp");
+        let active_file = dir.path().join("trial.pid");
+        eventually("active trial readiness", || active_file.is_file());
+        probe.record_ready_identity(&active_file);
+        let active = probe.owned.last().unwrap().clone();
+        unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        let cleanup = dir.path().join("cleanup-entered");
+        let pending = dir.path().join("wait-pending");
+        let log = dir.path().join("signals.log");
+        eventually("first forwarded signal and held cleanup", || {
+            cleanup.is_file()
+                && pending.is_file()
+                && std::fs::read_to_string(&log).is_ok_and(|contents| contents.lines().count() == 1)
+        });
+        assert_eq!(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["term-forward"]
+        );
+        for (index, (signal, _)) in [(libc::SIGINT, "int-repeat"), (libc::SIGTERM, "term-repeat")]
+            .into_iter()
+            .enumerate()
+        {
+            unsafe { libc::kill(probe.pid(), signal) };
+            eventually("mixed signal acknowledgement", || {
+                std::fs::read_to_string(&log)
+                    .is_ok_and(|contents| contents.lines().count() == index + 2)
+            });
+        }
+        assert_eq!(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["term-forward", "int-repeat", "term-repeat"]
+        );
+        assert!(probe.try_wait().is_none());
+        assert!(matrix_identity_alive(&active));
+        probe.release();
+        assert!(probe.wait().success());
+        assert!(!matrix_identity_alive(&active));
+        let rows = matrix_probe_rows(dir.path());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].outcome, Outcome::HarnessError);
+        assert_eq!(rows[1].wall_time_ms, 0);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("launches.log"))
+                .unwrap()
+                .lines()
+                .collect::<Vec<_>>(),
+            ["signup"]
+        );
+    }
+
+    #[test]
+    fn matrix_spawn_failure_keeps_all_rows_and_unknown_agent_statuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = matrix_probe_config(
+            dir.path(),
+            false,
+            false,
+            None,
+            "complete",
+            "signup,otp",
+            MatrixProbeControls {
+                missing_trial_executable: true,
+                ..MatrixProbeControls::default()
+            },
+        );
+        assert!(probe.wait().success());
+        assert!(!dir.path().join("launches.log").exists());
+        let rows = matrix_probe_rows(dir.path());
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| {
+            row.outcome == Outcome::HarnessError
+                && row.agent_exit_status.is_none()
+                && row.agent_exits.is_empty()
+                && row.trial_id != "matrix-probe"
+        }));
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.trial_id.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn matrix_stdout_backpressure_is_bounded_and_still_observes_signals() {
+        use std::io::BufRead;
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = matrix_probe_config(
+            dir.path(),
+            false,
+            false,
+            Some("admission"),
+            "complete",
+            "signup",
+            MatrixProbeControls {
+                trials: Some(5000),
+                pipe_stdout: true,
+                pipe_stderr: true,
+                ..MatrixProbeControls::default()
+            },
+        );
+        let hold = dir.path().join("admission");
+        eventually("refusal-only matrix admission hold", || {
+            hold.join("entered").is_file()
+        });
+        unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        eventually("admission signal acknowledgement", || {
+            hold.join("signal-term").is_file()
+        });
+        probe.release();
+        let ack_pending = dir.path().join("output-ack-pending");
+        eventually("matrix output acknowledgement wait", || {
+            ack_pending.is_file()
+        });
+        unsafe { libc::kill(probe.pid(), libc::SIGINT) };
+        let stderr = probe.child.as_mut().unwrap().stderr.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stderr);
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                if line.contains("stdout made no progress for five seconds") {
+                    let _ = tx.send(line.clone());
+                }
+                line.clear();
+            }
+        });
+        let diagnostic = rx
+            .recv_timeout(Duration::from_secs(12))
+            .expect("the real unread pipe reached the fixed output acknowledgement deadline");
+        assert!(diagnostic.contains("stdout made no progress for five seconds"));
+        assert!(dir.path().join("output-timeout").is_file());
+        assert!(
+            std::fs::read_to_string(dir.path().join("signals.log"))
+                .unwrap()
+                .lines()
+                .any(|event| event == "write-int"),
+            "the writer wait continues observing interruption while stdout is blocked"
+        );
+        let mut stdout = probe.child.as_mut().unwrap().stdout.take().unwrap();
+        let mut drained = Vec::new();
+        std::io::Read::read_to_end(&mut stdout, &mut drained).unwrap();
+        assert!(probe.wait().success());
+        assert!(drained.windows(1).any(|byte| byte[0] == b'\n'));
+    }
+
+    #[test]
+    fn matrix_post_exit_inherited_pipe_is_bounded_and_holder_is_reaped_by_the_test() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = matrix_probe_config(
+            dir.path(),
+            false,
+            false,
+            None,
+            "holder",
+            "signup,otp",
+            MatrixProbeControls {
+                pipe_stderr: true,
+                ..MatrixProbeControls::default()
+            },
+        );
+        let holder_file = dir.path().join("holder.pid");
+        eventually("inherited stdout descriptor holder", || {
+            holder_file.is_file()
+        });
+        let holder_pid = std::fs::read_to_string(&holder_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let holder = matrix_identity(holder_pid).expect("holder identity");
+        probe.record_identity(holder.clone());
+        probe.record_ready_identity(&dir.path().join("trial.pid"));
+        let trial = probe
+            .owned
+            .iter()
+            .find(|id| id.pid != holder.pid)
+            .unwrap()
+            .clone();
+        assert!(matrix_identity_alive(&holder));
+        let eof_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !(dir.path().join("trial-reaped").is_file()
+            && dir.path().join("eof-timeout").is_file())
+            && std::time::Instant::now() < eof_deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            dir.path().join("trial-reaped").is_file() && dir.path().join("eof-timeout").is_file(),
+            "missing EOF completion markers; trial={trial:?} current={:?}; holder={holder:?} current={:?}; stdout={}",
+            matrix_identity(trial.pid),
+            matrix_identity(holder.pid),
+            std::fs::read_to_string(dir.path().join("stdout.log")).unwrap_or_default()
+        );
+        assert!(probe.wait().success());
+        assert!(
+            !matrix_identity_alive(&trial),
+            "the exited trial child was reaped"
+        );
+        assert!(
+            matrix_identity_alive(&holder),
+            "the inherited descriptor remained open at return"
+        );
+        let mut stderr = String::new();
+        probe
+            .child
+            .as_mut()
+            .unwrap()
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        assert!(
+            stderr.contains("trial stdout remained open more than five seconds after child exit"),
+            "{stderr}"
+        );
+        assert!(
+            probe.cleanup_owned(),
+            "the test-owned holder is explicitly reaped"
+        );
+        assert!(!matrix_identity_alive(&holder));
     }
 
     #[test]

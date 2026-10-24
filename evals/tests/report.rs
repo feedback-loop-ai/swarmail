@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use serde_json::{Value, json};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::Stdio;
 use swarmail_evals::runner::TrialResult;
 use swarmail_evals::tasks::Outcome;
@@ -100,7 +100,11 @@ fn the_matrix_keeps_counting_after_a_harness_error_and_exits_two() {
     let dir = tempfile::tempdir().unwrap();
     let agents = agents_file(
         dir.path(),
-        json!([{"label": "ghost", "argv": ["/nonexistent/agent"]}, {"label": "oracle", "argv": []}]),
+        json!([
+            {"label": "ghost", "argv": ["/nonexistent/agent"]},
+            {"label": "null", "argv": []},
+            {"label": "oracle", "argv": []}
+        ]),
     );
     let out = cli()
         .args([
@@ -109,10 +113,15 @@ fn the_matrix_keeps_counting_after_a_harness_error_and_exits_two() {
         .output()
         .unwrap();
     let rows = rows(&out.stdout);
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].outcome, Outcome::HarnessError);
-    assert_eq!(rows[1].outcome, Outcome::Pass, "the matrix went on");
-    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(rows[1].outcome, Outcome::Fail);
+    assert_eq!(rows[2].outcome, Outcome::Pass, "the matrix went on");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "harness errors outrank failures"
+    );
 }
 
 /// An unresolvable Swarmail binary still owes one harness-error row per
@@ -362,6 +371,25 @@ impl MatrixGuard {
         }
     }
 
+    fn finish(&mut self) -> Result<(), String> {
+        let child = self
+            .child
+            .as_mut()
+            .ok_or_else(|| "matrix guard child handle was already removed".to_string())?;
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err("matrix still requires owner rescue".into()),
+            Err(error) => return Err(format!("cannot reap matrix child: {error}")),
+        }
+        let survivors: Vec<_> = self.owned.iter().filter(|id| identity_alive(id)).collect();
+        if !survivors.is_empty() {
+            return Err(format!(
+                "matrix left owned identities running: {survivors:?}"
+            ));
+        }
+        Ok(())
+    }
+
     fn cleanup_owned(&self) -> bool {
         let wait_stopped = |limit: std::time::Duration| {
             let deadline = std::time::Instant::now() + limit;
@@ -427,7 +455,7 @@ fn marker_identity(value: &Value, name: &str) -> ProcessIdentity {
     }
 }
 
-fn matrix_signal_case(signal: i32, suffix: &str) {
+fn matrix_signal_case(signal: i32) {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("active.json");
     let launches = dir.path().join("launches.txt");
@@ -497,9 +525,14 @@ fn matrix_signal_case(signal: i32, suffix: &str) {
     }
     matrix.record_identity(agent.clone());
     matrix.record_identity(descendant.clone());
+    let unique_by_pid: std::collections::HashMap<_, _> = before
+        .iter()
+        .map(|process| (process.pid, process))
+        .collect();
+    let unique_pids: std::collections::HashSet<_> = unique_by_pid.keys().copied().collect();
     assert!(
-        before.len() >= 5,
-        "trial, servers, fixture, agent and descendant are owned: {before:?}"
+        unique_pids.len() == 5,
+        "readiness contains the exact five distinct owned process IDs: {before:?}"
     );
     assert!(
         before
@@ -512,14 +545,17 @@ fn matrix_signal_case(signal: i32, suffix: &str) {
             .any(|p| p.pid == descendant.pid && p.start_time == descendant.start_time)
     );
 
-    let prefix_before = std::fs::read_to_string(&rows_path).unwrap();
-    let prefix_lines: Vec<_> = prefix_before.lines().collect();
+    let prefix_before = std::fs::read(&rows_path).unwrap();
+    let prefix_lines: Vec<_> = prefix_before
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .collect();
     assert_eq!(
         prefix_lines.len(),
         1,
         "only the completed prefix is committed before readiness"
     );
-    let prefix: Value = serde_json::from_str(prefix_lines[0]).unwrap();
+    let prefix: Value = serde_json::from_slice(prefix_lines[0]).unwrap();
     assert_eq!(
         (
             prefix["task"].as_str(),
@@ -547,8 +583,12 @@ fn matrix_signal_case(signal: i32, suffix: &str) {
     assert!(!identity_alive(&agent));
     assert!(!identity_alive(&descendant));
 
-    let output = std::fs::read_to_string(rows_path).unwrap();
-    let parsed = rows(output.as_bytes());
+    let output = std::fs::read(rows_path).unwrap();
+    assert!(
+        output.starts_with(&prefix_before),
+        "the exact committed JSONL byte prefix is immutable"
+    );
+    let parsed = rows(&output);
     assert_eq!(parsed.len(), 4, "full schema-v1 product accounting");
     assert_eq!(
         serde_json::to_value(&parsed[0]).unwrap(),
@@ -634,20 +674,16 @@ fn matrix_signal_case(signal: i32, suffix: &str) {
             .iter()
             .all(|g| g["harness_errors"] == 1 && g["success_rate"].is_null())
     );
-    assert_eq!(
-        signal,
-        if suffix == "term" {
-            libc::SIGTERM
-        } else {
-            libc::SIGINT
-        }
+    assert!(
+        matrix.finish().is_ok(),
+        "matrix and all owned identities were reaped"
     );
 }
 
 #[test]
 fn matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup() {
-    matrix_signal_case(libc::SIGTERM, "term");
-    matrix_signal_case(libc::SIGINT, "int");
+    matrix_signal_case(libc::SIGTERM);
+    matrix_signal_case(libc::SIGINT);
 }
 
 #[test]
@@ -672,7 +708,7 @@ fn a_broken_matrix_stdout_stops_after_the_owned_trial_finishes() {
             "1",
         ])
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     drop(child.stdout.take().unwrap());
@@ -690,6 +726,21 @@ fn a_broken_matrix_stdout_stops_after_the_owned_trial_finishes() {
         1,
         "stdout failure stops admission after the active trial is reaped"
     );
+    let mut diagnostic = String::new();
+    matrix
+        .child
+        .as_mut()
+        .unwrap()
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut diagnostic)
+        .unwrap();
+    assert!(diagnostic.contains("stdout write failed"), "{diagnostic}");
+    assert!(
+        matrix.finish().is_ok(),
+        "broken-pipe matrix cleanup completed"
+    );
 }
 
 #[test]
@@ -703,8 +754,25 @@ fn normal_matrix_binary_ignores_test_control_environment_variables() {
         ("EVAL_TEST_MATRIX_PRE_TRAP_HOLD_DIR", "pre-trap"),
         ("EVAL_TEST_MATRIX_COMMIT_HOLD_DIR", "commit"),
         ("EVAL_TEST_MATRIX_FINAL_HOLD_DIR", "final"),
+        ("EVAL_TEST_MATRIX_PENDING_HOLD_DIR", "pending"),
+        ("EVAL_TEST_MATRIX_PENDING_HOLD_AT", "1"),
+        ("EVAL_TEST_MATRIX_SPAWN_HOLD_DIR", "spawned"),
+        ("EVAL_TEST_MATRIX_SIGNAL_LOG", "signal-log"),
+        ("EVAL_TEST_MATRIX_TRIAL_START", "trial-start"),
+        ("EVAL_TEST_MATRIX_SIGNAL_OBSERVED", "signal-observed"),
+        ("EVAL_TEST_MATRIX_OUTPUT_ACK_PENDING", "ack-pending"),
+        ("EVAL_TEST_MATRIX_OUTPUT_TIMEOUT", "output-timeout"),
+        ("EVAL_TEST_MATRIX_EOF_TIMEOUT", "eof-timeout"),
+        ("EVAL_TEST_MATRIX_CHILD_REAPED", "child-reaped"),
+        ("EVAL_TEST_MATRIX_TRIALS", "2"),
         ("EVAL_TEST_CLEANUP_HOLD_DIR", "cleanup"),
         ("EVAL_TEST_PRE_HANDLER_HOLD_DIR", "pre-handler"),
+        ("EVAL_TEST_MATRIX_WAIT_PENDING", "wait-pending"),
+        ("EVAL_TEST_MATRIX_CLEANUP_ENTERED", "cleanup-entered"),
+        ("EVAL_TEST_MATRIX_RELEASE", "release"),
+        ("EVAL_TEST_MATRIX_TRIAL_PID", "trial-pid"),
+        ("EVAL_TEST_MATRIX_TRIAL_EXE", "trial-exe"),
+        ("EVAL_TEST_MATRIX_PROBE", "1"),
         ("EVAL_RUNNER_FAULT", "panic"),
     ] {
         cmd.env(name, dir.path().join(value));
@@ -724,8 +792,22 @@ fn normal_matrix_binary_ignores_test_control_environment_variables() {
         "pre-trap",
         "commit",
         "final",
+        "pending",
+        "spawned",
+        "signal-log",
+        "trial-start",
+        "signal-observed",
+        "ack-pending",
+        "output-timeout",
+        "eof-timeout",
+        "child-reaped",
         "cleanup",
         "pre-handler",
+        "wait-pending",
+        "cleanup-entered",
+        "release",
+        "trial-pid",
+        "trial-exe",
     ] {
         assert!(
             !dir.path().join(name).exists(),
@@ -738,10 +820,11 @@ fn normal_matrix_binary_ignores_test_control_environment_variables() {
 fn matrix_signal_cancels_and_reaps_the_fallback_cargo_group() {
     let dir = tempfile::tempdir().unwrap();
     let ready = dir.path().join("cargo-ready");
+    let invocation = dir.path().join("cargo-invocations.log");
     let script = dir.path().join("cargo-wrapper.sh");
     std::fs::write(&script, format!(
-        "#!/bin/sh\nsleep 1000 &\nchild=$!\nprintf '%s %s\\n' \"$$\" \"$child\" > \"{}.tmp\"\nmv \"{}.tmp\" \"{}\"\nwait \"$child\"\n",
-        ready.display(), ready.display(), ready.display()
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"{}\"\nsleep 1000 &\nchild=$!\nprintf '%s %s\\n' \"$$\" \"$child\" > \"{}.tmp\"\nmv \"{}.tmp\" \"{}\"\nwait \"$child\"\n",
+        invocation.display(), ready.display(), ready.display(), ready.display()
     )).unwrap();
     let mut permissions = std::fs::metadata(&script).unwrap().permissions();
     use std::os::unix::fs::PermissionsExt;
@@ -782,6 +865,17 @@ fn matrix_signal_cancels_and_reaps_the_fallback_cargo_group() {
         .map(|p| p.parse().unwrap())
         .collect();
     assert_eq!(pids.len(), 2);
+    let invocations = std::fs::read_to_string(&invocation).unwrap();
+    let cargo_args = invocations.lines().collect::<Vec<_>>();
+    assert_eq!(
+        cargo_args.len(),
+        1,
+        "fallback cargo is invoked once: {invocations}"
+    );
+    assert_eq!(
+        cargo_args[0],
+        "build --offline --locked --bin swarmail --message-format=json-render-diagnostics"
+    );
     let owned: Vec<_> = pids
         .iter()
         .map(|pid| process_identity(*pid).unwrap())
@@ -800,5 +894,23 @@ fn matrix_signal_cancels_and_reaps_the_fallback_cargo_group() {
         result_rows
             .iter()
             .all(|row| row.outcome == Outcome::HarnessError && row.wall_time_ms == 0)
+    );
+    assert_eq!(
+        result_rows
+            .iter()
+            .map(|row| row.trial_id.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        2,
+        "both unstarted fallback slots receive fresh refusal identities"
+    );
+    assert!(
+        result_rows
+            .iter()
+            .all(|row| row.agent_exit_status.is_none() && row.agent_exits.is_empty())
+    );
+    assert!(
+        matrix.finish().is_ok(),
+        "fallback owner and children were reaped"
     );
 }
