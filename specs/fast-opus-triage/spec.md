@@ -1,67 +1,83 @@
 # Fast triage on Opus medium
 
-Date: 2026-10-24. Run: `apply-the-operator-directed-tria-fcd757d9`.
-Phase: chief design synthesis; implementation and delivery proofs are outstanding.
+Date: 2026-10-25. Run: `apply-the-operator-directed-fast-ff1692a8`.
+Phase: chief design synthesis; implementation and delivery review remain.
+Baseline: `d7e615d5e94ac28aa84d5a825c95abf1cd436997`.
 
 ## Feature and rationale
 
-Change only the `codex-fast` triage model route to Claude Opus 5.5, using the
-existing `opus` key at medium effort with no fallback. The operator selected
-this model for the risk classification that determines which implementation
-and review lane a task enters. Preserve every existing classification rule,
-execution bound and downstream route. This is a normative recipe amendment,
-so it receives the full design and five-role review path despite its small diff.
+Route only `codex-fast` triage to Claude Opus 5.5 through the existing `opus`
+key at medium effort, with no fallback. The operator selected the model that
+classifies risk before implementation. Preserve the classification rules,
+execution bounds and every other route. No model-quality improvement is claimed.
 
 Authority is accepted [0057](../../docs/decisions/0057-codex-delivery-recipes.md)
-as narrowly amended by the current operator directive, and accepted
-[0058](../../docs/decisions/0058-codex-review-routing.md) for reviews. The directive
-requires an appended dated clarification to 0057, not a new numbered proposal.
-It expressly supersedes the earlier “Triage stays on Sol / medium” sentence;
-0057 remains accepted and its historical text remains intact. Neither this spec
-nor the clarification grants authority to accept unrelated or future decisions.
+as narrowly amended by the operator's 2026-10-24 directive, and accepted
+[0058](../../docs/decisions/0058-codex-review-routing.md) for reviews. The
+operator explicitly requires a dated clarification appended to 0057, retaining
+accepted status and historical text. This specific directive supersedes the
+generic requirement to draft a newly numbered proposal. No decision is declared
+by this spec, no number is allocated, and this seat accepts nothing further.
 
-## Evidence and synthesis rulings
+## Evidence and framing
 
-Read both run-local positions, `.brokkr/state/design/positions/simplicity.md`
-and `robustness.md`. The requested `.brokkr/state/tasks/` directory is absent;
-the matching intake is `specs/codex-fast-opus-triage/intake.md`. Preserve that
-untracked evidence in place; do not manufacture a legacy task or journal entry.
-Baseline HEAD at inspection is `352b1cb`. The design uses a separate slug so
-its three artifacts do not require committing or hiding that intake evidence.
+Both `.brokkr/state/design/positions/simplicity.md` and `robustness.md` were
+read. The requested `.brokkr/state/tasks/` directory is absent. The current
+framing is the committed [intake](intake.md), matching this run; it takes
+precedence over the packet's historical `prior-intake.md` and earlier design.
+Do not manufacture task copies or journal history.
 
-1. **Adopt simplicity's single-owner change.** Update the existing triage
-   office, retain its name and inheritance, and reuse the Claude adapter.
-   Reject new offices, aliases, route registries, fallback machinery, engine
-   changes and dependencies. Cost: the `codex-triage` name remains historical,
-   and Opus unavailability can stop a run instead of selecting another model.
-2. **Adopt robustness's exact preservation proof.** Resolved routes, concrete
-   model identities, efforts and entire role sets must match explicit expected
-   values. A two-field edit with string-presence checks is insufficient.
-   Simplicity also supports these bounded tests; the real tension is proof
-   breadth, not the requested route. Rule for full preservation assertions in
-   the existing tests. Cost to the smallest-edit position: more test changes
-   and full verification latency, without a new validation subsystem.
-3. **Reconcile documentation scope.** Correct the triage charter's model and
-   its stale four-reviewer claims, current recipe/agent summaries, and nearby
-   claims that 0058 is proposed. Keep classification predicates and all
-   historical rulings. Reject rewriting unrelated 0058 history or cleaning
-   the duplicated index row. Cost: historical superseded prose remains and
-   readers must follow dated clarifications; current instructions stay truthful.
-4. **Bound robustness's runtime concerns to preservation.** Synchronous
-   acceptance, subscribe-before-check, oldest-only pruning and ingest-time
-   extraction remain mandatory. Existing protocol, persistence, webhook,
-   chaos and TLS proofs remain required. Reject new SMTP, store, webhook or
-   certificate work in this routing amendment. Cost: any reproduced existing
-   failure blocks delivery and needs separately authorized repair; it cannot
-   be hidden or treated as fixed by this configuration change.
-5. **Keep proof categories separate.** Static and engine-controlled tests
-   establish routing and refusal behavior; only five actual provider reviews
-   establish the requested review evidence. Neither these positions nor
-   compilation substitutes for those calls. Cost: provider availability and
-   five separate results remain delivery prerequisites, including two Astra
-   invocations rather than one result reused for two roles.
+The packet README, operator-rulings, prior patch and prior intake verify against
+`.forge/epic192/opus-triage/SHA256SUMS`, checked from that directory. The local
+`.forge/bin/brokkr` digest is
+`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`, matching
+`bundles/self/tooling.json`. Current resolution confirms Sol/medium triage,
+three attempts and 3600 seconds. The Claude adapter already supports Opus 5.5
+and medium. Main already pins Luna/xhigh implementation; earlier references to
+stale Sol/high implementation tests are obsolete. The known cross-attempt
+engine defect is outside this amendment. No GitHub, CI, journal or sibling
+worktree evidence is needed.
+
+## Panel synthesis and rulings
+
+1. **Adopt simplicity's single owner.** Change the existing office's model and
+   complete effort map; retain its name, inheritance and adapter. Reject new
+   offices, fallback machinery, retry policies, providers and dependencies.
+   Cost: the historical `codex-triage` name remains and an Opus outage can stop
+   triage under existing failure behavior. No Sol rescue is authorized.
+2. **Adopt robustness's resolved proof.** A source-only two-field assertion
+   cannot prove dispatch identity or inherited fallback. Check the actual
+   recipe selection, resolved chain, provider, concrete mapping and effective
+   effort against independent literal expectations. Retain the existing test
+   suites; reject a general matrix framework or unrelated engine work. The
+   smallest-edit position loses on proof breadth: extra equality controls and
+   full verification cost are accepted. Both positions support this bounded
+   reconciliation.
+3. **Rule for robustness on current charter accuracy.** Along with the model,
+   correct its stale four-reviewer descriptions to the accepted five-role
+   design/engine panel. Simplicity's preference to leave this wording alone
+   loses because it instructs the new triager incorrectly. Cost: two nearby
+   documentation corrections; classification predicates remain unchanged.
+   Do not rewrite 0058, unrelated historical text, or the decision index.
+4. **Bound preservation proofs to existing routes.** Add fast triage and
+   Standard/Careful intake plus absent-triage assertions to the Python matrix;
+   retain existing work/reviewer guards and explicitly compare self's existing
+   route baseline rather than treating its skipped comparison as proof.
+   Reject wholesale replacement with the stale patch's framework. Cost:
+   maintaining a few explicit baseline expectations, not new runtime code.
+5. **Reject runtime hardening and engine repair.** Robustness's storage,
+   webhook, hostile-DATA, chaos, TLS and concurrency concerns justify retaining
+   the full-risk classification and existing real-server gates. They create no
+   new implementation scope. Keep the cross-attempt fixture and assertion
+   exactly as on main. Cost: the full routing proof can remain red at that
+   known control; a separate passing route matrix cannot make it green.
+6. **Keep evidence categories distinct.** Exact routing, controlled dispatcher
+   proofs, house gates and actual five-role reviews establish different facts.
+   Neither this design nor a controlled fixture is a provider review. Cost:
+   delivery still needs the existing independent reviews and honest gate results.
 
 ## Dated clarification — chief commit authority (2026-10-24)
+
 
 Both positions flag the inherited ship-only instruction against the chief's
 committed-HEAD requirement. For this retry, the direct chief-phase instruction
@@ -74,94 +90,99 @@ there is one design-only author commit before ship. This is a scope ruling for
 this requested chief action, not an amendment of repository-wide delivery policy
 or permission to claim gates/review complete. No validator or journal changes.
 
+
+## Dated clarification — current-base reconciliation (2026-10-25)
+
+The preceding dated entry records the previous chief's instruction and remains
+historical. This run's explicit instruction is to commit all requested work
+before returning. It supersedes that entry's ship-only implementation timing;
+implementation must commit its authorized changes before handing off for
+verification. The chief commits exactly this directory's spec.md, plan.md and
+tasks.md and leaves that commit last. The intake is already tracked here and
+stays unchanged. This revision replaces stale-base findings and removes any
+requirement to repair the cross-attempt engine defect. It preserves the control
+and its honest result. No policy, engine pin or decision number changes follow.
+
 ## Required route contract
 
-| Surface | Exact requirement |
+| Surface | Exact preserved or requested route |
 | --- | --- |
-| Fast triage | `codex-triage`; Claude; singleton `[opus]`; `claude-opus-5-5`; medium |
-| Fast implementation | Codex `[luna]`, xhigh for chore, feature, design and engine |
-| Standard intake / implementation | Codex `[sol]`, medium / high |
-| Careful intake / implementation | Codex `[sol]`, high / xhigh |
-| Shared design, including self | Sol high simplicity; Astra high robustness; Astra high chief; inherited deterministic check |
+| Fast triage | Office `codex-triage`; provider `claude`; chain `[opus]`; concrete `claude-opus-5-5`; medium; no fallback |
+| Standard / Careful triage | Absent in both recipes |
+| Standard intake / implementation | `codex-intake`: Sol medium / `codex-implementer`: Sol high |
+| Careful intake / implementation | `codex-careful-intake`: Sol high / `codex-careful-implementer`: Sol xhigh |
+| Fast intake / implementation | Intake absent; Luna xhigh in chore, feature, design and engine |
+| Shared design, including self | Sol high simplicity; Astra high robustness and chief; inherited deterministic check |
 | Standard review | Fable correctness; official Flash security; Sonnet tests |
 | Careful and fast design/engine review | Separate Astra correctness, official Flash security, Sonnet tests, Astra guarantees and independent Fable |
 | Fast chore review | One combined official Flash reviewer |
-| Fast feature review | Qwen Max correctness, with only authorized pre-session Qwen-to-Sonnet fallback; official Flash security |
-| Legacy self | GLM intake/implementation; existing correctness `[qwen-max, glm-flash]`, security `[opus, glm-flash]`, guarantees `[astra, glm-flash]`, tests `[fable, glm-flash]`; unchanged shared design and proof ownership |
+| Fast feature review | Qwen Max correctness, with only existing pre-session Qwen-to-Sonnet fallback; official Flash security |
+| Legacy self | GLM intake/implementation; correctness `[qwen-max, glm-flash]`, security `[opus, glm-flash]`, guarantees `[astra, glm-flash]`, tests `[fable, glm-flash]`; shared design and proof ownership unchanged |
 
-Review model identities remain Claude `claude-fable-5-1` and
-`claude-sonnet-5-5`, Codex `gpt-6-astra`, DashScope `dashscope/qwen3.8-max`,
-and `deepseek-flash` through `deepseek-official`. Codex reviewer chains are
-singleton except the feature-correctness exception. Preserve existing legacy
-self chains; do not apply the Codex singleton rule to them. Reviewers retain
-high effort where specified and no explicit effort on the DashScope route.
-DeepSeek Pro is forbidden in selected, inherited and fallback chains.
+Review identities/efforts remain as pinned by accepted 0058: Claude Fable 5.1
+and Sonnet 5.5, Codex Astra, DashScope Qwen 3.8 Max and official DeepSeek Flash.
+DashScope has no explicit effort; the other reviewer routes retain high.
+Self's legacy fallback chains remain; Codex reviewer chains are singleton except
+feature correctness. DeepSeek Pro remains forbidden.
 
 ## Acceptance Criteria
 
-- **AC1 — Exact triage route:** resolved fast triage equals the full tuple in
-  the table. The office has exactly `models: ["opus"]` and
-  `efforts: {"opus": "medium"}`, with no obsolete Sol effort entry. The
-  existing adapter supplies the concrete identity; no adapter changes occur.
-- **AC2 — Refusal and scope unchanged:** unavailable/unsupported dispatch,
-  timeout, unusable classification, absent strategy or unknown strategy cannot
-  authorize another work lane or model. Preserve existing attempts, timeout,
-  bounded returns, five result values, sensitive-task classification, hands,
-  credential masks, charter ownership and no-default selectors. No retry
-  counter is reset. Model/count corrections change no classification predicate.
-- **AC3 — Accepted amendment:** append a 2026-10-24 clarification to 0057
-  citing this directive/run, replacing only the earlier fast-triage ruling
-  with Opus 5.5/medium and no fallback. Preserve its historical body,
-  accepted status, Luna/xhigh ruling and 0058 authority. Current charter,
-  `bundles/README.md` and `agents/README.md` agree with this route and five-role
-  full-risk review. Historical specs need no rewriting.
-- **AC4 — Numbering untouched:** no new decision/proposal or index edit;
-  no renumbering or duplicate records. Preserve reservations: #180 owns 0062;
-  #200 0063; #174 0064; #202 0065; #195 0069; #181 0070; #198 0071.
-- **AC5 — Work routes preserved:** exact tests compare all work rows above,
-  including every fast strategy, Standard/Careful intake and implementation,
-  shared design, and legacy self. Inherited design/verify/ship proof origin,
-  selectors, policies, engine identity and sandbox constraints remain unchanged.
-- **AC6 — Review contract preserved:** exact matrices equal the review rows
-  above, including office identities, concrete provider destinations and
-  efforts. Preserve distinct role results, worst-verdict aggregation, protected
-  review, security's hard hold, unknown-fact refusal and candidate binding.
-  A valid verdict, residual or malformed facts never authorizes fallback.
-- **AC7 — Tests can reject drift:** extend `tests/delivery_recipes.rs` and
-  `tests/codex_review_routing.py`; replace stale fast Sol/high assumptions with
-  Luna/xhigh and remove the Python proof's skipped self comparison. Wrong triage
-  provider, model, effort and extra fallback fail the same equality predicate
-  used for the real tuple. Missing/extra/wrong reviewers, forbidden fallback,
-  Pro, malformed facts and foreign-attempt results retain refusal controls.
-- **AC8 — Complete verification:** all gates in the single house-rule inventory,
-  verifier selftests and native-TLS absence proof pass on the candidate, with
-  exact 100% line/branch/function coverage. Four recipe compiles are warning-free;
-  resolved route and existing engine-backed boundary proofs pass. Save commands,
-  outcomes, candidate commit/tree and recorded engine digest. No skipped,
-  unavailable or failing proof counts as passed; CI-only proofs retain CI ownership.
-- **AC9 — Actual review:** after verification, obtain five separate actual
-  provider invocations and results on that same candidate: Astra correctness,
-  official Flash security, Sonnet tests, Astra guarantees and independent Fable.
-  Record run/attempt/member identity and aggregate verdict. Missing roles,
-  provider failures or a security hold prevent shipping. Candidate changes
-  require renewed applicable verification and review.
-- **AC10 — Delivery boundary:** no push, merge, tag, publication or issue
-  closure. The chief makes the specifically requested unsigned design commit,
-  touching exactly this directory's spec.md, plan.md and tasks.md, and leaves
-  it at HEAD for the final design check. Implementation commits remain restricted
-  to ship. Position files and intake evidence are not staged. The design commit
-  is not evidence that implementation, full gates or actual review succeeded.
+- **AC1 — Exact fast triage:** source models equal `["opus"]` and the entire
+  effort map equals `{"opus":"medium"}`. Real recipe/office resolution equals
+  the complete triage row above, including a singleton chain and existing
+  concrete Claude mapping. No obsolete Sol effort or alternate survives.
+- **AC2 — Route isolation:** all other configuration equals the baseline.
+  Tests preserve the work/review rows above, Standard/Careful absent triage,
+  fast absent intake, triage inheritance, workspace hands/masks, limits,
+  classification vocabulary, no-default selectors and bounded returns.
+  Charter edits change model/count wording only, not classification rules.
+- **AC3 — Documentation and authority:** append a dated clarification to 0057
+  recording the operator directive of 2026-10-24 and explicitly superseding
+  only its fast-triage Sol/medium statement. Existing bytes remain an unchanged
+  prefix and accepted status remains. Update the triage charter, agents and
+  bundles READMEs and house rules consistently. No decision/index allocation,
+  renumbering or new acceptance occurs; the packet's number ledger stands.
+- **AC4 — Effective-route regression proof:** extend `tests/delivery_recipes.rs`
+  and `tests/codex_review_routing.py::resolved_matrix` with exact triage and
+  preserved intake/absence checks. Missing triage, wrong provider, wrong alias,
+  wrong concrete model, wrong effort and extra fallback are rejected by the
+  same comparison used on real resolved data. Preserve existing reviewer and
+  Luna guards; no stale expectation is restored.
+- **AC5 — Excluded work stays excluded:** engine binary/pin/patch stack,
+  adapters, lockfile/dependencies, gates, policies, bundle selectors, 0058,
+  decision index and application code are unchanged. The existing Python
+  cross-attempt fixture, assertion and engine behavior remain as on main.
+  No source-receipt bypass or unrelated CI change is imported from the patch.
+- **AC6 — Local evidence is complete and honest:** execute every house gate,
+  pinned verifier selftests and fail-closed native-TLS absence proof against
+  the committed candidate, with the specified engine. Record commands, exits,
+  logs and commit/tree identities; exact coverage remains missed == 0 for
+  lines, branches and functions with its selftest. Four compiles and the
+  focused recipe and resolved-matrix proofs must pass. Run the full routing
+  proof unchanged and record its cross-attempt result separately. A failure
+  stays red and bars an all-gates-clean claim; this criterion neither requires
+  an engine fix nor waives the delivery policy.
+- **AC7 — Committed handoff:** this chief's last commit touches exactly this
+  directory's spec.md, plan.md and tasks.md; all three are nonempty, clean,
+  committed and pass the pinned design checker. Position files remain ignored.
+  Implementation commits before verification, unsigned. No push, merge, tag,
+  publication, issue closure or decision acceptance is authorized.
 
-## Non-goals and completion limits
+## Delivery ownership and limits
 
-No application behavior, dependency/lockfile/license policy, adapter, engine
-pin, bundle selector, gate script, review charter or decision-index change is
-required. Do not restore an earlier self design route. The no-fallback choice
-accepts reduced availability; no throughput or provider-quality improvement is
-claimed. Intake's historical coverage and foreign-attempt failures are leads
-for reproduction, not newly proven failures or discharged obligations.
+These local criteria do not require live-provider, macOS, namespace, network or
+live-GitHub proofs. The delivery engine owns actual accepted-0058 five-role
+review on the verified candidate: separate Astra correctness, Flash security,
+Sonnet tests, Astra guarantees and independent Fable results. Controlled Python
+participants cannot satisfy it. Changed candidate trees require renewed
+applicable verification/review. Missing reviews or hard holds prevent delivery.
 
-A chief `drafted` result records committed design artifacts. The final pinned
-check independently owns design advancement; full gates and live review remain
-downstream obligations on the implementation candidate. Neither design text nor
-its structural check certifies feature delivery.
+CI owns the chart contract/history/selftest, Docker smoke, RustSec advisory
+audit, tag-only rate proof and privileged port-80 exchange under the house
+inventory. The operator owns later sealing/publication. This chief adds no
+local acceptance criteria for their external evidence.
+
+Frozen accept == stored, subscribe-before-check, oldest-only pruning and
+accepted ingest-time extraction remain unchanged. No production behavior,
+benchmark, schema or API change is justified. A `drafted` result records this
+committed design; the sequence's final check alone rules design advancement.
