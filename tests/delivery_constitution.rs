@@ -559,18 +559,23 @@ impl VerifySeatFixture {
             .prefix("verify seat ; [fixture] ")
             .tempdir()
             .expect("temporary verify fixture");
-        let candidate = root.path().join("candidate ; [workspace]");
-        let bundle = root.path().join("bundle ; [pinned]");
+        // The gate stubs report bash's $PWD, which bash derives from getcwd()
+        // because Command::current_dir sets no PWD. macOS temp dirs sit behind
+        // the /var -> /private/var symlink, so every fixture path is built on
+        // the physical root.
+        let base = root.path().canonicalize().expect("canonical fixture root");
+        let candidate = base.join("candidate ; [workspace]");
+        let bundle = base.join("bundle ; [pinned]");
         let pin = bundle.join("scripts");
-        let result_dir = root.path().join("result files ; [entry]");
-        let bin = root.path().join("fake commands");
-        let engine_dir = root.path().join("engine path ; [literal]");
+        let result_dir = base.join("result files ; [entry]");
+        let bin = base.join("fake commands");
+        let engine_dir = base.join("engine path ; [literal]");
         let engine = engine_dir.join("brokkr");
-        let gate_order = root.path().join("gate order.txt");
-        let gate_report = root.path().join("gate report.txt");
-        let argv_marker = root.path().join("engine argv.txt");
-        let later_marker = root.path().join("later gate.txt");
-        let prompt = root.path().join("verify prompt.md");
+        let gate_order = base.join("gate order.txt");
+        let gate_report = base.join("gate report.txt");
+        let argv_marker = base.join("engine argv.txt");
+        let later_marker = base.join("later gate.txt");
+        let prompt = base.join("verify prompt.md");
         let result = result_dir.join("seat result.json");
 
         std::fs::create_dir_all(&candidate).unwrap();
