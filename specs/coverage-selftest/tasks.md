@@ -1,36 +1,51 @@
 # Ordered tasks — coverage selftest reservation follow-up
 
-Updated: 2026-10-24. These are downstream obligations, not claims made by the
-chief commit. Initial #174 code exists at `16841aa`, but verification failed;
+Updated: 2026-10-24 — recovery from `310b969`. These are downstream
+obligations, not claims made by the chief commit. Initial #174 code exists at `16841aa`, but verification failed;
 retained requirements must be revalidated. Follow [spec.md](spec.md) and
 [plan.md](plan.md). Keep dated clarifications on any subsequent return.
 
+T1 gates T2–T5: unknown causality blocks patch selection, not merely task
+closure. Preserve the two stopped-run receipts and engine return bounds;
+this recovery is no reset. All tasks remain unchecked until their tests have
+actual candidate-bound evidence.
+
 - [ ] **T1 — Establish causality before patch selection (AC10).** Preserve
-  the receipt, identify `16841aa` and #173 ancestry `ff9bf8a`, and compare the
-  actual full-context fixture with a direct race through the same resolver.
+  the receipts and recovery HEAD `310b969`, identify `16841aa` and #173
+  ancestry `ff9bf8a`, and compare the actual full-context fixture with a direct race through the same resolver.
   **Test:** candidate/command/Bash/command-resolution/path/lifetime and
   individual output/status receipts reproduce and attribute the two-success
-  failure. A passing reduced control alone fails this evidence requirement.
+  failure. Capture working directory, child identities, relevant traps and
+  descriptors. Distinguish command selection/result, effective path identity,
+  intervening removal and status recording. If shell evidence cannot decide,
+  retain process-attributed filesystem evidence from that failing execution;
+  passing traced reruns do not explain it. A passing reduced control alone
+  fails this evidence requirement.
   Unreplicated causality stays unresolved; do not close the residual.
 - [ ] **T2 — Apply the evidenced repair within AC8 (AC10, AC14–AC15).** Fix
-  only the responsible selftest execution path. A proved production resolver
-  fault requires scope return and reconciled documents before production edits.
+  only the responsible selftest execution path, after T1 is proved. Remove a
+  proved unnecessary path, simplify lifetime, restore behavior, then add only
+  a necessary local guard; retain sound existing code. A proved production
+  resolver fault requires scope return and reconciled documents before production edits.
   **Test:** a control through actual functions fails when the demonstrated
   fault is restored and passes after repair; diff/byte checks confirm scope.
   A speculative readiness patch cannot substitute for causal repair.
 - [ ] **T3 — Make coordination explicit and finite (AC11–AC12).** Use private
   endpoints, checked readiness/release and a bound covering opens, writes,
-  reads and waits. Preserve inherited descriptors; stop/reap fixture children
-  before root cleanup.
+  reads and waits from setup through joins. Preserve inherited descriptors;
+  stop/reap fixture children, including nested resolvers, and finish the
+  watchdog before root cleanup. Document the finite bound and teardown.
   **Test:** two live children acknowledge readiness before release and request
   the same leaf; death before readiness and failure after release yield bounded
-  failed proofs with no surviving workers or descriptor damage. Expiry never
-  yields success and no sleep establishes readiness.
+  failed proofs with no surviving workers/watchdog or descriptor damage,
+  including conditional Bash execution. No unbounded final wait or signaling
+  of unrelated processes is allowed. Expiry never yields success and no sleep establishes readiness.
 - [ ] **T4 — Attribute each outcome (AC11–AC12).** Capture actual winner path
   and ownership, loser status/output, complete fresh records and independent
   worker completion; check errors under conditional shell execution.
   **Test:** real race yields {0,1}, exact winner path/ownership 0 and the status-1
-  child's own named refusal/path. Missing completion, unrelated nonzero result
+  child's own named refusal/path. Missing completion, missing/malformed
+  records, wrong release tokens, unrelated nonzero result
   and refusal text present only in the other log each fail the actual local
   assertion logic without resetting the real parent's failure count.
 - [ ] **T5 — Prove caller-owned lifetime (AC13).** Retain the winning leaf

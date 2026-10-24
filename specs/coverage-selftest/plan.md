@@ -1,7 +1,7 @@
 # Implementation plan — coverage selftest reservation follow-up
 
-Updated: 2026-10-24. Implements [spec.md](spec.md), preserving AC1–AC9 and
-adding AC10–AC15. [tasks.md](tasks.md) pairs each obligation with its proof.
+Updated: 2026-10-24 — recovery from `310b969`. Implements [spec.md](spec.md),
+preserving AC1–AC9 and AC10–AC15. [tasks.md](tasks.md) pairs each obligation with its proof.
 This replaces the initial implementation plan with investigation, bounded
 repair and revalidation of existing code; it certifies no completed task.
 
@@ -11,8 +11,10 @@ The canonical gate is Bash with `set -euo pipefail`. Explicit resolution uses
 parent `mkdir -p`, one plain leaf `mkdir`, and ownership 0. The selftest has
 FIFO releases, nested resolver subshells, child status files and merged-log
 matching. Conditional shell execution can disable errexit; worker completion
-and resolver outcome need separate observations. The retained verification
-failure has not been causally reproduced in this seat.
+and resolver outcome need separate observations. The retained full-context
+failure and passing direct control were inspected,
+but causality remains unresolved. This design seat performed no new execution
+reproduction. Recovery keeps the prior stopped receipts as evidence.
 
 Existing compiler fixtures use jq, Cargo, installed coverage nightly,
 cargo-llvm-cov and the standalone Rust scanner. One measured application crate
@@ -59,19 +61,37 @@ joined before any outer cleanup runs. All other files are inspection inputs.
 
 ## Research and implementation approach
 
-1. Preserve the failed receipt and identify baseline `16841aa` and reviewed
-   #173 ancestor `ff9bf8a`. Reproduce through the actual canonical definitions
+1. Preserve both stopped-run receipts and recovery HEAD `310b969`; identify
+   baseline `16841aa` and reviewed #173 ancestor `ff9bf8a`. Reproduce through the actual canonical definitions
    and full accumulated selftest context. Record focused traces of paths,
    Bash options, relevant command/function resolution, individual statuses,
    outputs and leaf lifetime without dumping unrelated environment or secrets.
    Compare a controlled direct race through the same resolver. A reduced pass
-   is a comparison, not discharge of the full-context failure.
+   is a comparison, not discharge of the full-context failure. Record working
+   directory, child identities, relevant descriptors/traps and effective path
+   identity as well. Keep full-context preceding arms intact. Use a bounded
+   investigation with explicit observations, never sleep-based coordination
+   or retries until green; record unsuccessful attempts honestly.
+
+   The T1 evidence record must pair each claim with candidate, command, output
+   and status. Separate shell command selection, actual command result,
+   filesystem lifetime and recorded resolver result. Test command overrides,
+   masked status, namespace removal/replacement and path identity as competing
+   hypotheses, not diagnoses. If shell evidence is insufficient, use available
+   process-attributed filesystem tracing on the failing execution. State any
+   instrumentation perturbation; a passing traced run cannot close that gap.
+   Store focused receipts under an ignored run-specific `.forge/` directory,
+   never rewrite historical evidence or dump the full environment.
 2. Identify what permits both successes: selected paths, inherited overrides,
    status capture, descriptor interference or leaf deletion/replacement. Do
    not assume an EXIT-trap fault. Correct only the demonstrated selftest path.
    A reproduced production resolver fault triggers scope return to reconcile
    AC8 and dependent documents before production edits. If unreproduced, record
    uncertainty rather than labeling a synchronization patch causally verified.
+   T1 is a hard dependency of T2–T5. Apply the recovery ruling's order: remove
+   a proved unnecessary path, simplify ownership/lifetime, restore the proven
+   behavior, then add only a justified local guard. Do not preselect a barrier,
+   unconditional command bypass or trap rewrite as the repair.
 3. Keep coordination local to two children under one root. Use private
    endpoints and dynamically allocated descriptors or equivalent child
    isolation; never overwrite inherited harness descriptors. Each child
@@ -82,9 +102,12 @@ joined before any outer cleanup runs. All other files are inspection inputs.
    using the existing shell environment. Cover FIFO opens/writes as well as
    reads and waits. Explicitly check setup and I/O even under conditional
    errexit. On failure stop and reap only the fixture's tracked children,
-   close endpoints and clean only after joins. Document the chosen failure
-   bound in the fixture; it is not a wall-clock validity assertion. No new
-   dependency, reusable process manager or timing-based success condition.
+   including nested resolver processes, and finish the watchdog before root
+   cleanup. Do not signal unrelated processes or conceal an unbounded final
+   wait in teardown. Close only owned endpoints after joins. Document the
+   chosen failure bound and bounded teardown in the fixture; it is not a
+   wall-clock validity assertion. No new dependency, reusable process manager
+   or timing-based success condition.
 5. Capture resolver status in a subshell because `refuse` exits. Report the
    actual winner path/ownership only after successful resolution; no trailing
    successful command may mask failure. Workers write fresh complete records
@@ -98,10 +121,13 @@ joined before any outer cleanup runs. All other files are inspection inputs.
    unchanged leaf/sentinel. Reuse existing retry/ownership tests where possible;
    the outer caller owns final root cleanup after joins.
 7. Exercise the actual local proof with child-local controls: death before
-   readiness; failure after release/missing completion; unrelated nonzero
+   readiness; failure after release/missing completion; missing/malformed
+   records; wrong release tokens; unrelated nonzero
    result; refusal text only in the other child's output. Each must fail and
-   leave no children or damaged descriptors. Observe control verdicts without
-   resetting the real parent's failures. Restore the evidenced original fault
+   leave no children or damaged descriptors, including in conditional Bash
+   calling context. A small shared local helper is justified only where the
+   real race and controls exercise that same code. Observe control verdicts
+   without resetting the real parent's failures. Restore the evidenced original fault
    in an isolated control for red, then show green after repair. No duplicate
    resolver, production injection hook or broad mutation framework. Follow
    focused controls with the full canonical selftest.
@@ -165,6 +191,7 @@ blocked and not-run gates/reviews stay outstanding.
 
 | Risk | Mitigation and accepted cost |
 |---|---|
+| Passing traced rerun substitutes for failing-run evidence | Require process-attributed observations of the actual failure when shell evidence is insufficient; accept an unresolved stop if tools or reproduction cannot supply them. |
 | Readiness patch conceals the two-success cause | Require full-context causal evidence and fault-restored red/green; unreproduced residual stays unresolved. |
 | Resolver fault conflicts with AC8 | Return with reproduction and reconcile scope before editing production; accept explicit design return. |
 | Worker errors look like refusal | Separate completion from resolver status, require fresh records and per-child category/path; wrong-error and wrong-log controls. |
@@ -173,5 +200,6 @@ blocked and not-run gates/reviews stay outstanding.
 | Early cleanup permits two reservations or removes evidence | Neither child deletes the leaf; parent joins, checks ownership/sentinel/retry, then cleans its root. |
 | Controls contaminate later arms | Child-local overrides/counters, fresh records and checked joins; never reset parent failure count. |
 | Repair expands into #175 or weakens #173/#174 | Scope/byte checks and full retained proof audit; no scanner/runtime/dependency/policy or denominator/floor change. |
+| Timeout on an overloaded host or hard external kill | Timeout fails; supervise the complete tracked process lifetime. External kill may leave a private root; no stale-target reclamation or trap-survival guarantee. |
 | Added checks cost time and tool coupling | Keep shell controls local, reuse compiler fixtures, permit either winner; no exhaustive schedule matrix. |
 | Draft check is mistaken for delivery success | Leave downstream tasks unchecked until evidenced; deterministic sequence owns design verdict, actual gates/reviews own delivery. |

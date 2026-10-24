@@ -5,7 +5,8 @@ Status: Draft
 Story: [Epic #192 issue #174](https://github.com/feedback-loop-ai/swarmail/issues/174)
 Preservation baseline: `ff9bf8aba26fabaeea89876d5257b58198a12601` (reviewed issue #173 candidate)
 Follow-up baseline: `16841aa4f503ad8eb83e36208ff5fd125fe25b95`
-Updated: 2026-10-24 — reservation verification residual
+Updated: 2026-10-24 — recovery after two stopped implementation attempts
+Recovery baseline: `310b9695fa03cec63bd06bb1b01e1697a5f5d984`
 
 ## Feature and rationale
 
@@ -132,6 +133,70 @@ authorize no SMTP, store, webhook, TLS or extraction work. Keep intake's
 `engine` classification under 0057 §§6–7, all gates and four independent
 reviews. Patch size cannot justify a lane downgrade.
 
+## Recovery synthesis and clarification — 2026-10-24
+
+This synthesis reads both current panel positions and intake for
+`epic-192-issue-174-recovery-afte-190349d3`. Retain the single feature slug
+`coverage-selftest`, the dated initial/follow-up rulings above, AC1–AC15 and
+unchecked T1–T8. The current panel agrees on the mandatory bound; the earlier
+follow-up's losing suggestion to defer it is historical, not a position the
+current simplicity seat still holds. No new semantic ruling is proposed.
+
+**Evidence is a discrepancy, not attribution.** The stopped runs were
+`epic-192-issue-174-strengthen-th-63080acf` and
+`epic-192-issue-174-follow-up-res-8891f7c7`. The first implementation receipt
+`.forge/results/d6005095-9b0d-4259-93bf-5b9e314e30d8.json` reports inability
+to reproduce; the second, `9cb9ec21-b2ea-4fc6-a1a7-7244ca7007b9.json` in the
+same directory, reports reproduction with causality unresolved. Their stops
+are not completed tasks or permission to reset the engine's return bounds.
+The retained `repro-canonical.output` and `repro-canonical.trace` under
+`.forge/epic192/issue174-followup/` show the two-success failure. The adjacent
+`direct-race.txt` records {1,0}, successful worker waits and the loser's own
+refusal. Its shell options differ from the canonical context. Xtrace records
+two leaf commands and success assignments, not two proven successful syscalls
+against an unchanged namespace. This chief inspected those receipts; it did
+not reproduce or attribute the fault anew.
+
+**Adopt simplicity's single owner and simplification order.** First remove an
+unnecessary path if T1 proves it responsible, then simplify lifetime under one
+fixture owner, restore the proven behavior, and only then add a necessary local
+guard. Preserve sound existing code. Reject speculative command bypasses,
+trap changes, locks, retries and readiness rewrites as causal repairs. The
+cost is that patch selection can remain stopped even when a plausible rewrite
+passes; buying a green fixture would leave the reported failure unexplained.
+
+**Adopt robustness's complete lifecycle proof within that small boundary.**
+One local two-child controller must bound setup through joins, including
+blocking opens/writes and any nested resolver or watchdog. Check malformed
+records and tokens through the actual coordination/assertion path as well as
+child death and wrong-log attribution. Rule against minimizing away these
+controls: their maintenance cost is accepted because unchecked infrastructure
+can impersonate a reservation result. Conversely, reject a general process
+framework, permanent helper executable and exhaustive scheduler/platform
+matrix. The accepted cost of that rejection is a specialized two-worker shell
+protocol with a documented finite timeout that may fail on an overloaded host.
+Timeout never earns a pass; no sleep establishes readiness or success.
+
+**Reconcile proof strength with investigation scope.** Keep focused shell
+observations first. If they cannot distinguish command selection/result,
+status masking, effective path identity or intervening removal, T1 needs
+process-attributed filesystem observations from the failing execution using
+available tools. A passing instrumented rerun cannot supply missing evidence
+for another run; instrumentation's scheduling effect remains a stated limit.
+Neither identical CPU scheduling instants nor a syscall-tracing dependency is
+required. Unavailable or inconclusive evidence leaves T1 unresolved.
+
+**Retain caller ownership and the scope return.** Observe winner metadata;
+never manufacture ownership 0. Neither worker deletes the leaf. The caller's
+sentinel survives real cleanup and retained-path retry. AC8 remains binding:
+a proved production resolver defect requires evidence-backed scope return and
+reconciled spec/plan/tasks before production edits. Broader reservation or
+runtime redesign loses; its extra recovery/portability surface has no causal
+justification. Accept a bounded design return instead. #175 remains excluded,
+the exact 100/100/100 floor stands, and the existing engine lane retains all
+gates and its four protected reviewers. Runtime failure examples in the panel
+are preservation arguments, not additional implementation tasks.
+
 ## Acceptance Criteria
 
 - **AC1 — Every refusal has a cause.** Remove `expect_refuse` and every call.
@@ -203,11 +268,15 @@ reviews. Patch size cannot justify a lane downgrade.
 - **AC10 — Causal evidence before repair.** Run the actual baseline resolver
   and fixture in its accumulated selftest context. Retain candidate, command,
   Bash version/options, relevant command resolution/overrides, exact requested
-  paths, per-child outcomes and leaf lifetime. Compare a controlled race through
+  paths, working directory, child identities, relevant traps/descriptors,
+  per-child outcomes and leaf lifetime. Compare a controlled race through
   the same resolver outside that context. Reproduce and attribute the recorded
   two-success/no-refusal fault before choosing a patch. Static inspection,
   successful retries and a passing approximation cannot close the residual;
-  unreplicated causality must remain explicitly unresolved.
+  unreplicated causality must remain explicitly unresolved. When shell evidence
+  is inconclusive, obtain process-attributed filesystem evidence from the
+  failing execution; a passing instrumented run cannot explain a different
+  failure. Distinguish actual command results from recorded resolver outcomes.
 - **AC11 — One attributable winner and loser.** Two live children share one
   exact initially absent leaf under a unique disk-backed fixture root. Both
   acknowledge readiness before release and consume checked release tokens.
@@ -220,11 +289,15 @@ reviews. Patch size cannot justify a lane downgrade.
   descriptor opens, readiness/release I/O, output writes and worker waits,
   including under conditional Bash execution. Missing/malformed records, wrong
   tokens, unrelated exits and worker death fail the proof. A finite deadline
-  or watchdog covers every blocking coordination operation; expiry is failure,
-  never successful synchronization. Stop and reap fixture children before
-  root cleanup. Controls for death before readiness, failure after release with
-  missing completion, unrelated nonzero status and refusal text only in the
-  wrong child's log must fail without leaked children or descriptor damage.
+  or watchdog covers setup through joins, every blocking coordination
+  operation and nested resolver processes; expiry is failure,
+  never successful synchronization. Stop and reap fixture children and finish
+  any watchdog before root cleanup; teardown cannot hide an unbounded final wait or signal
+  unrelated processes. Controls for death before readiness, failure after
+  release with missing completion, missing/malformed records, wrong release tokens,
+  unrelated nonzero status and refusal text only in the wrong child's log
+  must fail through the actual local proof without leaked children or
+  descriptor damage, including under conditional Bash execution.
   No sleep-as-synchronization or retries-until-green.
 - **AC13 — Caller-owned lifetime.** Neither child deletes the reserved leaf.
   After both outcomes it remains present. A sentinel in the winning tree
