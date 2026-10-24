@@ -1,6 +1,6 @@
 # 0070 — Refuse positional REST seed and chaos bodies before mutation
 
-- **Status:** proposed — awaiting the operator; not implementation authority.
+- **Status:** accepted (operator, 2026-10-24)
 - **Date:** 2026-10-24.
 - **Scope:** Epic #192, issue #181, implementation of
   [chaos-contract](../../specs/chaos-contract/spec.md), AC6 / tasks T2–T3.
