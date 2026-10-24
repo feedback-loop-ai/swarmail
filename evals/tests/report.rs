@@ -287,7 +287,9 @@ fn empty_and_all_error_inputs_give_null_estimates_and_bad_rows_refuse() {
 
 struct MatrixGuard {
     child: Option<std::process::Child>,
+    owner: ProcessIdentity,
     release: std::path::PathBuf,
+    owned: Vec<ProcessIdentity>,
 }
 
 impl MatrixGuard {
@@ -295,32 +297,121 @@ impl MatrixGuard {
         self.child.as_ref().unwrap().id() as i32
     }
 
-    fn wait(mut self) -> std::process::ExitStatus {
-        let _ = std::fs::write(&self.release, b"release");
-        self.child.take().unwrap().wait().unwrap()
+    fn record_identity(&mut self, identity: ProcessIdentity) {
+        if !self.owned.iter().any(|known| {
+            known.pid == identity.pid
+                && known.start_time == identity.start_time
+                && known.pgrp == identity.pgrp
+                && known.session == identity.session
+        }) {
+            self.owned.push(identity);
+        }
+    }
+
+    fn record_descendants(&mut self) {
+        let pid = self.pid();
+        if !process_identity(pid).is_some_and(|now| {
+            now.start_time == self.owner.start_time
+                && now.pgrp == self.owner.pgrp
+                && now.session == self.owner.session
+        }) {
+            return;
+        }
+        for process in process_descendants(pid) {
+            self.record_identity(process);
+        }
+    }
+
+    fn wait_for(&mut self, limit: std::time::Duration) -> Option<std::process::ExitStatus> {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            match self.child.as_mut()?.try_wait() {
+                Ok(Some(status)) => return Some(status),
+                Ok(None) => {}
+                Err(_) => return None,
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn wait(&mut self) -> std::process::ExitStatus {
+        self.wait_for(std::time::Duration::from_secs(30))
+            .unwrap_or_else(|| panic!("matrix child exceeded its 30-second wait deadline"))
+    }
+
+    fn signal_owned_groups(&self, signal: i32) {
+        let groups: std::collections::HashSet<_> = self.owned.iter().map(|id| id.pgrp).collect();
+        for pgrp in groups {
+            let known_member_is_live = self.owned.iter().any(|want| {
+                want.pgrp == pgrp
+                    && process_identity(want.pid).is_some_and(|now| {
+                        now.start_time == want.start_time
+                            && now.pgrp == want.pgrp
+                            && now.session == want.session
+                            && !matches!(now.state, 'Z' | 'X')
+                    })
+            });
+            if known_member_is_live {
+                // SAFETY: a recorded PID/start/session identity still proves membership in this
+                // test-owned process group; empty or recycled groups are never signalled.
+                unsafe { libc::kill(-pgrp, signal) };
+            }
+        }
+    }
+
+    fn cleanup_owned(&self) -> bool {
+        let wait_stopped = |limit: std::time::Duration| {
+            let deadline = std::time::Instant::now() + limit;
+            while self.owned.iter().any(identity_alive) {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            true
+        };
+        self.signal_owned_groups(libc::SIGTERM);
+        if wait_stopped(std::time::Duration::from_secs(5)) {
+            return true;
+        }
+        self.signal_owned_groups(libc::SIGKILL);
+        wait_stopped(std::time::Duration::from_secs(5))
     }
 }
 
 impl Drop for MatrixGuard {
     fn drop(&mut self) {
         let _ = std::fs::write(&self.release, b"release");
-        let Some(child) = self.child.as_mut() else {
-            return;
-        };
-        if child.try_wait().ok().flatten().is_none() {
-            send_signal(child.id() as i32, libc::SIGTERM);
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            while child.try_wait().ok().flatten().is_none() && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            if child.try_wait().ok().flatten().is_none() {
-                // SAFETY: this guard owns the matrix child it just spawned.
-                unsafe {
-                    libc::kill(child.id() as i32, libc::SIGKILL);
+        self.record_descendants();
+        if self.child.is_some() {
+            let ordinary_wait = if std::thread::panicking() {
+                std::time::Duration::ZERO
+            } else {
+                std::time::Duration::from_secs(30)
+            };
+            if self.wait_for(ordinary_wait).is_none() {
+                let pid = self.pid();
+                send_signal(pid, libc::SIGTERM);
+                self.record_descendants();
+                if self.wait_for(std::time::Duration::from_secs(15)).is_none() {
+                    // SAFETY: this guard still owns and has not reaped the direct child.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                    if self.wait_for(std::time::Duration::from_secs(5)).is_none() {
+                        eprintln!(
+                            "matrix child {pid} did not reap within bounded failure teardown"
+                        );
+                    }
                 }
-                let _ = child.wait();
             }
+        }
+        if !self.cleanup_owned() {
+            eprintln!(
+                "matrix test guard left owned processes running: {:?}",
+                self.owned
+            );
         }
     }
 }
@@ -368,14 +459,19 @@ fn matrix_signal_case(signal: i32, suffix: &str) {
         .spawn()
         .unwrap();
     let release = dir.path().join("unused-release");
+    let owner = process_identity(child.id() as i32).expect("matrix process identity");
     let mut matrix = MatrixGuard {
         child: Some(child),
+        owner,
         release,
+        owned: Vec::new(),
     };
     let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while !marker.is_file() && std::time::Instant::now() < ready_deadline {
+        matrix.record_descendants();
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+    matrix.record_descendants();
     assert!(
         marker.is_file(),
         "readiness missing; status={:?}, launches={:?}, rows={:?}",
@@ -396,6 +492,11 @@ fn matrix_signal_case(signal: i32, suffix: &str) {
         "the ready descendant identity is live: {descendant:?}"
     );
     let before = process_descendants(matrix.pid());
+    for process in &before {
+        matrix.record_identity(process.clone());
+    }
+    matrix.record_identity(agent.clone());
+    matrix.record_identity(descendant.clone());
     assert!(
         before.len() >= 5,
         "trial, servers, fixture, agent and descendant are owned: {before:?}"
@@ -575,9 +676,12 @@ fn a_broken_matrix_stdout_stops_after_the_owned_trial_finishes() {
         .spawn()
         .unwrap();
     drop(child.stdout.take().unwrap());
-    let matrix = MatrixGuard {
+    let owner = process_identity(child.id() as i32).expect("matrix process identity");
+    let mut matrix = MatrixGuard {
         child: Some(child),
+        owner,
         release: dir.path().join("unused-release"),
+        owned: Vec::new(),
     };
     let status = matrix.wait();
     assert_eq!(status.code(), Some(2));
@@ -596,6 +700,7 @@ fn normal_matrix_binary_ignores_test_control_environment_variables() {
     for (name, value) in [
         ("EVAL_TEST_MATRIX_SIGNAL_SETUP_FAIL", "1"),
         ("EVAL_TEST_MATRIX_ADMISSION_HOLD_DIR", "admission"),
+        ("EVAL_TEST_MATRIX_PRE_TRAP_HOLD_DIR", "pre-trap"),
         ("EVAL_TEST_MATRIX_COMMIT_HOLD_DIR", "commit"),
         ("EVAL_TEST_MATRIX_FINAL_HOLD_DIR", "final"),
         ("EVAL_TEST_CLEANUP_HOLD_DIR", "cleanup"),
@@ -614,7 +719,14 @@ fn normal_matrix_binary_ignores_test_control_environment_variables() {
     let result_rows = rows(&out.stdout);
     assert_eq!(result_rows.len(), 1);
     assert_eq!(result_rows[0].outcome, Outcome::Pass);
-    for name in ["admission", "commit", "final", "cleanup", "pre-handler"] {
+    for name in [
+        "admission",
+        "pre-trap",
+        "commit",
+        "final",
+        "cleanup",
+        "pre-handler",
+    ] {
         assert!(
             !dir.path().join(name).exists(),
             "ordinary production binary did not create {name} test-control state"
@@ -653,11 +765,17 @@ fn matrix_signal_cancels_and_reaps_the_fallback_cargo_group() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let matrix = MatrixGuard {
+    let owner = process_identity(child.id() as i32).expect("matrix process identity");
+    let mut matrix = MatrixGuard {
         child: Some(child),
+        owner,
         release: dir.path().join("unused-release"),
+        owned: Vec::new(),
     };
-    eventually("fallback build readiness", || ready.is_file());
+    eventually("fallback build readiness", || {
+        matrix.record_descendants();
+        ready.is_file()
+    });
     let pids: Vec<i32> = std::fs::read_to_string(&ready)
         .unwrap()
         .split_whitespace()

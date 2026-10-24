@@ -24,6 +24,8 @@ use crate::tasks::{self, Outcome, PromptVars, Task, Verdict};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+#[cfg(test)]
+use std::future::Future;
 use std::net::SocketAddr;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -44,6 +46,10 @@ pub const SWARMAIL_BIN_ENV: &str = "SWARMAIL_BIN";
 const FAULT_ENV: &str = "EVAL_RUNNER_FAULT";
 #[cfg(test)]
 const CLEANUP_HOLD_ENV: &str = "EVAL_TEST_CLEANUP_HOLD_DIR";
+#[cfg(test)]
+const CLEANUP_WAIT_PENDING_ENV: &str = "EVAL_TEST_CLEANUP_WAIT_PENDING";
+#[cfg(test)]
+const CLEANUP_WAIT_BYPASS_ENV: &str = "EVAL_TEST_CLEANUP_WAIT_BYPASS";
 #[cfg(test)]
 const PRE_HANDLER_HOLD_ENV: &str = "EVAL_TEST_PRE_HANDLER_HOLD_DIR";
 /// The built-in agent labels.
@@ -499,14 +505,69 @@ impl Groups {
         for group in groups {
             tasks.spawn(async move { group.await_cleanup().await });
         }
-        let mut errors = Vec::new();
-        while let Some(result) = tasks.join_next().await {
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => errors.push(e),
-                Err(e) => errors.push(format!("cleanup waiter failed: {e}")),
+        #[cfg(test)]
+        let errors = if std::env::var_os(CLEANUP_WAIT_PENDING_ENV).is_some()
+            || std::env::var_os(CLEANUP_WAIT_BYPASS_ENV).is_some()
+        {
+            let mut errors = Vec::new();
+            let mut pending_recorded = false;
+            while !tasks.is_empty() {
+                let mut next = Box::pin(tasks.join_next());
+                let mut was_pending = false;
+                let ready = std::future::poll_fn(|cx| match next.as_mut().poll(cx) {
+                    std::task::Poll::Ready(joined) => std::task::Poll::Ready(Some(joined)),
+                    std::task::Poll::Pending => {
+                        was_pending = true;
+                        std::task::Poll::Ready(None)
+                    }
+                })
+                .await;
+                let joined = if was_pending {
+                    if !pending_recorded {
+                        if let Some(path) = std::env::var_os(CLEANUP_WAIT_PENDING_ENV) {
+                            std::fs::write(path, b"owned cleanup future returned Pending")
+                                .expect("write actual cleanup Pending acknowledgement");
+                        }
+                        pending_recorded = true;
+                    }
+                    if std::env::var_os(CLEANUP_WAIT_BYPASS_ENV).is_some() {
+                        return Ok(());
+                    }
+                    next.await
+                } else {
+                    ready.expect("a completed join poll carries its result")
+                };
+                match joined {
+                    Some(Ok(Ok(()))) => {}
+                    Some(Ok(Err(e))) => errors.push(e),
+                    Some(Err(e)) => errors.push(format!("cleanup waiter failed: {e}")),
+                    None => break,
+                }
             }
-        }
+            errors
+        } else {
+            let mut errors = Vec::new();
+            while let Some(result) = tasks.join_next().await {
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => errors.push(e),
+                    Err(e) => errors.push(format!("cleanup waiter failed: {e}")),
+                }
+            }
+            errors
+        };
+        #[cfg(not(test))]
+        let errors = {
+            let mut errors = Vec::new();
+            while let Some(result) = tasks.join_next().await {
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => errors.push(e),
+                    Err(e) => errors.push(format!("cleanup waiter failed: {e}")),
+                }
+            }
+            errors
+        };
         if errors.is_empty() {
             Ok(())
         } else {
@@ -1441,6 +1502,7 @@ mod test_probes {
     struct ProcessIdentity {
         pid: i32,
         pgrp: i32,
+        session: i32,
         start_time: u64,
         state: char,
     }
@@ -1453,13 +1515,21 @@ mod test_probes {
             pid,
             state: fields.first()?.chars().next()?,
             pgrp: fields.get(2)?.parse().ok()?,
+            session: fields.get(3)?.parse().ok()?,
             start_time: fields.get(19)?.parse().ok()?,
         })
     }
 
+    fn same_identity(want: &ProcessIdentity, now: &ProcessIdentity) -> bool {
+        want.pid == now.pid
+            && want.pgrp == now.pgrp
+            && want.session == now.session
+            && want.start_time == now.start_time
+    }
+
     fn alive(want: &ProcessIdentity) -> bool {
         identity(want.pid)
-            .is_some_and(|now| now.start_time == want.start_time && !matches!(now.state, 'Z' | 'X'))
+            .is_some_and(|now| same_identity(want, &now) && !matches!(now.state, 'Z' | 'X'))
     }
 
     fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
@@ -1498,7 +1568,9 @@ mod test_probes {
 
     struct Probe {
         child: Option<std::process::Child>,
+        owner: ProcessIdentity,
         release: PathBuf,
+        pending: PathBuf,
         owned: Vec<ProcessIdentity>,
     }
 
@@ -1511,17 +1583,119 @@ mod test_probes {
             let _ = std::fs::write(&self.release, b"release");
         }
 
-        fn wait(&mut self) -> std::process::ExitStatus {
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        fn wait_for(&mut self, limit: Duration) -> Option<std::process::ExitStatus> {
+            let deadline = std::time::Instant::now() + limit;
             loop {
-                if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
-                    return status;
+                match self.child.as_mut()?.try_wait() {
+                    Ok(Some(status)) => return Some(status),
+                    Ok(None) => {}
+                    Err(_) => return None,
                 }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "runner probe exceeded its wait deadline"
-                );
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
                 std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        fn wait(&mut self) -> std::process::ExitStatus {
+            self.wait_for(Duration::from_secs(30))
+                .unwrap_or_else(|| panic!("runner probe exceeded its 30-second wait deadline"))
+        }
+
+        fn returned_after_owned_cleanup(&mut self) -> bool {
+            self.child
+                .as_mut()
+                .is_some_and(|child| child.try_wait().ok().flatten().is_some())
+                && self.owned.iter().all(|id| !alive(id))
+        }
+
+        fn signal_owned_groups(&self, signal: i32) {
+            let groups: std::collections::HashSet<_> =
+                self.owned.iter().map(|id| id.pgrp).collect();
+            for pgrp in groups {
+                let has_known_live_member = self.owned.iter().any(|want| {
+                    want.pgrp == pgrp
+                        && identity(want.pid).is_some_and(|now| {
+                            same_identity(want, &now) && !matches!(now.state, 'Z' | 'X')
+                        })
+                });
+                if has_known_live_member {
+                    // SAFETY: the group is signalled only while a recorded PID/start-time/session
+                    // identity still proves membership in this test-owned process group.
+                    unsafe { libc::kill(-pgrp, signal) };
+                }
+            }
+        }
+
+        fn wait_owned_stopped(&self, limit: Duration) -> bool {
+            let deadline = std::time::Instant::now() + limit;
+            while self.owned.iter().any(alive) {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            true
+        }
+
+        fn cleanup_owned(&self) -> bool {
+            self.signal_owned_groups(libc::SIGTERM);
+            if self.wait_owned_stopped(Duration::from_secs(5)) {
+                return true;
+            }
+            self.signal_owned_groups(libc::SIGKILL);
+            self.wait_owned_stopped(Duration::from_secs(5))
+        }
+
+        fn record_owned_from_tree(&mut self) {
+            let root = self.pid();
+            if !identity(root).is_some_and(|now| same_identity(&self.owner, &now)) {
+                return;
+            }
+            let mut processes = Vec::new();
+            let Ok(entries) = std::fs::read_dir("/proc") else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+                    continue;
+                };
+                if let Some(process) = identity(pid) {
+                    let ppid = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                        .ok()
+                        .and_then(|stat| {
+                            stat.rsplit_once(')')?
+                                .1
+                                .split_whitespace()
+                                .nth(1)?
+                                .parse::<i32>()
+                                .ok()
+                        });
+                    if let Some(ppid) = ppid {
+                        processes.push((process, ppid));
+                    }
+                }
+            }
+            let mut parents = std::collections::HashSet::from([root]);
+            loop {
+                let children: Vec<_> = processes
+                    .iter()
+                    .filter(|(_, ppid)| parents.contains(ppid))
+                    .map(|(process, _)| process.clone())
+                    .collect();
+                let added = children
+                    .iter()
+                    .filter(|child| parents.insert(child.pid))
+                    .count();
+                for child in children {
+                    if !self.owned.iter().any(|known| same_identity(known, &child)) {
+                        self.owned.push(child);
+                    }
+                }
+                if added == 0 {
+                    break;
+                }
             }
         }
     }
@@ -1529,43 +1703,52 @@ mod test_probes {
     impl Drop for Probe {
         fn drop(&mut self) {
             self.release();
-            let Some(child) = self.child.as_mut() else {
-                return;
-            };
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
-            while child.try_wait().ok().flatten().is_none() && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            if child.try_wait().ok().flatten().is_none() {
-                unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
-                let deadline = std::time::Instant::now() + Duration::from_secs(15);
-                while child.try_wait().ok().flatten().is_none()
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(Duration::from_millis(20));
+            self.record_owned_from_tree();
+            if self.child.is_some() && self.wait_for(Duration::from_secs(30)).is_none() {
+                let pid = self.pid();
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+                if self.wait_for(Duration::from_secs(15)).is_none() {
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                    if self.wait_for(Duration::from_secs(5)).is_none() {
+                        eprintln!(
+                            "runner probe {pid} did not reap within its bounded failure teardown"
+                        );
+                    }
                 }
             }
-            if child.try_wait().ok().flatten().is_none() {
-                unsafe { libc::kill(child.id() as i32, libc::SIGKILL) };
-                let _ = child.wait();
-            }
-            if let Some(leader) = self.owned.iter().find(|p| p.pid == p.pgrp) {
-                let still_same_group = identity(leader.pid).is_some_and(|now| {
-                    now.start_time == leader.start_time && now.pgrp == leader.pgrp
-                });
-                if still_same_group {
-                    unsafe { libc::kill(-leader.pgrp, libc::SIGKILL) };
-                }
+            if !self.cleanup_owned() {
+                eprintln!(
+                    "runner probe failure teardown left an owned process identity running: {:?}",
+                    self.owned
+                );
             }
         }
     }
 
-    fn launch_probe(dir: &std::path::Path, fault: Option<&str>, hold: bool) -> Probe {
+    fn launch_probe_with_controls(
+        dir: &std::path::Path,
+        fault: Option<&str>,
+        hold: bool,
+        bypass_cleanup_wait: bool,
+        leader_first: bool,
+    ) -> Probe {
         let script = dir.join("stall-agent.sh");
         std::fs::write(
             &script,
-            "#!/bin/sh\nsleep 1000 &\nchild=$!\nprintf '%s %s\\n' \"$$\" \"$child\" > \"$EVAL_TEST_RUNNER_PIDS\"\nwait \"$child\"\n",
+            r#"#!/bin/sh
+if [ "$EVAL_TEST_RUNNER_AGENT_MODE" = leader_first ]; then
+  /bin/sh -c 'trap "" TERM; exec sleep 1000' &
+  child=$!
+  trap 'exit 0' TERM
+else
+  sleep 1000 &
+  child=$!
+fi
+tmp="$EVAL_TEST_RUNNER_PIDS.tmp.$$"
+printf '%s %s\n' "$$" "$child" > "$tmp"
+mv "$tmp" "$EVAL_TEST_RUNNER_PIDS"
+wait "$child"
+"#,
         )
         .unwrap();
         let pids = dir.join("agent-pids");
@@ -1579,6 +1762,7 @@ mod test_probes {
             std::fs::create_dir_all(&hold_dir).unwrap();
             std::fs::write(hold_dir.join("arm"), b"arm").unwrap();
         }
+        let pending = dir.join("cleanup-wait-pending");
         let bin = resolve_swarmail_bin().expect("root Swarmail binary resolves");
         let output = std::fs::File::create(dir.join("probe.stdout")).unwrap();
         let mut cmd = Command::new(std::env::current_exe().unwrap());
@@ -1593,6 +1777,7 @@ mod test_probes {
         .env(PIDS_ENV, &pids)
         .env(BIN_ENV, &bin)
         .env(SWARMAIL_BIN_ENV, &bin)
+        .env(CLEANUP_WAIT_PENDING_ENV, &pending)
         .env(
             "EVAL_TEST_RUNNER_EXECUTABLE",
             std::env::current_exe()
@@ -1611,13 +1796,23 @@ mod test_probes {
         if hold {
             cmd.env(CLEANUP_HOLD_ENV, &hold_dir);
         }
+        if bypass_cleanup_wait {
+            cmd.env(CLEANUP_WAIT_BYPASS_ENV, "1");
+        }
+        if leader_first {
+            cmd.env("EVAL_TEST_RUNNER_AGENT_MODE", "leader_first");
+        }
         let child = cmd.spawn().unwrap();
+        let owner = identity(child.id() as i32).expect("runner probe owner identity");
         let mut probe = Probe {
             child: Some(child),
+            owner,
             release: release.clone(),
+            pending,
             owned: Vec::new(),
         };
         eventually("the runner's agent readiness", || {
+            probe.record_owned_from_tree();
             if pids.is_file() {
                 return true;
             }
@@ -1640,33 +1835,106 @@ mod test_probes {
         probe
     }
 
+    fn wait_for_cleanup_pending(probe: &mut Probe, dir: &std::path::Path) {
+        let hold = dir.join("cleanup");
+        eventually("runner cleanup hold entry", || {
+            std::fs::read_dir(&hold).ok().is_some_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy().starts_with("entered-"))
+            })
+        });
+        eventually("the actual cleanup future to return Pending", || {
+            probe.pending.is_file()
+        });
+        assert!(
+            probe.owned.iter().any(alive),
+            "some owned work remains live at Pending: expected={:?}, actual={:?}",
+            probe.owned,
+            probe
+                .owned
+                .iter()
+                .map(|id| identity(id.pid))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn assert_runner_returned_after_cleanup(probe: &mut Probe) {
+        assert!(probe.returned_after_owned_cleanup());
+        let leader = probe.owned.first().expect("agent leader identity recorded");
+        assert!(
+            identity(leader.pid).is_none(),
+            "the runner reaped its direct agent child before returning: {leader:?}"
+        );
+    }
+
     #[test]
-    fn panic_and_server_death_keep_runner_cleanup_owned_until_release() {
-        for fault in ["panic", "server_death"] {
+    fn runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults() {
+        let cases = [
+            (None, Some(libc::SIGTERM)),
+            (None, Some(libc::SIGINT)),
+            (Some("panic"), None),
+            (Some("server_death"), None),
+        ];
+        for (fault, signal) in cases {
             let dir = tempfile::tempdir().unwrap();
-            let mut probe = launch_probe(dir.path(), Some(fault), true);
-            let hold = dir.path().join("cleanup");
-            eventually("runner cleanup acknowledgement", || {
-                std::fs::read_dir(&hold).ok().is_some_and(|entries| {
-                    entries
-                        .flatten()
-                        .any(|entry| entry.file_name().to_string_lossy().starts_with("entered-"))
-                })
-            });
+            let mut probe = launch_probe_with_controls(dir.path(), fault, true, false, false);
+            if let Some(signal) = signal {
+                unsafe { libc::kill(probe.pid(), signal) };
+            }
+            wait_for_cleanup_pending(&mut probe, dir.path());
+            assert!(probe.child.as_mut().unwrap().try_wait().unwrap().is_none());
+            assert!(probe.owned.iter().all(alive));
             assert!(
-                probe.owned.iter().all(alive),
-                "{fault}: owned agents remain alive at the held boundary"
-            );
-            assert!(
-                identity(probe.pid()).is_some(),
-                "{fault}: trial owner remains alive while cleanup is held"
+                probe.wait_for(Duration::from_millis(50)).is_none(),
+                "the runner remains pending while owned cleanup is held"
             );
             probe.release();
-            assert!(probe.wait().success(), "{fault}: runner probe completed");
-            eventually("runner-owned agents to stop", || {
-                probe.owned.iter().all(|id| !alive(id))
-            });
+            assert!(probe.wait().success());
+            assert_runner_returned_after_cleanup(&mut probe);
         }
+
+        for signal in [libc::SIGTERM, libc::SIGINT] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut probe = launch_probe_with_controls(dir.path(), None, true, true, false);
+            unsafe { libc::kill(probe.pid(), signal) };
+            wait_for_cleanup_pending(&mut probe, dir.path());
+            assert!(
+                probe.wait_for(Duration::from_secs(2)).is_some(),
+                "the negative control bypasses the actual pending cleanup fence"
+            );
+            assert!(
+                !probe.returned_after_owned_cleanup(),
+                "the same completion predicate fails while owned work remains live"
+            );
+            assert!(probe.owned.iter().any(alive));
+            probe.release();
+            assert!(
+                probe.cleanup_owned(),
+                "negative-control owned work is torn down"
+            );
+            assert!(probe.owned.iter().all(|id| !alive(id)));
+        }
+    }
+
+    #[test]
+    fn runner_probe_failure_teardown_handles_owner_and_leader_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = launch_probe_with_controls(dir.path(), None, true, true, true);
+        unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        wait_for_cleanup_pending(&mut probe, dir.path());
+        assert!(probe.wait_for(Duration::from_secs(2)).is_some());
+        let leader = probe.owned.first().unwrap().clone();
+        let descendant = probe.owned.get(1).unwrap().clone();
+        eventually(
+            "the owner and group leader to exit before the resistant descendant",
+            || !alive(&leader) && alive(&descendant),
+        );
+        assert!(
+            probe.cleanup_owned(),
+            "the known group member permits safe cleanup"
+        );
+        assert!(!alive(&descendant));
     }
 
     #[test]
@@ -1705,9 +1973,12 @@ mod test_probes {
             .stdout(stdout)
             .stderr(std::process::Stdio::null());
         let child = child.spawn().unwrap();
+        let owner = identity(child.id() as i32).expect("pre-handler probe owner identity");
         let mut probe = Probe {
             child: Some(child),
+            owner,
             release: hold.join("release"),
+            pending: dir.path().join("pre-handler-pending"),
             owned: Vec::new(),
         };
         eventually("trial pre-handler acknowledgement", || {

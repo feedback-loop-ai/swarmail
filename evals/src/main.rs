@@ -991,6 +991,7 @@ mod tests {
     const MATRIX_CLEANUP_ENTERED_ENV: &str = "EVAL_TEST_MATRIX_CLEANUP_ENTERED";
     const MATRIX_RELEASE_ENV: &str = "EVAL_TEST_MATRIX_RELEASE";
     const MATRIX_TRIAL_PID_ENV: &str = "EVAL_TEST_MATRIX_TRIAL_PID";
+    const MATRIX_PRE_TRAP_HOLD_ENV: &str = "EVAL_TEST_MATRIX_PRE_TRAP_HOLD_DIR";
 
     #[test]
     fn matrix_probe_entrypoint() {
@@ -1016,9 +1017,47 @@ mod tests {
         assert_eq!(exit, ExitCode::from(2));
     }
 
+    #[derive(Clone, Debug)]
+    struct MatrixIdentity {
+        pid: i32,
+        pgrp: i32,
+        session: i32,
+        start_time: u64,
+        state: char,
+    }
+
+    fn matrix_identity(pid: i32) -> Option<MatrixIdentity> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, tail) = stat.rsplit_once(')')?;
+        let fields: Vec<_> = tail.split_whitespace().collect();
+        Some(MatrixIdentity {
+            pid,
+            state: fields.first()?.chars().next()?,
+            pgrp: fields.get(2)?.parse().ok()?,
+            session: fields.get(3)?.parse().ok()?,
+            start_time: fields.get(19)?.parse().ok()?,
+        })
+    }
+
+    fn matrix_identity_matches(want: &MatrixIdentity, now: &MatrixIdentity) -> bool {
+        want.pid == now.pid
+            && want.pgrp == now.pgrp
+            && want.session == now.session
+            && want.start_time == now.start_time
+    }
+
+    fn matrix_identity_alive(want: &MatrixIdentity) -> bool {
+        matrix_identity(want.pid).is_some_and(|now| {
+            matrix_identity_matches(want, &now) && !matches!(now.state, 'Z' | 'X')
+        })
+    }
+
     struct MatrixProbe {
         child: Option<std::process::Child>,
+        owner: MatrixIdentity,
         release: PathBuf,
+        pre_trap_release: PathBuf,
+        owned: Vec<MatrixIdentity>,
     }
 
     impl MatrixProbe {
@@ -1027,41 +1066,182 @@ mod tests {
         }
 
         fn release(&self) {
-            std::fs::write(&self.release, b"release").unwrap();
+            let _ = std::fs::write(&self.release, b"release");
+        }
+
+        fn release_pre_trap(&self) {
+            let _ = std::fs::write(&self.pre_trap_release, b"release");
         }
 
         fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
             self.child.as_mut().unwrap().try_wait().unwrap()
         }
 
-        fn wait(mut self) -> std::process::ExitStatus {
-            self.child.take().unwrap().wait().unwrap()
+        fn wait_for(&mut self, limit: Duration) -> Option<std::process::ExitStatus> {
+            let deadline = std::time::Instant::now() + limit;
+            loop {
+                match self.child.as_mut()?.try_wait() {
+                    Ok(Some(status)) => return Some(status),
+                    Ok(None) => {}
+                    Err(_) => return None,
+                }
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        fn wait(&mut self) -> std::process::ExitStatus {
+            self.wait_for(Duration::from_secs(30))
+                .unwrap_or_else(|| panic!("matrix probe exceeded its 30-second wait deadline"))
+        }
+
+        fn record_identity(&mut self, identity: MatrixIdentity) {
+            if !self
+                .owned
+                .iter()
+                .any(|known| matrix_identity_matches(known, &identity))
+            {
+                self.owned.push(identity);
+            }
+        }
+
+        fn record_ready_identity(&mut self, path: &std::path::Path) {
+            let value: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(path).expect("complete trap-ready marker exists"),
+            )
+            .expect("complete trap-ready marker is JSON");
+            let identity = MatrixIdentity {
+                pid: value["pid"].as_i64().expect("ready PID") as i32,
+                pgrp: value["pgrp"].as_i64().expect("ready process group") as i32,
+                session: value["session"].as_i64().expect("ready session") as i32,
+                start_time: value["start_time"].as_u64().expect("ready start time"),
+                state: 'S',
+            };
+            self.record_identity(identity);
+        }
+
+        fn record_descendants(&mut self) {
+            let root = self.pid();
+            if !matrix_identity(root).is_some_and(|now| matrix_identity_matches(&self.owner, &now))
+            {
+                return;
+            }
+            let mut processes = Vec::new();
+            let Ok(entries) = std::fs::read_dir("/proc") else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+                    continue;
+                };
+                let Some(process) = matrix_identity(pid) else {
+                    continue;
+                };
+                let parent = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .ok()
+                    .and_then(|stat| {
+                        stat.rsplit_once(')')?
+                            .1
+                            .split_whitespace()
+                            .nth(1)?
+                            .parse::<i32>()
+                            .ok()
+                    });
+                if let Some(parent) = parent {
+                    processes.push((process, parent));
+                }
+            }
+            let mut parents = std::collections::HashSet::from([root]);
+            loop {
+                let children: Vec<_> = processes
+                    .iter()
+                    .filter(|(_, parent)| parents.contains(parent))
+                    .map(|(child, _)| child.clone())
+                    .collect();
+                let added = children
+                    .iter()
+                    .filter(|child| parents.insert(child.pid))
+                    .count();
+                for child in children {
+                    self.record_identity(child);
+                }
+                if added == 0 {
+                    break;
+                }
+            }
+        }
+
+        fn signal_owned_groups(&self, signal: i32) {
+            let groups: std::collections::HashSet<_> =
+                self.owned.iter().map(|id| id.pgrp).collect();
+            for pgrp in groups {
+                let known_member_is_live = self.owned.iter().any(|want| {
+                    want.pgrp == pgrp
+                        && matrix_identity(want.pid).is_some_and(|now| {
+                            matrix_identity_matches(want, &now) && !matches!(now.state, 'Z' | 'X')
+                        })
+                });
+                if known_member_is_live {
+                    // SAFETY: each group is signalled only while a recorded PID/start/session
+                    // identity still proves membership in this test-owned group.
+                    unsafe { libc::kill(-pgrp, signal) };
+                }
+            }
+        }
+
+        fn wait_owned_stopped(&self, limit: Duration) -> bool {
+            let deadline = std::time::Instant::now() + limit;
+            while self.owned.iter().any(matrix_identity_alive) {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            true
+        }
+
+        fn cleanup_owned(&self) -> bool {
+            self.signal_owned_groups(libc::SIGTERM);
+            if self.wait_owned_stopped(Duration::from_secs(5)) {
+                return true;
+            }
+            self.signal_owned_groups(libc::SIGKILL);
+            self.wait_owned_stopped(Duration::from_secs(5))
         }
     }
 
     impl Drop for MatrixProbe {
         fn drop(&mut self) {
             self.release();
-            let Some(child) = self.child.as_mut() else {
-                return;
-            };
-            let deadline = std::time::Instant::now() + Duration::from_secs(30);
-            while child.try_wait().ok().flatten().is_none() && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            if child.try_wait().ok().flatten().is_none() {
-                unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
-                let deadline = std::time::Instant::now() + Duration::from_secs(15);
-                while child.try_wait().ok().flatten().is_none()
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(Duration::from_millis(20));
+            self.release_pre_trap();
+            self.record_descendants();
+            if self.child.is_some() {
+                let ordinary_wait = if std::thread::panicking() {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(30)
+                };
+                if self.wait_for(ordinary_wait).is_none() {
+                    let pid = self.pid();
+                    unsafe { libc::kill(pid, libc::SIGTERM) };
+                    self.record_descendants();
+                    if self.wait_for(Duration::from_secs(15)).is_none() {
+                        unsafe { libc::kill(pid, libc::SIGKILL) };
+                        if self.wait_for(Duration::from_secs(5)).is_none() {
+                            eprintln!(
+                                "matrix probe {pid} did not reap within bounded failure teardown"
+                            );
+                        }
+                    }
                 }
             }
-            if child.try_wait().ok().flatten().is_none() {
-                unsafe { libc::kill(child.id() as i32, libc::SIGKILL) };
-                let _ = child.wait();
+            if !self.cleanup_owned() {
+                eprintln!(
+                    "matrix probe failure teardown left an owned identity running: {:?}",
+                    self.owned
+                );
             }
         }
     }
@@ -1085,6 +1265,26 @@ mod tests {
         trial_mode: &str,
         tasks: &str,
     ) -> MatrixProbe {
+        matrix_probe_with_pre_trap(
+            dir,
+            bypass_wait,
+            signal_setup_fail,
+            hold_stage,
+            trial_mode,
+            tasks,
+            false,
+        )
+    }
+
+    fn matrix_probe_with_pre_trap(
+        dir: &std::path::Path,
+        bypass_wait: bool,
+        signal_setup_fail: bool,
+        hold_stage: Option<&str>,
+        trial_mode: &str,
+        tasks: &str,
+        hold_before_trap: bool,
+    ) -> MatrixProbe {
         use std::os::unix::fs::PermissionsExt;
         use std::process::Command;
 
@@ -1092,7 +1292,6 @@ mod tests {
         std::fs::write(
             &script,
             r#"#!/bin/sh
-printf '%s\n' "$$" > "$EVAL_TEST_MATRIX_TRIAL_PID"
 task= agent=
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -1101,11 +1300,29 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
+stat_tail=$(sed 's/^.*) //' "/proc/$$/stat")
+set -- $stat_tail
+ready="$EVAL_TEST_MATRIX_TRIAL_PID"
+tmp="$ready.tmp.$$"
+printf '{"pid":%s,"pgrp":%s,"session":%s,"start_time":%s}\n' "$$" "$3" "$4" "${20}" > "$tmp"
+if [ -n "${EVAL_TEST_MATRIX_PRE_TRAP_HOLD_DIR:-}" ]; then
+  mkdir -p "$EVAL_TEST_MATRIX_PRE_TRAP_HOLD_DIR"
+  touch "$EVAL_TEST_MATRIX_PRE_TRAP_HOLD_DIR/entered"
+  while [ ! -e "$EVAL_TEST_MATRIX_PRE_TRAP_HOLD_DIR/release" ]; do :; done
+fi
+interrupt() {
+  trap '' TERM INT
+  touch "$EVAL_TEST_MATRIX_CLEANUP_ENTERED"
+  while [ ! -e "$EVAL_TEST_MATRIX_RELEASE" ]; do :; done
+  printf '{"schema_version":1,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"harness_error","failure_class":"harness_error","wall_time_ms":1,"agent_exit_status":null,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"
+  exit 0
+}
+trap interrupt TERM INT
+mv "$tmp" "$ready"
 if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = complete ]; then
   printf '{"schema_version":1,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"pass","failure_class":null,"wall_time_ms":1,"agent_exit_status":0,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"
   exit 0
 fi
-trap 'touch "$EVAL_TEST_MATRIX_CLEANUP_ENTERED"; while [ ! -e "$EVAL_TEST_MATRIX_RELEASE" ]; do :; done; printf '{"schema_version":1,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"harness_error","failure_class":"harness_error","wall_time_ms":1,"agent_exit_status":null,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"; exit 0' TERM INT
 while :; do :; done
 "#,
         )
@@ -1120,6 +1337,8 @@ while :; do :; done
             .as_ref()
             .map(|path| path.join("release"))
             .unwrap_or_else(|| dir.join("release"));
+        let pre_trap_dir = dir.join("pre-trap");
+        let pre_trap_release = pre_trap_dir.join("release");
         let pending = dir.join("wait-pending");
         let cleanup = dir.join("cleanup-entered");
         let stdout = std::fs::File::create(dir.join("stdout.log")).unwrap();
@@ -1149,6 +1368,9 @@ while :; do :; done
         if signal_setup_fail {
             cmd.env("EVAL_TEST_MATRIX_SIGNAL_SETUP_FAIL", "1");
         }
+        if hold_before_trap {
+            cmd.env(MATRIX_PRE_TRAP_HOLD_ENV, &pre_trap_dir);
+        }
         if let Some(hold) = hold.as_ref() {
             let name = match hold_stage.unwrap() {
                 "admission" => MATRIX_ADMISSION_HOLD_ENV,
@@ -1159,44 +1381,60 @@ while :; do :; done
             cmd.env(name, hold);
         }
         let child = cmd.spawn().unwrap();
+        let owner = matrix_identity(child.id() as i32).expect("matrix probe owner identity");
         MatrixProbe {
             child: Some(child),
+            owner,
             release,
-        }
-    }
-
-    fn pid_running(pid: i32) -> bool {
-        let rc = unsafe { libc::kill(pid, 0) };
-        if rc == 0 {
-            if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-                return stat.rsplit_once(')').is_some_and(|(_, tail)| {
-                    !matches!(
-                        tail.split_whitespace()
-                            .next()
-                            .and_then(|s| s.chars().next()),
-                        Some('Z' | 'X')
-                    )
-                });
-            }
-            true
-        } else {
-            std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+            pre_trap_release,
+            owned: Vec::new(),
         }
     }
 
     fn matrix_wait_fence_case(bypass_wait: bool, signal: i32) {
         let dir = tempfile::tempdir().unwrap();
-        let mut matrix = matrix_probe(dir.path(), bypass_wait, false, None, "held", "signup,otp");
+        let mut matrix = matrix_probe_with_pre_trap(
+            dir.path(),
+            bypass_wait,
+            false,
+            None,
+            "held",
+            "signup,otp",
+            true,
+        );
         let cleanup = dir.path().join("cleanup-entered");
         let pending = dir.path().join("wait-pending");
         let trial_pid_file = dir.path().join("trial.pid");
-        eventually("the matrix child future poll", || trial_pid_file.is_file());
-        let trial_pid: i32 = std::fs::read_to_string(&trial_pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert!(pid_running(trial_pid), "the active trial is live");
+        let pre_trap = dir.path().join("pre-trap");
+        eventually("helper before trap installation", || {
+            pre_trap.join("entered").is_file()
+        });
+        matrix.record_descendants();
+        assert!(
+            !trial_pid_file.exists(),
+            "no PID-only readiness is published before traps"
+        );
+        assert!(
+            matrix.try_wait().is_none(),
+            "matrix remains live before readiness"
+        );
+        assert!(
+            matrix.owned.iter().any(matrix_identity_alive),
+            "the test-owned helper is recorded while it is held before trap installation"
+        );
+        matrix.release_pre_trap();
+        eventually("atomic complete trap-ready marker", || {
+            trial_pid_file.is_file()
+        });
+        matrix.record_ready_identity(&trial_pid_file);
+        let active = matrix.owned.last().unwrap().clone();
+        assert!(
+            matrix_identity_alive(&active),
+            "the acknowledged helper identity is live"
+        );
+
+        // Signal only the matrix PID, and only after its active helper has
+        // atomically acknowledged that its own TERM/INT trap is installed.
         unsafe { libc::kill(matrix.pid(), signal) };
         eventually("the active trial cleanup hold", || cleanup.is_file());
 
@@ -1210,30 +1448,31 @@ while :; do :; done
                 "bypassing the wait fence cannot acknowledge a pending wait"
             );
             assert!(
-                pid_running(trial_pid),
+                matrix_identity_alive(&active),
                 "the negative control exits while owned work is still held"
             );
             matrix.release();
             assert!(matrix.wait().success());
             eventually("the released negative-control trial to stop", || {
-                !pid_running(trial_pid)
+                !matrix_identity_alive(&active)
             });
         } else {
             eventually("the child's actual wait future returning Pending", || {
                 pending.is_file()
             });
             assert!(
-                matrix.try_wait().is_none(),
-                "matrix remains alive after the pending wait acknowledgement"
+                matrix.wait_for(Duration::from_millis(50)).is_none(),
+                "the matrix wait remains bounded and retains its child handle"
             );
+            assert!(matrix.try_wait().is_none());
             assert!(
-                pid_running(trial_pid),
+                matrix_identity_alive(&active),
                 "the trial remains live at the held cleanup boundary"
             );
             matrix.release();
             assert!(matrix.wait().success());
             assert!(
-                !pid_running(trial_pid),
+                !matrix_identity_alive(&active),
                 "trial exited before matrix completion"
             );
             let stdout = std::fs::read_to_string(dir.path().join("stdout.log")).unwrap();
@@ -1265,6 +1504,52 @@ while :; do :; done
         }
     }
 
+    #[test]
+    fn matrix_probe_readiness_unwind_releases_and_reaps_owned_processes() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("trial.pid");
+        let mut owned = Vec::new();
+        let mut matrix_pid = 0;
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut matrix = matrix_probe_with_pre_trap(
+                dir.path(),
+                false,
+                false,
+                None,
+                "held",
+                "signup,otp",
+                true,
+            );
+            matrix_pid = matrix.pid();
+            eventually("pre-trap readiness hold", || {
+                dir.path().join("pre-trap/entered").is_file()
+            });
+            matrix.record_descendants();
+            owned = matrix.owned.clone();
+            assert!(
+                !ready.exists(),
+                "failure occurs before trap-ready publication"
+            );
+            assert!(matrix.try_wait().is_none());
+            std::panic::resume_unwind(Box::new("injected assertion unwind"));
+        }));
+        assert!(unwind.is_err());
+        assert!(
+            matrix_identity(matrix_pid).is_none(),
+            "matrix probe was reaped"
+        );
+        assert!(
+            !owned.is_empty(),
+            "the guard retained identities before unwind"
+        );
+        assert!(
+            owned
+                .iter()
+                .all(|identity| !matrix_identity_alive(identity)),
+            "readiness-failure teardown stopped every retained identity: {owned:?}"
+        );
+    }
+
     fn matrix_probe_rows(dir: &std::path::Path) -> Vec<TrialResult> {
         let stdout = std::fs::read_to_string(dir.join("stdout.log")).unwrap();
         stdout
@@ -1279,7 +1564,7 @@ while :; do :; done
     #[test]
     fn matrix_owner_test_controls_cover_setup_admission_commit_and_final_row() {
         let setup = tempfile::tempdir().unwrap();
-        let probe = matrix_probe(setup.path(), false, true, None, "complete", "signup,otp");
+        let mut probe = matrix_probe(setup.path(), false, true, None, "complete", "signup,otp");
         assert!(probe.wait().success());
         assert!(!setup.path().join("trial.pid").exists());
         let rows = matrix_probe_rows(setup.path());
@@ -1291,7 +1576,7 @@ while :; do :; done
         }));
 
         let admission = tempfile::tempdir().unwrap();
-        let probe = matrix_probe(
+        let mut probe = matrix_probe(
             admission.path(),
             false,
             false,
@@ -1315,7 +1600,7 @@ while :; do :; done
         assert!(rows.iter().all(|row| row.wall_time_ms == 0));
 
         let commit = tempfile::tempdir().unwrap();
-        let probe = matrix_probe(
+        let mut probe = matrix_probe(
             commit.path(),
             false,
             false,
@@ -1341,7 +1626,7 @@ while :; do :; done
         assert_eq!(rows[1].wall_time_ms, 0);
 
         let final_row = tempfile::tempdir().unwrap();
-        let probe = matrix_probe(
+        let mut probe = matrix_probe(
             final_row.path(),
             false,
             false,
