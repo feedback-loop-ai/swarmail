@@ -482,7 +482,7 @@ fn codex_correctness_charter_provenance_matches_the_tracked_library() {
     let overlay = read_json("agents/codex-review-correctness.json");
     let base = read_json("agents/review-correctness.json");
     assert_eq!(overlay["extends"], "review-correctness");
-    assert_eq!(overlay["models"], json!(["qwen-max"]));
+    assert_eq!(overlay["models"], json!(["fable"]));
     assert_eq!(base["charter"], "charters/review-correctness.md");
     assert!(readme.contains("brokkr compile --bundle bundles/self"));
     assert!(readme.contains(".forge/bin/brokkr agents show codex-review-correctness"));
