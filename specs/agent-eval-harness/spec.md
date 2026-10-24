@@ -190,7 +190,7 @@ once and pass the absolute path to each trial, avoiding recursive builds
 and shared target writes per trial. Build failures never skip the proof.
 
 Start fresh in-memory Swarmail with all listeners at `127.0.0.1:0`, no TLS
-or data file and explicit cap 100000. Clear inherited `SWARMAIL_*` settings
+or data file and explicit cap 100000. Use the closed runtime map in proposed 0075
 for that child, pin startup logging, parse announced actual addresses, then
 check HTTP health and SMTP greeting. Fixture readiness also requires a real
 HTTP response. Startup has a separate bounded deadline; port probing then
@@ -328,3 +328,52 @@ SIGKILL. Use the explicit release protocol and bounded handled-error
 contract above. Reject robustness's `builtin` confinement label and arbitrary
 report error threshold. Cost: the first wait is prescribed but not app-score
 enforced; every row discloses unconfined execution and infrastructure counts.
+
+
+## 2026-10-24 clarification — decision 0075 (renumbered from 0062) (proposed)
+
+This dated clarification supersedes the original caller-environment and raw-
+diagnostic wording above where it conflicts. Every harness-created child starts
+with `env_clear()`. The common map is fixed `PATH=/usr/bin:/bin`, `LANG=C`,
+`LC_ALL=C`, a fresh private `HOME` and `TMPDIR`, and fresh XDG config/cache/data/
+state directories under a 0700 `/tmp` owner. Swarmail adds only fixed `RUST_LOG`;
+the fixture alone receives its generated admin secret; each agent receives
+exactly the eight `EVAL_*` trial inputs already listed. Matrix trial workers add
+only resolved `SWARMAIL_BIN`. Caller variables and test controls are not forwarded.
+Resolve programs at the original cwd/PATH boundary; keep remaining argv literal.
+Ambient credentials/runtime config migrate to deliberate caller-owned wrappers.
+
+The runner concurrently drains stdout and stderr and retains zero arbitrary
+child bytes. Diagnostics, panic/Clap errors, Cargo failures, paths, argv,
+response bodies and OS error text use safe categories and numeric facts only.
+Service announcement lines cap at 8192 bytes and publish only one typed
+loopback tuple. Cargo records cap at 1 MiB; matrix output retains the stricter #194 total 64 KiB bound; overflow is drained
+then fails safely. Matrix stderr is discarded. `diagnostics.log` is capped at
+64 KiB; metadata records `swarmail_bin: null`. These rules do not imply process
+confinement or redact explicit task/agent labels, argv, caller-selected config
+paths, or files a child deliberately writes. Results remain `unconfined`.
+
+Automatic Swarmail preparation also clears the environment, resolves Cargo,
+rustc and rustdoc from the original PATH, and sets only the named toolchain and
+cache selectors in decision 0075 (renumbered from 0062). Preparation remains offline and locked.
+
+## 2026-10-24 integration onto matrix cancellation
+
+Proposed [0075](../../docs/decisions/0075-eval-privacy.md), renumbered from
+0062, and [the port contract](../eval-privacy-port/spec.md) govern the current
+closed environments and safe publication. Preserve #194's owned waiters,
+pre-spawn signal handlers, concurrent five-second TERM grace plus five-second
+post-KILL observation, final cleanup fence and complete matrix accounting.
+Private runtime owners survive abort, reaping and drainage. Agents receive
+generated PWD equal to actual cwd. Matrix row capture remains 64 KiB. Artifact
+publication is exclusive, initially private, descriptor-normalized before
+payload and atomic per file with no clobbering. Existing entries remain intact.
+Historical receipts above are not proof of this port. Five fresh 0058 careful
+reviews and every Linux preparation/toolchain/custom-target, eval fmt/locked
+clippy/full-test, artifact, mutation and gate proof remain obligations. Under
+the 2026-10-24 operator ruling, row **macOS evidence for `evals/`**, in
+[operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md), `evals/`
+is outside CI on every OS until #201. #201's CI gating owns macOS eval
+preparation/toolchain, clippy/tests and selected artifact-primitive execution;
+those receipts do not block #196 (port spec AC13/AC23). This records ownership,
+not macOS execution or existing CI proof.

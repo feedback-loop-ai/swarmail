@@ -8,7 +8,7 @@
 //! exactly one result row.
 //!
 //! The runner owns every child's Unix process group: it drains their
-//! output with bounded retention, signals the whole group on every handled
+//! output without retaining child bytes, signals the whole group on every handled
 //! ending (deadline, interruption, panic, server death) and reaps it. That
 //! is lifecycle ownership, not confinement: a child that leaves its group
 //! or daemonizes escapes it, and every result says `unconfined`.
@@ -23,18 +23,21 @@ use crate::state::{DeliveryStatus, FailureClass, Snapshot};
 use crate::tasks::{self, Outcome, PromptVars, Task, Verdict};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
 #[cfg(test)]
 use std::future::Future;
+use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::AsyncRead;
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 /// The result row's schema.
 pub const RESULT_SCHEMA: u32 = 1;
@@ -108,7 +111,6 @@ fn runner_signal_event(event: &str) {
 pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 
 const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
-const LOG_RETENTION: usize = 64 * 1024;
 const CLEANUP_POLL: Duration = Duration::from_millis(100);
 
 /// One agent process's real exit.
@@ -174,7 +176,7 @@ impl TrialResult {
 pub struct TrialRequest {
     pub task: Option<String>,
     pub agent: Option<String>,
-    pub argv: Vec<String>,
+    pub argv: Vec<OsString>,
     pub deadline_ms: Option<u64>,
     pub artifacts_dir: Option<PathBuf>,
 }
@@ -185,28 +187,310 @@ pub fn new_trial_id() -> String {
     format!("{}-{n:08x}", chrono::Utc::now().format("%Y%m%dT%H%M%S"))
 }
 
-/// Resolve the Swarmail binary: `SWARMAIL_BIN` if set (it must be an
-/// existing file), else build the root crate's `swarmail` once, offline and
-/// locked, and take the executable path from Cargo's own artifact report
-/// (so a custom target directory is honoured).
-pub fn resolve_swarmail_bin() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os(SWARMAIL_BIN_ENV) {
-        let path = PathBuf::from(path);
-        return if path.is_file() {
-            Ok(path)
-        } else {
-            Err(format!(
-                "{SWARMAIL_BIN_ENV}={} is not a file",
-                path.display()
-            ))
-        };
+/// The caller's path context is captured before the harness clears a child.
+#[derive(Clone)]
+struct CallerEnv {
+    cwd: PathBuf,
+    path: Option<OsString>,
+}
+
+impl CallerEnv {
+    fn capture() -> Result<Self, String> {
+        Ok(Self {
+            cwd: std::env::current_dir().map_err(|_| "caller_cwd")?,
+            path: std::env::var_os("PATH"),
+        })
     }
+
+    fn search_path(&self) -> Vec<PathBuf> {
+        self.path
+            .as_deref()
+            .map(std::env::split_paths)
+            .unwrap_or_else(|| std::env::split_paths(OsStr::new("/usr/bin:/bin")))
+            .map(|part| {
+                if part.as_os_str().is_empty() {
+                    self.cwd.clone()
+                } else if part.is_absolute() {
+                    part
+                } else {
+                    self.cwd.join(part)
+                }
+            })
+            .collect()
+    }
+
+    fn absolute_locator(&self, path: &OsStr) -> Result<PathBuf, String> {
+        let path = PathBuf::from(path);
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            self.cwd.join(path)
+        };
+        absolute
+            .is_absolute()
+            .then_some(absolute)
+            .ok_or_else(|| "path_resolution".to_string())
+    }
+}
+
+fn executable_file(path: &Path) -> bool {
+    path.is_file()
+        && std::fs::metadata(path)
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+}
+
+/// Resolve one executable using the original caller cwd and PATH. Returned
+/// paths are absolute, and no failed candidate is rendered in an error.
+fn resolve_program(program: &OsStr, caller: &CallerEnv) -> Result<PathBuf, String> {
+    if program.is_empty() {
+        return Err("program_missing".into());
+    }
+    let path = Path::new(program);
+    let has_separator = program.as_bytes().contains(&b'/');
+    if path.is_absolute() || has_separator {
+        let candidate = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            caller.cwd.join(path)
+        };
+        return executable_file(&candidate)
+            .then_some(candidate)
+            .ok_or_else(|| "program_missing".to_string());
+    }
+    caller
+        .search_path()
+        .into_iter()
+        .map(|directory| directory.join(program))
+        .find(|candidate| executable_file(candidate))
+        .ok_or("program_missing".into())
+}
+
+/// One child's private runtime directories. The owning TempDir is held by
+/// the trial or matrix worker until every child has been drained and reaped.
+pub struct RuntimeDirs {
+    root: PathBuf,
+    home: PathBuf,
+    tmp: PathBuf,
+    config: PathBuf,
+    cache: PathBuf,
+    data: PathBuf,
+    state: PathBuf,
+}
+
+impl RuntimeDirs {
+    pub fn create(parent: &Path, role: &str) -> Result<Self, String> {
+        let root = parent.join(role);
+        std::fs::create_dir(&root).map_err(|_| "private_directory")?;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| "private_directory")?;
+        let make = |name: &str| -> Result<PathBuf, String> {
+            let path = root.join(name);
+            std::fs::create_dir(&path).map_err(|_| "private_directory")?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .map_err(|_| "private_directory")?;
+            Ok(path)
+        };
+        Ok(Self {
+            root: root.clone(),
+            home: make("home")?,
+            tmp: make("tmp")?,
+            config: make("config")?,
+            cache: make("cache")?,
+            data: make("data")?,
+            state: make("state")?,
+        })
+    }
+
+    pub fn apply(&self, cmd: &mut Command) {
+        cmd.env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("LANG", "C")
+            .env("LC_ALL", "C")
+            .env("HOME", &self.home)
+            .env("TMPDIR", &self.tmp)
+            .env("XDG_CONFIG_HOME", &self.config)
+            .env("XDG_CACHE_HOME", &self.cache)
+            .env("XDG_DATA_HOME", &self.data)
+            .env("XDG_STATE_HOME", &self.state);
+    }
+}
+
+pub fn private_tempdir(prefix: &str) -> Result<tempfile::TempDir, String> {
+    let directory = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in("/tmp")
+        .map_err(|_| "private_directory")?;
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "private_directory")?;
+    Ok(directory)
+}
+
+const CARGO_RECORD_LIMIT: usize = 1024 * 1024;
+
+#[derive(Default)]
+struct CargoRecords {
+    record: Vec<u8>,
+    oversized: bool,
+    invalid: bool,
+    executable: Option<PathBuf>,
+}
+
+impl CargoRecords {
+    fn feed(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            if *byte == b'\n' {
+                if self.oversized {
+                    self.invalid = true;
+                } else if !self.record.is_empty() {
+                    match serde_json::from_slice::<Value>(&self.record) {
+                        Ok(message) => {
+                            if self.executable.is_none()
+                                && message["reason"] == "compiler-artifact"
+                                && message["target"]["name"] == "swarmail"
+                                && message["target"]["kind"]
+                                    .as_array()
+                                    .is_some_and(|k| k.contains(&json!("bin")))
+                                && let Some(path) = message["executable"].as_str()
+                            {
+                                self.executable = Some(PathBuf::from(path));
+                            }
+                        }
+                        Err(_) => self.invalid = true,
+                    }
+                }
+                self.record.clear();
+                self.oversized = false;
+            } else if !self.oversized {
+                if self.record.len() < CARGO_RECORD_LIMIT {
+                    self.record.push(*byte);
+                } else {
+                    self.record.clear();
+                    self.oversized = true;
+                }
+            }
+        }
+    }
+
+    fn valid(&self) -> bool {
+        !self.invalid && !self.oversized && self.record.is_empty()
+    }
+
+    fn finish(self) -> Result<PathBuf, String> {
+        if !self.valid() {
+            return Err("cargo_output_invalid".into());
+        }
+        let path = self.executable.ok_or("cargo_artifact_missing")?;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .ok_or("build_failed")?;
+        let path = if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        };
+        if !executable_file(&path) {
+            return Err("cargo_artifact_invalid".into());
+        }
+        Ok(path)
+    }
+}
+
+fn read_cargo_records<R: std::io::Read>(
+    mut reader: R,
+    executable: Arc<Mutex<Option<PathBuf>>>,
+) -> bool {
+    let mut records = CargoRecords::default();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => records.feed(&chunk[..n]),
+            Err(_) => return false,
+        }
+    }
+    let valid = records.valid();
+    *executable.lock().unwrap_or_else(|e| e.into_inner()) = records.executable;
+    valid
+}
+
+fn default_home_path(caller: &CallerEnv, home: &OsStr, child: &str) -> Result<PathBuf, String> {
+    if home.is_empty() {
+        return Err("toolchain_discovery".into());
+    }
+    Ok(caller.absolute_locator(home)?.join(child))
+}
+
+fn prepare_build(
+    caller: &CallerEnv,
+) -> Result<(std::process::Command, Arc<tempfile::TempDir>), String> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .ok_or("evals has no parent directory")?;
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let out = std::process::Command::new(cargo)
-        .current_dir(root)
+        .ok_or("build_failed")?;
+    let cargo = match std::env::var_os("CARGO") {
+        Some(selector) => resolve_program(&selector, caller)?,
+        None => resolve_program(OsStr::new("cargo"), caller)?,
+    };
+    let rustc = resolve_program(OsStr::new("rustc"), caller)?;
+    let rustdoc = resolve_program(OsStr::new("rustdoc"), caller)?;
+    let cargo_home_selector = std::env::var_os("CARGO_HOME");
+    let rustup_home_selector = std::env::var_os("RUSTUP_HOME");
+    if cargo_home_selector
+        .as_ref()
+        .is_some_and(|path| path.is_empty())
+        || rustup_home_selector
+            .as_ref()
+            .is_some_and(|path| path.is_empty())
+    {
+        return Err("toolchain_discovery".into());
+    }
+    let original_home = if cargo_home_selector.is_none() || rustup_home_selector.is_none() {
+        Some(std::env::var_os("HOME").ok_or("toolchain_discovery")?)
+    } else {
+        None
+    };
+    let cargo_home = match cargo_home_selector {
+        Some(path) => caller.absolute_locator(&path)?,
+        None => default_home_path(
+            caller,
+            original_home.as_deref().ok_or("toolchain_discovery")?,
+            ".cargo",
+        )?,
+    };
+    let rustup_home = match rustup_home_selector {
+        Some(path) => caller.absolute_locator(&path)?,
+        None => default_home_path(
+            caller,
+            original_home.as_deref().ok_or("toolchain_discovery")?,
+            ".rustup",
+        )?,
+    };
+    let toolchain = std::env::var_os("RUSTUP_TOOLCHAIN");
+    if toolchain.as_ref().is_some_and(|v| v.is_empty())
+        || std::env::var_os("CARGO_TARGET_DIR")
+            .as_ref()
+            .is_some_and(|v| v.is_empty())
+    {
+        return Err("toolchain_discovery".into());
+    }
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .filter(|v| !v.is_empty())
+        .map(|v| caller.absolute_locator(&v))
+        .transpose()?;
+    let mut path_dirs = Vec::<PathBuf>::new();
+    for program in [&cargo, &rustc, &rustdoc] {
+        if let Some(parent) = program.parent()
+            && !path_dirs.iter().any(|seen| seen == parent)
+        {
+            path_dirs.push(parent.to_path_buf());
+        }
+    }
+    path_dirs.extend([PathBuf::from("/usr/bin"), PathBuf::from("/bin")]);
+    let path = std::env::join_paths(path_dirs).map_err(|_| "toolchain_discovery")?;
+    let owner = Arc::new(private_tempdir("swarmail-eval-build-")?);
+    let dirs = RuntimeDirs::create(owner.path(), "cargo")?;
+    let mut command = std::process::Command::new(cargo);
+    command
         .args([
             "build",
             "--offline",
@@ -215,24 +499,90 @@ pub fn resolve_swarmail_bin() -> Result<PathBuf, String> {
             "swarmail",
             "--message-format=json-render-diagnostics",
         ])
-        .stderr(Stdio::inherit())
-        .output()
-        .map_err(|e| format!("cannot run cargo: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("building swarmail failed: {}", out.status));
+        .current_dir(root)
+        .env_clear()
+        .env("PATH", path)
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("HOME", &dirs.home)
+        .env("TMPDIR", &dirs.tmp)
+        .env("XDG_CONFIG_HOME", &dirs.config)
+        .env("XDG_CACHE_HOME", &dirs.cache)
+        .env("XDG_DATA_HOME", &dirs.data)
+        .env("XDG_STATE_HOME", &dirs.state)
+        .env("RUSTC", rustc)
+        .env("RUSTDOC", rustdoc)
+        .env("CARGO_HOME", cargo_home)
+        .env("RUSTUP_HOME", rustup_home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(value) = toolchain {
+        command.env("RUSTUP_TOOLCHAIN", value);
     }
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .find(|m| {
-            m["reason"] == "compiler-artifact"
-                && m["target"]["name"] == "swarmail"
-                && m["target"]["kind"]
-                    .as_array()
-                    .is_some_and(|k| k.contains(&json!("bin")))
-        })
-        .and_then(|m| m["executable"].as_str().map(PathBuf::from))
-        .ok_or_else(|| "cargo reported no swarmail executable".to_string())
+    if let Some(value) = target_dir {
+        command.env("CARGO_TARGET_DIR", value);
+    }
+    Ok((command, owner))
+}
+
+/// Prepare the exact named build map before any owned spawn. The runtime
+/// owner must be retained through the caller's existing cleanup fence.
+pub fn prepare_swarmail_build() -> Result<(Command, Arc<tempfile::TempDir>), String> {
+    let (command, owner) = prepare_build(&CallerEnv::capture()?)?;
+    Ok((Command::from(command), owner))
+}
+
+/// Resolve an explicit selector at the original caller boundary, without a build.
+pub fn selected_swarmail_bin() -> Result<Option<PathBuf>, String> {
+    let caller = CallerEnv::capture()?;
+    std::env::var_os(SWARMAIL_BIN_ENV)
+        .map(|p| resolve_program(&p, &caller))
+        .transpose()
+}
+
+fn build_swarmail(caller: &CallerEnv) -> Result<PathBuf, String> {
+    let (mut command, _owner) = prepare_build(caller)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("build_failed")?;
+    let mut child = command.spawn().map_err(|_| "build_failed")?;
+    let executable = Arc::new(Mutex::new(None));
+    let stdout = child.stdout.take().ok_or("build_failed")?;
+    let stderr = child.stderr.take().ok_or("build_failed")?;
+    let found = executable.clone();
+    let stdout_thread = std::thread::spawn(move || read_cargo_records(stdout, found));
+    let stderr_thread = std::thread::spawn(move || {
+        std::io::copy(&mut std::io::BufReader::new(stderr), &mut std::io::sink()).is_ok()
+    });
+    let status = child.wait().map_err(|_| "build_failed")?;
+    let stdout_ok = stdout_thread.join().unwrap_or(false);
+    let stderr_ok = stderr_thread.join().unwrap_or(false);
+    if !status.success() || !stdout_ok || !stderr_ok {
+        return Err("build_failed".into());
+    }
+    let mut executable = executable
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or("build_failed")?;
+    if !executable.is_absolute() {
+        executable = root.join(executable);
+    }
+    if !executable_file(&executable) {
+        return Err("build_failed".into());
+    }
+    Ok(executable)
+}
+
+/// Resolve the Swarmail binary: the caller selector is resolved at the
+/// original cwd/PATH boundary; otherwise Cargo builds it in a cleared,
+/// offline, locked preparation environment and reports its artifact path.
+pub fn resolve_swarmail_bin() -> Result<PathBuf, String> {
+    let caller = CallerEnv::capture()?;
+    if let Some(path) = std::env::var_os(SWARMAIL_BIN_ENV) {
+        return resolve_program(&path, &caller);
+    }
+    build_swarmail(&caller)
 }
 
 /// The process groups this trial owns, for cleanup on any handled path.
@@ -250,6 +600,7 @@ struct OwnedGroup {
     status: ExitWatch,
     cleanup: Mutex<Option<CleanupWatch>>,
     drains: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    _runtime: Option<Arc<tempfile::TempDir>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -714,40 +1065,72 @@ impl Groups {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct Log(Arc<Mutex<VecDeque<u8>>>);
+const ANNOUNCEMENT_LINE_LIMIT: usize = 8192;
 
-impl Log {
-    fn push(&self, bytes: &[u8]) {
-        let mut buf = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        buf.extend(bytes);
-        let excess = buf.len().saturating_sub(LOG_RETENTION);
-        buf.drain(..excess);
-    }
+#[derive(Clone, Copy)]
+enum ServerRole {
+    Swarmail,
+    Fixture,
+}
 
-    pub fn text(&self) -> String {
-        let buf = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        String::from_utf8_lossy(&buf.iter().copied().collect::<Vec<_>>()).into_owned()
+enum Announcement {
+    Swarmail(SocketAddr, SocketAddr),
+    Fixture(SocketAddr, SocketAddr),
+}
+
+fn parse_announcement(role: ServerRole, line: &[u8]) -> Option<Announcement> {
+    let line = std::str::from_utf8(line).ok()?;
+    match role {
+        ServerRole::Swarmail => {
+            let (smtp, http) = parse_swarmail_addrs(line)?;
+            (smtp.ip().is_loopback() && http.ip().is_loopback())
+                .then_some(Announcement::Swarmail(smtp, http))
+        }
+        ServerRole::Fixture => {
+            let (public, admin) = parse_fixture_addrs(line)?;
+            (public.ip().is_loopback() && admin.ip().is_loopback())
+                .then_some(Announcement::Fixture(public, admin))
+        }
     }
 }
 
+/// Drain with fixed reads. Only a protocol owner can retain one typed,
+/// validated announcement; all other child output is discarded immediately.
 fn drain<R: AsyncRead + Unpin + Send + 'static>(
-    reader: R,
-    log: Log,
-    lines: Option<mpsc::UnboundedSender<String>>,
+    mut reader: R,
+    role: Option<ServerRole>,
+    announcement: Option<oneshot::Sender<Announcement>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut reader = BufReader::new(reader);
-        let mut line = Vec::new();
+        let mut announcement = announcement;
+        let mut chunk = [0u8; 8192];
+        let mut line = Vec::with_capacity(ANNOUNCEMENT_LINE_LIMIT);
+        let mut oversized = false;
         loop {
-            line.clear();
-            let mut limited = tokio::io::AsyncReadExt::take(&mut reader, 8192);
-            match limited.read_until(b'\n', &mut line).await {
+            let count = match tokio::io::AsyncReadExt::read(&mut reader, &mut chunk).await {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    log.push(&line);
-                    if let Some(tx) = &lines {
-                        let _ = tx.send(String::from_utf8_lossy(&line).into_owned());
+                Ok(count) => count,
+            };
+            for byte in &chunk[..count] {
+                if announcement.is_none() {
+                    continue;
+                }
+                if *byte == b'\n' {
+                    if !oversized
+                        && let Some(role) = role
+                        && let Some(value) = parse_announcement(role, &line)
+                        && let Some(sender) = announcement.take()
+                    {
+                        let _ = sender.send(value);
+                    }
+                    line.clear();
+                    oversized = false;
+                } else if !oversized {
+                    if line.len() + 1 < ANNOUNCEMENT_LINE_LIMIT {
+                        line.push(*byte);
+                    } else {
+                        line.clear();
+                        oversized = true;
                     }
                 }
             }
@@ -757,13 +1140,12 @@ fn drain<R: AsyncRead + Unpin + Send + 'static>(
 
 /// A process whose wait task and process-group record outlive the caller.
 pub struct Proc {
-    pub label: String,
     pub child: ProcessWait,
     pub pgid: i32,
     pub pid: i32,
-    pub log: Log,
     group: Arc<OwnedGroup>,
-    pub lines: mpsc::UnboundedReceiver<String>,
+    announcement: Option<oneshot::Receiver<Announcement>>,
+    pub cargo_records: Option<oneshot::Receiver<Result<PathBuf, String>>>,
 }
 
 pub struct ProcessWait {
@@ -771,29 +1153,19 @@ pub struct ProcessWait {
 }
 
 impl Proc {
-    pub fn next_line(&mut self) -> impl std::future::Future<Output = Option<String>> + '_ {
-        self.lines.recv()
-    }
-
     pub async fn cleanup(&self) -> Result<(), String> {
         self.group.await_cleanup().await
     }
 
-    async fn announce<T>(&mut self, parse: impl Fn(&str) -> Option<T>) -> Result<T, String> {
+    /// Wait for the first valid typed announcement, child exit, or startup
+    /// deadline. Raw lines never cross this boundary.
+    async fn announce(&mut self) -> Result<Announcement, String> {
         let deadline = tokio::time::Instant::now() + STARTUP_DEADLINE;
-        loop {
-            tokio::select! {
-                line = self.lines.recv() => match line {
-                    Some(line) => if let Some(value) = parse(&line) {
-                        self.lines.close();
-                        return Ok(value);
-                    },
-                    None => return Err(format!("{} exited before announcing its addresses", self.label)),
-                },
-                _ = tokio::time::sleep_until(deadline) => {
-                    return Err(format!("{} did not announce within {STARTUP_DEADLINE:?}", self.label));
-                }
-            }
+        let receiver = self.announcement.take().ok_or("startup_protocol")?;
+        tokio::select! {
+            value = receiver => value.map_err(|_| "startup_protocol".into()),
+            _ = tokio::time::sleep_until(deadline) => Err("startup_timeout".into()),
+            _ = self.child.wait() => Err("startup_exit".into()),
         }
     }
 }
@@ -815,11 +1187,21 @@ impl ProcessWait {
     }
 }
 
-pub fn spawn_owned_command(cmd: Command, label: &str, groups: &Groups) -> std::io::Result<Proc> {
-    spawn(cmd, label, groups)
+pub fn spawn_owned_cargo(
+    cmd: Command,
+    groups: &Groups,
+    runtime: Arc<tempfile::TempDir>,
+) -> std::io::Result<Proc> {
+    spawn(cmd, groups, None, Some(runtime), true)
 }
 
-fn spawn(mut cmd: Command, label: &str, groups: &Groups) -> std::io::Result<Proc> {
+fn spawn(
+    mut cmd: Command,
+    groups: &Groups,
+    role: Option<ServerRole>,
+    runtime: Option<Arc<tempfile::TempDir>>,
+    cargo: bool,
+) -> std::io::Result<Proc> {
     cmd.process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -828,7 +1210,7 @@ fn spawn(mut cmd: Command, label: &str, groups: &Groups) -> std::io::Result<Proc
     let mut child = cmd.spawn()?;
     let pid = child
         .id()
-        .ok_or_else(|| std::io::Error::other("spawned child has no pid"))? as i32;
+        .ok_or_else(|| std::io::Error::other("spawn_pid_missing"))? as i32;
     let stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take().expect("stderr is piped");
     let identity = proc_identity(pid);
@@ -841,28 +1223,52 @@ fn spawn(mut cmd: Command, label: &str, groups: &Groups) -> std::io::Result<Proc
         status,
         cleanup: Mutex::new(None),
         drains: Mutex::new(Vec::new()),
+        _runtime: runtime.clone(),
     });
     groups.add(group.clone());
     tokio::spawn(async move {
-        let result = child.wait().await.map_err(|e| e.to_string());
+        let _runtime = runtime;
+        let result = child.wait().await.map_err(|_| "process_wait_failed".into());
         status_tx.send_replace(Some(result));
     });
-    let log = Log::default();
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (sender, announcement) = if role.is_some() {
+        let (tx, rx) = oneshot::channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
     let mut drains = group.drains.lock().unwrap_or_else(|e| e.into_inner());
-    drains.push(drain(stdout, log.clone(), Some(tx)));
-    drains.push(drain(stderr, log.clone(), None));
+    let cargo_records = if cargo {
+        let (tx, rx) = oneshot::channel();
+        drains.push(tokio::spawn(async move {
+            let mut reader = stdout;
+            let mut records = CargoRecords::default();
+            let mut chunk = [0u8; 8192];
+            let result = loop {
+                match tokio::io::AsyncReadExt::read(&mut reader, &mut chunk).await {
+                    Ok(0) => break records.finish(),
+                    Ok(n) => records.feed(&chunk[..n]),
+                    Err(_) => break Err("cargo_output_read_failed".into()),
+                }
+            };
+            let _ = tx.send(result);
+        }));
+        Some(rx)
+    } else {
+        drains.push(drain(stdout, role, sender));
+        None
+    };
+    drains.push(drain(stderr, None, None));
     drop(drains);
     Ok(Proc {
-        label: label.to_string(),
         child: ProcessWait {
             group: group.clone(),
         },
         pgid: pid,
         pid,
-        log,
         group,
-        lines: rx,
+        announcement,
+        cargo_records,
     })
 }
 
@@ -878,14 +1284,15 @@ pub fn parse_swarmail_addrs(line: &str) -> Option<(SocketAddr, SocketAddr)> {
             .ok()
     };
     let smtp = field("smtp=")?;
-    let _pop3: SocketAddr = field("pop3=")?;
+    let pop3: SocketAddr = field("pop3=")?;
     let http = field("http=")?;
-    Some((smtp, http))
+    (smtp.ip().is_loopback() && pop3.ip().is_loopback() && http.ip().is_loopback())
+        .then_some((smtp, http))
 }
 
 pub fn parse_fixture_addrs(line: &str) -> Option<(SocketAddr, SocketAddr)> {
     let rest = line.trim().strip_prefix("fixture ")?;
-    let field = |k: &str| {
+    let field = |k: &str| -> Option<SocketAddr> {
         rest.split(k)
             .nth(1)?
             .split_whitespace()
@@ -893,11 +1300,14 @@ pub fn parse_fixture_addrs(line: &str) -> Option<(SocketAddr, SocketAddr)> {
             .parse()
             .ok()
     };
-    Some((field("public=")?, field("admin=")?))
+    let public = field("public=")?;
+    let admin = field("admin=")?;
+    (public.ip().is_loopback() && admin.ip().is_loopback()).then_some((public, admin))
 }
 
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("a plain http client builds")
@@ -923,12 +1333,12 @@ impl Admin {
                 .header("content-type", "application/json")
                 .body(body.to_string());
         }
-        let resp = req.send().await.map_err(|e| format!("{path}: {e}"))?;
+        let resp = req.send().await.map_err(|_| "admin_transport")?;
         let status = resp.status().as_u16();
-        let bytes = resp.bytes().await.map_err(|e| format!("{path}: {e}"))?;
-        let value: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+        let bytes = resp.bytes().await.map_err(|_| "admin_response_read")?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|_| "admin_response_invalid")?;
         if status != 200 {
-            return Err(format!("{path}: status {status}: {value}"));
+            return Err("admin_response_status".into());
         }
         Ok(value)
     }
@@ -952,6 +1362,7 @@ fn deliveries_with(value: &Value, status: DeliveryStatus) -> Result<usize, Strin
 /// Everything a handled ending needs to clean up.
 struct Trial {
     groups: Groups,
+    runtime: Arc<tempfile::TempDir>,
     servers: Vec<Proc>,
     agents: Arc<Mutex<Vec<(String, i32)>>>,
     diagnostics: Vec<String>,
@@ -961,13 +1372,7 @@ impl Trial {
     async fn stop_servers(&mut self) -> Result<(), String> {
         let pids: Vec<_> = self.servers.iter().map(|p| p.pid).collect();
         self.groups.cleanup_pids(&pids).await?;
-        while let Some(p) = self.servers.pop() {
-            let log = p.log.text();
-            if !log.is_empty() {
-                self.diagnostics
-                    .push(format!("--- {} log (tail) ---\n{log}", p.label));
-            }
-        }
+        self.servers.clear();
         Ok(())
     }
 }
@@ -976,7 +1381,7 @@ impl Trial {
 enum AgentsEnd {
     Done,
     Deadline,
-    ServerDied(String),
+    ServerDied,
 }
 
 fn exit_of(identity: &str, status: Option<ExitStatus>) -> AgentExit {
@@ -1020,19 +1425,35 @@ fn evals_executable() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("EVAL_TEST_RUNNER_EXECUTABLE") {
         return Ok(PathBuf::from(path));
     }
-    std::env::current_exe().map_err(|e| format!("current_exe: {e}"))
+    std::env::current_exe().map_err(|_| "program_missing".into())
 }
 
-fn agent_argv(label: &str, argv: &[String]) -> Result<Vec<String>, String> {
+/// Resolve the executable once at the caller boundary; keep every later
+/// argument as its original literal OS string.
+pub fn resolve_agent_command(argv: &[String]) -> Result<Vec<OsString>, String> {
+    let caller = CallerEnv::capture()?;
+    let program = argv.first().ok_or("program_missing")?;
+    let resolved = resolve_program(OsStr::new(program), &caller)?;
+    let mut command = Vec::with_capacity(argv.len());
+    command.push(resolved.into_os_string());
+    command.extend(argv[1..].iter().map(OsString::from));
+    Ok(command)
+}
+
+fn agent_argv(label: &str, argv: &[OsString], caller: &CallerEnv) -> Result<Vec<OsString>, String> {
     if BUILTINS.contains(&label) {
         let exe = evals_executable()?;
         Ok(vec![
-            exe.display().to_string(),
-            "agent".to_string(),
-            label.to_string(),
+            exe.into_os_string(),
+            OsString::from("agent"),
+            OsString::from(label),
         ])
     } else {
-        Ok(argv.to_vec())
+        let program = resolve_program(&argv[0], caller)?;
+        let mut resolved = Vec::with_capacity(argv.len());
+        resolved.push(program.into_os_string());
+        resolved.extend(argv[1..].iter().cloned());
+        Ok(resolved)
     }
 }
 
@@ -1088,7 +1509,7 @@ pub fn refused_row(req: &TrialRequest, trial_id: &str) -> TrialResult {
 async fn run_body(
     task: &Task,
     label: &str,
-    argv: &[String],
+    argv: &[OsString],
     trial_id: &str,
     swarmail_bin: &Path,
     scratch: &Path,
@@ -1096,8 +1517,8 @@ async fn run_body(
     exits: &mut Vec<AgentExit>,
     snapshot_out: &mut Option<Snapshot>,
 ) -> Result<bool, String> {
-    // Swarmail: fresh, in memory, every listener on loopback port zero,
-    // inherited SWARMAIL_* settings removed, startup logging pinned.
+    // Every role gets a closed runtime map and a private owner under /tmp.
+    let swarmail_dirs = RuntimeDirs::create(scratch, "swarmail")?;
     let mut cmd = Command::new(swarmail_bin);
     cmd.args([
         "serve",
@@ -1110,33 +1531,38 @@ async fn run_body(
         "--max-per-inbox",
         "100000",
     ]);
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("SWARMAIL_") {
-            cmd.env_remove(key);
-        }
-    }
+    swarmail_dirs.apply(&mut cmd);
     cmd.env("RUST_LOG", "swarmail=info,tower_http=off")
-        .current_dir(scratch);
-    let mut swarmail = spawn(cmd, "swarmail", &trial.groups)
-        .map_err(|e| format!("cannot start {}: {e}", swarmail_bin.display()))?;
-    let announced = swarmail.announce(parse_swarmail_addrs).await;
+        .current_dir(&swarmail_dirs.root);
+    let mut swarmail = spawn(
+        cmd,
+        &trial.groups,
+        Some(ServerRole::Swarmail),
+        Some(trial.runtime.clone()),
+        false,
+    )
+    .map_err(|_| "swarmail_spawn")?;
+    let announced = swarmail.announce().await;
     trial.servers.push(swarmail);
-    let (smtp, http) = announced?;
+    let (smtp, http) = match announced? {
+        Announcement::Swarmail(smtp, http) => (smtp, http),
+        Announcement::Fixture(_, _) => return Err("startup_protocol".into()),
+    };
     let client = http_client();
     let health = client
         .get(format!("http://{http}/healthz"))
         .send()
         .await
-        .map_err(|e| format!("swarmail health: {e}"))?;
+        .map_err(|_| "swarmail_health")?;
     if !health.status().is_success() {
-        return Err(format!("swarmail health: {}", health.status()));
+        return Err("swarmail_health".into());
     }
     mail::probe_greeting(smtp)
         .await
-        .map_err(|e| format!("swarmail SMTP: {e}"))?;
+        .map_err(|_| "swarmail_smtp")?;
     let mcp_url = format!("http://{http}/mcp");
 
-    // The fixture, with the admin secret in its environment alone.
+    // The fixture receives the generated admin secret in its environment alone.
     let secret: String = {
         use rand::Rng;
         use rand::distr::Alphanumeric;
@@ -1147,6 +1573,7 @@ async fn run_body(
             .collect()
     };
     let exe = evals_executable()?;
+    let fixture_dirs = RuntimeDirs::create(scratch, "fixture")?;
     let mut cmd = Command::new(&exe);
     cmd.args([
         "fixture",
@@ -1156,14 +1583,24 @@ async fn run_body(
         &task.id,
         "--trial-id",
         trial_id,
-    ])
-    .env(ADMIN_SECRET_ENV, &secret)
-    .current_dir(scratch);
-    let mut fixture = spawn(cmd, "fixture", &trial.groups)
-        .map_err(|e| format!("cannot start the fixture: {e}"))?;
-    let announced = fixture.announce(parse_fixture_addrs).await;
+    ]);
+    fixture_dirs.apply(&mut cmd);
+    cmd.env(ADMIN_SECRET_ENV, &secret)
+        .current_dir(&fixture_dirs.root);
+    let mut fixture = spawn(
+        cmd,
+        &trial.groups,
+        Some(ServerRole::Fixture),
+        Some(trial.runtime.clone()),
+        false,
+    )
+    .map_err(|_| "fixture_spawn")?;
+    let announced = fixture.announce().await;
     trial.servers.push(fixture);
-    let (public, admin_addr) = announced?;
+    let (public, admin_addr) = match announced? {
+        Announcement::Fixture(public, admin) => (public, admin),
+        Announcement::Swarmail(_, _) => return Err("startup_protocol".into()),
+    };
     let app_url = format!("http://{public}");
     let index = client
         .get(format!("{app_url}/"))
@@ -1224,11 +1661,17 @@ async fn run_body(
     }
 
     // The agents: one process group each, launched together.
-    let argv = agent_argv(label, argv)?;
+    let caller = CallerEnv::capture()?;
+    let argv = match agent_argv(label, argv, &caller) {
+        Ok(argv) => argv,
+        Err(_) => {
+            *exits = ids.iter().map(|id| exit_of(&id.identity, None)).collect();
+            return Err("program_missing".into());
+        }
+    };
     let mut waits = tokio::task::JoinSet::new();
     let mut agent_groups = Vec::new();
-    let mut logs = Vec::new();
-    let mut spawn_failed = None;
+    let mut spawn_failed = false;
     for (index, id) in ids.iter().enumerate() {
         let vars = PromptVars {
             app_url: &app_url,
@@ -1236,30 +1679,31 @@ async fn run_body(
             identity: &id.identity,
             inbox: &id.inbox,
         };
-        let prompt = tasks::render_prompt(task, &vars)?;
-        let workdir = scratch.join(format!("agent-{index}"));
-        std::fs::create_dir_all(&workdir).map_err(|e| format!("workdir: {e}"))?;
+        let prompt = tasks::render_prompt(task, &vars).map_err(|_| "prompt_render")?;
+        let dirs = RuntimeDirs::create(scratch, &format!("agent-{index}"))?;
+        let workdir = dirs.root.join("work");
+        std::fs::create_dir(&workdir).map_err(|_| "private_directory")?;
+        std::fs::set_permissions(&workdir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|_| "private_directory")?;
         let prompt_file = workdir.join("prompt.md");
-        std::fs::write(&prompt_file, &prompt).map_err(|e| format!("prompt file: {e}"))?;
+        std::fs::write(&prompt_file, &prompt).map_err(|_| "private_file")?;
         let mut cmd = Command::new(&argv[0]);
-        cmd.args(&argv[1..])
-            .current_dir(&workdir)
-            .env_remove(ADMIN_SECRET_ENV)
-            .env(ENV_TASK, &task.id)
+        cmd.args(&argv[1..]).current_dir(&workdir);
+        dirs.apply(&mut cmd);
+        cmd.env(ENV_TASK, &task.id)
             .env(ENV_APP_URL, &app_url)
             .env(ENV_MCP_URL, &mcp_url)
             .env(ENV_IDENTITY, &id.identity)
             .env(ENV_INBOX, &id.inbox)
             .env(ENV_GOAL, &prompt)
             .env(ENV_PROMPT_FILE, &prompt_file)
-            .env(ENV_DEADLINE_MS, task.deadline_ms.to_string());
-        match spawn(cmd, &format!("agent {}", id.identity), &trial.groups) {
+            .env(ENV_DEADLINE_MS, task.deadline_ms.to_string())
+            .env("PWD", &workdir);
+        match spawn(cmd, &trial.groups, None, Some(trial.runtime.clone()), false) {
             Ok(Proc {
-                label,
                 mut child,
                 pgid,
                 pid,
-                log,
                 ..
             }) => {
                 agent_groups.push(pgid);
@@ -1268,17 +1712,16 @@ async fn run_body(
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .push((id.identity.clone(), pid));
-                logs.push((label, log));
                 waits.spawn(async move { (index, child.wait().await.ok()) });
             }
-            Err(e) => {
-                spawn_failed = Some(format!("cannot spawn agent {:?}: {e}", argv[0]));
+            Err(_) => {
+                spawn_failed = true;
                 break;
             }
         }
     }
     let mut statuses: Vec<Option<ExitStatus>> = vec![None; ids.len()];
-    let end = if spawn_failed.is_some() {
+    let end = if spawn_failed {
         AgentsEnd::Done
     } else {
         #[cfg(test)]
@@ -1314,8 +1757,8 @@ async fn run_body(
                     None => break AgentsEnd::Done,
                 },
                 _ = tokio::time::sleep_until(deadline) => break AgentsEnd::Deadline,
-                s = swarmail.wait() => break AgentsEnd::ServerDied(format!("swarmail exited during the trial: {s:?}")),
-                s = fixture.wait() => break AgentsEnd::ServerDied(format!("the fixture exited during the trial: {s:?}")),
+                _ = swarmail.wait() => break AgentsEnd::ServerDied,
+                _ = fixture.wait() => break AgentsEnd::ServerDied,
             }
         }
     };
@@ -1331,47 +1774,94 @@ async fn run_body(
         .zip(&statuses)
         .map(|(id, s)| exit_of(&id.identity, *s))
         .collect();
-    for (label, log) in logs {
-        let text = log.text();
-        if !text.is_empty() {
-            trial
-                .diagnostics
-                .push(format!("--- {label} log (tail) ---\n{text}"));
-        }
+    if spawn_failed {
+        return Err("agent_spawn".into());
     }
-    if let Some(e) = spawn_failed {
-        return Err(e);
-    }
-    if let Err(e) = cleanup_result {
-        return Err(format!("agent cleanup failed: {e}"));
-    }
+    cleanup_result?;
     match end {
-        AgentsEnd::ServerDied(why) => return Err(why),
+        AgentsEnd::ServerDied => return Err("server_died".into()),
         AgentsEnd::Done | AgentsEnd::Deadline => {}
     }
 
     // Freeze, then take one consistent snapshot before the servers stop.
     admin.call(true, "/admin/freeze", None).await?;
     let snap = admin.call(false, "/admin/snapshot", None).await?;
-    let snap: Snapshot = serde_json::from_value(snap).map_err(|e| format!("snapshot: {e}"))?;
+    let snap: Snapshot = serde_json::from_value(snap).map_err(|_| "snapshot_invalid")?;
     *snapshot_out = Some(snap);
     Ok(matches!(end, AgentsEnd::Deadline))
 }
 
-/// The artifacts a requested directory retains for one trial.
+const ARTIFACT_DIRECTORY_MODE: u32 = 0o700;
+const ARTIFACT_FILE_MODE: u32 = 0o600;
+
+/// Make an exclusively owned trial directory under the caller-selected root.
+/// Existing roots and ancestors are caller-owned and keep their permissions.
+fn create_private_artifact_dir(root: &Path, trial_id: &str) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(root).map_err(|_| "artifact_write")?;
+    let out = root.join(trial_id);
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(ARTIFACT_DIRECTORY_MODE);
+    builder.create(&out).map_err(|_| "artifact_write")?;
+
+    // mkdir applies umask; this chmod applies only to our exclusive empty leaf.
+    // It precedes all file creation, and any failed chmod leaves no payload.
+    if std::fs::set_permissions(
+        &out,
+        std::fs::Permissions::from_mode(ARTIFACT_DIRECTORY_MODE),
+    )
+    .is_err()
+    {
+        let _ = std::fs::remove_dir(&out);
+        return Err("artifact_write".into());
+    }
+    Ok(out)
+}
+
+fn create_private_artifact_temp_with(
+    out: &Path,
+    builder: &tempfile::Builder<'_, '_>,
+) -> io::Result<tempfile::NamedTempFile> {
+    let tmp = builder.tempfile_in(out)?;
+    // tempfile creates exclusively with mode 0600 on Unix. Umask may make it
+    // stricter, so normalize through the open descriptor before any payload.
+    tmp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(ARTIFACT_FILE_MODE))?;
+    Ok(tmp)
+}
+
+fn create_private_artifact_temp(out: &Path) -> io::Result<tempfile::NamedTempFile> {
+    create_private_artifact_temp_with(out, &tempfile::Builder::new())
+}
+
+fn write_artifact_with(
+    out: &Path,
+    name: &str,
+    bytes: &[u8],
+    write_payload: impl FnOnce(&mut std::fs::File, &[u8]) -> io::Result<()>,
+) -> Result<(), String> {
+    let mut tmp = create_private_artifact_temp(out).map_err(|_| "artifact_write")?;
+    write_payload(tmp.as_file_mut(), bytes).map_err(|_| "artifact_write")?;
+
+    // tempfile 3.27.0 uses no-replace rename on Linux/macOS; its supported
+    // fallback links then unlinks and can leave this private temp name behind.
+    // In either case the complete payload is private before the final name
+    // becomes visible, and an existing final name is never replaced.
+    tmp.persist_noclobber(out.join(name)).map_err(|error| {
+        drop(error);
+        "artifact_write".to_string()
+    })?;
+    Ok(())
+}
+
 fn write_artifacts(
     dir: &Path,
     row: &TrialResult,
     snap: Option<&Snapshot>,
     diagnostics: &[String],
-    bin: Option<&Path>,
 ) -> Result<(), String> {
-    let out = dir.join(&row.trial_id);
-    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let out = create_private_artifact_dir(dir, &row.trial_id)?;
     let write = |name: &str, bytes: &[u8]| -> Result<(), String> {
-        let tmp = out.join(format!(".{name}.tmp"));
-        std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, out.join(name)).map_err(|e| e.to_string())
+        write_artifact_with(&out, name, bytes, |file, payload| file.write_all(payload))
     };
     if let Some(snap) = snap {
         write(
@@ -1383,11 +1873,17 @@ fn write_artifacts(
         "result.json",
         &serde_json::to_vec_pretty(row).expect("serializes"),
     )?;
-    write("diagnostics.log", diagnostics.join("\n").as_bytes())?;
+    let safe_diagnostics = diagnostics.join("\n");
+    let safe_diagnostics = if safe_diagnostics.len() > 64 * 1024 {
+        "diagnostics truncated\n"
+    } else {
+        &safe_diagnostics
+    };
+    write("diagnostics.log", safe_diagnostics.as_bytes())?;
     let meta = json!({
         "harness": env!("CARGO_PKG_NAME"),
         "harness_version": env!("CARGO_PKG_VERSION"),
-        "swarmail_bin": bin.map(|b| b.display().to_string()),
+        "swarmail_bin": Value::Null,
         "confinement": CONFINEMENT,
     });
     write(
@@ -1396,20 +1892,76 @@ fn write_artifacts(
     )
 }
 
+pub fn safe_cleanup_category(error: &str) -> &'static str {
+    if error.starts_with("cleanup timed out") {
+        "cleanup_expired"
+    } else if error.starts_with("cannot inspect")
+        || error.starts_with("/proc/")
+        || error.starts_with("cannot verify")
+        || error.starts_with("process-group leader")
+    {
+        "cleanup_observation_failed"
+    } else if error.starts_with("cannot reap") {
+        "cleanup_wait_failed"
+    } else if error.starts_with("output pipe") {
+        "cleanup_output_expired"
+    } else if error.starts_with("cannot signal") {
+        "cleanup_signal_failed"
+    } else {
+        "operation_failed"
+    }
+}
+
+fn safe_trial_category(error: &str) -> &'static str {
+    match error {
+        "private_directory" => "private_directory_unavailable",
+        "private_file" => "private_file_unavailable",
+        "swarmail_spawn" => "swarmail_spawn_failed",
+        "startup_exit" => "service_exited_before_ready",
+        "startup_timeout" => "service_readiness_timeout",
+        "startup_protocol" => "service_announcement_invalid",
+        "swarmail_health" => "swarmail_health_failed",
+        "swarmail_smtp" => "swarmail_smtp_failed",
+        "fixture_spawn" => "fixture_spawn_failed",
+        "fixture_index" => "fixture_health_failed",
+        "program_missing" => "program_unavailable",
+        "agent_spawn" => "agent_spawn_failed",
+        "server_died" => "service_exited_during_trial",
+        "snapshot_invalid" => "snapshot_invalid",
+        "artifact_write" => "artifact_write_failed",
+        "admin_transport" => "admin_transport_failed",
+        "admin_response_read" => "admin_response_read_failed",
+        "admin_response_invalid" => "admin_response_invalid",
+        "admin_response_status" => "admin_response_rejected",
+        _ => safe_cleanup_category(error),
+    }
+}
+
 /// Run one trial to its one result row. Diagnostics go to stderr.
 pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> TrialResult {
     let trial_id = new_trial_id();
     let (task, label) = match validate_request(&req) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("swarmail-evals: {e}");
+        Err(_) => {
+            eprintln!("swarmail-evals: harness error: request_invalid");
             return refused_row(&req, &trial_id);
         }
     };
-    let bin = match swarmail_bin.map(Ok).unwrap_or_else(resolve_swarmail_bin) {
+    let caller = match CallerEnv::capture() {
+        Ok(caller) => caller,
+        Err(_) => {
+            eprintln!("swarmail-evals: harness error: caller_context_unavailable");
+            return refused_row(&req, &trial_id);
+        }
+    };
+    let bin = match swarmail_bin {
+        Some(path) => resolve_program(path.as_os_str(), &caller),
+        None => resolve_swarmail_bin(),
+    };
+    let bin = match bin {
         Ok(b) => b,
-        Err(e) => {
-            eprintln!("swarmail-evals: {e}");
+        Err(_) => {
+            eprintln!("swarmail-evals: harness error: swarmail_unavailable");
             return refused_row(&req, &trial_id);
         }
     };
@@ -1436,31 +1988,32 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
     let (mut term, mut int) = match signals {
         (Ok(t), Ok(i)) => (t, i),
         _ => {
-            eprintln!("swarmail-evals: cannot install signal handlers");
+            eprintln!("swarmail-evals: harness error: signal_handlers_unavailable");
             return refused_row(&req, &trial_id);
         }
     };
-    let scratch = match tempfile::Builder::new().prefix("swarmail-eval-").tempdir() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("swarmail-evals: scratch dir: {e}");
+    let scratch = match private_tempdir("swarmail-eval-") {
+        Ok(d) => Arc::new(d),
+        Err(_) => {
+            eprintln!("swarmail-evals: harness error: private_directory_unavailable");
             return refused_row(&req, &trial_id);
         }
     };
     let mut body = {
-        let (task, label, argv, trial_id, bin, scratch_path, groups, agents) = (
+        let (task, label, argv, trial_id, bin, scratch_owner, groups, agents) = (
             task.clone(),
             label.clone(),
             req.argv.clone(),
             trial_id.clone(),
             bin.clone(),
-            scratch.path().to_path_buf(),
+            scratch.clone(),
             groups.clone(),
             agents.clone(),
         );
         tokio::spawn(async move {
             let mut trial = Trial {
                 groups,
+                runtime: scratch_owner.clone(),
                 servers: Vec::new(),
                 agents,
                 diagnostics: Vec::new(),
@@ -1473,7 +2026,7 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
                 &argv,
                 &trial_id,
                 &bin,
-                &scratch_path,
+                scratch_owner.path(),
                 &mut trial,
                 &mut exits,
                 &mut snap,
@@ -1481,7 +2034,7 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             .await;
             let outcome = match trial.stop_servers().await {
                 Ok(()) => outcome,
-                Err(e) => Err(format!("server cleanup failed: {e}")),
+                Err(e) => Err(e),
             };
             (outcome, exits, snap, trial.diagnostics)
         })
@@ -1524,7 +2077,10 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             .expect("acknowledge cleanup wait bypass return");
         }
         if let Err(e) = cleanup_result {
-            eprintln!("swarmail-evals: interrupted trial cleanup failed: {e}");
+            eprintln!(
+                "swarmail-evals: interrupted trial cleanup failed: {}",
+                safe_cleanup_category(&e)
+            );
         }
         let agent_exits: Vec<_> = agents
             .lock()
@@ -1553,27 +2109,35 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
         };
     };
     let (mut verdict, exits, snap, mut diagnostics) = match joined {
-        Ok((outcome, exits, snap, diagnostics)) => {
+        Ok((outcome, exits, snap, mut diagnostics)) => {
             // Precedence (0055 §2): infrastructure — a process error, or a
             // snapshot that is absent or unscorable (a failed or parked
             // fixture delivery included) — then the deadline, then the
             // business check.
             let verdict = match (&outcome, &snap) {
-                (Err(e), _) => {
-                    eprintln!("swarmail-evals: harness error: {e}");
+                (Err(error), _) => {
+                    let category = safe_trial_category(error);
+                    eprintln!("swarmail-evals: harness error: {category}");
+                    diagnostics.push(format!("stage=trial category={category}"));
                     Verdict::harness_error()
                 }
-                (Ok(_), None) => Verdict::harness_error(),
+                (Ok(_), None) => {
+                    eprintln!("swarmail-evals: harness error: snapshot_missing");
+                    diagnostics.push("stage=snapshot category=missing".into());
+                    Verdict::harness_error()
+                }
                 (Ok(deadline), Some(snap)) => match tasks::validate_snapshot(&task, snap) {
-                    Err(e) => {
-                        eprintln!("swarmail-evals: harness error: unscorable snapshot: {e}");
+                    Err(_) => {
+                        eprintln!("swarmail-evals: harness error: snapshot_unscorable");
+                        diagnostics.push("stage=scoring category=snapshot_invalid".into());
                         Verdict::harness_error()
                     }
                     Ok(()) if *deadline => Verdict::fail(FailureClass::Budget),
                     Ok(()) => match tasks::score(&task, snap) {
                         Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("swarmail-evals: harness error: unscorable snapshot: {e}");
+                        Err(_) => {
+                            eprintln!("swarmail-evals: harness error: scoring_failed");
+                            diagnostics.push("stage=scoring category=failed".into());
                             Verdict::harness_error()
                         }
                     },
@@ -1581,13 +2145,15 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             };
             (verdict, exits, snap, diagnostics)
         }
-        Err(join) => {
-            eprintln!("swarmail-evals: harness error: the runner panicked: {join}");
+        Err(_) => {
+            // A panic: the body's handles are gone, so its groups are
+            // killed through the shared registry.
+            eprintln!("swarmail-evals: harness error: runner_panicked");
             (
                 Verdict::harness_error(),
                 Vec::new(),
                 None,
-                vec![format!("runner panicked: {join}")],
+                vec!["stage=runner category=panicked".into()],
             )
         }
     };
@@ -1611,8 +2177,14 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
         }
     };
     if let Err(e) = cleanup_result {
-        diagnostics.push(format!("owned process cleanup failed: {e}"));
-        eprintln!("swarmail-evals: harness error: owned process cleanup failed: {e}");
+        diagnostics.push(format!(
+            "owned process cleanup failed: {}",
+            safe_cleanup_category(&e)
+        ));
+        eprintln!(
+            "swarmail-evals: harness error: owned process cleanup failed: {}",
+            safe_cleanup_category(&e)
+        );
         verdict = Verdict::harness_error();
     }
     if interrupted_during_cleanup {
@@ -1637,14 +2209,14 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
         confinement: CONFINEMENT.to_string(),
     };
     if let Some(dir) = &req.artifacts_dir
-        && let Err(e) = write_artifacts(dir, &row, snap.as_ref(), &diagnostics, Some(&bin))
+        && write_artifacts(dir, &row, snap.as_ref(), &diagnostics).is_err()
     {
-        diagnostics.push(format!("artifacts: {e}"));
-        eprintln!("swarmail-evals: cannot write artifacts: {e}");
+        diagnostics.push("stage=artifact category=write_failed".into());
+        eprintln!("swarmail-evals: harness error: artifact_write_failed");
     }
     if row.outcome == Outcome::HarnessError {
         for d in &diagnostics {
-            eprintln!("{d}");
+            eprintln!("swarmail-evals: {d}");
         }
     }
     drop(scratch);
@@ -1720,7 +2292,7 @@ mod test_probes {
         let req = TrialRequest {
             task: Some("signup".into()),
             agent: Some("runner-probe".into()),
-            argv: vec!["/bin/sh".into(), script.to_string_lossy().into_owned()],
+            argv: vec!["/bin/sh".into(), script.clone()],
             deadline_ms: Some(60_000),
             artifacts_dir: None,
         };
@@ -2125,6 +2697,24 @@ wait "$child"
         if leader_first {
             cmd.env("EVAL_TEST_RUNNER_AGENT_MODE", "leader_first");
         }
+        let mut script_text = std::fs::read_to_string(&script).unwrap();
+        let mut setup = format!(
+            "#!/bin/sh\n/usr/bin/env -0 > '{}'\n",
+            dir.join("runtime-env").display()
+        );
+        for (key, value) in cmd.get_envs() {
+            if key.to_string_lossy().starts_with("EVAL_TEST_RUNNER_")
+                && let Some(value) = value
+            {
+                setup.push_str(&format!(
+                    "export {}='{}'\n",
+                    key.to_str().unwrap(),
+                    value.to_str().unwrap().replace('\'', "'\\''")
+                ));
+            }
+        }
+        script_text = script_text.replacen("#!/bin/sh\n", &setup, 1);
+        std::fs::write(&script, script_text).unwrap();
         let child = cmd.spawn().unwrap();
         let owner = identity(child.id() as i32).expect("runner probe owner identity");
         let mut probe = Probe {
@@ -2359,8 +2949,8 @@ wait "$child"
     #[test]
     fn cleanup_observation_error_and_forced_expiry_fail_with_live_owned_processes() {
         for (fault, expected) in [
-            ("observation_error", "injected observation error"),
-            ("forced_expiry", "cleanup timed out for process group"),
+            ("observation_error", "cleanup_observation_failed"),
+            ("forced_expiry", "cleanup_expired"),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let mut probe =
@@ -2403,6 +2993,67 @@ wait "$child"
             );
             assert!(probe.owned.iter().all(|identity| !alive(identity)));
         }
+    }
+
+    fn fault_privacy_case(fault: &str, expected: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe =
+            launch_probe_with_controls(dir.path(), Some(fault), true, false, false, false);
+        wait_for_cleanup_pending(&mut probe, dir.path());
+        assert!(probe.owned.iter().any(alive));
+        probe.release();
+        assert!(probe.wait().success());
+        assert_runner_returned_after_cleanup(&mut probe);
+        let stderr = std::fs::read_to_string(dir.path().join("probe.stderr")).unwrap();
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+
+    #[test]
+    fn server_death_during_the_trial_is_a_harness_error() {
+        fault_privacy_case("server_death", "service_exited_during_trial");
+    }
+
+    #[test]
+    fn a_runner_panic_cleans_up_and_still_emits_one_row() {
+        fault_privacy_case("panic", "runner_panicked");
+    }
+
+    #[test]
+    fn trial_runtime_owner_survives_aborted_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = launch_probe_with_controls(dir.path(), None, true, false, false, false);
+        let bytes = std::fs::read(dir.path().join("runtime-env")).unwrap();
+        let paths: Vec<PathBuf> = bytes
+            .split(|b| *b == 0)
+            .filter_map(|entry| {
+                let (key, value) = entry.split_at(entry.iter().position(|b| *b == b'=')?);
+                [
+                    b"HOME".as_slice(),
+                    b"TMPDIR",
+                    b"XDG_CONFIG_HOME",
+                    b"XDG_CACHE_HOME",
+                    b"XDG_DATA_HOME",
+                    b"XDG_STATE_HOME",
+                ]
+                .contains(&key)
+                .then(|| PathBuf::from(OsStr::from_bytes(&value[1..])))
+            })
+            .collect();
+        assert_eq!(paths.len(), 6);
+        unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        wait_for_cleanup_pending(&mut probe, dir.path());
+        assert!(probe.owned.iter().any(alive));
+        assert!(
+            paths.iter().all(|path| path.is_dir()),
+            "runtime survives joined body abort and actual cleanup Pending"
+        );
+        probe.release();
+        assert!(probe.wait().success());
+        assert_runner_returned_after_cleanup(&mut probe);
+        assert!(
+            paths.iter().all(|path| !path.exists()),
+            "runtime released after cleanup"
+        );
     }
 
     #[test]
@@ -2501,5 +3152,504 @@ wait "$child"
         assert_eq!(status.signal(), Some(libc::SIGTERM));
         assert!(!dir.path().join("agent-pids").exists());
         assert!(probe.finish().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod privacy_tests {
+    use super::{
+        ARTIFACT_DIRECTORY_MODE, ARTIFACT_FILE_MODE, CARGO_RECORD_LIMIT, CallerEnv,
+        create_private_artifact_dir, create_private_artifact_temp,
+        create_private_artifact_temp_with, default_home_path, read_cargo_records, resolve_program,
+        write_artifact_with,
+    };
+    use serde_json::json;
+    use std::ffi::{OsStr, OsString};
+    use std::io::Cursor;
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    fn executable(path: &std::path::Path) {
+        std::fs::write(path, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+    }
+
+    #[test]
+    fn artifact_leaf_and_temporary_are_private_before_payload() {
+        use std::io::Write;
+
+        if std::env::var_os("EVAL_TEST_ARTIFACT_MODE_CHILD").is_none() {
+            for mask in ["0000", "0777"] {
+                let output = std::process::Command::new("/bin/sh")
+                    .args(["-c", "umask \"$1\"; shift; exec \"$@\"", "sh", mask])
+                    .arg(std::env::current_exe().unwrap())
+                    .args(["--exact", "runner::privacy_tests::artifact_leaf_and_temporary_are_private_before_payload", "--nocapture"])
+                    .env("EVAL_TEST_ARTIFACT_MODE_CHILD", "1").output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "pre-payload mask={mask}: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            return;
+        }
+
+        let owner = super::private_tempdir("swarmail-artifact-mode-proof-").unwrap();
+        let root = owner.path().join("selected-root");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let root_mode = mode(&root);
+        let out = create_private_artifact_dir(&root, "fresh-trial").unwrap();
+        assert_eq!(mode(&out), ARTIFACT_DIRECTORY_MODE);
+        assert_eq!(mode(&root), root_mode, "the selected parent is untouched");
+
+        let mut temp = create_private_artifact_temp(&out).unwrap();
+        assert_eq!(mode(temp.path()), ARTIFACT_FILE_MODE);
+        assert_eq!(mode(&out), ARTIFACT_DIRECTORY_MODE);
+        assert_eq!(std::fs::metadata(temp.path()).unwrap().len(), 0);
+        temp.write_all(b"payload after private creation").unwrap();
+        assert_eq!(
+            std::fs::read(temp.path()).unwrap(),
+            b"payload after private creation"
+        );
+    }
+
+    #[test]
+    fn artifact_leaf_refuses_existing_directories_files_and_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let owner = tempfile::tempdir().unwrap();
+        let root = owner.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let target = owner.path().join("target");
+        std::fs::write(&target, b"sentinel").unwrap();
+        for (name, kind) in ["directory", "file", "live-link", "dangling-link"]
+            .into_iter()
+            .zip([0, 1, 2, 3])
+        {
+            let leaf = root.join(name);
+            match kind {
+                0 => std::fs::create_dir(&leaf).unwrap(),
+                1 => std::fs::write(&leaf, b"sentinel").unwrap(),
+                2 => symlink(&target, &leaf).unwrap(),
+                _ => symlink(owner.path().join("missing-target"), &leaf).unwrap(),
+            }
+            let existing_mode = std::fs::symlink_metadata(&leaf)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert!(create_private_artifact_dir(&root, name).is_err());
+            assert_eq!(
+                std::fs::symlink_metadata(&leaf)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                existing_mode,
+                "an existing trial leaf is not chmodded"
+            );
+            if kind == 1 {
+                assert_eq!(std::fs::read(&leaf).unwrap(), b"sentinel");
+            }
+            if kind == 2 {
+                assert_eq!(std::fs::read(&target).unwrap(), b"sentinel");
+            }
+            if kind == 3 {
+                assert!(std::fs::read_link(&leaf).is_ok());
+            }
+        }
+        assert_eq!(std::fs::read(&target).unwrap(), b"sentinel");
+    }
+
+    #[test]
+    fn artifact_temp_name_collision_preserves_the_unowned_file() {
+        let owner = tempfile::tempdir().unwrap();
+        let out = create_private_artifact_dir(owner.path(), "trial").unwrap();
+        let collision = out.join(".tmp");
+        std::fs::write(&collision, b"unowned sentinel").unwrap();
+        std::fs::set_permissions(&collision, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let permissions = mode(&collision);
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(".tmp").rand_bytes(0);
+        assert!(create_private_artifact_temp_with(&out, &builder).is_err());
+        assert_eq!(std::fs::read(&collision).unwrap(), b"unowned sentinel");
+        assert_eq!(mode(&collision), permissions);
+        assert_eq!(mode(&out), ARTIFACT_DIRECTORY_MODE);
+    }
+
+    #[test]
+    fn artifact_final_name_appears_only_after_complete_private_payload() {
+        use std::io::Write;
+
+        let owner = tempfile::tempdir().unwrap();
+        let out = create_private_artifact_dir(owner.path(), "trial").unwrap();
+        let final_path = out.join("result.json");
+        let payload = b"complete artifact payload";
+        write_artifact_with(&out, "result.json", payload, |file, bytes| {
+            assert_eq!(
+                file.metadata()?.permissions().mode() & 0o7777,
+                ARTIFACT_FILE_MODE
+            );
+            assert_eq!(mode(&out), ARTIFACT_DIRECTORY_MODE);
+            assert!(!final_path.exists());
+            file.write_all(&bytes[..8])?;
+            assert!(!final_path.exists());
+            file.write_all(&bytes[8..])
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&final_path).unwrap(), payload);
+        assert_eq!(mode(&final_path), ARTIFACT_FILE_MODE);
+        assert_eq!(mode(&out), ARTIFACT_DIRECTORY_MODE);
+    }
+
+    #[test]
+    fn artifact_write_failure_cleans_only_its_private_partial_file() {
+        use std::io::Write;
+
+        let owner = tempfile::tempdir().unwrap();
+        let out = create_private_artifact_dir(owner.path(), "trial").unwrap();
+        let final_path = out.join("result.json");
+        let error = write_artifact_with(
+            &out,
+            "result.json",
+            b"synthetic private payload",
+            |file, payload| {
+                assert_eq!(
+                    file.metadata()?.permissions().mode() & 0o7777,
+                    ARTIFACT_FILE_MODE
+                );
+                assert_eq!(mode(&out), ARTIFACT_DIRECTORY_MODE);
+                assert!(!final_path.exists());
+                file.write_all(&payload[..8])?;
+                Err(std::io::Error::other("synthetic write failure"))
+            },
+        );
+        assert_eq!(error.unwrap_err(), "artifact_write");
+        assert!(!final_path.exists());
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+        assert_eq!(mode(&out), ARTIFACT_DIRECTORY_MODE);
+    }
+
+    #[test]
+    fn artifact_publication_refuses_existing_targets_without_clobbering() {
+        use std::io::Write;
+        use std::os::unix::fs::{MetadataExt, symlink};
+
+        let owner = tempfile::tempdir().unwrap();
+        let out = create_private_artifact_dir(owner.path(), "trial").unwrap();
+        let payload = b"complete replacement must not happen";
+
+        let file = out.join("file-target");
+        std::fs::write(&file, b"file sentinel").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let file_mode = mode(&file);
+        assert_eq!(
+            write_artifact_with(&out, "file-target", payload, |tmp, bytes| tmp
+                .write_all(bytes)),
+            Err("artifact_write".into())
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"file sentinel");
+        assert_eq!(mode(&file), file_mode);
+
+        let directory = out.join("directory-target");
+        std::fs::create_dir(&directory).unwrap();
+        let directory_mode = mode(&directory);
+        assert_eq!(
+            write_artifact_with(&out, "directory-target", payload, |tmp, bytes| tmp
+                .write_all(bytes)),
+            Err("artifact_write".into())
+        );
+        assert_eq!(mode(&directory), directory_mode);
+        assert!(directory.is_dir());
+
+        let live_target = out.join("live-target-data");
+        std::fs::write(&live_target, b"live sentinel").unwrap();
+        let live_link = out.join("live-link-target");
+        symlink(&live_target, &live_link).unwrap();
+        let link_target = std::fs::read_link(&live_link).unwrap();
+        assert_eq!(
+            write_artifact_with(&out, "live-link-target", payload, |tmp, bytes| tmp
+                .write_all(bytes)),
+            Err("artifact_write".into())
+        );
+        assert_eq!(std::fs::read(&live_target).unwrap(), b"live sentinel");
+        assert_eq!(std::fs::read_link(&live_link).unwrap(), link_target);
+
+        let dangling = out.join("dangling-link-target");
+        let absent = owner.path().join("still-absent");
+        symlink(&absent, &dangling).unwrap();
+        let dangling_target = std::fs::read_link(&dangling).unwrap();
+        assert_eq!(
+            write_artifact_with(&out, "dangling-link-target", payload, |tmp, bytes| tmp
+                .write_all(bytes)),
+            Err("artifact_write".into())
+        );
+        assert!(!absent.exists());
+        assert_eq!(std::fs::read_link(&dangling).unwrap(), dangling_target);
+
+        let original = out.join("hard-link-original");
+        let hard_link = out.join("hard-link-target");
+        std::fs::write(&original, b"hard-link sentinel").unwrap();
+        std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::fs::hard_link(&original, &hard_link).unwrap();
+        let original_meta = std::fs::metadata(&original).unwrap();
+        assert_eq!(
+            write_artifact_with(&out, "hard-link-target", payload, |tmp, bytes| tmp
+                .write_all(bytes)),
+            Err("artifact_write".into())
+        );
+        let after_meta = std::fs::metadata(&original).unwrap();
+        assert_eq!(std::fs::read(&original).unwrap(), b"hard-link sentinel");
+        assert_eq!(std::fs::read(&hard_link).unwrap(), b"hard-link sentinel");
+        assert_eq!(after_meta.ino(), original_meta.ino());
+        assert_eq!(after_meta.mode() & 0o7777, original_meta.mode() & 0o7777);
+        assert_eq!(mode(&out), ARTIFACT_DIRECTORY_MODE);
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 7);
+    }
+
+    #[tokio::test]
+    async fn admin_transport_read_and_parse_failures_are_value_free() {
+        use super::{Admin, http_client};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = closed.local_addr().unwrap();
+        drop(closed);
+        let admin = Admin {
+            http: http_client(),
+            base: format!("http://{address}"),
+            secret: "synthetic-secret".into(),
+        };
+        assert_eq!(
+            admin
+                .call(false, "/synthetic-url-canary", None)
+                .await
+                .unwrap_err(),
+            "admin_transport"
+        );
+        for (response, expected) in [
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 5000\r\nConnection: close\r\n\r\nsynthetic-read-canary",
+                "admin_response_read",
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 22\r\nConnection: close\r\n\r\nsynthetic-parse-canary!",
+                "admin_response_invalid",
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut chunk).await.unwrap();
+                    assert_ne!(n, 0);
+                    request.extend_from_slice(&chunk[..n]);
+                }
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+            let admin = Admin {
+                http: http_client(),
+                base: format!("http://{address}"),
+                secret: "synthetic-secret".into(),
+            };
+            assert_eq!(
+                admin
+                    .call(false, "/synthetic-url-canary", None)
+                    .await
+                    .unwrap_err(),
+                expected
+            );
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cargo_runtime_owner_survives_cancelled_preparation() {
+        use super::{Groups, RuntimeDirs, private_tempdir, spawn_owned_cargo};
+        use std::time::Duration;
+        use tokio::process::Command;
+        let control = tempfile::tempdir().unwrap();
+        let entered = control.path().join("entered");
+        let ready = control.path().join("ready");
+        let release = control.path().join("release");
+        let runtime = Arc::new(private_tempdir("swarmail-eval-build-owner-").unwrap());
+        let root = runtime.path().to_path_buf();
+        let dirs = RuntimeDirs::create(runtime.path(), "cargo").unwrap();
+        let script = format!(
+            "trap 'touch \"{}\"; while [ ! -e \"{}\" ]; do :; done; exit 0' TERM; touch \"{}\"; while :; do :; done",
+            entered.display(),
+            release.display(),
+            ready.display()
+        );
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", &script]);
+        dirs.apply(&mut cmd);
+        let groups = Groups::default();
+        let cargo = spawn_owned_cargo(cmd, &groups, runtime).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !ready.exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        {
+            let cleanup = cargo.cleanup();
+            tokio::pin!(cleanup);
+            tokio::select! { result = &mut cleanup => panic!("cleanup returned before barrier: {result:?}"),
+            _ = async { while !entered.exists() { tokio::task::yield_now().await; } } => {} }
+            assert!(
+                root.is_dir() && dirs.home.is_dir(),
+                "private owner retained through actual cleanup Pending"
+            );
+            std::fs::write(release, b"release").unwrap();
+            cleanup.await.unwrap();
+        }
+        drop(cargo);
+        drop(groups);
+        assert!(
+            !root.exists(),
+            "owner released after group cleanup/reap/drains"
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_error_categories_discard_injected_response_text() {
+        use super::{Admin, http_client, safe_trial_category};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let canary = b"synthetic-http-response-canary-196";
+        let body = br#"{"message":"synthetic-http-response-canary-196"}"#;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert_ne!(count, 0, "client sent a complete request");
+                request.extend_from_slice(&chunk[..count]);
+            }
+            let headers = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+        });
+        let admin = Admin {
+            http: http_client(),
+            base: format!("http://{address}"),
+            secret: "synthetic-admin-secret".into(),
+        };
+        let error = admin.call(false, "/injected", None).await.unwrap_err();
+        assert_eq!(error, "admin_response_status");
+        assert_eq!(safe_trial_category(&error), "admin_response_rejected");
+        assert!(!error.as_bytes().windows(canary.len()).any(|w| w == canary));
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn executable_resolution_uses_only_the_supplied_original_context() {
+        let owner = tempfile::tempdir().unwrap();
+        let cwd = owner.path().to_path_buf();
+        let path_dir = cwd.join("tools");
+        std::fs::create_dir(&path_dir).unwrap();
+        executable(&cwd.join("relative-agent"));
+        executable(&path_dir.join("bare-agent"));
+        let odd_name = OsString::from_vec(b"nonutf8-\xff-agent".to_vec());
+        executable(&path_dir.join(&odd_name));
+        let path =
+            std::env::join_paths([OsString::new(), path_dir.clone().into_os_string()]).unwrap();
+        let caller = CallerEnv {
+            cwd: cwd.clone(),
+            path: Some(path),
+        };
+        assert_eq!(
+            resolve_program(OsStr::new("relative-agent"), &caller).unwrap(),
+            cwd.join("relative-agent")
+        );
+        assert_eq!(
+            resolve_program(OsStr::new("bare-agent"), &caller).unwrap(),
+            path_dir.join("bare-agent")
+        );
+        assert_eq!(
+            resolve_program(&odd_name, &caller).unwrap(),
+            path_dir.join(&odd_name)
+        );
+        let absolute = path_dir.join("bare-agent");
+        assert_eq!(
+            resolve_program(absolute.as_os_str(), &caller).unwrap(),
+            absolute
+        );
+        assert_eq!(
+            resolve_program(OsStr::new("missing-agent"), &caller).unwrap_err(),
+            "program_missing"
+        );
+    }
+
+    #[test]
+    fn default_toolchain_homes_resolve_relative_home_at_the_caller_boundary() {
+        let owner = tempfile::tempdir().unwrap();
+        let caller = CallerEnv {
+            cwd: owner.path().to_path_buf(),
+            path: None,
+        };
+        assert_eq!(
+            default_home_path(&caller, OsStr::new("caller-home"), ".cargo").unwrap(),
+            owner.path().join("caller-home/.cargo")
+        );
+        assert_eq!(
+            default_home_path(&caller, owner.path().as_os_str(), ".rustup").unwrap(),
+            owner.path().join(".rustup")
+        );
+        assert_eq!(
+            default_home_path(&caller, OsStr::new(""), ".cargo").unwrap_err(),
+            "toolchain_discovery"
+        );
+    }
+
+    #[test]
+    fn cargo_record_reader_bounds_lines_and_keeps_draining_after_overflow() {
+        let artifact = json!({
+            "reason": "compiler-artifact",
+            "target": {"name": "swarmail", "kind": ["bin"]},
+            "executable": "/tmp/swarmail"
+        })
+        .to_string();
+        let found = Arc::new(Mutex::new(None));
+        assert!(read_cargo_records(
+            Cursor::new(format!("{artifact}\n")),
+            found.clone()
+        ));
+        assert_eq!(*found.lock().unwrap(), Some(PathBuf::from("/tmp/swarmail")));
+
+        let mut stream = vec![b'x'; CARGO_RECORD_LIMIT + 1];
+        stream.push(b'\n');
+        stream.extend_from_slice(artifact.as_bytes());
+        stream.push(b'\n');
+        let after_overflow = Arc::new(Mutex::new(None));
+        assert!(!read_cargo_records(
+            Cursor::new(stream),
+            after_overflow.clone()
+        ));
+        assert_eq!(
+            *after_overflow.lock().unwrap(),
+            Some(PathBuf::from("/tmp/swarmail")),
+            "overflow is discarded through newline and later protocol data is drained"
+        );
     }
 }

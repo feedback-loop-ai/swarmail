@@ -221,3 +221,38 @@ status and relative links; it cannot prove the future implementation.
 | Scoring state changes during capture. | Freeze mutations and delivery timers, take one consistent snapshot, then stop services. |
 | A real Swarmail defect appears. | Preserve minimal SMTP/MCP reproduction and report outstanding acceptance; no `src/` edit or workaround. |
 | Reports hide infrastructure errors or overclaim sample size. | Print all attempts, error rate, n, both denominators, defined Wilson/quantile conventions and null empty estimates. |
+
+
+## 2026-10-24 clarification — decision 0075 (renumbered from 0062) (proposed)
+
+The earlier plan's inherited environment and bounded raw-log retention are
+superseded by [eval privacy](../eval-privacy-port/spec.md). Trial and matrix child
+commands use exact closed role maps, private `/tmp` runtime directories,
+caller-boundary executable resolution and explicit wrapper authentication.
+Cargo preparation uses its own cleared, named toolchain map. All output streams
+are drained but arbitrary bytes are discarded; typed service announcements,
+Cargo records, matrix rows and safe diagnostics use the bounds and failure
+rules in decision 0075 (renumbered from 0062). Metadata no longer records an executable path. Result
+schema, scoring, lifecycle, real protocol proofs and honest `unconfined`
+reporting remain unchanged.
+
+## 2026-10-24 integration onto matrix cancellation
+
+Proposed [0075](../../docs/decisions/0075-eval-privacy.md), renumbered from
+0062, and [the port contract](../eval-privacy-port/spec.md) govern the current
+closed environments and safe publication. Preserve #194's owned waiters,
+pre-spawn signal handlers, concurrent five-second TERM grace plus five-second
+post-KILL observation, final cleanup fence and complete matrix accounting.
+Private runtime owners survive abort, reaping and drainage. Agents receive
+generated PWD equal to actual cwd. Matrix row capture remains 64 KiB. Artifact
+publication is exclusive, initially private, descriptor-normalized before
+payload and atomic per file with no clobbering. Existing entries remain intact.
+Historical receipts above are not proof of this port. Five fresh 0058 careful
+reviews and every Linux preparation/toolchain/custom-target, eval fmt/locked
+clippy/full-test, artifact, mutation and gate proof remain obligations. Under
+the 2026-10-24 operator ruling, row **macOS evidence for `evals/`**, in
+[operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md), `evals/`
+is outside CI on every OS until #201. #201's CI gating owns macOS eval
+preparation/toolchain, clippy/tests and selected artifact-primitive execution;
+those receipts do not block #196 (port spec AC13/AC23). This records ownership,
+not macOS execution or existing CI proof.

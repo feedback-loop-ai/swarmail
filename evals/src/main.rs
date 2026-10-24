@@ -3,6 +3,7 @@
 //! line); every diagnostic goes to stderr.
 
 use clap::{Parser, Subcommand};
+use std::ffi::OsString;
 #[cfg(test)]
 use std::future::Future;
 use std::io::Write;
@@ -60,7 +61,7 @@ enum Cmd {
         artifacts_dir: Option<PathBuf>,
         /// The external agent's program and literal arguments (no shell).
         #[arg(last = true)]
-        argv: Vec<String>,
+        argv: Vec<OsString>,
     },
     /// Run tasks × agents × trials sequentially, one JSON line per requested slot.
     /// SIGTERM or SIGINT stops admission, waits for active cleanup and exits 2.
@@ -97,17 +98,39 @@ fn print_line(value: &impl serde::Serialize) {
     let _ = out.flush();
 }
 
-fn fail(msg: impl std::fmt::Display) -> ExitCode {
-    eprintln!("swarmail-evals: {msg}");
+fn fail(_msg: impl std::fmt::Display) -> ExitCode {
+    eprintln!("swarmail-evals: harness error: operation_failed");
     ExitCode::from(2)
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    std::panic::set_hook(Box::new(|_| {
+        eprintln!("swarmail-evals: harness error: panicked");
+    }));
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            let code = error.exit_code();
+            let _ = error.print();
+            return ExitCode::from(code as u8);
+        }
+        Err(_) => {
+            eprintln!("swarmail-evals: harness error: arguments_invalid");
+            return ExitCode::from(2);
+        }
+    };
+    let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("a tokio runtime");
+    {
+        Ok(rt) => rt,
+        Err(_) => return fail("runtime unavailable"),
+    };
     match cli.command {
         Cmd::Tasks => {
             let catalogue = tasks::catalogue();
@@ -137,8 +160,8 @@ fn main() -> ExitCode {
                 };
                 match rt.block_on(oracle::run_oracle(&env)) {
                     Ok(()) => ExitCode::SUCCESS,
-                    Err(e) => {
-                        eprintln!("oracle: {e}");
+                    Err(_) => {
+                        eprintln!("swarmail-evals: harness error: oracle_failed");
                         ExitCode::from(1)
                     }
                 }
@@ -442,7 +465,7 @@ fn start_output_writer() -> OutputWriter {
             let result = out
                 .write_all(&message.bytes)
                 .and_then(|_| out.flush())
-                .map_err(|e| format!("stdout write failed: {e}"));
+                .map_err(|_| "stdout write failed".to_string());
             let failed = result.is_err();
             let _ = message.ack.send(result);
             if failed {
@@ -547,22 +570,16 @@ fn matching_trial_row(
     if captured.overflow {
         return Err("trial result output exceeded 64 KiB".into());
     }
-    let text = String::from_utf8(captured.bytes)
-        .map_err(|e| format!("trial result output is not UTF-8: {e}"))?;
-    let rows: Vec<_> = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .collect();
-    if rows.len() != 1 {
-        return Err(format!(
-            "trial printed {} nonempty result lines",
-            rows.len()
-        ));
+    let row_bytes = captured
+        .bytes
+        .strip_suffix(b"\n")
+        .unwrap_or(&captured.bytes);
+    if row_bytes.is_empty() || row_bytes.contains(&b'\n') || row_bytes.contains(&b'\r') {
+        return Err("trial_result_line_invalid".into());
     }
-    let row: TrialResult = serde_json::from_str(rows[0])
-        .map_err(|e| format!("trial printed invalid result JSON: {e}"))?;
-    row.validate()
-        .map_err(|e| format!("trial result violates schema: {e}"))?;
+    let row: TrialResult =
+        serde_json::from_slice(row_bytes).map_err(|_| "trial_result_json_invalid")?;
+    row.validate().map_err(|_| "trial_result_schema_invalid")?;
     if row.task.as_deref() != Some(id) || row.agent.as_deref() != Some(spec.label.as_str()) {
         return Err("trial result labels do not match the requested task and agent".into());
     }
@@ -603,15 +620,17 @@ fn signal_trial(pid: u32) -> Result<(), String> {
     if e.raw_os_error() == Some(libc::ESRCH) {
         Ok(())
     } else {
-        Err(format!("cannot forward SIGTERM to active trial {pid}: {e}"))
+        Err("trial_signal_failed".into())
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_child(
     exe: &std::path::Path,
     bin: &std::path::Path,
     id: &str,
     spec: &report::AgentSpec,
+    argv: &[OsString],
     deadline_ms: Option<u64>,
     term: &mut tokio::signal::unix::Signal,
     int: &mut tokio::signal::unix::Signal,
@@ -621,31 +640,48 @@ async fn run_child(
     if let Some(path) = std::env::var_os(MATRIX_TRIAL_START_ENV) {
         let _ = std::fs::write(path, matrix_test_monotonic_nanos().to_string());
     }
+    let setup = runner::private_tempdir("swarmail-eval-matrix-").and_then(|owner| {
+        let dirs = runner::RuntimeDirs::create(owner.path(), "worker")?;
+        Ok((owner, dirs))
+    });
+    let (_runtime, dirs) = match setup {
+        Ok(setup) => setup,
+        Err(_) => {
+            return ChildRun {
+                row: None,
+                interrupted: false,
+                failure: Some("private_directory_unavailable".into()),
+                stop_admission: false,
+                elapsed_ms: 0,
+            };
+        }
+    };
     let mut cmd = Command::new(exe);
     #[cfg(test)]
     let bypass_wait = std::env::var_os("EVAL_TEST_MATRIX_BYPASS_WAIT").is_some();
     #[cfg(not(test))]
     let bypass_wait = false;
+    dirs.apply(&mut cmd);
     cmd.process_group(0)
         .args(["trial", "--task", id, "--agent", &spec.label])
         .env(runner::SWARMAIL_BIN_ENV, bin)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::null())
         .kill_on_drop(!bypass_wait);
     if let Some(ms) = deadline_ms {
         cmd.args(["--deadline-ms", &ms.to_string()]);
     }
-    if !spec.argv.is_empty() {
-        cmd.arg("--").args(&spec.argv);
+    if !argv.is_empty() {
+        cmd.arg("--").args(argv);
     }
     let mut child = match cmd.spawn() {
         Ok(child) => child,
-        Err(e) => {
+        Err(_) => {
             return ChildRun {
                 row: None,
                 interrupted: false,
-                failure: Some(format!("cannot run trial: {e}")),
+                failure: Some("trial_spawn_failed".into()),
                 stop_admission: false,
                 elapsed_ms: started.elapsed().as_millis() as u64,
             };
@@ -722,7 +758,7 @@ async fn run_child(
             }
             result = &mut wait => match result {
                 Ok(status) => break Some(status),
-                Err(e) => { failure = Some(format!("cannot reap trial {pid}: {e}")); break None; }
+                Err(_) => { failure = Some("trial_wait_failed".into()); break None; }
             },
         }
     };
@@ -739,8 +775,8 @@ async fn run_child(
                 _ = int.recv() => interrupted = true,
                 result = &mut reader => break match result {
                     Ok(Ok(output)) => Some(output),
-                    Ok(Err(e)) => { failure = Some(format!("cannot read trial stdout: {e}")); None }
-                    Err(e) => { failure = Some(format!("trial stdout reader failed: {e}")); None }
+                    Ok(Err(_)) => { failure = Some("trial_stdout_read_failed".into()); None }
+                    Err(_) => { failure = Some("trial_stdout_reader_failed".into()); None }
                 },
                 _ = tokio::time::sleep_until(deadline) => {
                     #[cfg(test)]
@@ -778,21 +814,6 @@ async fn run_child(
     }
 }
 
-fn parse_cargo_artifact(line: &str) -> Option<PathBuf> {
-    let value: serde_json::Value = serde_json::from_str(line).ok()?;
-    if value["reason"] == "compiler-artifact"
-        && value["target"]["name"] == "swarmail"
-        && value["target"]["kind"]
-            .as_array()?
-            .iter()
-            .any(|kind| kind == "bin")
-    {
-        value["executable"].as_str().map(PathBuf::from)
-    } else {
-        None
-    }
-}
-
 async fn cleanup_cargo(
     cargo: &runner::Proc,
     term: &mut tokio::signal::unix::Signal,
@@ -821,7 +842,7 @@ async fn output_deadline(at: Option<tokio::time::Instant>) {
 
 enum CargoEvent {
     Signal,
-    Line(Option<String>),
+    Records(Result<Result<PathBuf, String>, tokio::sync::oneshot::error::RecvError>),
     Status(std::io::Result<std::process::ExitStatus>),
     OutputTimedOut,
 }
@@ -831,36 +852,16 @@ async fn resolve_matrix_bin(
     int: &mut tokio::signal::unix::Signal,
     interrupted: &mut bool,
 ) -> Result<Option<(PathBuf, PathBuf)>, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-    if let Some(path) = std::env::var_os(runner::SWARMAIL_BIN_ENV) {
-        let path = PathBuf::from(path);
-        return if path.is_file() {
-            Ok(Some((exe, path)))
-        } else {
-            Err(format!(
-                "{}={} is not a file",
-                runner::SWARMAIL_BIN_ENV,
-                path.display()
-            ))
-        };
+    let exe = std::env::current_exe().map_err(|_| "program_missing")?;
+    if let Some(path) = runner::selected_swarmail_bin()? {
+        return Ok(Some((exe, path)));
     }
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("evals has no parent directory")?
-        .to_path_buf();
-    let cargo_bin = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let mut cmd = Command::new(cargo_bin);
-    cmd.current_dir(root).args([
-        "build",
-        "--offline",
-        "--locked",
-        "--bin",
-        "swarmail",
-        "--message-format=json-render-diagnostics",
-    ]);
+    let (cmd, runtime) = runner::prepare_swarmail_build()?;
     let groups = runner::Groups::default();
-    let mut cargo = runner::spawn_owned_command(cmd, "cargo build", &groups)
-        .map_err(|e| format!("cannot run cargo build: {e}"))?;
+    let mut cargo =
+        runner::spawn_owned_cargo(cmd, &groups, runtime).map_err(|_| "cargo_spawn_failed")?;
+    let mut records = cargo.cargo_records.take().ok_or("cargo_output_missing")?;
+    let mut records_error = None;
     let mut binary = None;
     let mut status = None;
     let mut status_at = None;
@@ -874,7 +875,7 @@ async fn resolve_matrix_bin(
             biased;
             _ = term.recv() => CargoEvent::Signal,
             _ = int.recv() => CargoEvent::Signal,
-            line = cargo.lines.recv(), if !output_closed => CargoEvent::Line(line),
+            result = &mut records, if !output_closed => CargoEvent::Records(result),
             result = cargo.child.wait(), if status.is_none() => CargoEvent::Status(result),
             _ = output_deadline(deadline), if status_at.is_some() && !output_closed => CargoEvent::OutputTimedOut,
         };
@@ -882,36 +883,43 @@ async fn resolve_matrix_bin(
             CargoEvent::Signal => {
                 *interrupted = true;
                 if let Err(e) = cleanup_cargo(&cargo, term, int, interrupted).await {
-                    eprintln!("swarmail-evals: fallback cargo cleanup failed: {e}");
+                    eprintln!(
+                        "swarmail-evals: fallback cargo cleanup failed: {}",
+                        runner::safe_cleanup_category(&e)
+                    );
                 }
                 return Ok(None);
             }
-            CargoEvent::Line(Some(line)) => {
-                if binary.is_none() {
-                    binary = parse_cargo_artifact(&line);
+            CargoEvent::Records(result) => {
+                output_closed = true;
+                match result {
+                    Ok(Ok(path)) => binary = Some(path),
+                    Ok(Err(error)) => records_error = Some(error),
+                    Err(_) => records_error = Some("cargo_output_reader_failed".into()),
                 }
             }
-            CargoEvent::Line(None) => output_closed = true,
             CargoEvent::Status(Ok(exit)) => {
                 status = Some(exit);
                 status_at = Some(tokio::time::Instant::now());
             }
-            CargoEvent::Status(Err(e)) => {
+            CargoEvent::Status(Err(_)) => {
                 let cleanup = cleanup_cargo(&cargo, term, int, interrupted).await;
-                return Err(format!(
-                    "cannot wait for fallback cargo: {e}; cleanup: {cleanup:?}"
-                ));
+                return Err(format!("cargo_wait_failed; cleanup={}", cleanup.is_ok()));
             }
             CargoEvent::OutputTimedOut => {
                 let cleanup = cleanup_cargo(&cargo, term, int, interrupted).await;
                 return Err(format!(
-                    "fallback cargo stdout did not close after exit; cleanup: {cleanup:?}"
+                    "cargo_stdout_close_timeout; cleanup={}",
+                    cleanup.is_ok()
                 ));
             }
         }
     }
     if let Err(e) = cleanup_cargo(&cargo, term, int, interrupted).await {
-        return Err(format!("fallback cargo cleanup failed: {e}"));
+        return Err(format!(
+            "fallback cargo cleanup failed: {}",
+            runner::safe_cleanup_category(&e)
+        ));
     }
     if *interrupted {
         return Ok(None);
@@ -919,6 +927,9 @@ async fn resolve_matrix_bin(
     let status = status.expect("loop exits only after the cargo child was reaped");
     if !status.success() {
         return Err(format!("building swarmail failed: {status}"));
+    }
+    if let Some(error) = records_error {
+        return Err(error);
     }
     let binary = binary.ok_or_else(|| "cargo reported no swarmail executable".to_string())?;
     Ok(Some((exe, binary)))
@@ -937,7 +948,7 @@ async fn matrix(
         return fail(format!("unknown task {id}"));
     }
     let specs = match std::fs::read_to_string(&agents)
-        .map_err(|e| format!("{}: {e}", agents.display()))
+        .map_err(|_| "agents_file_unreadable".to_string())
         .and_then(|t| report::parse_agents(&t))
     {
         Ok(s) => s,
@@ -953,8 +964,8 @@ async fn matrix(
     };
     let (mut term, mut int) = match install_matrix_signals() {
         Ok(signals) => signals,
-        Err(e) => {
-            eprintln!("swarmail-evals: cannot install matrix signal handlers: {e}");
+        Err(_) => {
+            eprintln!("swarmail-evals: matrix_signal_setup_failed");
             for index in 0..total_slots {
                 let (id, spec) = matrix_slot(&ids, &specs, trials, index);
                 print_line(&matrix_refused(id, spec));
@@ -994,6 +1005,16 @@ async fn matrix(
     if let Some(error) = resolution_error.as_deref() {
         eprintln!("swarmail-evals: harness error for every trial: {error}");
     }
+    let resolved_agents: Vec<Option<Vec<OsString>>> = specs
+        .iter()
+        .map(|spec| {
+            if runner::BUILTINS.contains(&spec.label.as_str()) && spec.argv.is_empty() {
+                Some(Vec::new())
+            } else {
+                runner::resolve_agent_command(&spec.argv).ok()
+            }
+        })
+        .collect();
     let mut next_slot = 0;
     let (mut any_error, mut any_fail) = (resolved.is_none(), false);
     let mut stop_admission = false;
@@ -1005,7 +1026,18 @@ async fn matrix(
         }
         let (id, spec) = matrix_slot(&ids, &specs, trials, next_slot);
         let mut row = if let Some((exe, bin)) = &resolved {
-            let child = run_child(exe, bin, id, spec, deadline_ms, &mut term, &mut int).await;
+            let agent_index = (next_slot / trials as usize) % specs.len();
+            let child = if let Some(argv) = &resolved_agents[agent_index] {
+                run_child(exe, bin, id, spec, argv, deadline_ms, &mut term, &mut int).await
+            } else {
+                ChildRun {
+                    row: None,
+                    interrupted: false,
+                    failure: Some("agent_program_unavailable".into()),
+                    stop_admission: false,
+                    elapsed_ms: 0,
+                }
+            };
             let child_interrupted = child.interrupted;
             let child_failed = child.failure.is_some();
             let child_stop = child.stop_admission;
@@ -1632,6 +1664,21 @@ while :; do :; done
             };
             cmd.env(name, hold);
         }
+        let mut script_text = std::fs::read_to_string(&script).unwrap();
+        let mut setup = String::from("#!/bin/sh\n");
+        for (key, value) in cmd.get_envs() {
+            if key.to_string_lossy().starts_with("EVAL_TEST_MATRIX_")
+                && let Some(value) = value
+            {
+                setup.push_str(&format!(
+                    "export {}='{}'\n",
+                    key.to_str().unwrap(),
+                    value.to_str().unwrap().replace('\'', "'\\''")
+                ));
+            }
+        }
+        script_text = script_text.replacen("#!/bin/sh\n", &setup, 1);
+        std::fs::write(&script, script_text).unwrap();
         let child = cmd.spawn().unwrap();
         let owner = matrix_identity(child.id() as i32).expect("matrix probe owner identity");
         MatrixProbe {
@@ -2451,5 +2498,206 @@ while :; do :; done
             assert!(output.overflow);
             assert_eq!(output.bytes.len(), MATRIX_OUTPUT_LIMIT);
         });
+    }
+}
+
+#[cfg(test)]
+mod privacy_tests {
+    async fn bounded_stdout<R: tokio::io::AsyncRead + Unpin>(reader: R) -> Option<Vec<u8>> {
+        let captured = super::capture_stdout(reader).await.ok()?;
+        (!captured.overflow).then_some(captured.bytes)
+    }
+
+    async fn run_child(
+        exe: &std::path::Path,
+        bin: &std::path::Path,
+        id: &str,
+        spec: &swarmail_evals::report::AgentSpec,
+        argv: &[std::ffi::OsString],
+        deadline: Option<u64>,
+    ) -> Option<swarmail_evals::runner::TrialResult> {
+        let (mut term, mut int) = super::install_matrix_signals().unwrap();
+        super::run_child(exe, bin, id, spec, argv, deadline, &mut term, &mut int)
+            .await
+            .row
+    }
+    use std::io::Cursor;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use swarmail_evals::report::AgentSpec;
+    use swarmail_evals::runner::{AgentExit, TrialResult};
+    use swarmail_evals::state::FailureClass;
+    use swarmail_evals::tasks::Outcome;
+
+    fn worker_program(directory: &Path, name: &str, output: &str) -> std::path::PathBuf {
+        let program = directory.join(name);
+        let quoted = output.replace('\'', "'\\''");
+        std::fs::write(
+            &program,
+            format!("#!/bin/sh\nprintf '%s' '{quoted}'\nexit 1\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        program
+    }
+
+    #[tokio::test]
+    async fn matrix_worker_requires_one_matching_schema_row_and_exit() {
+        let owner = tempfile::tempdir().unwrap();
+        let expected = TrialResult {
+            schema_version: 1,
+            trial_id: "synthetic-worker-row".into(),
+            task: Some("signup".into()),
+            agent: Some("oracle".into()),
+            outcome: Outcome::Fail,
+            failure_class: Some(FailureClass::GaveUp),
+            wall_time_ms: 3,
+            agent_exit_status: Some(3),
+            agent_exits: vec![AgentExit {
+                identity: "synthetic-identity".into(),
+                code: Some(3),
+                signal: None,
+            }],
+            confinement: "unconfined".into(),
+        };
+        let spec = AgentSpec {
+            label: "oracle".into(),
+            argv: Vec::new(),
+        };
+        let valid = worker_program(
+            owner.path(),
+            "valid-worker-row",
+            &serde_json::to_string(&expected).unwrap(),
+        );
+        assert_eq!(
+            run_child(&valid, Path::new("/bin/true"), "signup", &spec, &[], None,).await,
+            Some(expected.clone())
+        );
+
+        let extra = worker_program(
+            owner.path(),
+            "extra-worker-output",
+            &format!(
+                "{}\nsynthetic-worker-canary",
+                serde_json::to_string(&expected).unwrap()
+            ),
+        );
+        assert!(
+            run_child(&extra, Path::new("/bin/true"), "signup", &spec, &[], None,)
+                .await
+                .is_none()
+        );
+
+        let wrong_task = worker_program(
+            owner.path(),
+            "wrong-worker-task",
+            &serde_json::to_string(&TrialResult {
+                task: Some("otp".into()),
+                ..expected.clone()
+            })
+            .unwrap(),
+        );
+        assert!(
+            run_child(
+                &wrong_task,
+                Path::new("/bin/true"),
+                "signup",
+                &spec,
+                &[],
+                None,
+            )
+            .await
+            .is_none()
+        );
+
+        let wrong_agent = worker_program(
+            owner.path(),
+            "wrong-worker-agent",
+            &serde_json::to_string(&TrialResult {
+                agent: Some("different-agent".into()),
+                ..expected.clone()
+            })
+            .unwrap(),
+        );
+        assert!(
+            run_child(
+                &wrong_agent,
+                Path::new("/bin/true"),
+                "signup",
+                &spec,
+                &[],
+                None,
+            )
+            .await
+            .is_none()
+        );
+
+        let exit_mismatch = worker_program(
+            owner.path(),
+            "worker-exit-mismatch",
+            &serde_json::to_string(&TrialResult {
+                outcome: Outcome::Pass,
+                failure_class: None,
+                agent_exit_status: None,
+                agent_exits: Vec::new(),
+                ..expected.clone()
+            })
+            .unwrap(),
+        );
+        assert!(
+            run_child(
+                &exit_mismatch,
+                Path::new("/bin/true"),
+                "signup",
+                &spec,
+                &[],
+                None,
+            )
+            .await
+            .is_none()
+        );
+
+        let carriage_return = worker_program(
+            owner.path(),
+            "worker-carriage-return",
+            &format!("{}\r", serde_json::to_string(&expected).unwrap()),
+        );
+        assert!(
+            run_child(
+                &carriage_return,
+                Path::new("/bin/true"),
+                "signup",
+                &spec,
+                &[],
+                None,
+            )
+            .await
+            .is_none()
+        );
+
+        let malformed = worker_program(owner.path(), "malformed-worker-row", "{not-json");
+        assert!(
+            run_child(
+                &malformed,
+                Path::new("/bin/true"),
+                "signup",
+                &spec,
+                &[],
+                None,
+            )
+            .await
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn matrix_row_reader_caps_storage_and_drains_overflow() {
+        let accepted = vec![b'x'; super::MATRIX_OUTPUT_LIMIT];
+        assert_eq!(
+            bounded_stdout(Cursor::new(accepted.clone())).await,
+            Some(accepted)
+        );
+        let oversized = vec![b'y'; super::MATRIX_OUTPUT_LIMIT + 1];
+        assert_eq!(bounded_stdout(Cursor::new(oversized)).await, None);
     }
 }

@@ -24,6 +24,7 @@ impl McpClient {
     /// Initialize a session against `url` (which ends in `/mcp`).
     pub async fn connect(url: &str) -> Result<McpClient, String> {
         let http = reqwest::Client::builder()
+            .no_proxy()
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(Duration::from_secs(10))
             .build()

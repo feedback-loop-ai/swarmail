@@ -6,7 +6,10 @@ mod common;
 
 use common::*;
 use serde_json::{Value, json};
+use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 use swarmail_evals::runner::TrialResult;
 use swarmail_evals::tasks::Outcome;
@@ -95,6 +98,135 @@ fn the_matrix_runs_the_whole_product_and_aggregates_exits() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn matrix_workers_are_closed_and_child_output_is_not_published() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("worker-env");
+    let wrapper = dir.path().join("observe-worker.sh");
+    let script = "#!/bin/sh\nprintf '%s' 'synthetic-matrix-output-canary-196'\nprintf '%s' 'synthetic-matrix-output-canary-196' >&2\n/usr/bin/cat /proc/$PPID/environ > \"$1\"\nshift\nexec \"$@\" agent oracle\n".to_string();
+    std::fs::write(&wrapper, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let agents = agents_file(
+        dir.path(),
+        json!([{
+            "label": "matrix-observer",
+            "argv": [wrapper, marker.to_string_lossy(), exe()]
+        }]),
+    );
+    let canary = "synthetic-matrix-parent-key-196";
+    let out = cli()
+        .env("OPENAI_API_KEY", canary)
+        .env(
+            "UNRELATED_CALLER_SETTING",
+            "synthetic-matrix-parent-value-196",
+        )
+        .args([
+            "matrix", "--tasks", "signup", "--agents", &agents, "--trials", "1",
+        ])
+        .output()
+        .unwrap();
+    let rows = rows(&out.stdout);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].outcome, Outcome::Pass, "{}", stderr(&out));
+    assert!(
+        !out.stdout
+            .windows(canary.len())
+            .any(|w| w == canary.as_bytes())
+    );
+    assert!(
+        !out.stderr
+            .windows(canary.len())
+            .any(|w| w == canary.as_bytes())
+    );
+    assert!(!stderr(&out).contains("synthetic-matrix-output-canary-196"));
+
+    let bytes = std::fs::read(marker).unwrap();
+    assert!(
+        !bytes
+            .windows(b"NONUTF8_PARENT_\xff".len())
+            .any(|w| w == b"NONUTF8_PARENT_\xff"),
+        "caller native environment canary crossed the closed command boundary"
+    );
+    let pairs: Vec<(&str, &str)> = bytes
+        .split(|b| *b == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let index = part.iter().position(|b| *b == b'=').unwrap();
+            (
+                std::str::from_utf8(&part[..index]).unwrap(),
+                std::str::from_utf8(&part[index + 1..]).unwrap(),
+            )
+        })
+        .collect();
+    let names: std::collections::HashSet<_> = pairs.iter().map(|(name, _)| *name).collect();
+    let expected: std::collections::HashSet<_> = [
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "HOME",
+        "TMPDIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "SWARMAIL_BIN",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(names, expected, "matrix worker map");
+    assert_eq!(
+        pairs
+            .iter()
+            .find(|(name, _)| *name == "SWARMAIL_BIN")
+            .unwrap()
+            .1,
+        swarmail_bin().to_str().unwrap()
+    );
+    assert!(!String::from_utf8_lossy(&bytes).contains(canary));
+}
+
+#[test]
+fn matrix_preserves_non_utf8_path_discovery_through_the_worker_cli() {
+    let dir = tempfile::tempdir().unwrap();
+    let path_dir = dir.path().join(OsString::from_vec(b"agents-\xff".to_vec()));
+    std::fs::create_dir(&path_dir).unwrap();
+    let marker = dir.path().join("agent-ran");
+    let program = path_dir.join("native-agent");
+    let literal_argument = "synthetic-matrix-literal-196";
+    std::fs::write(
+        &program,
+        "#!/bin/sh\nprintf '%s\\0' \"$2\" > \"$1\"\nexec \"$3\" agent oracle\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let agents = agents_file(
+        dir.path(),
+        json!([{
+            "label": "native-path-agent",
+            "argv": ["native-agent", marker.to_str().unwrap(), literal_argument, exe()]
+        }]),
+    );
+
+    let out = cli()
+        .env("PATH", &path_dir)
+        .args([
+            "matrix", "--tasks", "signup", "--agents", &agents, "--trials", "1",
+        ])
+        .output()
+        .unwrap();
+    let result_rows = rows(&out.stdout);
+    assert_eq!(result_rows.len(), 1, "{}", stderr(&out));
+    assert_eq!(result_rows[0].agent.as_deref(), Some("native-path-agent"));
+    assert_eq!(result_rows[0].outcome, Outcome::Pass, "{}", stderr(&out));
+    assert_eq!(result_rows[0].agent_exit_status, Some(0));
+    assert!(out.status.success(), "{}", stderr(&out));
+    let mut expected = literal_argument.as_bytes().to_vec();
+    expected.push(0);
+    assert_eq!(std::fs::read(marker).unwrap(), expected);
+}
+
 #[test]
 fn the_matrix_keeps_counting_after_a_harness_error_and_exits_two() {
     let dir = tempfile::tempdir().unwrap();
@@ -168,10 +300,9 @@ fn a_missing_swarmail_binary_still_emits_the_whole_product() {
     }
     let ids: std::collections::HashSet<&str> = rows.iter().map(|r| r.trial_id.as_str()).collect();
     assert_eq!(ids.len(), 8, "distinct trial ids");
-    assert_eq!(
-        stderr(&out).matches("no-such-swarmail").count(),
-        1,
-        "{}",
+    assert!(
+        !stderr(&out).contains("no-such-swarmail"),
+        "lookup paths are suppressed: {}",
         stderr(&out)
     );
     assert!(!marker.exists(), "no trial child ran");
@@ -455,17 +586,25 @@ fn marker_identity(value: &Value, name: &str) -> ProcessIdentity {
     }
 }
 
-fn matrix_signal_case(signal: i32) {
+fn matrix_signal_case(signal: i32, noisy: bool) {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("active.json");
     let launches = dir.path().join("launches.txt");
     let rows_path = dir.path().join("matrix.jsonl");
-    let helper_exe = std::env::current_exe().unwrap();
+    let (helper, _helper_owner) = helper_command(
+        if noisy { "noisy_stall" } else { "stall" },
+        &[],
+        &[
+            (MARKER_ENV, marker.to_str().unwrap()),
+            (LAUNCH_LOG_ENV, launches.to_str().unwrap()),
+        ],
+    );
+    let wrapper = helper.get_args().last().unwrap().to_os_string();
     let agents = agents_file(
         dir.path(),
         json!([
             {"label": "oracle", "argv": []},
-            {"label": "stall", "argv": [helper_exe, "--exact", "helper_agent", "--nocapture", "--test-threads=1"]}
+            {"label": "stall", "argv": [wrapper.to_str().unwrap()]}
         ]),
     );
     let stdout = std::fs::File::create(&rows_path).unwrap();
@@ -486,7 +625,11 @@ fn matrix_signal_case(signal: i32) {
         .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
-    let release = dir.path().join("unused-release");
+    let release = if noisy {
+        marker.with_extension("release")
+    } else {
+        dir.path().join("unused-release")
+    };
     let owner = process_identity(child.id() as i32).expect("matrix process identity");
     let mut matrix = MatrixGuard {
         child: Some(child),
@@ -568,6 +711,22 @@ fn matrix_signal_case(signal: i32) {
     // The only signal is sent to the matrix PID; its ordinary trial runner
     // must finish owned cleanup before the matrix exits.
     send_signal(matrix.pid(), signal);
+    if noisy {
+        eventually("noisy descendant acknowledged actual TERM cleanup", || {
+            marker.with_extension("cleanup-entered").exists()
+        });
+        assert!(identity_alive(&descendant));
+        assert!(
+            matrix.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+            "matrix waits for live owned cleanup"
+        );
+        let paths: Vec<String> = serde_json::from_value(ready["runtime_paths"].clone()).unwrap();
+        assert_eq!(paths.len(), 6);
+        assert!(paths.iter().all(|p| std::path::Path::new(p).is_dir()));
+        assert!(ready["stdout_bytes"].as_u64().unwrap() > 64 * 1024);
+        assert!(ready["stderr_bytes"].as_u64().unwrap() > 64 * 1024);
+        std::fs::write(marker.with_extension("release"), b"release").unwrap();
+    }
     let status = matrix.wait();
     assert_eq!(
         status.code(),
@@ -584,6 +743,12 @@ fn matrix_signal_case(signal: i32) {
     assert!(!identity_alive(&descendant));
 
     let output = std::fs::read(rows_path).unwrap();
+    if noisy {
+        let canary = b"synthetic-cancellation-output-canary";
+        assert!(!output.windows(canary.len()).any(|w| w == canary));
+        let paths: Vec<String> = serde_json::from_value(ready["runtime_paths"].clone()).unwrap();
+        assert!(paths.iter().all(|p| !std::path::Path::new(p).exists()));
+    }
     assert!(
         output.starts_with(&prefix_before),
         "the exact committed JSONL byte prefix is immutable"
@@ -682,8 +847,14 @@ fn matrix_signal_case(signal: i32) {
 
 #[test]
 fn matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup() {
-    matrix_signal_case(libc::SIGTERM);
-    matrix_signal_case(libc::SIGINT);
+    matrix_signal_case(libc::SIGTERM, false);
+    matrix_signal_case(libc::SIGINT, false);
+}
+
+#[test]
+fn privacy_cancellation_preserves_owned_runtime_and_suffix_accounting() {
+    matrix_signal_case(libc::SIGTERM, true);
+    matrix_signal_case(libc::SIGINT, true);
 }
 
 #[test]
