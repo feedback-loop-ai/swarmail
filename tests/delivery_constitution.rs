@@ -6,6 +6,7 @@
 //! policy-sweep warning.
 
 use std::path::Path;
+use std::process::Command;
 
 use serde_json::{Value, json};
 
@@ -28,6 +29,28 @@ fn rules_from(policy: &Value, phase: &str, result: &str) -> Vec<Value> {
         .filter(|rule| rule["from"] == phase && rule["result"] == result)
         .cloned()
         .collect()
+}
+
+fn sha256_file(path: &str) -> String {
+    let absolute = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+    let output = Command::new("sha256sum")
+        .arg(&absolute)
+        .output()
+        .or_else(|_| {
+            Command::new("shasum")
+                .arg("-a")
+                .arg("256")
+                .arg(&absolute)
+                .output()
+        })
+        .unwrap_or_else(|e| panic!("cannot run a SHA-256 utility for {path}: {e}"));
+    assert!(output.status.success(), "SHA-256 failed for {path}");
+    String::from_utf8(output.stdout)
+        .expect("SHA-256 output is UTF-8")
+        .split_whitespace()
+        .next()
+        .expect("SHA-256 output contains a digest")
+        .to_owned()
 }
 
 /// #125: the residual allow rule requires both explicit safe facts, the
@@ -184,7 +207,7 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
     }
     assert!(seat.contains("bash -c \"$command\""));
     assert!(!seat.contains("bash -lc \"$command\""));
-    for candidate_copy in ["bash scripts/", "tools/coverage-fn-scan"] {
+    for candidate_copy in ["bash scripts/", "bash ./scripts/", "tools/coverage-fn-scan"] {
         assert!(
             !seat.contains(candidate_copy),
             "verify-seat.sh still runs {candidate_copy}"
@@ -235,6 +258,114 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
         assert!(
             !Path::new(env!("CARGO_MANIFEST_DIR")).join(old).exists(),
             "{old} still exists"
+        );
+    }
+}
+
+/// Fixed reviewed digests make the tracked bundle, shim manifest and canonical
+/// boundary checks fail closed when their bytes change. The manifest itself is
+/// pinned independently, then every listed public shim is checked against it.
+#[test]
+fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
+    for (path, expected) in [
+        (
+            "bundles/self/bundle.json",
+            "2a5fa3696dac122822102316041022850d1630641987b96156a2f4f784bdb265",
+        ),
+        (
+            "bundles/self/policy.json",
+            "652a064814e42a3d1e0e5fc5ecc600de5241da7e5cace8d73e6bf087ef15a47f",
+        ),
+        (
+            "bundles/self/tooling.json",
+            "e6eaeff867eb71fab5a1ce93f4ff1d46ae9deb2944b517867787a63a966f3fa3",
+        ),
+        (
+            "bundles/self/scripts/shims.sha256",
+            "72d34b479a900da837f34a4c3c3066f5964d067050166f7ab4067ff076978566",
+        ),
+        (
+            "bundles/self/scripts/design-check.sh",
+            "ba32e18bd8808a36b1f5786dc259d6f37a53c6d105b70be4a0ebdd7a60665124",
+        ),
+        (
+            "bundles/self/scripts/verify-seat.sh",
+            "71670cf7e65fc47ff9dfc10de65f420c5dfb05e33704a25b83f79093fa2a7639",
+        ),
+        (
+            "bundles/self/scripts/delivery-proof-test.sh",
+            "9a048b395f5a73360127b8e20455a70ed2c89aa1d82d67974b8882c6903d08a3",
+        ),
+    ] {
+        assert_eq!(
+            sha256_file(path),
+            expected,
+            "{path} changed without a reviewed pin"
+        );
+    }
+
+    let manifest = read_text("bundles/self/scripts/shims.sha256");
+    let mut manifest_paths = manifest
+        .lines()
+        .map(|line| line.split_once("  ").expect("sha256 manifest row").1)
+        .collect::<Vec<_>>();
+    manifest_paths.sort_unstable();
+    assert_eq!(
+        manifest_paths,
+        [
+            ".specify/scripts/bash/check-prerequisites.sh",
+            "scripts/coverage-gate.sh",
+            "scripts/design-check.sh",
+            "scripts/publish-guard-test.sh",
+            "scripts/publish-guard.sh",
+            "scripts/seal-branch-test.sh",
+            "scripts/seal-branch.sh",
+        ],
+        "the pinned public shim manifest must contain exactly seven reviewed members"
+    );
+    for line in manifest.lines() {
+        let (expected, path) = line.split_once("  ").expect("sha256 manifest row");
+        assert_eq!(
+            sha256_file(path),
+            expected,
+            "{path} differs from the pinned shim manifest"
+        );
+    }
+
+    let bundle = read_json("bundles/self/bundle.json");
+    let design = bundle["seats"]["design"]["sequence"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
+    assert_eq!(design["driver"]["command"][4], "bash");
+    assert_eq!(design["driver"]["command"][5], "./scripts/design-check.sh");
+
+    let seat = read_text("bundles/self/scripts/verify-seat.sh");
+    let active = seat
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for needle in [
+        "recorded_sha=",
+        "launched_digest=",
+        "recorded_digests=",
+        "grep -qx \"$launched_digest\"",
+        "fail_now \"verify-seat: tooling.json records no binary_sha256",
+        "is not the recorded build of",
+        "run \"delivery tamper-boundary proof\"",
+        "\"bash $pin_q/delivery-proof-test.sh\"",
+    ] {
+        assert!(
+            active.contains(needle),
+            "verify-seat lost required pinned behavior: {needle}"
+        );
+    }
+    for candidate_dispatch in ["bash scripts/", "bash ./scripts/"] {
+        assert!(
+            !active.contains(candidate_dispatch),
+            "verify-seat dispatches a candidate-controlled gate: {candidate_dispatch}"
         );
     }
 }

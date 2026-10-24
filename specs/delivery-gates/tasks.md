@@ -125,7 +125,7 @@ unchecked proof tasks do not request rebuilding their existing implementation.
   valid artifacts advance only after `designed`, first failure retries once,
   second stops. Exercise fallback phase accounting only if the pinned grammar
   requires it. Verify/CI run the delivery harness without recursion. AC7.
-- [ ] T08 — Confirm ABOVE-MEDIUM → OK → UNSAFE (#125), per the operator
+- [x] T08 — Confirm ABOVE-MEDIUM → OK → UNSAFE (#125), per the operator
   ruling of 2026-10-19; `ad02e3c` already implements the shape.
   **Proof:** the unchanged named structural pin in AC8 passes. The pinned
   actual evaluator truth table covers each absent/null/wrong type,
@@ -168,3 +168,27 @@ unchecked proof tasks do not request rebuilding their existing implementation.
   native-tls absence and warning-free pinned compile on the restored final
   tree. Confirm exact 100/100/100, no dependency allowlist widening, clean
   authorized branch and signed history; no push/PR/merge/issue closure. AC13.
+
+## Recovery reconciliation — 2026-10-24 (NEXT-171)
+
+- [x] **Original T08 — AC8 evaluator slice.** The run-local AC1 receipt
+  records 105 complete unique cases, exact expected/actual rulings and
+  refusals, the 17-failure permissive-policy negative control, 12 aggregation
+  regressions, clean pinned self compilation, and the passing named structural
+  test. See [`receipts.md`](../delivery-proof-residuals/receipts.md).
+- [ ] **Original R04 — actual-path evidence.** Still open: no real pinned
+  verify dispatch produced combined shim-integrity and uncovered-line
+  diagnostics with retained exact counts, no covered live verify control was
+  dispatched, and no real self design refusal/retry/pass lifecycle was
+  recorded. Current canonical-script ownership was not refreshed; #172/#206
+  overlap in the dated fleet snapshot. Provider dispatch is outside this
+  seat's workspace-only capability. See the receipt index's precise limits.
+- [ ] **Original D04 — full delivery reconciliation.** Still open. D04 includes
+  the complete original AC1–AC13 proofs; this run does not re-prove the
+  separate coverage bypass mutations, #143 lifecycle/configuration/allocation/
+  cleanup proofs, every actual design/verify dispatch, or all CI-owned jobs.
+  Do not infer delivery completion from the T08 checkbox.
+
+The 2026-10-19 resume sections above are preserved as history. For this
+recovery, accepted 0056 supersedes their signed-commit wording; no task here
+accepts proposed 0062 or closes an issue.

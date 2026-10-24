@@ -329,3 +329,34 @@ allowlist changes. No chart release, broad documentation sweep, decision
 acceptance, engine upgrade, push, PR, merge or issue closure. Those later
 epic stories remain separate. This design adds no persistence or wire
 contract and must not reshape server shutdown merely to ease a test.
+
+## Recovery reconciliation — 2026-10-24 (NEXT-171)
+
+This note preserves the original AC1–AC13 obligations and dated history. The
+run-local receipt index is
+[`delivery-proof-residuals/receipts.md`](../delivery-proof-residuals/receipts.md);
+its raw, hash-checked records remain under the ignored `.forge/epic192` run
+folder.
+
+- **AC8/T08:** the recovered evaluator run records all 105 distinct expected
+  outcomes through the recorded resolver and `Machine::evaluate`, including
+  exact rule/destination/severity or exact refusal text. Its permissive-policy
+  control fails 17 assertions; the restored table passes. The 12 aggregation
+  regressions preserve absent, null and malformed facts as unknown, and the
+  pinned self compile exits cleanly. T08 is reconciled as complete by those
+  receipts and the targeted structural test.
+- **Live self and R04:** remain open. This implementer seat cannot launch the
+  nested providers or create a canonical Brokkr journal. The reported
+  `epic-192-issue-171-live-self-bun-c69c9fa3` stopped before design after DSH
+  transport failures and is not a qualifying design/refusal/retry/pass run.
+  No actual pinned verify-seat combined red receipt or clean live control was
+  produced here. The canonical script edits in 0062 also remain unperformed
+  pending current ownership reconciliation.
+- **D04:** remains open because its proof obligation spans all original
+  AC1–AC13, beyond the evaluator slice. No broader delivery completion follows
+  from T08 or the issue-specific local receipts.
+
+Current work follows accepted 0050, unsigned commits under accepted 0056, and
+the engine route under accepted 0057. Proposed 0062 remains proposed; the
+index entry is not acceptance. No runtime, wire, dependency, license or
+coverage-floor contract changed.

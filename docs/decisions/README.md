@@ -69,6 +69,7 @@ them. What may land while a decision is still proposed is stated in
 | [0062](0062-rpc-edge-contracts.md) | RPC edge contracts and the supplied ID ruling | proposed — awaiting the operator | (Epic #192, issue #180) |
 | [0062](0062-coverage-reservation-tooling.md) | Direct exclusive coverage reservation with checked tooling | proposed — awaiting the operator | (Epic #192 issue #174) |
 | [0064](0064-coverage-reservation-tooling.md) | Direct exclusive coverage reservation with checked tooling | proposed — awaiting the operator | (Epic #192 issue #174) |
+| [0062](0062-delivery-proof-residuals.md) | Distinguish delivery proof completion from documented limits | proposed — awaiting the operator | (NEXT-171, epic #192) |
 | [0073](0073-matrix-cancellation.md) | Matrix cancellation stops admission and waits for owned cleanup with complete schema-1 accounting | proposed — awaiting the operator | (Epic #192, issue #194) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that

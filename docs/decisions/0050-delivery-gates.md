@@ -124,3 +124,16 @@ residual truth table and warning-free pinned compile; six real-build coverage
 bypass refusals; and each #143 broken-tree mutation failing before restoration.
 The operator alone accepts this record; a design draft or green test run is
 not that acceptance.
+
+## Dated known limit — 2026-10-24 (proposed 0062)
+
+The existing release-expansion comparator's `check_expansions_equivalent`
+allowance admits an equal-indentation `if true {` to `if false {` change
+without establishing that the branch came from a debug assertion. An ordinary
+`cfg!(debug_assertions)` branch can fit the same textual shape. The retained
+observation is explicitly textual, not compiler-expansion or real-build proof:
+[0062](0062-delivery-proof-residuals.md) and the
+[recovery receipt index](../../specs/delivery-proof-residuals/receipts.md).
+This records a known limit only. It grants no exception, repairs no false
+acceptance, and does not weaken §2's requirement that unaccounted release
+differences refuse. The comparator and its function bytes remain unchanged.

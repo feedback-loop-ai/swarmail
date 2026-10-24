@@ -394,3 +394,27 @@ post-repair warning-free result.
   fallback. Brokkr refusal is deferred to its authorized verify seat; cargo
   refusal follows the commission's patch-and-stop rule. No completion claim
   while any required execution or commit remains outstanding.
+
+## Recovery reconciliation — 2026-10-24 (NEXT-171)
+
+The recovery uses the existing recorded-core harness and committed design;
+raw outputs and identities are indexed in
+[`delivery-proof-residuals/receipts.md`](../delivery-proof-residuals/receipts.md).
+The exact 105-row evaluator and its negative control, the 12 real aggregation
+unit regressions, warning-free pinned self compile, and targeted constitution
+test satisfy the original T08 proof. Its dated task entry is checked with
+these bounded receipts.
+
+R04 stays open: this seat produced no actual pinned verify dispatch combining
+shim integrity and uncovered-production diagnostics, no covered live control,
+and no actual design validator retry dispatch. The recovery's inherited
+preflight says the canonical `.forge/forge.db` is absent and the fleet snapshot
+is dated 2026-10-23; it assigns overlapping `verify-seat.sh` hunks to #172 and
+#206. Those reservations were not refreshed here, so neither canonical gate
+script was edited. The self-provider lifecycle remains open for the precise
+seat limitation and prior DSH transport report recorded in preflight.
+
+D04 stays open for all unsatisfied parts of AC1–AC13. Existing older text
+requesting signed author commits is historical: accepted 0056 governs this
+recovery, so its implementation commit is unsigned. This addendum does not
+accept 0062, authorize a provider fallback, or claim ship readiness.
