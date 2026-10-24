@@ -1888,6 +1888,14 @@ after"
   }
   resolve_coverage_toolchain; ensure_fn_scan
 
+  # The helper is a standalone tool workspace, so its own unit suite must be
+  # run explicitly. Keep its Cargo output under this selftest's owned scratch
+  # root and require that target to be fresh before Cargo writes there.
+  local helper_manifest="$PIN_DIR/coverage-fn-scan/Cargo.toml" helper_test_target="$root/fn-scan-test-target"
+  [ ! -e "$helper_test_target" ] || refuse "coverage gate: selftest helper test target is not fresh: $helper_test_target"
+  fx_cmd "$PWD" coverage-fn-scan-tests.log 'coverage-fn-scan unit tests' "$root/coverage-fn-scan-tests.out" \
+    cargo test --manifest-path "$helper_manifest" --offline --locked --target-dir "$helper_test_target"
+
   # The production clean boundary must refuse in normal and conditional
   # callers, preserve diagnostics, and prevent every later-stage marker.
   local clean_mode=fail
@@ -2085,8 +2093,9 @@ after"
     check_no_coverage_exclusions "$root/derive-order-green-exp.rs"
 
   # Binary-only red/green fixtures exercise the independent bin dep-info path.
-  # Integration tests spawn their built executable so the ordinary included
-  # function contributes real report records.
+  # llvm-cov is the sole producer in each fresh target; its integration test
+  # spawns the instrumented executable so the ordinary included function
+  # contributes real report records.
   local fxbr="$root/fx-bin-red" fxbg="$root/fx-bin-green" fxbrt="$root/fx-bin-red-target" fxbgt="$root/fx-bin-green-target"
   for fixture in "$fxbr" "$fxbg"; do
     mkdir -p "$fixture/src" "$fixture/tests"
@@ -2105,15 +2114,24 @@ after"
   done
   for spec in "fxbin_red:$fxbr:$fxbrt:red" "fxbin_green:$fxbg:$fxbgt:green"; do
     IFS=: read -r bin_name fixture target color <<<"$spec"
-    fx_cmd "$fixture" "$bin_name-build.log" "the $bin_name executable build" "$root/$bin_name-build.out" \
-      cargo +"$coverage_toolchain" build --bin "$bin_name" --offline --locked --target-dir "$target"
-    fx_cmd "$fixture" "$bin_name-test.log" "the $bin_name executable integration test" "$root/$bin_name-test.out" \
-      cargo +"$coverage_toolchain" test --test exec_bin --offline --locked --target-dir "$target"
-    fx_cmd "$fixture" "$bin_name-cov.log" "the $bin_name coverage report" "$root/$bin_name-cov.out" \
+    [ ! -e "$target" ] || refuse "coverage gate: selftest instrumented target is not fresh: $target"
+    fx_cmd "$fixture" "$bin_name-cov.log" "the $bin_name instrumented coverage report" "$root/$bin_name-cov.out" \
       env CARGO_LLVM_COV_TARGET_DIR="$target" cargo +"$coverage_toolchain" llvm-cov --lcov --offline --locked --output-path "$root/$bin_name.info"
-    fx_cmd "$root" "$bin_name-harvest.log" "the $bin_name bin harvest" "$root/$bin_name-prod.txt" \
+    fx_cmd "$root" "$bin_name-harvest.log" "the $bin_name instrumented bin harvest" "$root/$bin_name-prod.txt" \
       "$FN_SCAN_BIN" files --workspace "$fixture" --build-dir "$target" --package "$bin_name" \
       --bin-root=src/main.rs --capture "$root/$bin_name-depinfo"
+    local depinfo_file captured_selected=0
+    for depinfo_file in "$root/$bin_name-depinfo"/*.d; do
+      [ -s "$depinfo_file" ] || continue
+      if grep -Fq "$bin_name:" "$depinfo_file" && grep -Fq 'src/main.rs' "$depinfo_file"; then
+        captured_selected=1
+        break
+      fi
+    done
+    [ "$captured_selected" -eq 1 ] || {
+      printf 'coverage gate: selftest failure — %s capture lacks a nonempty selected executable dep-info rule with src/main.rs\n' "$bin_name" >&2
+      failures=$((failures + 1))
+    }
     grep -Fxq 'src/main.rs' "$root/$bin_name-prod.txt" || {
       printf 'coverage gate: selftest failure — %s harvest omitted bin root src/main.rs\n' "$bin_name" >&2
       failures=$((failures + 1))

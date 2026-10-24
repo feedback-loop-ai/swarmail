@@ -210,7 +210,10 @@ fn unescaped_colon(line: &str) -> Option<usize> {
 }
 
 fn unescape(token: &str) -> String {
-    token.replace("\\ ", " ").replace("\\#", "#")
+    token
+        .replace("$$", "$")
+        .replace("\\ ", " ")
+        .replace("\\#", "#")
 }
 
 fn file_name_of(target: &str) -> &str {
@@ -227,9 +230,10 @@ fn is_lib_target(target: &str, package: &str) -> bool {
     let Some(rest) = stem.strip_prefix("lib") else {
         return false;
     };
-    rest == package
+    let crate_name = package.replace('-', "_");
+    rest == crate_name
         || rest
-            .strip_prefix(package)
+            .strip_prefix(&crate_name)
             .is_some_and(|tail| tail.starts_with('-'))
 }
 
@@ -820,13 +824,129 @@ fn scan_tokens(tokens: &[proc_macro2::TokenTree], derived: bool, scan: &mut Scan
 
 #[cfg(test)]
 mod exclusion_kind_tests {
-    use super::exclusion_kind;
+    use super::{cmd_attrs, exclusion_kind, is_bin_target, is_lib_target, unescape};
     use proc_macro2::{TokenStream, TokenTree};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::ExitCode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            for _ in 0..128 {
+                let path = std::env::temp_dir().join(format!(
+                    "coverage-fn-scan-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!(
+                        "cannot create owned test scratch {}: {error}",
+                        path.display()
+                    ),
+                }
+            }
+            panic!("could not allocate a unique coverage-fn-scan test scratch directory");
+        }
+
+        fn file(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn attribute(source: &str) -> TokenTree {
         let mut tokens = source.parse::<TokenStream>().unwrap().into_iter();
         assert!(matches!(tokens.next(), Some(TokenTree::Punct(_))));
         tokens.next().expect("attribute bracket group")
+    }
+
+    #[test]
+    fn cmd_attrs_names_a_cannot_tokenize_refusal_and_accepts_valid_expansion() {
+        let scratch = ScratchDir::new();
+        let malformed = scratch.file("malformed-expanded.rs");
+        fs::write(&malformed, "fn broken( {").unwrap();
+
+        let path = malformed.display().to_string();
+        let refusal = cmd_attrs(std::slice::from_ref(&path)).unwrap_err();
+        assert!(refusal.contains("cannot tokenize expansion"), "{refusal}");
+        assert!(refusal.contains(&path), "{refusal}");
+
+        let valid = scratch.file("valid-expanded.rs");
+        fs::write(&valid, "fn visible() {}\n").unwrap();
+        let valid_path = valid.display().to_string();
+        assert_eq!(
+            cmd_attrs(std::slice::from_ref(&valid_path)),
+            Ok(ExitCode::SUCCESS)
+        );
+    }
+
+    #[test]
+    fn recognizes_dash_normalized_library_targets_without_widening_matches() {
+        let cases = [
+            ("target/debug/deps/libdash_name.rlib", "dash-name", true),
+            (
+                "target/debug/deps/libdash_name-abc123.rlib",
+                "dash-name",
+                true,
+            ),
+            ("target/debug/deps/libordinary.rlib", "ordinary", true),
+            (
+                "target/debug/deps/libordinary-abc123.rlib",
+                "ordinary",
+                true,
+            ),
+            ("target/debug/deps/libunder_score.rlib", "under_score", true),
+            ("target/debug/deps/libdash_names.rlib", "dash-name", false),
+            ("target/debug/deps/libother.rlib", "dash-name", false),
+            (
+                "target/debug/deps/libdash_name-abc123.rmeta",
+                "dash-name",
+                false,
+            ),
+            ("target/debug/deps/dash-name-abc123", "dash-name", false),
+            ("target/debug/deps/dash_name-abc123", "dash-name", false),
+        ];
+        for (target, package, expected) in cases {
+            assert_eq!(
+                is_lib_target(target, package),
+                expected,
+                "target {target:?} for package {package:?}"
+            );
+        }
+        assert!(is_bin_target("target/debug/dash-name", "dash-name"));
+        assert!(!is_bin_target("target/debug/dash_name", "dash-name"));
+    }
+
+    #[test]
+    fn make_dollar_pairs_unescape_once_and_preserve_existing_escapes() {
+        let cases = [
+            ("ordinary", "ordinary"),
+            ("$", "$"),
+            ("$$", "$"),
+            ("a$$b", "a$b"),
+            ("a$$$$b", "a$$b"),
+            ("a\\ b", "a b"),
+            ("a\\#b", "a#b"),
+            ("a$$\\ b\\#c", "a$ b#c"),
+        ];
+        for (encoded, expected) in cases {
+            assert_eq!(
+                unescape(encoded),
+                expected,
+                "encoded dep-info token {encoded:?}"
+            );
+        }
     }
 
     #[test]
