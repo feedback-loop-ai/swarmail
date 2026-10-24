@@ -114,6 +114,17 @@ Update this reference with actual receipt/index hashes, restoration and
 fresh verification references during implementation; retain precise gaps
 until discharged. Never clean these target receipts before review completes.
 
+### Current implementation evidence — 2026-10-24
+
+The current run's ignored [evidence index](../../target/bridge-reap-proof/receipts/epic-192-issue-179-evidence-reco-81b99d67/index.md)
+records the four sequentially regenerated AC5 rows, raw outputs, successful
+restorations, focused green tests and pinned verification receipts. Its
+[implementation search record](../../target/bridge-reap-proof/receipts/epic-192-issue-179-evidence-reco-81b99d67/implementation-search.txt)
+keeps exact predecessor paths and access limits; current-run reds do not
+establish original predecessor provenance. The required four reviewer
+workspaces must read and hash every indexed receipt after dispatch; access
+is not claimed here. Retain the ignored receipt tree through review.
+
 ## Residual implementation procedure — 2026-10-24
 
 1. Record initial HEAD, clean status, both preservation hashes and engine
