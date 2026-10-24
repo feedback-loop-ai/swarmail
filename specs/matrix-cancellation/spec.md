@@ -4,7 +4,7 @@ Date: 2026-10-24. Epic #192, issue #194. Residual-repair run:
 `triage-and-continue-epic-192-iss-d9c1d0eb`, following completed
 `continue-epic-192-issue-194-from-8d385d4d`.
 
-Decision: 0062 — [Matrix cancellation and cleanup completion](../../docs/decisions/0062-matrix-cancellation.md), already committed, clean and proposed; acceptance is the operator's.
+Decision: 0073 — [Matrix cancellation and cleanup completion](../../docs/decisions/0073-matrix-cancellation.md), already committed, clean and proposed; acceptance is the operator's.
 
 ## Feature and rationale
 
@@ -46,7 +46,7 @@ unverified. These member findings define this bounded repair; no missing
 journal event or current-candidate gate receipt is invented.
 
 Accepted [0055](../../docs/decisions/0055-agent-eval-harness.md) remains the
-lifecycle/schema/report authority. Existing proposed 0062 describes the
+lifecycle/schema/report authority. Existing proposed 0073 describes the
 compatible interruption contract retained here; this proof repair adds no
 semantic ruling and needs no new decision. Accepted
 [0045 §8](../../docs/decisions/0045-delivery-repairs.md) permits compatible
@@ -99,7 +99,7 @@ do not invent a disagreement or carry withdrawn advice forward as current.
   supervisor framework, cgroup/subreaper or root-server hardening absent a
   concrete residual failure. Cost: conservative unknown/expiry failures and
   explicit unsupported escape/kernel limits; ownership is not confinement.
-- Adopt the existing spec directory and proposed 0062. No new semantic ADR,
+- Adopt the existing spec directory and proposed 0073. No new semantic ADR,
   schema, outcome, report denominator, dependency or coverage exception is
   warranted. Preserve O(product) refusal output and attempts including
   unstarted slots. Broader failure analysis supplies preservation constraints.
@@ -340,7 +340,7 @@ be applied to the current candidate.
 issue regression as 1 passed, 14 filtered, under `.forge/design-194-recovery/`.
 That historical receipt does not prove this successor. The earlier findings
 of ordinary-build controls and a three-second guard describe that revision,
-not the current cfg(test) migration. The original missing 0062 index row is
+not the current cfg(test) migration. The original missing 0073 index row is
 also historical; the current index already contains it.
 
 2026-10-24, continuation chief: read the actual prior VERIFY-FAIL at
@@ -372,7 +372,7 @@ it supersedes the older output-coverage claim, not current verification.
 The current work is AC11/AC12 plus reproduction of AC1–AC10, not adding
 those controls anew. Exact seq-714 aggregate binding remains unavailable. No
 historical receipt is promoted, bounded return counts are not reset, and
-0062 remains proposed. Current chief checks are recorded separately under
+0073 remains proposed. Current chief checks are recorded separately under
 `.forge/design-194-selector/`; their results cannot close future repair tasks.
 
 2026-10-24, chief execution at initial draft 0b522d9: the shared-selector test
@@ -389,7 +389,7 @@ documentation changes do not relabel their executed revision. T9/T10 and
 current verification remain open. The final chief commit changes only design
 artifacts, and its own structural check is recorded separately.
 
-Commit exactly this directory's spec.md, plan.md and tasks.md. Existing 0062
+Commit exactly this directory's spec.md, plan.md and tasks.md. Existing 0073
 stays clean, committed, declared and proposed; no new decision is needed.
 Only the sequence's pinned deterministic check owns the design verdict.
 Run-local checks/results stay uncommitted. Drafted does not mean implemented,

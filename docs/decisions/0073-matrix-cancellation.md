@@ -1,4 +1,4 @@
-# 0062 — Matrix cancellation waits for owned cleanup
+# 0073 — Matrix cancellation waits for owned cleanup
 
 - **Status:** proposed — acceptance is the operator's.
 - **Date:** 2026-10-24.
@@ -6,7 +6,7 @@
 - **Specification:** [matrix cancellation](../../specs/matrix-cancellation/spec.md).
 - **Extends:** [0055 §§8–10](0055-agent-eval-harness.md), compatibly: explicit matrix interruption, completion and accounting semantics.
 - **Preserves:** 0001–0005, schema 1, single-trial cleanup, report formulas, root coverage and dependencies.
-- **Number:** 0062 follows the highest existing numbered record, 0061; historical gaps are not reused.
+- **Number:** proposed as 0062; renumbered to 0073 at integration, because 0062 and 0072 went to other epic #192 decisions first. Historical gaps are not reused.
 
 ## Context
 
