@@ -36,6 +36,13 @@
 //! would drop this process's SQLite record locks — and a missing one is
 //! created exclusively, no wider than SQLite's own 0644 (subject to umask).
 //!
+//! An ordinary missing data path is created. A dangling symlink is an
+//! `OpenError::Io` refusal for the supplied path with `ENOENT`; the symlink
+//! remains and its missing target is not created. Relative paths and paths
+//! through a symlinked parent are admitted with their spelling preserved for
+//! path sidecars and errors. Cooperating servers using those aliases meet at
+//! the identity guard while they share the stable guard namespace.
+//!
 //! The scope is cooperating current servers under the data file's owner,
 //! on a local filesystem with working `flock`, sharing one `/tmp`. Outside
 //! it, and not refused: an older, sidecar-only binary reaching the file
@@ -305,6 +312,16 @@ fn create_new(path: &Path, mode: u32) -> std::io::Result<Option<File>> {
 /// data file's owner, and the guard a private, singly linked regular file
 /// of that owner — checked before it is opened and again on the opened
 /// handle, so a planted symlink, hard link or FIFO never redirects it.
+///
+/// Accepted decision 0047 §1 says:
+/// > Validate the opened metadata before locking too.
+/// > The verified private, stable parent is the trust boundary, not a promise against hostile same-user replacement.
+/// > Namespace replacement during lookup/open is outside the stable-namespace contract.
+///
+/// This validates the opened metadata; it does not compare pre-open and
+/// post-open inode identity. A replacement seam is not justified outside the
+/// accepted stable-namespace contract. This documents the defense-in-depth
+/// check and claims no new replacement-race proof.
 #[cfg(unix)]
 fn identity_guard(root: &Path, path: &Path, data: &std::fs::Metadata) -> Result<File, OpenError> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
@@ -663,6 +680,32 @@ mod tests {
         (dir, path)
     }
 
+    #[cfg(unix)]
+    fn assert_alias_refuses_in_both_orders(first: &Path, second: &Path) {
+        for (owner_path, rival_path) in [(first, second), (second, first)] {
+            let owner = Persist::open(owner_path).expect("the first alias owns the data file");
+            let err = Persist::open(rival_path)
+                .err()
+                .expect("the competing spelling refuses while its owner is held");
+            let expected = OpenError::InUse(rival_path.to_path_buf());
+            assert_eq!(
+                std::mem::discriminant(&err),
+                std::mem::discriminant(&expected),
+                "the rival is refused specifically as InUse: {err:?}"
+            );
+            assert_eq!(format!("{err:?}"), format!("{expected:?}"));
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "the data file is already in use by another server: {}",
+                    rival_path.display()
+                )
+            );
+            drop(owner);
+            drop(Persist::open(rival_path).expect("the rival is reusable after its owner drops"));
+        }
+    }
+
     fn full_email(id: &str, inbox: &str) -> Email {
         let mut e = email(id, inbox, "rcpt@x.io");
         e.from = Some(crate::model::EmailAddress {
@@ -902,7 +945,9 @@ mod tests {
     /// A file written before the seed fix can carry duplicate seq values;
     /// the restore must not depend on SQLite's tie-break (issue #54): rows
     /// with equal seq come back in write order — the (seq, rowid) index
-    /// order — not whichever order a temp sort happens to emit.
+    /// order — not whichever order a temp sort happens to emit. The fixture's
+    /// legal competing index makes dropping rowid from the actual restore
+    /// query reverse the tied rows on the locked SQLite build.
     #[test]
     fn a_legacy_duplicate_seq_restores_in_write_order() {
         let (_guard, path) = db_path("dup-seq");
@@ -916,6 +961,7 @@ mod tests {
                  received_at TEXT NOT NULL, received_ms INTEGER NOT NULL, size INTEGER NOT NULL, \
                  text TEXT, html TEXT, links_json TEXT NOT NULL, codes_json TEXT NOT NULL, \
                  raw BLOB NOT NULL);
+                 CREATE INDEX emails_seq ON emails(seq, received_ms DESC);
                  INSERT INTO emails VALUES ('first', 'box', 1, 'null', '[]', '[]', '[]', 'Hi', \
                  't', 1, 1, NULL, NULL, '[]', '[]', x'00');
                  INSERT INTO emails VALUES ('tied-a', 'box', 2, 'null', '[]', '[]', '[]', 'Hi', \
@@ -1284,6 +1330,97 @@ mod tests {
         probe
             .try_lock()
             .expect("the failed open released the sidecar");
+    }
+
+    /// A dangling data symlink is an I/O refusal, not a missing ordinary
+    /// path: identity lookup follows it, exclusive creation sees its entry,
+    /// and the final lookup reports NotFound without creating its target.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_data_symlink_refuses_with_enoent_without_creating_target() {
+        let (_guard, path) = db_path("dangling-data-link");
+        let target_parent = path.parent().unwrap().join("target-parent");
+        std::fs::create_dir(&target_parent).unwrap();
+        let target = target_parent.join("absent.db");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        let err = Persist::open(&path)
+            .err()
+            .expect("a dangling data symlink refuses startup");
+        let expected = OpenError::Io {
+            path: path.clone(),
+            source: std::io::Error::from(ErrorKind::NotFound),
+        };
+        assert_eq!(
+            std::mem::discriminant(&err),
+            std::mem::discriminant(&expected),
+            "the refusal is specifically OpenError::Io: {err:?}"
+        );
+        assert!(
+            format!("{err:?}").starts_with(&format!("Io {{ path: {path:?}, source: ")),
+            "the refusal names the supplied data path: {err:?}"
+        );
+        assert_eq!(
+            std::error::Error::source(&err)
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .map(std::io::Error::kind),
+            Some(ErrorKind::NotFound),
+            "the source keeps NotFound"
+        );
+        assert_eq!(
+            std::error::Error::source(&err)
+                .and_then(|source| source.downcast_ref::<std::io::Error>())
+                .and_then(std::io::Error::raw_os_error),
+            Some(libc::ENOENT),
+            "the source keeps the platform ENOENT"
+        );
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_link(&path).unwrap(), target);
+        assert!(!target.exists());
+    }
+
+    /// A relative spelling creates the missing file and keeps the supplied
+    /// spelling for a rival refusal; the absolute spelling meets the same
+    /// held owner without changing process cwd.
+    #[cfg(unix)]
+    #[test]
+    fn relative_data_path_refuses_its_absolute_alias_in_both_orders() {
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let absolute = dir.path().join("mail.db");
+        let relative = absolute.strip_prefix(&cwd).unwrap().to_path_buf();
+        assert!(relative.is_relative());
+        drop(Persist::open(&relative).expect("a missing relative data path is admitted"));
+        assert!(absolute.is_file());
+
+        assert_alias_refuses_in_both_orders(&relative, &absolute);
+    }
+
+    /// A path through a symlinked parent creates the missing file and meets
+    /// the real-parent spelling under one owner, in either acquisition order.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_parent_refuses_its_real_path_in_both_orders() {
+        let cwd = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&cwd).unwrap();
+        let real_parent = dir.path().join("real-parent");
+        std::fs::create_dir(&real_parent).unwrap();
+        let linked_parent = dir.path().join("linked-parent");
+        std::os::unix::fs::symlink(&real_parent, &linked_parent).unwrap();
+        let real = real_parent.join("mail.db");
+        let linked = linked_parent.join("mail.db");
+
+        drop(
+            Persist::open(&linked)
+                .expect("a missing database through a symlinked parent is admitted"),
+        );
+        assert!(real.is_file());
+        assert_alias_refuses_in_both_orders(&linked, &real);
     }
 
     /// The refusal follows the file, not its name (decision 0047 §1, issue

@@ -182,3 +182,44 @@ configured independent review lenses named in the spec, without fallback.
 | New assertions pressure exact coverage | Use branch-stable inline tests and existing idioms; no blanket harness moves, exemptions or floor changes. |
 | Linux-only evidence overstates filesystem portability | State Linux/macOS targets and existing stable shared namespace scope; preserve assigned macOS/CI proof obligations. |
 | Missing tools or failed gates obscure unfinished work | Record exact commands/failures and outstanding obligations; no inferred pass, alternate provider or policy bypass. |
+
+## Implementation evidence — Linux
+
+- Before source edits, the committed artifacts at a8802b3 passed
+  bash bundles/self/scripts/design-check.sh check . using the candidate-local
+  pinned Brokkr binary (SHA-256
+  ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f).
+
+- The post-open call to check_guard(&held.metadata()...) still precedes
+  try_lock; the owning comment records the three exact accepted 0047 §1
+  statements, distinguishes metadata validation from inode equality, and
+  explicitly claims no new replacement-race proof. No seam was added.
+- a_dangling_data_symlink_refuses_with_enoent_without_creating_target
+  passed in the 42-test persist::tests run. It checks typed OpenError::Io,
+  the supplied path, NotFound, raw ENOENT, unchanged symlink type/target,
+  and absent target.
+- relative_data_path_refuses_its_absolute_alias_in_both_orders and
+  symlinked_parent_refuses_its_real_path_in_both_orders passed. Each creates
+  a missing database through its alias, checks typed InUse with the rival's
+  exact spelling in both orders, and reopens after owner drop. No cwd or
+  environment mutation is used.
+- a_legacy_duplicate_seq_restores_in_write_order and
+  the_restore_scan_reads_the_seq_index passed. The unchanged restore-order
+  assertion failed under the actual ORDER BY seq mutant on
+  ["first", "tied-b", "tied-a"], then passed after exact source
+  restoration. Full command, test count, exits, assertion output, and hashes
+  are retained in
+  .forge/evidence/epic-192-issue-187-rowid-mutation.md.
+- sixteen_threads_cannot_leave_memory_and_disk_in_two_orders passed after
+  all three mutation results changed to .expect(...); the 16 roles, joins,
+  final nonempty witness and live/reopen comparisons remain intact.
+- Focused suites passed: persistence unit family 42; restore plan 1;
+  boundary probe 1; tests/binary.rs 32 passed (1 CI-owned port-80 test
+  ignored); tests/sqlite_locks.rs 1 passed (1 child helper ignored by
+  design); tests/persistence.rs 12; and tests/store_contract_docs.rs 19.
+- Full house-rule gates and the fail-closed native-tls absence proof passed.
+  Exact counts, command inventory, pinned Brokkr SHA-256, and CI-owned limits
+  are recorded in .forge/evidence/epic-192-issue-187-implement-gates.md.
+  CI-only and macOS receipts remain outstanding as the charter assigns.
+- T10's policy-selected four-lens review has not run in the implementation
+  phase; no review verdict or completion is claimed here. The engine's later review phase owns that dispatch.

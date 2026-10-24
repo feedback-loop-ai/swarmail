@@ -2156,7 +2156,9 @@ mod bounded_tests {
                     barrier.wait();
                     for j in 0..per_role {
                         for role in 0..roles {
-                            let _ = store.delete(&format!("{prefix}{round}-{role}-{j}"));
+                            store
+                                .delete(&format!("{prefix}{round}-{role}-{j}"))
+                                .expect("the boundary probe injects no storage failures");
                         }
                     }
                 }));
@@ -2168,7 +2170,9 @@ mod bounded_tests {
                 handles.push(s.spawn(move || {
                     barrier.wait();
                     for _ in 0..per_role {
-                        let _ = store.clear("A");
+                        store
+                            .clear("A")
+                            .expect("the boundary probe injects no storage failures");
                     }
                 }));
             }
@@ -2179,7 +2183,9 @@ mod bounded_tests {
                 handles.push(s.spawn(move || {
                     barrier.wait();
                     for _ in 0..per_role {
-                        let _ = store.clear_all();
+                        store
+                            .clear_all()
+                            .expect("the boundary probe injects no storage failures");
                     }
                 }));
             }

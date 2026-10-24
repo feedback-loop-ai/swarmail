@@ -998,6 +998,16 @@ restarts — after a crash, SQLite looks for the `-wal` file beside the name
 it was given, so restarting through another hard link's name would miss
 the crashed server's last commits.
 
+A missing ordinary data path is created. A dangling symlink refuses startup
+as `OpenError::Io` for the supplied path with `ENOENT`; the symlink remains
+unchanged and its missing target is not created. Relative data paths and
+paths through a symlinked parent are admitted. When cooperating servers
+share the stable namespace, either spelling of the same file is refused as
+`InUse` while an owner holds it, with the rival's supplied spelling in the
+error; it can be opened after that owner drops. These spelling checks prove
+the existing ownership behavior without attributing the refusal to one
+particular guard.
+
 **Memory is not globally bounded** (decision
 [0038](docs/decisions/0038-store-memory-and-timestamps.md)).
 `SWARMAIL_MAX_PER_INBOX` caps messages per inbox — `0` disables it — and is
