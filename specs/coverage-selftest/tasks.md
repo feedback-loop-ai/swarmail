@@ -1,58 +1,64 @@
-# Ordered tasks — coverage selftest
+# Ordered tasks — coverage selftest reservation follow-up
 
-All boxes describe downstream work, not work claimed by the design commit.
-Each task owns its proof; preserve dated clarification entries if returned.
+Updated: 2026-10-24. These are downstream obligations, not claims made by the
+chief commit. Initial #174 code exists at `16841aa`, but verification failed;
+retained requirements must be revalidated. Follow [spec.md](spec.md) and
+[plan.md](plan.md). Keep dated clarifications on any subsequent return.
 
-- [ ] **T1 — Establish the bounded baseline (AC8).** Verify ancestry from
-  ff9bf8aba26fabaeea89876d5257b58198a12601 and inventory every refusal arm with
-  its cause/context. Confirm only selftest code is an implementation target.
-  **Proof:** git diff/ancestry inspection, scanner and non-selftest gate
-  byte comparison, and an arm-to-reason audit preserving all #173 regressions.
-- [ ] **T2 — Require diagnostic-specific refusal assertions (AC1–AC2).**
-  Convert and remove the status-only helper, strengthen weak existing needles,
-  preserve context/partial-output checks, remove the aggregate inner-attribute
-  claim while retaining the isolated compiler proof. Add child-local controls.
-  **Proof:** syntax check and selftest; intended diagnostic + failure passes,
-  unrelated exit 127 and intended text + success increment child failures;
-  parent failures remain intact. Static audit finds no status-only helper/call.
-- [ ] **T3 — Cover malformed free-space output (AC3, AC7).** Add the scoped
-  successful-df/nonnumeric-column fixture without touching production parsing.
-  **Proof:** selftest requires read-space category and fixture path; numeric
-  success, short-space and stat-failure controls retain their own outcomes,
-  with subsequent real commands unaffected by the override.
-- [ ] **T4 — Prove derive scope and the green dump premise (AC4–AC5, AC7).**
-  Generate a real derive-before-offender red/green pair and assert canonical
-  ordering/context. Inspect the existing green dump's generated Eq impl.
-  **Proof:** uniquely named post-derive offender refuses, clean twin passes;
-  green dump contains the associated minted coverage(off)/assert_fields_are_eq
-  before scanner success is accepted. Missing shape is an explicit test
-  failure, not a skip or inferred pass.
-- [ ] **T5 — Exercise the binary paths independently (AC6–AC7).** Generate
-  binary-only red/green crates, offline locks, executable tests, actual reports,
-  dep-info inventories and explicit bin expansions with checked fixture builds.
-  **Proof:** harvest names the bin root and bin-only fn-bearing include;
-  stage 1 names the red missing file and cause, stage 2 names the excluded bin
-  function, and the exercised measured green binary passes both checks.
-- [ ] **T6 — Verify complete selftest coverage and scope preservation
-  (AC1–AC8).** Run the full strengthened selftest and audit final negative
-  assertions, real-fixture premises, isolation and cleanup.
-  **Proof:** selftest exits zero with all new/retained arms, no arbitrary
-  infrastructure failure counts as a refusal, and baseline comparison confirms
-  unchanged scanner, production gate/verdict, shims, dependencies and routes.
-  Return any discovered production defect through scope handling.
-- [ ] **T7 — Prove the implemented candidate through every local gate
-  (AC8–AC9).** Run the entire house-rule inventory, separately including exact
-  application coverage and coverage selftest; also run design-check selftest,
-  delivery tamper proof, strict shim digests and native-tls absence.
-  **Proof:** command/status/candidate/pin receipts show fmt, locked clippy/tests,
-  digest-matched bundle compile, exact positive-count 100/100/100, all required
-  selftests, publish-guard, keyless seal, licenses and explicit package-absence
-  diagnostic. Failed/blocked checks remain outstanding; baseline runs do not
-  certify the implemented candidate.
-- [ ] **T8 — Hand off the proved candidate on the selected engine lane
-  (AC9).** Preserve the full protected review and security hold, pinned Qwen,
-  Opus, official DeepSeek Flash and GLM routes, with no fallback or Pro.
-  **Proof:** actual engine verify/review receipts refer to the implemented
-  candidate; CI-only obligations are recorded as CI-owned until evidenced.
-  Keep honest task disposition, unsigned author commits and no push, merge,
-  tag or publish.
+- [ ] **T1 — Establish causality before patch selection (AC10).** Preserve
+  the receipt, identify `16841aa` and #173 ancestry `ff9bf8a`, and compare the
+  actual full-context fixture with a direct race through the same resolver.
+  **Test:** candidate/command/Bash/command-resolution/path/lifetime and
+  individual output/status receipts reproduce and attribute the two-success
+  failure. A passing reduced control alone fails this evidence requirement.
+  Unreplicated causality stays unresolved; do not close the residual.
+- [ ] **T2 — Apply the evidenced repair within AC8 (AC10, AC14–AC15).** Fix
+  only the responsible selftest execution path. A proved production resolver
+  fault requires scope return and reconciled documents before production edits.
+  **Test:** a control through actual functions fails when the demonstrated
+  fault is restored and passes after repair; diff/byte checks confirm scope.
+  A speculative readiness patch cannot substitute for causal repair.
+- [ ] **T3 — Make coordination explicit and finite (AC11–AC12).** Use private
+  endpoints, checked readiness/release and a bound covering opens, writes,
+  reads and waits. Preserve inherited descriptors; stop/reap fixture children
+  before root cleanup.
+  **Test:** two live children acknowledge readiness before release and request
+  the same leaf; death before readiness and failure after release yield bounded
+  failed proofs with no surviving workers or descriptor damage. Expiry never
+  yields success and no sleep establishes readiness.
+- [ ] **T4 — Attribute each outcome (AC11–AC12).** Capture actual winner path
+  and ownership, loser status/output, complete fresh records and independent
+  worker completion; check errors under conditional shell execution.
+  **Test:** real race yields {0,1}, exact winner path/ownership 0 and the status-1
+  child's own named refusal/path. Missing completion, unrelated nonzero result
+  and refusal text present only in the other log each fail the actual local
+  assertion logic without resetting the real parent's failure count.
+- [ ] **T5 — Prove caller-owned lifetime (AC13).** Retain the winning leaf
+  through both outcomes and run cleanup/retry against sentinel evidence.
+  **Test:** actual cleanup with observed ownership 0 and retry naming the
+  refusal category/path leave leaf/sentinel unchanged; outer cleanup follows
+  joins and assertions. Existing explicit/default ownership, path-shape and
+  parent/leaf-error controls retain their outcomes.
+- [ ] **T6 — Revalidate the full selftest and preservation boundaries
+  (AC1–AC8, AC14–AC15).** Run syntax check and canonical selftest, audit diff
+  to `16841aa` and scanner/non-selftest bytes to `ff9bf8a`.
+  **Test:** diagnostic helper controls, malformed successful df, derive before
+  independent offender, actual green minted attribute, independent binary
+  red/green, offline locked builds, inventory/partial-output, raw identifiers,
+  clean boundaries and reservations all pass. Setup errors never substitute
+  for refusals; no scanner/runtime/shim/policy/dependency/#175 change appears.
+- [ ] **T7 — Prove the final candidate through every local gate (AC9, AC15).**
+  Run the full house-rule inventory and pinned verifier's additional proofs.
+  **Test:** candidate/pin-bound receipts show fmt, locked clippy/tests,
+  digest-matched bundle compile, separate actual coverage and selftest,
+  positive exact 100/100/100 counts, publish-guard, keyless seal, licenses,
+  design-check selftest, delivery tamper proof, strict shims and native-tls
+  absence by its specific diagnostic. Failed/blocked/not-run checks remain
+  outstanding; baseline and structural draft checks do not certify repair.
+- [ ] **T8 — Retain engine-selected reviews and honest handoff (AC9, AC15).**
+  Preserve the four configured seats, protected review and security hold.
+  **Test:** actual engine receipts for the implemented candidate identify Qwen
+  Max correctness, Claude Opus security, official DeepSeek Flash guarantees
+  and DashScope GLM 5.3 tests, with no Pro or fallback. CI-only proofs keep their
+  charter owner until evidenced. Keep unsigned author commits and no push,
+  merge, tag or publish; report no completion with required work outstanding.

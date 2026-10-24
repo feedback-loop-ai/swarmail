@@ -1,23 +1,27 @@
-# Coverage selftest: prove the intended refusal
+# Coverage selftest: prove refusals and concurrent reservations
 
 Created: 2026-10-24
 Status: Draft
 Story: [Epic #192 issue #174](https://github.com/feedback-loop-ai/swarmail/issues/174)
-Baseline: `ff9bf8aba26fabaeea89876d5257b58198a12601` (reviewed issue #173 candidate)
+Preservation baseline: `ff9bf8aba26fabaeea89876d5257b58198a12601` (reviewed issue #173 candidate)
+Follow-up baseline: `16841aa4f503ad8eb83e36208ff5fd125fe25b95`
+Updated: 2026-10-24 — reservation verification residual
 
 ## Feature and rationale
 
-Strengthen the canonical coverage gate's selftest so each negative arm proves
-the intended refusal, and four missing fixture premises are exercised. Today
-`expect_refuse` accepts an unrelated exit 127; a green expansion can pass without
-containing the compiler-generated exclusion it claims to test; library-only
-fixtures cannot establish binary harvesting or scanning. These gaps can falsely
-certify a broken verifier even when its exit-status assertions all pass.
+Resolve the concurrent explicit-target reservation residual recorded after the
+initial #174 implementation. The retained verifier receipt reports two resolver
+successes (`0 0 ` instead of `0 1 `) and no named loser refusal. A selftest that
+cannot establish exclusive reservation cannot certify isolated instrumented
+builds. One contender must reserve the exact fresh leaf, the loser must receive
+the existing named refusal, and both must preserve caller ownership.
 
-The maintainer running `bash scripts/coverage-gate.sh selftest` must receive
-success only when the intended diagnostics, fixture premises and green controls
-all hold. Run actual coverage separately: a green selftest is not an exact
-coverage verdict for the application.
+The initial #174 work strengthened refusal diagnostics, malformed free-space
+output, real derive premises and independent binary fixtures. AC1–AC9 remain
+binding preservation requirements; the follow-up adds AC10–AC15. Existing code
+is not evidence of successful verification. Selftest success requires every
+intended diagnostic, premise and green control. Actual application coverage
+remains a separate verdict.
 
 This is test/selftest work inside `selftest()` in
 `bundles/self/scripts/coverage-gate.sh`. Preserve every reviewed #173 change,
@@ -46,7 +50,7 @@ selected `engine` lane. Gate work retains the full design and independent
 four-provider review, including official DeepSeek Flash, never Pro or fallback.
 The chief does not choose the next phase or certify delivery.
 
-## Panel synthesis and rulings
+## Initial panel synthesis — 2026-10-24
 
 The run-local simplicity and robustness positions agree on scope and on
 diagnostic-specific assertions. Adopt simplicity's single canonical owner,
@@ -76,6 +80,57 @@ Retain the isolated inner-only fixture and its green twin; remove the redundant
 aggregate inner-attribute assertion instead of claiming that any exclusion in
 that aggregate proves inner-attribute handling. Robustness's runtime examples
 explain why proof quality matters; they do not authorize new runtime work.
+
+## Follow-up panel synthesis and rulings — 2026-10-24
+
+Read both run-local positions (`simplicity.md` and `robustness.md`) and intake
+for `epic-192-issue-174-follow-up-res-8891f7c7`. Retained verifier receipt
+`.forge/results/0f6f9e1f-944f-4bb1-8c0e-6edcba5a4638.json` records failure,
+not its cause. The resolver uses one plain leaf `mkdir`, assigns ownership 0,
+and cleanup removes only owned defaults. The fixture has nested subshells,
+FIFO releases and child status files, but searches both logs together. Earlier
+command overrides are explicitly unset. Neither a resolver defect nor an
+EXIT-trap defect has been established by execution in this design seat.
+
+**Adopt simplicity's boundary and investigation order.** Keep the canonical
+selftest and atomic leaf reservation; reproduce through actual functions.
+Update this spec instead of adding competing requirements. Reject speculative
+locks, tokens, leases, backoff, stale-target reclamation, path normalization
+and automatic explicit cleanup. A passing reduced race is a control, not an
+explanation of the full-context failure. Unreplicated causality stays unresolved.
+
+**Adopt robustness's attribution and finite failure handling.** Rule against
+simplicity's suggestion to require a bound only after observing a hang: child
+death before FIFO readiness is a credible failure of this proof. Readiness,
+release and completion must be bounded and checked. Resolver status and worker
+completion are separate obligations. The accepted cost is a small local
+coordination protocol and failure controls; the losing minimal approach risks
+an indefinitely blocked gate and ambiguous child exits.
+
+**Reconcile readiness with causality.** Both children must acknowledge the
+start boundary before either is released; each checks its release before
+calling the resolver. This proves concurrent opportunity, not identical kernel
+scheduling instants. Either winner is valid. Readiness alone cannot explain two
+successful atomic reservations. Reject a generalized subprocess framework,
+extra permanent test executable, exhaustive scheduler matrix and production
+injection API. Keep sound existing coordination and only the local state needed
+for the proof. The cost of rejecting broader machinery is coupling this small
+protocol to two contenders and the existing stable refusal category.
+
+**Keep AC8 until evidence warrants scope return.** The authorized repair is
+inside selftest. If actual resolver execution proves a production defect,
+preserve its reproduction and use the established scope-return process to
+revise AC8, plan and tasks before production edits. Do not silently make an
+exception. Restoring the existing contract does not itself need a new decision;
+a semantic contract/ruling change requires a proposed decision, and conflict
+with accepted authority waits for operator acceptance. No semantic change is
+designed here. The accepted cost is a bounded design return if that hypothesis
+is proved, rather than speculative production authority.
+
+Robustness's runtime examples explain why trustworthy evidence matters; they
+authorize no SMTP, store, webhook, TLS or extraction work. Keep intake's
+`engine` classification under 0057 §§6–7, all gates and four independent
+reviews. Patch size cannot justify a lane downgrade.
 
 ## Acceptance Criteria
 
@@ -144,6 +199,57 @@ explain why proof quality matters; they do not authorize new runtime work.
   separately. Record command/status and candidate identity; blocked or failed
   checks remain outstanding. CI-only obligations stay CI-owned. Preserve
   protected review and security hold; never push, merge, tag or publish.
+
+- **AC10 — Causal evidence before repair.** Run the actual baseline resolver
+  and fixture in its accumulated selftest context. Retain candidate, command,
+  Bash version/options, relevant command resolution/overrides, exact requested
+  paths, per-child outcomes and leaf lifetime. Compare a controlled race through
+  the same resolver outside that context. Reproduce and attribute the recorded
+  two-success/no-refusal fault before choosing a patch. Static inspection,
+  successful retries and a passing approximation cannot close the residual;
+  unreplicated causality must remain explicitly unresolved.
+- **AC11 — One attributable winner and loser.** Two live children share one
+  exact initially absent leaf under a unique disk-backed fixture root. Both
+  acknowledge readiness before release and consume checked release tokens.
+  Parent observes and reaps both. Complete fresh records show exactly one
+  resolver status 0 and one status 1. The winner reports its actual exact path
+  and `BUILD_DIR_OWNED=0`; the status-1 child's own output contains
+  `fresh, unused leaf` and that path. Merged logs, arbitrary winner identity,
+  distinct leaves or serialized substitute calls cannot satisfy the proof.
+- **AC12 — Infrastructure failure fails finitely.** Explicitly check setup,
+  descriptor opens, readiness/release I/O, output writes and worker waits,
+  including under conditional Bash execution. Missing/malformed records, wrong
+  tokens, unrelated exits and worker death fail the proof. A finite deadline
+  or watchdog covers every blocking coordination operation; expiry is failure,
+  never successful synchronization. Stop and reap fixture children before
+  root cleanup. Controls for death before readiness, failure after release with
+  missing completion, unrelated nonzero status and refusal text only in the
+  wrong child's log must fail without leaked children or descriptor damage.
+  No sleep-as-synchronization or retries-until-green.
+- **AC13 — Caller-owned lifetime.** Neither child deletes the reserved leaf.
+  After both outcomes it remains present. A sentinel in the winning tree
+  survives actual `cleanup_build_dir` with observed ownership 0 and retry
+  refusal naming category/path. Leaf/sentinel remain unchanged. Only the outer
+  fixture owner removes its root after joins and assertions. Retain existing
+  empty/dirty-directory, file, symlink/dangling-symlink, trailing-slash, spaces,
+  parent/leaf failure and owned-default cleanup controls.
+- **AC14 — Causal red/green regression.** A focused control through actual
+  canonical functions fails when the demonstrated fault is restored and passes
+  after repair. Also run the canonical full selftest in normal context.
+  Controls use the actual local assertion/coordination code, with child-local
+  overrides/counters that cannot reset the real parent's failure count.
+  Bounded repetition may supplement isolation evidence; it cannot replace
+  this control or AC12's infrastructure controls.
+- **AC15 — Preservation and delivery.** Compare the follow-up diff to
+  `16841aa` and preserved scanner/non-selftest bytes to `ff9bf8a` under AC8.
+  Retain AC1–AC9, including offline locked real compiler fixtures, failed
+  inventory/partial-output, raw identifiers and clean boundaries. All AC9
+  final-candidate gates must pass, including separate exact application
+  coverage with positive counts and zero missed lines, branches and functions.
+  Actual engine review receipts cover the implemented candidate: Qwen Max
+  correctness, Claude Opus security, official DeepSeek Flash guarantees and
+  DashScope GLM 5.3 tests, never Pro or fallback. Keep security hold and
+  CI-owned obligations. Drafting is not repair or verification completion.
 
 ## Design handoff
 

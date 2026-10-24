@@ -1,157 +1,177 @@
-# Implementation plan — coverage selftest
+# Implementation plan — coverage selftest reservation follow-up
 
-Implements [spec.md](spec.md); proofs are paired with [tasks.md](tasks.md).
+Updated: 2026-10-24. Implements [spec.md](spec.md), preserving AC1–AC9 and
+adding AC10–AC15. [tasks.md](tasks.md) pairs each obligation with its proof.
+This replaces the initial implementation plan with investigation, bounded
+repair and revalidation of existing code; it certifies no completed task.
 
 ## Technical context
 
-The canonical gate is Bash with `set -euo pipefail`, jq, Cargo, an installed
-coverage nightly and cargo-llvm-cov. Its standalone Rust scanner uses
-syn/proc-macro2 over real source inventories and canonical expansions. There is
-one measured application crate. No new dependency, production Rust line or
-application test placement is required.
+The canonical gate is Bash with `set -euo pipefail`. Explicit resolution uses
+parent `mkdir -p`, one plain leaf `mkdir`, and ownership 0. The selftest has
+FIFO releases, nested resolver subshells, child status files and merged-log
+matching. Conditional shell execution can disable errexit; worker completion
+and resolver outcome need separate observations. The retained verification
+failure has not been causally reproduced in this seat.
 
-No plan template exists under `.specify/templates/`; use the requested
-technical context, constitution check and project structure sections here,
-with research, data model, contracts and quickstart inline.
+Existing compiler fixtures use jq, Cargo, installed coverage nightly,
+cargo-llvm-cov and the standalone Rust scanner. One measured application crate
+remains unchanged. No new dependency, Rust line or test seam is needed.
+No plan template exists in `.specify/templates/`; the requested technical
+context, constitution, project structure, research, data model, contracts and
+quickstart are provided inline.
 
 ## Constitution check
 
-Preserve accepted 0020/0035/0050 and all frozen guarantees. This is evidence
-strengthening, with no new semantic decision. Keep executable proof ownership
-inside the pinned bundle and public shim bytes/checksums unchanged. Preserve
-the selected engine/full lane under 0057, its protected reviews, official
-DeepSeek Flash route and hard security hold. Commit unsigned and never push.
+Preserve accepted 0020/0035/0045/0050, all frozen guarantees and extraction at
+ingest. Strengthening this proof changes no semantic contract and requires no
+new decision. Scanner, application, non-selftest gate logic, dependencies,
+fixed shims/checksums, policies and recipes remain preservation boundaries.
+Production repair requires the evidence and scope return in AC8 and the dated
+follow-up ruling before implementation; it is not a hidden conditional permit.
 
-The candidate-local `.forge/bin/brokkr` must match
-`bundles/self/tooling.json`; chief observed SHA-256
+Retain codex-fast's recorded `engine` classification and all four configured
+reviews under 0057. The engine dispatches them; this seat does not substitute
+its own review. Keep security hold, no fallback or DeepSeek Pro, unsigned
+commits under 0056, and no push, merge, tag or publication.
+
+Recheck candidate-local `.forge/bin/brokkr` against
+`bundles/self/tooling.json` before compile or dispatch; the recorded SHA-256 is
 `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
-Recheck the manifest and digest before compile/dispatch. Do not borrow a
-sibling binary or reconstruct journal receipts. The sequence's final pinned
-check owns the design verdict.
+Version equality or a sibling binary does not prove the pin. Hermetic verify
+executes the pinned transitive proof chain and checks public shim integrity.
 
 ## Project structure and files touched
 
-| Path | Intended change |
+| Path | Role and permitted change |
 |---|---|
-| `bundles/self/scripts/coverage-gate.sh` | Only selftest-local helpers, diagnostic assertions and generated fixtures |
-| `specs/coverage-selftest/spec.md` | Requirements, panel rulings and scope |
-| `specs/coverage-selftest/plan.md` | Approach, proof contracts and risks |
-| `specs/coverage-selftest/tasks.md` | Ordered implementation and verification tasks |
+| `specs/coverage-selftest/spec.md` | Requirements, preserved criteria and dated rulings |
+| `specs/coverage-selftest/plan.md` | Investigation, repair boundary and validation |
+| `specs/coverage-selftest/tasks.md` | Ordered tasks paired with tests |
+| `bundles/self/scripts/coverage-gate.sh` | Downstream repair only inside selftest helpers/concurrent arm |
+| `.brokkr/state/tasks/`, `.brokkr/state/design/positions/`, `.forge/results/` | Ignored framing, positions and receipts; never stage as design artifacts |
+| `target/coverage/selftest.XXXXXX` | Existing unique disk-backed fixture root, endpoints and records |
 
-Scanner source, production gate functions/top-level verdict, `src/`, manifests,
-locks, policies, routes, CI, public shims and accepted decisions are read-only
-inputs to this repair. Fixture files and generated lockfiles live under the
-existing unique `target/coverage/selftest.XXXXXX` root and are not committed.
-No additional design documents or permanent fixture workspace are needed.
+Only the three spec artifacts belong in the chief commit. No permanent fixture
+crate, helper executable, separate shell test or additional research/contract
+file is needed. Use the existing outer fixture lifetime, ensuring children are
+joined before any outer cleanup runs. All other files are inspection inputs.
 
 ## Research and implementation approach
 
-1. Confirm baseline ancestry and inspect the diff from `ff9bf8a`. Intake
-   reproduced a status-only false pass with exit 127; the current helper has
-   no diagnostic condition. Inventory every negative assertion, including
-   existing naming calls and the separate #173 context/partial-output checks.
-   Record an arm-to-reason mapping in local evidence to prevent omissions.
-2. Convert all status-only calls to `expect_refuse_naming` or its existing
-   `_without` variant, then delete the weak helper. Capture output/status once
-   per command. Use literal comparisons and stable reason text, adding unique
-   function/file discriminators where multiple faults coexist. Retain
-   deterministic paired context proofs; replace escape-variable-only causes.
-   Remove the redundant aggregate inner-attribute assertion; keep the
-   isolated `inner-only`/inner-allow compiler proof. Do not snapshot complete
-   rustc diagnostics or introduce a shared assertion API.
-3. Add child-shell assertion controls around the real helper. Start a local
-   failure count, invoke each controlled command, assert the expected delta,
-   and relay only the control verdict to the parent. Suppress/capture
-   deliberately failing control messages without swallowing unexpected
-   failures. No recursion into the full selftest and no resetting of the real
-   parent count. Explicitly observe status; conditional callers disable
-   assumptions about shell errexit.
-4. Add a small selftest-local function with a subshell body overriding `df`
-   for exactly one `check_free_space` invocation. Emit a successful normal
-   header/row with nonnumeric column four and assert the read-space refusal
-   plus path. Keep stat-failure, numeric-success and short-space controls.
-   No global PATH changes or production injection hook.
-5. Generate a small derive-order red/green library pair through the existing
-   fixture infrastructure. Use a real Eq derive and one excluded function
-   after it; expand with coverage cfgs. Check the controlled dump's impl and
-   function ordering/context, then require its unique function diagnostic.
-   Green removes only the author exclusion. Separately inspect the already
-   generated `green-exp.rs` for the Eq impl's minted attribute and
-   `assert_fields_are_eq` association before the existing pass assertion.
-   A small exact-shape check of this fixture is sufficient; do not introduce
-   generalized Rust parsing or tolerate absent compiler output.
-6. Generate two dependency-free binary-only crates with explicit bin names,
-   `src/main.rs`, a bin-only include and an integration test that executes
-   the actual binary. Red includes a harness-named fn-bearing file omitted
-   by the report filter and a unique excluded function. Green uses an ordinary
-   measured include with no author exclusion and executes it. Generate
-   locks offline; collect real reports/builds/expansions with explicit bin
-   selection and offline locked commands. Use existing `fx_cmd` fail-fast
-   logging, unique targets and scanner `files --capture`; assert inventory
-   membership before separate stage-1 and stage-2 checks. Ensure report
-   filtering actually causes the intended red omission, and assert the
-   reason plus filename. Binary-only crates prevent any library offender or
-   rlib depfile from certifying this arm. Do not run the whole repo gate
-   recursively for each fixture.
-7. Run the strengthened selftest, inspect all four new proofs and controls,
-   then the independent real exact coverage gate and full charter inventory.
-   Check the diff's non-selftest prefix/suffix and scanner against baseline,
-   including retained #173 arms. Record failures honestly; a discovered
-   production defect returns through scope handling. No scanner repair,
-   denominator change, lower floor or conditional skip is permitted here.
+1. Preserve the failed receipt and identify baseline `16841aa` and reviewed
+   #173 ancestor `ff9bf8a`. Reproduce through the actual canonical definitions
+   and full accumulated selftest context. Record focused traces of paths,
+   Bash options, relevant command/function resolution, individual statuses,
+   outputs and leaf lifetime without dumping unrelated environment or secrets.
+   Compare a controlled direct race through the same resolver. A reduced pass
+   is a comparison, not discharge of the full-context failure.
+2. Identify what permits both successes: selected paths, inherited overrides,
+   status capture, descriptor interference or leaf deletion/replacement. Do
+   not assume an EXIT-trap fault. Correct only the demonstrated selftest path.
+   A reproduced production resolver fault triggers scope return to reconcile
+   AC8 and dependent documents before production edits. If unreproduced, record
+   uncertainty rather than labeling a synchronization patch causally verified.
+3. Keep coordination local to two children under one root. Use private
+   endpoints and dynamically allocated descriptors or equivalent child
+   isolation; never overwrite inherited harness descriptors. Each child
+   acknowledges the start boundary. Release only after both acknowledgements;
+   children check the token before calling the actual resolver. Either kernel
+   scheduling order and either winner are valid.
+4. Bound readiness, release and completion with a local deadline/watchdog
+   using the existing shell environment. Cover FIFO opens/writes as well as
+   reads and waits. Explicitly check setup and I/O even under conditional
+   errexit. On failure stop and reap only the fixture's tracked children,
+   close endpoints and clean only after joins. Document the chosen failure
+   bound in the fixture; it is not a wall-clock validity assertion. No new
+   dependency, reusable process manager or timing-based success condition.
+5. Capture resolver status in a subshell because `refuse` exits. Report the
+   actual winner path/ownership only after successful resolution; no trailing
+   successful command may mask failure. Workers write fresh complete records
+   and signal record-delivery success separately. Parent validates both worker
+   waits and records before requiring {0,1}. Match stable literal refusal
+   category plus exact path in only the losing child's output. Reuse existing
+   assertion helpers locally; no merged-log attribution or new result library.
+6. Keep the leaf until both outcomes and ownership assertions finish. Write
+   sentinel bytes, invoke actual cleanup with observed ownership, and retry
+   the retained path through the real resolver. Assert named category/path and
+   unchanged leaf/sentinel. Reuse existing retry/ownership tests where possible;
+   the outer caller owns final root cleanup after joins.
+7. Exercise the actual local proof with child-local controls: death before
+   readiness; failure after release/missing completion; unrelated nonzero
+   result; refusal text only in the other child's output. Each must fail and
+   leave no children or damaged descriptors. Observe control verdicts without
+   resetting the real parent's failures. Restore the evidenced original fault
+   in an isolated control for red, then show green after repair. No duplicate
+   resolver, production injection hook or broad mutation framework. Follow
+   focused controls with the full canonical selftest.
+8. Revalidate AC1–AC9, separate application coverage and all required gates.
+   Byte-compare scanner and non-selftest script regions to `ff9bf8a`, and audit
+   follow-up scope against `16841aa`. Preserve actual final-candidate verify
+   and review receipts; baseline and draft checks cannot certify later edits.
 
 ## Data model and contracts
 
-No application schema, API or persistence changes. Selftest evidence consists
-of command status + combined output, an expected literal refusal category,
-optional function/path context and forbidden partial-output text. A negative
-proof passes only when status is nonzero and its required text holds; compiler
-setup success is a prerequisite, never an expected negative.
+No application schema, API or persistence changes. Each of two fixture
+identities binds a child PID, readiness observation, checked release, captured
+output, resolver status and complete result record. The parent separately
+observes worker completion. Both identities carry the same exact leaf.
 
-Generated artifacts are per-fixture manifests/locks, source files, reports,
-captured dep-info, production file lists, canonical dumps and logs. Their
-ownership and cleanup use the existing temporary-root lifecycle. Artifact
-shape checks establish test premises; they do not become a production Rust
-recognizer or a public diagnostic protocol. The actual gate's exact integer
-coverage and build-derived inventories remain unchanged.
+Lifecycle: setup -> both ready -> both released -> both joined -> validated
+outcomes -> ownership/retry assertions -> caller cleanup. Any infrastructure
+failure takes bounded stop-and-join followed by a failed proof. A resolver
+refusal is expected only when its worker completes correctly and its own
+output proves the refusal category/path.
+
+Success means resolver statuses {0,1}, actual winner ownership 0 and exact
+path, and attributed loser refusal. Retained explicit reservations after
+failure/crash belong to the caller. Atomic mkdir covers cooperating callers
+retaining the namespace, not hostile external deletion, distributed locking
+or automatic stale-target recovery.
 
 ## Quickstart and validation
 
-From the candidate root, verify `.forge/bin/brokkr` against the manifest.
-Run `bash -n bundles/self/scripts/coverage-gate.sh`, then
-`bash scripts/coverage-gate.sh selftest`. Inspect the named new arms and
-control results, then run `bash scripts/coverage-gate.sh` separately.
-Leave `CARGO_LLVM_COV_TARGET_DIR` unset for automatic fresh allocation; if
-explicitly selected, supply a never-created leaf, never a cached/precreated
-directory. Do not weaken the free-space preflight.
+For the chief's documentation change run `git diff --check`, then after
+commit `bash bundles/self/scripts/design-check.sh check .` as structural
+preflight. Keep the design commit at HEAD for the sequence's final pinned
+check. Structural validation certifies no implementation or runtime gate.
 
-Execute the sole full gate inventory in
-[house rules](../../docs/house-rules.md#gates--part-of-every-change), using
-the candidate-local digest-matched Brokkr and locked Cargo commands. Also
+Downstream, run `bash -n bundles/self/scripts/coverage-gate.sh`, focused
+actual-function reproduction and red/green controls, then
+`bash scripts/coverage-gate.sh selftest`. Separately run
+`bash scripts/coverage-gate.sh` for actual coverage. Leave the explicit target
+unset for automatic allocation or use a never-created leaf; do not reuse a
+cached/precreated target or bypass the free-space check.
+
+Execute the entire sole inventory in
+[house rules § Gates](../../docs/house-rules.md#gates--part-of-every-change)
+against the final candidate: fmt, locked clippy/tests, digest-matched bundle
+compile, exact coverage, coverage selftest, publish-guard, keyless seal and
+licenses. Retain positive counts and integer covered == count in all three
+dimensions, real protocol tests and offline locked compiler fixtures. Also
 execute `bundles/self/scripts/design-check.sh selftest`,
-`bundles/self/scripts/delivery-proof-test.sh` and strict verification of
-`bundles/self/scripts/shims.sha256`. Native-tls absence requires a failed
-`cargo tree --locked -i native-tls` and its specific
-`did not match any packages` diagnostic; any other failure is a failed proof.
-Capture command, status, candidate/pin identity and evidence path in ignored
-run evidence. CI-only checks remain those listed in the charter.
+`bundles/self/scripts/delivery-proof-test.sh`, strict shim digest checks and
+fail-closed native-tls absence. Only nonzero
+`cargo tree --locked -i native-tls` with `did not match any packages` proves
+absence; other failures do not. Record command/status, candidate/pin and log
+paths in ignored evidence. CI-only obligations retain their charter owner.
 
-After the chief commit, run
-`bash bundles/self/scripts/design-check.sh check .` as a structural preflight;
-the final sequence check executes its pinned copy. HEAD must remain this
-design commit until that check. Implementation and hermetic verify must rerun
-their required proofs against the implemented candidate; draft/baseline gate
-results do not certify future edits.
+The engine retains Qwen Max correctness, Claude Opus security, official
+DeepSeek Flash guarantees and DashScope GLM 5.3 tests reviews, without
+fallback. Design-seat checks replace none of those dispatches. Failed,
+blocked and not-run gates/reviews stay outstanding.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 |---|---|
-| An unrelated failure satisfies a negative test | Require reason + nonzero status; exercise unrelated exit 127 and text-plus-success controls; checked real builds precede assertions. |
-| A different offender masks the intended branch | Isolate derive ordering and bin crates; use unique diagnostic names and independent stage checks; retain isolated inner-only proof. |
-| Green derive stops containing the carve-out premise | Check associated Eq impl/minted method/attribute context before accepting scan success; changed compiler shape fails loudly and costs explicit fixture maintenance. |
-| Diagnostic formatting changes cause brittle tests | Match stable literal categories and discriminators, not whole output, temporary roots or exit numbers. Wording changes require deliberate review. |
-| Shell overrides or helper meta-failures leak | Use subshell-local overrides/counters and explicit observed control status; never reset the parent failures or depend on errexit. |
-| Extra binary/derive builds cost time and disk | Reuse existing fixture runner and owned cleanup; dependency-free crates, installed toolchain and offline locks; accept bounded extra compiler work, no resource bypass. |
-| Source changes escape the test-only scope | Byte-compare scanner and non-selftest gate regions to ff9bf8a, audit #173 controls, and return new production defects through scope handling. |
-| A draft gets mistaken for completed delivery | Leave implementation tasks unchecked; distinguish structural validation, baseline gates, implemented selftest, actual coverage, hermetic verify/review and CI evidence. |
+| Readiness patch conceals the two-success cause | Require full-context causal evidence and fault-restored red/green; unreproduced residual stays unresolved. |
+| Resolver fault conflicts with AC8 | Return with reproduction and reconcile scope before editing production; accept explicit design return. |
+| Worker errors look like refusal | Separate completion from resolver status, require fresh records and per-child category/path; wrong-error and wrong-log controls. |
+| Child death blocks FIFO or wait forever | Bound every phase, check tokens and stop/reap before cleanup; accept small local protocol maintenance. |
+| Descriptor collision or conditional errexit hides failure | Allocate/isolate descriptors and explicitly check I/O; test actual conditional calling context. |
+| Early cleanup permits two reservations or removes evidence | Neither child deletes the leaf; parent joins, checks ownership/sentinel/retry, then cleans its root. |
+| Controls contaminate later arms | Child-local overrides/counters, fresh records and checked joins; never reset parent failure count. |
+| Repair expands into #175 or weakens #173/#174 | Scope/byte checks and full retained proof audit; no scanner/runtime/dependency/policy or denominator/floor change. |
+| Added checks cost time and tool coupling | Keep shell controls local, reuse compiler fixtures, permit either winner; no exhaustive schedule matrix. |
+| Draft check is mistaken for delivery success | Leave downstream tasks unchecked until evidenced; deterministic sequence owns design verdict, actual gates/reviews own delivery. |
