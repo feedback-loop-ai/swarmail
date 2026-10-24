@@ -153,3 +153,30 @@ record's own verb and scope, and nothing above is rewritten by it.
   `QUIT` applies the retained marks and `RSET` clears them. "The failing
   suffix unmarked" and "idempotent over the unmarked suffix" above are
   erroneous prose (0045 §6); this is the dated pointer 0045 §6 promised.)*
+
+## Factual correction marker — 2026-10-24 (NEXT-183, finding 15.2)
+
+This marker corrects factual timing claims in Context item 2 and Decision §2.
+The accepted status and historical text remain as recorded; this is not a
+new ruling, amendment, or operator acceptance.
+
+### Busy-handler scope
+
+`busy_timeout=5000` configures SQLite's busy handler for lock-contention
+waits and retries. It does not bound arbitrary filesystem I/O or fsync, the
+time to return ENOSPC/EDQUOT/read-only errors, mutation mutex waiting,
+blocking-pool admission, scheduling, a whole transaction, request, or
+shutdown. A lock conflict need not consume the full threshold. The inline
+tripwire checks the opened connection's configured PRAGMA value; it does not
+measure elapsed storage time or prove a full-disk refusal latency. When an
+ordinary storage error is returned, the existing fixed refusal mapping
+remains in force.
+
+The wording above that makes a refusal or disk-exhaustion delay bounded by
+the same five-second stall is overbroad. The inherited amendment in
+[0012](0012-commit-failure-refusal-and-the-mutation-boundary.md) §Why claims
+that each refusal is bounded to about five seconds per statement; that claim
+is overbroad as well, and 0012 remains unchanged by this issue. The
+historical claim in [0014](0014-one-ordered-mutation-boundary.md)
+Consequences is corrected by its NEXT-183 marker. The dependency-default
+tripwire and all wire refusal text remain unchanged.

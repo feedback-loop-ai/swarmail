@@ -9,11 +9,11 @@
 //! Every tool maps to the same store the SMTP server writes — an agent sees
 //! exactly what was accepted, with no polling loops.
 //!
-//! The envelope follows decision 0029 §2: the JSON-RPC predicate is a
-//! *missing id* (a request has an id, a notification does not — whatever
-//! its method name), narrowed by decision 0047 §3 to objects whose `method`
-//! is a string — an id-less object without one is an invalid request
-//! answered with a null id. The code taxonomy is `-32700`/`-32600`/`-32601`/
+//! The envelope follows decision 0029 §2: only an object with a missing `id`
+//! and a string `method` is a notification. The 2026-10-24 amendment to
+//! accepted decision 0047 §3 also restricts supplied IDs to strings, numbers
+//! and null; Boolean, object and array IDs refuse with `-32600`/null before
+//! dispatch or effects. The code taxonomy is `-32700`/`-32600`/`-32601`/
 //! `-32602`, and every argument is staged — an absent key keeps its schema
 //! default, a present-but-wrong-typed key (or explicit `null`) refuses by
 //! name before any effect.
@@ -65,28 +65,31 @@ pub(crate) enum Envelope {
     /// included — a non-object value is answered too, with a null id.
     Single(Value),
     /// An admitted batch with requests: answered with one array, one entry
-    /// per id-bearing member and one null-id entry per invalid member (a
-    /// non-object, or an id-less object without a string method), in member
-    /// order — duplicates and nulls kept.
+    /// per valid id-bearing member and one null-id entry per invalid member
+    /// (including a non-scalar supplied id), in member order — duplicates
+    /// and explicit nulls kept; notifications are omitted.
     Batch(Vec<Value>),
     /// An empty or over-cap array: one null-id refusal, whatever ids its
     /// members carry. The bounds are judged before any silence.
     InvalidBatch,
 }
 
-/// The id one value is answered with, if any — the one notification
-/// predicate, shared by [`classify`] and [`handle`] so the server and the
-/// bridge owe the same replies. An object's own `id`, null included, is
-/// answered. `None` — silence — only for a notification: an object with no
-/// `id` *and* a string `method` (JSON-RPC 2.0 §4.1; decision 0047 §3, issue
-/// #132). Any other id-less object (`{}`, a lost `method`, a numeric one)
-/// is an invalid request owed a null id, and so is anything that is not an
-/// object — a scalar, `null`, a string or a nested array (decision 0044
-/// §1, issue #91).
+/// The id one value is answered with, if any — the shared notification and
+/// supplied-ID predicate used by [`classify`] and [`handle`]. A string,
+/// number or null ID is retained. Boolean, object and array IDs normalize to
+/// a null reply position and are refused by `handle` before effects (accepted
+/// decision 0047 §3, amended 2026-10-24). `None` — silence — only for an
+/// object with no `id` and a string `method`. Other id-less objects and
+/// non-object values are invalid requests owed a null ID (decision 0044 §1).
+fn valid_id(id: &Value) -> bool {
+    matches!(id, Value::String(_) | Value::Number(_) | Value::Null)
+}
+
 fn reply_id(value: &Value) -> Option<Value> {
     match value {
         Value::Object(fields) => match fields.get("id") {
-            Some(id) => Some(id.clone()),
+            Some(id) if valid_id(id) => Some(id.clone()),
+            Some(_) => Some(Value::Null),
             None if fields.get("method").is_some_and(Value::is_string) => None,
             None => Some(Value::Null),
         },
@@ -179,19 +182,27 @@ pub async fn dispatch(ctx: &McpContext, body: &[u8]) -> axum::response::Response
 }
 
 /// Handle one JSON-RPC request. Returns `None` for a notification — an
-/// object with no `id` and a string `method` (decision 0029 §2 as amended
-/// by decision 0047 §3), whatever that method names; an id-less
-/// `notifications/initialized` and an id-less `tools/call` both get
-/// silence, while an id-less object without a string method is answered.
+/// object with no `id` and a string `method` (decision 0029 §2), whatever
+/// that method names. Supplied Boolean, object and array IDs refuse with
+/// `-32600`/null before method dispatch or effects (decision 0047 §3,
+/// amended 2026-10-24); other malformed id-less objects are also answered.
 pub async fn handle(ctx: &McpContext, req: &Value) -> Option<Value> {
     // A value that is not an object is no request at all (decision 0044
     // §1): `-32600`, null id — the classification's null-id position.
     if !req.is_object() {
         return Some(error_object(-32600, NOT_AN_OBJECT, Value::Null));
     }
-    // The classification's own predicate: an id-less object reaches the
-    // method checks below with a null id, so a missing or non-string
-    // method is answered `-32600` (issue #132), never silence.
+    // Invalid supplied IDs are requests, not notifications: refuse before
+    // method lookup or any tool effect (decision 0047 §3, amended 2026-10-24).
+    if req.get("id").is_some_and(|id| !valid_id(id)) {
+        return Some(error_object(
+            -32600,
+            "id must be a string, number, or null",
+            Value::Null,
+        ));
+    }
+    // An id-less object reaches the method checks below with a null id, so a
+    // missing or non-string method is answered, never treated as silence.
     let id = reply_id(req);
     let method = match req.get("method") {
         None => {
@@ -264,12 +275,22 @@ fn arg_str(args: &Value, key: &str) -> Result<Option<String>, (i64, String)> {
     }
 }
 
+fn map_usize_conversion(
+    key: &str,
+    result: Result<usize, std::num::TryFromIntError>,
+) -> Result<Option<usize>, (i64, String)> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(_) => Err(refusal(key, "a non-negative integer that fits usize")),
+    }
+}
+
 /// Stage an unsigned integer argument (0 and up).
 fn arg_usize(args: &Value, key: &str) -> Result<Option<usize>, (i64, String)> {
     match args.get(key) {
         None => Ok(None),
         Some(v) => match v.as_u64() {
-            Some(n) => Ok(Some(n as usize)),
+            Some(n) => map_usize_conversion(key, usize::try_from(n)),
             None => Err(refusal(key, "a non-negative integer")),
         },
     }
@@ -751,6 +772,145 @@ mod tests {
         }
     }
 
+    #[test]
+    fn invalid_supplied_ids_normalize_to_null_reply_positions() {
+        for invalid in [
+            json!(true),
+            json!(false),
+            json!({}),
+            json!({"x": 1}),
+            json!([]),
+            json!([1]),
+        ] {
+            assert_eq!(
+                classify(&json!({"id": invalid, "method": "ping"})),
+                Envelope::Single(Value::Null),
+                "invalid id: {invalid}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_ids_refuse_before_dispatch_or_effects() {
+        let (_stop, ctx) = context();
+        for (index, id) in [
+            json!(true),
+            json!(false),
+            json!({}),
+            json!({"nested": []}),
+            json!([]),
+            json!([1]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let inbox = format!("invalid-id-{index}");
+            let request = json!({
+                "id": id,
+                "method": "tools/call",
+                "params": { "name": "swarmail_seed_email",
+                            "arguments": { "inbox": inbox, "to": "a@x.io" } }
+            });
+            let reply = handle(&ctx, &request)
+                .await
+                .expect("invalid ID owes a reply");
+            assert_eq!(reply["error"]["code"], -32600, "{request}: {reply}");
+            assert_eq!(reply["id"], Value::Null, "{request}: {reply}");
+            assert_eq!(
+                reply["error"]["message"], "id must be a string, number, or null",
+                "{request}: {reply}"
+            );
+            assert!(ctx.store.inboxes().is_empty(), "{request} ran a tool");
+            assert_eq!(
+                ctx.store.watcher_count(),
+                0,
+                "{request} registered a waiter"
+            );
+        }
+
+        let malformed_method = json!({"id": true, "method": 42});
+        let reply = handle(&ctx, &malformed_method)
+            .await
+            .expect("invalid ID is rejected before method validation");
+        assert_eq!(reply["error"]["code"], -32600, "{reply}");
+        assert_eq!(reply["id"], Value::Null, "{reply}");
+        assert_eq!(
+            reply["error"]["message"], "id must be a string, number, or null",
+            "{reply}"
+        );
+
+        for id in [json!("text"), json!(7), json!(-2), json!(1.5), Value::Null] {
+            let request = json!({"id": id, "method": "ping"});
+            let reply = handle(&ctx, &request).await.expect("valid ID owes a reply");
+            assert_eq!(reply["id"], id, "{request}: {reply}");
+            assert_eq!(reply["result"], json!({}), "{request}: {reply}");
+        }
+    }
+
+    #[test]
+    fn map_usize_conversion_translates_success_and_named_refusals() {
+        assert_eq!(
+            map_usize_conversion("offset", Ok(usize::MAX)),
+            Ok(Some(usize::MAX))
+        );
+        assert_eq!(map_usize_conversion("count", Ok(0)), Ok(Some(0)));
+        assert_eq!(
+            map_usize_conversion("offset", Err(u8::try_from(256_u16).unwrap_err())),
+            Err((
+                -32602,
+                "offset must be a non-negative integer that fits usize".to_string()
+            ))
+        );
+        assert_eq!(
+            map_usize_conversion("count", Err(u8::try_from(256_u16).unwrap_err())),
+            Err((
+                -32602,
+                "count must be a non-negative integer that fits usize".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn arg_usize_preserves_optional_values_and_rejects_wrong_shapes() {
+        assert_eq!(arg_usize(&json!({}), "offset"), Ok(None));
+        assert_eq!(arg_usize(&json!({"offset": 0}), "offset"), Ok(Some(0)));
+        assert_eq!(
+            arg_usize(&json!({"offset": usize::MAX}), "offset"),
+            Ok(Some(usize::MAX))
+        );
+        for invalid in [
+            json!(null),
+            json!(-1),
+            json!(1.5),
+            json!("1"),
+            json!(true),
+            json!({}),
+        ] {
+            assert_eq!(
+                arg_usize(&json!({"offset": invalid}), "offset"),
+                Err((-32602, "offset must be a non-negative integer".to_string())),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn usize_staging_accepts_max_and_refuses_overflow_on_32_bit() {
+        let max = u64::try_from(usize::MAX).unwrap();
+        assert_eq!(
+            arg_usize(&json!({"offset": max}), "offset"),
+            Ok(Some(usize::MAX))
+        );
+        assert_eq!(
+            arg_usize(&json!({"offset": max + 1}), "offset"),
+            Err((
+                -32602,
+                "offset must be a non-negative integer that fits usize".to_string()
+            ))
+        );
+    }
+
     /// The classification is the server's own answer (decision 0039 §2,
     /// AC8): for every row, real `dispatch` replies in exactly the shape
     /// the classification promises — and a silent notification still
@@ -994,7 +1154,7 @@ mod tests {
         let reply = call(
             &ctx,
             "swarmail_search_emails",
-            json!({"inbox": "paged", "offset": u64::MAX}),
+            json!({"inbox": "paged", "offset": usize::MAX}),
         )
         .await;
         assert_eq!(page(reply), (json!(3), Vec::<String>::new()));

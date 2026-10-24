@@ -62,15 +62,18 @@
   precedes domain validation of a deserializable body. Unsupported destructive
   selectors never scope clears; body-based selective deletion uses the ids body.
   Compat list/search tolerance, selective DELETE, chaos/webhook PUT and
-  health/metrics/UI/document routes keep their own contracts. An MCP argument
-  key (`{"inbx": "zz"}`), or an unknown key in a seed or webhook body
-  (`subjet`, `secrt`) is refused by name with 400; a
-  present JSON `null` for an optional string (seed `from`/`subject`/`text`/
+  health/metrics/UI/document routes keep their own contracts. An unknown key
+  in a seed or webhook body (`subjet`, `secrt`) is refused by name with HTTP
+  400. An unknown MCP tool argument key (`{"inbx": "zz"}`) returns JSON-RPC
+  `-32602` in HTTP 200 for a call with an `id`; valid notifications remain
+  silent. A present JSON `null` for an optional string (seed `from`/`subject`/`text`/
   `html`, webhook `inbox`/`secret`/`ca_pem`, chaos `error`) is refused,
-  omission takes the default. Seed and webhook body errors are 400 with a
-  JSON `error`; chaos body errors stay 422. A blank inbox name, or one with a
-  control character, is refused on every plane (SMTP AUTH and POP3 USER
-  included), and any other name is kept verbatim, padding included.
+  omission takes the default. Seed and webhook JSON data errors are `400`
+  with a JSON `error`. Malformed JSON syntax stays the extractor's plain-text
+  `400`, missing/wrong media type its plain-text `415`, and oversize its
+  plain-text `413`. Chaos JSON data errors stay the extractor's `422`.
+  A blank inbox name, or one with a control character, is refused on every
+  plane (SMTP AUTH and POP3 USER included), and any other name is kept verbatim, padding included.
 - The Mailpit/MailHog compat list and search routes keep their upstream
   tolerance: unknown query keys are ignored, so a typo such as
   `/api/v1/messages?inbx=` answers the whole store. The compat `latest`
@@ -117,8 +120,30 @@
 `swarmail_wait_for_email`, `swarmail_extract_links`, `swarmail_extract_codes`,
 `swarmail_seed_email`, `swarmail_set_chaos`, `swarmail_clear_chaos`.
 stdio transport: `swarmail mcp --url http://127.0.0.1:8025` (launch as an MCP
-subprocess; talks to the same server). Errors are always JSON-RPC: bad JSON
-or invalid UTF-8 is `-32700`, a body over 2 MiB is HTTP 413 `-32600`, a
+subprocess; talks to the same server). Except for malformed seed fixture
+content and the supplied `timeout_ms`
+refusal described below, wrong-typed or malformed MCP arguments and unknown
+argument keys return JSON-RPC `-32602` in HTTP 200 for a call with an `id`,
+before any effect. An elapsed `swarmail_wait_for_email` timeout is a normal
+tool result: `isError: false`, with `matched`, `total` and `timed_out: true`
+in its text content. On `swarmail_wait_for_email`, a supplied `timeout_ms`
+must be an integer from 0 through 60000; malformed values and values above
+60000 return an HTTP-200 tool result with `isError: true` and refusal text,
+not a JSON-RPC `error` object.
+`swarmail_seed_email` refuses `CR/LF/NUL` in its `to`, `from` or
+`subject` fixture strings before insertion under decision
+[0010 §2](docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md);
+for a call with an `id`, it returns HTTP 200 with a tool result
+`isError: true` whose text names the offending field and its reason;
+no message is inserted. Wrong-typed seed arguments and unknown keys
+remain JSON-RPC `-32602`; id-less notifications stay silent.
+
+Tool failures such as `shutting down` return
+`isError: true` with an error message in text content.
+An unknown MCP argument key returns JSON-RPC `-32602` in HTTP 200 for a call
+with an `id`, before any effect. Other protocol and
+argument refusals use a JSON-RPC `error`: bad JSON
+or invalid UTF-8 is HTTP 400 `-32700`, a body over 2 MiB is HTTP 413 `-32600`, a
 non-object value — or an id-less object without a string `method` — is
 `-32600` with a null id (once per batch member). The stdio bridge dials
 port 80 for a portless URL and refuses a body over 2 MiB itself, `-32600`

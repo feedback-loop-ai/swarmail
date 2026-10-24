@@ -1079,6 +1079,16 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
         "the wait registers exactly once: {metrics}"
     );
 
+    // Snapshot the cumulative row before this wait, in the same process
+    // and under its own label; the assertion below is a delta, not a reset
+    // assumption about the process-shared registry.
+    let (_, metrics) = common::http_get_text(addr, "/metrics").await;
+    let registered_408_before = common::metric_row_value(
+        &metrics,
+        r#"swarmail_awaits_registered_total{inbox="observed408"}"#,
+    )
+    .unwrap_or(0);
+
     // Timeout arm: a non-matching mail lands mid-wait; total counts it
     // while `matched` stays honest about the filter. The wait is spawned
     // and observed parked *before* the mail is sent — mirroring the REST
@@ -1116,13 +1126,14 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
     );
     // The second wait registered exactly once more, under its own inbox.
     let (_, metrics) = common::http_get_text(addr, "/metrics").await;
-    let registered_408 = common::metric_row_value(
+    let registered_408_after = common::metric_row_value(
         &metrics,
         r#"swarmail_awaits_registered_total{inbox="observed408"}"#,
     )
-    .unwrap_or(0);
+    .expect("the 408 wait must expose its cumulative registration row");
     assert_eq!(
-        registered_408, 1,
+        registered_408_after,
+        registered_408_before + 1,
         "one registration for the 408 arm: {metrics}"
     );
 }
@@ -1135,8 +1146,31 @@ async fn wait_results_carry_the_post_wait_total_in_both_arms() {
 async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
     let srv = start().await;
 
+    // Establish two distinguishable probability-zero rules, then compare the
+    // complete REST snapshot after every refused MCP write.
+    let connect = tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event": "connect", "probability": 0, "error": "421 baseline connect", "delay_ms": 5}"#,
+    )
+    .await;
+    assert_eq!(text(&connect)["connect"]["probability"], 0, "{connect}");
+    let data = tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event": "data", "probability": 0, "error": "451 baseline data", "delay_ms": 15}"#,
+    )
+    .await;
+    assert_eq!(text(&data)["data"]["probability"], 0, "{data}");
+    let (snapshot_status, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(snapshot_status, 200, "{before}");
+
     // 256 does not become 0: it does not fit u8.
     for (args, label) in [
+        (
+            r#"{"event": "data", "probability": -1}"#,
+            "negative probability -1 refuses by name",
+        ),
         (
             r#"{"event": "data", "probability": 256}"#,
             "256 must refuse, not narrow to 0",
@@ -1181,6 +1215,9 @@ async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
             body["error"]["message"], "probability must be an integer between 0 and 100",
             "{label}: {body}"
         );
+        let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{label}: {after}");
+        assert_eq!(after, before, "{label} changed active rules");
     }
 
     // Wrong-typed delay_ms refuses by name; absent stays the honest zero.
@@ -1195,6 +1232,9 @@ async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
         body["error"]["message"], "delay_ms must be a non-negative integer",
         "{body}"
     );
+    let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(get_status, 200, "{after}");
+    assert_eq!(after, before, "a rejected delay changed active rules");
 
     // A legal value sets the rule — the pole case is already pinned by the
     // chaos tests; this is the interior.
@@ -1304,6 +1344,14 @@ async fn next177_registered(addr: Http, inbox: &str) -> u64 {
 }
 
 async fn next177_establish_registration(addr: Http, inbox: &str) {
+    // Allow absence only before this positive control; afterward the row is
+    // required so a renamed counter cannot turn the check into zero == zero.
+    let (_, metrics) = http_get_text(addr, "/metrics").await;
+    let registered_before = metric_row_value(
+        &metrics,
+        &format!("swarmail_awaits_registered_total{{inbox=\"{inbox}\"}}"),
+    )
+    .unwrap_or(0);
     let result = tool(
         addr,
         "swarmail_wait_for_email",
@@ -1312,7 +1360,11 @@ async fn next177_establish_registration(addr: Http, inbox: &str) {
     .await;
     assert_eq!(text(&result)["timed_out"], true);
     assert_eq!(text(&result)["matched"], 0);
-    assert_eq!(next177_registered(addr, inbox).await, 1);
+    assert_eq!(
+        next177_registered(addr, inbox).await,
+        registered_before + 1,
+        "the positive control registers exactly once"
+    );
 }
 
 /// A supplied malformed `timeout_ms` refuses by name and registers no
@@ -1460,6 +1512,23 @@ async fn the_schemas_publish_the_wire_bounds() {
 
 // ---------- the validation family: #46 (arguments + envelope) ----------
 
+async fn assert_one_default_mail(addr: Http, expected_id: &str, when: &str) {
+    let (status, count) = http_json(addr, "GET", "/api/v1/inboxes/default/count", None).await;
+    assert_eq!(status, 200, "{when}: {count}");
+    assert_eq!(count["count"], 1, "{when}: {count}");
+    let (status, messages) = http_json(addr, "GET", "/api/v1/inboxes/default/messages", None).await;
+    assert_eq!(status, 200, "{when}: {messages}");
+    assert_eq!(
+        messages["emails"].as_array().unwrap().len(),
+        1,
+        "{when}: {messages}"
+    );
+    assert_eq!(
+        messages["emails"][0]["id"], expected_id,
+        "{when}: {messages}"
+    );
+}
+
 /// A *present* argument of the wrong JSON type — or explicit `null` —
 /// refuses -32602 with a sentence naming the field and its domain, on
 /// every tool that reads it (decision 0029 §1), and the effect never
@@ -1467,6 +1536,16 @@ async fn the_schemas_publish_the_wire_bounds() {
 #[tokio::test]
 async fn a_wrong_typed_argument_refuses_by_name() {
     let srv = start().await;
+    let (seed_status, seeded) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/default/seed",
+        Some(r#"{"to": "retained@x.io", "subject": "clear refusal witness"}"#),
+    )
+    .await;
+    assert_eq!(seed_status, 200, "{seeded}");
+    let retained_id = seeded["id"].as_str().unwrap().to_string();
+    assert_one_default_mail(srv.http_addr, &retained_id, "before malformed clear probes").await;
     let legs: &[(&str, &str, &str)] = &[
         // (tool, arguments, field named in the refusal) — one leg per wrong
         // shape: string→int, int→string, array→string, explicit null,
@@ -1487,6 +1566,15 @@ async fn a_wrong_typed_argument_refuses_by_name() {
         ("swarmail_seed_email", r#"{"to": 7}"#, "to"),
     ];
     for (name, args, field) in legs {
+        let clear_probe = *name == "swarmail_clear_inbox";
+        if clear_probe {
+            assert_one_default_mail(
+                srv.http_addr,
+                &retained_id,
+                "immediately before malformed clear",
+            )
+            .await;
+        }
         let (st, body) = rpc(
             srv.http_addr,
             "tools/call",
@@ -1496,15 +1584,29 @@ async fn a_wrong_typed_argument_refuses_by_name() {
         assert_eq!(st, 200, "{name} {args}");
         assert_eq!(body["error"]["code"], -32602, "{name} {args}: {body}");
         let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains(field), "{name} {args}: {message}");
-        assert!(message.contains("must be"), "{name} {args}: {message}");
+        if *name == "swarmail_seed_email" {
+            assert_eq!(message, "to must be a string", "{name} {args}: {message}");
+        } else {
+            assert!(message.contains(field), "{name} {args}: {message}");
+            assert!(message.contains("must be"), "{name} {args}: {message}");
+        }
+        if clear_probe {
+            assert_one_default_mail(
+                srv.http_addr,
+                &retained_id,
+                "immediately after malformed clear",
+            )
+            .await;
+        }
     }
 
-    // The refusal is not just words: `clear_inbox {"inbox": 42}` did not
-    // clear `default` — and stored nothing anywhere else either.
-    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
-    assert_eq!(st, 200);
-    assert_eq!(body["count"], 0, "a refused clear_inbox clears nothing");
+    // The seeded identity remains after every refusal, including both clear probes.
+    assert_one_default_mail(
+        srv.http_addr,
+        &retained_id,
+        "after all malformed argument probes",
+    )
+    .await;
 }
 
 /// The arguments *container* is itself a supplied value (0025 §2 through
@@ -1575,16 +1677,13 @@ async fn the_wait_registers_no_waiter_when_staging_refuses() {
     .await
     .unwrap();
 
+    next177_establish_registration(srv.http_addr, "nowaiter").await;
+
     // The cumulative registration is the observable (issue #102): the
     // delta across the refused call must stay zero — a wait that
     // subscribed before validating would leave a permanent +1, which the
     // released gauge cannot show.
-    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    let registered_before = metric_row_value(
-        &metrics,
-        r#"swarmail_awaits_registered_total{inbox="nowaiter"}"#,
-    )
-    .unwrap_or(0);
+    let registered_before = next177_registered(srv.http_addr, "nowaiter").await;
     let (st, body) = rpc(
         srv.http_addr,
         "tools/call",
@@ -1596,11 +1695,7 @@ async fn the_wait_registers_no_waiter_when_staging_refuses() {
     assert_eq!(body["error"]["message"], "to must be a string", "{body}");
 
     let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    let registered_after = metric_row_value(
-        &metrics,
-        r#"swarmail_awaits_registered_total{inbox="nowaiter"}"#,
-    )
-    .unwrap_or(0);
+    let registered_after = next177_registered(srv.http_addr, "nowaiter").await;
     assert_eq!(
         registered_after, registered_before,
         "a refused wait registers no waiter: {metrics}"
@@ -1859,6 +1954,137 @@ async fn malformed_objects_answer_over_http() {
     let initialized = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
     let (st, body) = http_send_text(srv.http_addr, "POST", "/mcp", Some(initialized)).await;
     assert_eq!((st, body.as_str()), (202, ""));
+}
+
+#[tokio::test]
+async fn supplied_non_scalar_ids_refuse_before_tool_effects_over_http() {
+    let srv = start().await;
+    let invalid_ids = [
+        serde_json::json!(true),
+        serde_json::json!(false),
+        serde_json::json!({}),
+        serde_json::json!({"nested": 1}),
+        serde_json::json!([]),
+        serde_json::json!([1]),
+    ];
+    for (index, id) in invalid_ids.into_iter().enumerate() {
+        let inbox = format!("invalid-id-{index}");
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": { "name": "swarmail_seed_email",
+                        "arguments": { "inbox": inbox, "to": "a@x.io" } }
+        });
+        let (status, reply) =
+            http_json(srv.http_addr, "POST", "/mcp", Some(&request.to_string())).await;
+        assert_eq!(status, 200, "{request}: {reply}");
+        assert_eq!(reply["id"], serde_json::Value::Null, "{request}: {reply}");
+        assert_eq!(reply["error"]["code"], -32600, "{request}: {reply}");
+        assert_eq!(
+            reply["error"]["message"], "id must be a string, number, or null",
+            "{request}: {reply}"
+        );
+        let (_, list) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/{inbox}/messages"),
+            None,
+        )
+        .await;
+        assert_eq!(list["total"], 0, "{request} had a tool effect: {list}");
+    }
+
+    for id in [
+        serde_json::json!("text"),
+        serde_json::json!(7),
+        serde_json::json!(-2),
+        serde_json::json!(1.5),
+        serde_json::Value::Null,
+    ] {
+        let request = serde_json::json!({"jsonrpc":"2.0", "id":id, "method":"ping"});
+        let (status, reply) =
+            http_json(srv.http_addr, "POST", "/mcp", Some(&request.to_string())).await;
+        assert_eq!(status, 200, "{request}: {reply}");
+        assert_eq!(reply["id"], id, "{request}: {reply}");
+        assert_eq!(reply["result"], serde_json::json!({}), "{request}: {reply}");
+    }
+
+    let batch = serde_json::json!([
+        {"id": true, "method": "ping"},
+        {"id": "dup", "method": "ping"},
+        {"method": "notifications/initialized"},
+        {"id": false, "method": "tools/call", "params": {
+            "name": "swarmail_seed_email",
+            "arguments": {"inbox": "invalid-batch-id", "to": "a@x.io"}
+        }},
+        {"id": null, "method": "ping"},
+        {"id": "dup", "method": "ping"},
+        {"id": {}, "method": "ping"},
+        {"id": [], "method": "ping"}
+    ]);
+    let (status, replies) =
+        http_json(srv.http_addr, "POST", "/mcp", Some(&batch.to_string())).await;
+    assert_eq!(status, 200, "{replies}");
+    let replies = replies.as_array().expect("mixed batch replies");
+    assert_eq!(
+        replies.len(),
+        7,
+        "only the valid notification is omitted: {replies:?}"
+    );
+    assert_eq!(
+        replies
+            .iter()
+            .map(|reply| reply["id"].clone())
+            .collect::<Vec<_>>(),
+        [
+            serde_json::Value::Null,
+            serde_json::json!("dup"),
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::json!("dup"),
+            serde_json::Value::Null,
+            serde_json::Value::Null
+        ]
+    );
+    for index in [0, 2, 5, 6] {
+        assert_eq!(replies[index]["error"]["code"], -32600, "{replies:?}");
+    }
+    let (_, list) = http_json(
+        srv.http_addr,
+        "GET",
+        "/api/v1/inboxes/invalid-batch-id/messages",
+        None,
+    )
+    .await;
+    assert_eq!(list["total"], 0, "invalid batch ID ran a tool: {list}");
+}
+
+#[cfg(target_pointer_width = "32")]
+#[tokio::test]
+async fn mcp_search_offset_refuses_values_beyond_32_bit_usize() {
+    let srv = start().await;
+    let max = u64::try_from(usize::MAX).unwrap();
+    for (offset, expected_error) in [(max, false), (max + 1, true)] {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name":"swarmail_search_emails", "arguments":{"offset":offset}}
+        });
+        let (status, reply) =
+            http_json(srv.http_addr, "POST", "/mcp", Some(&request.to_string())).await;
+        assert_eq!(status, 200, "{request}: {reply}");
+        if expected_error {
+            assert_eq!(reply["error"]["code"], -32602, "{reply}");
+            assert_eq!(
+                reply["error"]["message"], "offset must be a non-negative integer that fits usize",
+                "{reply}"
+            );
+        } else {
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+        }
+    }
 }
 
 /// Batches are answered in order and bounded (decision 0029 §2): requests
@@ -2143,12 +2369,8 @@ async fn the_staging_refuses_over_the_cap_and_honors_the_boundary() {
     // delta across the refused call must stay zero — a wait that
     // subscribed before validating would leave a permanent +1, which the
     // released gauge cannot show.
-    let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    let registered_before = metric_row_value(
-        &metrics,
-        r#"swarmail_awaits_registered_total{inbox="capbox"}"#,
-    )
-    .unwrap_or(0);
+    next177_establish_registration(srv.http_addr, "capbox").await;
+    let registered_before = next177_registered(srv.http_addr, "capbox").await;
     let (st, body) = rpc(
         srv.http_addr,
         "tools/call",
@@ -2162,11 +2384,7 @@ async fn the_staging_refuses_over_the_cap_and_honors_the_boundary() {
         "{body}"
     );
     let (_, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    let registered_after = metric_row_value(
-        &metrics,
-        r#"swarmail_awaits_registered_total{inbox="capbox"}"#,
-    )
-    .unwrap_or(0);
+    let registered_after = next177_registered(srv.http_addr, "capbox").await;
     assert_eq!(
         registered_after, registered_before,
         "a refused wait registers no waiter: {metrics}"

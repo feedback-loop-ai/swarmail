@@ -211,6 +211,24 @@ expect_refusal() { # <desc> <expected-exit> <needle...> -- <cmd...>
   done
 }
 
+# Targeted unknown-state cases must reach precisely their intended stage,
+# with the same repository scope and bare manifest identity as the caller.
+assert_requests() { # <description> <none|token|manifest>
+  local desc="$1" mode="$2" expected=""
+  case "$mode" in
+    none|token|manifest) ;;
+    *) fail "$desc: invalid assertion mode '$mode'" ;;
+  esac
+  if [ "$mode" != none ]; then
+    expected='/token?service=ghcr.io&scope=repository:feedback-loop-ai/swarmail:pull'
+  fi
+  if [ "$mode" = manifest ]; then
+    expected+=$'\n/v2/feedback-loop-ai/swarmail/manifests/0.1.0'
+  fi
+  [ "$(cat "$recorded")" = "$expected" ] \
+    || fail "$desc: unexpected registry request sequence: $(cat "$recorded")"
+}
+
 # Lifetime checks surround each refused connection; the child owns a bound
 # non-listening socket until cleanup joins it. No released-port reuse.
 assert_holder() {
@@ -269,20 +287,37 @@ expect_refusal "probe 200" 1 "already published" -- \
 
 # 9. Probe answers 500: registry state unknown — refuse, never publish.
 printf 'token=200\nmanifest=500\n' >"$control"
+: >"$recorded"
 expect_refusal "probe 500" 1 "HTTP 500" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+assert_requests "probe 500" manifest
 
 # 10. Token exchange fails (HTTP 500): registry state unknown — refuse.
 printf 'token=500\nmanifest=404\n' >"$control"
+: >"$recorded"
 expect_refusal "token exchange 500" 1 "token exchange failed" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+assert_requests "token exchange 500" token
+# The unknown mode collides with this same token-only request sequence; it
+# must refuse by mode before log comparison, not because the log differs.
+invalid_mode=token-only-typo
+invalid_mode_err="$work/invalid-mode.err"
+set +e
+( assert_requests "token exchange 500" "$invalid_mode" ) 2>"$invalid_mode_err"
+invalid_mode_status=$?
+set -e
+[ "$invalid_mode_status" -ne 0 ] || fail "token exchange 500: invalid mode '$invalid_mode' was accepted"
+grep -Fq "token exchange 500: invalid assertion mode '$invalid_mode'" "$invalid_mode_err" \
+  || fail "token exchange 500: invalid mode refusal did not identify '$invalid_mode': $(cat "$invalid_mode_err")"
 
 # 11. Connection refused (closed port): registry state unknown — refuse.
+: >"$recorded"
 expect_refusal "connection refused" 1 "token exchange failed" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="http://127.0.0.1:${closed_port}" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+assert_requests "connection refused" none
 
 assert_holder
 
@@ -378,13 +413,19 @@ expect_refusal "require-present + 404" 1 "0.1.0 is not published" -- present suc
 # 14d. Unknown registry state refuses: 500, a failed token exchange, a
 #      refused connection.
 printf 'token=200\nmanifest=500\n' >"$control"
-expect_refusal "require-present + 500" 1 "registry state unknown" -- present success v0.1.0 v0.1.0
+: >"$recorded"
+expect_refusal "require-present + 500" 1 "HTTP 500" -- present success v0.1.0 v0.1.0
+assert_requests "require-present + 500" manifest
 printf 'token=500\nmanifest=200\n' >"$control"
-expect_refusal "require-present + token 500" 1 "registry state unknown" -- present success v0.1.0 v0.1.0
+: >"$recorded"
+expect_refusal "require-present + token 500" 1 "token exchange failed" -- present success v0.1.0 v0.1.0
+assert_requests "require-present + token 500" token
 assert_holder
-expect_refusal "require-present + connection refused" 1 "registry state unknown" -- \
+: >"$recorded"
+expect_refusal "require-present + connection refused" 1 "token exchange failed" -- \
   env DOCKER_RESULT=success GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="http://127.0.0.1:${closed_port}" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail bare require-present
+assert_requests "require-present + connection refused" none
 
 assert_holder
 
@@ -423,20 +464,26 @@ expect_refusal "v0.1.1 tag: the chart's image preflight" 1 "ref 'v0.1.1' is not 
 # Distinct unknown-state proofs. A real token success followed by a closed
 # manifest connection exercises transport failure, separate from HTTP errors.
 printf 'token=200\nmanifest=close\n' >"$control"
+: >"$recorded"
 expect_refusal "manifest transport" 1 "manifest query failed" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+assert_requests "manifest transport" manifest
 # Installed-curl reachability experiment: an HTTP 000 status line is invalid,
 # so curl must fail before classification. This is not successful HTTP 000.
 printf 'token=200\nmanifest=raw000\n' >"$control"
+: >"$recorded"
 expect_refusal "raw 000 transport" 1 "manifest query failed" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+assert_requests "raw 000 transport" manifest
 echo "raw HTTP-000 experiment: $(curl --version | head -1); $(cat "$err")"
 printf 'token=200\nmanifest=404\n' >"$control"
+: >"$recorded"
 expect_refusal "000 classifier only after real authenticated 404" 1 "HTTP 000" -- \
   env ZERO_CLASSIFY=1 GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
+assert_requests "000 classifier only after real authenticated 404" manifest
 
 for v in 01.0.0 1.0.0-01 1.0.0-.a 1.0.0-a. 1.0.0-a..b 1.0.0- 1.0 '1.0.0-!'; do
   expect_refusal "strict semver $v" 1 "not valid semver" -- \

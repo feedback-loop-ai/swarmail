@@ -41,21 +41,37 @@ validate() {
     add_finding "HEAD does not resolve to a commit"
     verdict_notes="$findings"; return
   fi
-  # The slugs HEAD's own commit touches, NUL-delimited so no path can split.
-  local slugs=() seen=" " s
-  local changed
-  if ! changed="$(git -C "$top" diff-tree --no-commit-id --root -r -z --name-only HEAD 2>/dev/null | tr '\0' '\n')"; then
+  # Keep Git's NUL record boundary in a checked temporary file. A shell
+  # variable cannot represent NUL, and a newline in a pathname is ordinary data.
+  local slugs=() s existing duplicate changed_file
+  if ! changed_file="$(mktemp "${TMPDIR:-/tmp}/design-check-paths.XXXXXX" 2>/dev/null && printf '.')"; then
+    add_finding "could not create a temporary file for Git path discovery"
+    verdict_notes="$findings"; return
+  fi
+  changed_file="${changed_file%.}"
+  if ! git -C "$top" diff-tree --no-commit-id --root -r -z --name-only HEAD >"$changed_file" 2>/dev/null; then
+    if ! rm -f -- "$changed_file"; then
+      add_finding "could not remove the temporary Git path file after discovery failure"
+    fi
     add_finding "git diff-tree HEAD failed"
     verdict_notes="$findings"; return
   fi
-  while IFS= read -r path; do
+  while IFS= read -r -d '' path; do
     case "$path" in
       specs/*/*)
         s="${path#specs/}"; s="${s%%/*}"
-        case "$seen" in *" $s "*) ;; *) slugs+=("$s"); seen="$seen$s " ;; esac
+        duplicate=0
+        for existing in "${slugs[@]}"; do
+          if [[ "$existing" == "$s" ]]; then duplicate=1; break; fi
+        done
+        [ "$duplicate" -eq 1 ] || slugs+=("$s")
         ;;
     esac
-  done <<<"$changed"
+  done <"$changed_file"
+  if ! rm -f -- "$changed_file"; then
+    add_finding "could not remove the temporary Git path file after discovery"
+    verdict_notes="$findings"; return
+  fi
   count="${#slugs[@]}"
   if [ "$count" -eq 0 ]; then
     add_finding "the HEAD commit touches no specs/<slug>/ directory — the chief's design commit must be HEAD"
@@ -109,8 +125,17 @@ validate() {
       dec_file="$decl_files"
       [ -z "$(git -C "$top" status --porcelain -- "$dec_file" 2>&1)" ] ||
         add_finding "declared decision $dec_file differs from HEAD in the worktree"
-      git -C "$top" show "HEAD:$dec_file" | grep -Eiq '^-[[:space:]]*\*\*Status:\*\*[[:space:]]*proposed' ||
-        add_finding "declared decision $dec_file is not status proposed (a new declaration is proposed; cite an accepted one as authority instead)"
+      local decision_text status_headers
+      if ! decision_text="$(git -C "$top" show "HEAD:$dec_file" 2>/dev/null)"; then
+        add_finding "declared decision $dec_file cannot be read at HEAD"
+      else
+        status_headers="$(printf '%s\n' "$decision_text" | grep -Eic '^[[:blank:]]*(-[[:blank:]]*)?(\*\*Status\*\*[[:blank:]]*:|\*\*Status[[:blank:]]*:|Status[[:blank:]]*:)')"
+        if [ "$status_headers" -ne 1 ]; then
+          add_finding "declared decision $dec_file has $status_headers status headers; expected exactly one written as '- **Status:** proposed' (status values are case-insensitive; cite an accepted record as authority instead)"
+        elif ! printf '%s\n' "$decision_text" | grep -Eiq '^[[:blank:]]*-[[:blank:]]*\*\*Status:[[:blank:]]*\*\*[[:blank:]]*proposed([[:blank:]]|$)'; then
+          add_finding "declared decision $dec_file must use exactly '- **Status:** proposed' (status values are case-insensitive; cite an accepted record as authority instead)"
+        fi
+      fi
       blob spec.md | grep -Fq "docs/decisions/$(basename "$dec_file")" ||
         add_finding "spec declares decision $dec but does not link $(basename "$dec_file")"
     done
@@ -169,9 +194,80 @@ selftest() {
       printf 'design-check selftest failure — %s: expected a refusal naming "%s", got (exit %s):\n%s\n' "$1" "$3" "$status" "$out" >&2; failures=$((failures + 1))
     fi
   }
+  legacy_slug_count() { # exact pre-fix newline conversion, for the regression baseline
+    local changed path s seen=" " count=0
+    changed="$(git -C "$repo" diff-tree --no-commit-id --root -r -z --name-only HEAD | tr '\0' '\n')"
+    while IFS= read -r path; do
+      case "$path" in
+        specs/*/*)
+          s="${path#specs/}"; s="${s%%/*}"
+          case "$seen" in *" $s "*) ;; *) seen="$seen$s "; count=$((count + 1)) ;; esac
+          ;;
+      esac
+    done <<<"$changed"
+    printf '%s' "$count"
+  }
   fresh ok; expect 'a valid committed design passes' designed
   git -C "$repo" worktree add -q "$root/linked" HEAD >/dev/null 2>&1
   repo="$root/linked"; expect 'a linked worktree of the valid design passes' designed
+  repo="$root/newline-second"; mkdir -p "$repo"; git init -q "$repo"
+  mkdir -p "$repo/specs/a-design"
+  printf '# Design\n## Acceptance Criteria\n' >"$repo/specs/a-design/spec.md"
+  printf '# Plan\n## Risks\n' >"$repo/specs/a-design/plan.md"
+  printf -- '- [ ] T1\n' >"$repo/specs/a-design/tasks.md"
+  g add -A; g commit -m design
+  local newline_slug=$'evil\nname' legacy_count
+  mkdir -p "$repo/specs/$newline_slug"
+  printf 'x\n' >"$repo/specs/$newline_slug/file.md"
+  printf 'same HEAD commit\n' >"$repo/specs/a-design/extra.md"
+  g add -A; g commit -m newline-second-slug
+  local git_bin="$root/git-wrapper" real_git baseline_status=0
+  mkdir -p "$git_bin"
+  real_git="$(command -v git)"
+  cat >"$git_bin/git" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = diff-tree ]; then
+    case "${DESIGN_GIT_MODE:-}" in
+      legacy)
+        legacy_stream="$("$REAL_GIT" "$@" 2>/dev/null | tr '\0' '\n')"
+        printf '%s\0' "$legacy_stream"
+        exit 0
+        ;;
+      fail) exit 23 ;;
+      partial)
+        printf 'specs/new-design/spec.md\0specs/evil\nname/file.md\0'
+        exit 23
+        ;;
+    esac
+  fi
+done
+exec "$REAL_GIT" "$@"
+EOF
+  chmod +x "$git_bin/git"
+  legacy_count="$(legacy_slug_count)"
+  if [ "$legacy_count" -ne 1 ]; then
+    printf 'design-check selftest failure — legacy newline parser saw %s slugs, expected its known false count of 1\n' "$legacy_count" >&2
+    failures=$((failures + 1))
+  fi
+  out="$(REAL_GIT="$real_git" DESIGN_GIT_MODE=legacy PATH="$git_bin:$PATH" bash "$pin_dir/design-check.sh" check "$repo" 2>&1)" || baseline_status=$?
+  if [ "$baseline_status" -ne 0 ] || [[ "$out" != designed:* ]]; then
+    printf 'design-check selftest failure — legacy boundary loss did not admit the otherwise valid fixture:\n%s\n' "$out" >&2
+    failures=$((failures + 1))
+  fi
+  expect 'a valid design plus a newline-bearing second slug refuses' fail 'touches 2 spec directories'
+  repo="$root/newline-only"; mkdir -p "$repo"; git init -q "$repo"
+  mkdir -p "$repo/specs/$newline_slug"
+  printf 'x\n' >"$repo/specs/$newline_slug/file.md"
+  git -C "$repo" -c user.name=t -c user.email=t@t -c commit.gpgsign=false add -A
+  git -C "$repo" -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -m newline-only >/dev/null 2>&1
+  expect 'a lone newline-bearing slug refuses kebab-case validation' fail 'not a kebab-case slug'
+  fresh repeated
+  printf 'x\n' >"$repo/specs/new-design/one.md"
+  local newline_file=$'sub\nfile.md'
+  printf 'x\n' >"$repo/specs/new-design/$newline_file"
+  g add -A; g commit -m repeated-files
+  expect 'repeated files under one slug, including a newline filename, pass' designed
   fresh risks; printf '# Plan\n' >"$repo/specs/new-design/plan.md"; g commit -am 'no risks'
   touch -d '2030-01-01' "$repo/specs/old-valid" "$repo/specs/old-valid/plan.md"
   expect 'a missing-risks draft refuses beside a newer-mtime valid spec' fail 'no risks section'
@@ -196,7 +292,43 @@ selftest() {
   fresh decmissing; g rm -q docs/decisions/0099-x.md; printf -- '- [x] T9\n' >>"$repo/specs/new-design/tasks.md"; g add -A; g commit -m x
   expect 'a missing declared decision refuses' fail 'no docs/decisions/0099-*.md'
   fresh decaccepted; printf '# 0099\n\n- **Status:** accepted\n' >"$repo/docs/decisions/0099-x.md"; printf -- '- [x] T9\n' >>"$repo/specs/new-design/tasks.md"; g commit -am x
-  expect 'an accepted record cannot be a new declaration' fail 'not status proposed'
+  expect 'an accepted record cannot be a new declaration' fail "'- **Status:** proposed'"
+  fresh status-explanation
+  printf '# 0099\n\n  -   **sTaTuS:**    PrOpOsEd — explanatory text\n' >"$repo/docs/decisions/0099-x.md"
+  printf 'status fixture\n' >>"$repo/specs/new-design/plan.md"; g commit -am status-explanation
+  expect 'canonical proposed status with case and spacing variants passes' designed
+  fresh status-alternate
+  printf '# 0099\n\n**Status**: proposed\n' >"$repo/docs/decisions/0099-x.md"
+  printf 'status fixture\n' >>"$repo/specs/new-design/plan.md"; g commit -am status-alternate
+  expect 'alternate recorded status spelling refuses with the exact expected form' fail "'- **Status:** proposed'"
+  fresh status-malformed
+  printf '# 0099\n\n- **Status: proposed**\n' >"$repo/docs/decisions/0099-x.md"
+  printf 'status fixture\n' >>"$repo/specs/new-design/plan.md"; g commit -am status-malformed
+  expect 'malformed status metadata refuses with the exact expected form' fail "'- **Status:** proposed'"
+  fresh status-missing
+  printf '# 0099\n' >"$repo/docs/decisions/0099-x.md"
+  printf 'status fixture\n' >>"$repo/specs/new-design/plan.md"; g commit -am status-missing
+  expect 'a missing status header refuses with the exact expected form' fail "'- **Status:** proposed'"
+  fresh status-draft
+  printf '# 0099\n\n- **Status:** Draft\n' >"$repo/docs/decisions/0099-x.md"
+  printf 'status fixture\n' >>"$repo/specs/new-design/plan.md"; g commit -am status-draft
+  expect 'Draft is not a proposed status' fail "'- **Status:** proposed'"
+  fresh status-proposedness
+  printf '# 0099\n\n- **Status:** proposedness\n' >"$repo/docs/decisions/0099-x.md"
+  printf 'status fixture\n' >>"$repo/specs/new-design/plan.md"; g commit -am status-proposedness
+  expect 'a status token with a suffix is not proposed' fail "'- **Status:** proposed'"
+  fresh status-prose
+  printf '# 0099\n\nThe narrative says the status is proposed.\n' >"$repo/docs/decisions/0099-x.md"
+  printf 'status fixture\n' >>"$repo/specs/new-design/plan.md"; g commit -am status-prose
+  expect 'prose mentioning proposed is not a status header' fail "'- **Status:** proposed'"
+  fresh status-duplicate
+  printf '# 0099\n\n- **Status:** proposed\n- **Status:** proposed\n' >"$repo/docs/decisions/0099-x.md"
+  printf 'status fixture\n' >>"$repo/specs/new-design/plan.md"; g commit -am status-duplicate
+  expect 'duplicate proposed headers refuse as ambiguous' fail 'has 2 status headers'
+  fresh status-conflict
+  printf '# 0099\n\n- **Status:** proposed\n**Status**: accepted\n' >"$repo/docs/decisions/0099-x.md"
+  printf 'status fixture\n' >>"$repo/specs/new-design/plan.md"; g commit -am status-conflict
+  expect 'canonical and alternate conflicting headers refuse as ambiguous' fail 'has 2 status headers'
   fresh declink; printf '# New\nDecision: 0099\n## Acceptance\n' >"$repo/specs/new-design/spec.md"; g commit -am x
   expect 'a declaration without its link refuses' fail 'does not link 0099-x.md'
   fresh authority; printf '# New\nSee [0007](../../docs/decisions/0007-y.md), accepted.\n## Acceptance\n' >"$repo/specs/new-design/spec.md"; g commit -am x
@@ -205,6 +337,45 @@ selftest() {
   expect 'a non-kebab slug refuses' fail 'not a kebab-case slug'
   repo="$root/nogit"; mkdir -p "$repo"
   expect 'a non-Git directory refuses' fail 'not a Git work tree'
+  fresh git-errors
+  local command_status=0
+  out="$(REAL_GIT="$real_git" DESIGN_GIT_MODE=fail PATH="$git_bin:$PATH" bash "$pin_dir/design-check.sh" check "$repo" 2>&1)" || command_status=$?
+  if [ "$command_status" -eq 0 ] || [[ "$out" != *"git diff-tree HEAD failed"* ]]; then
+    printf 'design-check selftest failure — a Git discovery failure did not refuse by name:\n%s\n' "$out" >&2
+    failures=$((failures + 1))
+  fi
+  command_status=0
+  out="$(REAL_GIT="$real_git" DESIGN_GIT_MODE=partial PATH="$git_bin:$PATH" bash "$pin_dir/design-check.sh" check "$repo" 2>&1)" || command_status=$?
+  if [ "$command_status" -eq 0 ] || [[ "$out" != *"git diff-tree HEAD failed"* ]]; then
+    printf 'design-check selftest failure — partial Git output followed by failure was accepted:\n%s\n' "$out" >&2
+    failures=$((failures + 1))
+  fi
+  expect 'a fresh discovery succeeds after injected Git failures' designed
+  command_status=0
+  out="$(TMPDIR="$root/no-such-temp-dir" bash "$pin_dir/design-check.sh" check "$repo" 2>&1)" || command_status=$?
+  if [ "$command_status" -eq 0 ] || [[ "$out" != *"could not create a temporary file for Git path discovery"* ]]; then
+    printf 'design-check selftest failure — temporary creation failure did not refuse:\n%s\n' "$out" >&2
+    failures=$((failures + 1))
+  fi
+  local rm_bin="$root/rm-wrapper" real_rm temp_root
+  mkdir -p "$rm_bin" "$root/discovery-temp"
+  real_rm="$(command -v rm)"
+  cat >"$rm_bin/rm" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in */design-check-paths.*) exit 91 ;; esac
+done
+exec "$REAL_RM" "$@"
+EOF
+  chmod +x "$rm_bin/rm"
+  command_status=0
+  out="$(REAL_RM="$real_rm" PATH="$rm_bin:$PATH" TMPDIR="$root/discovery-temp" bash "$pin_dir/design-check.sh" check "$repo" 2>&1)" || command_status=$?
+  if [ "$command_status" -eq 0 ] || [[ "$out" != *"could not remove the temporary Git path file after discovery"* ]]; then
+    printf 'design-check selftest failure — temporary cleanup failure did not refuse:\n%s\n' "$out" >&2
+    failures=$((failures + 1))
+  fi
+  "$real_rm" -f "$root/discovery-temp"/design-check-paths.*
+  expect 'a fresh discovery succeeds after temporary failures' designed
   # The prerequisite helper is part of the pinned chain: a copy of this
   # validator without it refuses, and one whose helper fails refuses.
   local pinless="$root/pinless"; mkdir -p "$pinless"; cp "$pin_dir/design-check.sh" "$pinless/"

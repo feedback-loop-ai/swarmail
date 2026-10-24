@@ -1,0 +1,32 @@
+# Ordered tasks — RPC edge contracts
+
+Checked boxes record evidence completed in this implementation phase; unchecked
+boxes name proof still required. Each task names its proving test. See
+[spec.md](spec.md) acceptance criteria and [plan.md](plan.md) for scope and
+evidence limits.
+
+- [x] T1 (AC9): Append the 2026-10-24 operator ID amendment to 0047 §3, preserving history/status; index 0062 as proposed and update current contract comments. **Proof:** `cargo test --workspace --locked` passed, including `store_contract_docs`; the dated addendum matches the supplied ruling and preserves the accepted text/status.
+- [x] T2 (AC1): Capture short-valid-JSON/whitespace/non-2xx-error reds; fix length comparison and nine-byte fixture. Cover invalid UTF-8, zero/exact/excess/no-length and cap/header/status controls. **Proof:** baseline red is recorded in `.forge/results/37f295bd-3945-4a83-ada6-2c336be860a0-parser-baseline.log`; the final locked workspace test log records the restored green. Short JSON/whitespace/invalid-UTF8/non-2xx cases now refuse before interpretation.
+- [x] T3 (AC2): Exercise a real short-body/EOF peer, request/batch/notification correlation and subsequent-line success; retain complete upstream error forwarding. **Proof:** `tests/stdio.rs::short_http_bodies_fail_correlated_slots_and_the_bridge_recovers` passed against a loopback peer; it checks -32000 positions, notification silence and following-line recovery.
+- [x] T4 (AC3, AC4): Add one ID predicate beside reply_id; normalize invalid IDs to owed null slots and reject before handle dispatch. **Proof:** the old classifier red is in `.forge/results/37f295bd-3945-4a83-ada6-2c336be860a0-id-baseline.log`; classifier, handler, HTTP and stdio tests now cover both Booleans, empty/nonempty objects/arrays, scalar controls and no effects.
+- [x] T5 (AC3, AC4): Prove notification effects and invalid-ID mutation refusal over real HTTP and stdio; cover mixed ordered batches, duplicate/null slots, empty/over-cap refusal and concurrency. **Proof:** `tests/mcp.rs::supplied_non_scalar_ids_refuse_before_tool_effects_over_http` and the stdio parity test passed against real servers; isolated inbox reads prove refusal before effects, valid notifications remain effectful/silent, and mixed batches preserve ordered positions.
+- [x] T6 (AC4): Extend local transport and oversize refusal tables with invalid IDs and mixed batches. **Proof:** the inline local-refusal table covers invalid supplied IDs and the real truncated-response test covers -32000 transport correlation; existing byte-limit test preserves -32600 wording and notification omission.
+- [ ] T7 (AC5): Add bounded binary child with real stdin read error and child-local warning filter. **Proof:** Linux `tests/binary.rs::mcp_read_warning_is_captured_on_stderr_only` passed; disabling the warning and routing it to stdout each made it fail. Restored-green receipts are in `.forge/results/37f295bd-3945-4a83-ada6-2c336be860a0-binary-stderr-green.log`; the macOS receipt remains pending.
+- [ ] T8 (AC6): Extract only production request formatting if needed; pin exact Host, spelling, path and byte length. **Proof:** the production-used request formatter covers hostname, IPv4, bracketed IPv6, explicit ports and spelling; its test fails when Host is mutated to `dial_target`. The ignored real port-80 test remains; privileged Linux/macOS CI receipts are pending.
+- [x] T9 (AC7): Replace unchecked usize cast and preserve defaults/null/type/zero/tool bounds. **Proof:** ordinary-target argument and HTTP tests pass; the unchecked cast is replaced by `usize::try_from`. No width simulator, dependency or production cfg split was added.
+- [ ] T10 (AC7): Execute actual 32-bit staging and wire overflow cases with installed target/runner. **Proof status:** target `i686-unknown-linux-musl` is installed, but actual execution remains unavailable. This follow-up retried all three commands; each stopped in native dependency compilation because `musl-gcc` is absent, with 0 tests executed. See `.forge/usize-proof/i686-{staging,http,paging}.log`; the prior referenced raw runtime log is not present in this candidate. No runtime or cross-build proof is claimed; this box remains open.
+- [x] T11 (AC8): Move a_connect_past_the_deadline_names_the_timeout inside existing cfg(test) mod tests, retaining assertions and other tests. **Proof:** `cargo test --locked --lib -- --list` lists `stdio::tests::a_connect_past_the_deadline_names_the_timeout`; filtered execution and the full suite passed. Exact coverage remains outstanding.
+- [x] T12 (AC9, AC10): Audit frozen guarantees, scope, recipe ancestry, ADR status and restored mutation-test bytes. **Proof:** `git diff`/ancestry audit, document-integrity and full workspace tests pass; production changes are limited to MCP/stdio, with no store/persistence/SMTP/webhook, dependency or gate edits.
+- [x] T13 (AC10): Run every house gate using verified absolute engine and pinned scripts/shim hashes, plus fail-closed native-tls absence. **Proof:** the candidate-local engine digest is `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`; shim hashes, fmt, locked clippy/workspace tests, self-bundle compile, exact coverage (13121/13121 lines, 766/766 branches, 1447/1447 functions), coverage selftest, publish/seal proofs, licenses, design-check selftest, delivery tamper-boundary proof and fail-closed native-tls absence all pass. Receipts are under `.forge/usize-proof/`. The earlier 13078/13079 and 1444/1445 deficit remains historical baseline evidence.
+- [x] T14 (AC5–AC7, AC10): Reconcile local/external evidence and remaining obligations. **Proof:** this task file names the pending macOS stderr, privileged port-80, actual 32-bit runtime and CI chart/Docker/RustSec/tag-release proofs. Missing evidence stays open. The implementation commit is unsigned; no push or issue/epic completion is claimed.
+
+## Checked usize follow-up — 2026-10-24
+
+The exact host coverage deficit is repaired without changing checked conversion
+semantics. `src/mcp.rs` now sends the actual `usize::try_from` result to a
+measured private mapper; host tests execute its success and refusal arms for
+`offset` and `count`. Target-correct fixture conversions are recorded in
+`specs/usize-proof/tasks.md`. The three required i686 commands were attempted
+again and each failed before test execution because `musl-gcc` is missing; T10
+remains open. This update does not close the earlier missing macOS stderr,
+privileged port-80 or CI-owned chart/Docker/RustSec/tag-release proofs.

@@ -19,6 +19,7 @@ mod common;
 use common::{
     http_get_text, http_json, metric_now, smtp_send, start, start_with, wait_for_metric_from,
 };
+use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -57,9 +58,60 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(10);
 /// landing after some window has closed.
 type Hits = Arc<AtomicUsize>;
 
-/// A sink's hits, read once the exhaustion signal has fired.
-fn hits(hits: &Hits) -> usize {
-    hits.load(std::sync::atomic::Ordering::Relaxed)
+fn stored_fixture(recipient: &str, subject: &str, text: &str) -> (String, String, String) {
+    // smtp_send writes the DATA body followed by its CRLF terminator.
+    (
+        recipient.to_owned(),
+        subject.to_owned(),
+        format!("{text}\r\n"),
+    )
+}
+
+/// One immediate REST witness for every accepted SMTP fixture. The identity
+/// set and distinct ids prove the accepted mails are queryable independently
+/// of webhook delivery and budget counters.
+async fn assert_stored_fixtures(
+    http: SocketAddr,
+    inbox: &str,
+    expected: impl IntoIterator<Item = (String, String, String)>,
+) {
+    let expected: BTreeSet<_> = expected.into_iter().collect();
+    let path = format!("/api/v1/inboxes/{inbox}/messages?limit={}", expected.len());
+    let (status, body) = http_json(http, "GET", &path, None).await;
+    assert_eq!(status, 200, "{inbox}: {body}");
+    assert_eq!(body["total"], expected.len(), "{inbox}: {body}");
+    let emails = body["emails"].as_array().expect("the REST message page");
+    assert_eq!(emails.len(), expected.len(), "{inbox}: {body}");
+
+    let mut actual = BTreeSet::new();
+    let mut ids = BTreeSet::new();
+    for email in emails {
+        let id = email["id"].as_str().expect("stored mail id");
+        assert!(!id.is_empty(), "stored mail id is nonempty: {email}");
+        assert!(
+            ids.insert(id.to_owned()),
+            "stored mail ids are distinct: {body}"
+        );
+        let recipients = email["recipients"]
+            .as_array()
+            .expect("stored envelope recipients");
+        assert_eq!(recipients.len(), 1, "one fixture recipient: {email}");
+        actual.insert((
+            recipients[0]
+                .as_str()
+                .expect("stored recipient address")
+                .to_owned(),
+            email["subject"]
+                .as_str()
+                .expect("stored subject")
+                .to_owned(),
+            email["text"].as_str().expect("stored text").to_owned(),
+        ));
+    }
+    assert_eq!(
+        actual, expected,
+        "{inbox}: stored fixture identities differ"
+    );
 }
 
 /// The first *completed* exchange claims the capture channel; every later
@@ -69,35 +121,24 @@ fn hits(hits: &Hits) -> usize {
 type Capture<T> = std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<T>>>>;
 
 /// An HTTP sink that replies `status` to every connection for its whole
-/// `window`, and reports the first completed request head plus the final
-/// observed hit count. Each connection is served in its own task — one
-/// stalled exchange can never block the next accept — and an accept error
-/// is retried, never silently fatal.
+/// `window`, and reports the first completed request head. Each connection
+/// is served in its own task — one stalled exchange can never block the next
+/// accept — and an accept error is retried, never silently fatal.
 ///
-/// The count channel resolves **only at window close**, with the final
-/// observed count (issue #51): an early fire at the `expect`-th connection
-/// would resolve every "4 attempts, no more" assertion *before* the window
-/// it claims to cover, and a fifth attempt would be unobservable. Awaiting
-/// `rx_count` is the readiness signal for "the window has closed on
-/// everything that will ever arrive".
-///
-/// The returned [`Hits`] counter is the same count, live: incremented at
-/// accept, readable before the window closes (issue #102). Reading it is
-/// sound after a monotonic counter on `/metrics` has signalled that the
-/// dispatcher is done — never instead of one.
+/// Its [`Hits`] counter is live: incremented at accept and readable before
+/// the window closes (issue #102). Budget tests read it only after the
+/// dispatcher's exhaustion signal proves no later attempt can arrive.
 async fn http_sink(
     status: u16,
     window: Duration,
 ) -> (
     std::net::SocketAddr,
     tokio::sync::oneshot::Receiver<String>,
-    tokio::sync::oneshot::Receiver<usize>,
     Hits,
 ) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx_head, rx_head) = tokio::sync::oneshot::channel();
-    let (tx_count, rx_count) = tokio::sync::oneshot::channel();
     let hits: Hits = Arc::new(AtomicUsize::new(0));
     let reply = format!("HTTP/1.1 {status} TEST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     let capture: Capture<String> = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_head)));
@@ -147,11 +188,8 @@ async fn http_sink(
                 Err(_) => break, // the window is over
             }
         }
-        // The window closed: report what the sink actually saw — the count
-        // is observed, never echoed from a hope.
-        let _ = tx_count.send(sink_hits.load(Ordering::Relaxed));
     });
-    (addr, rx_head, rx_count, hits)
+    (addr, rx_head, hits)
 }
 
 /// What the TLS sink saw: the request head and the negotiated TLS version.
@@ -167,16 +205,15 @@ struct Captured {
 /// attempt's retry is still served — and reports the first completed
 /// exchange's request head with its negotiated TLS version. A failed
 /// handshake (an untrusted client rejecting our cert) still counts as an
-/// attempt. The count channel resolves only at window close, with the final
-/// observed count (issue #51). Each connection is served in its own task —
-/// one stalled or partial exchange can never block the next accept — and an
-/// accept error is retried, never silently fatal.
+/// attempt. Each connection is served in its own task — one stalled or
+/// partial exchange can never block the next accept — and an accept error
+/// is retried, never silently fatal.
 async fn tls_sink(
     reply: &'static [u8],
     cert_der: Vec<u8>,
     key_der: Vec<u8>,
     window: Duration,
-) -> (SocketAddr, Receiver<Captured>, Receiver<usize>, Hits) {
+) -> (SocketAddr, Receiver<Captured>, Hits) {
     tls_sink_cfg(reply, cert_der, key_der, window, 0).await
 }
 
@@ -189,7 +226,7 @@ async fn tls_sink_cfg(
     key_der: Vec<u8>,
     window: Duration,
     drop_first: usize,
-) -> (SocketAddr, Receiver<Captured>, Receiver<usize>, Hits) {
+) -> (SocketAddr, Receiver<Captured>, Hits) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let key = tokio_rustls::rustls::pki_types::PrivateKeyDer::Pkcs8(
@@ -206,7 +243,6 @@ async fn tls_sink_cfg(
         .unwrap();
     let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
     let (tx_req, rx_req) = tokio::sync::oneshot::channel();
-    let (tx_count, rx_count) = tokio::sync::oneshot::channel();
     let hits: Hits = Arc::new(AtomicUsize::new(0));
     let capture: Capture<Captured> = std::sync::Arc::new(std::sync::Mutex::new(Some(tx_req)));
     let sink_hits = hits.clone();
@@ -263,10 +299,8 @@ async fn tls_sink_cfg(
                 Err(_) => break, // the window is over
             }
         }
-        // The window closed: the count is observed, never echoed.
-        let _ = tx_count.send(sink_hits.load(Ordering::Relaxed));
     });
-    (addr, rx_req, rx_count, hits)
+    (addr, rx_req, hits)
 }
 
 /// The Content-Length of a request head already fully buffered, if any.
@@ -287,19 +321,17 @@ fn content_length(buf: &[u8]) -> Option<usize> {
 /// A redirecting "target": the attacker's endpoint. Answers every connection
 /// with `status` and an absolute `Location` header pointing wherever it
 /// likes, for the sink's whole `window`, and reports the first completed
-/// request (head and body) the moment it arrives plus the final observed
-/// hit count (resolved only at window close, issue #51), with the same live
-/// [`Hits`] counter as every other sink. Each connection is
-/// served in its own task; an accept error is retried, never silently fatal.
+/// request (head and body) the moment it arrives. Its [`Hits`] counter is
+/// live like every other sink. Each connection is served in its own task;
+/// an accept error is retried, never silently fatal.
 async fn redirect_sink(
     status: u16,
     location: String,
     window: Duration,
-) -> (SocketAddr, Receiver<String>, Receiver<usize>, Hits) {
+) -> (SocketAddr, Receiver<String>, Hits) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx_first, rx_first) = tokio::sync::oneshot::channel();
-    let (tx_count, rx_count) = tokio::sync::oneshot::channel();
     let hits: Hits = Arc::new(AtomicUsize::new(0));
     let reason = match status {
         301 => "Moved Permanently",
@@ -356,10 +388,8 @@ async fn redirect_sink(
                 Err(_) => break, // the window is over
             }
         }
-        // The window closed: the count is observed, never echoed.
-        let _ = tx_count.send(sink_hits.load(Ordering::Relaxed));
     });
-    (addr, rx_first, rx_count, hits)
+    (addr, rx_first, hits)
 }
 
 /// The redirect destination: records the head of every request that arrives
@@ -413,7 +443,7 @@ fn mint_cert() -> (String, Vec<u8>, Vec<u8>) {
 #[tokio::test]
 async fn delivered_to_a_pathless_target_with_secret() {
     let srv = start().await;
-    let (addr, rx, _, _hits) = http_sink(204, SINK_LIFETIME).await;
+    let (addr, rx, _hits) = http_sink(204, SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}", "secret": "topsecret"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
@@ -443,7 +473,7 @@ async fn delivered_to_a_pathless_target_with_secret() {
 #[tokio::test]
 async fn the_webhook_payload_carries_the_capped_codes() {
     let srv = start().await;
-    let (addr, rx, _, _hits) = http_sink(204, SINK_LIFETIME).await;
+    let (addr, rx, _hits) = http_sink(204, SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}/hook"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
@@ -483,7 +513,7 @@ async fn failing_target_is_retried_four_times_not_more() {
     // The window outlives any budget the loop could ever spend — a mutant
     // fifth attempt fires at ~+8.5 s — and the test never waits on it:
     // the budget is observed by signal below.
-    let (addr, _, _count, sink_hits) = http_sink(500, SINK_LIFETIME).await;
+    let (addr, _, sink_hits) = http_sink(500, SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}/hooks", "inbox": "retrybox"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
@@ -493,6 +523,12 @@ async fn failing_target_is_retried_four_times_not_more() {
     smtp_send(srv.smtp_addr, None, "f@x.io", "other@x.io", "filtered", "x")
         .await
         .unwrap();
+    assert_stored_fixtures(
+        srv.http_addr,
+        "default",
+        [stored_fixture("other@x.io", "filtered", "x")],
+    )
+    .await;
 
     // The exhaustion baseline is taken before the mail that will exhaust
     // its budget: only a NEW exhaustion satisfies the poll below (issue #51).
@@ -507,6 +543,12 @@ async fn failing_target_is_retried_four_times_not_more() {
     )
     .await
     .unwrap();
+    assert_stored_fixtures(
+        srv.http_addr,
+        "retrybox",
+        [stored_fixture("r@x.io", "retried", "x")],
+    )
+    .await;
 
     // Budget by signal, never by clock (issue #102): the hit count is read
     // only after the server's own rendered row says the budget is spent.
@@ -521,7 +563,7 @@ async fn failing_target_is_retried_four_times_not_more() {
         1,
     )
     .await;
-    let seen = hits(&sink_hits);
+    let seen = sink_hits.load(Ordering::Relaxed);
     assert_eq!(seen, 4, "expected the 4-attempt retry budget, no more");
 }
 
@@ -529,7 +571,7 @@ async fn failing_target_is_retried_four_times_not_more() {
 async fn https_target_is_delivered_over_tls() {
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
-    let (addr, rx, _, _hits) = tls_sink(
+    let (addr, rx, _hits) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,
@@ -543,11 +585,27 @@ async fn https_target_is_delivered_over_tls() {
     let targets = serde_json::json!([{
         "url": format!("https://127.0.0.1:{}/hook", addr.port()),
         "secret": "topsecret",
-        "ca_pem": ca_pem,
+        "ca_pem": ca_pem.clone(),
     }])
     .to_string();
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
     assert_eq!(st, 200);
+    let (get_status, listed) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(get_status, 200, "{listed}");
+    let returned_ca = listed[0]["ca_pem"]
+        .as_str()
+        .expect("GET retains public CA material");
+    assert!(ca_pem.contains('\n'), "generated PEM includes line breaks");
+    assert_eq!(
+        returned_ca.as_bytes(),
+        ca_pem.as_bytes(),
+        "ca_pem GET is byte-for-byte"
+    );
+    assert_eq!(
+        listed[0]["secret"],
+        serde_json::Value::Null,
+        "GET withholds the secret"
+    );
 
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "hooked", "x")
         .await
@@ -584,7 +642,7 @@ async fn untrusted_certificate_fails_the_handshake_and_is_retried() {
     let untrusted = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
     // The window outlives any budget the loop could spend; the count is
     // observed by signal below, never by the sink's clock (issue #102).
-    let (addr, _, _count, sink_hits) = tls_sink(
+    let (addr, _, sink_hits) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         untrusted.cert.der().to_vec(),
         untrusted.key_pair.serialize_der(),
@@ -600,6 +658,12 @@ async fn untrusted_certificate_fails_the_handshake_and_is_retried() {
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "distrusted", "x")
         .await
         .unwrap();
+    assert_stored_fixtures(
+        srv.http_addr,
+        "default",
+        [stored_fixture("r@x.io", "distrusted", "x")],
+    )
+    .await;
 
     // The budget is spent when the server's own row says so (issue #102);
     // the read after it sees every handshake attempt, a fifth included.
@@ -610,7 +674,7 @@ async fn untrusted_certificate_fails_the_handshake_and_is_retried() {
         1,
     )
     .await;
-    let seen = hits(&sink_hits);
+    let seen = sink_hits.load(Ordering::Relaxed);
     assert_eq!(seen, 4, "expected 4 handshake attempts, no more");
 }
 
@@ -623,7 +687,7 @@ async fn non_2xx_over_tls_is_retried_four_times_not_more() {
     // same four-attempt budget as a non-2xx over plain http — TLS may not
     // change the failure semantics, only the transport.
     // The window outlives any budget the loop could spend (issue #102).
-    let (addr, _, _count, sink_hits) = tls_sink(
+    let (addr, _, sink_hits) = tls_sink(
         b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,
@@ -643,6 +707,12 @@ async fn non_2xx_over_tls_is_retried_four_times_not_more() {
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "servererror", "x")
         .await
         .unwrap();
+    assert_stored_fixtures(
+        srv.http_addr,
+        "default",
+        [stored_fixture("r@x.io", "servererror", "x")],
+    )
+    .await;
 
     // The budget is spent when the server's own row says so (issue #102).
     wait_for_metric_from(
@@ -652,7 +722,7 @@ async fn non_2xx_over_tls_is_retried_four_times_not_more() {
         1,
     )
     .await;
-    let seen = hits(&sink_hits);
+    let seen = sink_hits.load(Ordering::Relaxed);
     assert_eq!(seen, 4, "expected 4 attempts over TLS, no more");
 }
 
@@ -712,7 +782,7 @@ async fn redirect_302_never_leaks_the_secret_to_the_destination() {
     let (tx_stop, rx_stop) = watch::channel(false);
     let (dest, rx_leaked) = destination_sink(rx_stop).await;
     // The window outlives any budget the loop could spend (issue #102).
-    let (addr, rx_first, _count, sink_hits) =
+    let (addr, rx_first, sink_hits) =
         redirect_sink(302, format!("http://{dest}/stolen"), SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}/hook", "secret": "topsecret"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
@@ -758,7 +828,7 @@ async fn redirect_302_never_leaks_the_secret_to_the_destination() {
         1,
     )
     .await;
-    let seen = hits(&sink_hits);
+    let seen = sink_hits.load(Ordering::Relaxed);
     tx_stop.send(true).unwrap();
     let leaked = tokio::time::timeout(Duration::from_secs(5), rx_leaked)
         .await
@@ -789,7 +859,7 @@ async fn redirect_307_never_leaks_the_secret_or_body_to_the_destination() {
     let (tx_stop, rx_stop) = watch::channel(false);
     let (dest, rx_leaked) = destination_sink(rx_stop).await;
     // The window outlives any budget the loop could spend (issue #102).
-    let (addr, rx_first, _count, sink_hits) =
+    let (addr, rx_first, sink_hits) =
         redirect_sink(307, format!("http://{dest}/stolen"), SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}/hook", "secret": "topsecret"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
@@ -834,7 +904,7 @@ async fn redirect_307_never_leaks_the_secret_or_body_to_the_destination() {
         1,
     )
     .await;
-    let seen = hits(&sink_hits);
+    let seen = sink_hits.load(Ordering::Relaxed);
     tx_stop.send(true).unwrap();
     let leaked = tokio::time::timeout(Duration::from_secs(5), rx_leaked)
         .await
@@ -886,7 +956,7 @@ async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
     let mut sinks = Vec::new();
     for _ in 0..count {
         let (ca_pem, leaf, leaf_key) = mint_cert();
-        let (addr, rx, _, _hits) = tls_sink(
+        let (addr, rx, _hits) = tls_sink(
             b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
             leaf,
             leaf_key,
@@ -974,7 +1044,7 @@ async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
 async fn a_dropped_first_attempt_is_retried_and_still_delivered_over_tls() {
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
-    let (addr, rx, _, _hits) = tls_sink_cfg(
+    let (addr, rx, _hits) = tls_sink_cfg(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,
@@ -1021,7 +1091,7 @@ async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
     let (ca_pem, leaf, leaf_key) = mint_cert();
     // The window outlives everything the two passes could spend; the count
     // is read by signal below (issue #102).
-    let (addr, rx, _count, sink_hits) = tls_sink(
+    let (addr, rx, sink_hits) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,
@@ -1066,7 +1136,7 @@ async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
         2,
     )
     .await;
-    let hits_seen = hits(&sink_hits);
+    let hits_seen = sink_hits.load(Ordering::Relaxed);
     assert_eq!(hits_seen, 2, "both passes must reach the sink over TLS");
 }
 
@@ -1083,7 +1153,7 @@ async fn garbage_ca_pem_is_refused_at_put_and_nothing_is_applied() {
     // be made — the zero is read after the mail is stored, with no window
     // to race (issue #102).
     let pair = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
-    let (addr, _rx_req, _count, sink_hits) = tls_sink(
+    let (addr, _rx_req, sink_hits) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         pair.cert.der().to_vec(),
         pair.key_pair.serialize_der(),
@@ -1119,7 +1189,11 @@ async fn garbage_ca_pem_is_refused_at_put_and_nothing_is_applied() {
     // Nothing applied (the GET above was empty) ⇒ no delivery exists to
     // arm ⇒ the sink can never be dialed: the zero is structural, not a
     // wait-for-nothing (issue #102).
-    assert_eq!(hits(&sink_hits), 0, "the sink never saw a connection");
+    assert_eq!(
+        sink_hits.load(Ordering::Relaxed),
+        0,
+        "the sink never saw a connection"
+    );
 
     // The server still serves (the failure was contained to the PUT).
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
@@ -1129,22 +1203,43 @@ async fn garbage_ca_pem_is_refused_at_put_and_nothing_is_applied() {
 
 // ---------- the delivery bound (AC4/AC5/AC6/AC7) ----------
 
-/// The can-fire leg for the sink protocol itself (issue #51): a window
-/// that closes before any attempt can arrive resolves its count channel
-/// with `0`. The channel is *observed* — it carries what the sink saw, not
-/// an expectation echoed back at the `expect`-th hit (there is no expect to
-/// fire at). Red if a sink ever fires early again: an early fire at a
-/// count that was never reached would resolve `None`-never or echo a
-/// hoped-for number, and both are visible here.
+/// A zero window accepts no connection. The listener closure owns the
+/// capture sender, and it creates per-connection tasks only after accept;
+/// awaiting capture cancellation therefore observes listener closure before
+/// the live hit count is read.
 #[tokio::test]
 async fn a_window_closing_before_any_attempt_observes_zero() {
-    let (_, _, rx, _) = http_sink(204, Duration::ZERO).await;
-    assert_eq!(rx.await.unwrap(), 0, "a closed window saw nothing");
-    let (_, _, rx, _) =
+    let (_, capture, hits) = http_sink(204, Duration::ZERO).await;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), capture)
+            .await
+            .expect("the HTTP listener closes its capture channel")
+            .is_err(),
+        "no HTTP request was captured"
+    );
+    assert_eq!(
+        hits.load(Ordering::Relaxed),
+        0,
+        "no HTTP connection arrived"
+    );
+
+    let (_, capture, hits) =
         redirect_sink(302, "http://127.0.0.1:1/nowhere".into(), Duration::ZERO).await;
-    assert_eq!(rx.await.unwrap(), 0, "a closed window saw nothing");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), capture)
+            .await
+            .expect("the redirect listener closes its capture channel")
+            .is_err(),
+        "no redirect request was captured"
+    );
+    assert_eq!(
+        hits.load(Ordering::Relaxed),
+        0,
+        "no redirect connection arrived"
+    );
+
     let (ca_pem, leaf, leaf_key) = mint_cert();
-    let (_, _, rx, _) = tls_sink_cfg(
+    let (_, capture, hits) = tls_sink_cfg(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,
@@ -1153,7 +1248,14 @@ async fn a_window_closing_before_any_attempt_observes_zero() {
     )
     .await;
     drop(ca_pem);
-    assert_eq!(rx.await.unwrap(), 0, "a closed window saw nothing");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(15), capture)
+            .await
+            .expect("the TLS listener closes its capture channel")
+            .is_err(),
+        "no TLS request was captured"
+    );
+    assert_eq!(hits.load(Ordering::Relaxed), 0, "no TLS connection arrived");
 }
 
 /// A sink that answers every request with 200 after `hold`, and counts
@@ -1320,12 +1422,23 @@ async fn the_delivery_bound_holds_exactly_and_the_excess_is_counted() {
     // The refusal baseline precedes the storm: only refusals this storm
     // caused satisfy the poll (issue #51).
     let dropped_base = metric_now(srv.http_addr, "swarmail_webhook_dropped_total").await;
+    let mut expected = Vec::with_capacity(50);
     for i in 0..50 {
-        let reply = smtp_send(srv.smtp_addr, None, "f@x.io", "storm@x.io", "storm", "x")
-            .await
-            .unwrap_or_else(|e| panic!("mail {i} refused: {e}"));
+        let subject = format!("storm {i:02}");
+        let reply = smtp_send(
+            srv.smtp_addr,
+            Some("stormbox"),
+            "f@x.io",
+            "storm@x.io",
+            &subject,
+            "x",
+        )
+        .await
+        .unwrap_or_else(|e| panic!("mail {i} refused: {e}"));
         assert!(reply.starts_with("250"), "mail {i} refused: {reply}");
+        expected.push(stored_fixture("storm@x.io", &subject, "x"));
     }
+    assert_stored_fixtures(srv.http_addr, "stormbox", expected).await;
 
     wait_for_metric_from(
         srv.http_addr,
@@ -1523,18 +1636,22 @@ async fn a_stalled_target_cannot_starve_a_healthy_one() {
     assert_eq!(st, 200, "{resp}");
 
     let total = swarmail::webhook::WEBHOOK_DELIVERY_CAP + 8;
+    let mut expected = Vec::with_capacity(total);
     for i in 0..total {
+        let subject = format!("two sinks {i:02}");
         smtp_send(
             srv.smtp_addr,
             Some("twosink"),
             "f@x.io",
             "two@x.io",
-            "two sinks",
+            &subject,
             "x",
         )
         .await
         .unwrap_or_else(|e| panic!("mail {i} refused: {e}"));
+        expected.push(stored_fixture("two@x.io", &subject, "x"));
     }
+    assert_stored_fixtures(srv.http_addr, "twosink", expected).await;
 
     // Every mail reached the healthy sink — observed on the ledger, so the
     // count and the wire agree, and on the sink's own counter, so the
@@ -1716,7 +1833,7 @@ async fn a_list_with_one_unheaderable_secret_leaves_the_prior_config_whole() {
 #[tokio::test]
 async fn url_credentials_reach_the_sink_and_never_the_echo() {
     let srv = start().await;
-    let (addr, rx, _, _hits) = http_sink(204, SINK_LIFETIME).await;
+    let (addr, rx, _hits) = http_sink(204, SINK_LIFETIME).await;
     let body = serde_json::json!([{
         "url": format!("http://user:hunter2@{addr}/hook?k=v"),
         "secret": "a\tb é",
@@ -1785,7 +1902,7 @@ fn installed(srv: &swarmail::RunningServer) -> Vec<[Option<String>; 4]> {
 /// `inbox` and pointed at a fresh sink: the configuration every refusal
 /// below must leave whole.
 async fn install_prior(srv: &swarmail::RunningServer, inbox: &str) -> Receiver<String> {
-    let (addr, rx, _, _hits) = http_sink(204, SINK_LIFETIME).await;
+    let (addr, rx, _hits) = http_sink(204, SINK_LIFETIME).await;
     let prior = serde_json::json!([{
         "url": format!("http://user:hunter2@{addr}/prior"),
         "inbox": inbox,
@@ -1956,7 +2073,7 @@ async fn webhook_unknown_and_null_fields_preserve_configuration() {
 async fn webhook_second_ca_root_delivers_over_verified_https() {
     let srv = start().await;
     let (second, leaf, leaf_key) = mint_cert();
-    let (addr, rx, _, _hits) = tls_sink(
+    let (addr, rx, _hits) = tls_sink(
         b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
         leaf,
         leaf_key,

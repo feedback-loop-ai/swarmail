@@ -40,7 +40,12 @@ write_result() {
   fi
 }
 fail_now() { printf '%s\n' "$1" >> "$notes"; write_result fail; exit 0; }
-for resource in coverage-gate.sh publish-guard.sh publish-guard-test.sh design-check.sh \
+# Static call closure: coverage-gate.sh owns the scanner manifest, lock and
+# source; design-check.sh calls both speckit helpers; delivery-proof-test.sh
+# exercises the pinned proof boundary; publish-guard-test.sh uses the guard;
+# seal-branch-test.sh uses the seal tool. shims.sha256 and ../tooling.json are
+# consumed directly by this seat for wrapper and engine identity checks.
+for resource in coverage-gate.sh publish-guard.sh publish-guard-test.sh design-check.sh delivery-proof-test.sh \
   seal-branch.sh seal-branch-test.sh speckit/check-prerequisites.sh speckit/common.sh coverage-fn-scan/Cargo.toml \
   coverage-fn-scan/Cargo.lock coverage-fn-scan/src/main.rs shims.sha256 ../tooling.json; do
   [ -f "$pin_dir/$resource" ] || fail_now "verify-seat: pinned resource $pin_dir/$resource is missing; refusing before any gate runs"
@@ -76,9 +81,11 @@ fi
 printf '%s\n' "$recorded_digests" | grep -qx "$launched_digest" ||
   fail_now "verify-seat: the launched brokkr $launched (sha256 $launched_digest) is not the recorded build of ${recorded_sha:-?}"
 
+launched_q="$(printf '%q' "$launched")"
+
 run() {
   label="$1"; command="$2"
-  if ! bash -lc "$command" > "$output" 2>&1 </dev/null; then
+  if ! bash -c "$command" > "$output" 2>&1 </dev/null; then
     printf '%s failed; decisive output follows verbatim:\n' "$label" >> "$notes"
     grep -E '(error|Error|ERROR|fail|FAIL|refus|not found|offline)' "$output" | tail -n 20 >> "$notes" || true
     [ "$(wc -l < "$notes")" -gt 1 ] || tail -n 20 "$output" >> "$notes"
@@ -102,7 +109,7 @@ pin_q="$(printf '%q' "$pin_dir")"
 run "cargo fmt --all -- --check"  'cargo fmt --all -- --check'
 run "cargo clippy -D warnings"    'cargo clippy --workspace --all-targets --locked -- -D warnings'
 run "cargo test"                  'cargo test --workspace --locked'
-run "brokkr compile --bundle bundles/self"   "\"$brokkr\" compile --bundle bundles/self"
+run "brokkr compile --bundle bundles/self"   "$launched_q compile --bundle bundles/self"
 # A compile that exits 0 but sweeps a rule as reading past a hard rule's facts
 # (#125's residual warning) is not a clean constitution: refuse it by name.
 if grep -q 'lets the run go on without reading' "$output"; then

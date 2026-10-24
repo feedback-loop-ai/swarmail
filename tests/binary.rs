@@ -3,6 +3,10 @@
 //! instrumented binary, so `src/main.rs` is covered like everything else.
 
 mod common;
+#[path = "binary/helper_reliability.rs"]
+mod helper_reliability;
+#[path = "binary/http_reliability.rs"]
+mod http_reliability;
 
 use std::net::SocketAddr;
 use std::process::Stdio;
@@ -33,6 +37,7 @@ struct Serve {
     /// sequence on the server's own log lines, never a sleep.
     stdout: Option<BufReader<ChildStdout>>,
     reaped: bool,
+    stderr: StderrDrain,
 }
 
 impl Drop for Serve {
@@ -81,57 +86,208 @@ fn serve_with_data(db: &std::path::Path) -> Command {
     cmd
 }
 
-/// Spawn `serve` and read its bound addrs off the startup line; the rest of
-/// stderr is drained in the background so the pipe can never fill and block
-/// the server. A server that dies before it is up fails here loudly, with
-/// whatever it said on the way out.
-async fn spawn_serve(cmd: Command) -> Serve {
-    let mut cmd = cmd;
-    // The startup line is the tracing subscriber's output — stdout. Both
-    // pipes are drained (stderr in the background) so neither can fill and
-    // block the server.
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn swarmail serve");
-    let stdout = child.stdout.take().expect("piped stdout");
-    let stderr = child.stderr.take().expect("piped stderr");
-    tokio::spawn(async move {
-        let mut reader = BufReader::new(stderr);
-        let mut rest = String::new();
-        loop {
-            let n = reader.read_line(&mut rest).await.unwrap_or(0);
-            if n == 0 {
-                break;
-            }
-            rest.clear();
+/// Kill and witness the reap before reporting an awaitable failure. Drop
+/// remains the cancellation/unwind fallback, never the successful proof.
+async fn kill_and_reap(child: &mut Child) -> Result<std::process::ExitStatus, String> {
+    // Even a failed kill must still try to reap (the child may have just
+    // exited). Keep both source diagnostics if the wait also fails.
+    let killed = child.start_kill();
+    tokio::time::timeout(common::HELPER_DEADLINE, child.wait())
+        .await
+        .map_err(|e| format!("reap child: {e}; kill: {killed:?}"))?
+        .map_err(|e| format!("reap child: {e}; kill: {killed:?}"))
+}
+
+async fn wait_child(
+    child: &mut Child,
+    deadline: Duration,
+) -> Result<std::process::ExitStatus, String> {
+    match tokio::time::timeout(deadline, child.wait()).await {
+        Ok(Ok(status)) => Ok(status),
+        outcome => {
+            let cause = match outcome {
+                Ok(Err(e)) => format!("child wait failed: {e}"),
+                Err(e) => format!("child wait deadline: {e}"),
+                Ok(Ok(_)) => unreachable!(),
+            };
+            let reaped = kill_and_reap(child).await;
+            Err(format!("{cause}; cleanup: {reaped:?}"))
         }
-    });
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    let mut transcript = String::new();
-    let addrs = loop {
-        line.clear();
-        let n = reader
-            .read_line(&mut line)
-            .await
-            .expect("read the startup line");
-        if n == 0 {
-            break None;
-        }
-        if let Some(pair) = parse_addrs(&line) {
-            break Some(pair);
-        }
-        transcript.push_str(&line);
-    };
-    let (smtp_addr, pop3_addr, http_addr) =
-        addrs.unwrap_or_else(|| panic!("the server exited before it was up:\n{transcript}"));
-    Serve {
-        child,
-        smtp_addr,
-        pop3_addr,
-        http_addr,
-        stdout: Some(reader),
-        reaped: false,
     }
+}
+
+/// Concurrent pipe drains and wait, under one deadline. Keeping Child
+/// borrowed (rather than consuming wait_with_output) lets failure reap it.
+async fn child_output(child: &mut Child) -> Result<std::process::Output, String> {
+    drop(child.stdin.take());
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let result = tokio::time::timeout(common::HELPER_DEADLINE, async {
+        let (_, _, status) = tokio::try_join!(
+            async {
+                if let Some(pipe) = stdout.as_mut() {
+                    pipe.read_to_end(&mut out).await?;
+                }
+                Ok::<_, std::io::Error>(())
+            },
+            async {
+                if let Some(pipe) = stderr.as_mut() {
+                    pipe.read_to_end(&mut err).await?;
+                }
+                Ok::<_, std::io::Error>(())
+            },
+            child.wait(),
+        )?;
+        Ok::<_, std::io::Error>(status)
+    })
+    .await;
+    match result {
+        Ok(Ok(status)) => Ok(std::process::Output {
+            status,
+            stdout: out,
+            stderr: err,
+        }),
+        outcome => {
+            let reaped = kill_and_reap(child).await;
+            Err(format!(
+                "child output failed: {outcome:?}; cleanup: {reaped:?}; stdout: {}; stderr: {}",
+                String::from_utf8_lossy(&out),
+                String::from_utf8_lossy(&err)
+            ))
+        }
+    }
+}
+
+async fn command_output(cmd: &mut Command) -> std::process::Output {
+    let mut child = cmd
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn command");
+    child_output(&mut child)
+        .await
+        .unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// Owned drain: successful exits join it; unwind/cancellation aborts the
+/// task and closes its pipe instead of detaching background work.
+struct StderrDrain(Option<tokio::task::JoinHandle<(Vec<u8>, std::io::Result<usize>)>>);
+
+impl StderrDrain {
+    fn new(mut pipe: tokio::process::ChildStderr) -> Self {
+        Self(Some(tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            let result = pipe.read_to_end(&mut bytes).await;
+            (bytes, result)
+        })))
+    }
+
+    async fn finish(&mut self) -> String {
+        let Some(task) = self.0.as_mut() else {
+            return String::new();
+        };
+        match tokio::time::timeout(common::HELPER_DEADLINE, task).await {
+            Ok(Ok((bytes, result))) => {
+                self.0.take();
+                format!(
+                    "{}\nstderr read: {result:?}",
+                    String::from_utf8_lossy(&bytes)
+                )
+            }
+            outcome => {
+                let task = self.0.take().expect("owned stderr task");
+                task.abort();
+                let _ = task.await;
+                format!("stderr drain failed: {outcome:?}")
+            }
+        }
+    }
+}
+
+impl Drop for StderrDrain {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
+/// One deadline owns the entire address-discovery operation, including
+/// partial lines and chatter. Failure retains source diagnostics from both
+/// streams, after killing/reaping and settling the owned stderr drain.
+async fn try_spawn_serve(mut cmd: Command, deadline: Duration) -> Result<Serve, String> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!("spawn swarmail serve: {e}"))?;
+    let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut stderr = StderrDrain::new(child.stderr.take().expect("piped stderr"));
+    let mut transcript = String::new();
+    let mut line = Vec::new();
+    let end = tokio::time::Instant::now() + deadline;
+    let result = tokio::time::timeout_at(end, async {
+        loop {
+            line.clear();
+            let n = reader
+                .read_until(b'\n', &mut line)
+                .await
+                .map_err(|e| format!("read startup stdout: {e}"))?;
+            transcript.push_str(&String::from_utf8_lossy(&line));
+            if n == 0 {
+                return Err("stdout EOF before startup addresses".to_string());
+            }
+            if let Some(addrs) = parse_addrs(&String::from_utf8_lossy(&line)) {
+                return Ok(addrs);
+            }
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok((smtp_addr, pop3_addr, http_addr))) => Ok(Serve {
+            child,
+            smtp_addr,
+            pop3_addr,
+            http_addr,
+            stdout: Some(reader),
+            reaped: false,
+            stderr,
+        }),
+        outcome => {
+            // read_until retains a partial line even on cancellation.
+            // EOF may precede the process's final exit by a scheduling turn;
+            // let it finish within the same owned deadline to keep its status.
+            let reaped = if matches!(&outcome, Ok(Err(e)) if e == "stdout EOF before startup addresses")
+            {
+                wait_child(
+                    &mut child,
+                    end.saturating_duration_since(tokio::time::Instant::now()),
+                )
+                .await
+            } else {
+                kill_and_reap(&mut child).await
+            };
+            let reason = stderr.finish().await;
+            let exit = reaped
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|e| e.clone());
+            Err(format!(
+                "serve startup failed: {outcome:?}; exit: {exit}; cleanup: {reaped:?}\nstdout: {transcript}\npartial stdout: {}\nstderr: {reason}",
+                String::from_utf8_lossy(&line)
+            ))
+        }
+    }
+}
+
+async fn spawn_serve(cmd: Command) -> Serve {
+    try_spawn_serve(cmd, common::HELPER_DEADLINE)
+        .await
+        .unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Read the server's own stdout until a line mentioning `needle` appears
@@ -140,43 +296,52 @@ async fn spawn_serve(cmd: Command) -> Serve {
 /// "shutting down" line can attest without a sleep.
 async fn wait_for_line(serve: &mut Serve, needle: &str, deadline: Duration) -> String {
     let reader = serve.stdout.as_mut().expect("piped stdout");
-    let end = tokio::time::Instant::now() + deadline;
     let mut transcript = String::new();
     let mut line = String::new();
-    loop {
-        assert!(
-            tokio::time::Instant::now() < end,
-            "the server never said {needle:?}: {transcript}"
-        );
-        match tokio::time::timeout(Duration::from_millis(200), reader.read_line(&mut line)).await {
-            Ok(Ok(0)) | Err(_) => continue,
-            Ok(Ok(_)) => {
-                transcript.push_str(&line);
-                if line.contains(needle) {
-                    return std::mem::take(&mut line);
+    let result = tokio::time::timeout(deadline, async {
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => return Err("stdout EOF".to_string()),
+                Ok(_) => {
+                    transcript.push_str(&line);
+                    if line.contains(needle) {
+                        return Ok(line.clone());
+                    }
                 }
-                line.clear();
+                Err(e) => return Err(format!("reading stdout: {e}")),
             }
-            Ok(Err(e)) => panic!("reading the server's stdout failed: {e}"),
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(line)) => line,
+        outcome => {
+            let reaped = kill_and_reap(&mut serve.child).await;
+            let stderr = serve.stderr.finish().await;
+            panic!(
+                "the server never said {needle:?}: {outcome:?}; cleanup: {reaped:?}\n{transcript}{line}\nstderr: {stderr}"
+            );
         }
     }
 }
 
 /// Poll the HTTP port until the server answers (or fail loudly).
-async fn wait_http_up(addr: std::net::SocketAddr) {
-    for _ in 0..100 {
-        if tokio::time::timeout(
-            Duration::from_millis(200),
-            tokio::net::TcpStream::connect(addr),
-        )
-        .await
-        .is_ok_and(|s| s.is_ok())
-        {
-            return;
+async fn wait_http_up(serve: &mut Serve) {
+    let addr = serve.http_addr;
+    let result = tokio::time::timeout(common::HELPER_DEADLINE, async {
+        loop {
+            if TcpStream::connect(addr).await.is_ok() {
+                return;
+            }
+            tokio::task::yield_now().await;
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+    })
+    .await;
+    if let Err(e) = result {
+        kill_serve(serve).await;
+        panic!("server never came up on {addr}: {e}");
     }
-    panic!("server never came up on {addr}");
 }
 
 /// SIGINT = ctrl_c: the graceful-shutdown path, then a clean exit 0. The
@@ -185,30 +350,31 @@ async fn wait_http_up(addr: std::net::SocketAddr) {
 /// which a loaded runner stretches past 10s — the budget itself is proven
 /// by the API-level held-lock tests on the server's own clock.
 async fn signal_and_wait(
-    child: &mut Child,
+    serve: &mut Serve,
     sig: libc::c_int,
     deadline: Duration,
 ) -> std::process::ExitStatus {
     unsafe {
-        libc::kill(child.id().expect("a live pid") as i32, sig);
+        libc::kill(serve.child.id().expect("a live pid") as i32, sig);
     }
-    tokio::time::timeout(deadline, async {
-        loop {
-            match child.try_wait().unwrap() {
-                Some(status) => return status,
-                None => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-        }
-    })
-    .await
-    .expect("the server did not stop on the signal")
+    let result = wait_child(&mut serve.child, deadline).await;
+    let stderr = serve.stderr.finish().await;
+    result
+        .unwrap_or_else(|e| panic!("the server did not stop on the signal: {e}\nstderr: {stderr}"))
+}
+
+async fn kill_serve(serve: &mut Serve) {
+    let result = kill_and_reap(&mut serve.child).await;
+    let stderr = serve.stderr.finish().await;
+    result.unwrap_or_else(|e| panic!("{e}\nstderr: {stderr}"));
+    serve.reaped = true;
 }
 
 #[tokio::test]
 async fn serve_answers_healthz_and_stops_on_sigint() {
     let mut serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
-    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    wait_http_up(&mut serve).await;
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
@@ -224,8 +390,8 @@ async fn serve_answers_healthz_and_stops_on_sigint() {
 /// only decremented, and the first scrape read `18446744073709551615`.
 #[tokio::test]
 async fn the_in_flight_total_counts_each_request_once_and_returns_to_rest() {
-    let serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(&mut serve).await;
     let addr = serve.http_addr;
     let total = "swarmail_http_requests_in_flight";
     for _ in 0..3 {
@@ -265,6 +431,7 @@ async fn the_in_flight_total_counts_each_request_once_and_returns_to_rest() {
     for _ in 0..3 {
         assert_eq!(common::metric_now(addr, total).await, 1, "back at rest");
     }
+    kill_serve(&mut serve).await;
 }
 
 /// The three bind knobs: env var, flag, and compiled default port.
@@ -307,7 +474,7 @@ async fn serve_takes_its_binds_from_the_environment() {
     assert!(pop3.cmd("QUIT").await.starts_with("+OK"), "POP3 answers");
     let (st, body) = common::http_json(serve.http_addr, "GET", "/healthz", None).await;
     assert_eq!(st, 200, "the env-bound server answers healthz: {body}");
-    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
@@ -330,38 +497,14 @@ async fn assert_env_bind_refused(var: &str) {
             cmd.args([flag, "127.0.0.1:0"]);
         }
     }
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.kill_on_drop(true);
-    let mut child = cmd.spawn().expect("spawn swarmail serve");
-    let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
-    let mut stderr = child.stderr.take().expect("piped stderr");
-    // Stdout to EOF, line by line: a ready line means the env value was
-    // not the bind, and fails at once rather than at the deadline.
-    let mut transcript = String::new();
-    loop {
-        let mut line = String::new();
-        let n = tokio::time::timeout(Duration::from_secs(30), stdout.read_line(&mut line))
-            .await
-            .unwrap_or_else(|_| panic!("{var}={addr}: the child neither exited nor came up"))
-            .expect("read the child's stdout");
-        if n == 0 {
-            break;
-        }
-        assert!(
-            parse_addrs(&line).is_none(),
-            "{var}={addr}: the server came up although the env named an occupied port: {line}"
-        );
-        transcript.push_str(&line);
-    }
-    let mut reason = String::new();
-    tokio::time::timeout(Duration::from_secs(30), stderr.read_to_string(&mut reason))
-        .await
-        .expect("the child's stderr closes")
-        .expect("read the child's stderr");
-    let status = tokio::time::timeout(Duration::from_secs(30), child.wait())
-        .await
-        .expect("the refused child exits")
-        .expect("the child's status");
+    let out = command_output(&mut cmd).await;
+    let status = out.status;
+    let transcript = String::from_utf8_lossy(&out.stdout);
+    let reason = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        transcript.lines().all(|line| parse_addrs(line).is_none()),
+        "{var}={addr}: the refused server came up: {transcript}"
+    );
     assert!(
         !status.success(),
         "{var}={addr} must refuse: {status:?}\n{transcript}{reason}"
@@ -394,7 +537,7 @@ async fn serve_restores_a_data_file_across_a_restart() {
     let db = dir.path().join("persist.db");
     // First run: --data-file as the flag; one real SMTP mail in.
     let mut first = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(first.http_addr).await;
+    wait_http_up(&mut first).await;
     let reply = common::smtp_send(
         first.smtp_addr,
         Some("binpersist"),
@@ -406,7 +549,7 @@ async fn serve_restores_a_data_file_across_a_restart() {
     .await
     .expect("smtp send");
     assert!(reply.starts_with("250"), "{reply}");
-    let status = signal_and_wait(&mut first.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut first, libc::SIGINT, Duration::from_secs(30)).await;
     first.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 
@@ -417,7 +560,7 @@ async fn serve_restores_a_data_file_across_a_restart() {
         cmd.env("SWARMAIL_DATA_FILE", &db);
         spawn_serve(cmd).await
     };
-    wait_http_up(restarted.http_addr).await;
+    wait_http_up(&mut restarted).await;
     let (st, list) = common::http_json(
         restarted.http_addr,
         "GET",
@@ -428,7 +571,7 @@ async fn serve_restores_a_data_file_across_a_restart() {
     assert_eq!(st, 200);
     assert_eq!(list["total"], 1, "mail did not survive the restart: {list}");
     assert_eq!(list["emails"][0]["subject"], "Binary persist");
-    let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut restarted, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     drop(restarted);
@@ -442,14 +585,14 @@ async fn mcp_bridge_exits_zero_at_eof_without_touching_the_network() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .expect("spawn swarmail mcp");
     // A bridge that ignores its stdin must not hang the test forever: the
     // wait is bounded, naming the step (issue #102).
-    let status = tokio::time::timeout(common::HELPER_DEADLINE, child.wait())
+    let status = wait_child(&mut child, common::HELPER_DEADLINE)
         .await
-        .expect("the mcp bridge never exited")
-        .unwrap();
+        .unwrap_or_else(|e| panic!("the mcp bridge never exited: {e}"));
     assert!(status.success(), "mcp EOF exit: {status:?}");
 }
 
@@ -464,26 +607,55 @@ async fn mcp_subcommand_keeps_stdout_protocol_only() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .expect("spawn swarmail mcp");
     let request = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
-    child
-        .stdin
-        .take()
-        .expect("piped stdin")
-        .write_all(request)
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let result = tokio::time::timeout(common::HELPER_DEADLINE, stdin.write_all(request)).await;
+    drop(stdin);
+    if !matches!(result, Ok(Ok(()))) {
+        let reaped = kill_and_reap(&mut child).await;
+        panic!("feed the bridge: {result:?}; cleanup: {reaped:?}");
+    }
+    let out = child_output(&mut child)
         .await
-        .expect("feed the bridge");
-    let out = tokio::time::timeout(common::HELPER_DEADLINE, child.wait_with_output())
-        .await
-        .expect("the mcp bridge never answered")
-        .expect("mcp child");
+        .unwrap_or_else(|e| panic!("the mcp bridge never answered: {e}"));
     assert!(out.status.success(), "mcp exit: {out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let reply: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout is protocol only: {stdout:?}");
     assert_eq!(reply["id"], 1, "{reply}");
     assert_eq!(reply["error"]["code"], -32000, "{reply}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mcp_read_warning_is_captured_on_stderr_only() {
+    let child = Command::new(binary())
+        .args(["mcp", "--url", "http://127.0.0.1:1"])
+        .stdin(Stdio::from(
+            std::fs::File::open("/").expect("open directory as stdin"),
+        ))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("RUST_LOG", "swarmail=warn")
+        .spawn()
+        .expect("spawn swarmail mcp with an erroring stdin");
+    let output = tokio::time::timeout(common::HELPER_DEADLINE, child.wait_with_output())
+        .await
+        .expect("mcp read-error child did not exit")
+        .expect("mcp read-error child");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "protocol stdout is empty after read failure: {output:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stdio read error"),
+        "warning must reach stderr: {stderr:?}"
+    );
 }
 
 /// A pipelined burst sender for the kill leg: each mail's command block is
@@ -574,7 +746,7 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
     let dir = tempfile::TempDir::with_prefix("swarmail-binary-kill-").unwrap();
     let db = dir.path().join("kill.db");
     let mut serve = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
     let smtp_addr = serve.smtp_addr;
 
     // Three pipelined writers hammering the same data file, each recording
@@ -647,7 +819,7 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
     // pages like any client must (decision 0030 §3) — no harness asks for
     // an unbounded page.
     let mut restarted = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(restarted.http_addr).await;
+    wait_http_up(&mut restarted).await;
     let restart = common::list_all_ids(restarted.http_addr, "killbox").await;
     for id in &observed {
         assert!(
@@ -655,7 +827,7 @@ async fn a_hard_kill_loses_no_mail_whose_250_was_observed() {
             "a mail whose 250 was observed ({id}) was lost across a hard kill"
         );
     }
-    let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut restarted, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     drop(restarted);
@@ -675,12 +847,12 @@ fn cert_dir(name: &str) -> tempfile::TempDir {
 async fn gen_cert_writes_a_pair_the_server_serves() {
     let scratch = cert_dir("e2e");
     let dir = scratch.path().join("pair");
-    let out = Command::new(binary())
-        .args(["gen-cert", "--domain", "localhost", "--out"])
-        .arg(&dir)
-        .output()
-        .await
-        .expect("spawn swarmail gen-cert");
+    let out = command_output(
+        Command::new(binary())
+            .args(["gen-cert", "--domain", "localhost", "--out"])
+            .arg(&dir),
+    )
+    .await;
     assert!(out.status.success(), "gen-cert failed: {out:?}");
     assert!(String::from_utf8_lossy(&out.stdout).contains("cert.pem"));
 
@@ -694,7 +866,7 @@ async fn gen_cert_writes_a_pair_the_server_serves() {
         cmd.args(["--tls-key"]).arg(&key);
         spawn_serve(cmd).await
     };
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
     let smtp_addr = serve.smtp_addr;
 
     let pair_pem = std::fs::read_to_string(&cert).unwrap();
@@ -709,7 +881,7 @@ async fn gen_cert_writes_a_pair_the_server_serves() {
     assert!(tls.reply_raw().await.starts_with("250"));
     let stored = tls.data("Subject: from the cli\r\n\r\nbody").await;
     assert!(stored.starts_with("250"), "{stored}");
-    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     drop(scratch);
@@ -720,12 +892,12 @@ async fn gen_cert_writes_a_pair_the_server_serves() {
 async fn serve_takes_tls_from_the_environment() {
     let scratch = cert_dir("env");
     let dir = scratch.path().join("pair");
-    let out = Command::new(binary())
-        .args(["gen-cert", "--domain", "localhost", "--out"])
-        .arg(&dir)
-        .output()
-        .await
-        .expect("spawn swarmail gen-cert");
+    let out = command_output(
+        Command::new(binary())
+            .args(["gen-cert", "--domain", "localhost", "--out"])
+            .arg(&dir),
+    )
+    .await;
     assert!(out.status.success());
 
     let mut serve = {
@@ -734,7 +906,7 @@ async fn serve_takes_tls_from_the_environment() {
         cmd.env("SWARMAIL_TLS_KEY", dir.join("key.pem"));
         spawn_serve(cmd).await
     };
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
     let smtp_addr = serve.smtp_addr;
 
     let pair_pem = std::fs::read_to_string(dir.join("cert.pem")).unwrap();
@@ -745,7 +917,7 @@ async fn serve_takes_tls_from_the_environment() {
     let mut tls = common::starttls(smtp_addr, "localhost", root).await;
     tls.send("NOOP").await;
     assert!(tls.reply_raw().await.starts_with("250"));
-    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
     drop(scratch);
@@ -761,7 +933,8 @@ async fn serve_with_a_malformed_cert_exits_non_zero_and_says_why() {
     std::fs::write(&cert, "not a certificate").unwrap();
     std::fs::write(&key, "not a key").unwrap();
 
-    let mut child = Command::new(binary())
+    let mut child = Command::new(binary());
+    child
         .args([
             "serve",
             "--smtp-listen",
@@ -774,30 +947,10 @@ async fn serve_with_a_malformed_cert_exits_non_zero_and_says_why() {
         ])
         .arg(&cert)
         .args(["--tls-key"])
-        .arg(&key)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn swarmail serve");
-    let status = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            match child.try_wait().unwrap() {
-                Some(status) => return status,
-                None => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-        }
-    })
-    .await
-    .expect("server with a broken cert must exit, not hang");
-    assert!(!status.success(), "broken TLS must be a non-zero exit");
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .await
-        .unwrap();
+        .arg(&key);
+    let out = command_output(&mut child).await;
+    assert!(!out.status.success(), "broken TLS must be a non-zero exit");
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("tls-cert"), "{stderr}");
     drop(dir);
 }
@@ -808,12 +961,12 @@ async fn gen_cert_to_an_occupied_target_exits_non_zero() {
     let scratch = cert_dir("occupied");
     let occupied = scratch.path().join("occupied");
     std::fs::write(&occupied, "a file, not a dir").unwrap();
-    let out = Command::new(binary())
-        .args(["gen-cert", "--domain", "localhost", "--out"])
-        .arg(&occupied)
-        .output()
-        .await
-        .expect("spawn swarmail gen-cert");
+    let out = command_output(
+        Command::new(binary())
+            .args(["gen-cert", "--domain", "localhost", "--out"])
+            .arg(&occupied),
+    )
+    .await;
     assert!(!out.status.success(), "occupied --out must fail");
     assert!(String::from_utf8_lossy(&out.stderr).contains("swarmail"));
     drop(scratch);
@@ -834,7 +987,7 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
     let dir = tempfile::TempDir::with_prefix("swarmail-sigint-refuse-").unwrap();
     let db = dir.path().join("refuse.db");
     let mut serve = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
     let http_addr = serve.http_addr;
 
     // The test's own connection: the writer lock the commits must refuse
@@ -877,7 +1030,7 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
     // level. The exit wait is liveness (30s); the budget — at most one
     // busy bound plus ε — is what the API-level held-lock tests prove on
     // the server's own clock.
-    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 
@@ -903,7 +1056,7 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
     // released first — the restart must be able to restore.
     drop(_lock);
     let mut restarted = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(restarted.http_addr).await;
+    wait_http_up(&mut restarted).await;
     for inbox in ["sigint-one", "sigint-two", "sigint-three"] {
         let (st, list) = common::http_json(
             restarted.http_addr,
@@ -915,7 +1068,7 @@ async fn sigint_under_queued_seeds_exits_clean_and_stores_nothing() {
         assert_eq!(st, 200, "{list}");
         assert_eq!(list["total"], 0, "the refused set never landed: {list}");
     }
-    let status = signal_and_wait(&mut restarted.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut restarted, libc::SIGINT, Duration::from_secs(30)).await;
     restarted.reaped = true;
     assert!(status.success(), "restart SIGINT exit: {status:?}");
     drop(restarted);
@@ -932,7 +1085,7 @@ async fn sigterm_takes_the_graceful_path_and_the_mail_survives_a_restart() {
     let dir = tempfile::TempDir::with_prefix("swarmail-sigterm-").unwrap();
     let db = dir.path().join("sigterm.db");
     let mut serve = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
     let reply = common::smtp_send(
         serve.smtp_addr,
         Some("sigterm"),
@@ -945,13 +1098,13 @@ async fn sigterm_takes_the_graceful_path_and_the_mail_survives_a_restart() {
     .expect("smtp send");
     assert!(reply.starts_with("250"), "{reply}");
 
-    let status = signal_and_wait(&mut serve.child, libc::SIGTERM, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve, libc::SIGTERM, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGTERM exit: {status:?}");
 
     // The same data file, a fresh process: the committed mail is queryable.
     let mut again = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(again.http_addr).await;
+    wait_http_up(&mut again).await;
     let (st, list) = common::http_json(
         again.http_addr,
         "GET",
@@ -962,7 +1115,7 @@ async fn sigterm_takes_the_graceful_path_and_the_mail_survives_a_restart() {
     assert_eq!(st, 200, "{list}");
     assert_eq!(list["total"], 1, "mail did not survive SIGTERM: {list}");
     assert_eq!(list["emails"][0]["subject"], "Term graceful");
-    let status = signal_and_wait(&mut again.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut again, libc::SIGINT, Duration::from_secs(30)).await;
     again.reaped = true;
     assert!(status.success(), "restart SIGINT exit: {status:?}");
     drop(again);
@@ -980,19 +1133,16 @@ async fn a_second_server_on_a_held_data_file_refuses_and_a_dead_owner_frees_it()
     let dir = tempfile::TempDir::with_prefix("swarmail-binary-one-writer-").unwrap();
     let db = dir.path().join("mail.db");
     let mut a = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(a.http_addr).await;
+    wait_http_up(&mut a).await;
 
-    // B: same file, its own ephemeral ports. `kill_on_drop` reaps it even
-    // if the deadline fires, so a hung B can never leak into the run.
+    // B: same file, its own ephemeral ports. The output helper kills and
+    // reaps on failure; kill_on_drop also covers cancellation/unwind.
     let mut second = serve_with_data(&db);
     second
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let out = tokio::time::timeout(common::HELPER_DEADLINE, second.output())
-        .await
-        .expect("a refused second server exits instead of serving")
-        .expect("spawn the second server");
+    let out = command_output(&mut second).await;
     assert!(
         !out.status.success(),
         "the second server must exit non-zero: {out:?}"
@@ -1030,30 +1180,27 @@ async fn a_second_server_on_a_held_data_file_refuses_and_a_dead_owner_frees_it()
 
     // Kill A outright and reap it: the kernel drops the lock with the
     // process, and the inert sidecar stays where it was.
-    tokio::time::timeout(common::HELPER_DEADLINE, a.child.kill())
-        .await
-        .expect("the killed owner is reaped")
-        .expect("kill the owner");
+    kill_serve(&mut a).await;
     a.reaped = true;
     assert!(dir.path().join("mail.db.lock").is_file());
 
     let mut c = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(c.http_addr).await;
+    wait_http_up(&mut c).await;
     let (st, list) = common::http_json(c.http_addr, "GET", path, None).await;
     assert_eq!(st, 200, "{list}");
     assert_eq!(list["total"], 1, "the killed owner's mail survives: {list}");
     assert_eq!(list["emails"][0]["subject"], "Owned");
-    let status = signal_and_wait(&mut c.child, libc::SIGTERM, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut c, libc::SIGTERM, Duration::from_secs(30)).await;
     c.reaped = true;
     assert!(status.success(), "SIGTERM exit: {status:?}");
 
     // A graceful stop frees the file just the same.
     let mut d = spawn_serve(serve_with_data(&db)).await;
-    wait_http_up(d.http_addr).await;
+    wait_http_up(&mut d).await;
     let (st, list) = common::http_json(d.http_addr, "GET", path, None).await;
     assert_eq!(st, 200, "{list}");
     assert_eq!(list["total"], 1, "a graceful stop frees the file: {list}");
-    let status = signal_and_wait(&mut d.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut d, libc::SIGINT, Duration::from_secs(30)).await;
     d.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
@@ -1070,10 +1217,7 @@ async fn assert_refused_on(spelled: &std::path::Path) {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let out = tokio::time::timeout(common::HELPER_DEADLINE, second.output())
-        .await
-        .expect("a refused second server exits instead of serving")
-        .expect("spawn the second server");
+    let out = command_output(&mut second).await;
     assert!(
         !out.status.success(),
         "{spelled:?} must exit non-zero: {out:?}"
@@ -1147,7 +1291,7 @@ async fn aliases_of_a_held_data_file_refuse_and_the_owners_mail_survives() {
     };
     // The file must exist before a hard link can name it.
     let mut first = spawn_serve(capped(&db)).await;
-    wait_http_up(first.http_addr).await;
+    wait_http_up(&mut first).await;
     std::os::unix::fs::symlink(&db, &soft).unwrap();
     std::fs::hard_link(&db, &hard).unwrap();
     std::fs::hard_link(&db, &far).unwrap();
@@ -1158,13 +1302,13 @@ async fn aliases_of_a_held_data_file_refuse_and_the_owners_mail_survives() {
         assert_refused_on(alias).await;
         sent += 1;
         deliver(&first, "aliased", &format!("m{sent}")).await;
-        let status = signal_and_wait(&mut first.child, libc::SIGINT, Duration::from_secs(30)).await;
+        let status = signal_and_wait(&mut first, libc::SIGINT, Duration::from_secs(30)).await;
         first.reaped = true;
         assert!(status.success(), "SIGINT exit: {status:?}");
 
         // The alias owns; the real name is refused.
         let mut owner = spawn_serve(capped(alias)).await;
-        wait_http_up(owner.http_addr).await;
+        wait_http_up(&mut owner).await;
         assert_refused_on(&db).await;
         let (st, body) = common::http_json(owner.http_addr, "GET", "/healthz", None).await;
         assert_eq!(st, 200, "the owner keeps serving: {body}");
@@ -1172,33 +1316,29 @@ async fn aliases_of_a_held_data_file_refuse_and_the_owners_mail_survives() {
         deliver(&owner, "aliased", &format!("m{sent}")).await;
 
         // A SIGKILLed and reaped owner frees the file at once, by its name.
-        tokio::time::timeout(common::HELPER_DEADLINE, owner.child.kill())
-            .await
-            .expect("the killed owner is reaped")
-            .expect("kill the owner");
+        kill_serve(&mut owner).await;
         owner.reaped = true;
         let mut owner = spawn_serve(capped(alias)).await;
-        wait_http_up(owner.http_addr).await;
+        wait_http_up(&mut owner).await;
         assert_refused_on(&db).await;
         assert_eq!(
             subjects(&owner, "aliased").await[0],
             format!("m{sent}"),
             "the killed owner's 250 survives"
         );
-        let status =
-            signal_and_wait(&mut owner.child, libc::SIGTERM, Duration::from_secs(30)).await;
+        let status = signal_and_wait(&mut owner, libc::SIGTERM, Duration::from_secs(30)).await;
         owner.reaped = true;
         assert!(status.success(), "SIGTERM exit: {status:?}");
 
         first = spawn_serve(capped(&db)).await;
-        wait_http_up(first.http_addr).await;
+        wait_http_up(&mut first).await;
         assert_eq!(
             subjects(&first, "aliased").await,
             vec![format!("m{sent}"), format!("m{}", sent - 1)],
             "the newest two of {sent} acknowledged mails, oldest evicted"
         );
     }
-    let status = signal_and_wait(&mut first.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut first, libc::SIGINT, Duration::from_secs(30)).await;
     first.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
@@ -1215,10 +1355,10 @@ async fn a_created_data_file_is_no_wider_than_0644() {
     cmd.args(["-c", "umask 000 && exec \"$0\" \"$@\"", binary()])
         .args(serve_with_data(&db).as_std().get_args());
     let mut serve = spawn_serve(cmd).await;
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
     let mode = std::fs::metadata(&db).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o644, "{mode:o}");
-    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
@@ -1230,7 +1370,7 @@ async fn a_created_data_file_is_no_wider_than_0644() {
 #[tokio::test]
 async fn a_second_signal_during_the_drain_exits_70() {
     let mut serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
 
     // The park: a dispatched request whose body never completes. Its 100
     // Continue is the proof the handler is waiting on bytes (and so the
@@ -1262,7 +1402,7 @@ async fn a_second_signal_during_the_drain_exits_70() {
     wait_for_line(&mut serve, "shutting down", Duration::from_secs(10)).await;
 
     // The second signal lands inside the drain: forced exit 70.
-    let status = signal_and_wait(&mut serve.child, libc::SIGTERM, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve, libc::SIGTERM, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert_eq!(status.code(), Some(70), "second SIGTERM exit: {status:?}");
 }
@@ -1275,7 +1415,7 @@ async fn a_second_signal_during_the_drain_exits_70() {
 #[tokio::test]
 async fn an_exhausted_delivery_names_its_target_and_cause_in_stdout() {
     let mut serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
 
     // A port nothing listens on: every attempt is refused at once, so the
     // four-attempt budget burns in ~2.1 s of backoff, not 22 s of timeouts.
@@ -1320,7 +1460,7 @@ async fn an_exhausted_delivery_names_its_target_and_cause_in_stdout() {
         "the warn carries no URL credentials: {line:?}"
     );
 
-    let status = signal_and_wait(&mut serve.child, libc::SIGINT, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve, libc::SIGINT, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGINT exit: {status:?}");
 }
@@ -1438,7 +1578,7 @@ async fn a_delivery_dials_its_target_and_never_the_proxy(ca_pem: Option<String>)
     }
     cmd.env_remove("NO_PROXY").env_remove("no_proxy");
     let mut serve = spawn_serve(cmd).await;
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
 
     // An absent `ca_pem` is omitted, never `null` — a present null is
     // refused (decision 0048 §2).
@@ -1474,7 +1614,7 @@ async fn a_delivery_dials_its_target_and_never_the_proxy(ca_pem: Option<String>)
     );
     assert!(seen.contains("\"event\":\"received\""), "{seen}");
 
-    let status = signal_and_wait(&mut serve.child, libc::SIGTERM, Duration::from_secs(30)).await;
+    let status = signal_and_wait(&mut serve, libc::SIGTERM, Duration::from_secs(30)).await;
     serve.reaped = true;
     assert!(status.success(), "SIGTERM exit: {status:?}");
     assert_eq!(
@@ -1519,7 +1659,7 @@ async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
     let mut cmd = serve_command();
     cmd.env_remove("RUST_LOG");
     let mut serve = spawn_serve(cmd).await;
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
 
     let targets = format!(
         r#"[{{"url": "http://user:hunter2@{stalled}/hook"}},
@@ -1542,14 +1682,15 @@ async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
     }
     let mut rest = String::new();
     let mut stdout = serve.stdout.take().expect("piped stdout");
-    tokio::time::timeout(Duration::from_secs(30), stdout.read_to_string(&mut rest))
-        .await
-        .expect("the server's stdout reaches EOF")
-        .expect("stdout reads");
-    let status = tokio::time::timeout(Duration::from_secs(30), serve.child.wait())
-        .await
-        .expect("the server exits")
-        .expect("the server is reaped");
+    let read =
+        tokio::time::timeout(common::HELPER_DEADLINE, stdout.read_to_string(&mut rest)).await;
+    if !matches!(read, Ok(Ok(_))) {
+        kill_serve(&mut serve).await;
+        panic!("the server's stdout failed to reach EOF: {read:?}");
+    }
+    let status = wait_child(&mut serve.child, common::HELPER_DEADLINE).await;
+    let stderr = serve.stderr.finish().await;
+    let status = status.unwrap_or_else(|e| panic!("{e}\nstderr: {stderr}"));
     serve.reaped = true;
     assert!(status.success(), "SIGTERM exit: {status:?}");
 
@@ -1691,42 +1832,77 @@ impl McpChild {
     }
 
     async fn send(&mut self, bytes: &[u8]) {
-        let stdin = self.stdin.as_mut().expect("stdin is open");
-        stdin.write_all(bytes).await.expect("feed the bridge");
-        stdin.flush().await.expect("feed the bridge");
+        let result = tokio::time::timeout(common::HELPER_DEADLINE, async {
+            let stdin = self.stdin.as_mut().expect("stdin is open");
+            stdin.write_all(bytes).await?;
+            stdin.flush().await
+        })
+        .await;
+        if !matches!(result, Ok(Ok(()))) {
+            let reaped = kill_and_reap(&mut self.child).await;
+            panic!("feed the bridge: {result:?}; cleanup: {reaped:?}");
+        }
     }
 
-    /// The next reply line, bounded by the helper deadline.
+    /// Any I/O/deadline failure reaps before the caller reports it.
     async fn reply(&mut self) -> serde_json::Value {
         let mut line = String::new();
-        tokio::time::timeout(common::HELPER_DEADLINE, self.stdout.read_line(&mut line))
-            .await
-            .expect("the bridge never replied")
-            .expect("read the bridge's stdout");
-        serde_json::from_str(&line).unwrap_or_else(|e| panic!("{line:?} is not JSON: {e}"))
+        let result =
+            tokio::time::timeout(common::HELPER_DEADLINE, self.stdout.read_line(&mut line)).await;
+        if !matches!(result, Ok(Ok(n)) if n > 0) {
+            let reaped = kill_and_reap(&mut self.child).await;
+            panic!("the bridge never replied: {result:?}; cleanup: {reaped:?}");
+        }
+        match serde_json::from_str(&line) {
+            Ok(reply) => reply,
+            Err(e) => {
+                let reaped = kill_and_reap(&mut self.child).await;
+                panic!("{line:?} is not JSON: {e}; cleanup: {reaped:?}");
+            }
+        }
     }
 
-    /// Close stdin; every remaining stdout line (each must parse on its
-    /// own) and the exit status.
-    async fn finish(mut self) -> (std::process::ExitStatus, Vec<serde_json::Value>) {
+    /// One deadline covers both stdout EOF and process exit, so a child
+    /// that closes stdout but stays alive also takes the kill/reap path.
+    async fn finish_with_deadline(
+        &mut self,
+        deadline: Duration,
+    ) -> Result<(std::process::ExitStatus, Vec<serde_json::Value>), String> {
         drop(self.stdin.take());
         let mut rest = String::new();
-        tokio::time::timeout(
-            common::HELPER_DEADLINE,
-            self.stdout.read_to_string(&mut rest),
-        )
-        .await
-        .expect("the bridge never closed stdout")
-        .expect("read the bridge's stdout");
-        let status = tokio::time::timeout(common::HELPER_DEADLINE, self.child.wait())
-            .await
-            .expect("the bridge never exited")
-            .expect("mcp child");
+        let result = tokio::time::timeout(deadline, async {
+            self.stdout
+                .read_to_string(&mut rest)
+                .await
+                .map_err(|e| format!("read bridge stdout: {e}"))?;
+            self.child
+                .wait()
+                .await
+                .map_err(|e| format!("wait bridge: {e}"))
+        })
+        .await;
+        let status = match result {
+            Ok(Ok(status)) => status,
+            outcome => {
+                let reaped = kill_and_reap(&mut self.child).await;
+                return Err(format!(
+                    "bridge finish failed: {outcome:?}; cleanup: {reaped:?}"
+                ));
+            }
+        };
         let replies = rest
             .lines()
-            .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?} is not JSON: {e}")))
-            .collect();
-        (status, replies)
+            .map(|line| {
+                serde_json::from_str(line).map_err(|e| format!("{line:?} is not JSON: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((status, replies))
+    }
+
+    async fn finish(mut self) -> (std::process::ExitStatus, Vec<serde_json::Value>) {
+        self.finish_with_deadline(common::HELPER_DEADLINE)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"))
     }
 }
 
@@ -1744,8 +1920,8 @@ fn tool_text(reply: &serde_json::Value) -> serde_json::Value {
 /// The old bridge wrote nothing for any array.
 #[tokio::test]
 async fn mcp_forwards_batches_as_the_http_endpoint_answers_them() {
-    let serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(&mut serve).await;
     let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
     let batches = [
         r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"ping"}]"#
@@ -1780,6 +1956,7 @@ async fn mcp_forwards_batches_as_the_http_endpoint_answers_them() {
         canonical(&expected[..]),
         "stdio answers as HTTP does"
     );
+    kill_serve(&mut serve).await;
 }
 
 /// A wait and the seed that satisfies it, sent back to back with a ping,
@@ -1788,8 +1965,8 @@ async fn mcp_forwards_batches_as_the_http_endpoint_answers_them() {
 /// before it scans (decision 0002).
 #[tokio::test]
 async fn mcp_answers_a_wait_with_the_seed_sent_beside_it() {
-    let serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(&mut serve).await;
     let mut mcp = McpChild::spawn(&serve);
     mcp.send(
         concat!(
@@ -1816,6 +1993,7 @@ async fn mcp_answers_a_wait_with_the_seed_sent_beside_it() {
         "a false timeout: {result}"
     );
     assert_eq!(result["emails"][0]["subject"], "the seed", "{result}");
+    kill_serve(&mut serve).await;
 }
 
 /// A ping sent behind a registered five-second wait is answered first
@@ -1824,8 +2002,8 @@ async fn mcp_answers_a_wait_with_the_seed_sent_beside_it() {
 /// the wait. The old bridge answered the wait (timed out) first.
 #[tokio::test]
 async fn mcp_answers_a_ping_behind_a_parked_wait_first() {
-    let serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(&mut serve).await;
     let mut mcp = McpChild::spawn(&serve);
     mcp.send(
         concat!(
@@ -1868,6 +2046,7 @@ async fn mcp_answers_a_ping_behind_a_parked_wait_first() {
         Some(1),
         "{result}"
     );
+    kill_serve(&mut serve).await;
 }
 
 /// A non-UTF-8 line and a malformed one each get a null-id -32700 and the
@@ -1875,8 +2054,8 @@ async fn mcp_answers_a_ping_behind_a_parked_wait_first() {
 /// process exits 0 at EOF. The old bridge died on the first byte 0xFF.
 #[tokio::test]
 async fn mcp_answers_bad_lines_and_keeps_serving() {
-    let serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(&mut serve).await;
     let mut mcp = McpChild::spawn(&serve);
     mcp.send(b"\xff\xfe\n{nope\n{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"ping\"}\n")
         .await;
@@ -1893,6 +2072,7 @@ async fn mcp_answers_bad_lines_and_keeps_serving() {
         .find(|r| r["id"] == 9)
         .expect("the ping's reply");
     assert_eq!(ping["result"], serde_json::json!({}), "{ping}");
+    kill_serve(&mut serve).await;
 }
 
 /// An id-less object without a string method is no notification on the
@@ -1901,8 +2081,8 @@ async fn mcp_answers_bad_lines_and_keeps_serving() {
 /// with a null id, and the ping behind it is answered.
 #[tokio::test]
 async fn mcp_answers_a_malformed_object_with_one_invalid_request_line() {
-    let serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(&mut serve).await;
     let mut mcp = McpChild::spawn(&serve);
     mcp.send(b"{\"foo\":\"boo\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
         .await;
@@ -1920,6 +2100,7 @@ async fn mcp_answers_a_malformed_object_with_one_invalid_request_line() {
         .find(|r| r["id"] == 2)
         .expect("the ping's reply");
     assert_eq!(ping["result"], serde_json::json!({}), "{ping}");
+    kill_serve(&mut serve).await;
 }
 
 /// A raw `POST /mcp` of `body` and the JSON the server answered — a
@@ -1934,13 +2115,10 @@ async fn post_mcp_raw(addr: SocketAddr, body: &[u8]) -> serde_json::Value {
     .into_bytes();
     request.extend_from_slice(body);
     let _ = stream.write_all(&request).await;
-    let mut reply = Vec::new();
-    let _ = stream.read_to_end(&mut reply).await;
-    let split = reply
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .expect("a response head");
-    serde_json::from_slice(&reply[split + 4..]).expect("a JSON body")
+    let (_, _, body) = common::read_http_response(&mut stream, "post_mcp_raw: the HTTP response")
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    serde_json::from_slice(&body).expect("a JSON body")
 }
 
 /// An oversized request is refused by the bridge itself, with its own ids
@@ -1954,8 +2132,8 @@ async fn post_mcp_raw(addr: SocketAddr, body: &[u8]) -> serde_json::Value {
 /// lines are read, so the order is the input's.
 #[tokio::test]
 async fn oversized_bridge_requests_keep_ids_without_effects() {
-    let serve = spawn_serve(serve_command()).await;
-    wait_http_up(serve.http_addr).await;
+    let mut serve = spawn_serve(serve_command()).await;
+    wait_http_up(&mut serve).await;
     let limit = 2_097_152;
     let over_http = post_mcp_raw(serve.http_addr, &vec![b' '; limit + 1]).await;
     let words = over_http["error"]["message"].clone();
@@ -2009,6 +2187,7 @@ async fn oversized_bridge_requests_keep_ids_without_effects() {
     .await;
     assert_eq!(st, 200, "{count}");
     assert_eq!(count["count"], 0, "no oversized line reached the server");
+    kill_serve(&mut serve).await;
 }
 
 /// `serve` bound on 127.0.0.1:80.
@@ -2037,9 +2216,9 @@ const SERVE_ON_EIGHTY: [&str; 7] = [
 async fn portless_bridge_pings_port_eighty() {
     let mut serve = Command::new(binary());
     serve.args(SERVE_ON_EIGHTY);
-    let serve = spawn_serve(serve).await;
+    let mut serve = spawn_serve(serve).await;
     assert_eq!(serve.http_addr.port(), 80);
-    wait_http_up(serve.http_addr).await;
+    wait_http_up(&mut serve).await;
     let mut bridge = Command::new(binary());
     bridge.args(["mcp", "--url", "http://127.0.0.1"]);
     let mut mcp = McpChild::spawn_command(bridge);
@@ -2051,4 +2230,5 @@ async fn portless_bridge_pings_port_eighty() {
         replies,
         [serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}})]
     );
+    kill_serve(&mut serve).await;
 }

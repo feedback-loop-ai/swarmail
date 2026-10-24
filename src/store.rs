@@ -186,12 +186,12 @@ pub struct Store {
     persist: Option<persist::Persist>,
     /// The shutdown observer (decision 0024): `Some` once the server wired
     /// this store to the runtime's stop watch. The mutation boundary reads
-    /// it at the commit chokepoint; the read is `borrow()` — synchronous
-    /// and lock-free, so no await ever enters the boundary
-    /// (0014 §1). A store never wired (every unit test, every embedding)
-    /// keeps today's behavior exactly: the flag is the boundary's policy
-    /// input, not a constructor concern, so `Store::new`'s 46+ call sites
-    /// keep their shape.
+    /// it at the commit chokepoint with `borrow()`: synchronous, but it takes
+    /// a watch read lock. No await enters the boundary (0014 §1); this is not
+    /// a lock-free or wait-free read. A store never wired (every unit test,
+    /// every embedding) keeps today's behavior exactly: the flag is the
+    /// boundary's policy input, not a constructor concern, so `Store::new`'s
+    /// 46+ call sites keep their shape.
     stopping: std::sync::OnceLock<tokio::sync::watch::Receiver<bool>>,
     /// Test-only seam for the pins (decision 0020): when set, the closure
     /// runs pre-commit in `record`, *inside* the mutation boundary of every
@@ -339,9 +339,10 @@ impl Store {
     ) -> rusqlite::Result<()> {
         // The boundary refuses to *start* a commit once the stop has fired
         // (decision 0024): every queued mutation acquires the boundary in
-        // turn, reads the watch synchronously and refuses without one
-        // SQLite call, so shutdown burns at most the one busy bound the
-        // in-flight commit already owes — never one per queued request.
+        // turn, reads the watch and refuses before SQLite, so queued
+        // mutations do not start SQLite busy-handler lock retries. An admitted
+        // mutation may continue; `busy_timeout` configures lock-contention
+        // retries only and does not bound other storage I/O or shutdown latency.
         // The refusal is a constructed `SQLITE_ABORT` (truthful: nothing
         // was written) and applies nothing — no mail, no inbox, no counter
         // move, no eviction, no fan-out — so memory and data file agree.
@@ -1284,10 +1285,11 @@ mod tests {
     /// empties an inbox removes its entry — the listing `inboxes()` serves
     /// (and POP3's `has_inbox` follows) — releasing the watcher channel
     /// with it, exactly as `clear` does via `drain_inbox`. The live store
-    /// and a reopen of the same data file agree: no empty entry is
-    /// restored, and a later insert re-mints the inbox. This is the hang
-    /// regression: retaining a map guard while removing the emptied entry
-    /// deadlocks on that same map shard.
+    /// and a reopen of the same data file agree. This fixture inserts a new
+    /// row to re-mint the inbox before reopening, so restore checks that new
+    /// row rebuilds the entry; it does not claim an empty inbox stays absent
+    /// across a restart. This is the hang regression: retaining a map guard
+    /// while removing the emptied entry deadlocks on that same map shard.
     #[test]
     fn a_delete_that_empties_an_inbox_removes_the_entry_live_and_after_reopen() {
         // The data file and every sidecar (-wal, -shm, the lock) live inside
@@ -1748,7 +1750,6 @@ mod filter_tests {
     }
 }
 
-#[cfg(test)]
 // The persistence suite lives in src/store/persist_tests.rs — the harness
 // side of decision 0020: the exact gate counts production, not test prose.
 #[cfg(test)]
@@ -2154,7 +2155,9 @@ mod bounded_tests {
                     barrier.wait();
                     for j in 0..per_role {
                         for role in 0..roles {
-                            let _ = store.delete(&format!("{prefix}{round}-{role}-{j}"));
+                            store
+                                .delete(&format!("{prefix}{round}-{role}-{j}"))
+                                .expect("the boundary probe injects no storage failures");
                         }
                     }
                 }));
@@ -2166,7 +2169,9 @@ mod bounded_tests {
                 handles.push(s.spawn(move || {
                     barrier.wait();
                     for _ in 0..per_role {
-                        let _ = store.clear("A");
+                        store
+                            .clear("A")
+                            .expect("the boundary probe injects no storage failures");
                     }
                 }));
             }
@@ -2177,7 +2182,9 @@ mod bounded_tests {
                 handles.push(s.spawn(move || {
                     barrier.wait();
                     for _ in 0..per_role {
-                        let _ = store.clear_all();
+                        store
+                            .clear_all()
+                            .expect("the boundary probe injects no storage failures");
                     }
                 }));
             }

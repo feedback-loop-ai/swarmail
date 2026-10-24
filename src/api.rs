@@ -2448,7 +2448,7 @@ mod tests {
         ));
         // Persistent misbehavior: far more failures than the probe can
         // outlive — the loop stays degraded for the whole test.
-        crate::smtp::inject_accept_errors(1000);
+        let errors = crate::smtp::inject_accept_errors(1000);
         // The flag is the sequencer, not a probe retry loop (0020 rule 5):
         // once the loop has been polled into its backoff the degradation is
         // a settled fact, so ONE probe reads it — no race to schedule
@@ -2476,12 +2476,11 @@ mod tests {
                 "GET /healthz answered {observed}, which openapi.json must list"
             );
         }
-        // The seam is thread-local and this thread runs other tests after
-        // this one: leave it as it was found, so no later serve on this
-        // thread inherits a phantom failure.
-        crate::smtp::inject_accept_errors(0);
         smtp_task.abort();
+        let _ = smtp_task.await;
         api_task.abort();
+        let _ = api_task.await;
+        drop(errors);
     }
 
     /// The served contract is pinned to the constants (decision 0025):
@@ -2497,6 +2496,79 @@ mod tests {
         assert_eq!(probability["type"], "integer", "{probability}");
         assert_eq!(probability["minimum"], 0, "{probability}");
         assert_eq!(probability["maximum"], crate::chaos::PROBABILITY_MAX);
+        let probability_description = probability["description"].as_str().unwrap();
+        assert!(
+            probability_description.contains("101 through 255"),
+            "{probability_description}"
+        );
+        assert!(
+            probability_description.contains("native JSON 400"),
+            "{probability_description}"
+        );
+        assert!(
+            probability_description.contains("omitted, null, wrong type and values above 255"),
+            "{probability_description}"
+        );
+        assert!(
+            probability_description.contains("plain-text 422"),
+            "{probability_description}"
+        );
+
+        let chaos_rule = &doc["components"]["schemas"]["ChaosRule"];
+        assert_eq!(chaos_rule["additionalProperties"], false, "{chaos_rule}");
+        assert_eq!(
+            chaos_rule["required"],
+            serde_json::json!(["probability"]),
+            "{chaos_rule}"
+        );
+        let delay_ms = &chaos_rule["properties"]["delay_ms"];
+        assert_eq!(delay_ms["type"], "integer", "{delay_ms}");
+        assert_eq!(delay_ms["minimum"], 0, "{delay_ms}");
+        assert_eq!(
+            delay_ms["maximum"],
+            crate::chaos::MAX_DELAY_MS,
+            "{delay_ms}"
+        );
+        assert_eq!(delay_ms["default"], 0, "{delay_ms}");
+        let error = &chaos_rule["properties"]["error"];
+        let error_description = error["description"].as_str().unwrap();
+        for term in [
+            "three ASCII digits",
+            "4 or 5",
+            "ASCII space",
+            "CR or LF",
+            "UTF-8 octets",
+        ] {
+            assert!(
+                error_description.contains(term),
+                "missing {term:?}: {error_description}"
+            );
+        }
+        assert!(
+            error_description.contains(&crate::chaos::MAX_REPLY_LINE_OCTETS.to_string()),
+            "{error_description}"
+        );
+        assert!(
+            error.get("maxLength").is_none(),
+            "octets are not a character count: {error}"
+        );
+
+        let chaos_config = &doc["components"]["schemas"]["ChaosConfig"];
+        assert_eq!(
+            chaos_config["additionalProperties"], false,
+            "{chaos_config}"
+        );
+        for event in ["connect", "mail_from", "rcpt", "data"] {
+            let alternatives = chaos_config["properties"][event]["anyOf"]
+                .as_array()
+                .expect("each chaos event accepts a rule or null");
+            assert_eq!(alternatives.len(), 2, "{event}: {alternatives:?}");
+            assert_eq!(
+                alternatives[0]["$ref"], "#/components/schemas/ChaosRule",
+                "{event}: {alternatives:?}"
+            );
+            assert_eq!(alternatives[1]["type"], "null", "{event}: {alternatives:?}");
+        }
 
         let put_400 = &doc["paths"]["/api/v1/chaos"]["put"]["responses"]["400"]["description"];
         assert!(
@@ -2506,6 +2578,16 @@ mod tests {
                 .contains(crate::chaos::PROBABILITY_REFUSAL),
             "{put_400}"
         );
+        assert!(
+            put_400.as_str().unwrap().contains("101 through 255"),
+            "{put_400}"
+        );
+        let put_422 = &doc["paths"]["/api/v1/chaos"]["put"]["responses"]["422"]["description"];
+        assert!(
+            put_422.as_str().unwrap().contains("extractor's plain-text"),
+            "{put_422}"
+        );
+        assert!(put_422.as_str().unwrap().contains("negative"), "{put_422}");
 
         let parameters = &doc["paths"]["/api/v1/inboxes/{inbox}/await"]["get"]["parameters"];
         let timeout_ms = parameters

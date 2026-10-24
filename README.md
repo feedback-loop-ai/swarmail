@@ -638,8 +638,11 @@ name). In JSON bodies an omitted optional field takes its default while a
 present `null` is refused with the field named — on the seed's `from`,
 `subject`, `text` and `html`, a webhook's `inbox`, `secret` and `ca_pem`,
 and on a chaos rule's `error` alike (only a whole chaos event set to
-`null` means "clear it"). A seed or webhook body error is a `400` with a
-JSON `error` (decision 0048); a chaos body error stays the extractor's
+`null` means "clear it"). Seed and webhook JSON data errors are `400` with
+a JSON `error` (decision 0048): unknown keys, missing fields, wrong types,
+nulls and wrong top-level shapes. Malformed JSON syntax stays the extractor's
+plain-text `400`, missing/wrong media type its plain-text `415`, and
+oversize its plain-text `413`. Chaos JSON data errors stay the extractor's
 `422`. One inbox-name rule holds on every
 surface — REST, MCP, UI, the shims, webhook inbox filters, SMTP AUTH and
 POP3 `USER`: a blank name (empty after trimming whitespace) is refused, and
@@ -673,11 +676,14 @@ Twelve tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`. Every tool validates its supplied arguments at the
-envelope: a wrong-typed or malformed value — the `arguments` container
-included — refuses with a JSON-RPC `-32602` error naming the field and its
-domain, before any effect, and so does an argument key the tool does not
-publish (`{"inbx": "zz"}` can never clear `default`; every schema says
+`swarmail_set_chaos`, `swarmail_clear_chaos`. Except for malformed seed fixture
+content and the supplied
+`timeout_ms` refusal described below, every tool validates its supplied
+arguments at the envelope: a wrong-typed or malformed value — the
+`arguments` container included — returns JSON-RPC `-32602` in HTTP 200
+for a call with an `id`, naming the field and its domain, before any
+effect, and so does an argument key the tool does not publish
+(`{"inbx": "zz"}` can never clear `default`; every schema says
 `additionalProperties: false`); an unknown tool name is `-32601`; a JSON
 parse failure or invalid UTF-8 is HTTP 400 `-32700`; a body over the
 2,097,152-byte limit is HTTP 413 `-32600`; a value that is not an object
@@ -692,6 +698,27 @@ its 250 limit. The members of one batch (at most 16) run concurrently:
 sixteen waits share one wait interval rather than queueing, replies keep
 member order, and the members' effects have **no** order — send dependent
 mutations as separate requests.
+
+An elapsed `swarmail_wait_for_email` timeout is a normal tool result:
+`isError: false`, with `matched`, `total` and `timed_out: true` in its text
+content. On `swarmail_wait_for_email`, a supplied `timeout_ms` must be an
+integer from 0 through 60000; malformed values and values above 60000
+return an HTTP-200 tool result with `isError: true` and refusal text, not
+a JSON-RPC `error` object.
+`swarmail_seed_email` refuses `CR/LF/NUL` in its `to`, `from` or
+`subject` fixture strings before insertion under decision
+[0010 §2](docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md);
+for a call with an `id`, it returns HTTP 200 with a tool result
+`isError: true` whose text names the offending field and its reason;
+no message is inserted. Wrong-typed seed arguments and unknown keys
+remain JSON-RPC `-32602`; id-less notifications stay silent.
+
+Tool failures such as `shutting down` return
+`isError: true` with an error message in text content.
+An unknown MCP argument key returns JSON-RPC `-32602` in HTTP 200 for a call
+with an `id`, before any effect. Other protocol and
+argument refusals use a JSON-RPC `error` envelope as described above.
+
 Wire it up:
 
 ```jsonc
@@ -738,8 +765,14 @@ than the bridge's still answers its own null-id refusal.
 `:1110` — USER, PASS, STAT, LIST, UIDL, RETR, DELE, NOOP, RSET, TOP, CAPA,
 QUIT. The maildrop **is** a swarmail inbox: `USER proj-42` names the inbox
 exactly like SMTP AUTH does, so mail delivered over SMTP reads back over
-POP3 — including mail that arrived before the session opened. The name is
-everything after `USER` and its one space, verbatim (only the line's CRLF is
+POP3 — including mail that arrived before the session opened. The maildrop
+is a snapshot taken at successful `PASS`, not a lock: numbering stays stable,
+and new arrivals appear in the next session. Listings read the snapshot;
+`RETR`, `TOP` and `DELE` consult the live store, so mail removed elsewhere
+can remain listed but these commands answer `-ERR no such message`
+(decision [0028 §3](docs/decisions/0028-wire-octets-auth-refusals-and-the-maildrop-snapshot.md)).
+The name is everything after `USER` and its one space, verbatim (only the
+line's CRLF is
 removed, so an extra CR is part of the name and refused); a command that is
 not UTF-8 ends the session unanswered. UIDLs are the
 swarmail ids; octet counts are the payload the client keeps — every line
@@ -820,8 +853,9 @@ whitespace before it tolerated; a numbered `Re[2]:` is *not* a marker and
 stays in the fallback key — then every whitespace run collapsed to one
 space and the remainder Unicode-lowercased) as the fallback for the *chain-less* mails
 only: a reply threads by its References even when the parent id was
-never published, because absence does not authorize a subject merge. Each
-conversation carries a
+never published, because absence does not authorize a subject merge.
+Unicode lowercasing is not full case folding: `ß` and `ss` remain distinct
+in subject fallback keys. Each conversation carries a
 stable `key`: the hash of the conversation's *first* mail's anchor (its
 `Message-ID`, else its `In-Reply-To`/first `References` entry, else the
 normalized subject, else its own id). A reply — even one whose message-id
@@ -1017,6 +1051,16 @@ Keep one configured path across
 restarts — after a crash, SQLite looks for the `-wal` file beside the name
 it was given, so restarting through another hard link's name would miss
 the crashed server's last commits.
+
+A missing ordinary data path is created. A dangling symlink refuses startup
+as `OpenError::Io` for the supplied path with `ENOENT`; the symlink remains
+unchanged and its missing target is not created. Relative data paths and
+paths through a symlinked parent are admitted. When cooperating servers
+share the stable namespace, either spelling of the same file is refused as
+`InUse` while an owner holds it, with the rival's supplied spelling in the
+error; it can be opened after that owner drops. These spelling checks prove
+the existing ownership behavior without attributing the refusal to one
+particular guard.
 
 **Memory is not globally bounded** (decision
 [0038](docs/decisions/0038-store-memory-and-timestamps.md)).

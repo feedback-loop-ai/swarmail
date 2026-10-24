@@ -189,3 +189,9 @@ with that record's own verb and scope, and nothing above is rewritten by it.
   describes — names are no longer trimmed and pass the shared
   `model::validate_inbox` rule verbatim. The pointer's "proposed" is
   historical: 0046 is accepted.)*
+
+## Erratum — 2026-10-24 (issue #184)
+
+This correction qualifies §2 and the 0046 pointer above; it records existing behavior and changes no protocol rule. SMTP AUTH refusals have distinct precedence and replies: disabled AUTH returns 502; a mail transaction in progress or repeated AUTH returns 503 before credential decoding; an unsupported mechanism returns 504; eligible AUTH syntax or credential failures return 501. These refusals do not assign or alter the SMTP inbox identity. One successful AUTH per TLS epoch remains the rule under 0034.
+
+POP3 authorization behaves differently: USER clears the pending username before validating its argument. A failed USER returns -ERR, leaves no pending identity, and makes a subsequent PASS return -ERR USER required first. Therefore the 0046 pointer's general refusal wording must not be read as saying a failed POP3 USER preserves pending identity. Strict verbatim name validation and all accepted SMTP/POP3 behavior remain unchanged.

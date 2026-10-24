@@ -154,3 +154,47 @@ exact error — it treats two orders as one.
 - **Both this decision and 0012 as amended remain `proposed`** — acceptance
   is the operator's. Until accepted, the tree must not be judged against
   the amended text by anything but this run's own review.
+
+## Factual correction marker — 2026-10-24 (NEXT-183, findings 15.1–15.3)
+
+This marker corrects factual descriptions in §8 and Consequences above. The
+accepted status and historical text remain as recorded; this is not a new
+ruling, amendment, or operator acceptance.
+
+### Capped insert interval (15.1; §8)
+
+The claim that memory is a subset of disk at every instant for insert, and
+that no reader can see an id absent from disk, is false when a capped insert
+evicts an existing row. At cap 1, the live and disk mail-id sets initially
+both contain A. Inserting B plans to evict A; one SQLite transaction inserts
+B, deletes A, and updates counters. After commit and before memory apply, the
+disk mail-id set is `{B}` while the memory set is `{A}`; neither set contains
+the other. A was previously committed, and B is not visible before B commits.
+On successful completion, apply mirrors the planned eviction and retained
+mail and counters agree, absent a later mutation. An ordinary refusal applies
+nothing and emits no success fan-out. Readers do not take the mutation mutex,
+and separate in-memory updates do not provide a whole-store read transaction
+or guarantee a complete earlier disk snapshot. A mid-apply panic remains the
+poison case and restart recovery described in
+[0015](0015-boundary-failure-contract.md) §3. The insert subset and
+no-reader-can-see-a-missing-disk-id sentences above are historical errors,
+not current facts.
+
+### Busy-handler scope (15.2; Consequences)
+
+`busy_timeout=5000` configures SQLite's busy handler for lock-contention
+waiting and retries. It does not bound arbitrary filesystem I/O, fsync, a
+full-disk error, waiting for the mutation mutex or blocking-pool admission,
+scheduling, a complete transaction, a request, or shutdown. Not every lock
+conflict consumes the whole configured threshold. The Consequences claim
+that a slow or failing disk delays mutations only within five seconds is
+overbroad. When ENOSPC, EDQUOT, or a read-only error is returned, the existing
+fixed refusal mapping applies; this setting is not an end-to-end or full-disk
+deadline. See also [0015](0015-boundary-failure-contract.md) and
+[0016](0016-lag-invariant.md).
+
+### Missing measurement (15.3; Consequences)
+
+The cited steady-state ingest number is not recorded in 0012. That citation
+is unsupported. This marker adds no throughput result and does not substitute
+another benchmark.

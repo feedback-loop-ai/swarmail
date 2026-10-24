@@ -101,6 +101,16 @@ fn dial_target(authority: &str) -> Result<String, String> {
     Ok(format!("{host}:{}", port.unwrap_or(80)))
 }
 
+/// Build the request bytes sent by `rpc_post`. `authority` is the original
+/// URL spelling: only the dial target gets a synthesized default port.
+fn request_text(authority: &str, path: &str, body: &str) -> String {
+    format!(
+        "POST {}/mcp HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        path.trim_end_matches('/'),
+        body.len()
+    )
+}
+
 /// What the server sent: protocol to forward, or declared silence.
 #[derive(Debug, PartialEq)]
 enum Outcome {
@@ -138,13 +148,21 @@ fn parse_response(raw: &[u8]) -> Result<Outcome, String> {
         .and_then(|line| line.split(' ').nth(1))
         .and_then(|code| code.parse::<u16>().ok())
         .ok_or_else(|| "malformed response: unreadable status line".to_string())?;
-    // content-length is honored when present and plausible; a reply without
-    // one (or with a short one) falls back to the raw tail. The client is
-    // HTTP/1.1 with identity encoding only: a chunked reply has no
-    // content-length and surfaces here, loudly — the named residual.
+    // A recognized Content-Length frames the body before any content
+    // interpretation: a short read is transport truncation even if the
+    // bytes already form JSON, whitespace or a server error object.
+    // Without a parseable length, retain the raw-tail behavior. The client
+    // is HTTP/1.1 with identity encoding only; chunked replies remain the
+    // named residual.
     let body = match content_length(&head) {
-        Some(n) if body.len() >= n => &body[..n],
-        _ => body,
+        Some(n) if body.len() < n => {
+            return Err(format!(
+                "truncated response body: Content-Length declared {n} bytes, received {}",
+                body.len()
+            ));
+        }
+        Some(n) => &body[..n],
+        None => body,
     };
     let text = std::str::from_utf8(body).ok();
     let value = text.and_then(|t| serde_json::from_str::<Value>(t).ok());
@@ -195,11 +213,7 @@ async fn rpc_post(
     };
     let mut stream = dial(&dial_target(authority)?, DIAL_TIMEOUT).await?;
 
-    let req = format!(
-        "POST {}/mcp HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        path.trim_end_matches('/'),
-        body.len()
-    );
+    let req = request_text(authority, path, body);
 
     // One owner for the transport failure: the request write and the response
     // read surface through the same io-error text, whatever the peer does.
@@ -417,6 +431,19 @@ mod tests {
         assert_eq!(bridge_deadline().as_secs(), 65);
     }
 
+    #[test]
+    fn a_short_content_length_is_truncation_before_body_interpretation() {
+        for raw in [
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 9999\r\n\r\n{}"[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n  "[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n\xff"[..],
+            &b"HTTP/1.1 400 Bad Request\r\nContent-Length: 999\r\n\r\n{\"error\":{}}"[..],
+        ] {
+            let error = parse_response(raw).expect_err("a short declared body is truncated");
+            assert!(error.contains("truncated"), "{error}");
+        }
+    }
+
     /// The response parser's arms (decision 0029 §4), in-process: the
     /// status line, the declared body, the forwarded server error, the
     /// content-length slice, the cap and every refusal shape.
@@ -424,13 +451,28 @@ mod tests {
     fn the_response_parser_answers_for_every_shape() {
         // 2xx JSON is forwarded; a whitespace-only body is declared silence.
         assert_eq!(
-            parse_response(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 9\r\n\r\n{\"id\":1}")
+            parse_response(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\n\r\n{\"id\":1}")
                 .unwrap(),
             Outcome::Json(serde_json::json!({ "id": 1 }))
         );
         assert_eq!(
             parse_response(b"HTTP/1.1 202 Accepted\r\nContent-Length: 2\r\n\r\n  ").unwrap(),
             Outcome::Empty
+        );
+        assert_eq!(
+            parse_response(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n").unwrap(),
+            Outcome::Empty
+        );
+        assert_eq!(
+            parse_response(b"HTTP/1.1 200 OK\r\n\r\n{} ").unwrap(),
+            Outcome::Json(serde_json::json!({}))
+        );
+        assert_eq!(
+            parse_response(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 999999999999999999999999999999999999\r\n\r\n{}"
+            )
+            .unwrap(),
+            Outcome::Json(serde_json::json!({}))
         );
         // A server-declared JSON-RPC error is forwarded verbatim — even on
         // a 400 (axum's parse refusal is exactly this shape).
@@ -481,11 +523,10 @@ mod tests {
             parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: soon\r\n\r\n{}").unwrap(),
             Outcome::Json(serde_json::json!({}))
         );
-        // …and a short one falls back to the raw tail (identity encoding
-        // only; a chunked reply surfaces here, loudly).
+        // A short declared body is truncation, even when its tail is valid JSON.
         assert_eq!(
-            parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 9999\r\n\r\n{}").unwrap(),
-            Outcome::Json(serde_json::json!({}))
+            parse_response(b"HTTP/1.1 200 OK\r\nContent-Length: 9999\r\n\r\n{}").unwrap_err(),
+            "truncated response body: Content-Length declared 9999 bytes, received 2"
         );
         // The cap: a full take-buffer is a refusal, not a truncation.
         let full = vec![b'x'; RESPONSE_CAP as usize];
@@ -581,6 +622,26 @@ mod tests {
         let refused = parsed(answer(&Envelope::InvalidBatch, failed()));
         assert_eq!(refused["id"], Value::Null, "{refused}");
         assert_eq!(refused["error"]["code"], -32000, "{refused}");
+    }
+
+    #[test]
+    fn request_host_preserves_the_original_authority_bytes() {
+        for (authority, expected_host) in [
+            ("example.test", "Host: example.test\r\n"),
+            ("127.0.0.1", "Host: 127.0.0.1\r\n"),
+            ("[2001:db8::1]", "Host: [2001:db8::1]\r\n"),
+            ("Example.test:80", "Host: Example.test:80\r\n"),
+            ("127.0.0.1:8025", "Host: 127.0.0.1:8025\r\n"),
+            ("[2001:db8::1]:9", "Host: [2001:db8::1]:9\r\n"),
+        ] {
+            let request = request_text(authority, "/api/", "{}\n");
+            assert!(request.contains(expected_host), "{authority}: {request:?}");
+            assert!(
+                request.starts_with("POST /api/mcp HTTP/1.1\r\n"),
+                "{request:?}"
+            );
+            assert!(request.contains("Content-Length: 3\r\n"), "{request:?}");
+        }
     }
 
     /// The dial target (decision 0047 §4, issue #133; red before: the
@@ -689,9 +750,20 @@ mod tests {
 
         let batch = pad(
             r#"[{"id":7,"method":"ping","x":"PAD"},{"id":"a","method":"ping"},
-               {"id":null,"method":"ping"},{"method":"n"},{"foo":"boo"},{"id":7,"method":"ping"}]"#,
+               {"id":null,"method":"ping"},{"method":"n"},{"foo":"boo"},
+               {"id":true,"method":"ping"},{"id":{},"method":"ping"},
+               {"id":[],"method":"ping"},{"id":7,"method":"ping"}]"#,
         );
-        let positions = [json!(7), json!("a"), Value::Null, Value::Null, json!(7)];
+        let positions = [
+            json!(7),
+            json!("a"),
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            Value::Null,
+            json!(7),
+        ];
         let replies: Vec<Value> = positions
             .into_iter()
             .map(|id| refused(id, -32600, &words))
@@ -760,47 +832,47 @@ mod tests {
             "no oversized line dialed"
         );
     }
-}
 
-/// The connect that outlives its deadline is a named error, not a hang
-/// (decision 0029 §4): the deadline expiry and the io failure are
-/// distinct, client-usable strings. The hang is real — a listener whose
-/// accept queue is filled with unaccepted connections, so the kernel
-/// drops the next SYN and the connect blocks until the deadline ends it.
-#[tokio::test]
-async fn a_connect_past_the_deadline_names_the_timeout() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().unwrap().port();
-    // Fill the accept queue: connect until a connect stops completing
-    // (129 on this kernel's default backlog), then the next one hangs.
-    let mut held = Vec::new();
-    for _ in 0..1024 {
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(300),
-            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+    /// The connect that outlives its deadline is a named error, not a hang
+    /// (decision 0029 §4): the deadline expiry and the io failure are
+    /// distinct, client-usable strings. The hang is real — a listener whose
+    /// accept queue is filled with unaccepted connections, so the kernel
+    /// drops the next SYN and the connect blocks until the deadline ends it.
+    #[tokio::test]
+    async fn a_connect_past_the_deadline_names_the_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        // Fill the accept queue: connect until a connect stops completing
+        // (129 on this kernel's default backlog), then the next one hangs.
+        let mut held = Vec::new();
+        for _ in 0..1024 {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(300),
+                tokio::net::TcpStream::connect(("127.0.0.1", port)),
+            )
+            .await
+            {
+                Ok(Ok(s)) => held.push(s),
+                _ => break,
+            }
+        }
+        assert!(
+            !held.is_empty(),
+            "the queue must be fillable for this test to mean anything"
+        );
+        let err = dial(
+            &format!("127.0.0.1:{port}"),
+            std::time::Duration::from_millis(400),
         )
         .await
-        {
-            Ok(Ok(s)) => held.push(s),
-            _ => break,
-        }
+        .expect_err("the queued-over connect must not succeed");
+        assert_eq!(err, "connect timeout", "{err}");
+        let again = dial(
+            &format!("127.0.0.1:{port}"),
+            std::time::Duration::from_millis(400),
+        )
+        .await
+        .expect_err("the deadline, not the kernel, ends every later attempt");
+        assert_eq!(again, "connect timeout", "{again}");
     }
-    assert!(
-        !held.is_empty(),
-        "the queue must be fillable for this test to mean anything"
-    );
-    let err = dial(
-        &format!("127.0.0.1:{port}"),
-        std::time::Duration::from_millis(400),
-    )
-    .await
-    .expect_err("the queued-over connect must not succeed");
-    assert_eq!(err, "connect timeout", "{err}");
-    let again = dial(
-        &format!("127.0.0.1:{port}"),
-        std::time::Duration::from_millis(400),
-    )
-    .await
-    .expect_err("the deadline, not the kernel, ends every later attempt");
-    assert_eq!(again, "connect timeout", "{again}");
 }

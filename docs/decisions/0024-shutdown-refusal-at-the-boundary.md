@@ -192,3 +192,32 @@ fixes the cause; the wire text stays.
   budget (upper bound, sequence-independent), exit status success, and
   the restarted copy is exactly the committed set — here empty, every
   commit having refused against the held lock — never a partial row.
+
+## Factual correction marker — 2026-10-24 (NEXT-183, findings 15.2 and 15.4)
+
+This marker corrects factual claims in Preserves, Decision §§1 and 3, and
+Consequences above. The accepted status and historical text remain as
+recorded; this is not a new ruling, amendment, or operator acceptance.
+
+### Watch read (15.4; Preserves and §1)
+
+Tokio's watch `Receiver::borrow()` is synchronous and takes a read lock. It
+adds no await to the boundary, but it is not lock-free and does not promise
+wait-free progress. The lock-free descriptions above are erroneous. The
+receiver, expression, guard lifetime, and boundary behavior are unchanged.
+
+### Timing claims (15.2; Preserves, §3, Consequences)
+
+The configured `busy_timeout=5000` controls SQLite busy-handler waits and
+retries for lock contention; it is not an elapsed-time limit for arbitrary
+storage I/O, fsync, full-disk refusal, mutex waiting, blocking-pool admission,
+scheduling, a complete commit, request, or shutdown. A queued mutation that
+acquires the boundary after stopping is set refuses before calling SQLite,
+but the time to acquire the boundary and the time for an already admitted
+mutation to finish are not bounded by that setting. The measured durations
+in Context remain observations of that reproduction, not universal bounds.
+The claims above of at most one busy bound, microseconds, epsilon, or
+approximately one busy bound for overall shutdown are not guaranteed for all
+storage and scheduling conditions. The dependency-default tripwire proves
+configuration only. Returned storage errors keep the existing fixed refusal
+mapping; no latency or shutdown deadline is added here.

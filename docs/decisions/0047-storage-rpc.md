@@ -264,3 +264,28 @@ decision index, previous spec lock instructions and misleading proposal
 pointers, preserving accepted text/status; it lands README/module claims
 with code and tests. §§2–4 and their tests remain unchanged. None of these
 documents constitutes operator acceptance or completed macOS verification.
+
+## Dated amendment — supplied JSON-RPC ID domain (2026-10-24)
+
+The operator's directive supplied for issue #180 on 2026-10-24 amends this
+accepted decision's §3 ID behavior: only JSON string, number and null IDs
+are valid. A supplied Boolean, object or array ID is an invalid request;
+answer it with JSON-RPC error `-32600` and `id: null`, before method
+dispatch, tool effects or waiter registration. Such an invalid supplied ID
+is not a notification. Valid string, number (including negative and
+fractional numbers) and explicit null IDs retain their JSON values.
+
+This amendment supersedes §3's unrestricted supplied-ID behavior and the
+historical absence of ID-domain validation. It does not change the existing
+missing-ID notification predicate: only an object with no `id` key and a
+string `method` is a notification, and a valid notification remains
+effectful and silent. The shared classifier normalizes invalid supplied
+IDs to null reply positions; the handler independently refuses them before
+effects. Batch ordering, duplicate and explicit-null positions, concurrent
+admission, bridge transport/size error codes, and verbatim complete
+upstream replies remain as previously ruled.
+
+**Provenance:** the exact ID-domain choice above was supplied by the
+operator in the 2026-10-24 issue #180 delivery task. Proposed decision
+0062 records its implementation framing; this dated addendum preserves this
+decision's accepted status and historical text.

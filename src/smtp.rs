@@ -42,7 +42,11 @@ use mail_parser::{
     Addr, Address, HeaderValue, MessageParser, MessagePartId, MimeHeaders, PartType,
 };
 use std::io;
+#[cfg(test)]
+use std::marker::PhantomData;
 use std::pin::Pin;
+#[cfg(test)]
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::task::{Context, Poll};
@@ -201,12 +205,30 @@ thread_local! {
         const { core::cell::Cell::new(0) };
 }
 
-/// Install `count` failing accepts for the loop driven by this test. Called
-/// before the loop is first polled, the arm is branch-stable: the first
-/// poll consumes an error instead of reaching the listener.
+/// Restores the prior thread-local error count when its scope ends.
 #[cfg(test)]
-pub(crate) fn inject_accept_errors(count: usize) {
-    INJECTED_ACCEPT_ERRORS.with(|errors| errors.set(count));
+#[must_use = "accept-error injections must be scoped"]
+pub(crate) struct AcceptErrorInjection {
+    previous: usize,
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for AcceptErrorInjection {
+    fn drop(&mut self) {
+        INJECTED_ACCEPT_ERRORS.with(|errors| errors.set(self.previous));
+    }
+}
+
+/// Install `count` failing accepts for the loop driven by this test. Call
+/// before the loop is first polled so the injected error is branch-stable.
+#[cfg(test)]
+pub(crate) fn inject_accept_errors(count: usize) -> AcceptErrorInjection {
+    let previous = INJECTED_ACCEPT_ERRORS.with(|errors| errors.replace(count));
+    AcceptErrorInjection {
+        previous,
+        _thread_bound: PhantomData,
+    }
 }
 
 /// Consume one installed accept error, if any remain.
@@ -436,16 +458,10 @@ pub async fn serve(
         // retryable, written under the same idle deadline before any
         // session state exists, and the socket is closed without spawning.
         if sessions.len() >= cfg.max_sessions {
-            let _ = bound_io(
-                async {
-                    let mut stream = stream;
-                    write_line(
-                        &mut stream,
-                        "421 4.7.0 Too many connections, closing transmission channel",
-                        cfg.idle_timeout,
-                    )
-                    .await
-                },
+            let mut stream = stream;
+            let _ = write_line(
+                &mut stream,
+                "421 4.7.0 Too many connections, closing transmission channel",
                 cfg.idle_timeout,
             )
             .await;
@@ -1506,7 +1522,7 @@ fn auth_plain_inbox(b64: Option<&str>) -> Option<String> {
     else {
         return None;
     };
-    auth_inbox(user.to_vec())
+    auth_inbox(user)
 }
 
 /// The inbox a LOGIN username line names, or `None` when it names nothing —
@@ -1516,15 +1532,16 @@ fn auth_plain_inbox(b64: Option<&str>) -> Option<String> {
 /// name holding the password (issue #128). The literal `*` cancel is not
 /// valid base64 and refuses the same way.
 fn auth_login_username(line: &str) -> Option<String> {
-    auth_inbox(b64_decode(line)?)
+    let decoded = b64_decode(line)?;
+    auth_inbox(&decoded)
 }
 
-/// A decoded AUTH username through the one inbox-name rule: strict UTF-8,
-/// then `model::validate_inbox`, never trimmed.
-fn auth_inbox(user: Vec<u8>) -> Option<String> {
-    let user = String::from_utf8(user).ok()?;
-    crate::model::validate_inbox(&user).ok()?;
-    Some(user)
+/// Borrowed AUTH username bytes through the one inbox-name rule: strict
+/// UTF-8 and validation happen before the accepted identity is owned.
+fn auth_inbox(user: &[u8]) -> Option<String> {
+    let user = std::str::from_utf8(user).ok()?;
+    crate::model::validate_inbox(user).ok()?;
+    Some(user.to_owned())
 }
 
 fn b64_decode(input: &str) -> Option<Vec<u8>> {
@@ -2308,6 +2325,90 @@ mod tests {
         assert!(tls.take_plain().is_err());
     }
 
+    #[tokio::test]
+    async fn accept_error_injection_restores_every_scope_exit() {
+        fn current() -> usize {
+            INJECTED_ACCEPT_ERRORS.with(core::cell::Cell::get)
+        }
+        fn return_early(early: bool) {
+            let _errors = inject_accept_errors(4);
+            if early {
+                return;
+            }
+            assert_eq!(current(), 4);
+        }
+
+        assert_eq!(current(), 0);
+        {
+            let _errors = inject_accept_errors(3);
+            assert_eq!(current(), 3);
+        }
+        assert_eq!(current(), 0);
+        return_early(true);
+        assert_eq!(current(), 0);
+        return_early(false);
+        assert_eq!(current(), 0);
+
+        let outer = inject_accept_errors(5);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _inner = inject_accept_errors(11);
+            panic!("controlled accept-error injection unwind");
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(current(), 5);
+        drop(outer);
+        assert_eq!(current(), 0);
+
+        let previous = inject_accept_errors(7);
+        let mut pending = Box::pin({
+            let mut injection = None;
+            std::future::poll_fn(move |_| {
+                if injection.is_none() {
+                    injection = Some(inject_accept_errors(13));
+                }
+                Poll::<()>::Pending
+            })
+        });
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        assert!(std::future::Future::poll(pending.as_mut(), &mut cx).is_pending());
+        assert_eq!(current(), 13);
+        assert!(std::future::Future::poll(pending.as_mut(), &mut cx).is_pending());
+        assert_eq!(current(), 13);
+        drop(pending);
+        assert_eq!(current(), 7);
+        drop(previous);
+        assert_eq!(current(), 0);
+
+        ERRORS_SEEN.with(|seen| seen.borrow_mut().clear());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let degraded = Arc::new(AtomicBool::new(false));
+        let (stop, mut rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(serve(
+            listener,
+            Arc::new(Store::new(0)),
+            Arc::new(Chaos::default()),
+            SmtpConfig::default(),
+            None,
+            degraded.clone(),
+            async move {
+                let _ = rx.changed().await;
+            },
+        ));
+        let mut client = tokio::time::timeout(Duration::from_secs(5), greeted(addr))
+            .await
+            .expect("the same-thread listener did not greet");
+        assert!(ERRORS_SEEN.with(|seen| seen.borrow().is_empty()));
+        assert!(!degraded.load(Ordering::Relaxed));
+        assert_eq!(
+            command_reply(&mut client, "QUIT\r\n").await,
+            "221 2.0.0 Bye\r\n"
+        );
+        stop.send(true).unwrap();
+        server.await.unwrap().unwrap();
+    }
+
     /// One probe, one actual serve owner, one JoinSet for every batch.
     async fn observed_listener() -> (
         std::net::SocketAddr,
@@ -2337,6 +2438,97 @@ mod tests {
             ),
         ));
         (addr, probe, stop, server)
+    }
+
+    #[tokio::test]
+    async fn an_smtp_session_keeps_its_envelope_during_accept_error_backoff() {
+        use base64::Engine;
+        let store = Arc::new(Store::new(0));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let degraded = Arc::new(AtomicBool::new(false));
+        let probe = ListenerProbe::new();
+        let (stop, mut rx) = tokio::sync::watch::channel(false);
+        let server = tokio::spawn(LISTENER_PROBE.scope(
+            probe.clone(),
+            serve(
+                listener,
+                store.clone(),
+                Arc::new(Chaos::default()),
+                SmtpConfig {
+                    max_sessions: 2,
+                    ..SmtpConfig::default()
+                },
+                None,
+                degraded.clone(),
+                async move {
+                    let _ = rx.changed().await;
+                },
+            ),
+        ));
+
+        let mut client = tokio::time::timeout(Duration::from_secs(5), greeted(addr))
+            .await
+            .expect("SMTP session did not greet");
+        let authcid = base64::engine::general_purpose::STANDARD.encode(b"\0held-smtp\0pw");
+        assert_eq!(
+            command_reply(&mut client, &format!("AUTH PLAIN {authcid}\r\n")).await,
+            "235 2.7.0 Accepted\r\n"
+        );
+        assert_eq!(
+            command_reply(&mut client, "MAIL FROM:<sender@example.com>\r\n").await,
+            "250 2.1.0 OK\r\n"
+        );
+
+        let mut entered = probe.backoff_pending.subscribe();
+        probe.accept_error.store(true, Ordering::Relaxed);
+        let mut retry = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+            .await
+            .expect("retry connection did not complete")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered.wait_for(|pending| *pending))
+            .await
+            .expect("SMTP accept loop did not enter the observed backoff")
+            .unwrap();
+        assert!(degraded.load(Ordering::Relaxed));
+        assert!(!*probe.retry_ready.borrow());
+
+        assert_eq!(
+            command_reply(&mut client, "RCPT TO:<recipient@example.com>\r\n").await,
+            "250 2.1.5 OK\r\n"
+        );
+        assert_eq!(
+            command_reply(&mut client, "DATA\r\n").await,
+            "354 End data with <CR><LF>.<CR><LF>\r\n"
+        );
+        let stored_reply =
+            command_reply(&mut client, "Subject: held\r\n\r\nheld body\r\n.\r\n").await;
+        let id = stored_reply
+            .strip_prefix("250 2.0.0 OK: stored as ")
+            .and_then(|line| line.strip_suffix("\r\n"))
+            .expect("final 250 carries the stored id");
+        let stored = store.get(id).expect("final 250 means queryable storage");
+        assert_eq!(stored.inbox, "held-smtp");
+        assert_eq!(stored.envelope_from.as_deref(), Some("sender@example.com"));
+        assert_eq!(stored.recipients, ["recipient@example.com"]);
+        assert_eq!(stored.raw, b"Subject: held\r\n\r\nheld body\r\n");
+
+        probe.retry_ready.send_replace(true);
+        let retry_greeting = tokio::time::timeout(Duration::from_secs(5), reply(&mut retry))
+            .await
+            .expect("SMTP listener did not resume admission");
+        assert!(retry_greeting.starts_with("220 "), "{retry_greeting}");
+        assert!(!degraded.load(Ordering::Relaxed));
+        assert_eq!(
+            command_reply(&mut client, "QUIT\r\n").await,
+            "221 2.0.0 Bye\r\n"
+        );
+        assert_eq!(
+            command_reply(&mut retry, "QUIT\r\n").await,
+            "221 2.0.0 Bye\r\n"
+        );
+        stop.send(true).unwrap();
+        server.await.unwrap().unwrap();
     }
 
     async fn owner_quit(client: &mut TcpStream, index: usize, probe: &ListenerProbe) {
@@ -2467,7 +2659,16 @@ mod tests {
     /// One reply line from a loopback SMTP peer, byte-at-a-time so replies
     /// the server pipelines behind the banner are still consumed one line
     /// per call.
-    pub(super) async fn reply(stream: &mut TcpStream) -> String {
+    async fn command_reply(stream: &mut TcpStream, command: &str) -> String {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            stream.write_all(command.as_bytes()).await.unwrap();
+            reply(stream).await
+        })
+        .await
+        .expect("SMTP command/reply exceeded its bound")
+    }
+
+    async fn reply(stream: &mut TcpStream) -> String {
         use tokio::io::AsyncReadExt;
         let mut line = Vec::new();
         let mut byte = [0u8; 1];
@@ -2534,13 +2735,15 @@ mod tests {
         ));
         // Flipped before the loop is first polled, so the first accept is
         // the injected failure — the arm is branch-stable (0020 rule 1).
-        inject_accept_errors(1);
+        let errors = inject_accept_errors(1);
 
         flag_becomes(&degraded, true, "flagged degraded on the failed accept").await;
         // No peer yet: the parked retry alone is the recovery.
         flag_becomes(&degraded, false, "cleared the flag on the parked retry").await;
         deliver_one(&store, addr).await;
         server.abort();
+        let _ = server.await;
+        drop(errors);
     }
 
     /// Back-to-back failures publish no healthy moment between them: the
@@ -2564,7 +2767,7 @@ mod tests {
             degraded.clone(),
             std::future::pending(),
         ));
-        inject_accept_errors(2);
+        let errors = inject_accept_errors(2);
 
         // The loop has not been polled yet, so the wait is always entered.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -2583,11 +2786,13 @@ mod tests {
         flag_becomes(&degraded, false, "cleared the flag on the parked retry").await;
         deliver_one(&store, addr).await;
         server.abort();
+        let _ = server.await;
+        drop(errors);
     }
 
     /// A greeted SMTP session on a driven listener — the banner is written
     /// by the session task, so reading it proves the spawn.
-    pub(super) async fn greeted(addr: std::net::SocketAddr) -> TcpStream {
+    async fn greeted(addr: std::net::SocketAddr) -> TcpStream {
         let mut c = TcpStream::connect(addr).await.unwrap();
         let banner = reply(&mut c).await;
         assert!(
@@ -2600,7 +2805,7 @@ mod tests {
     /// Tokio's own completion flag for the session spawned `index`-th on
     /// this thread (a peer's EOF does not prove it), and-ed — never
     /// short-circuited — with the accept loop being parked.
-    pub(super) fn finished_while_parked(index: usize) -> bool {
+    fn finished_while_parked(index: usize) -> bool {
         SPAWNED.with(|spawned| spawned.borrow()[index].is_finished())
             & PARKED.with(|parked| parked.get())
     }
@@ -2789,7 +2994,7 @@ mod tests {
     }
 
     /// A client that trusts only the minted cert — a real verification.
-    pub(super) fn tls_connector(pair: &crate::tls::TlsConfig) -> tokio_rustls::TlsConnector {
+    fn tls_connector(pair: &crate::tls::TlsConfig) -> tokio_rustls::TlsConnector {
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
         for cert in rustls_pemfile::certs(&mut pair.cert_pem.as_bytes()) {
             roots.add(cert.unwrap()).unwrap();
@@ -2807,7 +3012,7 @@ mod tests {
     }
 
     /// The client side of a handshake to `localhost` over `tcp`.
-    pub(super) async fn tls_connect(
+    async fn tls_connect(
         connector: &tokio_rustls::TlsConnector,
         tcp: TcpStream,
     ) -> tokio_rustls::client::TlsStream<TcpStream> {
@@ -2836,6 +3041,84 @@ mod tests {
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Pending
         }
+    }
+
+    /// A real STARTTLS peer that stops reading cannot retain its slot after
+    /// the reply deadline. The bounded predicate wait stays inline under
+    /// decision 0020; its completion result is checked only after every task
+    /// is aborted and joined. Keep the open TLS read half until a fresh 220.
+    #[tokio::test]
+    async fn starttls_stalled_reply_releases_slot() {
+        let mut tasks: tokio::task::JoinSet<io::Result<()>> = tokio::task::JoinSet::new();
+        let scenario = tokio::time::timeout(Duration::from_secs(30), async {
+            let pair = crate::tls::TlsConfig::generate_self_signed("localhost").unwrap();
+            let server_config = Arc::new(pair.server_config().unwrap());
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            SPAWNED.with(|spawned| spawned.borrow_mut().clear());
+            tasks.spawn(serve(
+                listener,
+                Arc::new(Store::new(0)),
+                Arc::new(Chaos::default()),
+                SmtpConfig {
+                    idle_timeout: Duration::from_millis(200),
+                    max_sessions: 1,
+                    ..SmtpConfig::default()
+                },
+                Some(server_config),
+                Arc::new(AtomicBool::new(false)),
+                std::future::pending(),
+            ));
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            socket.set_recv_buffer_size(1024).unwrap();
+            let mut tcp = tokio::time::timeout(Duration::from_secs(5), socket.connect(addr))
+                .await
+                .expect("STARTTLS peer connect exceeded its bound")
+                .unwrap();
+            let banner = tokio::time::timeout(Duration::from_secs(5), reply(&mut tcp))
+                .await
+                .expect("SMTP banner exceeded its bound");
+            assert!(banner.starts_with("220 "), "{banner}");
+            assert_eq!(
+                command_reply(&mut tcp, "STARTTLS\r\n").await,
+                "220 2.0.0 Ready to start TLS\r\n"
+            );
+            let connector = tls_connector(&pair);
+            let tls = tokio::time::timeout(Duration::from_secs(5), tls_connect(&connector, tcp))
+                .await
+                .expect("STARTTLS handshake exceeded its bound");
+            let (unread, mut write) = tokio::io::split(tls);
+            let flood = b"EHLO x\r\n".repeat(100_000);
+            tasks.spawn(async move { write.write_all(&flood).await });
+
+            let completed = tokio::time::timeout(Duration::from_secs(10), async {
+                while !finished_while_parked(0) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await;
+            let fresh_reply = tokio::time::timeout(Duration::from_secs(10), async {
+                let mut fresh = TcpStream::connect(addr).await.unwrap();
+                reply(&mut fresh).await
+            })
+            .await;
+            drop(unread);
+            (completed, fresh_reply)
+        })
+        .await;
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+
+        let (completed, fresh_reply) = scenario.expect("STARTTLS stall scenario exceeded 30s");
+        assert!(
+            completed.is_ok(),
+            "the stalled session never released its slot"
+        );
+        let fresh_reply = fresh_reply.unwrap_or_default();
+        assert!(
+            fresh_reply.starts_with("220 "),
+            "a fresh peer was not greeted while the stalled client remained open: {fresh_reply:?}"
+        );
     }
 
     /// The session's last act (issue #121, decision 0046 §1): a failed
@@ -2902,9 +3185,3 @@ mod tests {
         server.abort();
     }
 }
-
-#[cfg(test)]
-// The stalled-STARTTLS release proof lives in src/smtp/protocol_edges_tests.rs
-// (decision 0020 rule 2): its "never released its slot" diagnostic runs
-// only while the unbounded TLS close is back, so it is unwritable inline.
-mod protocol_edges_tests;

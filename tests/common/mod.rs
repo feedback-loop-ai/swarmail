@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use swarmail::RunningServer;
 use swarmail::config::Config;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
 use tokio_rustls::{TlsConnector, rustls};
@@ -257,6 +257,12 @@ impl SmtpConn {
             .unwrap();
     }
 
+    /// Read exactly one wire line, preserving spaces and CRLF (including
+    /// the empty AUTH PLAIN continuation prompt). Uses the owned read bound.
+    pub async fn reply_raw(&mut self) -> String {
+        read_line_named(&mut self.reader, "SmtpConn::reply_raw: a reply line").await
+    }
+
     /// Read one reply line (final line of multi-line replies).
     pub async fn reply(&mut self) -> String {
         loop {
@@ -327,25 +333,10 @@ pub async fn http_get_text(addr: std::net::SocketAddr, path: &str) -> (u16, Stri
         )
         .await
         .unwrap();
-    let buf = read_to_end_named(&mut stream, "http_get_text: the HTTP response").await;
-    let s = String::from_utf8_lossy(&buf);
-    let status: u16 = s
-        .lines()
-        .next()
-        .unwrap()
-        .split(' ')
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    // split_once, not split: bodies (like /raw) may themselves contain \r\n\r\n.
-    (
-        status,
-        s.split_once("\r\n\r\n")
-            .map(|x| x.1)
-            .unwrap_or("")
-            .to_string(),
-    )
+    let (status, _, body) = read_http_response(&mut stream, "http_get_text: the HTTP response")
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    (status, String::from_utf8_lossy(&body).into_owned())
 }
 
 /// Read one metric's value out of a `/metrics` body (Prometheus text
@@ -470,23 +461,9 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
         )
         .await
         .unwrap();
-    let buf = read_to_end_named(&mut stream, "http_get_parts: the HTTP response").await;
-    let split = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .expect("no header/body boundary");
-    // The head is ASCII by construction; the body is octets and stays octets.
-    let head = String::from_utf8_lossy(&buf[..split]).to_string();
-    let status: u16 = head
-        .lines()
-        .next()
-        .unwrap()
-        .split(' ')
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    (status, head, buf[split + 4..].to_vec())
+    read_http_response(&mut stream, "http_get_parts: the HTTP response")
+        .await
+        .unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// The raw-HTTP text client: `(status, body as String)` for any method.
@@ -496,7 +473,11 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
 /// named, and so is silencing it back into `{}`.
 /// The deadline every helper read runs under (issue #102): a peer that
 /// accepts and never replies fails the helper within the bound, its panic
-/// naming the step, instead of hanging the whole suite.
+/// naming the step, instead of hanging the whole suite. The actual bound is
+/// 30 seconds, independent of the server's accepted 60-second long-poll
+/// maximum and the production stdio bridge's derived 65-second budget.
+/// Long-wait tests must release waits through observed events or use their
+/// own suitable harness; this helper does not narrow the server contract.
 pub const HELPER_DEADLINE: Duration = Duration::from_secs(30);
 
 /// One named read deadline for a helper's line read (issue #102): a wedged
@@ -533,6 +514,80 @@ pub(crate) async fn read_to_end_named<R: tokio::io::AsyncRead + Unpin>(
         Ok(Ok(_)) | Ok(Err(_)) => buf,
         Err(_) => panic!("{step}: no EOF within {HELPER_DEADLINE:?}"),
     }
+}
+
+/// HTTP observation is strict, unlike a raw SMTP session whose reset is
+/// itself an outcome. Never parse bytes left over from a failed read.
+/// Returning the diagnostic lets the helper regressions prove the actual
+/// read failure, rather than accepting an unrelated parsing panic.
+pub(crate) async fn read_http_response<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    step: &'static str,
+) -> Result<(u16, String, Vec<u8>), String> {
+    let mut buf = Vec::new();
+    match tokio::time::timeout(HELPER_DEADLINE, reader.read_to_end(&mut buf)).await {
+        Ok(Ok(_)) => parse_http_response(&buf, step),
+        Ok(Err(e)) => Err(format!("{step}: the read failed: {e}")),
+        Err(_) => Err(format!("{step}: no EOF within {HELPER_DEADLINE:?}")),
+    }
+}
+
+/// Only the identity, connection-close responses used by these helpers.
+/// Keep the body as octets and validate framing before any text conversion.
+pub(crate) fn parse_http_response(
+    buf: &[u8],
+    step: &'static str,
+) -> Result<(u16, String, Vec<u8>), String> {
+    let fail = |reason: &str| format!("{step}: invalid HTTP response: {reason}");
+    if buf.is_empty() {
+        return Err(fail("empty response"));
+    }
+    let split = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| fail("incomplete header/body boundary"))?;
+    let head = std::str::from_utf8(&buf[..split])
+        .map_err(|e| fail(&format!("invalid header text: {e}")))?;
+    let mut lines = head.split("\r\n");
+    let mut status_line = lines.next().unwrap_or_default().split_whitespace();
+    let version = status_line.next().unwrap_or_default();
+    let code = status_line.next().unwrap_or_default();
+    let status = code.parse::<u16>().ok().filter(|n| (100..=599).contains(n));
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") || code.len() != 3 || status.is_none() {
+        return Err(fail("malformed status line"));
+    }
+    let body = &buf[split + 4..];
+    let mut length = None;
+    for line in lines {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| fail("malformed header"))?;
+        if name.eq_ignore_ascii_case("content-length") {
+            let n = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| fail("invalid Content-Length"))?;
+            if length.replace(n).is_some() {
+                return Err(fail("duplicate Content-Length"));
+            }
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err(fail("unsupported Transfer-Encoding in identity helper"));
+        }
+    }
+    if let Some(n) = length
+        && body.len() != n
+    {
+        return Err(fail(&format!(
+            "Content-Length {n}, received {} body bytes",
+            body.len()
+        )));
+    }
+    Ok((
+        status.expect("validated status"),
+        head.to_owned(),
+        body.to_vec(),
+    ))
 }
 
 /// [`read_line_named`]'s byte form: one `read_until` under the helper
@@ -624,24 +679,10 @@ pub async fn http_send_text_allow_eof(
         // Accepted and closed with no answer at all.
         return (0, String::new());
     }
-    let s = String::from_utf8_lossy(&buf);
-    let status: u16 = s
-        .lines()
-        .next()
-        .unwrap()
-        .split(' ')
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    // split_once, not split: a body may itself contain \r\n\r\n. An empty
-    // body keeps the status it rode in on.
-    let body = s
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or("")
-        .to_string();
-    (status, body)
+    let (status, _, body) =
+        parse_http_response(&buf, "http_send_text_allow_eof: the HTTP response")
+            .unwrap_or_else(|e| panic!("{e}"));
+    (status, String::from_utf8_lossy(&body).into_owned())
 }
 
 pub async fn http_send_text(
@@ -679,22 +720,10 @@ pub async fn send_with_host(
         req.push_str(b);
     }
     stream.write_all(req.as_bytes()).await.unwrap();
-    let buf = read_to_end_named(&mut stream, "send_with_host: the HTTP response").await;
-    let s = String::from_utf8_lossy(&buf);
-    let status: u16 = s
-        .lines()
-        .next()
-        .unwrap()
-        .split(' ')
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    let body = s
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body.to_string())
-        .unwrap_or_default();
-    (status, body)
+    let (status, _, body) = read_http_response(&mut stream, "send_with_host: the HTTP response")
+        .await
+        .unwrap_or_else(|e| panic!("{e}"));
+    (status, String::from_utf8_lossy(&body).into_owned())
 }
 
 pub async fn http_send_text_with_headers(
@@ -720,28 +749,13 @@ pub async fn http_send_text_with_headers(
         req.push_str(b);
     }
     stream.write_all(req.as_bytes()).await.unwrap();
-    let buf = read_to_end_named(
+    let (status, _, body) = read_http_response(
         &mut stream,
         "http_send_text_with_headers: the HTTP response",
     )
-    .await;
-    let s = String::from_utf8_lossy(&buf);
-    let status: u16 = s
-        .lines()
-        .next()
-        .unwrap()
-        .split(' ')
-        .nth(1)
-        .unwrap()
-        .parse()
-        .unwrap();
-    // split_once, not split: a body may itself contain \r\n\r\n.
-    let body = s
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .unwrap_or("")
-        .to_string();
-    (status, body)
+    .await
+    .unwrap_or_else(|e| panic!("{e}"));
+    (status, String::from_utf8_lossy(&body).into_owned())
 }
 
 /// Tiny raw-HTTP client — enough for Swarmail's own JSON API, no client dep.

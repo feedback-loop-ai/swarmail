@@ -515,6 +515,36 @@ mod tests {
     }
 
     #[test]
+    fn the_subject_fallback_keeps_sharp_s_and_ss_distinct() {
+        let threads = group(vec![
+            mail("sharp-s", Some("ß"), 100),
+            mail("double-s", Some("ss"), 200),
+        ]);
+        assert_eq!(
+            threads.len(),
+            2,
+            "ß and ss are separate subjects: {threads:?}"
+        );
+        let sharp_s = threads
+            .iter()
+            .find(|thread| ids_of(thread) == ["sharp-s"])
+            .expect("ß conversation");
+        assert_eq!(sharp_s.count, 1);
+        assert_eq!(ids_of(sharp_s), ["sharp-s"]);
+
+        let double_s = threads
+            .iter()
+            .find(|thread| ids_of(thread) == ["double-s"])
+            .expect("ss conversation");
+        assert_eq!(double_s.count, 1);
+        assert_eq!(ids_of(double_s), ["double-s"]);
+        assert_ne!(
+            sharp_s.key, double_s.key,
+            "returned thread keys stay distinct"
+        );
+    }
+
+    #[test]
     fn a_reference_chain_is_one_thread_in_conversation_order() {
         // The chain's mails publish the ids their replies cite — the wire
         // evidence is what links them (decision 0018).
