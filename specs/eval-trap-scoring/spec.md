@@ -1,11 +1,15 @@
 # Eval trap scoring
 
-- Date: 2026-10-24.
+- Date: 2026-10-24; reconciled 2026-10-25 under accepted authority.
 - Status: design draft; implementation and delivery remain outstanding.
 - Scope: Epic #192, issue #198; triage classification: engine.
 - Baseline: `dc1822a45e4d2ae8326b44baf22818187a8320e9`.
 
-Decision: 0071 — [Named eval traps invalidate a trial](../../docs/decisions/0071-eval-trap-scoring.md), proposed.
+Authority: [0071 — Named eval traps invalidate a trial](../../docs/decisions/0071-eval-trap-scoring.md), accepted by the operator on 2026-10-24 (commit 32f0018).
+
+This design implements that accepted amendment without extending it. It declares
+no new decision and changes no accepted record. The existing accepted index row
+already resolves 0071; no proposal, index insertion or further acceptance is due.
 
 ## Feature and rationale
 
@@ -22,18 +26,27 @@ a pure function of fixture evidence, never a transcript, HTTP status, child
 claim or inferred intent. This is a bounded measurement repair, not proof
 against every naive strategy or hostile local process.
 
-The intake title, framing and both panel files are the available issue
-evidence. No external issue body or newly executed reproduction is claimed.
+The workspace packet `.forge/epic192/issue198/{README,operator-rulings}.md`
+passed its SHA256SUMS verification. It supplies the issue body, prior outcomes
+and binding operator ruling. Current framing is
+`.forge/tasks/epic-192-issue-198-make-eval-tra-75a00ffc.md`; the requested
+`.brokkr/state/tasks/` directory is absent. Both current run-local panel
+positions were read. No external service or journal access is required.
 
 ## Authority and scope
 
-Accepted [0055](../../docs/decisions/0055-agent-eval-harness.md) §2 gives
-satisfied goals precedence, except isolation, and §§1/9 define v1 contracts.
-0071 proposes an amendment. Per
-[0045](../../docs/decisions/0045-delivery-repairs.md) §8 and the
-[charter](../../docs/house-rules.md), incompatible scorer, prompt and version
-changes wait for explicit operator acceptance. Design and compatible proof
-scaffolding may proceed. Neither this draft nor green tests accepts 0071.
+Accepted [0071](../../docs/decisions/0071-eval-trap-scoring.md) amends
+[0055](../../docs/decisions/0055-agent-eval-harness.md) §§1, 2 and 9.
+Its operator acceptance authorizes the scoring, goal disclosure and v2 change.
+The earlier acceptance-wait instructions are superseded, not renewed.
+The original issue checklist is narrowed by 0071: refused-action fields,
+clean-pass metrics, invite budgets, slow/retry redesign, event-log caps and
+agent-caused delivery reclassification are outside this implementation.
+Failed/Parked deliveries remain infrastructure errors even when agent-triggered.
+Preserve the integrated #194 cancellation and #196 privacy behavior and full
+assertions described in proposed [0073](../../docs/decisions/0073-matrix-cancellation.md)
+and [0075](../../docs/decisions/0075-eval-privacy.md); neither is accepted here.
+Their old schema-1 expectations advance only as authorized by 0071.
 
 Preserve 0001 synchronous accept/store, 0002 subscribe-before-check,
 0003 oldest-only pruning, 0004 AUTH inbox separation and 0005 ingest
@@ -120,37 +133,45 @@ recorded old source/binary. V1 and v2 scores are distinct experiments and
 must not be pooled. Partial artifacts never establish pass. Optional
 metadata is not a substitute for required version boundaries.
 
-## Council synthesis and explicit losses
+## Council synthesis and explicit losses — 2026-10-25
 
-- Adopt both positions' event policy, truthful facts, one scorer, shared
-  action constants, disclosed goals and completed naive controls. Reject
-  blanket fail-on-rejection and destructive decoys: they punish required
-  reset replay or conceal what the experiment measures.
-- Rule for robustness on OTP expiry; reject simplicity's sticky expired_code.
-  Cost: recovery after genuine expiry is allowed and this benchmark does not
-  measure avoidance of every stale submission. Supersession avoids timing
-  dependence.
-- Rule for robustness on v2; reject simplicity's documentation-only revision.
-  Existing metadata records package version and binary path, not a required
-  scoring revision. Cost: consumer updates and archived historical replay;
-  benefit: mixed report input refuses without a migration framework.
-- Rule for simplicity on exact matching; reject robustness's expanded
-  malformed-known-trap validation. Cost: a structurally valid edited mismatch
-  may disappear from matching and a satisfied goal may pass. Adversarial
-  artifact integrity remains outside the accepted unconfined model.
-- Reconcile attribution with actual code: known-Decoy claim refusal can have
-  null flow. Neither position's shorthand flow table overrides this producer.
-- Adopt robustness's freeze/order proof using existing synchronization and
-  simplicity's bounded proof set. Reject exhaustive permutations, model
-  sampling, new seams/frameworks and configurable policies. Cost: evidence
-  establishes the listed strategies, not universal trap resistance.
+The current simplicity and robustness positions converge on the accepted
+policy. Do not invent a new disagreement or reopen the historical panel's
+expiry/version rulings recorded in 0071. The following choices resolve the
+implementation tradeoffs explicitly.
+
+- Adopt simplicity's one private matcher in the existing scorer, shared action
+  constants and existing validators. Adopt robustness's whole-trial scan and
+  precise claimant attribution. Reject any goal-first or class-only shortcut.
+  Cost: the seven cases remain a manually reviewed policy, and one mistaken
+  planted choice loses a trial even after genuine recovery.
+- Choose simplicity's existing owners over additional state, a policy framework,
+  destructive decoys or new lifecycle machinery. Robustness's failure analysis
+  constrains preservation tests, not new root-runtime work. Cost: unbounded event
+  storage and agent-triggered delivery infrastructure classification remain
+  acknowledged limitations of this scoped repair.
+- Choose robustness's complete protocol and lifecycle proof over reducing the
+  test set to wrong-action-only or first-link controls. Reconcile with simplicity
+  by extending existing suites and helper dispatch, with bounded independent
+  strategies rather than a public framework or exhaustive permutations. Cost:
+  more real-process test time; no universal naive-strategy resistance claim.
+- Adopt both positions' exact nonmatch rule and known-Decoy/null-flow exception.
+  Reject broader malformed-event validation or snapshot authentication. Cost:
+  structurally valid edited mismatches can evade matching on an unconfined host.
+- Adopt both current positions' supersession-only OTP rule and coordinated v2.
+  Reject expiry taint, documentation-only version provenance and history
+  migration. Cost: expiry avoidance is not measured; consumers update and retain
+  old tooling for old artifacts. These are already settled by accepted 0071.
+- Adopt truthful recovery and unchanged report arithmetic. Reject the older
+  issue's extra metrics, lockouts and expanded task redesign. Cost: invite-time,
+  slow-delivery and smtp-retry retain their existing measurement limitations.
 
 ## Acceptance Criteria
 
-- **AC1 — Authority:** this design's 0071 is proposed. Incompatible work has
-  explicit operator acceptance before proceeding. Accepted records remain
-  unchanged. The subsequent index row resolves once and matches actual
-  decision status, proved by tests/store_contract_docs.rs.
+- **AC1 — Authority:** accepted 0071 and its exactly-one resolving accepted
+  index row agree, proved by tests/store_contract_docs.rs. This design implements
+  its bounded amendment and leaves accepted records unchanged. No further
+  operator acceptance is an implementation prerequisite.
 - **AC2 — Named traps:** scoring cases cover every table action with
   trap-only, goal-only, trap-before-goal and goal-before-trap. Both goal
   orders fail with the listed class and true facts. Multiple traps select
@@ -189,19 +210,31 @@ metadata is not a substitute for required version boundaries.
   means unwanted business pass, not compile/version mismatch, missing
   binary, deadline or harness_error.
 - **AC11 — Documentation/scope:** goals, README and the active original eval
-  spec consistently describe v2 and migration, preserving dated history.
+  spec consistently describe v2 and historical replay without migration, preserving dated history.
   No prohibited root/dependency/gate edits.
 - **AC12 — Delivery:** independent evals fmt, locked clippy/tests, the entire
   pinned charter inventory, fail-closed native-tls proof, deterministic design
-  check, hermetic verify and four independent engine reviewers with hard
-  security hold remain mandatory. Preserve CI-only obligations; missing
-  evidence stays outstanding.
+  check, hermetic verify and protected review under the candidate
+  bundles' actual routing, including hard security hold, remain mandatory.
+  Preserve #194/#196 full regression assertions. CI owns charter-only proofs
+  and #201 macOS eval receipts; the operator owns live settings and sealing,
+  and #221 owns namespaces. Those are owned follow-ups, not new local criteria.
+  Required local evidence remains outstanding until executed.
 
 ## Design handoff boundary
 
-This chief commits exactly spec.md, plan.md, tasks.md and 0071. The explicit
-four-file limit excludes docs/decisions/README.md although root inventory
-tests require its row. The next implementation/integration seat must add that
-row as its first compatible documentation change before any full gate success.
-This known gap is not waived: design validation is not feature verification.
-Acceptance, implementation, red/green, full gates, review and ship remain open.
+The chief commits only this directory's spec.md, plan.md and tasks.md. Accepted
+0071 is an authority link, not a new proposed declaration. Run-local positions,
+logs and the engine result remain uncommitted. Implementation will reconcile
+active original eval documents with dated v2 amendments in its own commit.
+Design drafting and structural validation do not claim implemented traps,
+completed behavioral red/green, independent review or feature delivery.
+
+## Dated clarification — 2026-10-25
+
+The 2026-10-24 draft awaited acceptance and a missing decision index row.
+Commit 32f0018 and the checksum-verified operator ruling resolve acceptance;
+the row is already present. Those obsolete tasks are removed from the active
+plan. The earlier failed documentation-test receipt remains historical in
+plan.md. Current panel synthesis replaces the prior draft's attribution of
+positions; the accepted historical decision remains unchanged.

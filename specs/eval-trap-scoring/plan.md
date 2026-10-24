@@ -1,5 +1,7 @@
 # Eval trap scoring implementation plan
 
+Reconciled 2026-10-25 against accepted 0071 and the current integrated base.
+
 ## Technical context
 
 Use the existing standalone unpublished Rust workspace in evals/, its own
@@ -22,11 +24,13 @@ capacity too small for the planted alternatives. Failed/parked deliveries,
 including decoys, remain infrastructure. No persistence, webhook durability,
 hostile MIME or thousand-session throughput claim follows from these evals.
 
-0071 amends 0055 §§1/2/9 and requires operator acceptance before conflicting
-scoring/prompts/version changes. The index repair and baseline probes are
-compatible work. Accepted records stay unchanged. Add the proposed 0071 index
-row in the next seat, outside the exact four-file design commit. Do not
-suppress the resulting documentation-gate gap.
+Accepted [0071](../../docs/decisions/0071-eval-trap-scoring.md) authorizes the
+0055 §§1/2/9 amendment. Its accepted index row already exists. Validate that
+agreement without rewriting accepted records or introducing another proposal.
+Preserve #194 cancellation ownership and #196 closed child environments, safe
+diagnostics, bounded stream capture and private artifact publication. Update
+schema-sensitive fixtures without weakening their assertions or restoring older
+runner/helper source wholesale. Candidate bundle routing remains unchanged.
 
 The single authoritative root inventory is
 [the charter](../../docs/house-rules.md#gates--part-of-every-change).
@@ -40,7 +44,8 @@ denominator/dependency change or protected-review bypass is authorized.
 
 Read intake and both positions, decision index, 0001–0005, 0055, original eval
 spec, scorer, fixture, state, runner, CLI, report and proof helpers. The
-early goal return permits recovery after traps by accepted contract.
+early goal return still permits recovered traps to pass in current code;
+accepted 0071 now authorizes correcting that behavior.
 Decoys can answer HTTP 200, so status codes cannot classify the trap.
 
 The ordered events already carry lasting evidence. Private::claim can
@@ -62,7 +67,7 @@ No unresolved research choice blocks this design.
 | evals/src/state.rs | Shared trap action constants and snapshot v2; no flags or fields |
 | evals/src/fixture.rs | Replace matching action literals with constants; preserve public behavior and freeze |
 | evals/src/runner.rs | Result v2 and comments; preserve process/cleanup/precedence |
-| evals/src/main.rs | Existing check/report callers; adjust only if diagnostics need plumbing |
+| evals/src/main.rs | Preserve callers and #194/#196 ownership; update inline matrix probe schema fixtures and unsupported-version cases; safe diagnostic plumbing only if actual CLI proof requires it |
 | evals/src/report.rs | Existing strict result validation rejects old/mixed input; preserve arithmetic/aggregate shape |
 | evals/tests/scoring.rs | Policy, boundary, recovery and validation/version matrix |
 | evals/tests/common/mod.rs | Independent bounded external helper modes through existing dispatch |
@@ -70,10 +75,10 @@ No unresolved research choice blocks this design.
 | evals/tests/fixture.rs | Real producer evidence and HTTP action/freeze assertions |
 | evals/tests/runner.rs, evals/tests/report.rs | V2 CLI/artifact/report and trap-bearing precedence proofs |
 | evals/tests/boundary.rs | Retain dependency/publication proof; extend only for a concrete uncovered boundary |
-| evals/README.md, specs/agent-eval-harness/spec.md | Dated active v2 scoring and migration after acceptance |
+| evals/README.md, specs/agent-eval-harness/spec.md | Dated active v2 scoring and historical replay without migration |
 | specs/agent-eval-harness/plan.md and tasks.md | Reconcile obsolete active instructions, preserving historical entries |
-| docs/decisions/README.md | First compatible follow-up: one proposed 0071 index row |
-| specs/eval-trap-scoring/{spec,plan,tasks}.md and docs/decisions/0071-eval-trap-scoring.md | This chief's only committed artifacts |
+| docs/decisions/README.md and tests/store_contract_docs.rs | Read/validate the existing exactly-one accepted 0071 row; no index edit planned |
+| specs/eval-trap-scoring/{spec,plan,tasks}.md | This chief's only committed artifacts; 0071 remains unchanged authority |
 
 ## Data model
 
@@ -96,20 +101,25 @@ No historical selector/migration framework; old artifacts need the old binary.
 
 ## Contracts and implementation sequence
 
-1. Add the proposed index row and prove documentation inventory. Prepare
-   baseline-compatible probes in isolated run-local storage without modifying
-   the triage baseline.
-2. Extend existing helper dispatch in those isolated probes. Read public mail
-   via MCP, enumerate links or select the wrong message/code, then reach the
-   correct goal using public content. Reuse transport utilities, not
-   run_oracle as a solution. Await every HTTP response.
-3. Execute baseline pure/real probes. Retain command, source revision, exits,
-   delivery receipts, events, true facts and unwanted pass. A compile or
-   version refusal is not red evidence. Do not modify baseline version numbers
-   to manufacture a comparison.
-4. Record operator acceptance before incompatible work. Absent acceptance,
-   leave semantic implementation open rather than changing fixture facts to
-   evade the boundary.
+1. Verify packet checksums, accepted decision/index and pinned engine digest.
+   Run the documentation inventory test; acceptance is already established.
+2. Prepare independent bounded probes using existing test-helper dispatch and
+   public SMTP-backed MCP/fixture HTTP. Read links/codes from mail and complete
+   the real goal without run_oracle or private state. Await every response.
+3. Materialize the locally available baseline commit
+   dc1822a45e4d2ae8326b44baf22818187a8320e9 into ignored storage inside this
+   workspace (for example by git archive). Never reset this candidate or access
+   sibling worktrees. Compile baseline with its own source, versions and locked
+   dependencies; carry only independent probe/helper additions, recorded as a
+   patch with source hashes. Keep outputs separate from candidate artifacts.
+   Existing build tooling is offline; install nothing. If an input is absent,
+   name its exact path/revision rather than claiming a red result.
+4. Retain actual baseline unwanted passes: source revision and helper patch,
+   literal command/argv, raw zero child exits, healthy DATA 250 deliveries,
+   exact events and recovered facts. Compile, version, timeout, startup or
+   infrastructure failure is not red. Reuse the same public strategies on the
+   candidate and retain the matching green receipts. Parent test assertions may
+   inspect frozen admin snapshots; helpers never use them to solve a task.
 5. Introduce shared constants and private trap scan between validation and
    goal scoring. Leave isolation/fallback intact. Update goals and all v2
    constants as one authorized contract change; never emit stricter scores
@@ -131,7 +141,7 @@ No historical selector/migration framework; old artifacts need the old binary.
 
 ## Quickstart and validation
 
-After acceptance and implementation, from the repository root:
+For the implementation candidate, from the repository root:
 
 ```bash
 cargo build --offline --locked --bin swarmail
@@ -158,16 +168,18 @@ Then execute every charter gate with digest-matched pinned brokkr/gate copies
 and checked shim hashes. Retain source-bound commands, exits and logs.
 Hermetic verify installs nothing. Preserve CI-only chart/history/selftest,
 Docker, advisory, release-rate and port-80 obligations without claiming local
-proof. The full engine lane requires four independent review lenses and hard
-security hold. Chief structural preflight is advisory; the sequence's pinned
-check owns the design verdict.
+proof. #201 owns macOS eval evidence, the operator owns live settings/sealing,
+and #221 owns namespaces; none creates a new local acceptance criterion. The
+candidate bundles own the actual review routing and hard security hold; do not
+copy obsolete reviewer counts into a new delivery requirement. Chief structural
+preflight is advisory; the sequence's pinned check owns the design verdict.
 
 ## Risks
 
 | Risk | Mitigation / accepted cost |
 |---|---|
-| Implementation precedes authority | Acceptance task blocks changed scoring, prompts and versions |
-| Four-file chief commit leaves unindexed ADR | First follow-up index task and inventory proof; no full-gate success claim |
+| Stale instructions undo accepted authority | Validate existing accepted 0071/index; reconcile active text, preserve historical receipts |
+| Schema change weakens #194/#196 regression proof | Audit inline main.rs probe scripts and all synthetic/error/cancellation rows; use a truly unsupported version in refusal tests |
 | Old/new experiments silently mix | Required v2 boundaries, report refusal, old binary for historical replay |
 | Sticky rule punishes recovery or reset replay | Fixed mapping, supersession-only rule, non-target/replay controls |
 | Null-flow Decoy claim escapes matching | Real producer proof and Agent/Decoy/null-flow scoring cases |
@@ -177,8 +189,13 @@ check owns the design verdict.
 | Freeze loses fire-and-forget actions | Await responses; real HTTP sequence and frozen-immutability proof |
 | Real proof runtime/resources | Bound every helper, reuse server binary, isolate trial state, preserve infrastructure classification |
 | Root green hides eval defects | Independent evals suites plus full pinned gates and protected review |
+| Scope expands into known residuals | Retain unbounded event-log and agent-triggered infrastructure limitations; no cap, attribution redesign, lockout or root repair |
 
-## Chief validation receipt — 2026-10-24
+## Historical chief validation receipt — 2026-10-24
+
+Preserved verbatim below as the earlier run's evidence, not current instructions.
+The missing-index condition and proposed status were superseded before this
+2026-10-25 design; see the spec's dated clarification.
 
 Executed cargo test --locked --test store_contract_docs against these draft
 artifacts: exit 101, 17 passed and 2 failed. Both
@@ -191,3 +208,36 @@ checkbox presence, proposed status and relative links were checked locally.
 No behavioral red/green, full gate inventory, independent review, CI or ship
 receipt is claimed by this design seat. The subsequent pinned design check
 remains the sequence's authority.
+
+
+## Chief validation receipt — 2026-10-25
+
+Executed against base fa58d8b with only the three design artifacts changed.
+Run-local commands, logs, status table, source HEAD and tested design patch are
+retained under `.forge/epic192/issue198/chief-validation/`. Packet checksums,
+the candidate-local engine digest and all pinned public-shim hashes passed.
+
+- Root fmt, locked all-target clippy with denied warnings and full locked
+  workspace tests passed; store_contract_docs passed all 25 tests, including
+  the existing accepted 0071 inventory/status agreement.
+- `.forge/bin/brokkr compile --bundle bundles/self` passed with zero unruled
+  policy valuations. No routing change was made.
+- The pinned coverage gate passed: 13,850/13,850 lines, 780/780 branches,
+  1,508/1,508 functions; retained evidence is `target/coverage/run.cdg2rG`.
+  Its selftest passed. Pinned publish-guard, seal-branch, design-check selftest
+  and delivery-proof tests passed; `cargo deny check licenses` and the
+  fail-closed locked native-tls absence proof passed.
+- Independent evals fmt and locked all-target clippy passed. The first full
+  locked test invocation exited 101: the existing
+  `tests::matrix_stdout_backpressure_is_bounded_and_still_observes_signals`
+  test failed at `evals/src/main.rs:2312` reading missing `signals.log`.
+  The unchanged isolated test passed, then the complete locked suite with
+  `--no-fail-fast` passed. The initial failure remains in `eval-tests.log`;
+  this is an observed intermittent failure, not a demonstrated root cause or
+  a repaired defect. Preserve and investigate it if it recurs during T9/T11.
+
+These checks validate the current pre-implementation source and this design
+handoff. They do not prove the future v2 matcher, completed naive red/green
+controls, independent engine review or CI/operator-owned work. The structural
+check of the final design commit is a separate advisory preflight; the
+sequence's pinned final check owns its design verdict.
