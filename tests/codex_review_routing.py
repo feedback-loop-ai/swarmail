@@ -99,7 +99,8 @@ def resolved_matrix(engine, out):
         assert actual == expected[recipe], (recipe, actual)
         for key, agent in agents.items():
             if key.startswith('implement'):
-                assert agent['provider'] == 'codex' and agent['chain'] == ['sol']
+                chain = ['luna'] if recipe == 'codex-fast' else ['sol']
+                assert agent['provider'] == 'codex' and agent['chain'] == chain
         # Negative controls run the same whole-matrix assertion used above.
         for key in actual:
             for mutation in ['missing', 'pro', 'fallback', 'merged']:

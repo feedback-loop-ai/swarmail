@@ -368,8 +368,8 @@ fn fast_strategy_selectors_have_no_default_and_keep_one_two_or_five_reviewers() 
     let implement = &recipe["seats"]["implement"]["select"]["cases"];
     for class in ["chore", "feature", "design", "engine"] {
         let overlay = office(implement[class]["agent"].as_str().unwrap());
-        assert_eq!(overlay["models"], json!(["sol"]), "{class}: Codex only");
-        assert_eq!(overlay["efforts"]["sol"], "high");
+        assert_eq!(overlay["models"], json!(["luna"]), "{class}: Codex only");
+        assert_eq!(overlay["efforts"]["luna"], "xhigh");
     }
 }
 
