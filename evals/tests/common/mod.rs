@@ -1,11 +1,12 @@
 //! Shared proof helpers: the real CLI, the Swarmail binary resolved once
-//! per test binary, and a test-only external agent (the test executable
-//! re-run with `EVAL_TEST_HELPER` set) for the wrong-action, stall and
-//! echo controls. The helper is an external command like any other: it
-//! reaches the trial through the runner's spawn/env/deadline boundary.
+//! per test binary, and test-owned wrapper commands for the wrong-action,
+//! stall and echo controls. Wrappers record their initial environment before
+//! adding helper-only configuration, then use the ordinary agent spawn path.
 #![allow(dead_code)]
 
 use serde_json::{Value, json};
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
@@ -72,7 +73,10 @@ impl Drop for ChildGuard {
 pub fn cli() -> Command {
     let mut cmd = Command::new(exe());
     cmd.env(runner::SWARMAIL_BIN_ENV, swarmail_bin())
-        .env_remove(HELPER_ENV)
+        .env(
+            OsString::from_vec(b"NONUTF8_PARENT_\xff".to_vec()),
+            OsString::from_vec(b"synthetic_\xfe_value".to_vec()),
+        )
         .stdin(Stdio::null());
     cmd
 }
@@ -103,22 +107,92 @@ pub fn trial(args: &[&str]) -> (TrialResult, Output) {
 }
 
 /// A trial whose agent is the helper in `mode`.
-pub fn helper_trial(mode: &str, args: &[&str], env: &[(&str, &str)]) -> (TrialResult, Output) {
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+pub fn helper_command(
+    mode: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (Command, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = env
+        .iter()
+        .find(|(key, _)| *key == MARKER_ENV)
+        .map(|(_, value)| (*value).to_string())
+        .unwrap_or_else(|| dir.path().join("helper-marker").display().to_string());
+    let env_snapshot = format!("{marker}.launch-env");
+    let barrier_dir = env
+        .iter()
+        .find(|(key, _)| *key == BARRIER_DIR_ENV)
+        .map(|(_, value)| (*value).to_string());
+    let barrier_count = env
+        .iter()
+        .find(|(key, _)| *key == BARRIER_COUNT_ENV)
+        .map(|(_, value)| (*value).to_string());
     let me = std::env::current_exe().unwrap();
-    let mut cmd = cli();
-    cmd.env(HELPER_ENV, mode).arg("trial").args(args);
-    for (k, v) in env {
-        cmd.env(k, v);
+    let mut script = format!(
+        "#!/bin/sh\nif [ -r /proc/$$/environ ]; then /bin/cat /proc/$$/environ > {}; else /usr/bin/env -0 > {}; fi\nexport {}={}\nexport {}={}\nexport EVAL_TEST_ENV_SNAPSHOT={}\n",
+        shell_quote(&env_snapshot),
+        shell_quote(&env_snapshot),
+        HELPER_ENV,
+        shell_quote(mode),
+        MARKER_ENV,
+        shell_quote(&marker),
+        shell_quote(&env_snapshot),
+    );
+    script.push_str("export EVAL_TEST_RUNNER_PID=$PPID\n");
+    if let Some(value) = barrier_dir {
+        script.push_str(&format!(
+            "export {BARRIER_DIR_ENV}={}\n",
+            shell_quote(&value)
+        ));
     }
-    cmd.args([
-        "--",
-        me.to_str().unwrap(),
-        "--exact",
-        "helper_agent",
-        "--nocapture",
-        "--test-threads=1",
-    ]);
-    let out = cmd.output().expect("the CLI runs");
+    if let Some(value) = barrier_count {
+        script.push_str(&format!(
+            "export {BARRIER_COUNT_ENV}={}\n",
+            shell_quote(&value)
+        ));
+    }
+    for (key, value) in env.iter().filter(|(key, _)| key.starts_with("EVAL_TEST_")) {
+        script.push_str(&format!("export {key}={}\n", shell_quote(value)));
+    }
+    script.push_str("if [ -n \"${EVAL_TEST_ARG_MARKER-}\" ]; then printf '%s\\0' \"$@\" > \"$EVAL_TEST_ARG_MARKER\"; fi\n");
+    script.push_str(&format!(
+        "exec {} --exact helper_agent --nocapture --test-threads=1\n",
+        shell_quote(me.to_str().unwrap())
+    ));
+    let wrapper = dir.path().join("agent-wrapper.sh");
+    std::fs::write(&wrapper, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let mut command = cli();
+    command.arg("trial").args(args).arg("--").arg(&wrapper);
+    for (key, value) in env {
+        if ![HELPER_ENV, MARKER_ENV, BARRIER_DIR_ENV, BARRIER_COUNT_ENV].contains(key)
+            && !key.starts_with("EVAL_TEST_")
+        {
+            command.env(key, value);
+        }
+    }
+    (command, dir)
+}
+
+pub fn helper_trial(mode: &str, args: &[&str], env: &[(&str, &str)]) -> (TrialResult, Output) {
+    helper_trial_with_agent_args(mode, args, env, &[])
+}
+
+pub fn helper_trial_with_agent_args(
+    mode: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    agent_args: &[&str],
+) -> (TrialResult, Output) {
+    let (mut command, _owner) = helper_command(mode, args, env);
+    command.args(agent_args);
+    let out = command.output().expect("the CLI runs");
     (one_row(&out), out)
 }
 
@@ -241,7 +315,19 @@ async fn helper(mode: &str) -> i32 {
         "echo" => {
             let prompt = std::fs::read_to_string(&env.prompt_file).unwrap();
             let vars: Vec<(String, String)> = std::env::vars()
-                .filter(|(k, _)| k.starts_with("EVAL_"))
+                .filter(|(k, _)| {
+                    [
+                        "EVAL_TASK_ID",
+                        "EVAL_APP_URL",
+                        "EVAL_MCP_URL",
+                        "EVAL_IDENTITY",
+                        "EVAL_INBOX",
+                        "EVAL_GOAL",
+                        "EVAL_PROMPT_FILE",
+                        "EVAL_DEADLINE_MS",
+                    ]
+                    .contains(&k.as_str())
+                })
                 .collect();
             let report = json!({
                 "argv": std::env::args().collect::<Vec<_>>(),
@@ -276,7 +362,7 @@ async fn helper(mode: &str) -> i32 {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
             }
         }
-        "stall" => {
+        "stall" | "noisy_stall" => {
             if let Ok(path) = std::env::var(LAUNCH_LOG_ENV) {
                 use std::io::Write;
                 let mut file = std::fs::OpenOptions::new()
@@ -286,16 +372,45 @@ async fn helper(mode: &str) -> i32 {
                     .unwrap();
                 writeln!(file, "{}", std::process::id()).unwrap();
             }
-            // Deliberately never waited on: a descendant that outlives its
-            // leader is what the runner's group sweep must reap.
+            let path = marker().unwrap();
+            let mut child_cmd = std::process::Command::new("/bin/sh");
+            if mode == "noisy_stall" {
+                use std::io::Write;
+                let chunk = vec![b'x'; 96 * 1024];
+                std::io::stdout().write_all(&chunk).unwrap();
+                std::io::stderr().write_all(&chunk).unwrap();
+                std::io::stdout()
+                    .write_all(b"synthetic-cancellation-output-canary")
+                    .unwrap();
+                std::io::stderr()
+                    .write_all(b"synthetic-cancellation-output-canary")
+                    .unwrap();
+                let script = format!(
+                    "trap 'touch \"{}\"; while [ ! -e \"{}\" ]; do :; done; exit 0' TERM; touch \"{}\"; while :; do :; done",
+                    path.with_extension("cleanup-entered").display(),
+                    path.with_extension("release").display(),
+                    path.with_extension("descendant-ready").display()
+                );
+                child_cmd.args(["-c", &script]);
+            } else {
+                child_cmd.args(["-c", "exec sleep 1000"]);
+            }
+            // An intentionally unwaited same-group descendant exercises the final fence.
             #[allow(clippy::zombie_processes)]
-            let child = std::process::Command::new("sleep")
-                .arg("1000")
-                .spawn()
-                .unwrap();
+            let child = child_cmd.spawn().unwrap();
+            if mode == "noisy_stall" {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !path.with_extension("descendant-ready").exists() {
+                    assert!(Instant::now() < deadline);
+                    tokio::task::yield_now().await;
+                }
+            }
             let leader = process_identity(std::process::id() as i32).unwrap();
             let descendant = process_identity(child.id() as i32).unwrap();
             let pids = json!({
+                "runtime_paths": (["HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"].map(|key| std::env::var(key).unwrap())),
+                "stdout_bytes": if mode == "noisy_stall" {96 * 1024 + b"synthetic-cancellation-output-canary".len()} else {0},
+                "stderr_bytes": if mode == "noisy_stall" {96 * 1024 + b"synthetic-cancellation-output-canary".len()} else {0},
                 "leader": leader.pid, "leader_start": leader.start_time,
                 "leader_pgrp": leader.pgrp, "leader_session": leader.session,
                 "descendant": descendant.pid, "descendant_start": descendant.start_time,
@@ -307,6 +422,131 @@ async fn helper(mode: &str) -> i32 {
             loop {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
             }
+        }
+        "fixture_env_probe" => {
+            #[cfg(target_os = "linux")]
+            {
+                let runner_pid = std::env::var("EVAL_TEST_RUNNER_PID").unwrap();
+                let marker = std::env::var_os("EVAL_TEST_FIXTURE_ENV_MARKER").unwrap();
+                let mut captured = false;
+                for entry in std::fs::read_dir("/proc").unwrap() {
+                    let entry = entry.unwrap();
+                    let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                        continue;
+                    };
+                    if pid == std::process::id() {
+                        continue;
+                    }
+                    let process = entry.path();
+                    let Ok(status) = std::fs::read_to_string(process.join("status")) else {
+                        continue;
+                    };
+                    if !status.lines().any(|line| {
+                        line.strip_prefix("PPid:")
+                            .and_then(|value| value.trim().parse::<u32>().ok())
+                            .is_some_and(|parent| parent.to_string() == runner_pid)
+                    }) {
+                        continue;
+                    }
+                    let Ok(command) = std::fs::read(process.join("cmdline")) else {
+                        continue;
+                    };
+                    if !command
+                        .split(|byte| *byte == 0)
+                        .any(|arg| arg == b"fixture")
+                    {
+                        continue;
+                    }
+                    let environment = std::fs::read(process.join("environ")).unwrap();
+                    std::fs::write(marker, environment).unwrap();
+                    captured = true;
+                    break;
+                }
+                if !captured {
+                    return 64;
+                }
+                if oracle::run_oracle(&env).await.is_ok() {
+                    0
+                } else {
+                    1
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                64
+            }
+        }
+        "file_config" => {
+            let config =
+                std::fs::read_to_string(std::env::var_os("EVAL_TEST_AUTH_CONFIG").unwrap())
+                    .unwrap();
+            if config != "credential=synthetic-wrapper-secret-196\n" {
+                return 64;
+            }
+            std::fs::write(marker().unwrap(), b"config-read").unwrap();
+            if oracle::run_oracle(&env).await.is_ok() {
+                0
+            } else {
+                1
+            }
+        }
+        "unsafe_output" | "unsafe_output_then_server_death" => {
+            let canary = std::fs::read(std::env::var_os("EVAL_TEST_CANARY_FILE").unwrap()).unwrap();
+            let mut emitted = 0;
+            for chunk in canary.chunks(3) {
+                std::io::Write::write_all(&mut std::io::stdout(), chunk).unwrap();
+                std::io::Write::write_all(&mut std::io::stderr(), chunk).unwrap();
+                emitted += chunk.len();
+            }
+            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+            std::io::Write::flush(&mut std::io::stderr()).unwrap();
+            std::fs::write(
+                marker().unwrap(),
+                format!("emitted_bytes_per_stream={emitted}"),
+            )
+            .unwrap();
+            if mode == "unsafe_output_then_server_death" {
+                #[cfg(target_os = "linux")]
+                {
+                    let runner_pid = std::env::var("EVAL_TEST_RUNNER_PID").unwrap();
+                    let mut killed = false;
+                    for entry in std::fs::read_dir("/proc").unwrap() {
+                        let entry = entry.unwrap();
+                        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                            continue;
+                        };
+                        if pid == std::process::id() {
+                            continue;
+                        }
+                        let process = entry.path();
+                        let Ok(status) = std::fs::read_to_string(process.join("status")) else {
+                            continue;
+                        };
+                        if !status.lines().any(|line| {
+                            line.strip_prefix("PPid:")
+                                .and_then(|value| value.trim().parse::<u32>().ok())
+                                .is_some_and(|parent| parent.to_string() == runner_pid)
+                        }) {
+                            continue;
+                        }
+                        let Ok(command) = std::fs::read(process.join("cmdline")) else {
+                            continue;
+                        };
+                        if command.split(|byte| *byte == 0).any(|arg| arg == b"serve") {
+                            // SAFETY: this test helper targets the runner's own Swarmail child.
+                            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                            killed = true;
+                            break;
+                        }
+                    }
+                    if !killed {
+                        return 64;
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                return 64;
+            }
+            0
         }
         "noisy" => {
             let chunk = "x".repeat(64 * 1024);

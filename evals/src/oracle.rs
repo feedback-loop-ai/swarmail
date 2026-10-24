@@ -68,6 +68,7 @@ impl App {
     pub fn new(base: &str, identity: &str) -> Result<App, String> {
         Ok(App {
             http: reqwest::Client::builder()
+                .no_proxy()
                 .timeout(Duration::from_secs(30))
                 .build()
                 .map_err(|e| e.to_string())?,
