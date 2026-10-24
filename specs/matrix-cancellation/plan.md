@@ -1,7 +1,7 @@
 # Returned residual repair plan — matrix cancellation
 
 Implements [spec.md](spec.md). Existing proposed
-[0062](../../docs/decisions/0062-matrix-cancellation.md) remains unchanged.
+[0073](../../docs/decisions/0073-matrix-cancellation.md) remains unchanged.
 This chief commits only spec.md, plan.md and tasks.md in this directory.
 
 ## Technical context
@@ -18,7 +18,7 @@ this checkout; the required dialect sections are supplied here directly.
 
 Preserve frozen 0001–0003, AUTH/ingest 0004–0005, 0055 schema/lifecycle/report
 contracts, 0020 placement and every house gate. Accepted 0057 already settles
-Luna/xhigh; 0058 settles the five-result review route. Existing proposed 0062
+Luna/xhigh; 0058 settles the five-result review route. Existing proposed 0073
 is not accepted; compatible work may proceed under 0045 §8. This repair adds
 no semantic ruling or ADR. A contradiction requires the operator; a frozen
 guarantee cannot weaken. No gate, policy, model, tooling pin, accepted-decision,
