@@ -1,196 +1,220 @@
-# Implementation plan — matrix cancellation
+# Recovery plan — matrix cancellation
 
-Implements [spec.md](spec.md) and proposed
-[0062](../../docs/decisions/0062-matrix-cancellation.md). No implementation
-or gate success is inferred from this plan.
+Implements [spec.md](spec.md); retains proposed
+[0062](../../docs/decisions/0062-matrix-cancellation.md). Candidate source
+already implements the lifecycle. This plan audits and repairs its proof;
+it does not schedule a second implementation of cancellation.
 
 ## Technical context
 
-Rust 2024 standalone `evals/` workspace. Existing Tokio process/signal/I/O,
-libc, serde and tempfile support the work; no dependency, feature or lock
-change. Matrix has one active trial and a sequential product iterator.
-The root crate is unchanged and evals stays outside its exact coverage
-report under accepted 0055. There is no plan template in this checkout;
-this document supplies the required sections directly.
+Rust 2024 standalone `evals/` workspace; existing Tokio process/signal/I/O,
+libc, serde and tempfile. Sequential matrix and one active trial. No new
+crate, feature, dependency, manifest or lock changes. Under accepted 0055,
+evals remains outside the root exact-coverage report and owes its own suite.
+No plan template exists in this checkout; required sections are supplied here.
+
+Base candidate: `1a2f36c2b28e5e0bbce740c71485aeac39567b4d`. The current
+recovery is engine-class. The predecessor is concluded, not resumable by
+rewriting history. Use the current run's design/check/implementation/verify/
+review flow as selected by engine policy. Four independent correctness,
+security, guarantees and tests lenses remain mandatory, with no fallback
+provider or security-hold bypass. Never push, merge or close the issue.
 
 ## Constitution check
 
-Preserve accepted 0001–0005 and 0055, separate schema/accounting from
-execution, keep real process/protocol tests and 0020's deterministic seam
-rules. This proposed decision does not authorize contradiction of any
-accepted ruling; compatible implementation may proceed under house rules.
-Only the operator accepts 0062. Preserve the one canonical gate inventory,
-100% root coverage, allowlist, pinned tooling and unsigned/no-push delivery.
-No recipe edits, new root member or coverage exclusions.
+Preserve 0001–0005 and 0055. Reuse proposed 0062 without accepting it or
+changing its semantics. Test strengthening and removal of accidental test
+controls do not create a new contract (0050 §6). Any conflict discovered with
+accepted authority requires an operator ruling before contradictory work.
+Keep 0020's real-process, deterministic readiness and cfg(test)-only seam
+discipline. Root coverage remains exact 100%; no exclusions, extra root
+workspace members or license widening. Keep gate/recipe/policy files intact.
+Unsigned commits only (0056). Engine transitions and journal records are
+never fabricated by this seat.
 
-## Research and resolved design questions
+## Research and evidence
 
-`evals/src/main.rs::matrix` resolves the binary synchronously, then awaits
-`run_child`, whose opaque `output()` prevents parent cancellation ownership.
-`runner::resolve_swarmail_bin` may spawn Cargo. `run_trial` resolves before
-signals, but matrix supplies an already-resolved SWARMAIL_BIN, so its trial
-startup cannot build. Handler installation precedes every trial-owned
-process spawn. This grounds direct PID signalling without a production
-startup channel; preserve and test that invariant.
+Both recovery positions and both intake framings were read. Current source
+confirms that matrix installs handlers before resolution, retains its active
+child and reader separately, forwards SIGTERM once for either matrix signal,
+and waits for the child. Runner retains groups/reapers beyond the abortable
+body, aborts and joins admission before cleanup, and fences normal completion
+too. Those mechanisms should be preserved unless a reproducer finds a defect.
 
-`run_trial` aborts/joins its workload and calls `Groups::kill_all` before
-returning an interruption row. `Proc::stop` waits for its leader, then only
-signals the group. Agent wait handles live in a workload-owned JoinSet.
-Neither path establishes descendant cessation after workload cancellation.
-Retain direct-child wait ownership and group records outside the abortable
-workload and join cleanup before return.
+The previous verifier refused host digest `408c3c4d…a086`, not cancellation.
+The local `.forge/bin/brokkr` was independently hashed and matches tooling's
+`e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`.
+Resolve its absolute candidate-local path for every boxed compile/check;
+version or PATH equivalence is insufficient. Do not install or edit tooling.
 
-The shared helper's `pid_alive` maps any `/proc` read error to dead. Use typed
-observations and recorded start identities for the new proof. The existing
-eventual standalone test is not matrix evidence. Real readiness alone does
-not prove cleanup ordering: add a controlled completion fence.
+The exact-candidate issue regression passed during this chief step (see spec).
+It still lacks an acknowledgement that the matrix wait future is pending
+while cleanup is held. `MatrixGuard::wait` releases before waiting, and its
+Drop allows only three seconds before killing matrix. Production main/runner
+also read test environment hold/injection variables; this violates the
+existing test-only plan and can indefinitely stop cleanup. These are the
+scoped recovery repairs. No negative-control execution is claimed yet.
+
+Historical 2026-10-24 chief receipt: the earlier design's root tests and
+coverage refused an absent 0062 index row; other listed design checks passed.
+Candidate 1a2f36c supplies the row. Earlier `.forge/design-194-checks/` logs
+remain historical and must not be reused as current receipts. The old
+preimplementation tasks are replaced by the recovery tasks, not marked done
+from implementer assertions.
 
 ## Project structure and touched files
 
-| File | Implementation responsibility |
+| Path | Recovery responsibility |
 | --- | --- |
-| `evals/src/main.rs` | Matrix latch, active-child handle, cancellable bootstrap, output validation/drainage, ordered output, suffix, help; local boundary tests. |
-| `evals/src/runner.rs` | Shared resolver parsing, retained reapers/groups and cleanup fence; preserve standalone API/scoring; test-only seams. |
-| `evals/tests/common/mod.rs` | Identity observation, readiness/control helpers, launch markers and failure-safe guards. |
-| `evals/tests/report.rs` | Real matrix signals, output/bootstrap error controls, report assertions; helper entry point. |
-| `evals/tests/runner.rs` | Preserve standalone regression; prove strengthened cleanup and direct reaping separately. |
-| `evals/README.md` | Signals, exit/accounting, attempts meaning, bounds and platform/output limits. |
-| `docs/decisions/README.md` | First implementation commit adds proposed 0062 index row for the existing inventory gate. |
+| `specs/matrix-cancellation/{spec,plan,tasks}.md` | Only files in this chief commit; current framing, rulings, requirements and paired work. |
+| `evals/src/main.rs` | Remove production test injection/holds; cfg(test)-only matrix wait, admission/commit/startup controls and test harness re-entry; preserve runtime ownership. |
+| `evals/src/runner.rs` | Remove production cleanup/pre-handler holds; local test-only cleanup/reaper controls; preserve handler ordering and shared cleanup. |
+| `evals/tests/report.rs` | Ordinary-binary PID-only signals/accounting, bounded guard waits and failure cleanup; migrate internal controls into owning unit tests. |
+| `evals/tests/common/mod.rs` | Unique readiness/launch evidence, identity-aware observation and scoped cleanup helpers. |
+| `evals/tests/runner.rs` | Standalone signal, panic, deadline, server-death, resistant descendant and reaping regressions. |
+| `evals/tests/proof.rs` | Existing oracle/null/isolation suite, run unchanged unless a demonstrated local proof defect needs repair. |
+| `evals/README.md` | Align existing contract with queued-row commitment, limits and ordinary binary behavior where clarification is needed. |
 
-Chief artifacts are only this directory's spec/plan/tasks and proposed 0062.
-No report formula or root source edit; prefer existing-file tests and no new
-production module.
+Inspect `evals/src/report.rs` and TrialResult/refused_row as consumers; preserve
+schema and formulas. 0062 and its index remain unchanged. Root `src/`,
+accepted decisions, manifests/locks and delivery machinery are outside scope.
+Prefer existing owning test modules; a sibling test harness is permitted only
+when a concrete cold-path test warrants 0020's placement rule.
 
 ## Data model and contracts
 
-Keep TrialResult/schema 1 unchanged. Internal matrix state holds sticky
-interruption/first signal, product position, aggregate flags, and zero or one
-owned subprocess (bootstrap or trial). That owner retains child, PID,
-bounded stdout reader and wait completion. Stream the product/refusals.
+Retain TrialResult/schema 1. Matrix holds sticky interruption, position,
+aggregate flags and at most one owned bootstrap/trial process. Trial records
+retain direct-child wait/status and registered group identity until cleanup
+finishes; aborting workload must not abort those owners. Register spawns
+before any await. Retire empty groups and never deliberately signal recycled
+identities. Linux records group/session/start/state, with zombies non-running;
+direct children still owe wait. Other Unix uses conservative group absence.
 
-Trial cleanup retains each direct child's reaper/status and group until
-both wait and cessation finish. The workload gets readiness/status access;
-aborting it cannot abort reapers. Register each spawn before any await.
-Completed reapers retain status for scoring; leader exit alone cannot retire
-a group. Status subscriptions preserve server-health and agent-completion
-behavior without competing waits on a child.
+Keep Running → Stopping → Cleaning → Accounting → Finished. Ordinary
+completion loops Running. First observed signal closes admission forever.
+A concurrently spawned child remains owned. Pending signal at commitment
+wins over an unqueued normal result. Enqueue is irreversible; write/flush
+acknowledgement precedes continuing, and a signal during writing changes the
+exit verdict without rewriting the line. Output failure closes admission and
+retains cleanup ownership; unavailable output limits complete JSONL.
 
-States: Running → Stopping → Cleaning → Accounting → Finished. Normal
-completion loops Running; Stopping never admits a new trial. Pending
-cancellation overrides an uncommitted normal row. Commitment is ordered
-output enqueue after validated row and child wait; backpressure may defer
-it but cannot block signal/cleanup observation. Enqueued rows are immutable.
-Output failure uses the same stop/cleanup path, never detaches active work.
+After cleanup, interrupted active work has one harness-error row with usable
+identity/observed agent exits and measured lifetime. No usable row means fresh
+refusal identity and unknown exits. Unstarted slots have zero-time refusals,
+fresh IDs and no launch. Preserve exact task → agent → repetition order,
+exit 2 on either handled signal, normal precedence 2/1/0 and report formulas.
 
 ## Implementation approach
 
-1. Install a local sticky cancellation state before bootstrap. Retain both
-   signal streams through return. Biased checks at admission, commitment
-   and final return settle simultaneous readiness explicitly.
-2. Split binary resolution into shared path validation/artifact parsing and
-   an async matrix build owner. Cargo keeps offline/locked arguments, runs
-   once in its own group and drains incrementally, retaining the artifact
-   path and bounded diagnostics. Keep the synchronous standalone resolver
-   compatible. `spawn_blocking` around it alone cannot cancel Cargo.
-3. Replace `run_child.output()` with spawn/reader/wait ownership. Forward
-   SIGTERM once, retain wait, drain with a 64-KiB retention limit, validate
-   exact single-row/labels/status, normalize cancellation after wait. Use
-   a five-second post-exit EOF bound. ESRCH is a completion race; other
-   signal errors diagnose without dropping ownership. kill_on_drop is not
-   the cancellation protocol.
-4. Refactor only runner lifecycle ownership. Keep reapers/groups across body
-   abort/panic. Join stopped admission, TERM groups concurrently for five
-   seconds, KILL survivors, then observe cessation/reap for five seconds.
-   Existing normal cleanup can supply completed waits; the final fence
-   covers every path racing interruption. No per-child/repeated grace reset.
-5. Linux observation reads `/proc` membership for registered groups only,
-   using start identity/state; unexplained errors fail. It does not derive
-   a new kill inventory by ancestry. Retain group continuity while members
-   exist and retire empty registrations permanently. Other Unix uses
-   conservative kill(-pgid, 0)/ESRCH, diagnosing zombie timeout. No subreaper
-   or unrelated grandchild wait.
-6. Trial awaits its cleanup fence before returning a row. Matrix reaps it,
-   commits one active error if interrupted, then refusal suffix. Failures
-   cannot become pass. Keep matrix writes asynchronous/bounded and stderr
-   drainage independent so output pressure cannot stall cancellation.
-   Complete rows require progressing output; no universal exit timeout or
-   competing parent kill timer is invented.
-7. Update help/README with exit 2, ordering, refusal semantics, denominators
-   and cleanup/platform/output limits. Implement linked tests before making
-   the new cleanup claim.
+1. Preserve the exact-candidate receipt and source findings. Before source
+   changes, record HEAD and worktree status; after every repair, record the
+   successor revision. Chief docs-only HEAD is already a successor, even
+   though executable source is unchanged. Never claim final proof of 1a2f36c.
+2. Remove normal-build `EVAL_TEST_MATRIX_SIGNAL_SETUP_FAIL`, admission,
+   commit, final, cleanup and pre-handler controls. Introduce only cfg(test)
+   local seams. No public control socket, production environment hold or
+   feature flag. Unit-test helper re-entry runs the owner compiled with its
+   seams; integration CLI tests run the ordinary binary independently.
+   Evals library cfg(test) is not enabled merely because its binary is being
+   tested: place runner controls/tests in the runner's own test compilation
+   and matrix controls/tests in main's test compilation. Do not expose test
+   APIs through a normal library build to bridge that boundary.
+3. Build the causal fence test around the actual owner futures. After real
+   owned-work readiness and held cleanup acknowledgement, explicitly poll
+   the matrix wait path while completion is unavailable; require Pending
+   and emit an acknowledgement from that pending observation. An entry
+   marker before awaiting is insufficient. Gate release on this event,
+   observe group cessation/direct waits, then allow completion. Use the
+   analogous local runner control to prove cleanup precedes trial return.
+   Together with the ordinary CLI test these establish both links.
+4. Add a negative control that removes/bypasses the actual awaited completion
+   fence and must fail the same ordered-event/Pending assertion. Run for
+   SIGTERM and SIGINT separately. A test-only alternate path must exercise
+   the same orchestration; do not build an unrelated miniature supervisor.
+   If a temporary source mutation is used, isolate it, record the exact diff
+   and failure, restore it and rerun the unmutated proof before committing.
+   Mere missing markers, longer sleeps or repeated greens cannot stand in
+   for demonstrably failing the completion-fence removal.
+5. Make guards release all holds, stop admission and wait within an explicit
+   outer deadline. Allow at least the complete five-second TERM and
+   five-second cessation/reap window after release, plus a stated scheduling/
+   output margin; use a 30-second post-release test deadline. Drain output
+   independently. On expiry, diagnose the identities still present and
+   clean only test-owned groups after revalidating identity, then reap owned
+   direct children. A forced test cleanup is a test failure, never a product
+   cleanup success. Retain identities before assertions can unwind; test
+   readiness failure, assertion unwind and deadline cleanup themselves.
+6. Map every AC to executable proof (tasks below), reuse valid tests and fill
+   actual gaps. Keep setup, pre-handler, admission/spawn/completion/final-row,
+   repeated signals, bootstrap and output controls when migrating seams.
+   Restore ordinary runtime paths first; do not remove coverage to avoid
+   the migration. Repair production ownership only on a concrete reproducer.
+7. Run independent evals proofs and all canonical gates against final source,
+   then independent hermetic verify and four-lens review. Keep logs tied to
+   revision, executable digest, command and exit; failures remain outstanding.
+   No candidate script or local assertion selects an engine transition.
 
-## Test design
+## Test design and proof map
 
-Real CLI tests in `evals/tests/report.rs` run matrix with a passing prefix,
-active helper and suffix. Record per-launch unique markers (never overwrite),
-trial/server/fixture/agent/descendant identities, and atomic readiness after
-confirming liveness. Signal matrix PID only. Drain both pipes concurrently.
-Scoped guards clean only the test's owned groups/children on failure.
+Public CLI proof sends each signal only to matrix PID after a passing prefix
+and observed live trial/server/fixture/agent/descendant readiness. Use fresh
+scratch paths, AUTH inboxes, loopback port zero and append-only launch markers.
+Assert immediate identity-aware cessation at matrix exit, trial wait and
+no suffix launch, then exact rows and real report ingestion (AC1/3).
 
-Use test-only seams in existing owners for startup, admission, completion,
-signal-install failure and cleanup-bound cases. Compile under cfg(test);
-exercise production matrix/runner paths in a re-executed unit-test harness
-when the integration CLI cannot see a seam. No production environment hold
-or feature flag. Child acknowledges its cleanup hold with owned work live;
-matrix acknowledges waiting. Release, observe cessation/direct reaps, then
-acknowledge fence completion. A negative control dropping the wait fails by
-missing the required ordered acknowledgement, not a timing guess. Public
-CLI signal tests remain independent evidence.
+Internal re-executed tests supply causal pending-future controls and real
+owned processes for both completion fences (AC2); deterministic readiness
+and bounded deadlines replace sleep-dependent synchronization. Scoped helper
+processes contain any environment state. Keep mixed repeated-signal and
+startup/commit controls (AC4), escalation/leader-first/observation/budget
+failures (AC5), real cancellable bootstrap plus setup refusal (AC6), and
+bounded drain/invalid output/backpressure/broken stdout controls (AC7).
 
-TERM-resistant descendants and leader-first exit use real processes. Use
-readiness/control events and deadlines, never fixed sleep synchronization.
-Linux identity observations fail on unknown state; scope those tests to
-Linux explicitly rather than passing on absent `/proc`. Conservative Unix
-observation gets its own errno/error tests.
+Standalone and full oracle/null/isolation tests prove preserved behavior
+(AC8). Check ordinary dev and release paths with former test variables set:
+they must not create hold acknowledgements or inject failure; compilation
+boundaries and focused tests prove the seams are absent (AC9). Failure-path
+guard tests must reap their owned direct children and report unknown
+observations as failures. Restrict Linux /proc proofs explicitly; portable
+observation errors must not be treated as absence.
 
 ## Quickstart and validation
 
-From `evals/`: `cargo test --locked --test report`,
-`cargo test --locked --test runner`, `cargo fmt --all -- --check`,
-`cargo clippy --all-targets --locked -- -D warnings`, then
-`cargo test --locked` including oracle/null/isolation proof.
+From `evals/`, run the issue regression first:
+`cargo test --locked --test report matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup`.
+Then `cargo test --locked --test report`, `cargo test --locked --test runner`,
+`cargo test --locked` (including owner unit tests and oracle/null/isolation),
+`cargo fmt --all -- --check`, and
+`cargo clippy --all-targets --locked -- -D warnings`.
+Run the explicit AC2 negative control and its restored positive case as well.
 
-Run the complete [house-rule gates](../../docs/house-rules.md#gates--part-of-every-change)
-with locked dependencies, exact coverage/selftest, publish/seal proofs,
-digest-matched compile, licenses and fail-closed native-tls absence. Keep
-CI-only proofs with their designated owners. Implement and independent
-reviewers owe evals evidence separately; design-check is structural only.
+Run every [canonical house gate](../../docs/house-rules.md#gates--part-of-every-change),
+with locked dependencies, exact coverage and its selftest, publish/keyless-seal
+proofs, license check, pinned shim integrity and fail-closed native-tls absence.
+Use the absolute digest-matched candidate-local Brokkr for compile. Hermetic
+verify executes pinned canonical implementations, installs nothing, and owes
+its own receipts; local chief checks do not replace it. CI-only chart/history/
+selftest, Docker, RustSec, tag rate proof and port-80 obligations stay with CI.
 
-Chief handoff commits precisely four authorized paths unsigned, checks HEAD's
-file list/clean blobs, then runs
-`bash bundles/self/scripts/design-check.sh check .` locally. The engine's
-pinned check remains authoritative. Leave chief commit last. Do not claim
-full gates green while the excluded index row or environment prerequisite
-is outstanding.
+Chief checks links/diff/committed cleanliness, commits exactly the three spec
+artifacts unsigned, then runs `bash bundles/self/scripts/design-check.sh check .`.
+Leave that commit last. The sequence's pinned check alone owns advancement.
+Run-local logs and the mandatory drafted result are not committed.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 | --- | --- |
-| Signal during spawn loses handle | No await before registration; cancel admitted child; boundary control. |
-| Handler ordering drifts | Resolved binary and startup-order regression; future early spawn requires redesign. |
-| Abort drops waits | Reapers outside workload, joined cleanup fence; separate standalone and matrix proofs. |
-| Descendant outlives leader | Retain group; shared TERM/KILL budget and membership observation. |
-| PID reuse/observation error | Record identities, retire empty groups, unknown means failure; hostile races unsupported. |
-| Kernel cannot stop child | Explicit failure and unresolved-ownership diagnostic, no cleanup-success claim. |
-| Repeated signals | Sticky handlers, no reset or parent forced kill. |
-| Output pressure | Bounded concurrent drainage/output, independent cleanup, broken-output tests. |
-| Large refusal suffix | Stream O(product) rows; document requested-slot attempts/output prerequisites. |
-| Unix proof overstated | Linux-specific identity/zombie proof; conservative absence/failure elsewhere. |
-| ADR index excluded | First implementation task adds proposed row and proves inventory; no full-gate success meanwhile. |
-| Framework scope creep | Two existing production files, one trial, no dependency/schema/server changes. |
-
-## Chief validation receipt — 2026-10-24
-
-Design-only checks: relative links resolve; root fmt/clippy, digest-matched
-`.forge/bin/brokkr compile --bundle bundles/self`, coverage selftest,
-publish-guard proof, keyless seal proof, license check, shim integrity and
-fail-closed native-tls absence passed. The binary digest matches tooling.json
-(`e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`).
-
-`cargo test --workspace --locked` and instrumented coverage both refused
-`store_contract_docs`: the decision inventory and its refusal selftest see
-`0062-matrix-cancellation.md: no index row`. T1 supplies that excluded file
-change; these gates must be rerun on implementation. Run-local logs are in
-`.forge/design-194-checks/`; no full-gate or implementation success is claimed.
-The unchanged eval suite was not run by this design seat; T9 remains due.
+| Passing old test hides missing causal proof | Explicit Pending observation, ordered release and fence-removal negative control; extra test work. |
+| Seam compiled into ordinary binaries | cfg(test) at each owning compilation, ordinary dev/release tests with former variables; separate CLI proof. |
+| Test fails and kills matrix too soon | Release holds, 30-second outer deadline, owned-identity fallback cleanup and reaping; fail on escalation. |
+| Signal/spawn race loses ownership | No await before registration, sticky stop, pre-handler invariant and boundary tests. |
+| Group leader exit or EOF mistaken for cessation | Retain group/reapers, observe running members and direct waits independently. |
+| Reused identity or unknown observation | Revalidate owned identity, retire empty groups, diagnose unknowns; no unrelated signalling. |
+| Repeated signals multiply cleanup or kill owner | Shared five-plus-five windows, no reset or competing matrix timer. |
+| Backpressure hides signals or loses rows | Independent bounded drainage, irreversible queue boundary, output-error tests and explicit output limit. |
+| Large refusal suffix slows exit | Stream O(product) rows; no universal ten-second matrix promise. |
+| Linux proof presented as universal | Explicit Linux identity/zombie proof; conservative Unix absence and stated unsupported escapes. |
+| Wrong executable or stale receipts | Absolute local engine plus digest; fresh revision-bound logs and hermetic verify. |
+| Recovery grows into redesign | Narrow reproducer-backed repairs; preserve schema, root code, tooling and dependencies. |
