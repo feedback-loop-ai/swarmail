@@ -1,0 +1,13 @@
+# Tasks — scanner regressions
+
+Ordered implementation tasks; unchecked boxes describe future work. Exactly
+AC1 and AC2 in spec.md define feature acceptance; preservation and delivery
+checks below retain existing obligations.
+
+- [ ] T1 — Add command-level cannot-tokenize and balanced-control tests in the existing helper test area, preserving exclusion tests and using exclusively owned scratch files. **Proof (AC1):** explicit locked/offline helper unit suite returns the named malformed-input error and valid-input success.
+- [ ] T2 — Add literal table tests for dash-package rlibs and binary spelling, witness the dash positive failing before the fix, then normalize only the library matcher. **Proof (AC1):** hashed/unhashed normalized and ordinary positives pass; wrong-package, prefix, rmeta and executable/harness negatives remain rejected; literal dash binary control passes.
+- [ ] T3 — Add dollar/escape table tests, witness the paired-dollar cases failing before the fix, then decode dollar pairs once. **Proof (AC1):** lone, paired, repeated, ordinary and mixed escaped-space/hash examples match literal expected strings under the helper suite.
+- [ ] T4 — Invoke the helper suite once from the existing selftest with the pinned manifest and private target. **Proof (AC1 integration):** the full selftest executes the helper tests and checks their exit status; explicit helper fmt/clippy/test checks also pass.
+- [ ] T5 — Remove plain predecessors from the existing binary fixture loop, assert fresh targets and captured selected dep-info, and retain the existing inventory/report/refusal controls. **Proof (AC2):** full coverage selftest builds and runs real binaries with llvm-cov, immediately harvests nonempty executable/source capture, and passes the red and green checks without a plain producer before capture.
+- [ ] T6 — Review scope and run the complete house-rule gate inventory using the digest-checked candidate-local engine, plus helper checks, shell syntax, strict shim hashes and fail-closed native-tls absence. **Proof (preservation):** retained command/status/output receipts for every required gate, exact positive integer covered==count in all three dimensions, and a diff confined to the two permitted implementation files with classifier/E-row and #174 behavior preserved. Record CI/operator-owned evidence separately; do not claim it locally.
+- [ ] T7 — Commit implementation unsigned and prepare the candidate for existing downstream verify/review routing. **Proof (delivery):** clean tracked worktree and committed file audit; bundle compilation succeeds for changed pinned resources. Actual hermetic verification and protected review remain their own required downstream proofs, not inferred from this design.
