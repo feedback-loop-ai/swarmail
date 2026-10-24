@@ -150,11 +150,40 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
         "\"bash $pin_q/coverage-gate.sh\"",
         "\"bash $pin_q/coverage-gate.sh selftest\"",
         "\"bash $pin_q/design-check.sh selftest\"",
+        "\"bash $pin_q/delivery-proof-test.sh\"",
         "\"bash $pin_q/publish-guard-test.sh\"",
         "\"bash $pin_q/seal-branch-test.sh\"",
     ] {
         assert!(seat.contains(gate), "verify-seat.sh does not run {gate}");
     }
+    let preflight = seat
+        .split("for resource in")
+        .nth(1)
+        .and_then(|tail| tail.split("; do").next())
+        .expect("verify-seat has a pinned-resource preflight");
+    for resource in [
+        "coverage-gate.sh",
+        "publish-guard.sh",
+        "publish-guard-test.sh",
+        "design-check.sh",
+        "delivery-proof-test.sh",
+        "seal-branch.sh",
+        "seal-branch-test.sh",
+        "speckit/check-prerequisites.sh",
+        "speckit/common.sh",
+        "coverage-fn-scan/Cargo.toml",
+        "coverage-fn-scan/Cargo.lock",
+        "coverage-fn-scan/src/main.rs",
+        "shims.sha256",
+        "../tooling.json",
+    ] {
+        assert!(
+            preflight.contains(resource),
+            "verify-seat does not preflight {resource}"
+        );
+    }
+    assert!(seat.contains("bash -c \"$command\""));
+    assert!(!seat.contains("bash -lc \"$command\""));
     for candidate_copy in ["bash scripts/", "tools/coverage-fn-scan"] {
         assert!(
             !seat.contains(candidate_copy),
@@ -313,4 +342,429 @@ fn ci_runs_the_chart_history_check_and_the_docker_smoke() {
         !smoke.contains("packages: write"),
         "the smoke job publishes nothing"
     );
+}
+
+#[test]
+fn codex_correctness_charter_provenance_matches_the_tracked_library() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let readme = read_text("agents/README.md");
+    let overlay = read_json("agents/codex-review-correctness.json");
+    let base = read_json("agents/review-correctness.json");
+    assert_eq!(overlay["extends"], "review-correctness");
+    assert_eq!(overlay["models"], json!(["qwen-max"]));
+    assert_eq!(base["charter"], "charters/review-correctness.md");
+    assert!(readme.contains("brokkr compile --bundle bundles/self"));
+    assert!(readme.contains(".forge/bin/brokkr agents show codex-review-correctness"));
+    assert!(readme.contains("historical host copy"));
+    assert!(readme.contains("actual review launch"));
+
+    let charter = root.join("agents/charters/review-correctness.md");
+    let digest_output = std::process::Command::new("sha256sum")
+        .arg(charter)
+        .output()
+        .expect("sha256sum is available");
+    assert!(digest_output.status.success());
+    let digest = String::from_utf8(digest_output.stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned();
+    assert!(
+        readme.contains(&digest),
+        "README omits the tracked charter digest"
+    );
+}
+
+// Runtime fixtures for the pinned verify seat. The gate resources are
+// controlled test scripts, while verify-seat.sh itself is copied byte-for-byte
+// from the tracked pinned bundle.
+const VERIFY_RESOURCE_PATHS: &[&str] = &[
+    "coverage-gate.sh",
+    "publish-guard.sh",
+    "publish-guard-test.sh",
+    "design-check.sh",
+    "delivery-proof-test.sh",
+    "seal-branch.sh",
+    "seal-branch-test.sh",
+    "speckit/check-prerequisites.sh",
+    "speckit/common.sh",
+    "coverage-fn-scan/Cargo.toml",
+    "coverage-fn-scan/Cargo.lock",
+    "coverage-fn-scan/src/main.rs",
+    "shims.sha256",
+    "../tooling.json",
+];
+
+const VERIFY_SHIMS: &[&str] = &[
+    "scripts/coverage-gate.sh",
+    "scripts/publish-guard.sh",
+    "scripts/publish-guard-test.sh",
+    "scripts/design-check.sh",
+    ".specify/scripts/bash/check-prerequisites.sh",
+    "scripts/seal-branch.sh",
+    "scripts/seal-branch-test.sh",
+];
+
+struct VerifySeatFixture {
+    _root: tempfile::TempDir,
+    candidate: std::path::PathBuf,
+    pin: std::path::PathBuf,
+    prompt: std::path::PathBuf,
+    result: std::path::PathBuf,
+    engine: std::path::PathBuf,
+    bin: std::path::PathBuf,
+    gate_order: std::path::PathBuf,
+    gate_report: std::path::PathBuf,
+    argv_marker: std::path::PathBuf,
+    later_marker: std::path::PathBuf,
+}
+
+impl VerifySeatFixture {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::Builder::new()
+            .prefix("verify seat ; [fixture] ")
+            .tempdir()
+            .expect("temporary verify fixture");
+        let candidate = root.path().join("candidate ; [workspace]");
+        let bundle = root.path().join("bundle ; [pinned]");
+        let pin = bundle.join("scripts");
+        let result_dir = root.path().join("result files ; [entry]");
+        let bin = root.path().join("fake commands");
+        let engine_dir = root.path().join("engine path ; [literal]");
+        let engine = engine_dir.join("brokkr");
+        let gate_order = root.path().join("gate order.txt");
+        let gate_report = root.path().join("gate report.txt");
+        let argv_marker = root.path().join("engine argv.txt");
+        let later_marker = root.path().join("later gate.txt");
+        let prompt = root.path().join("verify prompt.md");
+        let result = result_dir.join("seat result.json");
+
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::create_dir_all(&pin).unwrap();
+        std::fs::create_dir_all(&result_dir).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&engine_dir).unwrap();
+
+        for shim in VERIFY_SHIMS {
+            let source = Path::new(env!("CARGO_MANIFEST_DIR")).join(shim);
+            let destination = candidate.join(shim);
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(source, destination).unwrap();
+        }
+        let verify_source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("bundles/self/scripts/verify-seat.sh");
+        std::fs::copy(verify_source, pin.join("verify-seat.sh")).unwrap();
+
+        let engine_script = r#"#!/usr/bin/env bash
+printf 'brokkr\n' >> "$GATE_ORDER"
+printf '%s\n' "$@" > "$BROKKR_ARGV_MARKER"
+exit 0
+"#;
+        std::fs::write(&engine, engine_script).unwrap();
+        let mut engine_permissions = std::fs::metadata(&engine).unwrap().permissions();
+        engine_permissions.set_mode(0o755);
+        std::fs::set_permissions(&engine, engine_permissions).unwrap();
+
+        let cargo_script = r#"#!/usr/bin/env bash
+printf 'cargo:%s\n' "$*" >> "$GATE_ORDER"
+exit 0
+"#;
+        let cargo = bin.join("cargo");
+        std::fs::write(&cargo, cargo_script).unwrap();
+        let mut cargo_permissions = std::fs::metadata(&cargo).unwrap().permissions();
+        cargo_permissions.set_mode(0o755);
+        std::fs::set_permissions(&cargo, cargo_permissions).unwrap();
+
+        std::fs::write(
+            &prompt,
+            format!("Result file\n\n    {}\n", result.display()),
+        )
+        .unwrap();
+
+        let fixture = Self {
+            _root: root,
+            candidate,
+            pin,
+            prompt,
+            result,
+            engine,
+            bin,
+            gate_order,
+            gate_report,
+            argv_marker,
+            later_marker,
+        };
+        fixture.install_resources();
+        fixture.write_tooling(Some(&fixture.engine_digest()));
+        fixture
+    }
+
+    fn engine_digest(&self) -> String {
+        let output = std::process::Command::new("sha256sum")
+            .arg(&self.engine)
+            .output()
+            .expect("sha256sum is available to the verify fixture");
+        assert!(output.status.success(), "sha256sum failed");
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn write_tooling(&self, digest: Option<&str>) {
+        let broker = match digest {
+            Some(digest) => serde_json::json!({
+                "sha": "fixture-engine",
+                "binary_sha256": digest,
+            }),
+            None => serde_json::json!({ "sha": "fixture-engine" }),
+        };
+        let path = self.pin.parent().unwrap().join("tooling.json");
+        std::fs::write(
+            path,
+            serde_json::to_vec(&serde_json::json!({ "brokkr": broker })).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn install_resources(&self) {
+        for resource in VERIFY_RESOURCE_PATHS {
+            self.restore_resource(resource);
+        }
+    }
+
+    fn restore_resource(&self, resource: &str) {
+        let path = self.pin.join(resource);
+        if resource == "../tooling.json" {
+            self.write_tooling(Some(&self.engine_digest()));
+            return;
+        }
+        if resource == "shims.sha256" {
+            let source =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("bundles/self/scripts/shims.sha256");
+            std::fs::copy(source, path).unwrap();
+            return;
+        }
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        if resource == "coverage-gate.sh" {
+            let coverage = r#"#!/usr/bin/env bash
+printf '%s\n' coverage-gate.sh >> "$GATE_ORDER"
+if IFS= read -r input; then input_state=available; else input_state=eof; fi
+printf 'cwd=%s\noffline=%s\nstdin=%s\n' "$PWD" "${CARGO_NET_OFFLINE-unset}" "$input_state" > "$GATE_REPORT"
+printf 'forced coverage failure\n' >&2
+exit 17
+"#;
+            std::fs::write(path, coverage).unwrap();
+        } else if resource.ends_with(".sh") {
+            let later = r#"#!/usr/bin/env bash
+printf '%s\n' "${0##*/}" >> "$GATE_ORDER"
+printf '%s\n' invoked > "$LATER_MARKER"
+exit 0
+"#;
+            std::fs::write(path, later).unwrap();
+        } else {
+            std::fs::write(path, "fixture resource\n").unwrap();
+        }
+    }
+
+    fn base_command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new("bash");
+        let verify_script = self.pin.join("verify-seat.sh");
+        let current_path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            std::iter::once(self.bin.clone()).chain(std::env::split_paths(&current_path)),
+        )
+        .unwrap();
+        command
+            .arg(verify_script)
+            .arg(&self.prompt)
+            .arg(&self.engine)
+            .current_dir(&self.candidate)
+            .env("PATH", path)
+            .env("GATE_ORDER", &self.gate_order)
+            .env("GATE_REPORT", &self.gate_report)
+            .env("BROKKR_ARGV_MARKER", &self.argv_marker)
+            .env("LATER_MARKER", &self.later_marker);
+        command
+    }
+
+    fn read_result(&self) -> serde_json::Value {
+        let text = std::fs::read_to_string(&self.result).expect("verify seat wrote its result");
+        let value: serde_json::Value =
+            serde_json::from_str(&text).expect("verify seat result is JSON");
+        let mut keys: Vec<_> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, ["inputs", "notes", "result"]);
+        value
+    }
+}
+
+#[test]
+fn verify_seat_runs_gates_without_login_and_preserves_failure_evidence() {
+    let fixture = VerifySeatFixture::new();
+    let hook = fixture._root.path().join("bash startup hook.sh");
+    let startup_log = fixture._root.path().join("startup observations.txt");
+    let home = fixture._root.path().join("isolated login home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        &hook,
+        r#"if [[ -n ${BASH_EXECUTION_STRING-} ]]; then
+  if shopt -q login_shell; then shell_mode=login; else shell_mode=nonlogin; fi
+  printf '%s\t%s\n' "$shell_mode" "$BASH_EXECUTION_STRING" >> "$STARTUP_LOG"
+fi
+"#,
+    )
+    .unwrap();
+
+    let positive = std::process::Command::new("bash")
+        .args(["-lc", "true"])
+        .current_dir(&fixture.candidate)
+        .env("HOME", &home)
+        .env("BASH_ENV", &hook)
+        .env("STARTUP_LOG", &startup_log)
+        .output()
+        .expect("login-shell positive control started");
+    assert!(positive.status.success());
+    let positive_log =
+        std::fs::read_to_string(&startup_log).expect("login positive control reached BASH_ENV");
+    assert!(
+        positive_log
+            .lines()
+            .any(|line| line.starts_with("login\ttrue")),
+        "the positive control did not observe login-shell startup: {positive_log}"
+    );
+    std::fs::write(&startup_log, "").unwrap();
+
+    let output = fixture
+        .base_command()
+        .env("BASH_ENV", &hook)
+        .env("STARTUP_LOG", &startup_log)
+        .env("HOME", &home)
+        .output()
+        .expect("actual verify seat fixture ran");
+    assert!(
+        output.status.success(),
+        "verify seat reports through JSON, not its process status: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = fixture.read_result();
+    assert_eq!(result["result"], "fail");
+    let notes = result["notes"].as_str().unwrap();
+    assert!(notes.contains("forced coverage failure"), "{notes}");
+
+    let order = std::fs::read_to_string(&fixture.gate_order).unwrap();
+    assert_eq!(
+        order.lines().collect::<Vec<_>>(),
+        [
+            "cargo:fmt --all -- --check",
+            "cargo:clippy --workspace --all-targets --locked -- -D warnings",
+            "cargo:test --workspace --locked",
+            "brokkr",
+            "coverage-gate.sh",
+        ]
+    );
+    let report = std::fs::read_to_string(&fixture.gate_report).unwrap();
+    assert!(report.contains(&format!("cwd={}", fixture.candidate.display())));
+    assert!(report.contains("offline=true"));
+    assert!(report.contains("stdin=eof"));
+    assert!(
+        !fixture.later_marker.exists(),
+        "a later gate ran after failure"
+    );
+
+    let argv = std::fs::read_to_string(&fixture.argv_marker).unwrap();
+    assert_eq!(
+        argv.lines().collect::<Vec<_>>(),
+        ["compile", "--bundle", "bundles/self"]
+    );
+    let startup = std::fs::read_to_string(&startup_log).unwrap();
+    let observed: Vec<_> = startup.lines().collect();
+    assert!(
+        observed.len() >= 5,
+        "the startup hook did not observe each gate shell: {startup}"
+    );
+    assert!(
+        observed.iter().all(|line| line.starts_with("nonlogin\t")),
+        "a gate runner used login startup: {startup}"
+    );
+}
+
+#[test]
+fn verify_seat_preflights_each_static_resource_before_any_gate() {
+    let fixture = VerifySeatFixture::new();
+    for resource in VERIFY_RESOURCE_PATHS {
+        let missing = fixture.pin.join(resource);
+        std::fs::remove_file(&missing).unwrap_or_else(|error| {
+            panic!("could not remove preflight fixture resource {resource}: {error}")
+        });
+        std::fs::write(
+            &fixture.result,
+            r#"{"result":"pass","inputs":{},"notes":"stale result"}"#,
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(&fixture.gate_order);
+        let output = fixture
+            .base_command()
+            .output()
+            .expect("actual verify seat missing-resource fixture ran");
+        assert!(
+            output.status.success(),
+            "verify seat writes fail verdicts as JSON: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result = fixture.read_result();
+        assert_eq!(result["result"], "fail", "missing {resource}");
+        assert!(
+            result["notes"].as_str().unwrap().contains(resource),
+            "missing-resource diagnostic omitted {resource}: {}",
+            result["notes"]
+        );
+        assert!(
+            !fixture.gate_order.exists(),
+            "a gate ran before missing resource {resource} was refused"
+        );
+        fixture.restore_resource(resource);
+    }
+}
+
+#[test]
+fn verify_seat_refuses_missing_or_mismatched_engine_identity_before_gates() {
+    let fixture = VerifySeatFixture::new();
+    for (digest, expected) in [
+        (None, "records no binary_sha256"),
+        (
+            Some("0000000000000000000000000000000000000000000000000000000000000000"),
+            "not the recorded build",
+        ),
+    ] {
+        fixture.write_tooling(digest);
+        let _ = std::fs::remove_file(&fixture.gate_order);
+        let output = fixture
+            .base_command()
+            .output()
+            .expect("actual verify seat identity fixture ran");
+        assert!(output.status.success());
+        let result = fixture.read_result();
+        assert_eq!(result["result"], "fail");
+        assert!(
+            result["notes"].as_str().unwrap().contains(expected),
+            "identity refusal did not name {expected}: {}",
+            result["notes"]
+        );
+        assert!(
+            !fixture.gate_order.exists(),
+            "a gate ran before identity refusal"
+        );
+        fixture.write_tooling(Some(&fixture.engine_digest()));
+    }
 }

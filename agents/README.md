@@ -61,3 +61,39 @@ work for reclassification, and the single reviewer owns correctness and
 security together. Broader fixes use dedicated Qwen correctness and official
 Flash security offices; full design and engine work require all five roles.
 Only the security member (or combined chore reviewer) owns security hold.
+
+## Correctness charter resolution for Codex recipes
+
+The tracked library uses `agents/codex-review-correctness.json` as the
+Codex overlay. It extends `agents/review-correctness.json`, selects the
+singleton `fable` route that accepted 0058 assigns to standard correctness, and
+resolves `agents/charters/review-correctness.md`, whose tracked digest is
+`8785a54a83e88cf254213afe11f230e8e10c70a18f2f147df197e40cfe59a0cb`.
+Before 0058 the overlay selected `qwen-max`, and the charter digest in the
+#172 candidate of 2026-10-24 was
+`215d6e38a66cbaf16ed7b76f1742a68b48a8e42bb2deeb1e57ec53a099ddb2fa`.
+The required compile target for this realm is
+`brokkr compile --bundle bundles/self`.
+
+Reproduce the candidate-local resolution and digest check with:
+
+~~~bash
+.forge/bin/brokkr agents show codex-review-correctness
+sha256sum agents/charters/review-correctness.md
+.forge/bin/brokkr compile --bundle bundles/self
+~~~
+
+At that candidate, `.brokkr/agents` was absent and the recorded engine help
+documented `.brokkr/agents` as the preferred local library, falling back to
+the tracked `agents/` library. The agents show output's charter digest
+matched the tracked file. This is evidence for that candidate's resolution;
+it does not establish which historical host copy was loaded or prove a live
+review dispatch.
+
+At the actual review launch, resolve the correctness agent again and compare
+its overlay/base, singleton route, charter path and digest with the tracked
+library. Repeat this for every independent reviewer required by the selected
+recipe, including the official DeepSeek Flash route. If the engine resolves
+a different copy or any digest differs, resolve or escalate that divergence
+before claiming the reviewer was used. Do not create a `.brokkr/agents`
+shadow library to repair provenance.
