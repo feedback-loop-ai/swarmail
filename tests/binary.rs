@@ -1651,11 +1651,23 @@ async fn the_ca_pem_client_ignores_proxy_environment() {
 #[tokio::test]
 async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
     let (stalled, request) = one_request_sink(None).await;
-    // Bind and drop: a port nothing listens on, so every dial is refused.
-    let refused = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
+    // Hold a bound, non-listening target through the final assertions so a
+    // parallel test cannot claim it between setup and the webhook dial.
+    let reservation = tokio::net::TcpSocket::new_v4().unwrap();
+    reservation.set_reuseaddr(false).unwrap();
+    reservation
+        .bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
         .unwrap();
+    let refused = reservation.local_addr().unwrap();
+    let refusal = tokio::time::timeout(common::HELPER_DEADLINE, TcpStream::connect(refused))
+        .await
+        .expect("the reserved non-listening target must refuse promptly")
+        .expect_err("a bound non-listening target must not accept connections");
+    assert_eq!(
+        refusal.kind(),
+        std::io::ErrorKind::ConnectionRefused,
+        "the webhook target must fail at connect rather than during TLS or reading"
+    );
     let mut cmd = serve_command();
     cmd.env_remove("RUST_LOG");
     let mut serve = spawn_serve(cmd).await;
@@ -1743,6 +1755,7 @@ async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
     for secret in ["hunter2", "hunter3", "marker-secret"] {
         assert!(!rest.contains(secret), "no {secret} on stdout: {rest}");
     }
+    drop(reservation);
 }
 
 // ---------- the fallible EOF helper (issue #102, 0018 §2) ----------
