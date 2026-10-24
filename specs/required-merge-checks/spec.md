@@ -197,3 +197,17 @@ ingest extraction and permissive dependencies remain untouched.
   engine; design positions and chief preflights do not substitute for them.
   Failures remain explicit and cannot be reported as a verified implementation.
   Commits are unsigned and no unauthorized remote action occurs.
+
+## Implementation receipt — 2026-10-24
+
+The implementation updates the sole status-context inventory in house rules
+and points CONTRIBUTING to it, with corrected CI/verify ownership wording. The
+spec, plan and task list retain this bounded documentation scope. No workflow,
+source, test, gate, bundle, policy or dependency file is changed. The dated
+operator observation above remains the only live-settings evidence; this seat
+has not read GitHub or CI. The live throwaway-PR refusal experiments remain
+operator-owned and out of scope. The run-local inventory comparator and its
+negative-control output are under
+.forge/epic192/issue205/implement-47e37eec/. Candidate gate receipts and the
+implementation commit are recorded with the implementation tasks. Protected
+verification and review remain with the following engine phases.

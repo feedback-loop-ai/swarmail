@@ -56,21 +56,38 @@ bash scripts/seal-branch-test.sh       # the seal tool's keyless proof (0056)
 cargo deny check licenses              # permissive-only tree
 ```
 
+### Required status checks on main
+
+The operator's assistant read main branch protection through the GitHub API on 2026-10-24. That dated observation reports strict required checks, enforce_admins enabled, linear history required, and main CI green at dc1822a. The nine status check contexts required before a pull request merges to main are:
+
+- format, clippy, publish guard
+- test (ubuntu-latest)
+- test (macos-latest)
+- coverage
+- deny
+- RustSec dependency audit
+- helm chart
+- brokkr bundle (pinned)
+- docker smoke
+
+These are the displayed status context names. The test context expands to both listed operating systems. This is the operator-supplied observation for 2026-10-24, not a continuous read of GitHub settings.
+
 This is the one gate inventory: CI and the verify seat both run all of it,
-plus a fail-closed proof that `native-tls` is absent from the tree. The
-differences are listed here once (issue #104). CI also owns the Helm chart
-contract (`scripts/chart-verify.sh`), including its chart-bump check
-against the event's baseline and that check's selftest
-(`chart-verify.sh history` and `selftest`, issue #141), the real-Docker
-image smoke (`scripts/docker-smoke.sh`: persistence across stop and kill,
-no leaked anonymous volume, no `target/` in the build context), the
-network-backed RustSec advisory audit, the tag-only `release-rate-5k`
-proof that both publish jobs need, and the stdio bridge's real port-80
-exchange (the ignored `portless_bridge_pings_port_eighty`, run with the
-Linux unprivileged port floor lowered and as root on macOS — decision
-0047 §4). A tag publishes the image before the chart: the chart job needs
-the image job's success and preflights the image it names (proposed
-0051). The verify seat runs offline and installs nothing.
+plus a fail-closed proof that native-tls is absent from the tree. The absence
+proof runs inside CI's deny job and is not a separate status context. The
+required-on-main contexts above include the CI-owned Helm chart, Docker smoke
+and RustSec jobs. CI also owns the chart-bump check against the event's
+baseline and its history/selftest proofs (issue #141), the Docker image smoke
+(persistence across stop and kill, no leaked anonymous volume, no target/
+in the build context), the network-backed RustSec advisory audit, and the
+test jobs' real port-80 bridge exchange (the ignored
+portless_bridge_pings_port_eighty, run with the Linux unprivileged port floor
+lowered and as root on macOS — decision 0047 §4). The tag-only
+release-rate-5k proof gates both publish jobs. A tag publishes the image
+before the chart: the chart job needs the image job's success and preflights
+the image it names (proposed 0051). The verify seat runs offline and installs
+nothing. Main and tag image publication, tag-only chart publication and the
+tag-only rate proof are separate from the required pull-request contexts.
 
 Tests are part of every change. Extend the suite that proves the code —
 `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` or the unit tests — and run

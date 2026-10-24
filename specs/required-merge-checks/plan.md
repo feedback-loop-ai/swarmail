@@ -163,3 +163,14 @@ main observation and earlier attempted runs do not certify it.
 | Documentation change is used to waive expensive gates | Execute complete local inventory and pinned verification; keep CI/operator responsibilities explicit |
 | Disposable comparator does not prevent future drift | Retain reproducible run-local source/output and one maintained inventory; accept manual future upkeep instead of a new policy subsystem |
 | Local gate environment cannot execute a required proof | Record exact command/failure and missing prerequisite; preserve the design deliverable without a false verification claim |
+
+## Implementation disposition
+
+The bounded documentation change is in house rules and CONTRIBUTING. The
+required-context comparison passed against the independent nine-name input
+and the workflow producers, and its seven omission, duplicate, typo, tag-rate
+and publisher controls refused. Source and output are retained under
+.forge/epic192/issue205/implement-47e37eec/. The operator-owned live refusal
+experiments remain out of scope. The task list records current implementation
+gates and commit evidence; protected verification and review remain on the
+existing engine route.

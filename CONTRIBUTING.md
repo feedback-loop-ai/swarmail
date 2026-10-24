@@ -8,13 +8,15 @@ guarantees are not yours to trade.** Read
 ## The gates
 
 The gate list lives in one place:
-[`docs/house-rules.md` § Gates](docs/house-rules.md#gates--part-of-every-change). Run every
-command there — the `--locked` builds and tests, the pinned
-`brokkr compile --bundle bundles/self`, the exact coverage gate *and* its
-selftest, the publish guard's proof and `cargo deny check licenses` — and
-read the same section for what only CI proves (the native-tls absence
-check, the chart contract, the RustSec audit, the tag-only rate proof and
-the rest). This file keeps no copy of the list, so it cannot drift from it.
+[the Gates section of house rules](docs/house-rules.md#gates--part-of-every-change). Run every
+command there: the locked builds and tests, the pinned brokkr compile, the
+exact coverage gate and its selftest, the publish guard's proof, the seal
+tool's keyless proof and cargo deny. That section also names the exact status
+checks required before a pull request merges to main, plus the CI and verify
+proof ownership. The native-tls absence proof runs in both CI and verify; the
+Helm chart, Docker smoke and RustSec jobs are required main checks. Release
+rate and publication jobs keep their main/tag conditions. This file keeps no
+copy of the check list, so it cannot drift from house rules.
 
 - Tests speak the real protocol against real servers — `tests/common/mod.rs`
   boots them; no mocks in the loop. Extend the suite that proves the code.
