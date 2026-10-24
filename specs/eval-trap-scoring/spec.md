@@ -1,7 +1,7 @@
 # Eval trap scoring
 
 - Date: 2026-10-24; reconciled 2026-10-25 under accepted authority.
-- Status: design draft; implementation and delivery remain outstanding.
+- Status: implemented and proved locally, 2026-10-25; engine verify/review and delivery remain outstanding.
 - Scope: Epic #192, issue #198; triage classification: engine.
 - Baseline: `dc1822a45e4d2ae8326b44baf22818187a8320e9`.
 

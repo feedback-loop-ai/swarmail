@@ -1807,11 +1807,11 @@ fn a_delivery_parked_after_provisioning_outranks_the_deadline() {
 }
 
 #[test]
-fn the_catalogue_is_served_as_schema_version_one() {
+fn the_catalogue_is_served_as_schema_version_two() {
     let out = cli().arg("tasks").output().unwrap();
     assert!(out.status.success());
     let cat: swarmail_evals::tasks::Catalogue = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(cat.schema_version, 1);
+    assert_eq!(cat.schema_version, 2);
     assert_eq!(cat.tasks, swarmail_evals::tasks::catalogue());
 }
 
@@ -1883,4 +1883,119 @@ fn loopback_clients_ignore_caller_proxy_settings() {
     let row = one_row(&out);
     assert_eq!(row.outcome, Outcome::Pass, "{}", stderr(&out));
     assert_eq!(row.agent_exit_status, Some(0));
+}
+
+#[test]
+fn v2_check_refuses_v1_state_with_a_safe_version_diagnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    let (row, _) = trial(&[
+        "--task",
+        "signup",
+        "--agent",
+        "oracle",
+        "--artifacts-dir",
+        dir.path().to_str().unwrap(),
+    ]);
+    assert_eq!(row.schema_version, 2);
+    assert_eq!(row.outcome, Outcome::Pass);
+    let mut state = retained_state(dir.path(), &row);
+    assert_eq!(state["schema_version"], 2);
+    state["schema_version"] = serde_json::json!(1);
+    let path = dir.path().join("old.json");
+    std::fs::write(&path, state.to_string()).unwrap();
+    let out = cli()
+        .args(["check", "--task", "signup", "--state"])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("unsupported snapshot schema version; expected 2"));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["outcome"], "harness_error");
+}
+
+#[test]
+fn trap_bearing_trials_preserve_deadline_and_delivery_precedence() {
+    for (mode, class, receipt) in [
+        ("naive_deadline", FailureClass::Budget, "delivered"),
+        ("naive_parked", FailureClass::HarnessError, "parked"),
+        ("naive_failed", FailureClass::HarnessError, "failed"),
+        (
+            "naive_parked_deadline",
+            FailureClass::HarnessError,
+            "parked",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = dir.path().join("artifacts");
+        let (row, out) = helper_trial(
+            mode,
+            &[
+                "--task",
+                "stale-otp",
+                "--agent",
+                mode,
+                "--deadline-ms",
+                "8000",
+                "--artifacts-dir",
+                artifacts.to_str().unwrap(),
+            ],
+            &[],
+        );
+        assert_eq!(row.schema_version, 2);
+        assert_eq!(
+            row.failure_class,
+            Some(class),
+            "{mode}: {row:?} {}",
+            stderr(&out)
+        );
+        assert_eq!(
+            row.outcome,
+            if class == FailureClass::Budget {
+                Outcome::Fail
+            } else {
+                Outcome::HarnessError
+            }
+        );
+        if mode.contains("deadline") {
+            assert_eq!(row.agent_exits[0].signal, Some(libc::SIGTERM));
+        } else {
+            assert_eq!(row.agent_exit_status, Some(0));
+        }
+        let state = retained_state(&artifacts, &row);
+        assert_eq!(state["identities"][0]["facts"]["otp_verified"], true);
+        assert_eq!(state["identities"][0]["facts"]["logged_in"], true);
+        assert!(
+            state["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["action"] == "superseded_code"
+                    && e["accepted"] == false
+                    && e["category"] == "stale_code")
+        );
+        assert_eq!(
+            state["deliveries"].as_array().unwrap().last().unwrap()["status"],
+            receipt
+        );
+        let check = cli()
+            .args(["check", "--task", "stale-otp", "--state"])
+            .arg(artifacts.join(&row.trial_id).join("state.json"))
+            .output()
+            .unwrap();
+        let verdict: Value = serde_json::from_slice(&check.stdout).unwrap();
+        // Snapshot replay cannot reconstruct a live deadline.
+        assert_eq!(
+            verdict["failure_class"],
+            if class == FailureClass::Budget {
+                "stale_code"
+            } else {
+                "harness_error"
+            }
+        );
+        assert_eq!(
+            check.status.code(),
+            Some(if class == FailureClass::Budget { 1 } else { 2 })
+        );
+    }
 }

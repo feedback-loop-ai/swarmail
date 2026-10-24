@@ -1,8 +1,8 @@
 # swarmail-evals — the agent eval harness
 
-Epic #164, Phase 0 run A: the fixture app (#149), the v1 task suite with
+Epic #164, Phase 0 run A: the fixture app (#149), the v2 task suite with
 oracle solutions (#150) and the agent-agnostic trial runner that #148's
-brokkr recipe will wrap. The design and its rulings are proposed decision
+brokkr recipe will wrap. The design and its rulings are accepted decision
 [0055](../docs/decisions/0055-agent-eval-harness.md); the acceptance
 authority is the [spec](../specs/agent-eval-harness/spec.md).
 
@@ -18,9 +18,8 @@ exact coverage gate neither build nor measure it, and the published `.crate`
 does not include it. Every package in `evals/Cargo.lock` is already in the
 root lock at the same version and source (`tests/boundary.rs` checks it).
 
-Until epic #120's batch 5 lands the CI and verify-seat wiring, **evals is
-proven by its own suite, run by the implement seat and reproduced by the
-reviewers**. From `evals/`:
+Until #201 adds evals CI gating, **evals is proven by its own suite, run by
+the implement seat and reproduced by reviewers**. From `evals/`:
 
 ```bash
 cargo fmt --all -- --check
@@ -43,7 +42,7 @@ cargo build --offline --locked --manifest-path evals/Cargo.toml
 export SWARMAIL_BIN="$PWD/target/debug/swarmail"   # adjust for CARGO_TARGET_DIR
 E=evals/target/debug/swarmail-evals
 
-$E tasks                                            # the v1 catalogue, schema 1
+$E tasks                                            # the v2 catalogue, schema 2
 $E trial --task signup --agent oracle               # one JSON line; exit 0
 $E trial --task signup --agent null                 # fail/gave_up; exit 1
 $E trial --task signup --agent mine -- /abs/agent --mode email
@@ -81,7 +80,7 @@ attempts; that denominator may include slots whose agents never ran. A
 signal during the fallback offline Cargo build cancels and reaps that build
 before the refusal suffix is written.
 
-The matrix accepts exactly one matching schema-v1 result from a trial and
+The matrix accepts exactly one matching schema-v2 result from a trial and
 checks its exit code. It drains child output while retaining at most 64 KiB;
 invalid, extra or oversized output stops admission with exit 2. Broken or
 non-progressing stdout also exits 2 after cleanup; unavailable output cannot
@@ -165,14 +164,14 @@ carries a token, code, password, challenge or calendar capability.
 
 ## The result row
 
-One JSON line per trial: `schema_version` (1), `trial_id`, `task`, `agent`,
+One JSON line per trial: `schema_version` (2), `trial_id`, `task`, `agent`,
 `outcome` (`pass|fail|harness_error`), `failure_class` (null only on pass),
 `wall_time_ms` (provisioning through cleanup, excluding the binary build),
 `agent_exit_status` (the single agent's numeric code, else null — always
 null for the three-agent isolation task), `agent_exits` (identity, code,
 signal per agent) and `confinement: "unconfined"`. Exit statuses never decide
 a goal: an agent that completes the task and then crashes passes with its
-real status; `null` exits zero and fails.
+real status when no named trap disqualifies it; `null` exits zero and fails.
 
 ## Tasks and the failure taxonomy
 
@@ -184,7 +183,8 @@ declares the `failure_class` it provokes and the `idle_class` (`gave_up` or
 `tool_misuse`, `budget`, `harness_error`.
 
 Scoring precedence: infrastructure failure → `harness_error`; an agent alive
-at its deadline → `fail/budget`; a satisfied app-state predicate → pass
+at its deadline → `fail/budget`; the earliest named trap → fail with its
+existing class; otherwise a satisfied app-state predicate → pass
 (isolation also forbids any foreign-token presentation); otherwise the first
 refused app action names the class; otherwise the task's idle class. The
 scorer reads only the frozen app snapshot — never a mailbox, transcript or
@@ -199,6 +199,48 @@ ordinary business outcome. `check` applies the same snapshot rule, so a
 retained state with a failed or parked delivery replays as `harness_error`
 (exit 2). Replay reproduces only what the snapshot records: process
 failures and deadlines are not in it.
+
+## Active scoring revision — 2026-10-25 (accepted 0071)
+
+[0071](../docs/decisions/0071-eval-trap-scoring.md) advances catalogue,
+snapshot and trial-result versions together to **2**, with unchanged fields,
+sixteen task IDs, tiers, eight failure classes and report arithmetic.
+`check` refuses v1 snapshots; `report` refuses v1 rows and mixed v1/v2 input
+before aggregation, with version diagnostics. Replay historical v1 artifacts
+with their recorded old source/binary. Do not relabel, migrate or pool v1 and
+v2 scores: they are different experiments.
+
+A rejected exact named action disqualifies its whole trial, before **or after**
+the goal. Application recovery remains usable and goal facts stay truthful.
+The seven affected goals disclose the rule:
+
+| Task | Action / class |
+|---|---|
+| confirm-decoys | decoy_link / wrong_link |
+| sibling-addresses | foreign_token / wrong_message |
+| i18n-subject | decoy_message / wrong_message |
+| stale-otp | superseded_code / stale_code |
+| magic-login | decoy_link / wrong_link |
+| entity-url | decoy_link or marketing_mangled / wrong_link |
+| digest-forty | digest_decoy / wrong_link |
+
+Matching requires rejected status, exact action/class/flow and a provisioned
+Agent claimant. Sibling's known Decoy claimant also counts with any flow,
+including null, because identity refusal can precede token lookup. Missing or
+unknown claimants and other structurally valid mismatches do not match.
+Expired-but-not-superseded OTPs and non-target tasks retain recovery; expected
+reset replay remains positive evidence. Isolation keeps its existing veto and
+first-refusal fallback. Validation/infrastructure and live deadlines still win.
+The frozen snapshot is evidence, not authenticated against a hostile local process.
+
+`tests/proof.rs` completes ten independent external recovery controls through
+real MCP and fixture HTTP backed by SMTP DATA 250. Confirm enumerates all three
+links forward and reverse; digest opens forty distinct links with 39 decoys.
+Every command exits zero and truly recovers its goal, yet loses in the named
+class; the actual retained-state `check` agrees. Oracle/null and overlapping
+isolation controls remain required. Linux proof does not imply CI or macOS
+execution: #201 owns macOS eval gating, the operator owns sealing/live settings,
+and #221 owns namespace isolation.
 
 ## Honest limits
 

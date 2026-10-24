@@ -346,7 +346,7 @@ fn the_matrix_refuses_bad_inputs_before_running_anything() {
 
 fn row(task: &str, outcome: &str, class: Option<&str>, ms: u64) -> String {
     json!({
-        "schema_version": 1, "trial_id": format!("t{ms}"), "task": task, "agent": "a",
+        "schema_version": 2, "trial_id": format!("t{ms}"), "task": task, "agent": "a",
         "outcome": outcome, "failure_class": class, "wall_time_ms": ms,
         "agent_exit_status": 0, "agent_exits": [], "confinement": "unconfined"
     })
@@ -754,7 +754,7 @@ fn matrix_signal_case(signal: i32, noisy: bool) {
         "the exact committed JSONL byte prefix is immutable"
     );
     let parsed = rows(&output);
-    assert_eq!(parsed.len(), 4, "full schema-v1 product accounting");
+    assert_eq!(parsed.len(), 4, "full schema-v2 product accounting");
     assert_eq!(
         serde_json::to_value(&parsed[0]).unwrap(),
         prefix,
@@ -1084,4 +1084,33 @@ fn matrix_signal_cancels_and_reaps_the_fallback_cargo_group() {
         matrix.finish().is_ok(),
         "fallback owner and children were reaped"
     );
+}
+
+#[test]
+fn v2_report_refuses_v1_and_mixed_rows_before_aggregation() {
+    let v2 = row("t", "pass", None, 1);
+    let mut old: Value = serde_json::from_str(&v2).unwrap();
+    old["schema_version"] = json!(1);
+    for input in [
+        old.to_string(),
+        format!("{v2}\n{old}"),
+        format!("{old}\n{v2}"),
+    ] {
+        assert!(
+            swarmail_evals::report::parse_rows(&input)
+                .unwrap_err()
+                .contains("schema_version")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rows.jsonl");
+        std::fs::write(&path, input).unwrap();
+        let out = cli()
+            .args(["report", "--input"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(out.stdout.is_empty(), "no partial aggregation");
+        assert!(stderr(&out).contains("unsupported result schema version; expected 2"));
+    }
 }

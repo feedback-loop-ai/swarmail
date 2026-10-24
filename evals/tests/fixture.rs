@@ -773,3 +773,52 @@ async fn a_transient_refusal_is_parked_and_retried_once_cleared() {
     );
     rig.stop().await;
 }
+
+#[tokio::test]
+async fn concurrent_trap_and_goal_linearize_before_freeze_and_stay_frozen() {
+    use swarmail_evals::state::{FailureClass, action};
+    use swarmail_evals::tasks::Verdict;
+    let rig = Rig::new("confirm-decoys", 1).await;
+    rig.prepare().await;
+    let mut mcp = rig.mcp().await;
+    let mail = mcp.wait_emails(rig.inbox(0), None, 1).await.unwrap();
+    let html = mail[0]["html"].as_str().unwrap();
+    let wrong = anchor_href(html, "Unsubscribe").unwrap();
+    let right = anchor_href(html, "Confirm").unwrap();
+    let app = rig.app(0);
+    let (a, b) = tokio::join!(app.get(&wrong), app.get(&right));
+    assert_eq!(a.unwrap().0, 200);
+    assert_eq!(b.unwrap().0, 200);
+    assert_eq!(rig.admin_post("/admin/freeze", None).await.0, 200);
+    let frozen = rig.snapshot().await;
+    assert!(frozen.frozen && frozen.identities[0].facts.confirmed);
+    assert_eq!(frozen.events.len(), 2);
+    assert!(frozen.events[0].seq < frozen.events[1].seq);
+    assert_eq!(
+        frozen
+            .events
+            .iter()
+            .filter(|e| e.action == action::DECOY_LINK
+                && !e.accepted
+                && e.category == Some(FailureClass::WrongLink))
+            .count(),
+        1
+    );
+    assert_eq!(
+        frozen
+            .events
+            .iter()
+            .filter(|e| e.action == action::CONFIRM && e.accepted)
+            .count(),
+        1
+    );
+    assert_eq!(
+        tasks::score(&tasks::find("confirm-decoys").unwrap(), &frozen),
+        Ok(Verdict::fail(FailureClass::WrongLink))
+    );
+    for link in [&wrong, &right] {
+        assert_eq!(app.get(link).await.unwrap().0, 409);
+    }
+    assert_eq!(rig.snapshot().await, frozen);
+    rig.stop().await;
+}

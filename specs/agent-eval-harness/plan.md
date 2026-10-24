@@ -4,6 +4,19 @@ Implements [spec.md](spec.md) and proposed
 [0055](../../docs/decisions/0055-agent-eval-harness.md). This is the design
 handoff, not a receipt for implemented functionality.
 
+## Active amendment — 2026-10-25, accepted 0071
+
+The original implementation plan below is retained as run-A history. The
+current [trap-scoring plan](../eval-trap-scoring/plan.md) advances catalogue,
+snapshot and result versions together to 2 and inserts one exact frozen-event
+matcher before goal scoring. Field shapes and CLI syntax stay stable; old or
+mixed artifacts refuse, with old source/binary required for historical replay
+and no relabeling, migration or pooling. Goals disclose trial-wide traps.
+Recovery stays operational, including expiry-only OTP and expected reset replay.
+Infrastructure, deadlines, isolation and #194/#196 lifecycle/privacy remain.
+Metadata keeps swarmail_bin null under #196; it is not a historical-version
+selector. Independent eval checks and all pinned house gates remain required.
+
 ## Technical context
 
 Standalone Rust crate, one Unix executable, Tokio processes/networking,
@@ -77,7 +90,7 @@ Only 0055 is available to this run; 0049–0054 are reserved for #120.
 | `evals/README.md` | Runnable examples, public fixture routes, agent contract, taxonomy, limits and interim gates. |
 
 These ownership boundaries may be combined when small, but proof target
-`proof` and public CLI/schema stay stable. No file outside evals changes in
+`proof` and public CLI/field sets stay stable. No file outside evals changes in
 implementation except repairs to these four design artifacts if required.
 
 ## Data model
@@ -217,7 +230,7 @@ status and relative links; it cannot prove the future implementation.
 | Taxonomy invents agent reasoning. | Target versus idle declaration, app provenance events, fixed precedence and focused negative controls; unknown external MCP misuse remains unobservable. |
 | Port/build races or cross-trial state. | Port-zero binds, fresh processes/temp dirs, once-per-proof binary resolution and two concurrently active isolation trials. |
 | Child output or descendants hang shutdown. | Continuous bounded-retention drains, group ownership, grace/kill/reap and failure-path process tests; no guarantee for daemonized or hostile children. |
-| Agent crashes after achieving goal. | Preserve raw exit status; state success wins unless infrastructure fails or deadline expires, with tests for all precedences. |
+| Agent crashes after achieving goal. | Preserve raw exit status; state success wins unless infrastructure fails, deadline expires or a named trap disqualifies the trial, with tests for all precedences. |
 | Scoring state changes during capture. | Freeze mutations and delivery timers, take one consistent snapshot, then stop services. |
 | A real Swarmail defect appears. | Preserve minimal SMTP/MCP reproduction and report outstanding acceptance; no `src/` edit or workaround. |
 | Reports hide infrastructure errors or overclaim sample size. | Print all attempts, error rate, n, both denominators, defined Wilson/quantile conventions and null empty estimates. |
