@@ -44,6 +44,39 @@ An ordinary `if cfg!(debug_assertions)` can fit that textual allowance.
    implementation changes. Use current 0057 safe scope/fixes predicates and
    unsigned author commits under 0056 while preserving historical entries.
 
+## Recovery clarification — 2026-10-24 (still proposed)
+
+Fresh recovery `epic-192-issue-171-recovery-on-t-181c6f9c` preserves this
+number and its prior record; root reconciles the reservation with NEXT-187
+before integration. No acceptance or linked continuation is inferred.
+
+The copied root harness now supplies real recorded-core access, but broad
+stop/refused/park assertions do not prove the exact AC8 rule and severity.
+Require independent complete expected triples, source/policy applicability,
+aggregation regressions and a permissive-policy negative control. The
+reported live-self run `epic-192-issue-171-live-self-bun-c69c9fa3` parked
+before design and cannot discharge the real self retry obligation.
+
+Stronger shim tests expose two early exits: verify stops on the ordinary
+suite, and coverage stops on the instrumented suite before exporting counts.
+To preserve accepted 0050 §1's combined diagnostic obligation, coordinate
+bounded continuation in both canonical scripts. After validated resource and
+engine identity, verify may retain ordinary test failure through compile and
+one canonical coverage call, then must fail. Coverage retains instrumented
+test status while exporting and validating fresh reports and all existing
+denominator/count checks; it must fail even if counts are complete when tests
+failed. Unproved identity still refuses before execution. No skip switch,
+test suppression, success conversion, recursive verify or candidate algorithm
+is permitted. Covered-failing, uncovered-failing and restored controls prove
+this behavior. This is compatible enforcement of 0050 §1, not a semantic
+exception; comparator function bytes and the dated-marker choice stay intact.
+
+Cost: two narrowly coordinated canonical changes and reviewed pin updates,
+plus bounded diagnostic time. An unchanged-runtime plan is rejected because
+it cannot satisfy the combined red proof once the stronger tests exist.
+Unavailable coordination leaves that proof open while independent work
+continues. Tooling/preflight reservations remain with NEXT-206/NEXT-172.
+
 ## Alternatives and costs
 
 Immediate strict comparison would reject legitimate debug-assert expansions
@@ -69,4 +102,5 @@ extraction, coverage denominator, dependency policy, protected review and
 security hold stay unchanged. No provider fallback, engine upgrade, push,
 publish or issue/epic completion is authorized by this draft. Implementation
 adds the proposed index entry and dated pointer; chief commits only the
-three design artifacts and this proposal as its identifiable HEAD.
+three revised design artifacts and this revised proposal as its identifiable
+HEAD. The original design commit remains in history; no new decision is created.

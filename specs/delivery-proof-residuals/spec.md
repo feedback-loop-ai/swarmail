@@ -2,7 +2,9 @@
 
 Created: 2026-10-24. Status: design draft. Story: NEXT-171, epic #192,
 findings 3.1–3.4. Baseline: `45d68df37044de3360439b34c39687975dd59b84`.
-Run: `part-of-epic-192-close-every-ope-0db51b58`.
+Original run: `part-of-epic-192-close-every-ope-0db51b58`.
+Recovery: `epic-192-issue-171-recovery-on-t-181c6f9c`, fresh intake on
+`a76c5e5bdf82663a35ac0553e173a1bc7dac8e84`; not a linked continuation.
 
 Decision: 0062
 
@@ -28,11 +30,50 @@ index; the earlier spec keeps its original proof obligations. T08/R04/D04
 remain open until their entire obligations are satisfied. No story or epic
 completion follows from a committed design.
 
-## Synthesis and rulings
+## Recovery synthesis — 2026-10-24 (controlling)
 
-Read both run-local positions at `.brokkr/state/design/positions/` and the
-intake framing under `.brokkr/state/tasks/` for this run. The following rules
-resolve their disagreement rather than combining incompatible alternatives.
+Read both recovery positions, `simplicity.md` and `robustness.md`, under
+`.brokkr/state/design/positions/`, both intake framings, the existing design,
+delivery-gates artifacts, accepted authorities and copied root evidence.
+The recovery preserves this slug and proposed 0062. It does not reserve a
+second decision number or infer NEXT-187 coordination from a dated snapshot.
+Only these three artifacts and the existing proposal change in chief's commit.
+
+| Question | Ruling and losing alternative's cost |
+|---|---|
+| Preserve or recreate | Adopt both recovery positions: revise `delivery-proof-residuals` and 0062 in place, preserving the prior design history below. Reject another slug, ADR or framework: it would duplicate ownership without discharging any proof. Root must reconcile 0062 with NEXT-187 before integration. |
+| Exact evaluator | Adopt both positions' exact rule/destination/severity oracle and robustness's complete-count/unique-case assertions. The copied real-core probe is useful but its broad stop/refused/park predicate cannot close AC8. Reuse its source/API approach in a new run-local child. Cost: provenance, aggregation ingress and a failing permissive-policy control remain mandatory. |
+| Diagnostic reachability | Rule for robustness against simplicity's unchanged-runtime preference. Strong shim tests fail the ordinary Rust suite before verify reaches coverage; coverage then fails again at its own instrumented tests before producing counts. Coordinate a bounded change to both canonical owners: continue after test failure only to collect canonical coverage diagnostics, never to permit success. Reject hiding the test, restoring the shim during the red run, skipping a suite, or attaching an unrelated coverage run. Cost: two narrowly changed pinned scripts, renewed hash review, additional diagnostic execution and ownership coordination. |
+| Pins and scope | Adopt simplicity's existing integration-test owner, fixed approved hashes and no new dependency; adopt robustness's named disabled/commented/deleted-call controls and actual dispatch evidence. Reject a general shell parser or hashes computed from arbitrary candidate bytes. Cost: legitimate canonical edits require explicit reviewed hash updates. |
+| Live self | Adopt both positions: the exact tracked self route must genuinely dispatch design, refuse, retry and pass, with the retained lifecycle/ledger and stop controls. Neither this codex-fast run nor `epic-192-issue-171-live-self-bun-c69c9fa3` qualifies; the latter reportedly parked before design. Cost: live provider/journal access can keep the criterion open; no substitute recipe, fallback or fabricated receipt. |
+| Comparator | Both recovery positions support the prior dated-marker choice. Retain it; reject immediate comparator redesign because no compatible macro-provenance mechanism has been demonstrated. Cost: ordinary if-shaped release flips remain falsely accepted by the check. Documentation satisfies the issue's offered marker alternative only; older refusal obligations remain open and 0050's normative requirement is unchanged. |
+| Completion | Adopt robustness's separate proof claims and simplicity's compact receipt index. Reconcile every T08/R04/D04 sub-obligation; D04 spans AC1–AC13. Reject checkbox closure from the four narrower issue bullets. Cost: broader missing evidence can block closure without authorizing unrelated code repair. Keep the full engine lane and four independent reviewers. |
+
+### Diagnostic contract
+
+After pinned resources and launched-engine identity are established, verify
+records any ordinary `cargo test` failure, continues through successful pinned
+compile to one canonical coverage invocation, and then returns `fail` even if
+that invocation succeeds. Other preflight/identity failures still refuse
+before execution; earlier fmt/clippy or compile failures need not continue.
+No candidate-controlled flag selects this behavior. A failed coverage command
+also returns `fail` and preserves the earlier test/integrity diagnostics.
+Successful candidates still execute every required gate.
+
+The coverage gate runs the full instrumented suite with failure status retained,
+then exports its report from the same fresh build/profile directory. It may
+collect diagnostics after failing tests; it must never emit a passing verdict
+from that run, even at exact 100/100/100. Missing or invalid reports refuse;
+all production-inventory, expansion, exclusion and exact-count checks remain.
+The combined red fixture must produce an actual uncovered-production diagnostic
+and retained LCOV/counts, not just an instrumented-test-failed message. The
+comparator function and its allowance remain byte-identical.
+
+## Original synthesis — 2026-10-24, prior run (historical)
+
+The table below records the original run
+`part-of-epic-192-close-every-ope-0db51b58`. Its implementation instructions
+are superseded by the recovery rulings above; its proof obligations remain.
 
 | Question | Ruling and cost |
 |---|---|
@@ -85,7 +126,8 @@ planned paths, not evidence asserted to exist.
    include boolean-like strings, numbers, arrays and objects. Assert rule ID,
    destination and severity per row, with no fixture coercion or defaults.
    Add absent/null/malformed/true scope and fixes controls to the explicitly
-   safe original matrix. Record the complete case count and outputs. A
+   safe original matrix. Assert independent expected table cardinality, unique
+   case IDs and complete execution count; zero rows or a partial prefix fails. Record all outputs. A
    permissive-policy negative control must demonstrably fail assertions;
    restored policy passes. Compilation must be warning-free and unsuppressed.
    Representative missing/malformed member facts also traverse the real
@@ -101,7 +143,8 @@ planned paths, not evidence asserted to exist.
    second failure stops and leaked phase-level `drafted` cannot advance.
    No push, tag, publication or issue closure is part of this proof.
 3. **AC3 — Pins (3.3).** `tests/delivery_constitution.rs` compares every public
-   shim's bytes with `shims.sha256` and pins the exact expected member set.
+   shim's bytes with `shims.sha256`, protects the manifest with a fixed approved
+   expectation, and pins the exact seven-member set.
    Independently reviewed fixed hashes cover canonical design-check and
    verify-seat, supplemented by named assertions for launched-engine
    resolution, digest comparison, missing/mismatched refusal and the pinned
@@ -114,8 +157,14 @@ planned paths, not evidence asserted to exist.
 4. **AC4 — Actual boundary (old AC4/AC5; R04).** Actual pinned verify dispatch
    on a candidate containing both an uncovered production line and an
    exit-zero public coverage shim records both integrity and canonical
-   coverage failure in the same failing seat receipt. A covered clean twin
-   passes. Actual dispatched validator refuses missing risks even after its
+   coverage failure in the same failing seat receipt, despite the strengthened
+   Rust suite failing on the shim. The canonical coverage report identifies
+   the uncovered production location and exact missed counts. Test failure is
+   sticky in both scripts: a separate covered-but-failing-test control cannot
+   pass even if its coverage counts are complete. Missing/invalid reports and
+   missing pinned resources refuse; no diagnostics execute with unproved
+   engine identity. A covered clean twin passes. Actual dispatched validator
+   refuses missing risks even after its
    candidate copy is replaced by exit zero; the selected pinned algorithm
    remains unchanged. Engine identity absent/mismatch cases refuse. Component
    selftests and text checks remain distinct, insufficient witnesses here.
@@ -128,7 +177,10 @@ planned paths, not evidence asserted to exist.
    equivalence or refusal of arbitrary flips. Preserve the existing comparator,
    exact coverage floor and honest debug-assert controls. A synthetic textual
    reproduction must be labelled textual; any real-build observation must be
-   labelled separately. No real-build refusal is claimed by this option.
+   labelled separately. Invoke the actual comparator in a bounded textual
+   regression: the documented shape is admitted only for release, while
+   no-coverage and changed-body controls refuse. No real-build refusal is
+   claimed by this option.
 6. **AC6 — Reconciliation and completion.** Update current instructions in
    `specs/delivery-gates/{spec,plan,tasks}.md` to accepted 0050/0056/0057 while
    preserving dated history and original obligations. Index 0062 as proposed.
@@ -148,28 +200,49 @@ planned paths, not evidence asserted to exist.
 
 ## Preconditions and present evidence
 
-This chief observed a clean tracked baseline and equal local HEAD/origin/main
-at the commit above; this is an attached branch, so detached fast-forward
-instructions do not apply. No network freshness is claimed. The local engine
-hash is `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`,
-matching tooling; its help has no evaluator command. Matching core source
-and historical live receipts are not supplied in this box.
+Recovery starts from clean tracked HEAD `a76c5e5` and retains its design.
+The candidate-local engine digest is
+`e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`,
+matching tooling and the copied probe receipt. The copied core at
+`.forge/epic192/brokkr-build-source` and the probe's real
+`compose::resolve` / `Machine::from_table/evaluate` calls are available.
+The receipt records 102110 cases and zero failures under a broad oracle;
+rule/severity were logged, not independently asserted. This is real but
+insufficient AC8 evidence. Preserve it and its host-specific runner unchanged.
+New evidence belongs under
+`.forge/epic192/next-171/epic-192-issue-171-recovery-on-t-181c6f9c/`.
+Verify source composite, recorded lock applicability and current policy hashes
+before reuse; the historical build receipt's `staged_not_activated` does not
+establish launch provenance or live-provider success.
 
-The intake records a live canonical journal inspection and candidate overlap
-check on 2026-10-24. This chief inspected its framing, fleet snapshot and
-worktree registry; the canonical journal and sibling worktrees are not mounted
-here. Prunable registry entries do not establish inactivity. No conflict was
-recorded for this new spec/decision or the bounded regression/doc paths.
-Before implementation, root must refresh live ownership, exact-core access
-and qualifying self receipts/provider availability. Tooling changes and
-verify-seat preflight rewrites stay outside scope (#172/#206 reservations
-require reconciliation). Park the dependent execution with the missing path,
-identity or provider; never turn these missing inputs into a proof pass.
+The copied fleet snapshot is dated 2026-10-23T20:05:53Z. The canonical shared
+journal and sibling workspaces are unavailable in this box. Root refreshes
+reservations before overlapping writes, specifically NEXT-172's verifier
+preflight, NEXT-206's tooling/digest hunk and NEXT-187's 0062 reservation.
+The only additional runtime surface authorized by this recovery is the bounded
+post-test diagnostic path in verify and coverage; tooling, providers, policy,
+comparator and engine patches remain unchanged. Unavailable coordination
+leaves that dependent proof open, not a global bar to independent local work.
+
+The reported live-self attempt
+`epic-192-issue-171-live-self-bun-c69c9fa3` parked before design after repeated
+DSH transport failures; no raw current transport diagnostic is supplied.
+It cannot close AC2. The authorized root context retains the next real
+attempt's provider/model, timestamp, run/attempt/event IDs and exact diagnostic
+if still blocked. Do not assert today's provider availability from history.
+
+Historical chief-check logs under `.forge/epic192/next-171/chief-checks/`
+record workspace test exit 101 and coverage exit 1 for unindexed 0062.
+Other historical component passes are not this recovery's final gate proof.
+Implementation must add the proposed index entry and satisfy all remaining
+criteria; chief's strict four-file artifact boundary cannot repair that index.
+All implementation boxes remain open at design.
 
 ## Non-goals
 
-No Store, SMTP, await, pruning, extraction, webhook, release pipeline, recipe
-or engine behavior change. No generic policy framework, shell parser,
+No Store, SMTP, await, pruning, extraction, webhook, release pipeline, recipe,
+policy or engine behavior change. The bounded gate diagnostic change above
+is required; it never relaxes admission. No generic policy framework, shell parser,
 compiler-provenance mechanism, parallel delivery launch by this design seat,
 or invented journal events. Accept == stored, subscribe before checking,
 oldest-only pruning and ingest-time extraction retain their accepted meaning.
