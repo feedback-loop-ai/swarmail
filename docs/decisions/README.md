@@ -74,6 +74,7 @@ them. What may land while a decision is still proposed is stated in
 | [0073](0073-matrix-cancellation.md) | Matrix cancellation stops admission and waits for owned cleanup with complete schema-1 accounting | proposed — awaiting the operator | (Epic #192, issue #194) |
 | [0074](0074-strict-native-queries.md) | Refuse unsupported queries before native operations | proposed — awaiting the operator | (Epic #192, issue #197) |
 | [0075](0075-eval-privacy.md) | Closed eval environments and safe diagnostics (renumbered from 0062) | proposed — awaiting the operator | (Epic #192, issue #196 on #194) |
+| [0062](0062-eval-trap-scoring.md) | Named eval traps invalidate a trial | proposed — awaiting the operator | (#192/#198) |
 
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
