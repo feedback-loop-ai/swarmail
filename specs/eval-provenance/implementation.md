@@ -172,7 +172,11 @@ matrix index. Envelope expiry is a cancellation request through the same
 observed Pending cleanup fence, with repeated signals and a bypass negative
 control. No parent kill timer or second completion handshake was imported.
 Index-write failure preserves the committed stdout verdict while exiting 2.
-Execution wall time continues to exclude target build time.
+Execution wall time continues to exclude target build time. Both signals also
+remain latched when source observation has finished and owned cleanup precedes
+Cargo admission; task-join errors still pass through that cleanup fence.
+The duplicate-boolean wire vector uses explicit fixture data instead of the
+checkout's build-time dirty flag, so a clean commit exercises the same refusal.
 
 ## Discriminating evidence and limits
 
