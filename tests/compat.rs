@@ -141,6 +141,27 @@ async fn latest_id(addr: SocketAddr, inbox: &str) -> String {
     body["emails"][0]["id"].as_str().unwrap().to_string()
 }
 
+async fn exact_rest_snapshot(addr: SocketAddr, inbox: &str) -> (Value, Vec<u8>) {
+    let (status, body) = http_json(
+        addr,
+        "GET",
+        &format!("/api/v1/inboxes/{inbox}/messages"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let rows = body["emails"].as_array().unwrap();
+    let mut raw = Vec::new();
+    for email in rows {
+        let id = email["id"].as_str().unwrap();
+        let (status, _, bytes) =
+            http_raw(addr, "GET", &format!("/api/v1/messages/{id}/raw"), None).await;
+        assert_eq!(status, 200, "raw bytes for {id}");
+        raw.extend(bytes);
+    }
+    (body, raw)
+}
+
 #[tokio::test]
 async fn mailpit_envelope_lists_the_store_newest_first() {
     let s = start().await;
@@ -861,8 +882,47 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
     .await
     .unwrap();
     let doomed = latest_id(srv.http_addr, "alpha").await;
+    smtp_send(
+        srv.smtp_addr,
+        Some("beta"),
+        "sender@x.io",
+        "rcpt@x.io",
+        "surviving mail",
+        "beta two",
+    )
+    .await
+    .unwrap();
+    let alpha_before = exact_rest_snapshot(srv.http_addr, "alpha").await;
+    let beta_before = exact_rest_snapshot(srv.http_addr, "beta").await;
 
     let trigger = common::refusing_trigger(&db, "delete");
+
+    // Unsupported selectors refuse before the delete-all reaches the
+    // deliberately failing commit path.
+    let (status, _, raw) = http_raw(
+        srv.http_addr,
+        "DELETE",
+        "/api/v1/delete-all?inbox=alpha",
+        None,
+    )
+    .await;
+    assert_eq!(status, 400, "the query refusal precedes SQLite");
+    let refusal: Value = serde_json::from_slice(&raw).unwrap();
+    assert!(
+        refusal["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid DELETE /api/v1/delete-all query:"),
+        "{refusal}"
+    );
+    assert!(
+        refusal["error"].as_str().unwrap().contains("`inbox`"),
+        "{refusal}"
+    );
+    assert!(
+        !refusal["error"].as_str().unwrap().contains("alpha"),
+        "{refusal}"
+    );
 
     // The shim's selector delete refuses with the fixed cause.
     let payload = json!({"ids": [doomed]}).to_string();
@@ -877,19 +937,20 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
     let refused: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(refused["error"], "storage commit failed", "{refused}");
 
-    // delete-all refuses the same way.
+    // A valid delete-all reaches the same failed commit and preserves both inboxes.
     let (status, _, raw) = http_raw(srv.http_addr, "DELETE", "/api/v1/delete-all", None).await;
     assert_eq!(status, 503, "a failed delete-all must not claim success");
     let refused: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(refused["error"], "storage commit failed", "{refused}");
-
-    // Committed state is preserved, live and across a restart.
-    let (st, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/alpha/count", None).await;
-    assert_eq!(st, 200);
     assert_eq!(
-        count["count"], 1,
-        "a refused shim delete must preserve the mail: {count}"
+        exact_rest_snapshot(srv.http_addr, "alpha").await,
+        alpha_before
     );
+    assert_eq!(
+        exact_rest_snapshot(srv.http_addr, "beta").await,
+        beta_before
+    );
+
     srv.stop().await;
     drop(trigger);
     let srv = common::start_with(|mut c| {
@@ -897,14 +958,17 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
         c
     })
     .await;
-    let (st, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/alpha/count", None).await;
-    assert_eq!(st, 200);
     assert_eq!(
-        count["count"], 1,
-        "a refused shim delete must not lose the mail across a restart: {count}"
+        exact_rest_snapshot(srv.http_addr, "alpha").await,
+        alpha_before
+    );
+    assert_eq!(
+        exact_rest_snapshot(srv.http_addr, "beta").await,
+        beta_before
     );
 
-    // Recovery: the trigger is gone, the same delete succeeds and sticks.
+    // Recovery: the selector succeeds once the trigger is gone and removes
+    // only its named mail; the other inbox remains byte-for-byte intact.
     let (status, _, raw) = http_raw(
         srv.http_addr,
         "DELETE",
@@ -915,6 +979,10 @@ async fn a_blocked_delete_refuses_the_shim_deletes_with_503() {
     assert_eq!(status, 200);
     let removed: Value = serde_json::from_slice(&raw).unwrap();
     assert_eq!(removed, json!({"removed": 1}));
+    assert_eq!(
+        exact_rest_snapshot(srv.http_addr, "beta").await,
+        beta_before
+    );
     srv.stop().await;
 }
 

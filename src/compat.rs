@@ -25,7 +25,7 @@
 //! ones: no attachments, no read/unread state, no send-API, and no
 //! `/api/v1/messages/{id}/mime/part/...`.
 
-use crate::api::{ApiError, AppState, bad_request};
+use crate::api::{ApiError, AppState, ViewQuery, bad_request, parse_query};
 use crate::model::{Email, EmailAddress};
 use crate::store::{Filter, Store};
 use axum::Router;
@@ -907,7 +907,8 @@ fn hog_mime(email: &Email) -> Option<HogMime<'_>> {
 ///
 /// A failed commit is the answer (decision 0014): `503` with the fixed
 /// text, never a count for work that did not commit.
-async fn delete_all(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+async fn delete_all(State(state): State<AppState>, raw: RawQuery) -> Result<Json<Value>, ApiError> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "DELETE /api/v1/delete-all")?;
     match state.store.clone().clear_all_async().await {
         Ok(removed) => Ok(Json(json!({ "removed": removed }))),
         Err(_) => Err(ApiError(

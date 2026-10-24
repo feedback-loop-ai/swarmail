@@ -571,7 +571,14 @@ $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 | `GET /api/v1/inboxes/{inbox}/threads[/{key}]` | conversations, oldest first, stable keys |
 | `GET /api/v1/inboxes/{inbox}/feed` | SSE: one snapshot, then one event per accepted mail |
 | `POST /api/v1/inboxes/{inbox}/seed` | a fixture without SMTP — full parse + extraction; `html` preserved verbatim (supersedes `text`), CR/LF/NUL envelope fields refused |
-| `GET /api/v1/messages/{id}[/raw]` | one mail; the RFC 5322 source as `message/rfc822` |
+| `GET /api/v1/messages/{id}` | one full mail |
+| `GET /api/v1/messages/{id}/raw` | the RFC 5322 source as `message/rfc822` |
+| `DELETE /api/v1/messages/{id}` | remove one mail |
+| `GET /api/v1/chaos` | inspect active chaos rules |
+| `DELETE /api/v1/chaos` | clear active chaos rules |
+| `GET /api/v1/webhooks` | inspect redacted targets |
+| `DELETE /api/v1/webhooks` | clear webhook targets |
+| `DELETE /api/v1/delete-all` | clear every inbox |
 
 Every mail carries `text`, `html`, `links`, `codes` — extracted at ingest —
 and `envelope_from`, the SMTP `MAIL FROM` reverse path: `""` for a bounce's
@@ -606,13 +613,26 @@ The filters are exact about what they match. `to` is a case-insensitive
 substring of **any recipient** — the `To` and `Cc` headers *and* the SMTP
 envelope recipients — so a Bcc'd address matches, and `assert?to=…&count=0`
 is not a "this address is in no header" check. `from` is the header `From`
-address. Every native query shape is closed to its own keys: an unknown
-key (`assert?too=`, `await?offset=`, `count?limit=`, `assert?timeout_ms=`
-— an assert never waits — or any key on `threads`, `threads/{key}` and
-`feed`, which take none) is a `400` naming the route and the key, never a
-silently dropped filter. The Mailpit/MailHog list and search shims keep
-their upstream tolerance of unknown keys — `/api/v1/messages?inbx=` is a
-typo that answers the whole store — while the `latest` shims refuse them.
+address. Closed native query rules are method-specific: the existing
+list/count/await/assert/thread/feed routes accept only their documented
+keys; an unknown key is a `400` naming the route and key. These ten native
+operations take no query keys: `DELETE /api/v1/inboxes/{inbox}/messages`,
+`DELETE /api/v1/delete-all`, `GET` and `DELETE /api/v1/messages/{id}`,
+`GET /api/v1/messages/{id}/raw`, `GET` and `DELETE /api/v1/chaos`,
+`GET` and `DELETE /api/v1/webhooks`, and
+`POST /api/v1/inboxes/{inbox}/seed`. Unsupported selectors (for example
+`?subject=keep`, `?inbox=a`, or `?event=data`) and typos receive a native
+JSON `400` naming the method, route and decoded key before the operation
+reads or changes data/configuration. An empty-valued or bare key also
+refuses; no query and a literal empty query keep their current behavior.
+Seed's JSON syntax/media/size/data-shape errors retain precedence over a bad
+query; a deserializable but domain-invalid seed body is checked after query
+admission. Use the body-based `DELETE /api/v1/messages` selector to remove
+specific ids. The Mailpit/MailHog list and search shims keep their upstream
+tolerance of unknown keys — `/api/v1/messages?inbx=` is a typo that answers
+the whole store — while the `latest` shims refuse them. This rule does not
+change compat aliases, selective DELETE, chaos/webhook PUT, health, metrics,
+UI or document routes.
 The seed and webhook bodies are closed too (`subjet`, `secrt` refuse by
 name). In JSON bodies an omitted optional field takes its default while a
 present `null` is refused with the field named — on the seed's `from`,
