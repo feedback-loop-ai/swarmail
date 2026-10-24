@@ -1,6 +1,7 @@
 # Recover the matrix cancellation proof
 
 Date: 2026-10-24. Epic #192, issue #194. Recovery run:
+`continue-epic-192-issue-194-from-8d385d4d`, continuing stopped
 `epic-192-issue-194-verification--cae786a0`.
 
 Decision: 0062 — [Matrix cancellation and cleanup completion](../../docs/decisions/0062-matrix-cancellation.md), already committed and proposed; acceptance is the operator's.
@@ -10,9 +11,10 @@ Decision: 0062 — [Matrix cancellation and cleanup completion](../../docs/decis
 SIGTERM or SIGINT sent only to the matrix PID must stop admission, cancel
 its active trial, and await owned cleanup, with complete truthful schema-1
 accounting when output remains available. This recovery retains that
-contract and its implementation at candidate
-`1a2f36c2b28e5e0bbce740c71485aeac39567b4d`. It replaces the predecessor's
-preimplementation framing with a fresh proof and narrowly scoped repairs.
+contract and the implementation now at
+`1315846de12787f78a6f66b1885bbbc2aff72786`, following original implementation
+`1a2f36c` and recovery design `1843c55`. It reconciles the remaining proof
+work with the repaired successor; it does not implement cancellation again.
 
 The concluded run `epic-192-issue-194-stop-active-e-b454f70a` stopped at
 VERIFY-FAIL because the launched host Brokkr digest was unrecorded. That
@@ -26,7 +28,7 @@ Current triage remains `engine`: [0057](../../docs/decisions/0057-codex-delivery
 requires full design, hermetic verification and four independent review
 lenses. The engine selects transitions. [0050](../../docs/decisions/0050-delivery-gates.md)
 binds design to the chief's HEAD and verification to actual executed proofs.
-This design commit necessarily creates a successor of 1a2f36c; later evidence
+This design commit necessarily creates a successor of 1315846; later evidence
 must identify its actual revision. Exact-candidate regression evidence is
 separate from successor verification.
 
@@ -43,46 +45,52 @@ work while proposed. Frozen [0001](../../docs/decisions/0001-synchronous-insert-
 
 ## Panel rulings and their costs
 
-These rulings synthesize the recovery positions, not the earlier panel.
-Both recovery positions agree on the ownership design and the need to close
-the proof gap. There is no incompatible proposal to average: the governing
-tradeoff is minimal recovery work versus sufficient causal evidence.
+The current simplicity and robustness positions agree on runtime ownership.
+Their dispute is how much proof repair is necessary. Rule as follows rather
+than averaging the requirements or copying stale findings from 1a2f36c.
 
-- Adopt simplicity's existing sequential matrix, one active child, direct
-  PID forwarding and one trial cleanup owner. Adopt robustness's retained
-  reapers, observed cessation and concurrent shared cleanup budget. Reject
-  a rewrite, second supervisor, matrix kill deadline, cgroup, subreaper,
-  parent-side duplicate kill registry or dependency. Cost: cleanup can delay
-  matrix exit; escaped or hostile processes remain outside the guarantee.
-- Rule for robustness's causal proof requirement over a tool-identity-only
-  recovery. Simplicity also identifies this concrete gap: the existing test
-  checks matrix liveness at a cleanup marker, then releases before waiting.
-  Preserve AC2 and require an executable negative control. Cost: a narrow
-  test repair and successor evidence are necessary even if the old test
-  passes; exact-1a2f36c green cannot close the issue.
-- Adopt simplicity's removal of normal-build environment holds and failure
-  injection. Reconcile this with robustness's demand for boundary coverage
-  through cfg(test)-only controls in re-executed test harnesses. Public CLI
-  tests still exercise the ordinary binary. Reject deleting the boundary
-  proofs or adding feature flags. Cost: separate CLI and internal causal
-  tests and more deliberate helper entry points.
-- Adopt robustness's failure-safe teardown correction. A three-second
-  guard deadline must not kill the trial's parent before its five-plus-five
-  cleanup window. Reject unbounded ordinary waits. Cost: recorded process
-  identities, a bounded outer test deadline and explicit survivor diagnostics;
-  test failure must not silently leak into other runs.
-- Adopt both positions' handler-before-owned-spawn invariant instead of a
-  mandatory startup handshake. Cost: pre-handler termination can yield no
-  row, requiring an honest fallback and a regression guarding spawn order.
-- Adopt both positions' schema 1, exit 2, immutable prefix and full ordered
-  refusal suffix. Reject partial output as normal cancellation behavior,
-  new outcomes, retries or report denominator changes. Cost: O(product)
-  output and attempts that include unexecuted slots. Unavailable output is
-  an explicit limit, never permission to fabricate statuses.
-- Retain the existing spec directory and proposed 0062. Reject new recipe,
-  engine, root-server, gate or accepted-decision changes. Brokkr identity
-  preflight already has a local solution. Cost: full independent gates and
-  protected four-lens review remain due; panel passes cannot substitute.
+- Adopt simplicity's sequential matrix, one active trial and one cleanup
+  owner, with robustness's retained reapers and observed cessation. Reject
+  a second supervisor, parent-side production descendant registry, new
+  startup protocol, cgroup, subreaper or dependency. Cost: cancellation waits
+  for its cleanup owner; escaped/hostile processes remain unsupported.
+- Adopt simplicity's reuse of the repaired matrix Pending/bypass control
+  and cfg(test) migration at 1315846. Reject describing those repairs as
+  still absent. Cost: independent execution and ordinary dev/release proof
+  remain due; implementer claims cannot close them.
+- Rule for robustness's concrete runner proof repair over stopping after
+  matrix proof. Simplicity makes this conditional on mapping existing
+  evidence; inspected runner tests only establish liveness at entry and
+  eventual death. Require actual cleanup-future Pending acknowledgement,
+  a matching bypass falsifier and cessation/direct reaps before return for
+  both signals, panic and server death. Cost to the narrower approach:
+  additional local test seams and execution, even if runtime code is sound.
+- Adopt robustness's trap-ready acknowledgement: the matrix shell helper
+  currently publishes its PID before installing traps. Publish complete
+  readiness atomically after traps are active. This is a test-helper fix,
+  not a new trial startup protocol. Cost: one additional readiness fact;
+  file existence alone is no longer an adequate signal trigger.
+- Adopt robustness's bounded guard and survivor-ownership repairs.
+  MatrixProbe currently takes its child out before an unbounded wait;
+  runner fallback depends on the original leader still existing. Require
+  bounded ordinary and failure waits, early identity retention and teardown
+  after leader-first exit or owner bypass. Reject relying on longer Drop
+  delays alone. Cost: explicit test-owned identity records and failure-path
+  controls; no duplicate production supervisor follows from this ruling.
+- Reconcile the shared cleanup budget with concurrent implementation:
+  groups must not incur serial five-plus-five windows, and repeated signals
+  cannot restart cleanup. Map actual deadline creation and reuse; do not
+  call independently scheduled deadlines mathematically identical. If a
+  reproducer shows renewed or multiplied windows, repair it within 0062.
+- Adopt both positions' existing schema 1, exit 2, immutable queued prefix
+  and complete ordered refusal suffix. Reject a partial-prefix exception,
+  new outcome, retry or report denominator change. Cost: O(product) output
+  and attempts including unexecuted slots; no universal wall-time promise.
+- Retain this directory and proposed 0062. The robustness failure analysis
+  of mail acceptance, webhooks, caps, waits, chaos, hostile bytes and TLS
+  establishes preservation constraints, not root-server implementation work.
+  Reject engine/pin/journal changes and gate weakening. Cost: all evals
+  proofs, house gates and protected four-lens review remain required.
 
 ## Required behavior
 
@@ -203,12 +211,15 @@ hostile commands and unkillable kernel tasks remain explicit residuals under
   after an observed passing prefix and live active trial/server/fixture/
   agent/descendant readiness. Matrix exits 2, launches no suffix element,
   and all recorded supported owned processes are non-running at exit.
-- **AC2:** Hold cleanup at an acknowledged test-only boundary while a known
-  owned process is live. An acknowledged matrix wait state must precede
-  release; it cannot report completion. Release, observe cessation/reaping,
-  then permit the completion fence. Removing the awaited fence must fail
-  this control. Immediate identity-aware observation at exit supplements
-  this ordering proof; no post-exit eventual-death loop earns the claim.
+- **AC2:** Prove both completion links independently: matrix awaiting the
+  active child and runner awaiting owned cleanup. Hold known live owned
+  work; acknowledge the actual awaited future returning Pending before
+  release, then observe cessation and direct reaps before completion.
+  For each signal, bypassing that same fence must violate the same ordering
+  predicate with live work at early completion; restoring it must pass.
+  Runner controls also cover panic and server death. A marker before await,
+  owner liveness or post-exit eventual death cannot establish this criterion.
+  Shell-helper readiness is published completely after trap installation.
 - **AC3:** Both signal cases produce the exact requested ordered cardinality,
   unique IDs, unchanged prefix, one truthful active error and zero-time
   refusal suffix; no extra stdout lines. Real `report` ingestion verifies
@@ -238,11 +249,15 @@ hostile commands and unkillable kernel tasks remain explicit residuals under
   remain unchanged. Run independent evals checks and the full canonical
   house-rule gates; root green cannot stand in for evals evidence.
 
-- **AC9:** Ordinary dev/release executables contain no effective test hold or
-  failure-injection control. Boundary tests run cfg(test)-only seams, including
-  AC2's negative control; real PID-only CLI coverage remains. Failed readiness,
-  assertion and deadline paths release holds, finish owned cleanup or report
-  identified survivors, reap direct children, and never signal unrelated work.
+- **AC9:** Ordinary dev/release executables ignore former test hold and
+  failure-injection controls. Internal controls stay cfg(test)-only; ordinary
+  PID-only CLI proof remains separate. Guards retain child handles and owned
+  identities before fallible assertions, use a 30-second post-release normal
+  wait deadline, and bound failure teardown separately while allowing the
+  full cleanup window plus margin. Readiness failure, assertion unwind,
+  stalled completion, bypassed owner and leader-first exit are exercised.
+  No unbounded wait or signalling of unrelated/recycled identities; forced
+  teardown and unresolved survivors explicitly fail the test.
 - **AC10:** Fresh evidence records candidate revision and engine digest.
   The final candidate passes independent evals checks, every canonical house
   gate and the selected four-lens review with the protected security hold.
@@ -250,18 +265,28 @@ hostile commands and unkillable kernel tasks remain explicit residuals under
 
 ## Recovery evidence and delivery boundary
 
-2026-10-24: before editing these artifacts, the chief ran
-`cargo test --locked --test report matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup`
-from `evals/` on exact 1a2f36c: 1 passed, 14 filtered. Run-local revision and
-log are under `.forge/design-194-recovery/`. This proves the existing
-regression passes, not AC2's missing causal control or full verification.
-Source inspection confirms ordinary-build test controls and the three-second
-MatrixGuard teardown; no mutation result is claimed.
+2026-10-24, earlier recovery chief (1843c55): recorded the exact-1a2f36c
+issue regression as 1 passed, 14 filtered, under `.forge/design-194-recovery/`.
+That historical receipt does not prove this successor. The earlier findings
+of ordinary-build controls and a three-second guard describe that revision,
+not the current cfg(test) migration. The original missing 0062 index row is
+also historical; the current index already contains it.
+
+2026-10-24, continuation chief: read the actual prior VERIFY-FAIL at
+`.forge/results/a5167df6-a43b-4830-967d-dea3e16c0433.json`, both current panel
+positions, all three intake framings and current source. Independently hashed
+`.forge/bin/brokkr` against tooling.json. Confirmed matrix actual-wait control
+and cfg(test) repair in source; confirmed helper trap ordering, unbounded
+MatrixProbe ordinary wait, runner eventual-death proof and leader-dependent
+fallback concerns. These are source findings, not executed test failures.
+The implementer receipt for 1315846 is not independent verification. No
+missing journal or later verdict is reconstructed.
 
 The chief commits exactly this directory's spec.md, plan.md and tasks.md.
-The already committed, clean 0062 remains declared and proposed; its index
-row is present at 1a2f36c. The previous missing-index gate refusal is historical,
-not a reason to add it again. No production changes occur in this phase.
-The sequence's pinned deterministic check alone owns the design verdict.
-Implementation, full verification and reviews remain outstanding as paired
-in [tasks.md](tasks.md); drafting is not delivery success.
+Already committed, clean 0062 stays declared and proposed; this recovery
+changes no runtime/public contract and needs no new numbered decision.
+No production change occurs in this phase. Local checks are documented in
+run-local evidence; only the sequence's pinned deterministic check owns the
+design verdict. Implementation, independent full verification and protected
+review remain outstanding in [tasks.md](tasks.md); drafted is not delivery
+success. The design commit must remain HEAD.
