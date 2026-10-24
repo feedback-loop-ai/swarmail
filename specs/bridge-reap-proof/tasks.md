@@ -1,8 +1,15 @@
 # Ordered tasks: bridge reap proof
 
-Implementation and verification remain unchecked at design handoff. Each
-task names its proving test or inspection; acceptance references are in
+Updated: 2026-10-24. The active residual work is R1–R7 below. Each task
+names its proving test or inspection; acceptance references are in
 [spec.md](spec.md), mechanics in [plan.md](plan.md).
+
+## Historical implementation checklist — 2026-10-23
+
+T1–T7 are preserved as the original handoff, including its unchecked
+markers; they are not a current instruction to repeat implementation.
+Candidate `c8364ed` contains the implementation. This design does not
+retroactively certify predecessor execution or change old task receipts.
 
 - [ ] T1 — Reconfirm baseline, Tokio completion semantics and owned scope before editing (AC2, AC6). Proof: Cargo.lock/import/source inspection for id/wait/try_wait, hashes of the allowed test and read-only helper, and clean source diff against 86c851f (design notes excepted); reproduce the existing focused regression as baseline evidence, without treating it as proof that PID reuse is safe.
 - [ ] T2 — Replace raw saved-PID evidence with completion capture, bounded capture-cleanup-fail handling, then cached SIGKILL and preserved diagnostics (AC1–AC4). Proof: exact named regression passes in both existing modes; inspect ordering and absence of saved-PID syscalls; unchanged readiness/Pending/EOF choreography is visible in the diff.
@@ -11,3 +18,13 @@ task names its proving test or inspection; acceptance references are in
 - [ ] T5 — Prove restored scope and all original #179 regression requirements (AC1–AC6). Proof: restoration hash equality; exact regression and full locked helper_reliability suite pass under ordinary concurrency; diff and read-only helper hash show only the intended regression changed, with all unrelated tests byte-identical. Summarize current-candidate evidence in these notes and retain raw receipts in ignored run-local storage.
 - [ ] T6 — Execute every house gate on the final candidate (AC7). Proof: fresh successful format, locked workspace clippy/tests, digest-verified `.forge/bin/brokkr compile --bundle bundles/self`, exact 100/100/100 coverage, coverage selftest, publish-guard proof, keyless seal proof and license gate receipts; fail-closed Cargo tree evidence establishes native-tls absence. Preserve failures and report any outstanding check rather than recycling old receipts.
 - [ ] T7 — Obtain actual outer offline verify and the accepted four independent reviews in engine order (AC7–AC8). Proof: dispatched pinned verify receipt with checked tooling/shims for this candidate, plus Qwen Max correctness, Claude Opus security, official DeepSeek Flash guarantees and DashScope GLM-5.3 tests verdicts; no fallback. Root retains CI/integration/closure and no lane push/merge/tag/registry action occurs.
+
+## Active residual tasks — 2026-10-24
+
+- [ ] R1 — Confirm the preservation baseline and dated plan correction (spec R1, R4; AC6–AC7). Proof: hash both test files against the current plan table/c8364ed, hash candidate-local brokkr against current tooling.json, and inspect Quickstart for no operative historical-digest requirement. Retain historical values unchanged. The chief supplies the clarification; this task validates it before evidence work.
+- [ ] R2 — Locate predecessor raw evidence before running mutants (spec R2; AC5). Proof: record actual journal/worktree references followed for all three named predecessor runs, inspected locations/results and precise access limitations. Do not infer loss from an empty local directory or invent journal events.
+- [ ] R3 — Validate and copy recoverable rows into the current ignored artifact directory (spec R2–R3; AC4–AC5). Proof: for each of the four indexed cells, inspect provenance, source/mutation/mode, compiled selected execution, real exit, lifecycle diagnostic, successful cleanup and restoration; compare original/copied hashes. Mark missing or invalid rows with reasons, and prove relevant historical source equivalence or leave them unproved.
+- [ ] R4 — Regenerate only unproved mutant/mode rows, sequentially (spec R3–R4; AC1–AC5). Proof: each missing cell independently compiles and runs the exact selected regression in its intended mode, exits nonzero at the named lifecycle guard and reports successful explicit cleanup. Record raw command/output/exit, mutation and saved/restored hashes; preserve unsuccessful attempts. If all four recovered rows validate, record regeneration as unnecessary with row references. Restore and independently compare exact bytes after every attempt, including interrupted attempts, before continuing.
+- [ ] R5 — Finalize the current-run evidence index and restored candidate (spec R4–R5; AC1–AC6). Proof: all four rows link to raw receipts, origin and hashes; final source/hash comparison to c8364ed and diff show no mutant, synthetic result, selector or other unauthorized change. Add only a dated evidence reference to plan.md. Run the exact locked bridge regression with --exact --nocapture and the full locked helper_reliability suite under ordinary concurrency, requiring nonzero selections and both real modes in the restored test.
+- [ ] R6 — Obtain fresh complete gates and pinned outer offline verify on the resulting candidate (spec R6; AC7). Proof: every command in the single house gate inventory succeeds with locked dependencies where specified, exact missed==0 coverage and selftest, publish/seal proofs, digest-verified local engine compile and licenses; fail-closed native-tls absence and actual dispatched offline verify with checked shims have receipts for this candidate. Historical greens do not transfer. Preserve CI-only obligations and every failed/outstanding check explicitly.
+- [ ] R7 — Expose evidence to the four actual review workspaces and complete policy-selected review (spec R5–R6; AC8). Proof: existing handoff supplies the index/raw files; each dispatched seat reads and hashes them, and independent Qwen Max correctness, Claude Opus security, official DeepSeek Flash guarantees and DashScope GLM-5.3 tests results are recorded. Access failure remains outstanding; provider failure stops, with no fallback or DeepSeek Pro. No push, merge, tag or publish; root retains CI/integration/closure.

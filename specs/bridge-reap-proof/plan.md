@@ -5,6 +5,10 @@ The repository has no `.specify/templates/plan-template.md`; this plan
 includes the required technical context, constitution check, project
 structure, research, data model, contracts, quickstart and risks here.
 
+Updated: 2026-10-24 for the two residual findings on `c8364ed`. Original
+implementation mechanics remain historical rationale; only the residual
+procedure below is pending implementation work.
+
 ## Technical context
 
 Single Rust crate; existing Unix-specific integration test in the binary
@@ -25,8 +29,9 @@ concurrency proof, irrespective of the small diff. No new semantic ADR.
 
 | Path | Role |
 | --- | --- |
-| `tests/binary/helper_reliability.rs` | Only the existing bridge timeout regression's lifecycle evidence and local failure cleanup; temporary mutants are confined here. |
-| `specs/bridge-reap-proof/{spec,plan,tasks}.md` | This design and directly necessary dated #179 evidence/clarifications. |
+| `tests/binary/helper_reliability.rs` | Preserve completed candidate bytes; temporary mutants for missing proof only, restored after each execution. |
+| `specs/bridge-reap-proof/{spec,plan,tasks}.md` | Chief updates exactly these three; subsequent residual work only adds directly necessary evidence/clarifications to plan.md. |
+| `.forge/artifacts/epic-192-issue-179-residual-foll-c304165b/` | Ignored search record, provenance index, raw receipts and restoration records; explicitly handed to current reviewers. |
 | `tests/binary.rs` | Read-only owner of `McpChild`, `finish_with_deadline`, `kill_and_reap`. |
 | `Cargo.lock` and installed Tokio source | Read-only semantic evidence. |
 
@@ -55,7 +60,8 @@ stdout, then park indefinitely without descendants. The initial live
 helper polling can leave it Done before the new observation. OS signal
 arrival alone cannot change the outer handle to Done.
 
-Baseline SHA-256 (chief inspection, not execution proof):
+Historical baseline SHA-256 (original chief inspection on 2026-10-23,
+not execution proof or current executable authority):
 
 | Input | SHA-256 |
 | --- | --- |
@@ -63,7 +69,97 @@ Baseline SHA-256 (chief inspection, not execution proof):
 | `tests/binary.rs` | `7da125cd5945bfc7f511c0c6fdaed52eb8baeb08497c5416ab29ede867752554` |
 | `.forge/bin/brokkr` | `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c` |
 
-## Data model and contracts
+### Current authority and preservation baseline — 2026-10-24
+
+Root re-pin `238372d` records the authoritative build in
+`bundles/self/tooling.json`. Current chief inspection independently found
+candidate-local `.forge/bin/brokkr` SHA-256
+`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`, equal
+to that file's `brokkr.binary_sha256`. The historical `e525babf…` value
+above is retained as an earlier inspection record, not rewritten to imply
+that past executions used today's binary. No rebuild or re-pin is needed
+while current equality holds; version equality alone is insufficient.
+
+Preserve the completed `c8364ed208612b72955cf271c2341e7c16f40c3f` bytes:
+
+| Input | Current SHA-256 |
+| --- | --- |
+| `tests/binary/helper_reliability.rs` | `5dc1b0573686e53d9444273dc14db8c292596cf12c8fd098c1d8ce962269ddcb` |
+| `tests/binary.rs` | `7da125cd5945bfc7f511c0c6fdaed52eb8baeb08497c5416ab29ede867752554` |
+
+These are inspection facts, not new mutation, gate or reviewer receipts.
+
+## Residual implementation procedure — 2026-10-24
+
+1. Record initial HEAD, clean status, both preservation hashes and engine
+   equality. The historical implementation order below is already present;
+   do not replay it. Keep all AC1–AC8 and this spec's R1–R6 binding.
+2. Follow `.forge/ledger/epic-192-issue-179-verify-and-re-ca74e365.md` and
+   actual accessible journal/worktree references for predecessor runs
+   `epic-192-residual-lane-next-179--826aa227`,
+   `epic-192-179-follow-up-remove-th-91e4bdaa` and
+   `epic-192-issue-179-verify-and-re-ca74e365`. Record inspected paths,
+   journal event/receipt references, outcomes and any access boundary.
+   The local ledger and seq-375 correctness result are search leads, not
+   raw red proof. An empty local artifact directory does not prove loss
+   elsewhere. Do not create, import or rewrite a journal for this repair.
+3. Verify recovered receipts against the evidence contract below. Copy
+   verified original bytes without altering predecessor storage; record
+   source and copied hashes and provenance. Explain any source differences
+   and prove relevant test/helper equivalence. A summary or unbound log is
+   not valid. Mark each matrix row recovered or still unproved with reason.
+4. Regenerate only unproved rows using the existing negative-control method
+   below. Save exact candidate bytes outside the mutation target first;
+   install unconditional restoration on normal/error exits. Run one mutant
+   and one mode at a time, never concurrently with another experiment or
+   gate in this worktree. Preserve actual command exit separately from log
+   collection success. Keep failed attempts; do not overwrite them. After
+   each experiment compare restored bytes/hash independently. Following an
+   interruption, restore and verify before any further proof; a trap alone
+   is not crash-proof. Only the final finish invocation and temporary
+   existing-loop mode selection may change. Keep the lifecycle guard and
+   explicit same-handle cleanup intact.
+5. Assemble the small ignored index, all raw files and search/restoration
+   records under `.forge/artifacts/epic-192-issue-179-residual-foll-c304165b/`.
+   Add a dated plan reference describing that current-run evidence when it
+   exists; do not predeclare successful recovery or execution. Expose the
+   files through the existing review evidence handoff, and require each
+   actual reviewer workspace to read/hash every indexed receipt. Record
+   the observed reviewer access in run-local evidence. Paths readable only
+   in this workspace do not close the finding. Retain files through review.
+6. Check exact candidate restoration and permitted final diff, then run
+   Quickstart, the complete house gates and actual pinned offline verify.
+   Historical red executions establish falsifiability, never fresh green
+   verification. The engine owns subsequent protected review dispatch;
+   no nested run, provider substitution or route change is authorized.
+
+### Evidence contract and four-row matrix
+
+Use one human-readable index, not a new schema or evidence library. Each
+row identifies recovered versus regenerated origin; original run/candidate,
+journal/worktree and receipt path; relevant test/helper hashes; mutant diff
+or bytes; selected mode and exact command; selected test count and actual
+execution exit; raw-output path/hash; lifecycle diagnostic and cleanup
+outcome; saved/restored hashes and restoration record. Copied hashes prove
+byte identity, not authentic origin: retain the provenance chain. For newly
+executed rows, label the current candidate and execution rather than
+attributing them to predecessor history.
+
+| Mutant | Independently selected mode | Required red |
+| --- | --- | --- |
+| `bridge_timeout_returns_without_reaping` | `bridge-open` | Lifecycle diagnostic, mode, successful explicit cleanup, nonzero test exit. |
+| `bridge_timeout_returns_without_reaping` | `bridge-closed` | Same, after real readiness and closed-mode EOF. |
+| `bridge_timeout_returns_with_live_child` | `bridge-open` | Lifecycle diagnostic, mode, successful explicit cleanup, nonzero test exit. |
+| `bridge_timeout_returns_with_live_child` | `bridge-closed` | Same, after real readiness and closed-mode EOF. |
+
+Compilation failure, zero tests, setup failure, cleanup failure, wrong-mode
+output or a later string mismatch leaves a row unproved. No saved-PID probe,
+new dependency, permanent switch, sleep synchronization, suite serialization
+or helper refactor is permitted. If proof requires exceeding this scope,
+report the evidence through the existing bounded return rather than weaken
+acceptance or silently enlarge the work.
+
+## Data model and contracts (implemented design)
 
 No public or persisted data changes. Local evidence consists of the finish
 Result, a boolean completion snapshot, cached ExitStatus and diagnostic
@@ -71,7 +167,8 @@ text. The same Child owns the process throughout. The boolean records
 whether the helper completed its obligation before the observer intervened;
 it must never be recomputed after fallback cleanup to decide success.
 
-Implementation order inside each existing mode iteration:
+Historical implementation order, already present at `c8364ed`, inside each
+existing mode iteration:
 
 1. Preserve readiness, closed-mode EOF, initial live status and Pending
    operation choreography. Delete saved `pid`.
@@ -131,8 +228,10 @@ Then execute the entire authoritative
 [house gate inventory](../../docs/house-rules.md#gates--part-of-every-change)
 on this candidate: fmt, locked workspace clippy/tests, pinned compile,
 exact coverage and selftest, publish-guard and keyless seal proofs, and
-licenses. Assert `.forge/bin/brokkr` has the digest above and matches
-`bundles/self/tooling.json` before using that exact binary for
+licenses. Before execution, hash this candidate's `.forge/bin/brokkr` and
+require equality with `brokkr.binary_sha256` in the current
+`bundles/self/tooling.json` (the dated current-authority value above).
+Refuse a missing or mismatched binary; use that exact local binary for
 `compile --bundle bundles/self`; version equality is insufficient.
 Run fail-closed native-tls absence: Cargo tree command failure is failure,
 not evidence of absence. Execute actual outer offline verify through the
@@ -159,4 +258,8 @@ route or nested delivery run. Root owns integration and issue closure.
 | Early panic hides the closed-stdout mode | Separate mode-specific negative executions; restore the ordinary two-mode test. |
 | Temporary mutation leaks into final candidate | Save exact bytes/hash, restore after each control, compare hashes and diff before final green tests/gates. |
 | Tokio upgrade changes the proof assumptions | Keep source/contract rationale in test note; recheck id/wait/try_wait semantics with any future Tokio change. No new dependency pin is needed here. |
-| Scope or evidence expands beyond this residual | Diff against 86c851f, preserve reviewed helpers and unrelated tests byte-for-byte; label historical/design/implementation/verify evidence distinctly. |
+| Scope or evidence expands beyond this residual | For the residual, diff against c8364ed and preserve both test files byte-for-byte; label historical/design/implementation/verify evidence distinctly. |
+| Historical tooling value becomes an operative instruction | Label the old inspection explicitly; hash the candidate-local binary against current tooling.json before execution, without rewriting past provenance. |
+| Copied or inaccessible logs falsely certify AC5 | Record actual origin/search boundaries, validate every row, and require read/hash checks in each dispatched reviewer workspace. Accept manual handoff, not a new archive service. |
+| Valid historical red is confused with current green | Label provenance separately; regenerate only unproved reds but require fresh complete verification on the final candidate. |
+| Crash or parallel gate observes mutated source | Run mutations sequentially; save exact bytes outside the target, restore on exits and independently check bytes after interruption before any green work. |
