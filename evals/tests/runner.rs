@@ -268,6 +268,20 @@ fn normal_trial_binary_ignores_the_former_runner_fault_control() {
         );
         assert!(!stderr(&out).contains("injected runner fault"));
     }
+    let dir = tempfile::tempdir().unwrap();
+    let (row, out) = helper_trial(
+        "echo",
+        &["--task", "signup", "--agent", "echo"],
+        &[
+            ("EVAL_TEST_CLEANUP_WAIT_BYPASS", "1"),
+            (
+                "EVAL_TEST_CLEANUP_WAIT_PENDING",
+                dir.path().join("must-not-be-created").to_str().unwrap(),
+            ),
+        ],
+    );
+    assert_ne!(row.outcome, Outcome::HarnessError, "{}", stderr(&out));
+    assert!(!dir.path().join("must-not-be-created").exists());
 }
 
 #[test]
