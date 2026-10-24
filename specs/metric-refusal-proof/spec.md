@@ -142,9 +142,16 @@ recovery. Preserve the disclosed finite semantic-pointer audit limitation.
    exact zero-missed coverage, its selftest, pinned tooling/shim checks and
    fail-closed native-tls absence. Preserve existing hostile-label, totals,
    admission, cap/overflow and guard lifecycle proofs. CI-owned checks remain
-   attributed to CI. The engine's full four-lens protected independent review
-   assesses the final candidate and witnessed security residual; only its
-   actual disposition can clear that residual. No push, merge or issue close.
+   attributed to CI. Under accepted [0058](../../docs/decisions/0058-codex-review-routing.md),
+   the engine requires five distinct protected results bound to the final
+   candidate: Astra correctness, official DeepSeek Flash security, Sonnet 5.5
+   tests, Astra guarantees and independent Fable 5.1. No DeepSeek Pro or
+   unauthorized fallback. Preserve recovered `has_security_residual=true`
+   and `max_residual_severity=low` unless evidence proves the recorded input
+   wrong; only actual protected disposition can resolve it. True security
+   cannot admit a residual under 0050. See the dated continuation account in
+   [the owning runtime plan](../decoded-inbox-metrics/plan.md).
+   No push, merge or issue close.
 
 A strict-scrape conflict must be returned with concrete evidence for the
 appropriate ruling/review. It never licenses silently changing accepted

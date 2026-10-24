@@ -126,9 +126,11 @@ publish/seal proofs, licenses and fail-closed native-tls absence. A failed
 or timed-out invocation is not a pass. CI retains chart history/selftest,
 real-Docker, network advisory, tag release-rate and real port-80 proofs.
 
-Fresh eventual-candidate verification and the engine's full independent
-correctness/security/guarantees/tests review remain downstream. Keep the
-security hold and provider policy intact; dispatch is not review success.
+Fresh eventual-candidate verification and five distinct protected results
+under accepted 0058 remain downstream: Astra correctness, official DeepSeek
+Flash security, Sonnet 5.5 tests, Astra guarantees and independent Fable 5.1.
+No DeepSeek Pro or unauthorized fallback. Keep the security hold and provider
+policy intact; dispatch is not review success.
 The chief's last commit must touch only this spec directory; run the pinned
 `design-check.sh check` against HEAD without writing the engine check result.
 The chief writes only its assigned `drafted` result after honest validation.
@@ -181,3 +183,21 @@ the new decoding, baseline-refusal captures or held-refusal regressions have
 been implemented. Runtime tasks remain unchecked. Fresh eventual-candidate
 verification, CI-owned proofs and actual protected independent review/security
 disposition remain downstream obligations.
+
+
+## Current handoff clarification — 2026-10-24
+
+The design baseline, proposed filenames and chief validation receipt above
+are historical. The actual declared cold-path harness is
+`src/api/refusal_tests.rs`; the independent parser is `tests/common/metrics.rs`.
+Their responsibilities and cfg(test)-only ownership match the design; no rename
+or speculative isolation is warranted. Accepted 0058 governs the current
+five-result handoff in AC7/T9, including independent Fable, and supersedes
+historical four-member review wording without rewriting its receipts.
+
+Current commands, candidate evidence and all eight recovered member notes are
+accounted for in [the owning runtime plan](../decoded-inbox-metrics/plan.md#review-continuation-receipt--2026-10-24).
+Retain `has_security_residual=true` and `max_residual_severity=low`; no parser
+pass establishes universal scraper compatibility. Protected review and actual
+security disposition remain pending, and true security cannot admit a residual
+under 0050. This handoff grants no push, merge or issue close.

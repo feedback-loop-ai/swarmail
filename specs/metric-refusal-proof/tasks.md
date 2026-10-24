@@ -13,7 +13,7 @@ pending at design time, including independent review.
 - [x] T6 — Implement exactly-once strict decoding in the existing selected-segment helper and update its comment/inline matrix. Test: every AC2 case passes, including whole-raw mixed-invalid fallback and slash/double-encoding; both T4/T5 regressions turn green. Restore every mutant and retain exact old-helper red/restored-green commands/outcomes (owning T4).
 - [x] T7 — Finish selector/collision guidance and owning evidence/task reconciliation, retaining historical receipts. Test: README selectors equal asserted decoded strings, no obsolete current raw-key/source-prohibition instruction remains, links/diff checks pass, and each completed checkbox maps to its entire executed proof; request activity is explicitly not admission/storage evidence (AC6; owning T6).
 - [x] T8 — Run targeted API/library/document regressions, then every fresh local house-rule gate with pinned tooling/shim integrity and fail-closed native-tls absence. Test: commands exit zero, coverage reports zero missed lines/branches/functions and its selftest passes; publish/seal proofs and all remaining inventory gates pass; logs identify the actual candidate and CI-owned obligations remain pending with CI (AC7; owning T7/T8).
-- [ ] T9 — Obtain the engine's full protected independent review of the final candidate and witnessed refused-control residual. Test: actual four-lens correctness/security/guarantees/tests results bind to that candidate, required rework and subsequent verification are resolved, and the security disposition satisfies the protected policy. Dispatch, old reviews or this drafted spec cannot check this task; no push, merge or issue close (AC7).
+- [ ] T9 — Obtain the engine's full protected independent review of the final candidate and witnessed refused-control residual. Test: five distinct results under accepted 0058 (Astra correctness, official DeepSeek Flash security, Sonnet 5.5 tests, Astra guarantees and independent Fable 5.1) bind to that candidate, required rework and subsequent verification are resolved, and the security disposition satisfies the protected policy. Dispatch, old reviews or this drafted spec cannot check this task; no push, merge or issue close (AC7).
 
 
 ## Implementation receipt — 2026-10-24
@@ -23,3 +23,14 @@ decoded-inbox plan's continuation receipt. The final candidate preserves 0065
 and its reservations. T9 above remains open: the engine must obtain the full
 protected four-lens review and actual security disposition; no prior review or
 test result is substituted for that phase.
+
+
+## Current review clarification — 2026-10-24
+
+The implementation receipt above is historical and remains verbatim. Its
+four-lens wording does not govern this continuation: accepted 0058 requires
+five separate results as stated in current T9. DeepSeek Pro and unauthorized
+fallback are forbidden. T9 remains open; recovered security facts remain
+true/low, and a passing parser or clean historical member cannot clear them.
+Fresh execution and residual accounting belong to
+[the owning runtime plan](../decoded-inbox-metrics/plan.md#review-continuation-receipt--2026-10-24).
