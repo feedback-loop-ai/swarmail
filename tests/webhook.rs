@@ -755,10 +755,26 @@ async fn non_2xx_over_tls_is_retried_four_times_not_more() {
 async fn refused_connection_never_blocks_the_smtp_path() {
     let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
-    // A port with nothing behind it: every attempt is refused on connect.
-    let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = dead.local_addr().unwrap();
-    drop(dead);
+    // Own a bound, non-listening port through the final observation. Reuse
+    // is disabled so another local test cannot take the refused target.
+    let reservation = tokio::net::TcpSocket::new_v4().unwrap();
+    reservation.set_reuseaddr(false).unwrap();
+    reservation
+        .bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .unwrap();
+    let addr = reservation.local_addr().unwrap();
+    let refused = tokio::time::timeout(
+        common::HELPER_DEADLINE,
+        tokio::net::TcpStream::connect(addr),
+    )
+    .await
+    .expect("the reserved non-listening target must refuse promptly")
+    .expect_err("a bound non-listening target must not accept connections");
+    assert_eq!(
+        refused.kind(),
+        std::io::ErrorKind::ConnectionRefused,
+        "the webhook target must fail at connect rather than during TLS or reading"
+    );
 
     let targets = format!(r#"[{{"url": "https://{addr}/hook"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
@@ -767,8 +783,8 @@ async fn refused_connection_never_blocks_the_smtp_path() {
     // The exhaustion baseline is taken before the mail that will exhaust
     // its budget: only a NEW exhaustion satisfies the poll below (issue #51).
     let exhausted_base = metric_now(srv.http_addr, "swarmail_webhook_exhausted_total").await;
-    // Acceptance must not wait on the (failing) delivery: 250 comes back
-    // immediately and the mail is queryable while the retries still run.
+    // Acceptance must not wait on the (failing) delivery: SMTP returned and
+    // the mail is queryable before exhaustion is observed below.
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "refused", "x")
         .await
         .unwrap();
@@ -793,6 +809,7 @@ async fn refused_connection_never_blocks_the_smtp_path() {
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1, "retries must not touch the store");
+    drop(reservation);
 }
 
 /// The redirect e2e: a target that answers 302 Found with an absolute

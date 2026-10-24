@@ -413,14 +413,6 @@ pub async fn wait_for_metric_from(
     }
 }
 
-/// [`wait_for_metric_from`] with the baseline taken at the first
-/// observation — the right shape for monotonic counters (`*_total`) whose
-/// trigger is still ahead of the poll: the baseline cannot already include
-/// the awaited event.
-pub async fn wait_for_metric(addr: std::net::SocketAddr, name: &str, delta: u64) -> u64 {
-    wait_for_metric_from(addr, name, metric_now(addr, name).await, delta).await
-}
-
 /// Poll `/metrics` (deadline-bounded) until the exact row `row` —
 /// `family{inbox="…"}` — reaches `wanted`, then return it. The labeled row
 /// is the sound gauge poll: the label names the caller's own unit (the
@@ -475,11 +467,6 @@ async fn http_get_parts(addr: std::net::SocketAddr, path: &str) -> (u16, String,
         .unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// The raw-HTTP text client: `(status, body as String)` for any method.
-/// `http_json` parses on top of this; a caller that *expects* a non-JSON
-/// body (axum's text rejections, a no-content 202) comes here instead —
-/// reading a text response as JSON is exactly the dishonesty issue #50
-/// named, and so is silencing it back into `{}`.
 /// The deadline every helper read runs under (issue #102): a peer that
 /// accepts and never replies fails the helper within the bound, its panic
 /// naming the step, instead of hanging the whole suite. The actual bound is
@@ -694,6 +681,11 @@ pub async fn http_send_text_allow_eof(
     (status, String::from_utf8_lossy(&body).into_owned())
 }
 
+/// The raw-HTTP text client: `(status, body as String)` for any method.
+/// `http_json` parses on top of this; a caller that *expects* a non-JSON
+/// body (axum's text rejections, a no-content 202) comes here instead —
+/// reading a text response as JSON is exactly the dishonesty issue #50
+/// named, and so is silencing it back into `{}`.
 pub async fn http_send_text(
     addr: std::net::SocketAddr,
     method: &str,
@@ -703,14 +695,8 @@ pub async fn http_send_text(
     http_send_text_with_headers(addr, method, path, &[], body).await
 }
 
-/// `http_send_text` with extra request headers — the Origin guard's wire
-/// legs speak raw HTTP so an attacker-spelled `Origin` rides the request
-/// exactly as a browser would send it.
-///
-/// The Host line names the addr itself (a loopback spelling of the bound
-/// port) unless `host` overrides it — the DNS-rebinding legs speak raw
-/// HTTP so a rebound `Host` rides the request exactly as a browser would
-/// send it.
+/// Send raw HTTP with the required `Host` value sent verbatim. The
+/// DNS-rebinding legs use this to preserve the caller's chosen spelling.
 pub async fn send_with_host(
     addr: std::net::SocketAddr,
     method: &str,
@@ -735,6 +721,8 @@ pub async fn send_with_host(
     (status, String::from_utf8_lossy(&body).into_owned())
 }
 
+/// `http_send_text` with extra request headers. The Origin guard's raw
+/// HTTP legs use this to send attacker-spelled `Origin` values verbatim.
 pub async fn http_send_text_with_headers(
     addr: std::net::SocketAddr,
     method: &str,
