@@ -1,6 +1,8 @@
 # Ordered tasks — eval privacy port
 
-These are ordered continuation/proof obligations, not completed receipts.
+These are ordered continuation/proof obligations. Implementation proof for
+T1–T10 is recorded in [evidence.md](evidence.md) and its candidate-bound local
+receipts; independent verify and T11 review results remain required.
 Implementation already exists in unreviewed handoff 529d916. Unchecked means
 verification is due; do not reimplement working code. Repair only a demonstrated
 failed criterion/test, then rerun affected proofs and final gates. Follow
@@ -14,7 +16,7 @@ is not a #196 completion prerequisite. Preserve historical blocked receipts as
 history, not passes. This chief commit changes exactly the three design files
 and proposed 0075; dependent current documentation is reconciled in T1.
 
-- [ ] **T1 — Reconcile owning contract and validate the existing index (AC9,13).**
+- [x] **T1 — Reconcile owning contract and validate the existing index (AC9,13).**
   Keep exactly one already-present proposed 0075 index row. Align the current
   platform sentences in evals/README.md and specs/agent-eval-harness/{spec,plan}.md
   with AC13's dated #201 ownership; preserve every Linux proof and dated history.
@@ -23,18 +25,18 @@ and proposed 0075; dependent current documentation is reconciled in T1.
   store_contract_docs, especially every_decision_file_has_exactly_one_resolving_index_row
   and every_index_row_matches_its_records_status; check relative links and exact
   role/preparation maps. No old 0062 live declaration or privacy acceptance.
-- [ ] **T2 — Bind both suites and audit existing probes (AC26).** Reconcile every plan
+- [x] **T2 — Bind both suites and audit existing probes (AC26).** Reconcile every plan
   inventory row against baseline and packet; retain assertions and helpers,
   verify former production-fault cases use compiled-only inline owners. **Test:**
   baseline/final test-list comparison plus executed helper markers, actual
   whole-environment observations before wrapper additions, and retained #194
   guard-failure/rescue tests. No unexplained missing name/assertion.
-- [ ] **T3 — Verify runtime maps and native inputs (AC1–2,16,24–25).**
+- [x] **T3 — Verify runtime maps and native inputs (AC1–2,16,24–25).**
   Verify native discovery/CLI/worker handoff and exact role maps, generated
   PWD and private directories retained at cleanup fences. **Test:** all named
   env/lookup/literal/native/wrapper tests, normal dev/release control inertness,
   trial_runtime_owner_survives_aborted_body, and overlapping isolation.
-- [ ] **T4 — Verify preparation within existing Cargo ownership (AC3,13,15,18,24).**
+- [x] **T4 — Verify preparation within existing Cargo ownership (AC3,13,15,18,24).**
   Verify lazy named tool/cache selection and bounded typed Cargo records while
   preserving once-only offline/locked build and signal/reap/EOF paths. **Test:**
   automatic_build_uses_a_cleared_named_preparation_map,
@@ -45,14 +47,14 @@ and proposed 0075; dependent current documentation is reconciled in T1.
   cargo_runtime_owner_survives_cancelled_preparation. Record actual Linux
   toolchain/custom-target proof. #201 owns macOS execution under AC13; record
   that ownership without asserting a macOS pass or blocking #196 on it.
-- [ ] **T5 — Verify omission and bounded readiness (AC4–5,17,24–25).**
+- [x] **T5 — Verify omission and bounded readiness (AC4–5,17,24–25).**
   Verify owned discard drains and first typed announcement retain no raw tails
   or unbounded strings; preserve independent waiters/EOF/signal responsiveness.
   **Test:**
   both readiness flood tests, noisy agent counted completion, portable canary
   trial with snapshot/Fail/GaveUp/status 0/exit 1, distinct Linux server-death
   test, and #194 stdout backpressure/inherited-pipe/fence tests.
-- [ ] **T6 — Verify every publishing sink and direct HTTP (AC4,6,12,20).**
+- [x] **T6 — Verify every publishing sink and direct HTTP (AC4,6,12,20).**
   Verify no_proxy on all clients, suppressed Admin/body/error text, safe CLI/panic/
   cleanup categories, null executable metadata and bounded safe diagnostics.
   Retain exact 64 KiB matching-row/exit validation and CR/wrong-label cases.
@@ -60,7 +62,7 @@ and proposed 0075; dependent current documentation is reconciled in T1.
   success, unsafe Clap/path tests, both old/new matrix parser tests, CLI
   stdout/stderr and entire artifact/temp-tree scans; cleanup failure remains
   distinct from success and real statuses remain unchanged.
-- [ ] **T7 — Verify exclusive private publication (AC21–23).** Verify restrictive
+- [x] **T7 — Verify exclusive private publication (AC21–23).** Verify restrictive
   exclusive leaf/temp creation, descriptor normalization before payload,
   complete-write persist_noclobber and owned-name cleanup in the current writer.
   **Test:** all six named artifact helper tests, real adverse-umask failed-trial
@@ -68,7 +70,7 @@ and proposed 0075; dependent current documentation is reconciled in T1.
   modes and final visibility assertions. Execute selected primitives on Linux;
   #201 owns macOS primitive execution under AC13. Final-only chmod checks remain
   insufficient, and neither missing artifacts nor launch failure passes.
-- [ ] **T8 — Prove combined privacy/cancellation preservation (AC6–7,24–26).**
+- [x] **T8 — Prove combined privacy/cancellation preservation (AC6–7,24–26).**
   Execute every retained #194 inline/wire race, both signals, repeated signals,
   Cargo/bootstrap/spawn failures, active cleanup hold/release, expiry/observation,
   leader-first/resistant descendant, EOF/output and checked guard cases.
@@ -76,7 +78,7 @@ and proposed 0075; dependent current documentation is reconciled in T1.
   plus full named baseline inventory; byte-identical prefix, one post-cleanup
   active error, fresh zero-time suffix IDs, no later launch, correct report
   denominators and actual statuses; full real oracle/null/wrong-action/isolation.
-- [ ] **T9 — Audit falsifier receipts, reproduce gaps and restore (AC8,19).**
+- [x] **T9 — Audit falsifier receipts, reproduce gaps and restore (AC8,19).**
   Match the eleven supplied receipts to actual source/test regions and candidate
   lineage. Retain valid intended-assertion proof; reproduce missing, stale or
   insufficient proof for plan's inheritance, raw-output, metadata/error,
@@ -85,7 +87,7 @@ and proposed 0075; dependent current documentation is reconciled in T1.
   **Test:** each exact focused command fails its intended assertion after
   acknowledged execution, then passes restored; record candidate/tree, patch
   region, command, OS, counts and exit. No mutation remains in final source.
-- [ ] **T10 — Execute all final-candidate gates (AC10–13).** Verify pinned
+- [x] **T10 — Execute all final-candidate gates (AC10–13).** Verify pinned
   .forge/bin/brokkr and tooling/shim identities; run every house gate, exact
   zero-missed coverage and selftest, design/delivery proofs, publish/seal proofs,
   licenses, fail-closed native-tls absence, and independent eval fmt/all-target
