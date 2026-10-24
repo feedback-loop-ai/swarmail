@@ -26,7 +26,7 @@
 #      build into a mid-build LLVM IO failure (issue #101) — so no stale
 #      instrumented executable or profile from an earlier source graph can
 #      join the merge; a nonempty explicit CARGO_LLVM_COV_TARGET_DIR must
-#      reserve a new leaf atomically and is retained for the caller. The EXIT
+#      reserve a new leaf by direct exclusive creation and is retained for the caller. The EXIT
 #      trap removes only the fresh default build directory. A free-space
 #      preflight refuses before the build, naming the
 #      path, the filesystem and the escape variable. The full lcov report,
@@ -423,14 +423,54 @@ check_free_space() {
   fi
 }
 
+reserve_explicit_leaf() {
+  # Probe the installed isolated stdlib before touching the requested leaf.
+  # A trailing record separator makes command substitution preserve and check
+  # every byte of the tool's completion protocol.
+  local requested="$1" probe operation operation_text operation_status separator
+  separator=$'\036'
+  probe="$(command python3 -I -S -c 'import os,sys; sys.stdout.write("ready")' 2>/dev/null; operation_status=$?; printf '\036%s' "$operation_status")"
+  if [ "$probe" != "ready${separator}0" ]; then
+    refuse 'coverage refusal: reservation tool unavailable (python3 isolated startup failed)'
+  fi
+
+  # os.mkdir is the exclusive leaf operation. It receives the exact path as
+  # one argv element and inherits the caller's umask. Only OSError is reported
+  # as a filesystem refusal; all other protocol/status combinations are tool
+  # failures. Never infer ownership from a later existence check.
+  operation="$(command python3 -I -S -c 'import os,sys
+try:
+    os.mkdir(sys.argv[1], 0o777)
+except OSError as error:
+    sys.stdout.write("oserror:" + str(error.errno))
+    raise SystemExit(10)
+else:
+    sys.stdout.write("created")' "$requested" 2>/dev/null; operation_status=$?; printf '\036%s' "$operation_status")"
+  if [ "$operation" = "created${separator}0" ]; then
+    return 0
+  fi
+  case "$operation" in
+    oserror:*"${separator}10")
+      operation_text="${operation#oserror:}"
+      operation_text="${operation_text%${separator}10}"
+      case "$operation_text" in
+        ''|*[!0-9]*) ;;
+        *) refuse "coverage refusal: explicit target must be a fresh, unused leaf ($requested; os.mkdir errno $operation_text) — choose a never-created target path" ;;
+      esac
+      ;;
+  esac
+  refuse 'coverage refusal: reservation tool unavailable (python3 operation or completion protocol failed)'
+}
+
 resolve_build_dir() {
   # A nonempty explicit path is the exact target, but it must be a new leaf.
-  # Parent creation is allowed; one atomic mkdir reserves the leaf. The
-  # explicit reservation remains caller-owned on success and failure.
+  # Parent creation is allowed; one direct exclusive operation reserves the
+  # leaf. The explicit reservation remains caller-owned on success and failure.
   # The default remains a fresh mktemp directory under disk-backed
   # target/coverage/, never $TMPDIR. BUILD_DIR_OWNED means the EXIT cleanup
   # may remove the directory, not merely that this call created it.
   local requested parent parent_probe status=0
+  unset BUILD_DIR_OWNED RESOLVED_BUILD_DIR
   if [ -n "${CARGO_LLVM_COV_TARGET_DIR:-}" ]; then
     requested="$CARGO_LLVM_COV_TARGET_DIR"
     parent_probe="$requested"
@@ -447,10 +487,7 @@ resolve_build_dir() {
       status=$?
       refuse "coverage refusal: explicit target parent could not be created ($parent; mkdir exit $status)"
     }
-    mkdir -- "$requested" || {
-      status=$?
-      refuse "coverage refusal: explicit target must be a fresh, unused leaf ($requested; mkdir exit $status) — choose a never-created target path"
-    }
+    reserve_explicit_leaf "$requested"
     BUILD_DIR_OWNED=0
     RESOLVED_BUILD_DIR="$requested"
   else
@@ -645,6 +682,691 @@ selftest() {
     fi
   }
 
+  # The selftest's explicit reservation and process proof require isolated
+  # Python stdlib plus POSIX session, waitid and selector support. Exact
+  # sentinel framing detects extra or truncated startup output.
+  local tool_probe probe_status separator real_python worker_template supervisor_file tracker_dir
+  separator=$'\036'
+  tool_probe="$(command python3 -I -S -c 'import os,selectors,signal,socket,subprocess,sys,time; needed=(hasattr(os,"killpg"),hasattr(os,"waitid"),hasattr(os,"WNOWAIT"),hasattr(os,"P_PID"),hasattr(selectors,"DefaultSelector"),hasattr(socket,"socketpair"),hasattr(signal,"SIGTERM"),hasattr(signal,"SIGKILL"),hasattr(time,"monotonic"),"start_new_session" in subprocess.Popen.__init__.__code__.co_varnames); sys.stdout.write("ready" if all(needed) else "unsupported")' 2>/dev/null; probe_status=$?; printf '\036%s' "$probe_status")"
+  if [ "$tool_probe" != "ready$separator"0 ]; then
+    refuse 'coverage refusal: reservation tool unavailable (python3 isolated POSIX selftest support failed)'
+  fi
+  real_python="$(type -P python3)" || refuse 'coverage refusal: reservation tool unavailable (python3 executable path is missing)'
+  worker_template="$root/reservation-worker.template"
+  supervisor_file="$root/reservation-supervisor.py"
+  tracker_dir="$root/reservation-tools"
+  mkdir -p -- "$tracker_dir"
+
+  # This wrapper records direct calls made by the canonical resolver. The
+  # false-success control uses the absolute interpreter instead, so the trace
+  # proves the repaired leaf path bypasses the old utility boundary.
+  cat > "$tracker_dir/python3" <<'TRACKER'
+#!/bin/sh
+case "$*" in
+  *'os.mkdir(sys.argv[1], 0o777)'*)
+    printf 'DIRECT\n' >> "$DIRECT_TRACE_DIR/$WORKER_ID" || exit 97
+    ;;
+esac
+exec "$REAL_PYTHON" "$@"
+TRACKER
+  chmod 700 "$tracker_dir/python3"
+
+  {
+    cat <<'WORKER_HEAD'
+#!/usr/bin/env bash
+set +e
+worker_id="$WORKER_ID"
+control_fd="$CONTROL_FD"
+control_send() { printf '%s\0' "$@" >&"$control_fd"; }
+control_read() { IFS= read -r -d '' reply <&"$control_fd"; }
+
+mkdir() {
+  if [ "$#" -eq 2 ] && [ "$1" = "--" ] && [ "$2" = "$TARGET" ] && [ "$WORKER_FAULT" = "old-fault" ]; then
+    control_send AT_LEAF "$worker_id" || return 97
+    control_read || return 98
+    local kind="$reply"
+    control_read || return 98
+    local receiver="$reply"
+    control_read || return 98
+    local token="$reply"
+    if [ "$kind" != "GO" ] || [ "$receiver" != "$worker_id" ] || [ "$token" != "$GO_TOKEN" ]; then
+      control_send ERROR "$worker_id" wrong-go-token || true
+      return 99
+    fi
+    local separator=$'\036' utility_result utility_status
+    utility_result="$("$REAL_PYTHON" -I -S -c 'import os,sys
+try:
+    os.mkdir(sys.argv[1], 0o777)
+except FileExistsError:
+    sys.stdout.write("eexist")
+    raise SystemExit(10)
+except OSError as error:
+    sys.stdout.write("other:" + str(error.errno))
+    raise SystemExit(11)
+else:
+    sys.stdout.write("created")' "$TARGET" 2>/dev/null; utility_status=$?; printf '\036%s' "$utility_status")"
+    case "$utility_result" in
+      "created$separator"0)
+        control_send UTILITY "$worker_id" created || return 97
+        return 0
+        ;;
+      "eexist$separator"10)
+        control_send UTILITY "$worker_id" eexist || return 97
+        return 0
+        ;;
+      *)
+        control_send UTILITY "$worker_id" other || true
+        return 100
+        ;;
+    esac
+  fi
+  command mkdir "$@"
+}
+
+WORKER_HEAD
+    declare -f refuse
+    declare -f reserve_explicit_leaf
+    declare -f resolve_build_dir
+    declare -f cleanup_build_dir
+    cat <<'WORKER_BODY'
+log_owner="$worker_id"
+if [ "$WORKER_FAULT" = "wrong-log" ]; then
+  if [ "$worker_id" = "one" ]; then log_owner=two; else log_owner=one; fi
+fi
+log_file="$RESULT_DIR/$log_owner.log"
+metadata_owned="$META_OWNED"
+metadata_path="$META_PATH"
+
+if [ "$WORKER_FAULT" = "death-before-readiness" ]; then exit 71; fi
+if [ "$WORKER_FAULT" = "blocked-coordination" ]; then
+  while control_read; do :; done
+  exit 0
+fi
+control_send READY "$worker_id" "$READY_TOKEN" || exit 72
+control_read || exit 73
+start_kind="$reply"
+control_read || exit 73
+start_id="$reply"
+control_read || exit 73
+start_token="$reply"
+if [ "$start_kind" != "START" ] || [ "$start_id" != "$worker_id" ] || [ "$start_token" != "$START_TOKEN" ]; then
+  control_send ERROR "$worker_id" wrong-token || true
+  exit 74
+fi
+control_send RELEASED "$worker_id" "$start_token" || exit 75
+control_read || exit 76
+resolve_kind="$reply"
+control_read || exit 76
+resolve_id="$reply"
+control_read || exit 76
+resolve_token="$reply"
+if [ "$resolve_kind" != "RESOLVE" ] || [ "$resolve_id" != "$worker_id" ] || [ "$resolve_token" != "$RESOLVE_TOKEN" ]; then
+  control_send ERROR "$worker_id" wrong-resolve-token || true
+  exit 77
+fi
+if [ "$WORKER_FAULT" = "post-release-failure" ]; then exit 78; fi
+if [ "$WORKER_FAULT" = "descendant-failure" ]; then
+  ( eval "exec $control_fd>&-"; exec sleep 60 ) >/dev/null 2>&1 &
+  exit 76
+fi
+
+if (
+  CARGO_LLVM_COV_TARGET_DIR="$TARGET" resolve_build_dir
+  printf '%s\0' "$BUILD_DIR_OWNED" > "$metadata_owned" || exit 95
+  printf '%s\0' "$RESOLVED_BUILD_DIR" > "$metadata_path" || exit 96
+) > "$log_file" 2>&1; then
+  resolver_status=0
+else
+  resolver_status=$?
+fi
+owned=""
+resolved=""
+if [ "$resolver_status" -eq 0 ]; then
+  IFS= read -r -d '' owned < "$metadata_owned" || exit 97
+  IFS= read -r -d '' resolved < "$metadata_path" || exit 98
+fi
+record_id="$worker_id"
+completion=complete
+if [ "$WORKER_FAULT" = "unrelated-status" ]; then resolver_status=42; fi
+if [ "$WORKER_FAULT" = "wrong-identity" ]; then record_id=other-worker; fi
+if [ "$WORKER_FAULT" = "missing-completion" ]; then completion=""; fi
+if [ "$WORKER_FAULT" = "missing-record" ]; then
+  while control_read; do :; done
+  exit 0
+fi
+if [ "$WORKER_FAULT" = "truncated-record" ]; then
+  control_send RESULT "$record_id" "$resolver_status" || exit 78
+  while control_read; do :; done
+  exit 0
+fi
+if [ "$WORKER_FAULT" = "failed-result-write" ]; then
+  eval "exec $control_fd>&-"
+fi
+if ! control_send RESULT "$record_id" "$resolver_status" "$owned" "$resolved" "$completion"; then
+  exit 79
+fi
+if [ "$WORKER_FAULT" = "extra-record" ]; then
+  control_send EXTRA "$worker_id" || exit 80
+fi
+control_send HOLD "$worker_id" || exit 81
+while control_read; do :; done
+exit 0
+WORKER_BODY
+  } > "$worker_template"
+  cat > "$supervisor_file" <<'PYTHON'
+import errno
+import os
+import secrets
+import selectors
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+FIELD_COUNTS = {
+    "READY": 3,
+    "RELEASED": 3,
+    "AT_LEAF": 2,
+    "UTILITY": 3,
+    "RESULT": 6,
+    "HOLD": 2,
+    "ERROR": 3,
+}
+class ProofFailure(Exception):
+    pass
+class UnsafeFailure(Exception):
+    pass
+
+class Channel:
+    def __init__(self, identity, sock):
+        self.identity = identity
+        self.sock = sock
+        self.buffer = bytearray()
+        self.fields = []
+        self.messages = []
+        self.eof = False
+    def pump(self):
+        try:
+            data = self.sock.recv(65536)
+        except BlockingIOError:
+            return
+        if not data:
+            self.eof = True
+            if self.buffer or self.fields:
+                raise ProofFailure("truncated worker record from " + self.identity)
+            return
+        self.buffer.extend(data)
+        while True:
+            try:
+                end = self.buffer.index(0)
+            except ValueError:
+                break
+            raw = bytes(self.buffer[:end])
+            del self.buffer[:end + 1]
+            field = raw.decode("utf-8", "surrogateescape")
+            if not self.fields and field not in FIELD_COUNTS:
+                raise ProofFailure("unexpected record type " + field)
+            self.fields.append(field)
+            expected = FIELD_COUNTS[self.fields[0]]
+            if len(self.fields) == expected:
+                self.messages.append(tuple(self.fields))
+                self.fields = []
+            elif len(self.fields) > expected:
+                raise ProofFailure("worker record has extra fields")
+
+def exited_without_reaping(proc):
+    try:
+        info = os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except InterruptedError:
+        return exited_without_reaping(proc)
+    return info is not None and info.si_pid != 0
+
+def wait_for_input(channels, selector, deadline, stage):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ProofFailure("deadline expired while waiting for " + stage)
+    try:
+        events = selector.select(min(remaining, 0.05))
+    except InterruptedError:
+        return
+    for key, _ in events:
+        key.data.pump()
+
+def receive(channel, channels, selector, deadline, kind, stage):
+    while not channel.messages:
+        if channel.eof:
+            raise ProofFailure("worker channel closed before " + stage + " (" + channel.identity + ")")
+        wait_for_input(channels, selector, deadline, stage)
+    message = channel.messages.pop(0)
+    if message[0] == "ERROR" and len(message) == 3 and message[2] in ("wrong-token", "wrong-resolve-token"):
+        raise ProofFailure("wrong release token rejected by worker " + channel.identity)
+    if message[0] != kind:
+        raise ProofFailure("unexpected record type " + message[0] + " from " + channel.identity)
+    return message
+
+def send_fields(channel, fields, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ProofFailure("deadline expired while writing worker control")
+    data = b"".join(os.fsencode(str(field)) + b"\0" for field in fields)
+    try:
+        channel.sock.settimeout(remaining)
+        channel.sock.sendall(data)
+        channel.sock.setblocking(False)
+    except (OSError, TimeoutError) as error:
+        raise ProofFailure("worker control write failed: " + str(error))
+
+def event_wait(seconds):
+    selector = selectors.DefaultSelector()
+    try:
+        selector.select(seconds)
+    finally:
+        selector.close()
+
+def group_exists(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except OSError as error:
+        if error.errno == errno.ESRCH:
+            return False
+        if error.errno == errno.EPERM:
+            return True
+        raise
+
+def terminate_owned(procs, channels):
+    if not procs:
+        return True
+    grace_deadline = time.monotonic() + 5.0
+    # Signal every owned session before reaping any leader. Leaders remain
+    # unreaped until escalation is finished, so their PGIDs cannot be reused.
+    for proc in procs:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError as error:
+            if error.errno != errno.ESRCH:
+                return False
+    delay = min(0.25, max(0.0, grace_deadline - time.monotonic()))
+    if delay:
+        try:
+            event_wait(delay)
+        except OSError:
+            pass
+    for proc in procs:
+        try:
+            if group_exists(proc.pid):
+                os.killpg(proc.pid, signal.SIGKILL)
+        except OSError as error:
+            if error.errno != errno.ESRCH:
+                return False
+    while time.monotonic() < grace_deadline:
+        all_exited = True
+        for proc in procs:
+            try:
+                if not exited_without_reaping(proc):
+                    all_exited = False
+            except (ChildProcessError, OSError):
+                return False
+        if all_exited:
+            break
+        selector = selectors.DefaultSelector()
+        try:
+            for channel in channels:
+                if not channel.eof:
+                    try:
+                        selector.register(channel.sock, selectors.EVENT_READ)
+                    except (KeyError, ValueError, OSError):
+                        pass
+            selector.select(min(0.05, max(0.0, grace_deadline - time.monotonic())))
+        except OSError:
+            pass
+        finally:
+            selector.close()
+    else:
+        return False
+    # All groups received TERM and any required KILL before leaders are joined.
+    for proc in procs:
+        try:
+            if not exited_without_reaping(proc):
+                return False
+            proc.wait(timeout=0)
+        except (subprocess.TimeoutExpired, ChildProcessError, OSError):
+            return False
+    while time.monotonic() < grace_deadline:
+        try:
+            if not any(group_exists(proc.pid) for proc in procs):
+                return True
+        except OSError:
+            return False
+        try:
+            event_wait(min(0.05, max(0.0, grace_deadline - time.monotonic())))
+        except OSError:
+            pass
+    return False
+
+def write_result(base, winner):
+    identity, path, owned = winner
+    fields = ((base + ".winner", identity + "\n"),
+              (base + ".path", path + "\n"),
+              (base + ".owned", owned + "\n"))
+    for filename, content in fields:
+        fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            data = os.fsencode(content)
+            offset = 0
+            while offset < len(data):
+                offset += os.write(fd, data[offset:])
+        finally:
+            os.close(fd)
+
+def mark_retain(root, reason):
+    try:
+        fd = os.open(os.path.join(root, "RETAIN_ROOT"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, os.fsencode(reason + "\n"))
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+def run_pair(mode, template, tracker_dir, real_python, root, result_base):
+    budget = 0.25 if mode in {
+        "blocked-coordination", "missing-record", "truncated-record"
+    } else 30.0
+    deadline = time.monotonic() + budget
+    case_root = os.path.join(root, "pair-" + mode + "-" + secrets.token_hex(5))
+    os.mkdir(case_root, 0o700)
+    target = os.path.join(case_root, "concurrent-target")
+    result_dir = os.path.join(case_root, "results")
+    os.mkdir(result_dir, 0o700)
+    worker_script = os.path.join(case_root, "worker.bash")
+    with open(template, "r", encoding="utf-8") as stream:
+        worker_source = stream.read()
+    if mode == "old-fault-red":
+        old_call = '    reserve_explicit_leaf "$requested"'
+        replacement = '''    mkdir -- "$requested" || {
+      status=$?
+      refuse "coverage refusal: explicit target must be a fresh, unused leaf ($requested; mkdir exit $status) — choose a never-created target path"
+    }'''
+        if worker_source.count(old_call) != 1:
+            raise ProofFailure("the isolated old-operation mutation did not identify one canonical resolver call")
+        worker_source = worker_source.replace(old_call, replacement, 1)
+    with open(worker_script, "x", encoding="utf-8") as stream:
+        stream.write(worker_source)
+    channels = {}
+    procs = []
+    selector = selectors.DefaultSelector()
+    result = None
+    proof_error = None
+    try:
+        identities = ("one",) if mode == "partial-setup" else ("one", "two")
+        for identity in identities:
+            parent_sock, child_sock = socket.socketpair()
+            parent_sock.setblocking(False)
+            nonce = secrets.token_hex(8)
+            ready_token = "ready:" + identity + ":" + nonce
+            start_token = "start:" + identity + ":" + nonce
+            go_token = "go:" + identity + ":" + nonce
+            if mode in ("old-fault-red", "green-under-override"):
+                worker_fault = "old-fault"
+            elif mode == "wrong-log":
+                worker_fault = "wrong-log"
+            elif identity == "one":
+                worker_fault = mode
+            else:
+                worker_fault = "none"
+            child_fd = child_sock.fileno()
+            env = os.environ.copy()
+            env.pop("BASH_ENV", None)
+            env.pop("ENV", None)
+            env["WORKER_ID"] = identity
+            env["WORKER_FAULT"] = worker_fault
+            env["CONTROL_FD"] = str(child_fd)
+            env["READY_TOKEN"] = ready_token
+            env["START_TOKEN"] = start_token
+            env["RESOLVE_TOKEN"] = "resolve:" + identity + ":" + nonce
+            env["GO_TOKEN"] = go_token
+            env["TARGET"] = target
+            env["RESULT_DIR"] = result_dir
+            env["META_OWNED"] = os.path.join(result_dir, identity + ".owned")
+            env["META_PATH"] = os.path.join(result_dir, identity + ".path")
+            env["REAL_PYTHON"] = real_python
+            env["DIRECT_TRACE_DIR"] = case_root
+            env["PATH"] = tracker_dir + os.pathsep + env.get("PATH", "")
+            env["CARGO_LLVM_COV_TARGET_DIR"] = target
+            proc = subprocess.Popen(
+                ["bash", "--noprofile", "--norc", worker_script],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                close_fds=True,
+                pass_fds=(child_fd,),
+                start_new_session=True,
+            )
+            procs.append(proc)
+            child_sock.close()
+            channel = Channel(identity, parent_sock)
+            channels[identity] = channel
+            selector.register(parent_sock, selectors.EVENT_READ, channel)
+            if os.getpgid(proc.pid) != proc.pid:
+                raise ProofFailure("worker was not isolated in its owned process group")
+            if mode == "partial-setup" and identity == "one":
+                raise ProofFailure("injected partial setup failure after first worker")
+        ready = {}
+        for identity in ("one", "two"):
+            ready[identity] = receive(channels[identity], channels, selector, deadline, "READY", "ready workers")
+            if ready[identity][1] != identity:
+                raise ProofFailure("readiness identity did not match worker " + identity)
+            token = ready[identity][2].split(":", 2)
+            if len(token) != 3 or token[0] != "ready" or token[1] != identity:
+                raise ProofFailure("readiness token did not bind worker " + identity)
+            proc = procs[0] if identity == "one" else procs[1]
+            if exited_without_reaping(proc):
+                raise ProofFailure("worker exited after readiness and before release: " + identity)
+        for identity in ("one", "two"):
+            proc = procs[0] if identity == "one" else procs[1]
+            if exited_without_reaping(proc):
+                raise ProofFailure("worker was not live at the checked release boundary: " + identity)
+        for identity in ("one", "two"):
+            nonce = ready[identity][2].split(":", 2)[2]
+            start_token = "start:" + identity + ":" + nonce
+            if mode == "wrong-token" and identity == "one":
+                start_token += ":wrong"
+            send_fields(channels[identity], ("START", identity, start_token), deadline)
+        release_tokens = {}
+        for identity in ("one", "two"):
+            release_tokens[identity] = "start:" + identity + ":" + ready[identity][2].split(":", 2)[2]
+            released = receive(channels[identity], channels, selector, deadline, "RELEASED", "checked release acknowledgements")
+            if released[1] != identity or released[2] != release_tokens[identity]:
+                raise ProofFailure("worker release acknowledgement did not bind its identity and token")
+        for identity in ("one", "two"):
+            proc = procs[0] if identity == "one" else procs[1]
+            if exited_without_reaping(proc):
+                raise ProofFailure("worker was not live after its checked release acknowledgement: " + identity)
+        for identity in ("one", "two"):
+            nonce = ready[identity][2].split(":", 2)[2]
+            send_fields(channels[identity], ("RESOLVE", identity, "resolve:" + identity + ":" + nonce), deadline)
+        if mode == "old-fault-red":
+            at_leaf = {}
+            for identity in ("one", "two"):
+                at_leaf[identity] = receive(channels[identity], channels, selector, deadline, "AT_LEAF", "both old utility calls")
+                if at_leaf[identity][1] != identity:
+                    raise ProofFailure("old utility readiness identity mismatch")
+            for identity in ("one", "two"):
+                nonce = ready[identity][2].split(":", 2)[2]
+                send_fields(channels[identity], ("GO", identity, "go:" + identity + ":" + nonce), deadline)
+            utilities = {}
+            for identity in ("one", "two"):
+                message = receive(channels[identity], channels, selector, deadline, "UTILITY", "old utility outcomes")
+                if message[1] != identity:
+                    raise ProofFailure("old utility outcome identity mismatch")
+                utilities[identity] = message[2]
+            if sorted(utilities.values()) != ["created", "eexist"]:
+                raise ProofFailure("old utility control did not witness one creation and one EEXIST")
+        else:
+            utilities = {}
+        results = {}
+        for identity in ("one", "two"):
+            results[identity] = receive(channels[identity], channels, selector, deadline, "RESULT", "resolver result")
+            receive(channels[identity], channels, selector, deadline, "HOLD", "independent worker completion")
+        for identity in ("one", "two"):
+            if channels[identity].messages:
+                raise ProofFailure("worker sent extra data after its completion record")
+            proc = procs[0] if identity == "one" else procs[1]
+            if exited_without_reaping(proc):
+                raise ProofFailure("worker exited before its completion was joined: " + identity)
+        parsed = {}
+        for identity, message in results.items():
+            if len(message) != 6 or message[1] != identity:
+                raise ProofFailure("result identity does not match channel " + identity)
+            if message[2] not in ("0", "1"):
+                raise ProofFailure("resolver status must be 0 or 1 for " + identity)
+            if message[5] != "complete":
+                raise ProofFailure("completion field is invalid for " + identity)
+            status = int(message[2])
+            if status == 0:
+                if message[3] != "0" or message[4] != target:
+                    raise ProofFailure("winner path or caller ownership is incorrect for " + identity)
+            elif message[3] != "" or message[4] != "":
+                raise ProofFailure("loser supplied success metadata for " + identity)
+            parsed[identity] = (status, message[3], message[4])
+        statuses = [parsed["one"][0], parsed["two"][0]]
+        if sorted(statuses) != [0, 1]:
+            raise ProofFailure("two simultaneous explicit reservations have one winner")
+        loser = "one" if parsed["one"][0] == 1 else "two"
+        winner = "two" if loser == "one" else "one"
+        own_log = os.path.join(result_dir, loser + ".log")
+        other_log = os.path.join(result_dir, winner + ".log")
+        try:
+            with open(own_log, "rb") as stream:
+                loser_output = stream.read().decode("utf-8", "replace")
+            with open(other_log, "rb") as stream:
+                other_output = stream.read().decode("utf-8", "replace")
+        except OSError as error:
+            raise ProofFailure("loser's own log could not be read: " + str(error))
+        if "fresh, unused leaf" not in loser_output or target not in loser_output:
+            if "fresh, unused leaf" in other_output and target in other_output:
+                raise ProofFailure("loser's own refusal is missing; matching text exists only in the other worker log")
+            raise ProofFailure("loser's own refusal does not name fresh, unused leaf and the exact target path")
+        for identity in ("one", "two"):
+            trace_path = os.path.join(case_root, identity)
+            trace = open(trace_path, "rb").read() if os.path.exists(trace_path) else b""
+            if trace != b"DIRECT\n":
+                raise ProofFailure("canonical direct creation was not witnessed exactly once for worker " + identity)
+        result = (winner, parsed[winner][2], parsed[winner][1])
+    except ProofFailure as error:
+        proof_error = error
+    except Exception as error:
+        proof_error = ProofFailure("controller infrastructure failed: " + repr(error))
+    finally:
+        safe = terminate_owned(procs, list(channels.values()))
+        try:
+            selector.close()
+        except Exception:
+            pass
+        for channel in channels.values():
+            try:
+                channel.sock.close()
+            except OSError:
+                pass
+        if not safe:
+            mark_retain(root, "owned worker group or leader could not be stopped and joined")
+            raise UnsafeFailure("owned worker containment failed; fixture root retained")
+    if proof_error is None and time.monotonic() > deadline:
+        proof_error = ProofFailure("deadline expired before worker joins completed")
+    if proof_error is not None:
+        raise proof_error
+    return result
+
+def expect_rejected(mode, needle, template, tracker_dir, real_python, root):
+    try:
+        run_pair(mode, template, tracker_dir, real_python, root, os.path.join(root, "unused-result"))
+    except ProofFailure as error:
+        if needle not in str(error):
+            raise ProofFailure("control " + mode + " failed for an unrelated reason: " + str(error))
+        return
+    raise ProofFailure("control " + mode + " unexpectedly passed")
+
+def main():
+    if len(sys.argv) != 7:
+        raise ProofFailure("controller argument count is invalid")
+    mode, template, tracker_dir, real_python, root, result_base = sys.argv[1:]
+    controls = {
+        "old-fault-red": "two simultaneous explicit reservations have one winner",
+        "death-before-readiness": "worker channel closed before ready",
+        "blocked-coordination": "deadline expired while waiting for ready workers",
+        "post-release-failure": "worker channel closed before resolver result",
+        "missing-completion": "completion field is invalid",
+        "missing-record": "deadline expired while waiting for resolver result",
+        "truncated-record": "deadline expired while waiting for resolver result",
+        "extra-record": "unexpected record type EXTRA",
+        "wrong-token": "wrong release token",
+        "unrelated-status": "resolver status must be 0 or 1",
+        "wrong-identity": "result identity does not match channel",
+        "wrong-log": "loser's own refusal is missing",
+        "failed-result-write": "worker channel closed before resolver result",
+        "descendant-failure": "worker channel closed before resolver result",
+        "partial-setup": "injected partial setup failure",
+    }
+    if mode in controls:
+        expect_rejected(mode, controls[mode], template, tracker_dir, real_python, root)
+        print("coverage reservation proof refusal: " + controls[mode])
+        return 1
+    if mode in ("normal", "green-under-override"):
+        result = run_pair(mode, template, tracker_dir, real_python, root, result_base)
+        write_result(result_base, result)
+        if mode == "normal":
+            print("coverage reservation proof pass: real exclusive race")
+        else:
+            print("coverage reservation proof pass: direct operation bypasses the old utility override")
+        return 0
+    raise ProofFailure("unknown controller mode " + mode)
+
+try:
+    sys.exit(main())
+except UnsafeFailure as error:
+    print("coverage reservation selftest: " + str(error), file=sys.stderr)
+    sys.exit(90)
+except ProofFailure as error:
+    print("coverage reservation proof refusal: " + str(error), file=sys.stderr)
+    sys.exit(1)
+PYTHON
+
+  reservation_controller() {
+    local mode="$1"
+    command python3 -I -S "$supervisor_file" "$mode" "$worker_template" "$tracker_dir" "$real_python" "$root" "$root/pair-result-$mode"
+  }
+  reservation_root_guard() {
+    if [ -f "$root/RETAIN_ROOT" ]; then selftest_root_cleanup_allowed=0; fi
+  }
+  reservation_expect_pass() {
+    local label="$1" mode="$2"
+    expect_pass "$label" reservation_controller "$mode"
+    reservation_root_guard
+  }
+  reservation_expect_refusal() {
+    local label="$1" phrase="$2" mode="$3"
+    expect_refuse_naming "$label" "$phrase" reservation_controller "$mode"
+    reservation_root_guard
+  }
+
+  conditional_blocked_controller() {
+    local output status=0
+    if output="$(reservation_controller blocked-coordination 2>&1)"; then
+      printf '%s\n' 'coverage reservation control unexpectedly passed under conditional invocation' >&2
+      return 1
+    else
+      status=$?
+    fi
+    if [ "$status" -ne 1 ] || [[ "$output" != *'deadline expired while waiting for ready workers'* ]]; then
+      printf '%s\n' "$output" >&2
+      return 1
+    fi
+    printf '%s\n' 'conditional controller refusal preserved its status and diagnostic'
+  }
+
   # Exercise the real assertion helper in a child-local failure counter. The
   # expected refusal passes, an unrelated exit 127 fails, and expected text
   # paired with success also fails; none may mutate the parent's count.
@@ -818,7 +1540,7 @@ selftest() {
   expect_eq 'canonical counting' "$got" '3 2 2 1 3 2'
 
   # 7. Build-target reservation: explicit targets require a fresh leaf,
-  #    survive cleanup, and arbitrate cooperating callers with atomic mkdir.
+  #    survive cleanup, and arbitrate cooperating callers by direct creation.
   local resolved explicit target_statuses
   local explicit="$root/explicit parent/target with spaces"
   resolved="$(CARGO_LLVM_COV_TARGET_DIR="$explicit" resolve_build_dir; printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
@@ -853,53 +1575,257 @@ selftest() {
   printf 'parent blocker\n' > "$root/blocked-parent"
   expect_refuse_naming 'an uncreatable explicit parent has a named refusal' 'explicit target parent could not be created' resolve_explicit_target "$root/blocked-parent/child"
 
-  mkdir() {
-    if [ "$#" -eq 2 ] && [ "$1" = -- ] && [ "$2" = "$root/forced-leaf-failure" ]; then
-      printf 'injected leaf mkdir failure\n' >&2
-      return 42
-    fi
-    command mkdir "$@"
+  local no_python_bin oserror_bin malformed_bin broken_bin fake_path long_component long_target
+  local relative_parent relative_target root_base umask_target resolved_mode
+  no_python_bin="$root/no-python-bin"
+  mkdir -p "$no_python_bin"
+  ln -s "$(type -P mkdir)" "$no_python_bin/mkdir"
+  ln -s "$(type -P mktemp)" "$no_python_bin/mktemp"
+  ln -s "$(type -P rm)" "$no_python_bin/rm"
+  resolve_explicit_with_path() {
+    local selected_path="$1" target="$2"
+    PATH="$selected_path" CARGO_LLVM_COV_TARGET_DIR="$target" resolve_build_dir
   }
-  expect_refuse_naming 'an explicit leaf creation error has a named refusal' 'fresh, unused leaf' resolve_explicit_target "$root/forced-leaf-failure"
-  unset -f mkdir
+  resolve_explicit_with_fake_python() {
+    local selected_path="$1" target="$2" actual_python="$3"
+    PATH="$selected_path" RESERVATION_REAL_PYTHON="$actual_python" \
+      CARGO_LLVM_COV_TARGET_DIR="$target" resolve_build_dir
+  }
+  expect_refuse_naming_context 'an explicit target refuses when Python is missing' \
+    'reservation tool unavailable' 'isolated startup failed' \
+    resolve_explicit_with_path "$no_python_bin" "$root/no-python-target"
+  expect_eq 'a missing reservation tool creates no explicit leaf' \
+    "$( [ -e "$root/no-python-target" ] && echo present || echo absent )" absent
+  resolve_default_without_python() {
+    local selected_path="$1" allocated
+    (
+      PATH="$selected_path"
+      unset CARGO_LLVM_COV_TARGET_DIR
+      resolve_build_dir || exit 1
+      [ "$BUILD_DIR_OWNED" = 1 ] || exit 2
+      case "$RESOLVED_BUILD_DIR" in
+        "$PWD/target/coverage/build."*) ;;
+        *) exit 3 ;;
+      esac
+      allocated="$RESOLVED_BUILD_DIR"
+      cleanup_build_dir "$allocated" 1 || exit 4
+      [ ! -e "$allocated" ]
+    )
+  }
+  expect_pass 'default allocation and cleanup do not require Python' \
+    resolve_default_without_python "$no_python_bin"
 
-  local contended="$root/concurrent-target"
-  local start_one="$root/start-one" start_two="$root/start-two"
-  mkfifo "$start_one" "$start_two"
-  (
-    IFS= read -r _ < "$start_one"
-    if (
-      CARGO_LLVM_COV_TARGET_DIR="$contended" resolve_build_dir
-    ) >"$root/one.out" 2>&1; then
-      printf '0\n' > "$root/one.status"
+  broken_bin="$root/broken-python-bin"
+  mkdir -p "$broken_bin"
+  cat > "$broken_bin/python3" <<'BROKEN_PYTHON'
+#!/bin/sh
+exit 42
+BROKEN_PYTHON
+  chmod 700 "$broken_bin/python3"
+  fake_path="$broken_bin:$PATH"
+  expect_refuse_naming_context 'a broken isolated Python startup has a distinct refusal' \
+    'reservation tool unavailable' 'isolated startup failed' \
+    resolve_explicit_with_path "$fake_path" "$root/broken-start-target"
+  expect_eq 'a broken Python startup creates no explicit leaf' \
+    "$( [ -e "$root/broken-start-target" ] && echo present || echo absent )" absent
+
+  oserror_bin="$root/oserror-python-bin"
+  mkdir -p "$oserror_bin"
+  cat > "$oserror_bin/python3" <<'OSERROR_PYTHON'
+#!/bin/sh
+if [ "$#" -eq 4 ]; then printf ready; exit 0; fi
+printf 'oserror:13'
+exit 10
+OSERROR_PYTHON
+  chmod 700 "$oserror_bin/python3"
+  fake_path="$oserror_bin:$PATH"
+  expect_refuse_naming_context 'an operation OSError keeps the filesystem refusal category and errno' \
+    'fresh, unused leaf' 'os.mkdir errno 13' \
+    resolve_explicit_with_path "$fake_path" "$root/injected-oserror"
+
+  malformed_bin="$root/malformed-python-bin"
+  mkdir -p "$malformed_bin"
+  cat > "$malformed_bin/python3" <<'MALFORMED_PYTHON'
+#!/bin/sh
+if [ "$#" -eq 4 ]; then printf ready; exit 0; fi
+"$RESERVATION_REAL_PYTHON" "$@" >/dev/null 2>&1
+status=$?
+printf malformed-completion
+exit "$status"
+MALFORMED_PYTHON
+  chmod 700 "$malformed_bin/python3"
+  fake_path="$malformed_bin:$PATH"
+  metadata_refusal_control() {
+    local selected_path="$1" target="$2" actual_python="$3" output status=0
+    if output="$(BUILD_DIR_OWNED=stale RESOLVED_BUILD_DIR=stale \
+      PATH="$selected_path" RESERVATION_REAL_PYTHON="$actual_python" \
+      CARGO_LLVM_COV_TARGET_DIR="$target" resolve_build_dir 2>&1
+      printf '%s\n' 'SUCCESS_METADATA_WAS_SET')"; then
+      return 1
     else
-      printf '%s\n' "$?" > "$root/one.status"
+      status=$?
     fi
-  ) &
-  local one_pid=$!
-  (
-    IFS= read -r _ < "$start_two"
-    if (
-      CARGO_LLVM_COV_TARGET_DIR="$contended" resolve_build_dir
-    ) >"$root/two.out" 2>&1; then
-      printf '0\n' > "$root/two.status"
-    else
-      printf '%s\n' "$?" > "$root/two.status"
+    [ "$status" -eq 1 ] &&
+      [[ "$output" == *'reservation tool unavailable'* ]] &&
+      [[ "$output" != *'SUCCESS_METADATA_WAS_SET'* ]]
+  }
+  expect_pass 'malformed completion refuses without resolver success metadata' \
+    metadata_refusal_control "$fake_path" "$root/malformed-created-target" "$real_python"
+  expect_eq 'malformed completion leaves any created caller evidence intact' \
+    "$( [ -d "$root/malformed-created-target" ] && echo present || echo absent )" present
+
+  long_component="$(printf '%0300d' 0)"
+  long_target="$root/$long_component"
+  expect_refuse_naming_context 'a non-EEXIST filesystem error names the exact leaf' \
+    'fresh, unused leaf' "$long_target" resolve_explicit_target "$long_target"
+
+  relative_parent="target/coverage/$(basename "$root")-relative"
+  relative_target="$relative_parent/leaf"
+  resolved="$(CARGO_LLVM_COV_TARGET_DIR="$relative_target" resolve_build_dir; \
+    printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
+  expect_eq 'a relative explicit reservation preserves its exact spelling' \
+    "$resolved" "0 $relative_target"
+  expect_eq 'the relative explicit leaf exists' \
+    "$( [ -d "$relative_target" ] && echo yes || echo no )" yes
+  rm -rf -- "$relative_parent"
+
+  reserve_under_umask() {
+    local mask="$1" target="$2"
+    (
+      umask "$mask"
+      CARGO_LLVM_COV_TARGET_DIR="$target" resolve_build_dir
+      printf '%s\n%s\n' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR"
+    )
+  }
+  umask_target="$root/umask-022"
+  resolved_mode="$(reserve_under_umask 022 "$umask_target")"
+  expect_eq 'umask 022 leaves explicit ownership and spelling intact' \
+    "$resolved_mode" "0
+$umask_target"
+  local actual_mode
+  actual_mode="$(command python3 -I -S -c 'import os,stat,sys; sys.stdout.write(format(stat.S_IMODE(os.stat(sys.argv[1]).st_mode), "03o"))' "$umask_target")"
+  expect_eq 'direct exclusive creation inherits umask 022' "$actual_mode" 755
+  umask_target="$root/umask-077"
+  resolved_mode="$(reserve_under_umask 077 "$umask_target")"
+  actual_mode="$(command python3 -I -S -c 'import os,stat,sys; sys.stdout.write(format(stat.S_IMODE(os.stat(sys.argv[1]).st_mode), "03o"))' "$umask_target")"
+  expect_eq 'direct exclusive creation inherits umask 077' "$actual_mode" 700
+
+  # Find a free descriptor without replacing any caller-owned descriptor.
+  local sentinel_fd="" candidate_fd
+  for candidate_fd in 3 4 5 6 7 8 9; do
+    if { : <&"$candidate_fd"; } 2>/dev/null || { : >&"$candidate_fd"; } 2>/dev/null; then
+      continue
     fi
-  ) &
-  local two_pid=$!
-  exec 3>"$start_one"
-  exec 4>"$start_two"
-  printf 'go\n' >&3
-  printf 'go\n' >&4
-  exec 3>&-
-  exec 4>&-
-  wait "$one_pid"
-  wait "$two_pid"
-  target_statuses="$(printf '%s\n' "$(cat "$root/one.status")" "$(cat "$root/two.status")" | sort | tr '\n' ' ')"
-  expect_eq 'two simultaneous explicit reservations have one winner' "$target_statuses" '0 1 '
-  expect_pass 'the concurrent loser receives the named reservation refusal' bash -c 'grep -q "fresh, unused leaf" "$1" "$2"' _ "$root/one.out" "$root/two.out"
-  expect_refuse_naming 'a retry of a retained explicit target refuses' 'fresh, unused leaf' resolve_explicit_target "$contended"
+    sentinel_fd="$candidate_fd"
+    break
+  done
+  open_sentinel_fd() {
+    case "$sentinel_fd" in
+      3) exec 3>"$root/descriptor-sentinel" ;;
+      4) exec 4>"$root/descriptor-sentinel" ;;
+      5) exec 5>"$root/descriptor-sentinel" ;;
+      6) exec 6>"$root/descriptor-sentinel" ;;
+      7) exec 7>"$root/descriptor-sentinel" ;;
+      8) exec 8>"$root/descriptor-sentinel" ;;
+      9) exec 9>"$root/descriptor-sentinel" ;;
+      *) return 1 ;;
+    esac
+  }
+  write_sentinel_fd() {
+    case "$sentinel_fd" in
+      3) printf '%s\n' "$1" >&3 ;;
+      4) printf '%s\n' "$1" >&4 ;;
+      5) printf '%s\n' "$1" >&5 ;;
+      6) printf '%s\n' "$1" >&6 ;;
+      7) printf '%s\n' "$1" >&7 ;;
+      8) printf '%s\n' "$1" >&8 ;;
+      9) printf '%s\n' "$1" >&9 ;;
+      *) return 1 ;;
+    esac
+  }
+  close_sentinel_fd() {
+    case "$sentinel_fd" in
+      3) exec 3>&- ;;
+      4) exec 4>&- ;;
+      5) exec 5>&- ;;
+      6) exec 6>&- ;;
+      7) exec 7>&- ;;
+      8) exec 8>&- ;;
+      9) exec 9>&- ;;
+      *) return 1 ;;
+    esac
+  }
+  local sentinel_available=0
+  if [ -z "$sentinel_fd" ] || ! open_sentinel_fd; then
+    expect_eq 'a free inherited-descriptor sentinel is available' no yes
+  else
+    sentinel_available=1
+    write_sentinel_fd before
+  fi
+
+  reservation_expect_pass 'the real two-worker reservation race has one attributable loser' normal
+  reservation_expect_refusal 'the restored old operation is rejected by the shared proof' \
+    'two simultaneous explicit reservations have one winner' old-fault-red
+  reservation_expect_pass 'the repaired operation bypasses that same utility override' \
+    green-under-override
+  reservation_expect_refusal 'death before readiness fails the controller' \
+    'worker channel closed before ready' death-before-readiness
+  reservation_expect_refusal 'failure after release has no fabricated completion' \
+    'worker channel closed before resolver result' post-release-failure
+  expect_pass 'blocked coordination refuses finitely under conditional Bash invocation' \
+    conditional_blocked_controller
+  reservation_root_guard
+  reservation_expect_refusal 'missing completion is rejected' \
+    'completion field is invalid' missing-completion
+  reservation_expect_refusal 'missing result delivery expires finitely' \
+    'deadline expired while waiting for resolver result' missing-record
+  reservation_expect_refusal 'truncated NUL record expires finitely' \
+    'deadline expired while waiting for resolver result' truncated-record
+  reservation_expect_refusal 'extra record fields are rejected' \
+    'unexpected record type EXTRA' extra-record
+  reservation_expect_refusal 'wrong identity-bound release token is rejected' \
+    'wrong release token' wrong-token
+  reservation_expect_refusal 'unrelated resolver status is not accepted as a loser' \
+    'resolver status must be 0 or 1' unrelated-status
+  reservation_expect_refusal 'a result bound to another worker is rejected' \
+    'result identity does not match channel' wrong-identity
+  reservation_expect_refusal "loser refusal text in the other log is rejected" \
+    "loser's own refusal is missing" wrong-log
+  reservation_expect_refusal 'a failed result write cannot become completion' \
+    'worker channel closed before resolver result' failed-result-write
+  reservation_expect_refusal 'a failed worker with a descendant is contained' \
+    'worker channel closed before resolver result' descendant-failure
+  reservation_expect_refusal 'partial process setup tears down its owned worker' \
+    'injected partial setup failure' partial-setup
+
+  if [ "$sentinel_available" -eq 1 ]; then
+    write_sentinel_fd after
+    close_sentinel_fd
+    expect_eq 'controller execution preserves the inherited descriptor sentinel' \
+      "$(cat "$root/descriptor-sentinel")" "before
+after"
+  fi
+
+  local pair_winner pair_path pair_owned pair_file="$root/pair-result-normal" pair_record_ok=1
+  if ! IFS= read -r pair_winner < "$pair_file.winner"; then pair_winner=missing; pair_record_ok=0; fi
+  if ! IFS= read -r pair_path < "$pair_file.path"; then pair_path=missing; pair_record_ok=0; fi
+  if ! IFS= read -r pair_owned < "$pair_file.owned"; then pair_owned=missing; pair_record_ok=0; fi
+  expect_eq 'the winner identity is one of the two controlled workers' \
+    "$(case "$pair_winner" in one|two) echo yes ;; *) echo no ;; esac)" yes
+  expect_eq 'the observed winner is caller-owned' "$pair_owned" 0
+  if [ "$pair_record_ok" -eq 1 ] && [ "$pair_owned" = 0 ] &&
+    [ -d "$pair_path" ] && [[ "$pair_path" == "$root"/pair-normal-*/concurrent-target ]]; then
+    printf 'caller-owned reservation sentinel\n' > "$pair_path/reservation-sentinel"
+    cleanup_build_dir "$pair_path" "$pair_owned"
+    expect_eq 'ownership-0 cleanup preserves the winner sentinel' \
+      "$(cat "$pair_path/reservation-sentinel")" 'caller-owned reservation sentinel'
+    expect_refuse_naming 'a retry of the observed retained winner refuses' \
+      'fresh, unused leaf' resolve_explicit_target "$pair_path"
+    expect_eq 'the retained winner leaf remains after retry refusal' \
+      "$( [ -d "$pair_path" ] && echo present || echo absent )" present
+  else
+    expect_eq 'the winner path and observed ownership are valid for lifetime proof' no yes
+  fi
 
   mkdir -p "$root/tmpdir"
   resolved="$(unset CARGO_LLVM_COV_TARGET_DIR; TMPDIR="$root/tmpdir" resolve_build_dir; printf '%s %s' "$BUILD_DIR_OWNED" "$RESOLVED_BUILD_DIR")"
@@ -1346,7 +2272,15 @@ case "${1:-}" in
   selftest)
     mkdir -p target/coverage
     selftest_root="$(mktemp -d "$PWD/target/coverage/selftest.XXXXXX")"
-    trap 'rm -rf "$selftest_root"' EXIT
+    selftest_root_cleanup_allowed=1
+    cleanup_selftest_root() {
+      if [ "$selftest_root_cleanup_allowed" -eq 1 ]; then
+        rm -rf -- "$selftest_root"
+      else
+        printf 'coverage gate: selftest retained fixture root because owned workers could not be proven stopped: %s\n' "$selftest_root" >&2
+      fi
+    }
+    trap cleanup_selftest_root EXIT
     selftest "$selftest_root"
     exit 0
     ;;
