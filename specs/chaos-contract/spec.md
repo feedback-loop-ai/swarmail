@@ -4,8 +4,9 @@ Created: 2026-10-24
 
 Status: Draft for implementation
 
-Scope: Epic #192, issue #181; `epic192/rollup-a` with accepted 0070
-(design input HEAD `594dc37`).
+Scope: Epic #192, issue #181; current-main reentry with accepted 0070
+and merged #197 strict native queries (design input HEAD `dc32761`).
+Feature slug: `chaos-contract`; revise the existing design family.
 
 ## Feature and rationale
 
@@ -42,12 +43,18 @@ Frozen [0001](../../docs/decisions/0001-synchronous-insert-lossless.md),
 under [0005](../../docs/decisions/0005-extraction-at-ingest.md) are preserved.
 
 Read both run-local positions at
-`.brokkr/state/design/positions/{simplicity,robustness}.md` and the current
-intake `.brokkr/state/tasks/epic-192-issue-181-publish-the-c-a8abe809.md`.
-The issue body, prior outcomes and operator rulings in
-`.forge/epic192/issue181/{README,operator-rulings}.md` both passed that
-directory's SHA256SUMS. These ignored files remain evidence, not committed
-artifacts. The committed criteria below stand without access to them.
+`.brokkr/state/design/positions/{simplicity,robustness}.md`. The requested
+`.brokkr/state/tasks/` is absent; committed [intake-reentry.md](intake-reentry.md)
+is the current framing for run `epic-192-issue-181-refuse-positi-9d907b26`.
+The packet README, operator rulings, feature records and supplied implementation
+patch all passed directory-local `sha256sum -c SHA256SUMS` on 2026-10-25.
+The patch is `.forge/epic192/issue181/0001-Refuse-positional-JSON-request-bodies.patch`,
+SHA-256 `760c0cd47066e7969a64b09f3ba5fc5d12ff55b06a3344dddde865e419eb8543`.
+Ignored evidence remains uncommitted; these criteria stand without it.
+
+Merged #197 behavior is a regression constraint; its
+[0074 record](../../docs/decisions/0074-strict-native-queries.md) remains
+proposed. This design neither accepts that record nor changes query policy.
 
 ## Clarification — 2026-10-24
 
@@ -55,6 +62,16 @@ Accepted 0070 supersedes this spec's earlier instruction to stop for operator
 review of the precise chaos shape-reader exception. Production reader work
 is now required. Already-shipped OpenAPI publication still needs proof; a
 design commit or pre-existing passing suite does not discharge any criterion.
+
+## Clarification — 2026-10-25
+
+Reapply the supplied five-file implementation on current main, reconciling
+its API test helper conflict with #197. Preserve all strict-query tests,
+state witnesses, documentation assertions and seed precedence. Candidate
+`bundles/` governs routing; older reviewer rosters in this design are replaced
+by that authority. Accepted 0070 already settles the semantic exception;
+no new decision or acceptance is needed. Implementation and gate receipts
+from older runs do not verify this candidate.
 
 ## Panel synthesis and rulings
 
@@ -66,6 +83,8 @@ than inventing a compromise domain.
 | --- | --- | --- |
 | Admission ownership | Adopt simplicity's owner-local readers at ChaosConfig, ChaosRule and SeedRequest, retaining derived map-field delegation and existing handlers/validators. Robustness concurs. | Reject a generic parser module, raw JSON preflight/reparse, typed MCP Args, newtypes, dependencies and setter redesign. Accept small private helper/literal duplication and hand-maintained OpenAPI. |
 | Compatibility versus shortest visitor | Adopt both positions' requirement to preserve already-refused sequences as well as object/scalar diagnostics. Permit narrow private legacy diagnostic decoding, whose successful positional values can never reach a handler. | Reject unconditional visit_seq rejection or a deserialize_map shortcut if it changes old failures. The minimum-line implementation loses: extra private branches and exact-coverage tests are the necessary cost. |
+| Current-main helper conflict | Adopt simplicity's existing tuple-returning `inbox_snapshot`, with robustness's complete-state and additional count witnesses. Keep both #197 named-query helpers and their callers. | Reject the patch's competing snapshot struct or wholesale old-file replacement. The cost is adapting #181 count assertions and retaining the full #197 suite. |
+| Parser boundary | Adopt robustness's precise complete-JSON admission claim and simplicity's narrow legacy sequence staging. The excess-element path may return intermediate fields while leaving an element unread; serde_json must reject before the extractor succeeds. | Reject claiming every visitor return is map-derived or offering this adapter as a general deserializer guarantee. The cost is pinned-parser real-HTTP excess/nested sequence proofs at every event and renewed proof after parser changes. |
 | Proof strength versus fixture economy | Adopt robustness's immediate complete populated-state witness after every refusal; retain simplicity's existing test tables and transports. | Reject status-only, empty-state, count-only and final-read-only proofs. Pay for extra requests, snapshots and credential delivery checks; a small fixture is insufficient if destructive acceptance stays invisible. |
 | CA fidelity and paths | Adopt generated loadable CA byte comparisons through PUT/GET, existing credential delivery proofs and independent literal complete diagnostic paths. | Reject new TLS policy, external preflight, new fidelity-only TLS fixture and response-derived/leaf-only expectations. Diagnostics do not promise future delivery; serde upgrades require deliberate compatibility review. |
 | Failure boundaries | Adopt robustness's explicit preservation limits and simplicity's bounded implementation scope. | Reject outbox, persistence, scheduler, concurrency stress and extraction work. Existing suites remain required, but this change adds no durability, exactly-once, latency or session-wide chaos transaction promise. |
@@ -197,7 +216,7 @@ wrong-type and excess-element sequences. Before each refusal install at least
 two distinguishable nonempty event rules or identifiable keeper mail. A short
 array failure alone cannot prove object-only admission.
 
-Successful admission at the three readers is map-only. Preserve original
+Successful complete REST JSON admission for the three types is map-only. Preserve original
 struct names, field order, defaults, present_string behavior, duplicate and
 unknown-field diagnostics, nested paths and existing error precedence. Use
 raw request text for duplicate keys and order-sensitive fixtures so a JSON
@@ -207,6 +226,10 @@ refusal for a formerly successful positional body names the expected
 object/struct and applicable serde path without echoing supplied values.
 Private diagnostic decoding may reproduce a legacy failure; it must never
 pass a positional request to mail construction or a configuration handler.
+In particular, the supplied excess-element staging relies on serde_json's
+outer sequence check after an intermediate visitor return. Real HTTP tests
+must prove this path still refuses with its original syntax classification
+and unchanged state; no guarantee for arbitrary non-JSON deserializers is made.
 
 Seed/webhook data failures retain value-free native JSON 400, chaos data
 failures retain extractor 422, and MCP argument failures retain -32602.
@@ -216,6 +239,19 @@ application. Pair webhook installed-state equality with existing real-sink
 delivery evidence that the prior credentials and secret remain usable.
 Retain positive omission/default, per-event null-clear, empty webhook-list
 clear and valid object controls.
+
+Preserve every merged #197 test and behavior. In `seed_inbox`, captured body
+extraction/`json_body` runs before empty-query parsing, which runs before
+offloaded construction/domain work and insertion. Existing
+`query_free_native_operations_refuse_by_name` and
+`native_query_refusal_preserves_error_precedence` remain green with every
+assertion retained. Add a mixed-defect control: the complete five-string
+positional seed plus an unknown query must return the body-shape error;
+a valid object with a domain-invalid field plus an unknown query must still
+return the named query error. Both retain the populated inbox immediately.
+Keep the one existing tuple snapshot helper and both named-query helpers;
+add explicit count endpoint assertions to #181 callers without weakening
+records/IDs/raw equality or #197 documentation assertions.
 
 Implement the narrow reader exception under accepted 0070; do not request
 acceptance again. Every existing refusal must retain its sentence, path and
@@ -235,11 +271,15 @@ distinguish CI-only evidence. Tests obey accepted 0020: isolated servers,
 no mocks, no sleep synchronization, no probabilistic validity assertions and
 no coverage exclusions.
 
-Retain the full independent panel under
-[0057](../../docs/decisions/0057-codex-delivery-recipes.md): DashScope Qwen Max
-correctness, Claude Opus security, official DeepSeek Flash guarantees,
-DashScope GLM 5.3 tests. No DeepSeek Pro or fallback. This design seat does not
-launch later-phase reviewers or claim their outcomes.
+Use this candidate's existing `bundles/` routing under
+[0057](../../docs/decisions/0057-codex-delivery-recipes.md) and
+[0058](../../docs/decisions/0058-codex-review-routing.md). The engine selects
+the route and required roles; do not edit bundles to match historical prose.
+The current codex standard route requires Fable correctness, official Flash
+security and Sonnet tests; careful and fast design/engine require Astra
+correctness, Flash security, Sonnet tests, Astra guarantees and independent
+Fable. Preserve protected review and hard security hold. This design seat
+does not launch later phases or claim their outcomes.
 
 CI owns the house-listed chart/history/selftest, real Docker, network RustSec,
 tag-only rate and privileged/port-80 platform evidence. Operator-only sealing
