@@ -145,3 +145,9 @@ pointers was wrong to add, so no claim above is withdrawn.
   rules on it. 0051 would order image publication before chart publication
   and restate §8's proposal rule in house rules; it does not extend the
   2026-10-19 acceptance of this record to itself.)*
+
+## Later-decision marker — 2026-10-24 (issue #184)
+
+The 2026-10-19 pointer above accurately records the proposal's status then. The operator accepted the corrected 0051 proposal on 2026-10-24 (SHA-256 89fff17e5a160de79e837bb0e61b2f00bfeef85241d515d1a18e7679f9f257dd); its pending-status statement is historical.
+
+- *(Amended/clarified by [0051](0051-release-records.md) (accepted 2026-10-24, operator ruling supplied to this run; corrected proposal SHA-256 89fff17e5a160de79e837bb0e61b2f00bfeef85241d515d1a18e7679f9f257dd): §5's independent-publication interpretation is qualified only for successful joint image-and-chart tag releases, which require tag version, Cargo package version, Chart appVersion and Chart version to agree. Package preparation may retain independent versions. Image publication precedes chart publication; main's continuous image publication keeps its separate §4 role. No change to the operator's recovery, release-proof or 0056 signing boundaries is implied.)*

@@ -157,3 +157,9 @@ The §3 phrase “no sleeps” describes the synchronization discipline, not the
 absence of every sleep call. Fixture readiness polls an explicit predicate
 under a real deadline, sleeping between polls. Correctness never depends on
 a fixed sleep duration; sleep-as-synchronization remains forbidden.
+
+## Later-decision marker — 2026-10-24 (issue #184)
+
+The 2026-10-19 pointer above accurately records the proposal's status then. The operator accepted the corrected 0051 proposal on 2026-10-24 (SHA-256 89fff17e5a160de79e837bb0e61b2f00bfeef85241d515d1a18e7679f9f257dd); its pending-status statement is historical.
+
+- *(Amended/clarified by [0051](0051-release-records.md) (accepted 2026-10-24, operator ruling supplied to this run; corrected proposal SHA-256 89fff17e5a160de79e837bb0e61b2f00bfeef85241d515d1a18e7679f9f257dd): for a successful joint image-and-chart tag release only, tag version, Cargo package version, Chart appVersion and Chart version must be equal. This supersedes the Consequences' rejection of a four-way publication-equality assertion within that scope; preparation versions may differ. The exact-ref binds and absent-tag refusals remain, as does image-before-chart ordering with the required Docker success and present-image checks. Partial image success, later chart failure, explicit operator recovery and the old-workflow-rerun limit remain.)*

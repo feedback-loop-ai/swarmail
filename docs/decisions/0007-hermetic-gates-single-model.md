@@ -67,3 +67,7 @@ Codex recipes' independent reviewer mapping. The shared design council
 now uses Codex Sol/Astra. Hermetic exec verification/shipping, the four
 review lenses, worst-verdict aggregation and the hard security hold remain
 in force. The historical ruling above is not rewritten.
+
+## Dated history correction — 2026-10-24
+
+Accepted decision [0013](0013-four-model-review-panel.md) amended 0007's second hard rule on the judging axis only. 0013 was accepted on 2026-10-13; this missing marker is recorded on 2026-10-24, not backdated. Decision [0057](0057-codex-delivery-recipes.md) supplies the later route authority and reviewer mapping. Hermetic verify and ship seats, protected review, and the hard security hold remain in force.

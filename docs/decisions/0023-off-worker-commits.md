@@ -128,3 +128,7 @@ record's own verb and scope, and nothing above is rewritten by it.
   records 0030's extension above as an existing amendment and asks for the
   missing 0030 link here; this marker and the one above are that link. 0045
   changes nothing in this record.)*
+
+## Erratum — 2026-10-24 (issue #184)
+
+The watcher-lifetime record referred to in the provenance above is [0021](0021-watcher-channel-lifetime.md), originally filed as 0010. Decision 0021 owns watcher channel lifetime and atomic registration; 0023 remains the record for off-worker commits. This adds the missing historical pointer and changes no concurrency or mutation-ordering rule.

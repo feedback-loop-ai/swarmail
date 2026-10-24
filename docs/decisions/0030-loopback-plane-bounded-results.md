@@ -288,3 +288,7 @@ landing task in the last Consequence is now done: 0018 and 0023 carry dated
 - *(Extended/clarified by [0049](0049-extraction-compat.md) (accepted
   2026-10-19): the off-worker work scope — every compat single-message
   response is built off the async workers, not only the pages.)*
+
+## Erratum — 2026-10-24 (issue #184)
+
+The statements in §3 and Consequences that OpenAPI publishes maximum: 250 beside every limit are too broad and are corrected here without rewriting the historical body. Applicable page and wait domains retain their 250 maximum. The assert endpoint is not a page: its count is an unsigned exact expected count, zero is allowed, and it has no page maximum. Its limit is an unsigned, type-checked inert value with no published default or maximum. Rust's unsigned parser domain remains in force; no arbitrary-precision input is implied. The served schema is src/static/openapi.json, pinned by the existing schema test and the real API assert test.

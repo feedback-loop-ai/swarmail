@@ -1006,21 +1006,21 @@ const AMENDMENTS: &[(&str, &str, &str, &str, &str)] = &[
         "0019",
         "**Amends/clarifies:**",
         "Amended/clarified",
-        PROPOSED_1019,
+        ACCEPTED_1024,
     ),
     (
         "0051",
         "0045",
         "**Amends/clarifies:**",
         "Amended/clarified",
-        PROPOSED_1019,
+        ACCEPTED_1024,
     ),
 ];
 
 /// The marker state of a relationship the operator accepted on 2026-10-19.
 const ACCEPTED_1019: &str = "accepted 2026-10-19";
-/// The marker state of a pointer to a proposal: explicitly not accepted.
-const PROPOSED_1019: &str = "proposed 2026-10-19 — not accepted";
+/// The marker state of the accepted 0051 amendment recorded for #184.
+const ACCEPTED_1024: &str = "accepted 2026-10-24";
 
 /// A header field of a whitespace-normalized record: the text after
 /// `label` up to the next field or section.
@@ -1150,24 +1150,143 @@ fn the_pointers_0045_promised_are_required() {
     }
 }
 
-/// A proposal stays a proposal: 0051's pointers say so, and a marker that
-/// claimed its acceptance would contradict its own status header.
+/// The operator's 0051 adoption and the four #184 errata remain explicit,
+/// dated and bounded to the cited contract facts.
+#[test]
+fn issue_184_adoption_and_factual_errata_are_recorded() {
+    let adopted = record("0051-release-records.md");
+    assert_eq!(file_status(&adopted, "0051"), "accepted");
+    states(
+        &doc("docs/decisions/0051-release-records.md"),
+        "0051",
+        &[
+            "accepted (operator, 2026-10-24)",
+            "Original 2026-10-19 proposal status",
+            "Corrected 2026-10-23 proposal status",
+            "SHA-256 89fff17e5a160de79e837bb0e61b2f00bfeef85241d515d1a18e7679f9f257dd",
+            "statements that the choice remains open",
+            "successful joint image-and-chart tag release",
+            "tag version = Cargo package version = Chart appVersion = Chart version",
+            "preparation versions may differ",
+        ],
+    );
+
+    let index = raw("docs/decisions/README.md");
+    let row = index
+        .lines()
+        .find(|line| line.starts_with("| [0051]("))
+        .expect("0051 index row");
+    assert_eq!(
+        index_rows(&index)
+            .into_iter()
+            .find(|(file, _)| file == "0051-release-records.md")
+            .map(|(_, status)| status),
+        Some("accepted")
+    );
+    states(
+        row,
+        "0051 index row",
+        &[
+            "accepted (operator, 2026-10-24)",
+            "89fff17e5a160de79e837bb0e61b2f00bfeef85241d515d1a18e7679f9f257dd",
+        ],
+    );
+
+    let release_integrity = doc("docs/decisions/0019-release-tag-integrity.md");
+    states(
+        &release_integrity,
+        "0019",
+        &[
+            "proposed 2026-10-19 — not accepted",
+            "Amended/clarified by [0051](0051-release-records.md) (accepted 2026-10-24",
+            "successful joint image-and-chart tag release only",
+            "preparation versions may differ",
+            "exact-ref binds and absent-tag refusals remain",
+        ],
+    );
+    let delivery = doc("docs/decisions/0045-delivery-repairs.md");
+    states(
+        &delivery,
+        "0045",
+        &[
+            "proposed 2026-10-19 — not accepted",
+            "Amended/clarified by [0051](0051-release-records.md) (accepted 2026-10-24",
+            "main's continuous image publication keeps its separate §4 role",
+        ],
+    );
+
+    states(
+        &doc("docs/decisions/0028-wire-octets-auth-refusals-and-the-maildrop-snapshot.md"),
+        "0028",
+        &[
+            "Erratum — 2026-10-24",
+            "disabled AUTH returns 502",
+            "repeated AUTH returns 503 before credential decoding",
+            "unsupported mechanism returns 504",
+            "eligible AUTH syntax or credential failures return 501",
+            "failed USER returns -ERR",
+            "subsequent PASS return -ERR USER required first",
+            "One successful AUTH per TLS epoch remains",
+        ],
+    );
+    states(
+        &doc("docs/decisions/0030-loopback-plane-bounded-results.md"),
+        "0030",
+        &[
+            "Erratum — 2026-10-24",
+            "Applicable page and wait domains retain their 250 maximum",
+            "its count is an unsigned exact expected count, zero is allowed",
+            "Its limit is an unsigned, type-checked inert value with no published default or maximum",
+            "src/static/openapi.json",
+        ],
+    );
+    states(
+        &doc("docs/decisions/0007-hermetic-gates-single-model.md"),
+        "0007",
+        &[
+            "accepted on 2026-10-13",
+            "recorded on 2026-10-24, not backdated",
+            "judging axis only",
+            "supplies the later route authority",
+        ],
+    );
+    states(
+        &doc("docs/decisions/0023-off-worker-commits.md"),
+        "0023",
+        &[
+            "watcher-lifetime record referred to in the provenance above is [0021](0021-watcher-channel-lifetime.md)",
+            "0021 owns watcher channel lifetime and atomic registration",
+            "0023 remains the record for off-worker commits",
+        ],
+    );
+}
+
+/// A fabricated proposed record must not claim an accepted marker.
 #[test]
 fn a_marker_cannot_claim_an_acceptance_the_record_lacks() {
     let names = decision_dir();
-    let tree = |number: &str| record(&file_of(&names, number));
+    let proposed_0051 = format!(
+        "{}- **Amends/clarifies:** [0019](0019-release-tag-integrity.md)\n",
+        fixture_record("proposed — acceptance is the operator's.")
+    );
+    let fixture = |number: &str| {
+        if number == "0051" {
+            proposed_0051.clone()
+        } else {
+            record(&file_of(&names, number))
+        }
+    };
     let claimed = [(
         "0051",
         "0019",
         "**Amends/clarifies:**",
         "Amended/clarified",
-        ACCEPTED_1019,
+        ACCEPTED_1024,
     )];
-    let problems = amendment_problems(&claimed, &names, tree);
-    assert!(
-        problems.contains(&format!(
-            "0051 is proposed, but its marker in 0019 says {ACCEPTED_1019}"
-        )),
+    let problems = amendment_problems(&claimed, &names, fixture);
+    assert_eq!(
+        problems,
+        ["0051 is proposed, but its marker in 0019 says accepted 2026-10-24"],
         "{problems:#?}"
     );
 }
