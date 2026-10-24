@@ -4,54 +4,71 @@ Created: 2026-10-24
 
 Status: Draft for implementation
 
-Scope: Epic #192, issue #181; integrated baseline `d681ccc`.
+Scope: Epic #192, issue #181; `epic192/rollup-a` with accepted 0070
+(design input HEAD `594dc37`).
 
 ## Feature and rationale
 
-Publish the already accepted chaos validation domain in the served OpenAPI
-document and close the REST/MCP validation matrix with meaningful state
-witnesses. A caller must be able to distinguish domain refusals from extractor
-refusals, retain public CA bytes through diagnostics, and trust that refused
-requests cannot insert mail, clear an inbox, or replace configuration.
+Implement the object-only admission authorized by accepted 0070 and finish the
+REST/MCP validation matrix. Serde-derived closed structs currently accept
+positional arrays: chaos arrays can clear installed rules, and a five-string
+seed array can insert mail. Shape refusal must precede mail construction,
+insertion and configuration replacement. Valid object behavior and every
+existing refusal's wording, path and envelope remain compatible.
 
-The rollup already contains the original #178 implementation and #179 helpers.
-The active #178 follow-up is docs-only. Reuse those changes. This design changes
-documentation and regression evidence; it neither defines a new accepted input
-domain nor authorizes an error-envelope change.
+OpenAPI chaos bounds already shipped in PR #217 and are present in this base.
+Retain that publication and prove it through both constant/clause pins and a
+real HTTP GET. Finish the populated-state, exact-path and public CA fidelity
+proofs; existing tests are assets to strengthen, not missing work to duplicate.
 
 ## Authority and design evidence
 
-Accepted authorities are [0025](../../docs/decisions/0025-shared-domain-validation.md),
-[0029](../../docs/decisions/0029-supplied-values-are-validated-wherever-they-reach-a-wire.md),
-[0044](../../docs/decisions/0044-compat-validation.md), and
-[0048](../../docs/decisions/0048-rest-webhook-validation.md). Frozen
-[0001](../../docs/decisions/0001-synchronous-insert-lossless.md),
-[0002](../../docs/decisions/0002-awaits-subscribe-before-checking.md), and
-[0003](../../docs/decisions/0003-oldest-only-pruning.md) remain unchanged.
-No new semantic ruling is made, so no new decision is declared.
+[0070](../../docs/decisions/0070-object-only-chaos-and-seed.md) was accepted by
+the operator on 2026-10-24. It authorizes the narrow exception to 0029 §§3/6
+for map-only admission of ChaosConfig and non-null ChaosRule, and object-only
+seed admission. Its historical blockage/proposal narrative is not a current
+stop condition. This design implements that accepted semantic ruling; it
+introduces no further ruling, proposed decision or acceptance.
 
-Both run-local positions were read:
-`.brokkr/state/design/positions/simplicity.md` and
-`.brokkr/state/design/positions/robustness.md`.
-The legacy `.brokkr/state/tasks/` directory is absent; the intake result
-identifies `specs/chaos-validation-matrix/framing.md`, which supplies the six
-criteria below. This spec incorporates that framing without committing the
-intake or panel evidence.
+Other accepted authorities are
+[0025](../../docs/decisions/0025-shared-domain-validation.md),
+[0029](../../docs/decisions/0029-supplied-values-are-validated-wherever-they-reach-a-wire.md),
+[0041](../../docs/decisions/0041-webhook-boundary.md),
+[0044](../../docs/decisions/0044-compat-validation.md), and
+[0048](../../docs/decisions/0048-rest-webhook-validation.md).
+Frozen [0001](../../docs/decisions/0001-synchronous-insert-lossless.md),
+[0002](../../docs/decisions/0002-awaits-subscribe-before-checking.md),
+[0003](../../docs/decisions/0003-oldest-only-pruning.md), and ingest extraction
+under [0005](../../docs/decisions/0005-extraction-at-ingest.md) are preserved.
+
+Read both run-local positions at
+`.brokkr/state/design/positions/{simplicity,robustness}.md` and the current
+intake `.brokkr/state/tasks/epic-192-issue-181-publish-the-c-a8abe809.md`.
+The issue body, prior outcomes and operator rulings in
+`.forge/epic192/issue181/{README,operator-rulings}.md` both passed that
+directory's SHA256SUMS. These ignored files remain evidence, not committed
+artifacts. The committed criteria below stand without access to them.
+
+## Clarification — 2026-10-24
+
+Accepted 0070 supersedes this spec's earlier instruction to stop for operator
+review of the precise chaos shape-reader exception. Production reader work
+is now required. Already-shipped OpenAPI publication still needs proof; a
+design commit or pre-existing passing suite does not discharge any criterion.
 
 ## Panel synthesis and rulings
 
-The panel agrees on the accepted contract and identifies the same unverified
-positional-array risk. There is no substantive disagreement about a new domain
-to resolve. The choices below resolve the tradeoffs in proof scope explicitly.
+Both positions agree on authority and the defect. There is no genuine dispute
+about the input domain; the rulings below settle the cost tradeoffs rather
+than inventing a compromise domain.
 
-| Question | Ruling | Rejected option and cost of the ruling |
+| Question | Ruling | Rejected alternative and cost |
 | --- | --- | --- |
-| Validation ownership | Adopt simplicity's existing type-owned validators, wire parsers, local test tables and #179 helpers; robustness concurs. | Reject schema generation, a shared validation framework, typed MCP Args, new dependencies and setter redesign. Small literal table duplication and hand-maintained OpenAPI remain. |
-| Evidence of no mutation | Adopt robustness's complete populated-state comparison after every refusal, including secrets hidden by GET. Simplicity's reuse of existing tests is retained only with these stronger witnesses. | Reject error-only, empty-to-empty and end-of-loop-only evidence. More setup and real requests are the necessary cost; fewer assertions would miss destructive defaults and partial application. |
-| CA fidelity | Adopt simplicity's generated loadable PEM and byte comparisons through PUT/GET; retain robustness's existing credential delivery proof for refused replacements. | Reject a new HTTPS scenario solely for fidelity, expiry checks, network preflight and replayable redacted configuration. Diagnostics do not establish future TLS success. |
-| Exact paths | Adopt both positions' literal per-row paths and existing wording, including containing-object/root errors. | Reject field-name substring checks, response-derived expectations and error normalization. Dependency changes may require deliberate review of these pins. |
-| Array-shaped structs | Adopt both positions' complete positional-array probes before any boundary repair. Robustness's requirement for an actual state witness rules out a docs-only shortcut if a decided shape is accepted. | Reject inferring object-only decoding from `deny_unknown_fields` or a short-array failure. An incompatible repair blocks implementation for operator review, rather than silently widening this issue. |
-| Broader guarantees | Adopt robustness's preservation of acceptance, subscribe ordering, oldest-only pruning, ingest extraction and best-effort bounded webhook dispatch; adopt simplicity's scope limit. | Reject new crash recovery, outbox, scheduler, concurrency stress or parser projects here. Existing full-suite proofs remain required; this matrix establishes no new durability, latency or exactly-once promise. |
+| Admission ownership | Adopt simplicity's owner-local readers at ChaosConfig, ChaosRule and SeedRequest, retaining derived map-field delegation and existing handlers/validators. Robustness concurs. | Reject a generic parser module, raw JSON preflight/reparse, typed MCP Args, newtypes, dependencies and setter redesign. Accept small private helper/literal duplication and hand-maintained OpenAPI. |
+| Compatibility versus shortest visitor | Adopt both positions' requirement to preserve already-refused sequences as well as object/scalar diagnostics. Permit narrow private legacy diagnostic decoding, whose successful positional values can never reach a handler. | Reject unconditional visit_seq rejection or a deserialize_map shortcut if it changes old failures. The minimum-line implementation loses: extra private branches and exact-coverage tests are the necessary cost. |
+| Proof strength versus fixture economy | Adopt robustness's immediate complete populated-state witness after every refusal; retain simplicity's existing test tables and transports. | Reject status-only, empty-state, count-only and final-read-only proofs. Pay for extra requests, snapshots and credential delivery checks; a small fixture is insufficient if destructive acceptance stays invisible. |
+| CA fidelity and paths | Adopt generated loadable CA byte comparisons through PUT/GET, existing credential delivery proofs and independent literal complete diagnostic paths. | Reject new TLS policy, external preflight, new fidelity-only TLS fixture and response-derived/leaf-only expectations. Diagnostics do not promise future delivery; serde upgrades require deliberate compatibility review. |
+| Failure boundaries | Adopt robustness's explicit preservation limits and simplicity's bounded implementation scope. | Reject outbox, persistence, scheduler, concurrency stress and extraction work. Existing suites remain required, but this change adds no durability, exactly-once, latency or session-wide chaos transaction promise. |
 
 ## Contract to publish and preserve
 
@@ -95,9 +112,9 @@ null using OpenAPI 3.1 schema composition, preserving typed clears.
 The chaos PUT operation itself documents native JSON 400 for representable
 101..255 probabilities, invalid error grammar and excessive representable
 delay, and extractor plain-text 422 for negative/unrepresentable probability,
-missing probability, wrong types/scalar null and closed-shape failures. Remove
-the misleading claim that every out-of-range probability gets 400; do not
-replace it with an equally misleading universal 422 claim.
+missing probability, wrong types/scalar null and closed-shape failures. Retain
+the shipped correction distinguishing those bands; neither a universal 400 nor
+a universal 422 claim is correct.
 
 Extend `the_served_openapi_publishes_the_shared_domain` to pin numeric bounds
 to the owning constants, required probability, both closures, null alternatives,
@@ -107,10 +124,11 @@ document. Deleting a required clause or bound must break the corresponding pin.
 
 ### AC2 — Both probability wires have complete refusal witnesses
 
-Add REST -1 and omitted probability, and MCP -1, to the existing matrices.
-Retain 0/100 success controls and 101/255/256, fraction, string, scalar null
-and MCP omission refusals. Use each wire's exact status/envelope from the
-table and the existing probability sentence where applicable.
+Audit and complete the existing matrices for -1 and omitted probability on
+both wires; reuse the already-present rows. Retain 0/100 success controls
+and 101/255/256, fraction, string and scalar null refusals. Use each wire's
+exact status/envelope from the table and the existing probability sentence
+where applicable.
 
 Install a distinguishable nonempty configuration before each refusal, capture
 the complete read-back, and compare it immediately after that refusal. Include
@@ -134,7 +152,7 @@ with identifiable content. Refuse wrong scalar/null/array/object inbox values,
 unknown argument keys, and non-object arguments containers (array, scalar,
 null). Pin HTTP 200, JSON-RPC -32602 and the exact existing relevant messages.
 Immediately after each refusal, prove exact count plus identical IDs and
-contents, including raw bytes where the existing helpers expose them.
+contents, including stored raw bytes through the existing raw endpoint.
 
 An object is a valid arguments container; its unknown keys or wrong-typed
 members are the refusal cases. Retain successful omitted/empty-arguments
@@ -165,15 +183,30 @@ nonempty before/after state witness for each added refusal:
 
 | Boundary | Required shape cases | State that must survive |
 | --- | --- | --- |
-| REST seed | Top-level empty/short and complete five-string positional arrays; array/object/null scalar fields; unknown keys | Exact original inbox count, IDs and contents; no extra inserted mail |
+| REST seed | Top-level empty/short and complete five-string positional arrays; array/object/null scalar fields; unknown keys | Exact original inbox count, IDs, contents and stored raw bytes; no extra inserted mail |
 | REST webhooks | Object instead of list; array/scalar instead of target object; array/object/null instead of each string field; unknown keys | Complete installed list, including secrets and URL credentials hidden by diagnostics |
-| REST chaos | Empty/short and complete positional config arrays; array instead of event rule; array/object/null scalar fields; unknown event/rule keys | Complete nonempty multi-event config |
+| REST chaos | Empty/short and complete positional config arrays; complete and malformed arrays at each of the four event-rule locations; array/object/null scalar fields; unknown event/rule keys | Complete nonempty multi-event config |
 | MCP tools | Non-object arguments containers; array/object/null values at typed argument boundaries; unknown keys | Seeded default inbox for clear/seed refusals, complete chaos config for set_chaos refusals |
 
-Probe otherwise valid complete positional values, including
-`[null,null,null,null]` as a config and `[0,"451 kept",0]` as an event rule.
-A short array refusing for missing fields does not prove object-only parsing.
-Seed positional probes use all five valid strings in the struct's field order.
+Permanently pin the 0070 witnesses: `[]`, `[null]`,
+`[null,null,null,null]`, and `{"data":[0,"451 kept",0]}` for chaos;
+`["sender@example.test","recipient@example.test","positional subject",
+"positional body","<p>positional html</p>"]` for seed. Exercise complete
+rule arrays at connect, mail_from, rcpt and data, plus already-refused short,
+wrong-type and excess-element sequences. Before each refusal install at least
+two distinguishable nonempty event rules or identifiable keeper mail. A short
+array failure alone cannot prove object-only admission.
+
+Successful admission at the three readers is map-only. Preserve original
+struct names, field order, defaults, present_string behavior, duplicate and
+unknown-field diagnostics, nested paths and existing error precedence. Use
+raw request text for duplicate keys and order-sensitive fixtures so a JSON
+value builder cannot erase the case. Capture existing failures before changing
+readers, including short seed arrays' invalid-length diagnostic. The new
+refusal for a formerly successful positional body names the expected
+object/struct and applicable serde path without echoing supplied values.
+Private diagnostic decoding may reproduce a legacy failure; it must never
+pass a positional request to mail construction or a configuration handler.
 
 Seed/webhook data failures retain value-free native JSON 400, chaos data
 failures retain extractor 422, and MCP argument failures retain -32602.
@@ -184,13 +217,12 @@ delivery evidence that the prior credentials and secret remain usable.
 Retain positive omission/default, per-event null-clear, empty webhook-list
 clear and valid object controls.
 
-If any probe succeeds against a decided refusal, record input, response and
-state effect. A repair is allowed only if it preserves all accepted semantics
-and diagnostics. If it requires a new interpretation, custom chaos
-deserialization contrary to 0029, different wording/envelopes or an accepted
-ruling amendment, stop implementation and record the precise proposed decision
-for operator review. Do not omit the failing row, mark AC6 satisfied, or treat
-current implementation behavior as authority.
+Implement the narrow reader exception under accepted 0070; do not request
+acceptance again. Every existing refusal must retain its sentence, path and
+envelope, while every formerly accepted positional body now refuses before
+effects. A compatibility test failure remains implementation work, not
+permission to weaken a pin or omit a row. A further semantic amendment is
+outside this design's authority.
 
 ## Delivery requirements and limits
 
@@ -208,6 +240,11 @@ Retain the full independent panel under
 correctness, Claude Opus security, official DeepSeek Flash guarantees,
 DashScope GLM 5.3 tests. No DeepSeek Pro or fallback. This design seat does not
 launch later-phase reviewers or claim their outcomes.
+
+CI owns the house-listed chart/history/selftest, real Docker, network RustSec,
+tag-only rate and privileged/port-80 platform evidence. Operator-only sealing
+and live GitHub settings remain with the operator. No macOS, external-network
+or namespace proof is added to local acceptance.
 
 No store/persistence, SMTP/await/pruning/extraction, chaos setter, dispatcher,
 dependency, license-allowlist, feature-flag or gate-policy changes are planned.

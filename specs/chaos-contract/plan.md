@@ -4,22 +4,24 @@
 
 One Rust crate; axum REST, JSON-RPC MCP, serde request decoding, hand-maintained
 OpenAPI 3.1, rustls webhook delivery, and real-server integration tests.
-Start at the integrated `d681ccc` rollup with the existing #178 behavior and
-#179 helpers. No dependency or build-matrix expansion is needed.
+Start from `epic192/rollup-a` with accepted 0070 (design input `594dc37`),
+shipped OpenAPI chaos publication and existing real-wire helpers. No dependency
+or build-matrix expansion is needed.
 
 The requested plan-template file is absent from `.specify/templates/`;
 this plan supplies the house-required technical context, constitution check,
 structure, research, data model, contracts and quickstart directly. It is
-governed by [the spec](spec.md), with six acceptance criteria and its explicit
-operator-review stop condition.
+governed by [the spec](spec.md), with six acceptance criteria and the
+operator-accepted scope of 0070.
 
 ## Constitution check
 
 Accepted 0025/0029 own the shared validators, scalar omission/null distinction,
 REST 400/422 split and plane-specific envelopes. Accepted 0044/0048 own
 closed inputs, value-free seed/webhook data 400s, diagnostic redaction and CA
-loadability. Publication and stronger tests require no semantic amendment.
-Do not add a Decision declaration for an existing authority.
+loadability. Accepted 0070 narrowly permits the required object-admission
+readers, amending 0029 §§3/6; preserve all other semantics and diagnostics.
+Cite 0070 as authority, without a new decision or editing accepted records.
 
 Frozen synchronous acceptance, subscribe-before-scan and oldest-only pruning
 stay untouched; extraction remains at ingest. Validation precedes insert or
@@ -35,13 +37,14 @@ evade coverage. All changes remain subject to the single house gate inventory.
 
 | File | Work |
 | --- | --- |
-| `src/static/openapi.json` | Publish bounds, complete grammar, required probability, closed objects, null-capable events, and the operation's exact 400/422 distinctions |
-| `src/api.rs` | Extend existing inline OpenAPI constant/clause pins; no handler rewrite planned |
+| `src/static/openapi.json` | Retain shipped bounds, grammar, closures, null alternatives and operation-local 400/422 descriptions; edit only if the completed pins reveal a missing decided clause |
+| `src/api.rs` | Implement owner-local SeedRequest object admission with legacy diagnostic compatibility; complete inline OpenAPI pins; preserve handler and BodyError mapping |
+| `src/chaos.rs` | Implement object-only ChaosConfig/ChaosRule admission with derived-equivalent field decoding, unchanged serialization/domain validators and measured compatibility tests |
 | `tests/api.rs` | Extend REST probability, served-document, seed/chaos shape and exact-path tests with per-row populated-state comparisons |
-| `tests/mcp.rs` | Add negative probability; strengthen clear/container/typed-argument tables and exact refusal messages with immediate state comparisons |
+| `tests/mcp.rs` | Complete existing probability rows; strengthen clear/container/typed-argument tables and exact refusal messages with immediate state comparisons |
 | `tests/webhook.rs` | Add PEM echo/GET byte equality and shape/path rows with complete installed-state witnesses and retained credential-delivery proof |
 | `tests/common/mod.rs` | Reuse #179 transport/seed helpers; edit only if an indispensable small missing helper is demonstrated |
-| `src/chaos.rs`, existing request readers in `src/api.rs`, `src/mcp.rs`, `src/webhook.rs` | Inspect owners; any production boundary repair is conditional on first reproducing a violation and satisfying the spec's stop rule |
+| `src/mcp.rs`, `src/webhook.rs` | Read as regression authorities; no production parser/dispatch changes are planned |
 
 No new production module or test binary is planned. The chief's commit contains
 only `spec.md`, `plan.md` and `tasks.md` in this directory. The untracked
@@ -49,39 +52,65 @@ intake framing and ignored panel positions are evidence, not design artifacts.
 
 ## Research and implementation sequence
 
-1. Inventory the existing tests named below and run their baseline. Inspect
-   the accepted parser/error owners. For root, missing-field and unknown-key
-   errors, capture existing wire responses and extract the exact path form
-   into literal expectations; preserve wording.
-2. Before designing any repair, add real-wire complete positional-array probes
-   to the owning integration tests. Probe all-four-slot chaos configs, complete
-   event rules and five-string seeds, alongside empty/short arrays. Install
-   state that silent acceptance would visibly change. Save any failing input,
-   response and before/after state in ignored run evidence.
-3. If a shape violation is reproduced, first seek a compatible repair at its
-   existing admission owner, deleting unintended acceptance where possible.
-   Do not introduce a generic visitor/validator framework or convert chaos to
-   seed/webhook's JSON error mapping. Stop and record an operator proposal if
-   preserving the existing diagnostics and 0029's no-custom-deserializer
-   ruling cannot be demonstrated. Never continue by deleting the requirement.
-4. Update OpenAPI and its measured pins together. Use
-   `MAX_DELAY_MS`, `MAX_REPLY_LINE_OCTETS` and `PROBABILITY_MAX` for numeric
-   drift checks, literal grammar clauses for description checks, and exact
-   operation-local response lookups. For OpenAPI 3.1, express each nullable
-   event as `anyOf` with a ChaosRule reference and `{"type":"null"}`;
-   assert both alternatives rather than relying only on prose.
-5. Extend existing wire tables with local tuple expectations. Make every
-   refused mutation prove unchanged state immediately; reinstall the known
-   chaos baseline before each row. Add successful controls separately so a
-   legal mutation cannot invalidate a later refusal witness.
-6. Add the generated PEM diagnostic test, complete the exact-path/shape matrix,
-   then run targeted suites and the entire verification chain. Repair the
-   owning artifacts if new evidence changes the plan. No requirement is
-   discharged merely because the structural design validator passes.
+1. Audit existing API/MCP/webhook tests and run the baseline. Capture literal
+   old diagnostics before modifying readers: scalar/root, missing, duplicate,
+   unknown, nested, short/wrong-type/excess sequence and order-sensitive
+   cases. Use raw request text where field order or duplicate keys matter.
+   Existing negative/missing probability rows and CA GET proof should be
+   strengthened in place, not re-added under new names.
+2. Add permanent real-HTTP regressions for 0070's documented positional
+   bodies. Observe the expected baseline failures with populated state;
+   distinguish these failures from already-refused compatibility controls.
+3. Implement the owner-local readers described below, then make the shape
+   regressions and unchanged legacy diagnostics pass. Keep typed Json
+   extraction, seed's local 400 conversion and chaos's 422 conversion.
+4. Audit the already-shipped OpenAPI against AC1 and complete measured pins
+   using MAX_DELAY_MS, MAX_REPLY_LINE_OCTETS and PROBABILITY_MAX. Check both
+   null alternatives, complete grammar clauses, response descriptions and
+   required/closed object fields. Extend the real GET proof of that document.
+5. Complete the remaining probability, clear, shape/path and CA echo tables.
+   Compare full populated state immediately after each refused request.
+   Keep legal object/default/null-clear controls separate from witnesses.
+6. Run targeted suites and all house gates on the final implementation, commit
+   the implementation before handoff, and leave independent review to the
+   existing engine route. Repair spec/plan/tasks together if evidence changes
+   the approach; do not infer feature completion from structural validation.
+
+### Reader design and diagnostic compatibility
+
+At each of ChaosConfig, ChaosRule and SeedRequest, successful admission must
+come only from a map. Keep the public type, serialization, validators and
+mutation boundary; use private owner-local field readers with derived decoding
+or equivalent delegation. Retain serde's original struct name, field order,
+closed keys, defaults and present_string behavior. Field helpers are wire
+implementation details, not new domain models or persistent data.
+
+A minimal visitor may delegate map decoding via serde's map access adapter.
+Its dispatch must also preserve old scalar expectations and previously refused
+sequence diagnostics. In particular, replacing deserialize_struct with
+unconditional deserialize_map, or immediately returning an object error from
+every visit_seq, can change legacy invalid-length/wrong-type/excess-element
+errors. Preserve those through the smallest necessary private compatibility
+reader. A successfully decoded positional value is discarded and refused
+before becoming an admitted request; only map success can reach a handler.
+This diagnostic staging performs no mail build, extraction, insertion or swap.
+For previously refused inputs, preserve the original failure's precedence,
+path and envelope; helper names must not leak. Baseline/after wire comparisons
+are the proof, not the visual similarity of the visitor.
+
+Use the current serde/serde_json dependencies. No Json<Value>, raw-body
+preflight, serialize/reparse round trip, manual parallel domain validator or
+general parser framework is planned. Any small reuse between owners must
+actually reduce code while preserving the complete compatibility contract.
+The implementation may choose the narrow delegation details based on measured
+proof; it may not simplify by weakening old diagnostic assertions. New reader
+branches need measured deterministic tests, with public proofs in tests/api.rs
+and placement following 0020. Existing setters and extraction stay untouched.
 
 ## Data model and state witnesses
 
-There is no stored-schema migration or new data model. ChaosRule retains
+There is no stored-schema migration or new domain model; private field readers
+exist only during decoding. ChaosRule retains
 `u8 probability`, optional string error and `u64 delay_ms`; ChaosConfig
 retains four optional events. REST replaces the full config after validation;
 MCP changes one event under its existing lock after staging.
@@ -155,11 +184,31 @@ official DeepSeek Flash guarantees and DashScope GLM 5.3 tests. Failure of a
 provider does not authorize fallback or DeepSeek Pro. Do not push, merge, tag
 or publish.
 
+## Preserved failure boundaries
+
+- A final SMTP DATA 250 still follows committed/queryable mail. A crash after
+  commit but before reply can cause a retry duplicate; memory-only storage is
+  not durable. This reader repair adds no idempotency or storage transaction.
+- Webhooks remain post-store and best-effort with bounded per-target work,
+  finite retries and request timeout. Hung targets, lag, shutdown and exhausted
+  retries do not justify an outbox or blocking insertion here.
+- Oldest-only pruning stays inside ordered insertion. A malformed seed must
+  never insert even transiently and evict a keeper. Continued valid churn can
+  evict old mail; tests own isolated inboxes and an adequate cap.
+- Chaos retains per-stage snapshots, not retroactive cancellation or one
+  session-wide snapshot. DATA refusal still occurs before build/insert; bounded
+  SMTP reads and ingest-time extraction remain unchanged.
+- Waiters still subscribe before scanning, including resubscription. Parser
+  validation moves under no store lock and adds no aggregate latency promise.
+- Generated CA fixtures prove byte fidelity and loadability. They add no PUT
+  expiry/hostname policy or future TLS success guarantee; verification stays on.
+
 ## Risks
 
 | Risk | Mitigation |
 | --- | --- |
-| Complete positional arrays may deserialize despite closed structs | Probe complete valid arrays first on real wires with populated state; retain failing evidence and stop for operator review if a compatible repair cannot preserve the rulings |
+| A shorter custom reader changes old errors or leaks helper names | Capture legacy wire diagnostics first; preserve original names, defaults and error precedence via narrow private delegation; assert scalar, short/excess sequence, duplicate, unknown and nested failures before/after |
+| Sequence staging accidentally admits a value or occurs after effects | Maps alone return admitted requests; all successful positional staging is discarded/refused before the existing handler; permanent complete-array regressions compare full populated state after every row |
 | Publishing a universal probability status would contradict 0025 | Pin 101..255 domain 400 separately from negative/overflow/missing/type 422 and MCP -32602 |
 | Schema closure could accidentally prohibit event null clears | Use OpenAPI 3.1 null alternatives and positive real PUT controls; scalar null remains refused |
 | Error-path tests could be brittle or vacuous | Use independent literal complete path segments and existing stable wording; deliberately review dependency drift, without pinning incidental line/column numbers |
