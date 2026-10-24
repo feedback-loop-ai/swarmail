@@ -1889,6 +1889,15 @@ async fn extracted_only_fields_miss_both_wire_searches() {
     )
     .await;
     let mut email = (*srv.store.get(&id).unwrap()).clone();
+    let raw = String::from_utf8_lossy(&email.raw);
+    assert!(
+        !raw.contains("linksentinel"),
+        "link needle must be absent from source"
+    );
+    assert!(
+        !raw.contains("9876543210"),
+        "code needle must be absent from source"
+    );
     email.links = vec!["https://array-only.invalid/linksentinel".into()];
     email.codes = vec!["9876543210".into()];
     srv.store.delete(&id).unwrap();
