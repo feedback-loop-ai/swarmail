@@ -226,8 +226,9 @@ jobs:
   # The delivery constitution is compiled by the *recorded* brokkr, not by
   # whatever `cargo install` would resolve today — two 0.12.0 binaries have
   # already disagreed (the bundle grammar moved). The pin lives in
-  # `bundles/self/tooling.json`, an operator-owned record (commit SHA, never
-  # a version string); absent or malformed, this job refuses with the name
+  # `bundles/self/tooling.json`, an operator-owned source-and-artifact record;
+  # the published binary digest, not a version string, admits execution.
+  # Absent or malformed, this job refuses with the name
   # of what is wrong — fail closed, never silently skipped (AC52.1).
   brokkr-compile:
     name: brokkr bundle (pinned)
@@ -249,15 +250,25 @@ jobs:
             echo "REFUSAL: $record is absent — the brokkr pin is an operator-owned record (docs/decisions/0045-delivery-repairs.md); the bundle cannot be compiled against a known toolchain without it, so this job refuses" >&2
             exit 1
           fi
-          if ! jq -e '.brokkr | type == "object"
-              and (.sha | type == "string" and test("^[0-9a-f]{40}$"))
-              and (.version | type == "string" and test("^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"))' \
+          if ! jq -e -s 'length == 1 and (.[0].brokkr | type == "object"
+              and (.sha | type == "string" and test("\\A[0-9a-f]{40}\\z"))
+              and (.version | type == "string" and test("\\A(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\z")))' \
               "$record" > /dev/null; then
-            echo "REFUSAL: $record is malformed — expected {\"brokkr\": {\"sha\": \"<40 lowercase hex>\", \"version\": \"<major.minor.patch>\"}}" >&2
+            echo "REFUSAL: $record is malformed — expected brokkr.sha (40 lowercase hex) and brokkr.version (major.minor.patch)" >&2
+            exit 1
+          fi
+          if ! jq -e '.brokkr.binary_sha256 | type == "string" and test("\\A[0-9a-f]{64}\\z")' "$record" > /dev/null; then
+            echo "REFUSAL: $record brokkr.binary_sha256 must be 64 lowercase hexadecimal characters" >&2
+            exit 1
+          fi
+          if ! jq -e '.brokkr.binary_url | type == "string" and test("\\Ahttps://github\\.com/feedback-loop-ai/brokkr/releases/download/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\\z")' "$record" > /dev/null; then
+            echo "REFUSAL: $record brokkr.binary_url must be a single-line HTTPS release asset URL under github.com/feedback-loop-ai/brokkr/releases/download/" >&2
             exit 1
           fi
           echo "sha=$(jq -r '.brokkr.sha' "$record")" >> "$GITHUB_OUTPUT"
           echo "version=$(jq -r '.brokkr.version' "$record")" >> "$GITHUB_OUTPUT"
+          echo "binary_sha256=$(jq -r '.brokkr.binary_sha256' "$record")" >> "$GITHUB_OUTPUT"
+          echo "binary_url=$(jq -r '.brokkr.binary_url' "$record")" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: feedback-loop-ai/brokkr
@@ -272,24 +283,53 @@ jobs:
           cargo test --locked -p brokkr-core policy::tests
           cargo test --locked -p brokkr-runtime --lib aggregate
           cargo test --locked -p brokkr-runtime --lib candidate_binding_tests
-      # --locked: the recorded commit's own Cargo.lock, never a fresh resolve.
-      - name: Build the pinned brokkr
-        working-directory: brokkr-src
-        run: cargo build --release --locked
-      - name: Assert the built version is the recorded one
+      # Source tests above prove patch semantics; only the published, admitted
+      # executable below compiles the bundles. Live acquisition is CI-owned.
+      - name: Admit the published brokkr and compile every recipe
         env:
+          BINARY_URL: ${{ steps.tooling.outputs.binary_url }}
+          BINARY_SHA256: ${{ steps.tooling.outputs.binary_sha256 }}
           RECORDED_VERSION: ${{ steps.tooling.outputs.version }}
         run: |
-          built="$(brokkr-src/target/release/brokkr --version)"
-          expected="brokkr $RECORDED_VERSION"
-          if [ "$built" != "$expected" ]; then
-            echo "REFUSAL: the built brokkr is '$built' but the record pins '$expected'" >&2
+          set -euo pipefail
+          engine_dir="$(mktemp -d "$RUNNER_TEMP/brokkr.XXXXXX")"
+          trap 'rm -rf "$engine_dir"' EXIT
+          artifact="$engine_dir/brokkr"
+          if ! curl --fail --location --proto '=https' --proto-redir '=https' \
+              --connect-timeout 10 --max-time 120 --output "$artifact" "$BINARY_URL"; then
+            echo "REFUSAL: brokkr binary_url download failed: $BINARY_URL" >&2
             exit 1
           fi
-      - name: Compile the delivery bundle with the pinned brokkr
-        run: |
+          if ! observed="$(sha256sum "$artifact")"; then
+            echo "REFUSAL: brokkr binary_sha256 could not be checked for $artifact" >&2
+            exit 1
+          fi
+          observed="${observed%% *}"
+          if [ "$observed" != "$BINARY_SHA256" ]; then
+            echo "REFUSAL: brokkr binary_sha256 mismatch: expected $BINARY_SHA256, observed $observed" >&2
+            exit 1
+          fi
+          chmod 700 "$artifact"
+          built="$("$artifact" --version)"
+          expected="brokkr $RECORDED_VERSION"
+          if [ "$built" != "$expected" ]; then
+            echo "REFUSAL: admitted brokkr version is '$built' but the record pins '$expected'" >&2
+            exit 1
+          fi
           for recipe in self codex codex-careful codex-fast; do
-            brokkr-src/target/release/brokkr compile --bundle "bundles/$recipe"
+            output="$engine_dir/$recipe.log"
+            if "$artifact" compile --bundle "bundles/$recipe" > "$output" 2>&1; then
+              cat "$output"
+            else
+              status=$?
+              cat "$output"
+              echo "REFUSAL: brokkr compile --bundle bundles/$recipe failed (exit $status)" >&2
+              exit "$status"
+            fi
+            if grep -q 'lets the run go on without reading' "$output"; then
+              echo "REFUSAL: brokkr compile --bundle bundles/$recipe emitted a policy-sweep warning" >&2
+              exit 1
+            fi
           done
 
   # The 5k delivery-bound proof at release optimization, tag-scoped: a slow

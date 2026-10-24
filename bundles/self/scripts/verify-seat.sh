@@ -65,21 +65,20 @@ if ! integrity="$(sha256sum --check --strict "$pin_dir/shims.sha256" 2>&1)"; the
   } >> "$notes"
 fi
 
-# 2. The launched engine is the pinned one. The record names the source SHA;
-#    `brokkr --version` prints only a version, which cannot establish that
-#    SHA, so identity is the launched binary's sha256 against the digest the
-#    operator records for the build of that SHA (.brokkr.binary_sha256, a
-#    string or a list). No recorded digest is an unprovable identity, and
-#    refuses (AC5).
+# 2. Compare the launched executable's SHA-256 with the operator-recorded
+#    binary_sha256 beside this pinned script (a string or a list). Version
+#    equality cannot establish byte identity. This checks the recorded digest,
+#    not source provenance or reproducibility of the base-plus-patches build.
+#    Setup provisions the artifact before this offline seat runs.
 recorded_sha="$(jq -r '.brokkr.sha // empty' "$pin_dir/../tooling.json" 2>/dev/null)"
 launched="$(command -v "$brokkr" 2>/dev/null)" || fail_now "verify-seat: the launched brokkr '$brokkr' cannot be resolved; its identity is unprovable"
 launched_digest="$(sha256sum "$launched" 2>/dev/null | cut -d' ' -f1)"
 recorded_digests="$(jq -r '.brokkr.binary_sha256 | if type == "array" then .[] elif type == "string" then . else empty end' "$pin_dir/../tooling.json" 2>/dev/null)"
 if [ -z "$recorded_digests" ]; then
-  fail_now "verify-seat: tooling.json records no binary_sha256 for brokkr ${recorded_sha:-?}; the launched $launched (sha256 $launched_digest) cannot be proved to be that build — version alone does not establish the source SHA"
+  fail_now "verify-seat: tooling.json records no binary_sha256 for brokkr ${recorded_sha:-?}; the launched $launched (sha256 $launched_digest) cannot be checked against the recorded digest"
 fi
 printf '%s\n' "$recorded_digests" | grep -qx "$launched_digest" ||
-  fail_now "verify-seat: the launched brokkr $launched (sha256 $launched_digest) is not the recorded build of ${recorded_sha:-?}"
+  fail_now "verify-seat: the launched brokkr $launched (sha256 $launched_digest) does not match the recorded binary_sha256 ($recorded_digests) for source base ${recorded_sha:-?}"
 
 launched_q="$(printf '%q' "$launched")"
 
