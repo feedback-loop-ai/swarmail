@@ -1,86 +1,68 @@
-# Tasks — Require the complete merge-check set
+# Tasks — Require the missing merge checks
 
-Ordered implementation obligations for [spec.md](spec.md). All boxes start
-open: chief has drafted a design, not repaired settings or proved enforcement.
-External actions belong to the authorized operator/driver; ordinary seats do
-not push or merge. Each task includes its proof and cannot be ticked on source
-inspection alone where behavior or live state is required.
+Ordered downstream tasks for [spec.md](spec.md). All start open: this design
+has not changed settings or proved implementation. The 2026-10-24 scope
+clarification replaces the old watcher/probe tasks; their historical obligations
+remain outstanding in the spec and Git history, not executable instructions.
+External operations require the authorized capability, never host workarounds.
 
-- [ ] **T1 — Resolve owner and live baseline (AC1, AC3).** Trace the actual
-  delivery invocation to repository owner, exact watcher/config/test/caller
-  paths and launched revision; capture authoritative main protection/effective
-  rules, actor permission, all existing context/app tuples and both legitimate
-  producers. Fill the plan's discovery details before owner edits.
-  **Test:** retained source/caller trace and raw API/check receipts identify
-  those exact entities; review confirms no invented owner or YAML-derived
-  baseline. Missing access remains an explicit outstanding prerequisite.
-- [ ] **T2 — Prepare the coordinated repair (AC1, AC2).** Reserve the settings
-  writer with the operator/driver, compute the exact union and prepare the
-  narrow request and run-specific operation ledger. Choose the owner's existing
-  expected-set mechanism and record the intended equality comparison.
-  **Test:** compare baseline/request to prove every old tuple and unrelated
-  field is preserved, both additions are present and strict/admin flags stay
-  true; exercise a changed pre-write baseline to refuse stale application.
-- [ ] **T3 — Repair and prove the actual wait path (AC3, AC4).** Add the full-set
-  comparison, producer/current-attempt/candidate association and fail-closed
-  behavior in the owner. Preserve bounded waiting, re-read head/base/policy,
-  discard cache after restart and propagate expected head through its caller.
-  **Test:** owner behavioral suite covers omitted additions, each independent
-  red, missing/pending/non-success, empty/partial pages, wrong app/duplicates,
-  stale success/reruns, valid and invalid synthetic checks, head/base/policy
-  change, API/auth/schema errors, timeout/cancellation/restart and all-green
-  control. Show the omission regression fails before repair; reuse existing
-  cases only where they execute the same real path.
-- [ ] **T4 — Review and activate owner change (AC3, AC4).** Obtain review in the
-  actual owner and record its change/revision and the launch configuration
-  consuming it, including an external owner link when applicable.
-  **Test:** actual launch/caller observation consumes that reviewed revision
-  and expected set; owner checks pass. A local unused implementation or an
-  unreviewed external diff does not pass.
-- [ ] **T5 — Apply the scoped protection update (AC1).** Re-read under the
-  reservation, reconcile any changed baseline, perform the authorized narrow
-  update and capture effective read-back. Never restore a stale snapshot.
-  **Test:** raw before/immediate-before/after comparison proves the full union,
-  preserved app constraints, strict/admin true and no unrelated changes;
-  failed read-back produces an unresolved/refused outcome, never ready.
-- [ ] **T6 — Align the one inventory (AC2).** Update only the relevant Gates
-  prose in `docs/house-rules.md` with the complete actual blocker identities,
-  keeping local and CI/tag distinctions. Reconcile discovery into this plan.
-  **Test:** retained exact-set comparison proves `D = E = R`; existing delivery
-  constitution/recipe tests pass and no tag-only publisher/rate obligation
-  has become a new PR requirement.
-- [ ] **T7 — Prove Brokkr refusal independently (AC5, AC7).** Through the
-  authorized driver, create a run-unique throwaway PR with only the genuine
-  Brokkr job deterministically red. Fulfil every other check and prerequisite,
-  establish safe refusal preconditions and retain the server response.
-  **Test:** same-candidate receipts establish only Brokkr is blocking, the
-  actual watcher refuses and GitHub refuses without bypass or merge. Generic
-  BLOCKED, wrong app or another outstanding prerequisite fails this proof.
-- [ ] **T8 — Prove Docker refusal independently (AC6, AC7).** Use a distinct
-  throwaway PR with only the genuine Docker job red, following the same
-  stable-candidate/no-publication/no-bypass procedure.
-  **Test:** full settings/check/prerequisite receipts and actual refusal
-  isolate Docker while Brokkr is green; watcher refuses; PR remains unmerged.
-- [ ] **T9 — Preserve evidence and clean probes (AC7).** Save raw receipts,
-  checksum manifest and a durable operator-retained handoff link before
-  closing both PRs and deleting only their owned refs. Reconcile unknown
-  interrupted outcomes before retrying, then read final effective protection.
-  **Test:** receipt integrity verifies independently of temporary refs; close/
-  delete responses plus subsequent reads prove closed/unmerged PRs, absent
-  owned refs and unchanged strict/admin enforcement with the complete set.
-- [ ] **T10 — Verify and review the implementation (AC8).** Finish tracked
-  artifacts and commit unsigned; run every gate in the authoritative house
-  inventory, pinned hermetic verify and protected full review. Preserve owner
-  review/tests and distinguish CI-only work from local evidence.
-  **Test:** command exits/logs and genuine run results bind to the final
-  candidate and pinned tooling; exact coverage/selftest, publish/seal proofs,
-  locked builds, license/native-tls and all other house obligations pass.
-  Any failure stays outstanding; targeted tests do not substitute.
-- [ ] **T11 — Prove root integration before closure (AC1–AC8).** Hand off for
-  operator sealing/integration, retain actual integrated root SHA/CI and the
-  launched reviewed watcher revision, re-read protection after integration
-  and compare documented/expected/live sets again. Keep #205 open until all
-  criteria and cleanup are evidenced; no release or unrelated setting change.
-  **Test:** final root CI run/check identities and all gate/owner receipts
-  pass for their recorded final revisions; final strict/admin flags and full
-  union remain true, and the AC1–AC8 evidence map has no missing obligation.
+- [ ] **T1 — Capture the live baseline (AC1, AC5).** Through the authorized
+  executor, retain fresh permission, full main protection/effective rules and
+  genuine producer receipts. Separate branch/ruleset sources and confirm both
+  exact names, all existing app constraints, admin permission and strict/admin
+  enforcement. Preserve prior failure records.
+  **Test:** raw timestamped complete responses identify the target and all
+  tuples; malformed/partial/unreadable observations refuse mutation. Missing
+  capability is reported as an unmet prerequisite, never a fabricated baseline.
+- [ ] **T2 — Prepare a coordinated narrow operation (AC2).** Record one writer
+  and interval, compute the two-context union and retain the intended supported
+  payload. Preserve legacy unbound and bound identities, strict mode and policy
+  ownership; reconcile conflicting bindings. Do not use full protection PUT.
+  **Test:** reproducible baseline/request comparison shows every old tuple plus
+  exactly the additions, no ruleset migration or unrelated field change; an
+  equivalent already-applied state yields no write.
+- [ ] **T3 — Prove comparison and recovery controls (AC2, AC3).** Retain a small
+  run-local comparison and adversarial observations before live mutation.
+  **Test:** exact union/no-op pass; missing each addition separately, removed
+  old tuple, changed app, strict/admin false, unrelated or ruleset change,
+  malformed/incomplete state and stale baseline refuse. An interrupted response
+  followed by already-applied fresh state reconciles without duplicate write;
+  unavailable read-back remains UNKNOWN. These controls prove no live refusal.
+- [ ] **T4 — Apply and read back (AC1–AC3).** Re-read immediately under
+  coordination; recompute on drift, then execute only the narrow required-check
+  update or verified no-op. Retain response and fresh full/effective read-back.
+  Resolve ambiguous outcomes from remote truth without blind retry/rollback.
+  **Test:** real raw before/immediate-before/after receipts and comparison prove
+  `B1 = B0 union A`, unchanged rulesets/other fields, strict/admin true and both
+  exact names with their established producer constraints. A missing read-back
+  cannot complete this task.
+- [ ] **T5 — Align the sole inventory (AC4).** After verified read-back, update
+  `docs/house-rules.md` Gates with the full exact effective blocker set and
+  relevant producer constraints; preserve every local/CI/tag distinction.
+  **Test:** retained identity-aware set comparison proves documentation equals
+  effective read-back; diff review shows no additional inventory, gate command,
+  CI job, runtime, dependency, accepted-decision or recipe change.
+- [ ] **T6 — Commit and verify the candidate (AC6).** Commit the scoped
+  documentation unsigned and execute all required house gates with the recorded
+  candidate-local engine and pinned proof ownership; retain existing delivery
+  constitution/recipe regression evidence and distinct CI-only obligations.
+  **Test:** final-candidate command exits/logs and hermetic verify prove the
+  complete authoritative inventory, exact coverage/selftest, locked operations,
+  publish/seal proofs, licenses/native-tls and shim checks. Unexecuted or failed
+  proof remains outstanding; targeted regressions are no substitute.
+- [ ] **T7 — Obtain the selected engine review (AC6).** Let the protected engine
+  dispatch distinct Astra correctness, official DeepSeek Flash security,
+  Sonnet 5.5 tests, Astra guarantees and independent Fable 5.1 reviewers.
+  **Test:** five genuine result identities bind to the candidate under accepted
+  0058, with worst-verdict/security-hold behavior and no fallback or DeepSeek
+  Pro. Missing results cannot be inferred from this design or another review.
+- [ ] **T8 — Re-read and hand off honestly (AC3–AC6).** Retain final fresh
+  protection/effective-rule comparison, receipt checksums and durable evidence
+  handoff. Record both live refusal experiments PENDING under the no-probe
+  charter and watcher/cleanup/root-integration obligations unclaimed. Keep
+  issue #205 open; perform no PR/ref creation, push, merge, bypass or release.
+  **Test:** final state still matches the intended union and one inventory;
+  evidence index distinguishes verified configuration from pending behavior,
+  links candidate/gate/review receipts, preserves historical failures and
+  records no prohibited external action. Drift or unavailable final observation
+  prevents a current-state verification claim and requires reconciliation.
