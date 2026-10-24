@@ -286,11 +286,11 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         ),
         (
             "bundles/self/scripts/design-check.sh",
-            "ba32e18bd8808a36b1f5786dc259d6f37a53c6d105b70be4a0ebdd7a60665124",
+            "05285f7c0c0b1ee89e00daafefcf4d082c3057f07dcbe8b16c060f517e92134e",
         ),
         (
             "bundles/self/scripts/verify-seat.sh",
-            "71670cf7e65fc47ff9dfc10de65f420c5dfb05e33704a25b83f79093fa2a7639",
+            "b55fa4c0ae739b6d7da8c17ec0e622a1aa86bf90f16463562dc81b6c99aaf2ed",
         ),
         (
             "bundles/self/scripts/delivery-proof-test.sh",
