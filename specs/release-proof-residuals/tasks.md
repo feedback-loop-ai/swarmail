@@ -1,8 +1,63 @@
 # Ordered tasks — release proof residuals
 
-These are subsequent implementation/delivery obligations. No checkbox is
-satisfied by this design commit or inherited receipts. Each task names its
-proving test; local completion never closes external criterion 18.5.
+## Continuation — 2026-10-24
+
+Run `epic-192-issue-186-residual-foll-fa975081`, inspected base `f00d8b5`.
+These are ordered implementation/delivery tasks, not checkmarks earned by the
+chief's design commit. The boxed workspace exposes no authentic journal; supplied
+context proves triage and panel positions only. No historical task is newly checked.
+Every later checkmark needs a run/event or journal-attached receipt locator plus
+candidate applicability. Missing evidence stays open; no journal is fabricated.
+
+- [ ] **R1 — Bind current base and evidence (AC11–AC12).** Capture actual
+  head/tree/worktree/changed files, script/shim hashes, local engine and ordered
+  patch identities. Inventory authentic journal evidence and establish the
+  requested current-base count from a real log. **Test:** compare to tooling.json,
+  verify history/applicability and successful locked workspace test suite totals;
+  no log means the count stays unproved, regardless of the requested 785.
+- [ ] **R2 — Refuse unknown request modes (AC9).** Add a default refusal
+  before existing expectation construction, preserving all recognized modes.
+  **Test:** the complete canonical real loopback publish proof passes with all
+  nine existing exact request assertions and existing credential/workflow checks.
+- [ ] **R3 — Prove the token-log collision (AC10).** Add a subshell regression
+  beside the existing successful token-only assertion, using its unchanged log
+  and explicit status/stderr checks. **Test:** invalid mode refuses and names its
+  value/description; remove only the new guard in an adjacent disposable copy
+  and require the regression to fail for unexpected admission; restore exact
+  bytes and pass the full canonical proof. Retain red/restored logs and hashes.
+- [ ] **R4 — Execute final candidate gates (AC13).** Run every gate from the
+  sole house inventory, shim checks and error-sensitive native-tls absence after
+  restoration. **Test:** command/exit/log/digest receipts, exact coverage and
+  selftest, actual test suite totals and pin-bound compile. Missing/failing
+  proofs remain open. Local passes do not complete immutable verify in T7.
+- [ ] **R5 — Append current receipt and reconcile obligations (AC11–AC12,
+  AC14).** Append dated current-pin/base evidence; identify old e525/597f/784,
+  old run/commits and NEXT-186 sibling path as historical. Correct plan execution
+  applicability and audit T1–T9 individually against authentic journal receipts.
+  **Test:** old receipt at f00d8b5 is a byte-identical prefix; every new checkmark
+  proves its entire obligation and candidate scope; requested/final counts have
+  logs or explicit outstanding status. Six external receipt categories survive
+  and external 18.5 remains unchecked. Missing records permit an honest unresolved
+  disposition, never inferred completion of the underlying task.
+- [ ] **R6 — Later-owner delivery evidence (AC12–AC14).** Hand off to actual
+  immutable verify and all four configured independent engine reviewers, protected
+  ship and root integration/CI. **Test:** authentic candidate-bound dispatch,
+  review/ship and root CI records, no Pro/fallback or substituted local assertions.
+  This belongs to later phases; it authorizes no chief-side delegation, publication
+  or closure of external 18.5.
+
+## Retained obligations and current dispositions
+
+Original T1–T9 retain their obligation identities and paired tests below.
+T1 requires current provenance reconciliation. T2–T6 have historical local
+claims in proof-receipt.md, but no visible journal establishes completion for
+this continuation. Their existing implementation is retained; they are not
+instructions to recreate already-present repairs. T7 lacks actual immutable
+verify evidence; T8 lacks independent review/ship/root CI evidence. T9 has a
+historical pending receipt, with the current addendum still to be implemented.
+None is complete solely from the receipt prose, local history or chief inspection.
+For each task, later record authentic evidence or the exact unavailable obligation;
+partially proved compound tasks stay unchecked or are split without erasing duties.
 
 - [ ] **T1 — Bind scope and proof identities (AC7).** Record base/tree, tool
   identities, candidate script hashes, unchanged shim hashes and exact brokkr

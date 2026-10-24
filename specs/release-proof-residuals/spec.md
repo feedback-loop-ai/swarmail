@@ -1,25 +1,32 @@
 # Release proof residuals
 
-Status: design draft for #186 criteria 18.1–18.4 under epic #192.
-This design authorizes bounded local proof/package repairs, not release or
-issue closure. Criterion 18.5 remains **EXPLICIT EXTERNAL PENDING**.
+Status: continuation design draft, 2026-10-24, for issue #186 under epic #192.
+Run: `epic-192-issue-186-residual-foll-fa975081`. Slug: `release-proof-residuals`.
+Criterion **18.5: EXPLICIT EXTERNAL PENDING**; #186/#192 remain open.
 
 ## Feature and rationale
 
-Make each requested chart/publish refusal distinguish its actual failure arm,
-prove the refusal fixture owns its socket throughout use, and prove Cargo
-packages intended root contents without synthetic in-tree cache decoys.
-Fail-closed exit alone is insufficient: the wrong validation stage can refuse
-and let a weak assertion pass. Actual Cargo membership, rather than a guessed
-glob interpretation, establishes the packaging boundary.
+Close the internal request-assertion helper's unknown-mode fallback and make
+current proof provenance auditable without rewriting historical evidence.
+`assert_requests` currently treats every value other than `none` as token-bearing
+and adds a manifest only for `manifest`. An unknown mode therefore succeeds
+against a token-only log. A refusal against an empty log would miss this bug.
 
-The inspected base is `df8630f` (PR212). It already contains the three requested
-chart cases, held non-listening refusal socket, manifest-close experiment,
-HTTP-000 classification control and root license/NOTICE anchors. These are
-retained and freshly proved, not rewritten to manufacture a diff. The known
-remaining assertion gap is the three require-present unknown-state cases in
-`bundles/self/scripts/publish-guard-test.sh`, which accept only the generic
-`registry state unknown` diagnostic.
+The inspected continuation base is
+`f00d8b532d7e255086913a53b21aa47c27fbe7c6`, tree
+`1c4d0f3edc82a037033386e8a7f09802c77d7351`. Its local history is engine pin
+`238372d`, design `79c3df9`, implementation `667b825`, then receipt `f00d8b5`.
+PR212/`df8630f` is the original design's historical base, not this continuation's
+base. The old receipt's `2c6f3e1`/`2dce0b4` identities remain historical claims;
+no equivalence to local commits is inferred.
+
+The three presence needles, request assertions and Cargo anchors already exist
+in this base. The chart, holder and HTTP-000 proofs remain inherited obligations
+whose evidence must be reconciled, not new defects to manufacture. Original
+AC1–AC8 below retain their proof requirements; continuation AC9–AC14 delimit the
+new work. Historical local proof is not current independent verify or release
+proof. The requested 785-test base must be established from an actual run log,
+not substituted for the historical receipt's 784 count.
 
 ## Authority and scope
 
@@ -38,35 +45,43 @@ frozen guarantee; no new ADR is declared. A discovered semantic/security
 change requires escalation and, where applicable, a proposed ADR and operator
 resolution under 0045 §8 before contradictory implementation.
 
-Implementation owners are `scripts/chart-verify.sh`, canonical
-`bundles/self/scripts/publish-guard-test.sh`, `Cargo.toml`, and directly
-necessary package documentation/fixtures. A demonstrated defect alone can
-justify editing canonical `bundles/self/scripts/publish-guard.sh` within the
-existing contract. Public publish dispatchers, shim hashes, CI, recipes/policy,
-versions, dependencies, allowlists, chart semantics and Rust production code
-are outside scope. Root owns integration and CI. The recorded `engine` triage
-keeps the full route: Qwen Max correctness, Claude Opus security, official
-DeepSeek Flash guarantees and DashScope GLM-5.3 tests, without Pro or fallback.
-The chief does not dispatch reviewers or choose the next phase.
+The continuation implementation touches only canonical
+`bundles/self/scripts/publish-guard-test.sh` and this directory's
+`proof-receipt.md`, `plan.md`, and `tasks.md`. This chief changes only the three
+design artifacts. Production guard, chart script, package helper, Cargo.toml,
+public shims/hash inventory, CI, tooling pin, recipes/policy, versions,
+dependencies, allowlists, Rust and accepted decisions are outside the residual
+repair. A discovered further defect returns for bounded scope review.
 
-## Panel synthesis and rulings
+Triage has already selected `engine` (TRIAGE-ENGINE). Under 0057 §§6–7, gate
+repairs retain four independent configured reviewers: DashScope Qwen Max
+correctness, Claude Opus security, official DeepSeek Flash guarantees and
+DashScope GLM 5.3 tests. Four is the smallest permitted review for this
+classification. No Pro, fallback or chief-side review dispatch. Provider failure
+stops; the engine owns phase selection and protected review/ship.
 
-The chief read both run-local positions (`simplicity.md`, `robustness.md`) and
-the run's intake framing under `.brokkr/state/`; they remain uncommitted.
+## Panel synthesis and rulings — 2026-10-24
 
-| Question | Ruling and cost |
+Read both positions in `.brokkr/state/design/positions/` and the intake framing
+in `.brokkr/state/tasks/epic-192-issue-186-residual-foll-fa975081.md`. These are
+run-local evidence, not committed artifacts. The two positions agree on the
+substantive correction; there is no genuine policy conflict to average away.
+The following rulings reconcile implementation size with evidentiary strength.
+
+| Question | Adoption, rejection and cost |
 |---|---|
-| Existing repairs versus replacement | Adopt simplicity's existing-owner, evidence-first repair and robustness's defect-specific controls. Reject duplicate chart cases, a second HTTP fixture, socket broker and generic mutation framework. Cost: existing fixes still need fresh independent evidence; a small diff does not imply a cheap proof. |
-| Diagnostic precision | Adopt robustness's stage/status and per-case request identity checks; adopt simplicity's three targeted presence-needle replacements. Token HTTP failure and refused token connection may share `token exchange failed` because they enter the same arm. Reject a new production error solely to distinguish those scenarios. Cost: no separate production taxonomy for transport versus HTTP exchange failures. |
-| Proof matrix | Require wrong-reason and inappropriate-admission mutations for targeted arms and independently target each of the three presence assertions. Shared manifest-close/000 arms need one demonstrated shared-path proof, not a cartesian duplication by mode. Add mode-specific cases only if a control reveals mode-specific unproved behavior. Cost: receipts must establish applicability instead of asserting every combination ran. |
-| Cargo anchors: genuine disagreement | Adopt robustness's explicit leading `/` for all intended includes, including slash-containing source/test/bench/asset/data patterns. Reject simplicity's restriction to changing only patterns proved leaky: the user's explicit root-boundary request warrants this small declarative clarification. Accept simplicity's empirical constraint: behavior-equivalent patterns are recorded as equivalent, never called newly fixed defects. Cost of this ruling: up to five behavior-preserving manifest edits and membership comparison; cost of the losing alternative: root intent remains implicit and Cargo-specific. |
-| Refusal lifetime | Both agree: retain the existing child-held non-listening port-0 socket, predicate readiness and joined cleanup. Adopt robustness's holder-close negative control. Reject release/reuse and probabilistic stress as proof. Cost: one held descriptor and platform-specific real socket evidence. |
-| Larger release remedies | Reject retries, overrides, skip-on-existing, rollback, serialization, digest enforcement and a release ledger. Retain the named outage, partial-release and concurrent check/push costs. These repairs do not purchase registry immutability or future-release evidence. |
+| Helper shape | Adopt simplicity's one local `case` guard and robustness's closed vocabulary. Preserve the existing comparisons. Reject a mode framework, new fixture process or production error taxonomy. Cost: the tiny Bash helper remains manually maintained. |
+| Regression strength | Adopt both positions' token-log collision using the existing real token-stage case, subshell refusal and mode-specific diagnostic. Adopt robustness's guard-only reversion control. Reject empty-log refusal as proof. Cost: an additional full negative/restored proof pair; omitting it would permit the old bug to pass. |
+| Receipt identity | Adopt robustness's candidate/tree/command/exit/digest binding and simplicity's append-only existing receipt. Reject cosmetic replacement of old pin/count/path strings, a new receipt schema or provenance database. Cost: a longer addendum and human evidence audit; a cosmetic update would destroy historical applicability. |
+| Scope and runtime analysis | Adopt simplicity's four implementation-file boundary. Retain robustness's frozen-guarantee analysis as preservation constraints, without converting it into runtime work. Reject reopening packaging, holder, chart, storage, webhook or TLS design absent a demonstrated defect. Cost: existing limitations and missing historical evidence remain visible. |
+| Completion and review | Adopt both positions' journal-backed per-obligation reconciliation and full engine review. Reject checking compound T7/T8 from local logs or downgrading review because the diff is small. Cost: missing records leave boxes open and four reviews cost more than one; the smaller route would violate the selected gate-repair classification. |
+| Release authority | Adopt explicit pending 18.5 and the unchanged six-category future receipt. Reject live GHCR access and new release policy. Cost: outage refusal, concurrent check/push races, partial image/chart publication and external receipt delay remain. |
 
 ## Acceptance Criteria
 
-Each criterion requires current evidence from the final candidate; inherited
-claims and this draft are not passes.
+Original AC1–AC8 remain evidence obligations; their recorded historical work is
+reconciled by AC12. Neither inherited claims nor this draft are passes. The
+continuation does not authorize repeating implementation already present.
 
 - **AC1 / 18.1 — chart discrimination.** The real chart selftest separately
   exercises malformed appVersion (`appVersion is not a release semver string`),
@@ -147,6 +162,57 @@ claims and this draft are not passes.
   exact checklist below marked **EXPLICIT EXTERNAL PENDING**. No local result
   closes #186 or #192, simulates a release receipt or authorizes tags, registry
   credentials, GHCR publication/deletion, push or merge.
+
+## Continuation acceptance criteria — 2026-10-24
+
+- **AC9 — closed helper modes.** Exactly `none`, `token`, and `manifest`
+  retain their existing exact sequence comparisons. Every unrecognized supplied
+  mode refuses through `fail` before comparing log bytes, with nonzero exit and
+  a diagnostic naming the invalid mode and case description. All nine existing
+  recognized call sites and their request scope/tag checks remain intact.
+- **AC10 — discriminating refusal regression.** After an existing real
+  token-only scenario passes its recognized-mode assertion, the same unmodified
+  log is tested with an invalid mode in a subshell. Explicit status and stderr
+  assertions require refusal for that mode, not request mismatch. The complete
+  canonical loopback proof passes. In a disposable adjacent copy, removing
+  only AC9's guard makes the new assertion fail specifically because the invalid
+  mode was admitted; exact restoration passes. No fabricated log, overridden
+  client/read operation, additional server or dependence on conditional errexit.
+- **AC11 — append-only current provenance.** Append a dated addendum to
+  [proof-receipt.md](proof-receipt.md); its prior bytes at `f00d8b5` remain an
+  unchanged prefix. Label source `597f4868e3fb971b62e6a368a2d8aa23271f4531`,
+  binary `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`,
+  784 tests, old run/commit identities and absolute `NEXT-186` sibling path as
+  historical, not current execution instructions. New evidence identifies
+  current worktree, base/candidate/tree and changes, exact commands/exits/logs,
+  canonical script digests and actual candidate-local engine. Bind source
+  `731189f9097308c01ae4f2b4c9caea5f41224844`, all three ordered patch paths and
+  full digests from tooling.json, and binary
+  `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
+  Identity checking is not a claim of rebuilding the engine. Record actual
+  passed/failed/ignored suite counts and aggregate for the 785-test base and
+  final candidate; explain any discrepancy. The shell check need not increase
+  Rust's count. Missing logs are outstanding, never invented or borrowed.
+- **AC12 — evidence-bound tasks and base.** Plan names the actual current
+  base and distinguishes original ancestry. Every newly checked task cites an
+  authentic run ID/event or journal-attached execution receipt, candidate
+  applicability and all its obligations. Partial compound tasks remain unchecked
+  or split into evidenced local and outstanding owner obligations. Candidate
+  logs cannot complete immutable verify (T7), review/ship/root CI (T8), or
+  external 18.5. No journal is fabricated, imported or inferred from prose.
+  Missing authentic journal access remains an explicit evidence gap.
+- **AC13 — final candidate proof.** Execute every gate in the sole house
+  inventory with locked commands, exact 100% coverage and its selftest, pin-bound
+  compile, publish/seal proofs and license check. Check shims and native-tls
+  absence fail-closed: failed tree enumeration is not absence. Record candidate
+  proof separately from actual immutable verify dispatch; use the pinned proof
+  chain for verify, offline without installation. Re-run affected proofs after
+  code changes; design-only preflight never proves the later helper repair.
+  Failures, missing tools and CI-only obligations remain named and open.
+- **AC14 — external boundary.** Preserve `18.5: EXPLICIT EXTERNAL PENDING`
+  and all six checklist categories below. The external checkbox stays open.
+  No GHCR access, publication, push, merge, tag, release-policy change, decision
+  acceptance, or claim that AC18.5, #186 or #192 is done.
 
 ## Outstanding future guarded-release receipt
 

@@ -2,165 +2,174 @@
 
 ## Technical context
 
-One Rust crate, existing Bash proof scripts, Python loopback/Git fixtures,
-installed curl, Cargo and the pinned brokkr. No new dependency, library, service
-or runtime code. The plan template is absent from this checkout (only
-`.specify/templates/spec-template.md` exists); this plan supplies the requested
-technical context, constitution check, structure, research, data model,
-contracts, quickstart and risks directly.
+Continuation dated 2026-10-24 for run
+`epic-192-issue-186-residual-foll-fa975081`. One Rust crate with an existing
+Bash proof and Python loopback fixture; no new dependency or runtime code.
+Only `.specify/templates/spec-template.md` is present; no plan template exists
+in this checkout. This plan supplies its required sections directly.
+
+Current inspected base: `f00d8b532d7e255086913a53b21aa47c27fbe7c6`, tree
+`1c4d0f3edc82a037033386e8a7f09802c77d7351`. History runs through `238372d`
+(engine pin), `79c3df9` (design), `667b825` (implementation), `f00d8b5`
+(receipt). PR212/`df8630f` is historical original-design ancestry. The receipt's
+`2c6f3e1`/`2dce0b4` are historical claims, not silently mapped local identities.
+Capture the later design and implementation heads/trees at execution time.
 
 ## Constitution check
 
-The spec preserves 0001–0005, accepted 0019/0020/0045/0050 and proposed 0051's
-existing compatible behavior. No new semantic ruling is needed. Keep exact
-100% measured lines/branches/functions and all required gates. Public publish
-shims and `shims.sha256` stay byte-identical. A mutable candidate proof and
-an immutable dispatched proof have separate identities and receipts. Commit
-unsigned under 0056, never push. The recorded engine route under 0057 retains
-four independent review lenses; scope/security changes return for escalation.
-Root owns integration and CI, and 18.5 is external pending throughout local work.
+Preserve frozen 0001–0003, ingest extraction 0005 and accepted
+0019/0020/0045/0050/0056/0057. This internal proof-helper repair restores the
+existing assertion vocabulary and evidence obligations; it changes no public
+contract or ruling and needs no new decision. 0051 remains proposed. Preserve
+current compatible release behavior. No Rust, policy, pin, shim or dependency
+change is authorized. Exact coverage remains 100% of lines/branches/functions.
+
+Triage selected `engine`; four independent configured reviewers are the smallest
+permitted review under 0057: DashScope Qwen Max correctness, Claude Opus
+security, official DeepSeek Flash guarantees, DashScope GLM 5.3 tests. No Pro,
+fallback, recipe edits or chief-side reviewer dispatch. Protected review and
+security hold remain. Commit unsigned; do not push, merge, tag, publish or
+access GHCR. Root owns integration/CI; external 18.5 stays pending.
 
 ## Project structure and files
 
-| Path | Work |
+| Path | Continuation work |
 |---|---|
-| `bundles/self/scripts/publish-guard-test.sh` | Replace three generic presence needles; add precise per-case request/stage assertions as needed; retain the observer, one server and holder. |
-| `scripts/chart-verify.sh` | Prove three existing cases; edit only demonstrated fixture/assertion defects, retaining metadata/history/render owners. |
-| `Cargo.toml` | Make every intended include explicitly root-anchored and keep accurate comments; preserve all other package settings. |
-| `bundles/self/scripts/publish-guard.sh` | Conditional only: a demonstrated defect within the existing contract, with a paired regression. No production change is currently justified. |
-| `specs/release-proof-residuals/{spec,plan,tasks}.md` | Design artifacts; later record truthful local disposition and outstanding external receipt in the owning documentation. |
-| Run-private ignored evidence under `.forge/` | Disposable copies, generated synthetic package fixtures, logs, mutation diffs and receipts. No new journal; never rewrite inherited evidence. |
+| `bundles/self/scripts/publish-guard-test.sh` | Add one closed mode guard and one token-log collision refusal regression; preserve existing real fixture and all recognized-mode checks. |
+| `specs/release-proof-residuals/proof-receipt.md` | Append dated current-pin/base addendum, keeping the old receipt byte-for-byte as a prefix. Implementation owns this edit. |
+| `specs/release-proof-residuals/plan.md` | Correct base/current scope now; later attach actual execution applicability without replacing historical evidence. |
+| `specs/release-proof-residuals/tasks.md` | Preserve obligation identities; reconcile completion only with authentic run-journal evidence. |
+| `specs/release-proof-residuals/spec.md` | Chief's continuation synthesis and AC9–AC14, retaining AC1–AC8 and external checklist. |
+| Ignored run-private `.forge/` | Logs, guard-only disposable mutation, command receipts; never fabricate or replace a journal. |
 
-If repeatability requires a committed package fixture helper, keep it directly
-adjacent to the owning package documentation in this spec directory and narrow
-to AC5. Prefer generated disposable fixtures and an explicit runnable receipt
-over a committed fake cache or a general packaging framework. No CI wiring or
-other owner changes are authorized. The design commit itself contains only the
-three required design files.
+The chief commits exactly spec.md, plan.md and tasks.md. Later implementation
+is bounded to the canonical proof and receipt/plan/tasks. Existing chart,
+package helper, Cargo anchors, production guard and public dispatchers remain
+owned by their present proofs. Reopen them only through explicit scope review
+if new evidence demonstrates another defect.
 
-## Research and decisions already settled
+## Research and rulings
 
-Inspection confirms that the chart cases, holder and manifest-close/000 controls
-already exist. Fresh execution must establish their discrimination. Presence
-unknown-state assertions are the known weak point. The two positions differ
-only materially on blanket root anchoring: use explicit anchors, but require
-Cargo membership evidence before calling a particular old pattern defective.
-A slash-containing old pattern may already behave identically. No further
-architectural research is needed; installed tool compatibility and actual
-packaging behavior are execution questions, not guessed requirements.
+All nine existing `assert_requests` callers use `none`, `token` or `manifest`.
+Unknown values currently construct the token expectation and can pass. An empty
+log is therefore a vacuous regression fixture. Both positions recommend reusing
+an existing token-stage HTTP case and its completed log. The chosen guard is a
+small `case` before the current expectation construction; default calls `fail`
+with description and invalid mode. No argument framework or new process.
+
+Chief verified the candidate-local binary and patch hashes against tooling.json;
+this is identity evidence, not an engine rebuild or gate result. No journal is
+visible in this boxed workspace. Supplied context proves this run's triage and
+position results, not verify/review/ship or historical task completion. Obtain
+only authentic authorized read-only records when available; otherwise retain
+unchecked dispositions. No importer, new evidence parser or fabricated journal.
 
 ## Data model and contracts
 
-No application schema or public API changes. Retain the existing fixture's
-control file (token/manifest poles), per-case request log and port readiness
-file. The same child owns both HTTP server and refusal holder; teardown tracks
-and joins that exact PID. The 000 observer remains a status-only classifier
-control following a successful real request.
+No application schema/API changes. The private helper accepts the closed set
+`none|token|manifest`; its existing exact request-log strings remain authoritative.
+Invalid modes must fail before log comparison and identify the caller and value.
+Use a subshell because `fail` exits; explicitly assert nonzero and the named
+refusal without depending on `set -e` inside a conditional.
 
-A proof receipt records AC/case, candidate identity, exact script/tool hashes,
-command/environment with secrets omitted, exit, named diagnostic, mutation
-identity and restored-byte identity. This is an evidence convention, not a new
-engine result schema. Record status as pass, fail or outstanding honestly.
-Package evidence contains actual Cargo lists, asserted required members, decoy
-paths, membership deltas and archive byte comparisons. 18.5 never receives a
-local pass. No current evidence is inferred from the older epic spec/handoff.
+The append-only receipt uses prose/tables, not a new engine schema. Each new proof
+records command, exit, log locator, base/candidate/tree, changed-file applicability,
+script hash, executable path/hash and input pin. Attach authentic run event or
+journal receipt references for task completion separately from local command logs.
+Describe unavailable records explicitly. Preserve the historical receipt as
+bytes, including its old absolute sibling command; mark that command historical
+in the addendum instead of rerunning in the sibling checkout.
+
+Current engine identity (paths relative to `bundles/self/`, order significant):
+
+| Input | Recorded identity |
+|---|---|
+| Source base | `731189f9097308c01ae4f2b4c9caea5f41224844` |
+| `tooling-patches/0001-preserve-review-residual-facts.patch` | `5d4da2217135c5a2ca14354ae9907623cf67ff0076b078277cb77a09ad3020b5` |
+| `tooling-patches/0002-preserve-review-scope-and-fixes.patch` | `361272eff344a5d5e05b832281407a99c3f1a77fc1fbc5216e19fb4ce7487173` |
+| `tooling-patches/0003-bind-verified-candidate.patch` | `4098228e7649d1bda8961bb491aa29d982b462c420470e265f8b9acf0a148d96` |
+| Candidate-local `.forge/bin/brokkr` SHA-256 | `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f` |
+
+Version 0.12.0 alone is insufficient. Pin absence/mismatch blocks compile proof;
+never substitute PATH/sibling binaries or edit the pin to make the check pass.
+Record the old e525/597f/784 identities as historical and the actual suite-level
+passed/failed/ignored totals for the requested 785-test base and final candidate.
+The new shell assertion need not change the Rust count. Explain discrepancies;
+missing logs do not establish either count.
 
 ## Ordered implementation approach
 
-1. Capture starting commit/tree and changed-file status, tool versions and
-   script hashes. Check exact brokkr base source, ordered patch digests and
-   executable SHA-256 against `bundles/self/tooling.json`; version alone does
-   not authorize compile. If absent/mismatched, record the missing proof for
-   root rather than installing, rewriting pins or bypassing verification.
-   Keep all fixture state private; use only synthetic registry credentials.
-2. Run the real chart selftest positively. In a disposable candidate copy
-   preserve its relative layout (the selftest copies `scripts/chart-verify.sh`
-   and reads workflow bodies). Mutate one validation at a time: malformed
-   appVersion validation, empty push-before refusal, malformed-baseline
-   refusal. Each must fail its owning named assertion; a later mismatch or
-   earlier metadata failure is not sufficient. Scope a mutation to the target
-   context if shared validation masks it. Restore exact bytes and rerun the
-   complete selftest after each control. Retain optional Helm render coverage
-   and record whether installed Helm actually exercised it; absence does not
-   certify rendered behavior. Do not install tooling in verify.
-3. Tighten presence HTTP-500/token-500/refused-connection needles to the
-   spec's distinct arms. Reset per-case request logs and assert exact scope,
-   repository/tag and stage progression. Reuse the existing HTTP fixture and
-   assertion helpers. Preserve credential-safe argv, headers, both image tag
-   forms, bare chart mode and workflow checks. Prove each changed presence
-   assertion with a presence-only wrong-reason mutation so the earlier absence
-   case cannot mask it. For each targeted shared unknown-state arm, exercise
-   wrong-reason and incorrect-admission controls in disposable adjacent
-   guard/test copies and restore positive. Record actual raw-000 curl behavior
-   and separately prove the status-only 000 classifier control.
-4. Prove the existing refusal socket lifecycle. Insert a temporary holder close
-   after port publication but before ownership validation; do not close it so
-   early that writing the port file merely fails. Require the real selftest's
-   ownership diagnostic, not incidental transport failure. Restore and rerun.
-   If necessary repair lifecycle in the same embedded fixture, without new
-   processes, fixed ports or sleeps as synchronization. Check cleanup joins
-   the exact child; do not claim cleanup survives SIGKILL.
-5. Explicitly anchor intended include patterns. Build a private candidate copy
-   with synthetic `.cargo-home/registry/src/decoy/` source/test/bench/asset/data
-   paths and license/NOTICE basenames. Omit nested Cargo.toml files, which
-   would conceal inclusion mistakes through Cargo's nested-package rule.
-   Do not replace or copy the real Cargo home. Run offline actual package list
-   on pristine candidate and fixture, using `--allow-dirty` only for deliberate
-   disposable modifications. Check every required root family and automatic
-   Cargo manifest/lock/readme files and reject all decoy prefixes. Individually
-   restore each unanchored license/NOTICE basename in private controls and
-   require the assertion to name a leaked member. Compare slash-pattern old
-   and anchored membership individually; equivalence is valid evidence. Create
-   a real offline `.crate` (for archive inspection, `--no-verify` may separate
-   archiving from build verification, explicitly recorded) and compare license,
-   NOTICE and entity-data bytes plus normalized package metadata. This is not
-   a substitute for full locked test/build gates.
-6. Run final candidate selftests and package proof, then all gates from the
-   sole [house inventory](../../docs/house-rules.md#gates--part-of-every-change).
-   This includes fmt, locked clippy/tests, pinned compile, exact coverage plus
-   coverage selftest, publish/seal proofs, license deny and the fail-closed
-   native-tls check. Dependency-tree command failure must not be mistaken for
-   absence. Verify offline, install nothing; distinguish candidate canonical
-   script receipts from the real pinned verify dispatch and preserve shim
-   checks. No immutable baseline resources are rewritten.
-7. Hand off current evidence and unresolved items to the existing full route.
-   CI retains actual-event chart history/render/bump proof, Docker persistence/
-   volume/context smoke, network advisory audit, tag same-run rate proof and
-   prescribed real port-80 exchange. Local chart fixtures do not certify those
-   CI runs. Root reconciles integration and CI. Preserve exact 18.5 evidence
-   checklist and open #186/#192; author commits unsigned with no push.
+1. Capture current head/tree/status and source/script/shim hashes; compare the
+   receipt at f00d8b5 to a saved immutable prefix. Verify exact local engine and
+   ordered patches before invoking it. Inventory available authentic journal
+   records; record missing evidence without inferring completion. If no applicable
+   base test log exists, run the locked workspace suite before the helper edit.
+2. Add the helper's mode guard. Immediately after the existing token-500 case's
+   successful `token` assertion, invoke an invalid mode against the SAME real
+   recorded sequence. Capture status/stderr privately in a subshell, require the
+   invalid-mode diagnostic and explicit parent failure if it unexpectedly succeeds.
+   Preserve the nine current assertions and fixture lifetime/credential controls.
+3. Run the full canonical loopback proof. Copy guard/test adjacent to one another
+   in an ignored private directory with the existing relative fixture/workflow
+   layout. Remove only the new guard in the copy; keep the new regression. Require
+   failure specifically at invalid-mode admission, not syntax, log mismatch,
+   prerequisite or workflow errors. Restore exact bytes, compare hashes and run
+   the full positive proof again. Retain commands, exits, diagnostics and logs.
+4. Execute every gate from the sole [house inventory](../../docs/house-rules.md#gates--part-of-every-change)
+   on final implementation inputs, including its locked commands and coverage
+   selftest. Check public shim hashes and native-tls absence fail-closed with a
+   successful complete dependency-tree command before inspecting absence. Keep
+   local candidate execution separate from engine-dispatched immutable verification;
+   verify runs pinned canonical proofs offline and installs nothing. A changed
+   implementation invalidates affected earlier passes. Record failures honestly.
+5. Append a dated receipt addendum binding observed reruns to the identities above
+   and actual candidate/base/tree. Do not claim independently rebuilding the engine.
+   Compare old receipt bytes as a prefix. Add per-task evidence/disposition notes;
+   only authentic journal-backed proof of the whole obligation earns a checkmark.
+   T7 stays open without immutable verify; T8 without review/ship/root CI. A partial
+   task may be split while preserving its unresolved original obligation.
+6. Hand off to the existing full engine route. Root retains actual-event chart
+   history/render/bump, Docker smoke, network RustSec, tag-only same-run rate and
+   prescribed real port-80 CI proofs. Preserve all six external receipt categories
+   and `18.5: EXPLICIT EXTERNAL PENDING`. Neither local proof nor a documented
+   pending receipt closes external 18.5, #186 or #192.
 
-## Quickstart for proof collection
+## Quickstart
 
-From the candidate root, with installed approved tooling and isolated evidence:
+From this candidate root, first verify tooling.json's complete identity and use
+this checkout's absolute `.forge/bin/brokkr` path. Entry commands:
 
 ```bash
-bash scripts/chart-verify.sh selftest
+cargo test --workspace --locked
 bash bundles/self/scripts/publish-guard-test.sh
-cargo package --list --locked --offline
+sha256sum -c bundles/self/scripts/shims.sha256
 ```
 
-These are entry commands, not the complete acceptance proof: steps 2–5 add
-independent red/restore controls, in-tree cache fixtures and archive inspection.
-Run `cargo package --list --locked --offline --allow-dirty` only within the
-private modified fixture. Execute the house inventory after restoration with
-Cargo offline configuration; invoke brokkr only after its exact pin is checked.
-Use candidate roots for candidate proof and dispatched pinned paths for verify;
-never make a shim select alternate code. Save command exits and applicability,
-not credential values. The deterministic design check can be preflighted with
-`bash bundles/self/scripts/design-check.sh check .` after the design commit;
-that local preflight does not replace the sequence's pinned check.
+Capture their actual exits and logs in run-private evidence. The full house
+inventory remains required; the three commands above are not its replacement.
+Use offline Cargo/tool execution and no installation or registry access. After
+the chief commit, `bash bundles/self/scripts/design-check.sh check .` is a local
+structural preflight; the sequence's pinned final check alone owns advancement.
+No design preflight or identity observation certifies later implementation gates.
 
 ## Risks
 
 | Risk | Mitigation and retained cost |
 |---|---|
-| Shared validators or generic needles make a mutation fail for the wrong reason | Named owning assertions, valid other inputs, per-case logs and presence-targeted mutations; more proof runs are intentional. |
-| Invalid HTTP 000 is conflated with status classification | Record real curl transport outcome and separate status-only observer proof; neither proves GHCR/TLS behavior. |
-| Socket close/reuse races or orphan fixtures | Keep one bound non-listening holder, port-0 allocation, explicit readiness, ownership checks and exact-PID joined cleanup. Platform behavior is exercised, not assumed; SIGKILL cleanup is not promised. |
-| Cargo matching differs from visual interpretation | Real package-list/archive oracle, no nested-package camouflage, per-pattern mutation and equivalence reporting. Explicit anchors can be behavior-preserving. |
-| Fixture copies include credentials or modify shared state | Generate synthetic cache files and credentials only; private directories and isolated copies, no real cache import or live registry. |
-| Candidate green is misrepresented as pinned verify green | Separate script/tool/tree identities and real dispatch; no shim/hash/pin changes. Missing exact tools remain outstanding. |
-| Release-contract scope drifts into tests | Preserve workflow and manifest identity, require escalation for changed release/security behavior, retain four-reviewer route. |
-| Existing release failure modes remain | Outage refuses; check/push races and image-success/chart-failure persist; no rollback, retry, skip or digest-enforcement contract is added. |
-| Inherited claims obscure present obligations | Fresh evidence only; 0051 stays proposed; 18.5 and CI-only evidence remain explicit and #186/#192 stay open. |
+| Unknown mode passes through token fallback | Explicit closed `case`; the real token-log collision test and guard-only negative control prove discrimination. |
+| Bash conditional errexit masks a failed assertion | Subshell isolation with explicit status/diagnostic checks and explicit parent failure on unexpected success. |
+| Negative control fails for an unrelated reason | Preserve adjacent layout and original workflow inputs; require the owning invalid-mode-admission diagnostic, then exact restore and full positive. |
+| Historical receipt is overwritten or used for current proof | Byte-prefix assertion against f00d8b5; dated addendum identifying old run/pin/path/count and actual current command/candidate applicability. |
+| Test counts or engine provenance are guessed | Full source/patch/binary hashes and per-suite logs; count discrepancies stay explained, missing evidence stays open. Checking hashes does not prove source rebuild. |
+| Compound tasks are falsely checked | Cite authentic event/receipt and scope per obligation; split partial local/owner duties or leave original unchecked. Missing journal access costs visible incompleteness. |
+| Candidate green is called immutable verify green | Separate command receipts from actual pinned dispatch; preserve shim checks, pin and canonical chain. Later implementation reruns affected proofs. |
+| Scope expands into publication or runtime work | Four-file implementation boundary and retained engine review; no GHCR access. Frozen storage/wait/prune/extraction contracts remain intact. |
+| Existing external release limitations persist | Retain outage refusal, concurrent probe/push race and image-success/chart-failure costs; no retry/rollback/immutability contract. All external receipt work remains pending. |
+
+## Dated clarification — 2026-10-24
+
+This continuation replaces the plan's stale present-tense PR212 base and broad
+implementation steps with the f00d8b5 residual scope. Original chart/package and
+publication proof requirements remain AC1–AC8 in spec.md and T1–T9 in tasks.md;
+this clarification neither erases them nor marks them complete. Historical
+receipt bytes are preserved by the later append-only addendum, not edited here.
