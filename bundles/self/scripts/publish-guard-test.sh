@@ -214,15 +214,19 @@ expect_refusal() { # <desc> <expected-exit> <needle...> -- <cmd...>
 # Targeted unknown-state cases must reach precisely their intended stage,
 # with the same repository scope and bare manifest identity as the caller.
 assert_requests() { # <description> <none|token|manifest>
-  local desc="$1" expected=""
-  if [ "$2" != none ]; then
+  local desc="$1" mode="$2" expected=""
+  case "$mode" in
+    none|token|manifest) ;;
+    *) fail "$desc: invalid assertion mode '$mode'" ;;
+  esac
+  if [ "$mode" != none ]; then
     expected='/token?service=ghcr.io&scope=repository:feedback-loop-ai/swarmail:pull'
   fi
-  if [ "$2" = manifest ]; then
+  if [ "$mode" = manifest ]; then
     expected+=$'\n/v2/feedback-loop-ai/swarmail/manifests/0.1.0'
   fi
   [ "$(cat "$recorded")" = "$expected" ] \
-    || fail "${desc}: unexpected registry request sequence: $(cat "$recorded")"
+    || fail "$desc: unexpected registry request sequence: $(cat "$recorded")"
 }
 
 # Lifetime checks surround each refused connection; the child owns a bound
@@ -296,6 +300,17 @@ expect_refusal "token exchange 500" 1 "token exchange failed" -- \
   env GITHUB_REF_NAME=v0.1.0 PUBLISH_GUARD_REGISTRY="$registry" \
   "$GUARD" v0.1.0 feedback-loop-ai/swarmail
 assert_requests "token exchange 500" token
+# The unknown mode collides with this same token-only request sequence; it
+# must refuse by mode before log comparison, not because the log differs.
+invalid_mode=token-only-typo
+invalid_mode_err="$work/invalid-mode.err"
+set +e
+( assert_requests "token exchange 500" "$invalid_mode" ) 2>"$invalid_mode_err"
+invalid_mode_status=$?
+set -e
+[ "$invalid_mode_status" -ne 0 ] || fail "token exchange 500: invalid mode '$invalid_mode' was accepted"
+grep -Fq "token exchange 500: invalid assertion mode '$invalid_mode'" "$invalid_mode_err" \
+  || fail "token exchange 500: invalid mode refusal did not identify '$invalid_mode': $(cat "$invalid_mode_err")"
 
 # 11. Connection refused (closed port): registry state unknown — refuse.
 : >"$recorded"

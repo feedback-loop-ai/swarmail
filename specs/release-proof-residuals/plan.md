@@ -8,12 +8,15 @@ Bash proof and Python loopback fixture; no new dependency or runtime code.
 Only `.specify/templates/spec-template.md` is present; no plan template exists
 in this checkout. This plan supplies its required sections directly.
 
-Current inspected base: `f00d8b532d7e255086913a53b21aa47c27fbe7c6`, tree
-`1c4d0f3edc82a037033386e8a7f09802c77d7351`. History runs through `238372d`
-(engine pin), `79c3df9` (design), `667b825` (implementation), `f00d8b5`
-(receipt). PR212/`df8630f` is historical original-design ancestry. The receipt's
-`2c6f3e1`/`2dce0b4` are historical claims, not silently mapped local identities.
-Capture the later design and implementation heads/trees at execution time.
+Triage inspected the continuation candidate
+`f00d8b532d7e255086913a53b21aa47c27fbe7c6`, tree
+`1c4d0f3edc82a037033386e8a7f09802c77d7351`. The committed continuation
+design is `52fba989db2ddabf1028e7a4bd5a0d1f7bd6a77e`; its tree
+`a049858200923dadaee25442d60e8ef5a4526c2c` is the actual implementation
+base. The implementation must bind candidate proofs to that checkout, not call
+the earlier triage candidate its code base. PR212/`df8630f` is historical
+original-design ancestry. The old receipt's `2c6f3e1`/`2dce0b4` are
+historical claims, not silently mapped local identities.
 
 ## Constitution check
 
@@ -173,3 +176,14 @@ implementation steps with the f00d8b5 residual scope. Original chart/package and
 publication proof requirements remain AC1–AC8 in spec.md and T1–T9 in tasks.md;
 this clarification neither erases them nor marks them complete. Historical
 receipt bytes are preserved by the later append-only addendum, not edited here.
+
+
+## Implementation-base correction — 2026-10-24
+
+The earlier continuation clarification named `f00d8b5` as the inspected
+residual candidate because that was triage's starting checkout. The design
+council then committed the continuation artifacts as `52fba989db2ddabf1028e7a4bd5a0d1f7bd6a77e`.
+That commit, tree `a049858200923dadaee25442d60e8ef5a4526c2c`, is the
+implementation base. The fresh 785-test base log and all later candidate
+commands are scoped from this actual base. This correction preserves the
+original f00d8b5/PR212 ancestry and does not rewrite the old receipt's claims.
