@@ -1,192 +1,166 @@
-# Implementation plan — eval privacy
+# Verification plan — eval privacy continuation
 
-Implements [spec.md](spec.md) and proposed
-[0062](../../docs/decisions/0062-eval-privacy.md). Design only; future commands
-and unchecked tasks are not execution receipts.
+Date: 2026-10-24. Implements the continuation obligations in [spec.md](spec.md).
+The contracts of proposed [0062](../../docs/decisions/0062-eval-privacy.md) remain
+unchanged. This replaces the original implementation plan's stale future work;
+it does not turn reported historical passes into current receipts.
 
 ## Technical context
 
-Existing standalone Rust 2024 evals workspace, Tokio processes, reqwest, Serde,
-Clap and tempfile, Unix process groups. Reuse existing dependencies/locks.
-Root exact coverage does not measure evals under 0055; separate proof is mandatory.
-No plan template exists here (only a spec template). Required research, data
-model, contracts and quickstart are embedded here to retain the three-file dialect.
+Standalone unpublished Rust 2024 eval workspace with its own lock, Tokio process
+ownership, reqwest, Serde, Clap and tempfile; root remains a single Rust crate.
+Unix Linux/macOS scope, real SMTP/HTTP/MCP proofs, no new dependencies. Evals is
+separately measured under 0055: root green does not prove it. The current host is
+Linux. Preserve c232602 and cf3aa2f; default implementation action is no code edit.
+Only a spec template is present under `.specify/templates/`; no plan template
+exists. Required research, data model, contracts and quickstart are embedded here.
 
-## Constitution check and phase boundary
+## Constitution check
 
-Preserve 0001–0005, 0020 test discipline, 0055 lifecycle/results and 0056 unsigned
-commits. No root source/manifests/locks, dependencies, gates or recipe changes.
-A discovered accepted-ruling contradiction waits for specific operator acceptance.
+Preserve synchronous accept/store, subscribe-before-check, oldest-only pruning,
+AUTH inbox routing and ingest extraction under 0001–0005. Keep 0020 deterministic
+test placement and real protocol discipline, 0050 pinned proof ownership, 0055
+eval semantics, 0056 unsigned commits and 0057 protected delivery. Proposed 0062
+is not operator acceptance; an accepted-ruling contradiction waits under 0045 §8.
+No frozen weakening is permitted even with a proposal and green tests.
 
-Chief commits exactly spec/plan/tasks and proposed 0062. The decision index is
-therefore not part of this commit. Root test
-`store_contract_docs::every_decision_file_has_exactly_one_resolving_index_row`
-requires a 0062 row: implementation T1 owns it. Do not claim clean root gates
-at this four-file-only boundary or suppress that prerequisite. No index-only
-commit follows chief during design. Pinned deterministic validation owns the
-design verdict; chief returns only drafted.
+This chief changes exactly `specs/eval-privacy/{spec,plan,tasks}.md`. Existing 0062
+and its index row are already committed. No new decision is needed because this
+continuation preserves the semantic contract. Keep this design commit last for
+the sequence's deterministic check. Chief returns drafted, never a design or
+verification verdict. Full gates and review remain downstream obligations.
 
 ## Research and resolved questions
 
-Both positions and intake identify independent inheritance/output leaks. Source
-review confirms runner.rs's raw Log tails, Admin error bodies, path-bearing
-metadata and unbounded announcement channel, plus main.rs's matrix inheritance,
-raw common failure rendering and default Clap/panic output. Cargo inherits stderr.
-Existing helpers rely on inherited EVAL_TEST_* and inspect only EVAL_*; replace
-them before relying on absence assertions.
+Read both current positions, both intake records, decision index and relevant
+rulings, existing design and c232602's diff. The observed fix maps Admin transport,
+read, JSON and non-200 response errors to finite categories. Its new HTTP test
+exercises non-200 JSON; the custom-target regression now checks a built executable.
+These observations identify proofs to run, not proof outcomes.
 
-Rule for robustness on cleared preparation and bounded typed announcements; for
-simplicity on omitting output and keeping existing module owners. The spec fixes
-exact runtime/toolchain maps and explicit-input limits. No new CLI/schema is needed.
+RuntimeDirs::apply remains the shared runtime environment owner; main::run_child
+reuses it for matrix workers, adds resolved SWARMAIL_BIN and drains stderr.
+Adopt simplicity's local ownership/no redesign and robustness's complete claim-to-
+evidence binding. No new receipt cache, sanitizer, provider adapter, process
+supervisor or policy evaluator. Named preparation selectors remain intentional
+inputs; arbitrary caller environment never becomes a compatibility fallback.
 
-## Project structure and files
+## Project structure and touched files
 
-| File | Change |
+| Path | Role and allowed action |
 |---|---|
-| evals/src/runner.rs | Shared environment construction, OS-string resolver, directory ownership, safe errors/facts, zero raw retention, bounded announcements/Cargo parsing, safe metadata. |
-| evals/src/main.rs | Fallible safe CLI parsing and entry panic hook; matrix resolves programs once, clears workers and drains bounded row protocol. |
-| evals/tests/common/mod.rs | Test-owned wrappers/configuration, complete actual-environment probes; no production test-variable exceptions. |
-| evals/tests/runner.rs | Environment, lookup/runtime/auth, preparation, independent output, buffer/lifecycle controls. |
-| evals/tests/report.rs | Matrix role/publication/cardinality/failure and report compatibility controls. |
-| evals/tests/proof.rs and evals/tests/fixture.rs | Adapt helper controls where necessary; preserve real protocol coverage. |
-| evals/README.md | Exact maps, preparation inputs, authentication migration and privacy limits. |
-| specs/agent-eval-harness/spec.md and plan.md | Dated clarification replacing inheritance/capture/path-metadata promises; preserve unrelated requirements and prior clarification history. |
-| docs/decisions/README.md | One proposed 0062 index row before implementation gates. |
-| This design and proposed 0062 | Correct discovered ambiguity and record real proof disposition without acceptance claims. |
+| specs/eval-privacy/spec.md, plan.md, tasks.md | Only committed chief edits; reconcile continuation requirements and proof tasks. |
+| evals/src/runner.rs | Preserve Admin categories, RuntimeDirs, preparation, bounded stream handling and lifecycle; inspect only if an existing proof exposes a defect/gap. |
+| evals/src/main.rs | Preserve matrix caller, row validation, safe CLI/publication; same bounded repair rule. |
+| evals/tests/runner.rs, report.rs, proof.rs, fixture.rs; evals/tests/common/mod.rs | Execute existing controls; narrow regression changes only when a failing proof demonstrates a defect under the downstream route. |
+| evals/README.md; specs/agent-eval-harness/ | Verify documentation agrees with the owning contract; no speculative rewrites. |
+| docs/decisions/0062-eval-privacy.md and README.md | Existing proposed record/index, verify status and links without acceptance or duplicate records. |
+| bundles/self/tooling.json; .forge/bin/brokkr | Identity inputs; candidate-local binary must match recorded SHA-256 before execution. |
+| Dispatched pinned scripts and public shims | Proof owners and integrity inputs; no edits/bypasses to obtain a pass. |
+| .forge/ run-local evidence/results; .brokkr/state/ framing/positions | Preserve historical records; new receipts remain uncommitted and distinguishable. Never fabricate journal events. |
 
-Inspect oracle.rs/fixture.rs consumers; do not change business logic to accommodate
-launch mistakes. No new production module/crate. Adapt other inherited helper test
-call sites only when compiler/test evidence requires it.
+No root production, lock, manifest, dependency allowance, policy, recipe or gate
+change is planned. A failure outside this bounded scope returns through the engine
+route; do not silently enlarge scope or modify tests merely to accept bad behavior.
 
 ## Data model and contracts
 
-Keep TrialRequest, TrialResult and secret-free Snapshot semantics. Use small
-internal enums/constants for role/stage/category and optional numeric status facts.
-Never attach arbitrary String causes to a publishable fact. Map underlying errors
-at their operation boundary. Existing diagnostics storage may hold only safely
-rendered facts, capped at 64 KiB plus a fixed truncation notice. metadata.swarmail_bin
-becomes null; no replacement path or caller-derived provenance string.
+No schema/CLI changes. Preserve TrialRequest, schema-1 TrialResult, secret-free
+Snapshot, explicit labels, actual agent exits, matrix product cardinality, scoring
+precedence and confinement:unconfined. Keep literal argv and the eight generated
+agent inputs, fixture-only secret and explicit wrapper-based authentication.
 
-Resolved commands hold OS-string absolute programs and unchanged remaining argv.
-Resolve at original caller cwd/PATH before changing either. Matrix passes resolved
-programs to workers. A directory owner holds per-child home/temp/XDG paths under
-0700 scratch in /tmp through draining/cleanup. Apply env_clear before generated
-values. No global set_var/remove_var, inherited test controls or secret dictionary.
+The spec owns exact runtime/preparation maps, per-child private directories,
+8192-byte stream/readiness bounds, first typed readiness slot, 1 MiB Cargo/matrix
+protocol bounds, zero raw diagnostic retention and capped safe facts. Keep owners
+alive through drain/cleanup. No global environment mutation, retained transcripts
+or test-control map exception. Admin body collection is not proved byte-bounded;
+owned local fixture trust and unconfined filesystem/network limits remain explicit.
 
-Preparation resolves tool executables and named locator defaults before private
-HOME creation, then constructs the spec's cleared Cargo map. Parse the executable
-from Cargo JSON; never guess target/debug or copy preparation variables to trials.
-Drain both Cargo streams, retaining no compiler diagnostics.
+Evidence uses existing run-local facilities rather than a new schema/framework.
+Keep command, exit, tested commit/tree, platform, engine hash, pinned resource
+identity and log path together; label historical versus freshly executed evidence.
+Only synthetic canaries enter proof records. Do not dump caller environment or
+credentials. Record partial/interrupted executions as incomplete. Bind any admitted
+historical mutation control to its precise tested source/test and explain continued
+relevance; otherwise reproduce the missing control narrowly, restoring the source.
 
-### Finite output handling
+## Execution approach and quickstart
 
-Use 8192-byte read buffers. Readiness lines cap at 8192 bytes: after overflow,
-discard through newline before parsing again. The producer parses the owning
-service's announcement, validates loopback endpoints and sends at most the first
-valid typed tuple through a one-slot/oneshot mechanism. It never awaits a receiver.
-No raw-line queue, no readiness channel for agents; keep existing startup deadline
-and real HTTP/SMTP health checks.
+1. Verify ancestry and clean starting candidate; record final candidate identity
+   after this documentation commit, engine digest and OS. Compare `.forge/bin/brokkr`
+   against tooling.json; use its absolute path for dispatched checks. Do not use a
+   sibling/host binary, rebuild the engine or bypass a mismatch.
+2. Run the focused c232602 controls, then separate eval fmt, all-target locked
+   clippy and the full locked suite including proof.rs. Require actual test counts
+   and helper execution markers. Check role maps, wrapper auth, independent output
+   canaries, final/temporary artifacts, bounded drains, readiness, failure outcomes,
+   cleanup, matrix cardinality and real oracle/null/wrong-action/isolation controls.
+3. Execute the complete current [house gate inventory](../../docs/house-rules.md#gates--part-of-every-change)
+   through its owning pinned route. Keep exact zero-missed line/branch/function
+   coverage and selftest, design selftest, delivery tamper-boundary proof,
+   publish/seal keyless proofs, licenses and fail-closed native-tls proof. Execute
+   recorded-engine compile without the policy-sweep warning refusal; actual design,
+   verify dispatch and policy-evaluator proofs are separate requirements. Never
+   replace the evaluator with a hand-written approximation. Hermetic verify is
+   offline and installs nothing. Previous reported greens do not skip these gates.
+4. On failure, preserve the failing command/log/source first. Distinguish a setup
+   or missing-evidence block from a demonstrated implementation defect. Repair only
+   the latter, preferring restoration of the existing owner or removal of an
+   unnecessary path before a small local guard. Add a discriminating regression,
+   rerun affected suites and all required gates on the final candidate. No raw
+   error output, inheritance fallback or reduced gate to restore compatibility.
+5. Preserve existing admissible mutation controls, reproduce only missing necessary
+   ones with synthetic values and no production candidate left mutated. Run all
+   protected review lenses on the verified candidate and retain security hold.
+   Tests: GLM 5.3; task-authorized Haiku only on documented dispatch failure.
+   Guarantees: official DeepSeek Flash, never Pro. Correctness/security remain.
+   Record identities and outcomes; an adverse verdict follows the engine return
+   route rather than selecting a different model.
 
-Cargo records cap at 1 MiB. Discard oversized records through newline, mark failure,
-continue concurrent draining and retain only the required matching executable
-artifact. Matrix buffers at most one 1 MiB row; reject extra/non-row output or
-overflow safely, validate schema and expected task/agent association, and discard
-stderr concurrently. No output() accumulation. The spec names the large-label
-compatibility cost. These bounds do not describe child allocations or total build
-duration; this task adds no new Cargo timeout or broad lifecycle redesign.
-
-Do not change matrix to in-process trials, group ownership, scoring or shutdown
-scheduling. Install a safe panic hook once in main, never in concurrent library
-trials. Join/error publication also suppresses payloads; hook suppression alone
-is not the publication boundary.
-
-### Publication audit
-
-Trace stdout JSON, stderr, diagnostics.log, metadata/result/state JSON and temporary
-writes. Trace Admin/MCP/task errors reaching them without changing predicates.
-Replace raw interpolation before formatting, including early returns. Use fallible
-Clap parse; generated help/version print normally, invalid arguments yield constant
-categories. Keep artifact failure's existing result/scoring behavior; emit safe
-stage/category and do not imply whole-bundle atomicity or artifacts after every
-early error. Matrix never inherits stderr even from the known executable; failures
-retain the existing harness_error row/cardinality and numeric/category evidence.
-
-Preserve explicit labels as attribution; document their non-secret requirement.
-Do not scan all parent values or rewrite structured state/counts.
-
-## Regression design and proof ordering
-
-First replace inherited helper modes/markers/barriers with test-owned wrapper
-configuration or literal synthetic arguments. Capture the launched environment
-before a wrapper sets its own helper variables. Inspect full raw OS key/value
-membership and require unique execution markers and correct generated values.
-For fixture/matrix/current-executable roles, use test-owned launch wrappers or
-owner-local test seams observing the actual constructed command, without public
-override knobs or mock mail services. Pair constructor assertions with real
-subprocess observations; unrelated environment reconstruction is not proof.
-
-Set synthetic parent canaries on individual Command.env, never globally. Include
-arbitrary names, non-UTF-8 and synthetic PATH directories. Output tests receive
-canaries through independent files/arguments. Scan both CLI streams and every
-final/dot-temporary artifact; assert useful categories and outcomes too, so a
-helper which never runs cannot pass. Synthetic file authentication proves supported
-wrapper behavior without real credentials.
-
-Use barriers/deadlines for pre/post-announcement floods, overflow, noisy agents,
-failure paths, matrix and Cargo cases. Functional SMTP/HTTP/MCP tests retain real
-servers; controlled subprocess emitters test only launch/stream boundaries. Inline
-stable owner-local tests are default; cold-path harnesses follow 0020. No sleep as
-synchronization, global env races, probabilistic chaos or checked-in TLS expiry.
-
-Record separate mutation-red/restored-green controls for role inheritance, raw tail
-publication and path/error interpolation. Restore mutations before final suites.
-Evidence names commands, source/test identities, exits and limits using synthetic
-values; never copy historical green verdicts into current proof.
-
-## Quickstart and validation
-
-Default target example from repository root:
+Focused command examples from root (offline cache must already be available):
 
 ```bash
-cargo build --offline --locked --bin swarmail
-cargo build --offline --locked --manifest-path evals/Cargo.toml
-SWARMAIL_BIN="$PWD/target/debug/swarmail" evals/target/debug/swarmail-evals trial --task signup --agent oracle
-SWARMAIL_BIN="$PWD/target/debug/swarmail" evals/target/debug/swarmail-evals trial --task signup --agent custom -- /absolute/caller-owned-agent-wrapper
+cargo test --offline --locked --manifest-path evals/Cargo.toml admin_error_categories_discard_injected_response_text
+cargo test --offline --locked --manifest-path evals/Cargo.toml --test runner automatic_build_uses_a_cleared_named_preparation_map
 cargo fmt --manifest-path evals/Cargo.toml --all -- --check
-cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings
-cargo test --manifest-path evals/Cargo.toml --locked
-cargo test --manifest-path evals/Cargo.toml --locked --test proof
+cargo clippy --offline --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings
+cargo test --offline --manifest-path evals/Cargo.toml --locked
+cargo test --offline --manifest-path evals/Cargo.toml --locked --test proof
+.forge/bin/brokkr compile --bundle bundles/self
 ```
 
-Custom targets use their actual Cargo-reported executable paths. README also
-shows automatic preparation and explicit wrapper configuration with synthetic
-placeholders, never key values in arguments. Keep existing proof target.
+These examples are not receipts and do not replace pinned dispatch. Root gate
+commands remain solely in the house inventory. Any local structural design check
+is a preview; the sequence's final pinned check owns advancement. Reviewers
+reproduce eval evidence under 0055; the chief does not certify downstream work.
 
-Before implementation completion run every gate in
-[the sole house inventory](../../docs/house-rules.md#gates--part-of-every-change),
-including exact coverage and selftest, publish/seal proofs, licenses, fail-closed
-native-tls absence and exact recorded brokkr compile. Use dispatched pinned proof
-resources with checked shims/tooling under 0050. Candidate scripts or this plan
-cannot certify themselves. Evals remains separate mandatory evidence reproduced
-by reviewers. Missing execution/tooling stays outstanding; no installation in
-verify, lowered floor or skipped gate represented as green.
+## Supported-platform and CI handoff
 
-The engine keeps hermetic verification, four independent reviews/security hold
-and ship. No push/merge. CI-only chart/history/selftest, Docker, advisory, port-80
-and tag/rate/publication obligations remain attributed to CI. This design phase
-neither runs nor claims implementation gates.
+T4 retains macOS system/rustup/toolchain preparation as explicitly outstanding
+until a macOS runner executes it with candidate-bound evidence. Linux-only success
+cannot check that task or prove full supported-platform completion. Continue independent Linux
+proofs while retaining this open obligation. Do not assert
+that current CI already runs this specific test. An unavailable macOS runner is a
+reported evidence gap, not permission to remove support or weaken acceptance.
+
+Separately attribute the charter's chart contract/history/selftest, real-Docker
+persistence/kill/volume/context smoke, network RustSec audit, tag-only release-rate
+and publication prerequisites, and privileged port-80 proof to their CI owners.
+Report actual receipts or outstanding status, not blanket CI-green claims. No push,
+merge, issue close, signing or live measurement is authorized by this design.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 |---|---|
-| Closed HOME/PATH breaks ambient auth/custom runtimes. | Exact maps, boundary lookup, synthetic file-auth wrapper proof; deliberate migration without fallback. |
-| Cargo cannot discover local toolchain/cache. | Named locators, system/rustup and custom-target tests, safe failure/prebuilt route; local file configuration remains trusted. |
-| Omission removes useful failure clues. | Safe role/stage/category and numeric facts, assert their usefulness; accept loss of transcripts. |
-| Output flood blocks startup or grows memory. | Fixed buffers/limits, first-valid typed slot, independent drains, overflow tests and structural bound inspection. |
-| Panic/Clap/library formatting bypasses policy. | Entry hook, fallible parsing, operation-boundary mapping and independently supplied bad values. |
-| Helper controls vanish and tests pass vacuously. | Move configuration, require execution/whole-map assertions, independent output and mutation controls. |
-| Concurrent trials share state or environment. | Per-command maps/owned dirs, no global mutation; overlapping real isolation proof. |
-| Explicit labels confused with hidden environment. | State limits and preserve attribution; no substring corruption of snapshots/counts. |
-| ADR has no index row at design boundary. | T1 owns index addition; no clean-root claim for this four-file draft. |
-| Incidental cleanup changes scoring/frozen behavior. | Existing owners and real eval/root suites; no production/gate changes. |
+| Stale receipts certify a changed candidate. | Record identities and fresh mandatory execution; preserve historical evidence separately. Accept rerun cost. |
+| Correct hash is confused with dispatch proof. | Actual pinned compile, design/verify dispatch and evaluator/tamper tests with checked shims; no alternate executable. |
+| Canary absence is vacuous. | Require helper markers, full role maps, generated inputs and useful failure categories; preserve attributable red/green controls. |
+| HTTP regression is overgeneralized. | It covers non-200 JSON; broader suite evidence must cover other claimed publication paths. No hostile-body memory-bound claim. |
+| Closed environment breaks toolchain/auth. | Real custom-target and wrapper tests, named locators, retain macOS gap; never restore ambient inheritance. |
+| Output suppression hides outcomes or stalls pipes. | Safe category/status assertions, independent stream canaries, flood/deadline/cleanup and matrix controls. Accept reduced diagnostic detail. |
+| Unnecessary audit becomes a redesign. | Run existing owners/tests first; bounded evidence-led repair only, no new framework/dependency. |
+| Review fallback changes verdict or independence. | Record GLM dispatch failure before task-specific Haiku; adverse reviews never trigger fallback; preserve security hold. |
+| Linux green becomes a macOS/full-delivery claim. | T4 remains open; distinct supported-platform and charter CI evidence in handoff. |
+| Proposal mistaken for permission to weaken guarantees. | 0062 stays proposed; preserve 0001–0005 and use 0045 §8 for any conflict. |

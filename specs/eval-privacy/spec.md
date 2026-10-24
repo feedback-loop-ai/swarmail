@@ -1,6 +1,7 @@
 # Eval privacy — Epic #192 / issue #196
 
-Date: 2026-10-24. Design draft; implementation and delivery proofs outstanding.
+Date: 2026-10-24. Continuation design; committed implementation preserved,
+candidate verification and delivery proofs outstanding.
 
 Decision: 0062 — [Closed eval environments and safe diagnostics](../../docs/decisions/0062-eval-privacy.md), proposed; only the operator accepts.
 
@@ -9,17 +10,57 @@ Decision: 0062 — [Closed eval environments and safe diagnostics](../../docs/de
 Keep caller credentials and unrelated environment values out of eval children,
 and arbitrary subprocess text out of eval diagnostics. These are independent
 boundaries: a child can print a secret from a file even with an empty environment.
-Current runner commands inherit arbitrary variables; raw output tails enter
-artifacts and errors; Cargo/matrix stderr and path-bearing errors bypass collection.
+The original fault was inherited arbitrary variables, raw output tails in
+artifacts/errors, and Cargo/matrix stderr and path-bearing errors bypassing
+collection. Commits cf3aa2f and c232602 implement the repair; their presence is
+not a receipt that this continuation has verified them.
 
 Construct closed environments and drain then discard arbitrary child output.
 Keep harness-authored failure facts, real exit statuses and secret-free snapshots.
 Preserve literal external commands, eight agent inputs, scoring, cleanup,
 schema 1 and `confinement:"unconfined"`.
 
-Read intake `.brokkr/state/tasks/epic-192-issue-196-keep-caller-c-8465b441.md`
-and both `.brokkr/state/design/positions/{simplicity,robustness}.md` files.
+This continuation reads intake
+`.brokkr/state/tasks/epic-192-issue-196-continuation--f920b5a8.md`, its prior-run
+framing, and both `.brokkr/state/design/positions/{simplicity,robustness}.md`.
 Those files remain uncommitted run-local evidence.
+
+## Continuation clarification — 2026-10-24
+
+Preserve c232602e92b008c6c7ee2f92eaaab9c022adb773 (starting tree
+9ccd6767ccb56ee9b1cbeea58420cc2c8246e974). The previous run concluded after a
+missing pinned executable (exit 127). Candidate-local `.forge/bin/brokkr` now
+hashes to ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f,
+as recorded in `bundles/self/tooling.json`. Identity is not execution proof.
+Prior reported green gates and mutation controls remain historical until their
+source binding and admissibility are established; required gates are not skipped.
+
+Reuse this feature slug and its exact contracts. No new semantic ruling is
+introduced: 0062 remains committed and proposed, and the index already names it.
+Do not recreate implementation merely because its original tasks were unchecked.
+A concrete failing proof must demonstrate a defect before code changes. A missing
+receipt or missing platform is outstanding evidence, not automatically a defect.
+The chief commits only this spec, plan and tasks; the existing 0062 is unchanged.
+
+### Continuation panel rulings
+
+| Question | Adopt, reject, reconcile and cost |
+|---|---|
+| Implementation scope | Adopt simplicity's existing owners and both positions' preservation of c232602. Reject speculative hardening, a new framework, duplicate specs, dependency changes and gate/recipe repairs to obtain green results. Cost: residual limits remain explicit rather than being redesigned. |
+| What counts as proof | Adopt robustness's candidate/source, engine/resource and platform binding. Reject compile-only closure or inheriting reported greens as new executions; simplicity also requires the complete pinned route. Cost: rerun time and a possible incomplete outcome despite unchanged code. |
+| Audit breadth and mutation controls | Rule for simplicity against a fresh broad audit or mutation framework by default; adopt robustness's coverage of all claimed publication/lifecycle paths. First run existing focused and full suites. Reuse attributable red/green controls only when their exact source/test binding remains relevant; reproduce narrowly missing necessary controls downstream. Cost to simplicity: missing evidence can require additional execution; cost to robustness: no speculative redesign or audit beyond a concrete gap. |
+| Diagnostic usefulness | Adopt both positions' omission and finite categories. Reject a raw debug escape hatch, secret dictionary and ambient-auth fallback. Cost: less error detail and explicit wrapper/configuration setup. |
+| Robustness scenarios | Adopt crash, webhook, cap, chaos, DATA, TLS and waiter boundaries as regression constraints, not new eval promises. Reject an outbox, write-behind, query extraction or concurrency rewrite. Cost: serialization, best-effort notification loss and existing durability/resource limits remain. |
+| Platform and review | Adopt robustness's explicit macOS gap and simplicity's unchanged protected route. Reject Linux-as-macOS proof or fallback after an adverse review. Cost: local green cannot establish complete supported-platform proof, and provider failure may stop delivery. |
+
+No hostile-fixture HTTP response allocation bound is claimed: Admin::call still
+collects response bytes under a request timeout. AC5 concerns the specified
+stream/protocol storage, not all HTTP bodies or total process memory. Stored mail
+is authoritative; webhook loss is allowed under its existing best-effort contract.
+Commit-before-reply can leave durable mail after a lost reply and permit retry
+duplicates; memory-only restart is not durability. Waiters need not recover mail
+legitimately evicted by the cap. Existing TLS verification, raw DATA parsing,
+ingest extraction and both subscribe-before-scan sites remain unchanged.
 
 ## Authority and scope
 
@@ -35,7 +76,7 @@ remain unchanged. Synchronous accept/store, subscribe-before-check, oldest-only
 pruning, AUTH inbox routing and ingest extraction remain intact. No sandbox,
 secret broker, forwarding flag, debug-log escape hatch or model measurement.
 
-## Explicit panel rulings
+## Original design panel rulings — 2026-10-24
 
 | Question | Decision and accepted cost |
 |---|---|
@@ -226,9 +267,36 @@ deliberate child file writes, arbitrary hostile peers or filesystem/network acce
   repair restored. Record separate synthetic red/green controls.
 - **AC9 — Documentation/scope.** README and earlier owning eval spec/plan replace
   obsolete inheritance/tail/path-metadata wording, state exact maps, authentication
-  migration and unconfined limits. Add proposed 0062's accurate index row before
-  implementation gates. No forbidden scope/dependency/gate or acceptance change.
+  migration and unconfined limits. Verify the existing proposed 0062 index row
+  and status agreement before gates; do not duplicate it. No forbidden scope,
+  dependency, gate or acceptance change.
 - **AC10 — Delivery.** Separate eval fmt, locked clippy/full tests including
   proof.rs, all pinned house verification gates and four independent reviews with
   security hold precede implementation completion. CI-only obligations stay with
   CI. Structural design validation is none of these receipts.
+
+- **AC11 — Pinned continuation.** Every new receipt names the tested commit/tree,
+  command, actual exit, OS and relevant engine/resource identity. Execute the
+  exact candidate-local engine compile without the policy-sweep warning refusal,
+  actual prescribed design/verify dispatch and policy/delivery tamper proofs.
+  A matching digest, compile alone or this draft is insufficient. Historical
+  records are preserved, not overwritten or fabricated. Any source change
+  requires affected proofs and required gates on the final candidate.
+- **AC12 — Fix-specific evidence.** Execute
+  `admin_error_categories_discard_injected_response_text`, checking
+  admin_response_status/admin_response_rejected and canary absence, and
+  `automatic_build_uses_a_cleared_named_preparation_map`, requiring the actual
+  executable under the selected custom target. The HTTP case proves a non-200
+  JSON response, not every transport/read/parse path; AC4/AC6 require broader
+  suite evidence and meaningful execution markers, not absence alone.
+- **AC13 — Honest platform boundary.** T4 macOS system/rustup/toolchain preparation
+  requires actual execution on macOS. On Linux it stays explicitly outstanding
+  for a macOS runner/CI; do not assert current CI already provides it. Report
+  charter CI-only obligations separately from local passes. Do not mark T4 or
+  overall supported-platform verification complete without that receipt.
+- **AC14 — Protected reviews and bounded returns.** Candidate-bound correctness,
+  security, guarantees and tests reviews actually execute. Guarantees uses
+  official DeepSeek Flash, never Pro. Tests uses GLM 5.3 with the task-specific
+  Haiku exception only after recorded dispatch failure, never an adverse verdict;
+  record the actual fallback identity. Preserve the security hold and engine
+  policy; no recipe edit, push, merge, issue close or signing in this run.
