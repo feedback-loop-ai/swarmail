@@ -32,12 +32,16 @@ and [0048](../../docs/decisions/0048-rest-webhook-validation.md)
 (executed proofs). Proposed 0061 belongs to other work and grants no authority here.
 Oldest-only pruning and ingest-time extraction also remain intact.
 
-Triage already selected `engine`; retain that full design/review route under
-[0057](../../docs/decisions/0057-codex-delivery-recipes.md). This is a fresh
-candidate starting at `9b15fda841f6ea304326df6df23adf6a3c2f77cb`, retaining
-recipe commit `450bef65c581b3a4791cf94dbc145912814bd6ed`, not a resumed stopped
-attempt. Direct implementation remains Luna xhigh without fallback; test
-review remains DashScope GLM 5.3 and DeepSeek review Flash only. No push,
+The current reviewed candidate is based on `origin/main`
+`45d68df37044de3360439b34c39687975dd59b84`, followed by the Brokkr pin
+commit `238372dc18997fe704cb1fb4ebd2cfa2a64a61fd`, the design commit
+`5ede7b2`, and implementation commit `f0e2a4de567da4a91f5aee736c7d9202ff034310`.
+The earlier `9b15fda841f6ea304326df6df23adf6a3c2f77cb` base and
+`450bef65c581b3a4791cf94dbc145912814bd6ed` recipe lineage belong to the
+historical design run; neither is in this candidate. The original implementation
+used the route recorded for that run; this follow-up is the bounded
+documentation correction classified `chore` under [0057](../../docs/decisions/0057-codex-delivery-recipes.md),
+with one independent official DeepSeek Flash review and no fallback. No push,
 merge, tag, publication, journal reconstruction or operator acceptance is
 part of this design. Commit unsigned under accepted 0056.
 

@@ -119,17 +119,19 @@ uses the existing parsed URL type and does not implement normalization anew.
 
 ## Quickstart and proof handoff
 
-Before compile or any provider dispatch, verify exactly:
+Before compile or any provider dispatch from this checkout, verify the
+candidate-local Brokkr pin:
 
 ```bash
-sha256sum /home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-178-luna1/.forge/bin/brokkr
+sha256sum .forge/bin/brokkr
 ```
 
 Required digest:
-`e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`.
-Stop dispatch on missing/mismatched binary; no PATH or sibling substitute.
-Use that absolute binary for `compile --bundle bundles/self` and engine checks,
-and this candidate's own target directory for all builds.
+`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
+Stop dispatch if the binary is missing or its digest differs. Use this
+candidate's `.forge/bin/brokkr` for `compile --bundle bundles/self` and
+engine checks, and keep all build outputs in this candidate's own target
+directory.
 
 Focused implementation commands include:
 
