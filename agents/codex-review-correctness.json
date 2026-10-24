@@ -1,6 +1,9 @@
 {
   "extends": "review-correctness",
   "models": [
-    "qwen-max"
-  ]
+    "fable"
+  ],
+  "efforts": {
+    "fable": "high"
+  }
 }

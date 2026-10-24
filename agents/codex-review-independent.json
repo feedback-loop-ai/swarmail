@@ -1,0 +1,9 @@
+{
+  "extends": "review-correctness",
+  "models": [
+    "fable"
+  ],
+  "efforts": {
+    "fable": "high"
+  }
+}

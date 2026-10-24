@@ -1,9 +1,9 @@
 {
   "extends": "review-security",
   "models": [
-    "opus"
+    "flash"
   ],
   "efforts": {
-    "opus": "high"
+    "flash": "high"
   }
 }

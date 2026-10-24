@@ -19,7 +19,8 @@
   },
   "judges": [
     "fable",
-    "opus"
+    "opus",
+    "sonnet"
   ],
   "model_flag": "--model",
   "efforts": [
@@ -192,7 +193,7 @@
           }
         },
         "restrictions": {
-          "unsupported": "no native transport for a restriction on Claude Code's WebFetch has been established; a WebFetch(domain:…) permission pattern was not measured as a host allowlist"
+          "unsupported": "no native transport for a restriction on Claude Code's WebFetch has been established; a WebFetch(domain:\u2026) permission pattern was not measured as a host allowlist"
         },
         "evidence": {
           "source": "adapters/claude.json and the installed 2.1.266 help: --tools, --allowedTools and --disallowedTools each take tool names",

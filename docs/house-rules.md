@@ -212,15 +212,18 @@ check rules the artifacts, and review is a four-member panel —
 correctness and security among them, decision 0013); the review gate is constitutionally protected and
 security-hold is a hard stop. `verify` and `ship` are hermetic exec
 seats — a shell proves what a model claims. Decision
-[0057](decisions/0057-codex-delivery-recipes.md) adds the operator-directed
-Codex recipes: Sol intake and standard implementation, a shared Sol/Astra
-design council, and independent Qwen Max, Opus, official DeepSeek Flash and
-DashScope GLM 5.3 reviewers, without model fallbacks. `codex-fast` uses GPT-6
-Luna at xhigh for implementation and triages
-first: isolated bugs go directly to implementation and one reviewer,
-broader understood fixes get two reviewers, and risky/design work keeps
-the design council and four reviewers. Every lane retains all shell gates,
-protected review and the hard security hold. The `self` bundle
+[0057](decisions/0057-codex-delivery-recipes.md) and its accepted amendment
+[0058](decisions/0058-codex-review-routing.md) define the operator-directed
+Codex recipes. Standard uses Fable 5.1 correctness, official DeepSeek Flash
+security and Sonnet 5.5 tests. Careful and the fast design/engine lanes require
+five separate results: Astra correctness, Flash security, Sonnet tests, Astra
+guarantees and independent Fable. `codex-fast` uses GPT-6 Luna at xhigh for
+implementation and triages first: isolated bugs get one combined Flash
+reviewer; broader fixes get Qwen Max correctness and Flash security, with
+Sonnet allowed only after Qwen dispatch failure before a review result. Risky
+work keeps the five-role panel. DeepSeek Pro is forbidden; other reviewers
+have no fallback. Every lane retains all shell gates, protected review and the
+hard security hold. The `self` bundle
 retains GLM intake/implementation and its original `qwen-max`, `opus`,
 `astra`, `fable` review chains from decision 0013; its shared design now
 uses Codex. Adding a route is a decision document, not an undocumented

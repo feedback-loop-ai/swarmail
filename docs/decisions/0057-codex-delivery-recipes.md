@@ -152,3 +152,14 @@ passes the absolute path to boxed checks. A sibling worktree's binary or the
 host `PATH` does not satisfy this requirement. Missing or mismatched binaries
 are setup blocks to resolve before provider dispatch, not implementation
 failures to retry.
+## Operator-directed routing amendment — accepted (2026-10-24)
+
+Decision [0058](0058-codex-review-routing.md) amends the reviewer matrix
+without changing who implements, triage selectors, protected review, or
+deterministic gates. Standard uses Fable 5.1 correctness, official DeepSeek
+Flash security and Sonnet 5.5 tests. High-risk (`codex-fast` design/engine)
+and Careful each require Astra correctness, Flash security, Sonnet tests, Astra
+guarantees and independent Fable as five separate results. Fast chore keeps
+one combined Flash reviewer. Fast feature uses Qwen Max correctness and Flash
+security; Sonnet is allowed only after Qwen dispatch failure before a review
+result. No other fallback is allowed, and DeepSeek Pro is forbidden.

@@ -95,12 +95,6 @@ fn recipes_cannot_replace_the_protected_policy_or_the_exec_gates() {
             "{name}: only model-seat assignments may change"
         );
     }
-    assert!(
-        read_json("bundles/codex-careful/bundle.json")["seats"]
-            .get("review")
-            .is_none(),
-        "the careful recipe inherits the same independent panel"
-    );
 }
 
 #[test]
@@ -188,7 +182,7 @@ fn codex_authors_keep_their_base_charters_and_get_boxed_workspace_tools() {
 }
 
 #[test]
-fn careful_work_increases_reasoning_without_changing_the_reviewers() {
+fn careful_work_keeps_the_directed_codex_efforts() {
     for (name, model, effort) in [
         ("codex-intake", "sol", "medium"),
         ("codex-position-simplicity", "sol", "high"),
@@ -204,55 +198,92 @@ fn careful_work_increases_reasoning_without_changing_the_reviewers() {
     }
 }
 
+fn standard_panel() -> Value {
+    json!({
+        "correctness": {"agent": "codex-review-correctness", "class": "gate"},
+        "security": {"agent": "codex-review-security", "class": "gate"},
+        "tests": {"agent": "codex-review-tests", "class": "gate"}
+    })
+}
+
+fn full_panel() -> Value {
+    let mut panel = standard_panel();
+    panel["correctness"]["agent"] = json!("codex-review-astra-correctness");
+    panel["guarantees"] = json!({"agent": "codex-review-guarantees", "class": "gate"});
+    panel["independent"] = json!({"agent": "codex-review-independent", "class": "gate"});
+    panel
+}
+
 #[test]
-fn reviewers_stay_on_the_requested_routes_without_author_or_pro_fallbacks() {
-    let recipe = read_json("bundles/codex/bundle.json");
-    let review = &recipe["seats"]["review"];
-    assert_eq!(review["aggregate"], "review-panel");
-    let panel = review["panel"].as_object().unwrap();
-    assert_eq!(panel.len(), 4, "all four review lenses remain present");
-    let mut models = BTreeSet::new();
-    for (lens, model) in [
-        ("correctness", "qwen-max"),
-        ("security", "opus"),
-        ("guarantees", "flash"),
-        ("tests", "glm53"),
+fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
+    for (name, base, models, effort) in [
+        ("correctness", "correctness", vec!["fable"], "fable"),
+        ("security", "security", vec!["flash"], "flash"),
+        ("tests", "tests", vec!["sonnet"], "sonnet"),
+        ("guarantees", "guarantees", vec!["astra"], "astra"),
+        ("astra-correctness", "correctness", vec!["astra"], "astra"),
+        ("independent", "correctness", vec!["fable"], "fable"),
+        (
+            "feature-correctness",
+            "correctness",
+            vec!["qwen-max", "sonnet"],
+            "sonnet",
+        ),
     ] {
-        let member = &panel[lens];
-        assert_eq!(member["class"], "gate");
-        let overlay = office(member["agent"].as_str().unwrap());
-        assert_eq!(overlay["extends"], format!("review-{lens}"));
-        assert_eq!(
-            overlay["models"],
-            json!([model]),
-            "{lens}: no fallback, including Codex or Pro"
-        );
+        let overlay = office(&format!("codex-review-{name}"));
+        assert_eq!(overlay["extends"], format!("review-{base}"));
+        assert_eq!(overlay["models"], json!(models), "{name}");
+        assert_eq!(overlay["efforts"], json!({effort: "high"}), "{name}");
         assert!(overlay.get("charter").is_none());
-        if matches!(lens, "correctness" | "tests") {
-            assert!(
-                overlay.get("efforts").is_none(),
-                "DashScope's custom model metadata rejects an explicit effort flag"
-            );
-        }
-        models.insert(model);
+        assert!(overlay.get("hands").is_none(), "inherit read-only review");
+        assert_eq!(
+            office(&format!("review-{base}"))["charter"],
+            format!("charters/review-{base}.md")
+        );
     }
-    assert_eq!(models.len(), 4);
     let dsh = read_json("adapters/dsh.json");
     assert_eq!(dsh["models"]["qwen-max"], "dashscope/qwen3.8-max");
-    assert_eq!(dsh["models"]["glm53"], "dashscope/glm-5.3");
     assert_eq!(dsh["models"]["flash"], "deepseek-flash");
     assert_eq!(dsh["credentials"]["deepseek-official"], "DEEPSEEK_API_KEY");
     assert_eq!(dsh["routes"]["deepseek-official"], "uncontracted");
     assert!(
         dsh["effortless_routes"]["dashscope"]
             .as_str()
-            .is_some_and(|reason| !reason.trim().is_empty()),
-        "the engine needs the measured reason for omitting DashScope effort controls"
+            .is_some_and(|s| !s.trim().is_empty())
     );
-    assert!(dsh["models"].as_object().unwrap().values().all(|route| {
-        let route = route.as_str().unwrap();
+    assert!(dsh["models"].as_object().unwrap().values().all(|v| {
+        let route = v.as_str().unwrap();
         !(route.contains("deepseek") && route.contains("pro"))
     }));
+    let claude = read_json("adapters/claude.json");
+    for (model, route) in [
+        ("fable", "claude-fable-5-1"),
+        ("sonnet", "claude-sonnet-5-5"),
+    ] {
+        assert_eq!(claude["models"][model], route);
+        assert!(claude["judges"].as_array().unwrap().contains(&json!(model)));
+    }
+    assert_eq!(
+        read_json("adapters/codex.json")["models"]["astra"],
+        "gpt-6-astra"
+    );
+}
+
+#[test]
+fn standard_and_careful_keep_exact_roles_and_identical_review_contracts() {
+    let standard = read_json("bundles/codex/bundle.json");
+    let careful = read_json("bundles/codex-careful/bundle.json");
+    let mut review = standard["seats"]["review"].clone();
+    assert_eq!(review["panel"], standard_panel());
+    assert_eq!(review["aggregate"], "review-panel");
+    review["panel"] = full_panel();
+    assert_eq!(careful["seats"]["review"], review);
+    assert!(
+        careful["override"]["seats"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("review"))
+    );
 }
 
 #[test]
@@ -291,7 +322,7 @@ fn fast_triage_routes_only_bounded_bugs_directly_to_implementation() {
 }
 
 #[test]
-fn fast_strategy_selectors_have_no_fallback_and_keep_one_two_or_four_reviewers() {
+fn fast_strategy_selectors_have_no_default_and_keep_one_two_or_five_reviewers() {
     let recipe = read_json("bundles/codex-fast/bundle.json");
     let expected: BTreeSet<_> = ["chore", "feature", "design", "engine"]
         .into_iter()
@@ -323,27 +354,22 @@ fn fast_strategy_selectors_have_no_fallback_and_keep_one_two_or_four_reviewers()
     let reviewer = office("codex-bug-reviewer");
     assert_eq!(reviewer["extends"], "reviewer");
     assert_eq!(reviewer["models"], json!(["flash"]));
-    let standard = read_json("bundles/codex/bundle.json");
-    for (class, lenses) in [
-        ("feature", vec!["correctness", "security"]),
-        (
-            "design",
-            vec!["correctness", "security", "guarantees", "tests"],
-        ),
-        (
-            "engine",
-            vec!["correctness", "security", "guarantees", "tests"],
-        ),
+    let mut feature = standard_panel();
+    feature.as_object_mut().unwrap().remove("tests");
+    feature["correctness"]["agent"] = json!("codex-review-feature-correctness");
+    for (class, expected) in [
+        ("feature", feature),
+        ("design", full_panel()),
+        ("engine", full_panel()),
     ] {
         assert_eq!(cases[class]["aggregate"], "review-panel");
-        let panel = cases[class]["panel"].as_object().unwrap();
-        assert_eq!(panel.len(), lenses.len(), "{class}");
-        for lens in lenses {
-            assert_eq!(
-                panel[lens], standard["seats"]["review"]["panel"][lens],
-                "{class}: {lens} retains its independent gate-class office"
-            );
-        }
+        assert_eq!(cases[class]["panel"], expected, "{class}");
+    }
+    let implement = &recipe["seats"]["implement"]["select"]["cases"];
+    for class in ["chore", "feature", "design", "engine"] {
+        let overlay = office(implement[class]["agent"].as_str().unwrap());
+        assert_eq!(overlay["models"], json!(["sol"]), "{class}: Codex only");
+        assert_eq!(overlay["efforts"]["sol"], "high");
     }
 }
 
