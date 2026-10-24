@@ -3,8 +3,9 @@
 ## Technical context
 
 Implement the bounded [spec](spec.md) in the existing single Rust crate.
-The deliverable is Markdown plus run-local evidence; no runtime code, new
-service, schema, dependency or GitHub operation is needed. The seat has only
+The deliverable is four existing Markdown files, a bounded correction in one
+existing Rust regression, and run-local evidence. No runtime code, new service,
+schema, dependency or GitHub operation is needed. The seat has only
 workspace capability. The host packet supplies the current framing's dated
 observation, so lack of live API/sibling-tree access no longer blocks this
 repair. No plan template exists under `.specify/`; follow the requested
@@ -20,8 +21,8 @@ Engine/gate classification retains full design and five distinct 0058 review
 results, protected review, worst verdict and hard security hold.
 
 Chief commits exactly this directory's spec.md, plan.md and tasks.md; the
-implementation seat edits Gates and records actual progress. The deterministic
-pinned design check owns advancement. Structural design validation proves
+implementation seat retains/reconciles Gates, corrects the authorized selector
+assertions and records actual progress. The deterministic pinned design check owns advancement. Structural design validation proves
 neither implementation, live configuration nor issue completion. Full candidate
 gates and review remain downstream, with failures reported honestly.
 
@@ -34,11 +35,14 @@ gates and review remain downstream, with failures reported honestly.
 | `.forge/epic192/issue205/host-evidence/` | Read-only input packet; do not edit the copied helper or receipts |
 | `.forge/epic192/issue205/action-receipt.json` and referenced receipts | Read-only historical settings operation evidence, separate from the packet manifest |
 | `.forge/epic192/issue205/design-proof/` and later run-specific evidence directory | Ignored comparison/reproduction logs and evidence index; no fabricated journal |
-| `.github/workflows/ci.yml`, existing delivery tests and bundle tooling/proofs | Read producer/scope definitions and run existing checks; no edits |
+| `tests/delivery_recipes.rs` | Implementation: correct only the stale model/effort assertions and diagnostic in the existing all-strategies loop to literal Luna/xhigh |
+| `.github/workflows/ci.yml`, `agents/codex-fast-implementer.json`, recipes, adapters, other tests and bundle tooling/proofs | Read producer/scope definitions and run existing checks; no edits |
 | Host helper at the absolute path in spec.md | External unresolved owner/consumer/activation; no claimed deployment from this tree |
 
-No new tracked files or edits to Rust, Cargo, dependencies, tests, workflows,
-gates/shims, recipes, adapters, tooling or accepted decisions are needed.
+Across design and implementation, exactly five existing tracked files are in
+scope. No new tracked file or other Rust/test edit is authorized. Cargo,
+dependencies, workflows, gates/shims, recipes, offices, adapters, tooling and
+accepted decisions remain outside the change.
 Positions remain ignored run-local evidence. No settings mutation, remote
 probe/cleanup or generic watcher is part of implementation.
 
@@ -59,7 +63,35 @@ the issue's driver is unresolved. The existing CI names match the packet;
 The existing delivery constitution test verifies wiring, not server refusal.
 `release-rate-5k` is tag-only; Docker publication also runs on main and chart
 publication is tag-only. No new technical research file or permanent checker
-is justified for these four existing Markdown surfaces.
+is justified for the four existing Markdown surfaces and bounded test repair.
+
+The host observer is the exact helper copied from
+/home/valentin/source/feedback-loop-ai/swarmail/.forge/epic192/ci-watch.py,
+with packet SHA-256
+6c9e88dcd3af91116e808c2ecfd49a7e62f3ef2ec2c9a84d4b03d9dc687967b1. Its
+persistence owner, launch path, intended issue-driver identity and consumer
+are not evidenced. The tracked change stops at the documented handoff;
+editing the ignored copy or adding a second watcher would not repair a proven
+consumer.
+
+## Historical implementation attempt and return disposition
+
+The nine-context inventory and the three spec artifacts were updated; the
+run-local packet and inventory validator passes. The full workspace test gate
+and exact coverage gate fail at the existing codex-fast selector assertion
+in tests/delivery_recipes.rs:371: the test expects Sol/high for the
+codex-fast implementer, while agents/codex-fast-implementer.json and the
+codex-fast contract specify Luna/xhigh. The pinned verifier records fail at
+cargo test for this reason. Other house gates, proof scripts, native-tls
+absence and shim integrity have historical passing receipts; logs and the
+verifier result are retained under .forge/epic192/issue205/implementation-17f8493f/gates/.
+
+That attempt returned the assertion mismatch to triage. The 2026-10-24 returned
+framing now authorizes the narrow test correction under accepted 0057, replacing
+the former no-tests restriction. It authorizes no recipe/policy change and
+resets no return count. Final-candidate verification remains outstanding. Five
+0058 results, operator archival retention, actual watcher ownership/activation, the two independent
+live refusal proofs and root integration remain outstanding.
 
 ## Implementation approach
 
@@ -85,12 +117,19 @@ is justified for these four existing Markdown surfaces.
    criteria. Do not restore executable mutation/retry instructions or mark
    watcher work complete. Retain exact host path/hash, ownership unknowns,
    predicate defects and pending activation/live-proof/archival obligations.
-5. Run the entire house inventory and pinned hermetic verification on the
+5. Correct the two stale model/effort expectations and diagnostic inside
+   `fast_strategy_selectors_have_no_default_and_keep_one_two_or_five_reviewers`
+   to literal `["luna"]` and `efforts.luna == "xhigh"`. Retain its four-strategy
+   loop, no-default guard, exact selector set, reviewer composition and all
+   hard-refusal assertions, plus the adjacent Luna regression. Do not edit the
+   selected office or read expected values from it. Run the focused suite and
+   isolated mutation proof below; retain candidate-bound logs.
+6. Run the entire house inventory and pinned hermetic verification on the
    candidate and obtain the five distinct 0058 results through the engine.
    Retain logs and candidate identity; unsigned commits only, never push.
    If a gate fails or cannot run, record it and follow the delivery policy;
-   documentation scope is no waiver. Revalidate affected proof after fixes.
-6. Hand off evidence durably through the existing operator process, recording
+   this bounded scope is no waiver. Revalidate affected proof after fixes.
+7. Hand off evidence durably through the existing operator process, recording
    an accessible archival receipt or explicitly leaving retention pending.
    Link raw hashes, candidate/gate/review evidence and the external obligations.
    Do not claim issue closure or current remote truth beyond the dated packet.
@@ -104,6 +143,7 @@ No production data model changes. Run-local records have these roles:
 | Packet verification | Capture time, repo/branch/head, manifest digest and each file's size/digest result; settings/rules shape checks |
 | Inventory comparison | Candidate identity, documented names/common app binding, captured tuples, uniqueness/equality result and negative-control outcomes |
 | Predicate reproduction | Source digest, AST-extracted expression, separate omission fixtures and observed true results; clearly offline |
+| Selector regression | Candidate/test digest, focused-suite exit/log, literal expected values and independent Sol/high negative-control outcomes |
 | Handoff | Exact external path, unresolved source/launcher/consumer/activation, archival status, candidate/gate/review receipts and each pending issue criterion |
 
 Do not store credentials, invent permission/coordination evidence or mutate raw
@@ -130,14 +170,34 @@ Controls must reject omission of Brokkr, omission of Docker, omission of an
 original context, an extra context, duplicate entries, a wrong/missing app
 and a tag-only addition. Evidence-shape controls reject contexts/checks
 mismatch, strict/admin false or missing, malformed/missing rules and modified
-file bytes; missing data cannot default to empty. Review the diff for intact
+file bytes; missing data cannot default to empty. The retained checker proves
+altered packets refuse but its shape mutations currently trip the hash check
+first. In isolated fixture copies, recompute fixture-manifest entries after
+shape mutations (or invoke the actual semantic validator on mutated objects)
+to prove each semantic refusal independently. Preserve an unchanged-manifest
+byte-tamper control and require duplicate-free contexts as well as tuples.
+Never rewrite the supplied packet, and do not treat scratch hashes as host
+provenance. Review the diff for intact
 commands, one inventory, precise CI/publication scopes, and no contradictory
 current instructions or completion claims. These are offline documentation
 checks, not the independent live refusal experiments.
 
-Existing `delivery_constitution` and `delivery_recipes` tests can be evidenced
-within `cargo test --workspace --locked`; do not rerun them solely to duplicate
-logs. Execute every gate in the authoritative
+After the assertion correction run:
+
+```bash
+cargo test --locked --test delivery_recipes
+```
+
+Prove sensitivity with the actual corrected assertions in a disposable copy or
+in-memory Rust harness: baseline Luna/xhigh passes; substituting Sol with the
+valid effort and high with the valid model each refuses independently. Do not
+mutate live recipe/office inputs, add a permanent redundant test, or substitute
+a separate Python predicate for the Rust assertions. Retain source, commands,
+exit statuses and proof that unrelated guards remain unchanged. Then run the
+full workspace suite as part of the required inventory; this repetition proves
+the integrated candidate after the focused regression, not live dispatch.
+
+Execute every gate in the authoritative
 [house inventory](../../docs/house-rules.md#gates--part-of-every-change),
 including its selftests and proofs, fail-closed native-tls absence and pinned
 shim/proof identities with the recorded digest-matched engine. Keep exact
@@ -169,5 +229,7 @@ generic BLOCKED response substitutes, and this run cannot create the probes.
 | Documentation is mistaken for deployed enforcement | Separate repository acceptance, external activation and independent live refusal proofs |
 | Run-local packet disappears | Durable spec provenance plus operator archival receipt; leave archival pending until a location is evidenced |
 | Old instructions trigger forbidden writes | Replace executable mutation/probe steps with dated history and explicit no-mutation scope |
+| Assertion repair changes policy or loses its oracle | Literal Luna/xhigh expected values and independent negative controls; review the bounded diff and preserve route/review/refusal guards |
+| Historical passes mask changed-candidate failures | Preserve earlier logs and bind all new gates/reviews to the final candidate; keep T4 open until proved |
 | Small diff bypasses full proof | Complete house inventory, pinned verify and five separate reviews; unexecuted proof remains open |
 | Whole issue is closed after partial delivery | Obligation map and unchecked external tasks retain watcher, live refusals, cleanup and integration gaps |
