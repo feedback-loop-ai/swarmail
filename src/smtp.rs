@@ -3071,7 +3071,7 @@ mod tests {
             ));
             let socket = tokio::net::TcpSocket::new_v4().unwrap();
             socket.set_recv_buffer_size(1024).unwrap();
-            let mut tcp = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+            let mut tcp = tokio::time::timeout(Duration::from_secs(5), socket.connect(addr))
                 .await
                 .expect("STARTTLS peer connect exceeded its bound")
                 .unwrap();
