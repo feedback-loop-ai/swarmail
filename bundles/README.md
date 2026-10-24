@@ -8,8 +8,9 @@ keeps `self` as its script origin; only that base seat's three model-office
 references change to the Codex design crew. Model reviewers read the change
 after deterministic verification; they do not replace the shell verifier.
 
-Use `codex-fast` for bug intake. Triage runs first on Codex Sol at medium
-effort and records its evidence and reason before choosing the path:
+Use `codex-fast` for bug intake. Triage runs first on Claude Opus 5.5 (`opus`)
+at medium effort, with no fallback, and records its evidence and reason before
+choosing the path:
 
 ```text
 +----------------+----------------------+------------------------------+
@@ -66,6 +67,7 @@ they are useful when the operator has already ruled that path necessary:
 | luna      | gpt-6-luna            | Codex CLI                  |
 | astra     | gpt-6-astra           | Codex CLI                  |
 | qwen-max  | dashscope/qwen3.8-max | DashScope through dsh      |
+| opus      | claude-opus-5-5       | Claude CLI                 |
 | fable     | claude-fable-5-1      | Claude CLI                 |
 | sonnet    | claude-sonnet-5-5     | Claude CLI                 |
 | flash     | deepseek-flash        | Official DeepSeek platform |
@@ -75,9 +77,9 @@ they are useful when the operator has already ruled that path necessary:
 Standard means `codex`; High-risk means fast `design`/`engine`, with the same
 five required role assignments as Careful. Both Astra roles retain distinct
 offices, charters and results; independent Fable is a separately required
-correctness reading. Five roles do not mean five model families. See proposed
-[0058](../docs/decisions/0058-codex-review-routing.md), sourced from the current
-operator directive; the seat does not accept that record.
+correctness reading. Five roles do not mean five model families. See accepted
+[0058](../docs/decisions/0058-codex-review-routing.md) for the operator-directed
+review matrix.
 
 Every Codex reviewer has a single-model chain except dedicated fast-feature
 correctness: `[qwen-max, sonnet]`. Only a settled pre-session dispatch failure
@@ -93,8 +95,8 @@ changes. A security hold remains a hard stop, and unknown residual safety
 facts never authorize shipping.
 
 The `codex-fast` implementation seat uses GPT-6 Luna at xhigh effort. Its
-triage seat stays on Sol / medium; strategy selection and reviewer routes are
-unchanged.
+triage seat uses Claude Opus 5.5 (`opus`) at medium effort with no fallback;
+strategy selection and reviewer routes are unchanged.
 
 Codex work offices inherit the original intake, design and implementation
 charters. Their declared workspace hands put writes through the engine's

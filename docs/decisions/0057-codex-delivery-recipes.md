@@ -163,3 +163,18 @@ guarantees and independent Fable as five separate results. Fast chore keeps
 one combined Flash reviewer. Fast feature uses Qwen Max correctness and Flash
 security; Sonnet is allowed only after Qwen dispatch failure before a review
 result. No other fallback is allowed, and DeepSeek Pro is forbidden.
+
+## Operator clarification — fast triage model (2026-10-24)
+
+The operator directed that only the `codex-fast` triage office use Claude
+Opus 5.5 through the existing Claude model key `opus`, at medium effort,
+with no triage fallback. This directive is the accepted amendment to 0057
+and supersedes only “Triage stays on Sol / medium” in the earlier fast
+implementation clarification. The historical text and 0057's accepted status
+remain as recorded; no new decision number or proposal is introduced.
+
+Fast implementation remains Luna / xhigh. Standard and Careful work routes,
+shared design, the accepted 0058 review matrix and its sole fast-feature
+Qwen-to-Sonnet dispatch fallback, legacy `self` routes, triage classifications
+and bounded returns, protected review and all deterministic gates are unchanged.
+No other acceptance follows from this directive.

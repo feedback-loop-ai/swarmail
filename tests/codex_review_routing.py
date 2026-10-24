@@ -77,6 +77,11 @@ def call(args, cwd, log):
 
 def resolved_matrix(engine, out):
     expected = {
+        'self': {'review:correctness': ('dsh', ['qwen-max', 'glm-flash']),
+                 'review:security': ('claude', ['opus', 'glm-flash']),
+                 'review:guarantees': ('codex', ['astra', 'glm-flash']),
+                 'review:tests': ('claude', ['fable', 'glm-flash']),
+                 'intake': ('dsh', ['glm-flash']), 'implement': ('dsh', ['glm-flash'])},
         'codex': {'review:correctness': ('claude', ['fable']),
                   'review:security': ('dsh', ['flash']), 'review:tests': ('claude', ['sonnet'])},
     }
@@ -88,21 +93,80 @@ def resolved_matrix(engine, out):
         'review:feature:correctness': ('dsh', ['qwen-max', 'sonnet']),
         'review:feature:security': ('dsh', ['flash']),
         **{'review:' + lane + ':' + k: v for lane in ['design', 'engine'] for k, v in five.items()}}
-    for recipe in ['self', *expected]:
+    expected['codex']['intake'] = ('codex', ['sol'])
+    expected['codex-careful']['intake'] = ('codex', ['sol'])
+    expected['codex-fast']['triage'] = ('claude', ['opus'])
+    wanted_triage = dict(agent='codex-triage', provider='claude', chain=['opus'],
+        models=['opus'], concrete=['claude-opus-5-5'], efforts={'opus': 'medium'},
+        resolution=[('opus', 'claude', 'ok')])
+    manifests = {}
+    for recipe in expected:
         result = call([engine, 'recipes', 'show', recipe], ROOT, out / (recipe + '-resolved'))
         assert result.returncode == 0, result.stderr
         data = json.loads(result.stdout)
-        if recipe == 'self':
-            continue
-        agents = data['manifest']['agents']
-        actual = {k: (v['provider'], v['chain']) for k, v in agents.items() if k.startswith('review')}
+        manifest = data['manifest']
+        manifests[recipe] = manifest
+        agents = manifest['agents']
+        actual = {k: (v['provider'], v['chain']) for k, v in agents.items()
+                  if k.startswith('review') or k in ['intake', 'triage']
+                  or (recipe == 'self' and k == 'implement')}
         assert actual == expected[recipe], (recipe, actual)
         for key, agent in agents.items():
-            if key.startswith('implement'):
+            if recipe != 'self' and key.startswith('implement'):
                 chain = ['luna'] if recipe == 'codex-fast' else ['sol']
                 assert agent['provider'] == 'codex' and agent['chain'] == chain
+        # Resolve inherited efforts instead of inferring them from model aliases.
+        for key in ['intake', *[k for k in agents if k.startswith('implement')]]:
+            if recipe == 'self' or key not in agents:
+                continue
+            result = call([engine, 'agents', 'show', agents[key]['agent']], ROOT,
+                          out / (recipe + '-' + key.replace(':', '-') + '-office'))
+            assert result.returncode == 0, result.stderr
+            office = json.loads(result.stdout)
+            model = 'luna' if recipe == 'codex-fast' else 'sol'
+            effort = ('medium' if key == 'intake' else 'high') if recipe == 'codex' else (
+                'high' if key == 'intake' else 'xhigh')
+            assert office['models'] == [model] and office['efforts'] == {model: effort}
+        if recipe == 'codex-fast':
+            selected = agents['triage']
+            result = call([engine, 'agents', 'show', selected['agent']], ROOT, out / 'triage-office')
+            assert result.returncode == 0, result.stderr
+            office = json.loads(result.stdout)
+            adapter = json.loads((ROOT / 'adapters/claude.json').read_text())
+            triage = dict(agent=selected['agent'], provider=selected['provider'],
+                chain=selected['chain'], models=office['models'], efforts=office['efforts'],
+                concrete=[adapter['models'][model] for model in office['models']],
+                resolution=[(c['model'], c['provider'], c['status'])
+                            for c in office['resolution']['chain']])
+            def assert_triage(matrix):
+                assert matrix == {'triage': wanted_triage}, matrix
+            assert_triage({'triage': triage})
+            # Each mutant must fail the comparison that accepted the real route.
+            mutations = ['missing', 'provider', 'alias', 'model', 'effort', 'fallback']
+            for mutation in mutations:
+                bad = {'triage': copy.deepcopy(triage)}
+                if mutation == 'missing':
+                    del bad['triage']
+                elif mutation == 'provider':
+                    bad['triage']['provider'] = 'codex'
+                elif mutation == 'alias':
+                    bad['triage']['chain'] = ['sol']
+                elif mutation == 'model':
+                    bad['triage']['concrete'] = ['claude-sonnet-5-5']
+                elif mutation == 'effort':
+                    bad['triage']['efforts'] = {'opus': 'high'}
+                else:
+                    bad['triage']['chain'].append('sol')
+                try:
+                    assert_triage(bad)
+                except AssertionError:
+                    pass
+                else:
+                    raise AssertionError(('triage mutant accepted', mutation))
+            dump(out / 'triage-matrix.json', dict(actual=triage, negative_controls=mutations,
+                                                providers_called=False))
         # Negative controls run the same whole-matrix assertion used above.
-        for key in actual:
+        for key in [k for k in actual if k.startswith('review')]:
             for mutation in ['missing', 'pro', 'fallback', 'merged']:
                 bad = copy.deepcopy(actual)
                 if mutation == 'missing':
@@ -110,6 +174,16 @@ def resolved_matrix(engine, out):
                 else:
                     bad[key] = ('dsh', ['deepseek-pro']) if mutation == 'pro' else ('claude', ['fable', 'sol']) if mutation == 'fallback' else ('codex', ['sol'])
                 assert bad != expected[recipe], (recipe, key, mutation)
+    base = manifests['self']
+    shared_design = {k: v for k, v in base['agents'].items() if k.startswith('design:')}
+    for recipe, manifest in manifests.items():
+        assert {k: v for k, v in manifest['agents'].items()
+                if k.startswith('design:')} == shared_design, recipe
+        for key in ['design:check', 'verify', 'ship']:
+            assert manifest['drivers'][key] == base['drivers'][key], (recipe, key)
+            assert manifest['hands'][key] == base['hands'][key], (recipe, key)
+            assert manifest['boundary'][key] == base['boundary'][key], (recipe, key)
+    print('resolved triage/intake, work/review matrices and negative controls passed', flush=True)
 
 
 def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):

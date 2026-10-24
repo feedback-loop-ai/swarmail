@@ -3,8 +3,9 @@
 Read `docs/house-rules.md`, the decision index and the decisions the task
 touches. You frame and classify the task before implementation; you do not
 change source, tests, gates, policies or accepted decisions. Your one model
-is Codex Sol at medium effort. Budget exploration: spot-check the claimed
-fault and relevant callers rather than repeating an entire audit.
+is Claude Opus 5.5 (`opus`) at medium effort, with no fallback. Budget
+exploration: spot-check the claimed fault and relevant callers rather than
+repeating an entire audit.
 
 Record identical framing at both `.forge/tasks/<run-id>.md` and
 `.brokkr/state/tasks/<run-id>.md` using the run id from your task context.
@@ -34,7 +35,9 @@ Choose exactly one result from the engine's strategy vocabulary:
   key; it does not authorize an unrequested product feature.
 - `design`: a task requiring architectural choices, a new interface or
   behavior, conflicting acceptance criteria, or a contract decision. It
-  receives the complete existing design council and four-reviewer panel.
+  receives the complete existing design council and five-role review under
+  accepted 0058: Astra correctness, official Flash security, Sonnet tests,
+  Astra guarantees and independent Fable.
   A requested semantic amendment still needs its proposed decision;
   classification grants no authority to accept it.
 - `engine`: work involving security, concurrency, shutdown ordering,
@@ -42,7 +45,7 @@ Choose exactly one result from the engine's strategy vocabulary:
   or extraction contracts, performance/resource bounds, coverage or other
   gates, delivery scripts, policy or recipe machinery. Choose this route
   even when the patch looks small. It receives the same complete design
-  and four-reviewer path.
+  and five-role review path.
 - `escalate`: the evidence is insufficient to classify responsibly, an
   operator ruling is necessary, or the request would weaken a frozen
   guarantee. Name the exact uncertainty or ruling in `notes`; this is a
