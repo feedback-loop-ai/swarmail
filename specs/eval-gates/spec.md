@@ -1,24 +1,44 @@
 # Gate evals against the candidate build
 
-- Status: draft for implementation; 2026-10-24.
+- Status: continuation design for implementation; 2026-10-24.
 - Scope: epic #192, issue #201; fixture provenance follow-up for #149.
-- Baseline: `dc1822a45e4d2ae8326b44baf22818187a8320e9`.
-- Intake: run `epic-192-issue-201-on-current-or-cbc7d3d2`, classified `engine`.
+- Original baseline: `dc1822a45e4d2ae8326b44baf22818187a8320e9`.
+- Continuation candidate: `26df727`, after inherited design `ae4d2bd`.
+- Intake: `continue-epic-192-issue-201-on-c-3c99fb84`, classified `engine`;
+  continues stopped run `epic-192-issue-201-on-current-or-cbc7d3d2`.
 
 ## Feature and rationale
 
 CI and hermetic verify must exercise the standalone eval crate against the
-Swarmail executable produced by that candidate's root test build. Today root
-green excludes evals, and stale documentation describes the already accepted
-harness as proposed. The runner also retains an unbounded server-stdout queue
-after readiness. Complete the deferred gate wiring, prove its failures are
-visible, reconcile the documentation, and remove that accumulating queue.
+Swarmail executable produced by that candidate's successful root test build.
+Contributors and operators need eval-only defects to prevent green results,
+and verbose children must not grow readiness retention or block pipe draining.
 
-The users are contributors relying on CI and operators relying on pinned
-verification. An eval-only format, lint, boundary or behavioral failure must
-prevent a green result. A successful eval must identify the candidate it
-exercised. A verbose child must neither exhaust a readiness queue nor block
-on an unread pipe.
+At `26df727`, the CI and pinned verifier wiring, artifact selection, boundary
+proofs, one-shot readiness and documentation corrections already exist. This
+continuation preserves them and closes proven gaps instead of rebuilding the
+feature. In particular, the retained-server regression has a blocking FIFO
+open and an unbounded child wait before its marker deadline. A drainer
+regression can prevent the test from ever reaching that deadline. Repair the
+proof locally and reconcile inherited evidence with the final candidate.
+This is a source-observed failure-path gap, not a reproduced runtime deadlock.
+
+### Dated clarification — 2026-10-24 continuation
+
+The original design's statements that CI excludes evals, guidance calls 0055
+proposed, and server stdout retains a growing queue describe `dc1822a`, not
+`26df727`. The original accumulation affected retained server receivers;
+agent launch dropped its receiver. Keep AC1–AC11 as the feature contract,
+strengthen AC7's bounded-failure proof, and reassess outstanding tasks from
+evidence. Unchecked boxes do not prove missing code.
+
+The previous implementation handoff claims all gates passed. Run-local
+`validation/gates.json` records earlier root/coverage timeouts;
+`validation/full-tests.json` records later root/eval exit 0 and an absolute
+artifact; `validation/coverage-full.json` records later coverage/tamper exit 0.
+These are distinct inherited receipts, not fresh proofs of this continuation.
+Receipts without candidate/pin/command identity cannot alone certify the final
+candidate. This design claims neither full gate success nor protected review.
 
 ## Authority and scope
 
@@ -44,48 +64,60 @@ remain mandatory under [0050](../../docs/decisions/0050-delivery-gates.md) and
 
 ## Panel synthesis and explicit rulings
 
-1. **Adopt simplicity's existing owners and robustness's executed proof.**
-   Extend CI quality and Linux/macOS test jobs and the canonical pinned
-   verifier. Keep explicit command wiring there; reject a new gate platform,
-   matrix or dispatch shim. Cost: modest duplication and eval runtime on both
-   platforms. Structural command checks alone lose: actual eval-only
-   failures must propagate through pinned dispatch, costing isolated proof
-   runs and maintained negative controls.
-2. **Choose one root test invocation with Cargo artifact capture.** Select
-   the root package's ordinary `swarmail` binary, never its unit-test harness,
-   from that successful invocation. Robustness's separate `--no-run` pass is
-   unnecessary here; losing it requires preserving mixed artifact/test output,
-   Cargo status and diagnostics correctly. Reject guessed paths, inherited
-   `SWARMAIL_BIN`, PATH lookup and per-case fallback builds in gates. Missing
-   provenance refuses even if an apparently usable stale binary exists.
-3. **Fix stdout now, rather than track the known queue as the delivery.**
-   Adopt both panels' one-shot parsed readiness and log-only agent mode.
-   Choose robustness's bounded whole-line framing over simplicity's wish to
-   leave chunk framing alone: an oversized continuation must not masquerade
-   as a new announcement. Cost: a small discard-until-newline state machine
-   and boundary tests. Reject awaited bounded sends (pipe stalls) and lossy
-   try-send queues (lost readiness). Old diagnostics beyond the log tail are
-   intentionally lost. This does not promise confinement or a total process
-   memory bound.
-4. **Separate server shape assertions from client compatibility.** Adopt
-   robustness's exact real-server response assertions and simplicity's
-   refusal to invent a stricter general MCP client. Test existing client
-   refusals through private decoding seams where needed; preserve tolerance
-   for harmless extra fields/blocks. Cost: no support for structured-only
-   results or a newer protocol, and no general MCP conformance claim.
-5. **Preserve historical authority and correct current guidance.** Both
-   panels agree that 0055 is already accepted. Update current spec/README
-   claims and contradictory dependent instructions, preserving dated history.
-   A dated factual addendum may explain the completed gate deferral; never
-   rewrite the accepted body. For #149, document the canonical source and
-   subcommand, and track unavailable external wording explicitly. Cost:
-   the external issue correction remains an identified handoff, not a
-   fabricated edit or a claim that the external issue was corrected.
+Both continuation positions were read from the run-local simplicity and
+robustness files. Their common recommendation is preservation with evidence;
+the rulings below resolve their different thresholds for additional work.
 
-The triage diagnosis is refined: agent launch drops the line receiver; the
-persistent accumulation is in server `Proc`s retained after `announce`.
-Startup can also outrun consumption. A chatty-agent test alone cannot prove
-this defect fixed.
+1. **Adopt simplicity's existing owners and robustness's executed proof.**
+   Retain CI quality and both OS test jobs, canonical pinned verify, explicit
+   commands and the existing outer `eval-dispatch` proof mode. Reject a new
+   workflow, gate registry, shim, helper crate or generic proof framework.
+   Structural wiring tests alone lose to executed refusal evidence. Cost:
+   command duplication, both-platform eval runtime and isolated proof runs.
+2. **Retain the implemented artifact selector.** One successful root-test
+   invocation supplies canonical package/ordinary-binary/non-test artifact
+   identity. Keep the current small Python selectors, failure propagation and
+   quoted path handling. Reject rewriting to jq merely to match the old plan,
+   a second build pass, guessed paths or combining pinned selection with the
+   local eval fallback resolver. Cost: two maintained selectors and explicit
+   negative controls; provenance does not prevent hostile local replacement.
+3. **Require the narrow regression repair now.** Simplicity permits no code
+   change if proof is adequate; robustness identifies the unbounded FIFO open
+   and child wait in the retained-server control. Source inspection confirms
+   that gap, so the zero-change option loses here even without a reproduced
+   hang. Require cancellable/deadline-aware rendezvous, bounded child waiting
+   and cleanup on failure in that test's owner. A timeout around a blocking
+   worker alone loses because cancellation leaves its thread blocked. Cost:
+   local test complexity and a deliberately stalled-drainer control. Reject
+   a production lifecycle redesign or generic supervisor.
+4. **Preserve the stdout fix, not tracking-only closure.** Retain one-shot
+   parsed readiness, log-only agents, continuous draining and discard through
+   newline for oversized startup lines. Reject awaited bounded sends, lossy
+   announcement queues, configurable streams and RSS-based bound claims.
+   Cost: truncated old logs and rejected oversized announcements; there is no
+   whole-process memory/confinement promise. AC6–AC7 remain mandatory.
+5. **Keep boundary proof separate from protocol expansion.** Adopt the exact
+   real-server MCP shape assertion and existing decoder refusal controls;
+   retain harmless-field/block tolerance and the existing lock tuple
+   predicate. Reject SSE, negotiation, structured-only support and another
+   parser/dependency policy. Cost: current-protocol scope only, and tuple
+   subset does not prove feature-graph equivalence.
+6. **Reconcile evidence and authority without rewriting history.** Adopt both
+   panels' already-accepted 0055 status, actual wired-gate guidance and
+   canonical fixture path. Reuse this spec directory; preserve dated history
+   and genuine deferred capabilities. Reject handoff prose as fresh proof,
+   marking inherited tasks done without evidence, or an invented external
+   #149 edit. Cost: final-candidate verification and an explicit operator
+   follow-up while external wording remains unavailable.
+
+Robustness's store/crash/webhook/cap/hostile-input/TLS discussion defines the
+limits of eval evidence, not additional implementation scope. Preserve the
+root proof owners and accepted boundaries: commit-before-reply can leave an
+uncertain acknowledgment and duplicate retry; notifications remain
+best-effort; later insertions can evict oldest mail; unconfined processes and
+wire-byte bounds are not a global resource budget. Reject turning this
+continuation into a broad service audit. Its cost is no new assurance for
+those distinct behaviors from eval green alone.
 
 ## Acceptance Criteria
 
@@ -99,8 +131,9 @@ this defect fixed.
   from successful root-test Cargo artifact messages, matching the canonical
   root package, binary target `swarmail`, non-test profile and non-null
   executable. The resulting path is absolute and executable. Missing,
-  ambiguous, wrong-package or test-harness-only artifacts refuse. A failed
-  root test/build cannot be masked by capture or parsing. A custom target
+  ambiguous, wrong-package, wrong-target, relative, non-executable or
+  test-harness-only artifacts refuse. A failed root test/build cannot be
+  masked by capture or parsing. A custom target
   directory containing spaces succeeds; a decoy inherited `SWARMAIL_BIN`
   is overwritten, and eval tests do not invoke fallback builds.
 - **AC3 — Lock and workspace boundary.** The full eval suite executes the
@@ -139,6 +172,14 @@ this defect fixed.
   SMTP probes, deadlines, server-death reporting and terminate/kill/reap of
   children and descendants remain effective. Use markers/barriers and real
   deadlines, never sleep as synchronization or RSS timing as a bound proof.
+  In the retained-server test, bound rendezvous, output completion and child
+  exit from before the first potentially blocking operation. Keep `Proc`
+  alive while the child crosses its 131072-byte stdout write. On failure,
+  release/cancel owned I/O, terminate/kill/reap the process group and finish
+  owned tasks without a stranded blocking thread. An isolated deliberately
+  stalled-drainer control must report the intended deadline failure and
+  finish cleanup within a declared finite outer budget; a restored control
+  must pass. Outer harness termination alone is not a passing red proof.
 - **AC8 — Executed gate refusals.** Isolated eval format, clippy and test
   defects each fail actual pinned verify dispatch at the relevant gate;
   restored controls pass it and a clean candidate passes the dispatch.
@@ -146,19 +187,22 @@ this defect fixed.
   CI-equivalent commands fail on the same defects. Keep shim-tamper and
   recorded-engine identity controls; candidate helper substitution cannot
   choose the verification algorithm. Preserve evidence with exit/result and
-  decisive diagnostics, not only command-string assertions.
+  decisive diagnostics, not only command-string assertions. Bind each receipt
+  to candidate HEAD plus any diff, pinned engine/script identity and exact
+  command. Reconcile earlier timeout and later success receipts explicitly;
+  missing or invalidated proof must run again on the relevant final code.
 - **AC9 — Documentation and fixture provenance.** Both older eval specs and
   `evals/README.md` cite accepted 0055 (operator, 2026-10-19), current gate
   wiring and candidate-binary prerequisite. Reconcile dependent plan/tasks
-  and the stale eval manifest comment without erasing dated history. Keep
-  the deferred brokkr driver, unconfined execution, HTTP ICS download and
+  and any remaining stale eval manifest comment without erasing dated
+  history. Keep the deferred brokkr driver, unconfined execution, HTTP ICS download and
   HTTP support-reply limitations. Document #149's fixture as
   `evals/src/fixture.rs`, invoked with `swarmail-evals fixture`. Locate any
   erroneous repository path before replacing it. If external #149 text
   remains unavailable, record that precise outstanding correction, canonical
   replacement and operator follow-up; do not claim an external mutation.
 - **AC10 — Inventory and full validation.** The single house-rule gate
-  inventory adds eval fmt/clippy/tests and the test-build binary prerequisite.
+  inventory retains eval fmt/clippy/tests and the test-build binary prerequisite.
   Retain every current gate, exact coverage/selftest, publish/seal proofs,
   license/native-TLS checks, pinned proofs and CI-only distinctions. Run the
   eval suite and complete inventory for implementation; record real failures

@@ -1,227 +1,234 @@
-# Implementation plan — eval gates
+# Implementation plan — continue eval gates
 
 ## Technical context
 
-One Rust service crate plus the already accepted standalone `evals/`
-workspace; Unix subprocess lifecycle on Linux/macOS; Tokio, serde_json and
-existing test helpers; Bash/jq for pinned verification and GitHub Actions.
-No new dependencies. Root coverage remains exact 100% lines, branches and
-functions; evals remains outside that denominator. Implementation starts from
-`dc1822a45e4d2ae8326b44baf22818187a8320e9` plus this design commit.
+Continue candidate `26df727` and inherited design `ae4d2bd` in this checkout.
+The service is one Rust crate; `evals/` is an unpublished standalone workspace
+outside root packaging and exact root coverage. Existing Tokio/libc and Unix
+process groups support Linux/macOS tests. CI and pinned Bash verification use
+small Python artifact selectors. No dependency or allowlist change is needed.
 
-The checkout has no plan-template file under `.specify/`; this plan supplies
-the requested technical context, constitution check, project structure,
-research, data model, contracts, quickstart and risks directly. No extra
-research/data-model artifact is necessary for this bounded change.
+No plan template exists under `.specify/templates/` in this checkout. This
+plan provides technical context, constitution check, research, structure,
+data model, contracts, quickstart and risks directly. The three existing
+artifacts remain the single design; no auxiliary research artifact is needed.
 
 ## Constitution check
 
-Implement accepted 0055's conditional wiring under 0050's pinned proof
-ownership. No accepted ruling or public contract is amended; no ADR is
-needed. Preserve 0001–0005, 0043, offline/no-install verification, all charter
-gates, protected review and security hold. Tests use real servers for protocol
-acceptance. Pure artifact/lock/decoder inputs test rejection seams, not mail
-acceptance. New root test cold paths follow decision 0020. Unsigned commits
-follow 0056, superseding stale signing instructions in older plans.
+This implements accepted [0055](../../docs/decisions/0055-agent-eval-harness.md)
+and [0050](../../docs/decisions/0050-delivery-gates.md), without a new public
+contract or ruling. No ADR is declared. Preserve accept==stored,
+subscribe-before-check, oldest-only pruning, AUTH isolation, ingest extraction
+and the MCP Origin/Host boundary. Production bridge limits in 0039 are not
+this runner's stdout contract. No root source, manifest, lock, packaging,
+license or coverage-denominator edit is authorized by this plan.
 
-## Research and resolved choices
+Pinned proof ownership, offline/no-install verify, every house gate, protected
+review and security hold remain mandatory. Root test placement follows 0020.
+0056 requires unsigned commits and later operator sealing; no push, merge,
+issue closure or decision acceptance. New scope that contradicts a ruling
+returns for design/operator action rather than being smuggled into a repair.
 
-The two panel files and intake under `.brokkr/state/` are run-local evidence.
-Inspection establishes these implementation facts:
+## Research and continuation evidence
 
-- CI tests only the root workspace; eval dependencies and test targets require
-  explicit manifest-path invocations. Keep quality and both OS test jobs.
-- `verify-seat.sh::run` launches a new shell per command. A transient export
-  inside one invocation does not reach another; explicitly carry binary
-  provenance across the dependent root/eval test steps.
-- `delivery-proof-test.sh` already owns isolated candidate fixtures and
-  tamper controls. Extend its proof machinery, not the verifier algorithm in
-  an unrelated test script. Avoid recursive verify-to-proof-to-verify calls.
-- Root-test Cargo output contains both artifacts and test output. Keep only
-  valid artifact JSON for selection, retain all diagnostics, and check Cargo's
-  exit first. Identify the root package from canonical manifest metadata,
-  not metadata array order, target filename searches or package name alone.
-- `runner::drain` currently chunks reads at 8192 bytes but forwards chunks
-  through an unbounded queue. Retained server receivers outlive announce;
-  agent receivers are dropped. Existing address parsers both return two
-  `SocketAddr`s, allowing a small typed one-shot mechanism.
-- MCP client tolerance and exact current server shape differ. Assert the
-  latter on real replies; extract only existing decoding into private pure
-  functions to exercise malformed inputs without adding protocol strictness.
-- 0055 and its index already record acceptance. The obsolete claims are in
-  current guidance. The exact external #149 erroneous wording was not
-  supplied or found in inspected repository text; record the canonical path
-  and explicit external follow-up instead of inventing a change.
+The current and stopped-run intake, both continuation positions, inherited
+specs and prior implementation result were read. Inspection confirms:
 
-## Project structure and files
+- CI quality already runs eval fmt and locked all-target clippy; Linux/macOS
+  tests capture root artifacts and invoke the full locked eval suite.
+- Canonical pinned verify mirrors that sequence offline. Root failures refuse
+  before artifact selection; explicit quoted binary propagation crosses its
+  command shells. Its fail result may accompany process exit zero.
+- `delivery-proof-test.sh eval-dispatch` already owns isolated mutant copies,
+  custom target/decoy controls and result receipts. Keep it outside the
+  default nested verifier proof to avoid recursion.
+- Runner readiness is optional one-shot parsed addresses; agents use log-only
+  drain. Startup framing and shared log retention are bounded. The historical
+  unbounded server receiver has been removed.
+- `retained_server_drains_chatty_stdout_after_one_shot_readiness` waits on
+  `spawn_blocking` FIFO open, then `proc.child.wait()`, without deadlines.
+  Its later five-second marker deadline cannot diagnose a stall in either.
+- Lock tuple negative controls and real MCP shape/decoder controls already
+  exist. README and both older specs cite accepted 0055 and wired gates.
+- Earlier timeout receipts, later root/eval/coverage success receipts and the
+  implementation handoff have different evidentiary weight. Inspect retained
+  dispatch evidence under `target/coverage/eval-dispatch-evidence` as well as
+  `.brokkr/state/design/validation`; bind it to the actual candidate and pin.
+  A missing receipt is outstanding proof, not evidence that code is missing.
 
-| Owner | Change |
+### Dated clarification — 2026-10-24
+
+The prior plan described adding gates, replacing the queue and using jq for
+selection from baseline `dc1822a`. Those are historical instructions.
+Preserve the implemented Python selectors and one-shot design, repair the
+local regression, and rerun missing/invalidated evidence. No claim is made
+that this local HEAD equals a freshly fetched remote main.
+
+## Project structure and file ownership
+
+| Owner | Continuation work |
 |---|---|
-| `.github/workflows/ci.yml` | Eval fmt/lint in quality; root artifact capture and full eval tests in both test jobs; preserve publication dependencies and finite deadlines. |
-| `bundles/self/scripts/verify-seat.sh` | Same mandatory checks, root binary provenance, explicit path propagation, diagnostics and success notes; offline/pin/shim refusals retained. |
-| `bundles/self/scripts/delivery-proof-test.sh` | Focused eval dispatch proof mode and existing fixture utilities; default tamper proof remains nonrecursive. |
-| `tests/delivery_constitution.rs` | Structural wiring/resource/CI publication guards that supplement executed proof. |
-| `docs/house-rules.md` | Extend the sole gate inventory and explain standalone eval/test-build prerequisite and coverage scope. |
-| `evals/src/runner.rs` | Replace stdout queue with optional typed readiness, bounded line assembly and continuous log draining. |
-| `evals/tests/runner.rs`, `evals/tests/common/mod.rs` and runner unit tests | Deterministic high-output/cleanup helpers and private bounded-state assertions. |
-| `evals/src/mcp.rs`, `evals/tests/fixture.rs` | Private decoding seams, refusal tests, exact real-server shape assertions. |
-| `evals/tests/boundary.rs` | Reuse subset predicate for name/version/source negative controls and retain existing workspace/TLS checks. |
-| `evals/tests/proof.rs`, scoring/report suites | Existing full acceptance controls; extend only where a concrete regression demands it. |
-| `evals/README.md`, `evals/Cargo.toml` | Accepted authority, active gates, canonical fixture path, accurate remaining limits and stale comment correction. |
-| `specs/agent-eval-harness/{spec,plan,tasks}.md`, `specs/eval-measurement-repairs/{spec,plan,tasks}.md` | Reconcile current proposal/gate/signing guidance while preserving dated provenance. |
-| `docs/decisions/0055-agent-eval-harness.md` | Only if needed: dated factual completion addendum after evidence exists; historical body and accepted status unchanged. |
+| `evals/src/runner.rs` test module | Primary repair: cancellable bounded retained-server rendezvous, child wait, failure cleanup and a stalled-drainer proof. Keep runtime readiness behavior. |
+| `evals/tests/runner.rs`, `evals/tests/common/mod.rs` | Reuse real process/lifecycle helpers; change only if the local regression needs them. |
+| `.github/workflows/ci.yml` | Preserve existing explicit quality and both OS test wiring, artifact selector, deadlines and publication prerequisites; repair only demonstrated gaps. |
+| `bundles/self/scripts/verify-seat.sh` | Preserve pinned offline sequence, artifact provenance and pin/shim refusals; repair only demonstrated gaps. |
+| `bundles/self/scripts/delivery-proof-test.sh` | Reuse outer eval-dispatch controls; repair missing evidence recording locally if proved necessary. |
+| `tests/delivery_constitution.rs` | Preserve structural wiring/inheritance checks as supplements to actual dispatch. |
+| `evals/tests/boundary.rs`, `evals/tests/fixture.rs`, `evals/src/mcp.rs` | Run existing tuple/real-shape/decoder tests; extend only for a concrete uncovered requirement. |
+| `evals/tests/proof.rs`, scorer/report/lifecycle suites | Preserve full oracle/null/isolation and infrastructure precedence controls. |
+| `docs/house-rules.md` | Keep the sole authoritative gate inventory and current binary prerequisite; no second inventory. |
+| `evals/README.md`, `evals/Cargo.toml`, `specs/agent-eval-harness/{spec,plan,tasks}.md`, `specs/eval-measurement-repairs/{spec,plan,tasks}.md` | Check current authority/gate/fixture/signing guidance; fix only remaining contradictions and preserve dated history. |
+| `specs/eval-gates/{spec,plan,tasks}.md` | This chief commit reconciles continuation scope; later tasks record proven completion with receipts. |
 
-Do not edit root source/manifests/lock/deny settings. Existing recipe bundles
-inherit the canonical verifier; check that inheritance instead of copying
-commands into each recipe. No new helper or shim is planned. If substantial
-shared logic proves necessary, return to justify a pinned helper and its
-transitive resource/completeness/tamper proofs before expanding the design.
+These are owners, not a mandatory edit list. No rewrite of accepted 0055's
+historical body or status is planned. No new shim, helper crate, workflow,
+model route, public mode or broad lifecycle platform is needed. Recipe bundles
+inherit canonical verify; validate inheritance instead of duplicating it.
 
-## Implementation approach and contracts
+## Implementation approach
 
-### Gate sequence and candidate executable
+### 1. Reconcile before editing
 
-Use these three checks in their existing owners:
+Record HEAD, tracked/untracked state and existing scoped changes. Map each
+acceptance criterion to current implementation and receipts. Preserve the
+chronology of timeout, later success and handoff claims. A usable execution
+receipt identifies HEAD plus dirty-diff digest when applicable, command,
+selected binary, engine/pinned proof identity, exit, result JSON and decisive
+diagnostics. Do not infer successful dispatch from process exit alone.
 
-```bash
-cargo fmt --manifest-path evals/Cargo.toml --all -- --check
-cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings
-SWARMAIL_BIN="$candidate_bin" cargo test --manifest-path evals/Cargo.toml --locked
-```
+Retain code already satisfying the contract. Do not import/reset concurrent
+worktrees or repeat completed implementation because old tasks are unchecked.
+Source changes invalidate affected receipts; final gates still belong to the
+final candidate. Keep evidence run-local and preserve original receipts.
 
-Resolve `candidate_bin` from a successful
-`cargo test --workspace --locked --message-format=json-render-diagnostics`.
-Capture the stream to a temporary artifact log while retaining useful console
-output; any tee pipeline needs `pipefail`. Use existing jq and Cargo metadata
-with locked resolution to bind the root package to its canonical manifest.
-Filter `compiler-artifact`, root package id, target name `swarmail`, kind `bin`,
-`profile.test == false` and a string executable. Deduplicate identical
-messages but require exactly one distinct path. Canonicalize to an absolute
-executable file and reject zero/multiple matches. Do not change the target
-directory, consult PATH or trust an inherited `SWARMAIL_BIN`.
+### 2. Repair the retained-server proof locally
 
-In CI group dependent root/eval tests in one checked shell block. In verify,
-retain separate diagnostic labels but pass a safely quoted absolute path
-explicitly to the eval command, or group dependent commands in one checked
-invocation with distinct diagnostics. Never interpolate unquoted paths or use
-JSON escaping as shell escaping. Clean temporary capture data on failure.
-All failures, including offline cache misses, refuse; there is no install or
-skip fallback. Standalone manual runner fallback remains unchanged by this
-CI/verify prerequisite.
+Keep the child ordering: emit valid readiness, write 131072 bytes, rendezvous,
+then emit its final marker. Keep `Proc` owned and alive throughout. Establish
+one five-second progress deadline before rendezvous, and apply its remaining
+budget to rendezvous, child completion and final-marker observation.
 
-Keep algorithms directly in CI and the pinned seat. Actual dispatch uses the
-pinned bytes, canonical resource checks, recorded engine identity and shim
-digests. Extend the current resource completeness assertion if an existing
-required proof file is missing from it. No candidate `scripts/eval-gate.sh`
-may select the verification implementation.
+Prefer preserving the FIFO with a nonblocking writer open via existing Unix
+`OpenOptionsExt` and `libc::O_NONBLOCK`. Retry only the expected no-reader
+condition cooperatively while checking the deadline; errors fail with their
+cause. Never use a blocking worker that outlives cancellation. Once the child
+has opened its reader after the stdout write, send the small release token
+without a blocking wait and close the writer. A cancellable owned async
+rendezvous is an acceptable local alternative if it is simpler on both OSes;
+it must prove the same causal crossing, not merely observe readiness.
 
-### Readiness data model
+Collect an outcome before asserting so every failure path closes control
+handles, signals the owned group, escalates to kill as necessary, waits for
+child reaping under an explicit cleanup budget, and aborts/joins owned drain
+handles. Preserve a panic-safe group guard as fallback; do not treat a kill
+signal alone as proof of reaping. Bound cleanup separately (at most ten
+seconds), and give the isolated proof an outer budget of sixty seconds to
+retain diagnostics. A cleanup failure remains a failed proof.
 
-Replace `Proc.lines` with optional one-shot receiver of
-`(SocketAddr, SocketAddr)`; supply the corresponding existing parser at server
-spawn. Agent mode has no parser/receiver. The stdout task owns parser state
-and one sender, sends the first accepted pair synchronously, then drops both.
-Stderr always drains to the existing shared log. Sender failure/receiver drop
-never stops draining. Closed sender before readiness maps to existing harness
-startup failure; the existing startup deadline remains authoritative.
+Exercise a test-only stalled drainer after readiness in an isolated control.
+It must fail for the progress deadline, complete cleanup and leave no owned
+child/blocking thread; the outer timeout killing the test does not satisfy
+this proof. Then restore normal draining and require the same test to pass
+with the final marker and retained-log assertion. No production fault flag,
+new dependency, sleep-based ordering or RSS sampling. Keep existing framing,
+EOF/error, receiver-drop, chatty-agent and descendant cleanup tests.
 
-Accumulate only a complete startup line, up to 8192 bytes including its
-newline. On overflow discard that line through the next newline, retaining
-only the discard flag, and resume at the following line. Never parse an
-8192-byte continuation as a new line. EOF without a complete accepted line
-and read errors before delivery refuse readiness. After readiness stop
-assembling lines entirely. Read chunks remain finite; `Log` keeps at most
-65536 bytes after each append, with finite temporary chunk overhead. Document
-these separate bounds instead of claiming a precise total heap bound.
+### 3. Preserve gate and boundary contracts
 
-Keep process groups, child handles, health and SMTP probes, startup/agent/I/O/
-shutdown deadlines and cleanup precedence. No serialized result or public
-command changes. Preserve read-error diagnostics where feasible without a
-new public error taxonomy.
+Keep the root Cargo test invocation with JSON artifact capture and pipefail.
+Select canonical manifest/package identity, target `swarmail`, kind `bin`,
+non-test profile and exactly one distinct absolute existing executable.
+Preserve useful root diagnostics and refuse root failure before selection.
+Override inherited `SWARMAIL_BIN`; never guess `target/debug`, use PATH or
+invoke eval's manual fallback in gates. Keep paths containing spaces safe.
 
-### Boundary tests and proof ownership
+Run the existing lock tuple predicate against foreign name/version/source
+controls. Run real MCP initialize/tool assertions and existing decoder
+negative controls separately: current real-server shape is not permission
+to tighten harmless-field tolerance. Preserve full real SMTP/HTTP/MCP
+acceptance, 16 oracle passes, 16 null failures with declared idle classes,
+and two overlapping isolation passes. Infrastructure remains harness_error.
 
-Refactor lock subset computation minimally to accept lock strings. Mutate
-name, version and source separately in disposable inputs and assert the same
-predicate used for real locks refuses. Keep current self-package exception,
-workspace/publication and TLS checks. Do not build a second lock parser.
+Use the existing outer eval-dispatch mode for actual pinned fmt/clippy/test
+mutants and restored green. Inspect JSON result and named failing gate as
+well as exit and logs. Exercise missing/ambiguous/wrong-package/wrong-target/
+harness-only/relative/non-executable artifacts and failed root tests, plus
+custom target/decoy controls. Disposable artifact inputs can test selector
+refusals, but do not substitute a fake engine/Cargo or modified algorithm for
+actual dispatch. Keep original tamper/engine identity proofs. If proof cannot
+retain sufficient receipts, correct its existing recorder, not the policy.
 
-In fixture tests inspect raw real initialize/tools responses for the exact
-server shape, and exercise actual JSON-RPC/tool error paths. In private MCP
-decoder unit tests prove every AC4 malformed control and preserve harmless
-extra-field/block tolerance. Do not manufacture a mock server or migrate the
-client to structured results/SSE/new protocol.
+### 4. Reconcile current documentation and handoff
 
-For readiness use deterministic helper children that write explicit markers
-and await barriers under real deadlines. Assert parser/log bounds directly
-and observe child progress while the server owner retains `Proc` after
-announcement. Test receiver drop, oversized suffix forgery, EOF/read error,
-agent noise and descendants retaining pipes. Unit helpers cover private state;
-real process integration covers draining and terminate/kill/reap. Restore
-controls after collecting red evidence against an isolated baseline copy.
+Both older specs and README must describe already accepted 0055, active gates
+and the test-build prerequisite, while preserving deferred broker driver,
+unconfined execution, HTTP ICS and HTTP reply limitations. Keep dated history
+and superseding 0056 signing authority. The fixture exists at
+`evals/src/fixture.rs` and CLI exposes `swarmail-evals fixture`.
 
-Add an explicit `eval-dispatch` proof mode to the existing pinned delivery
-proof script, invoked by the implement/verify evidence workflow outside the
-verifier's default nested proof call. Keep its default mode nonrecursive.
-Use disposable candidate copies, the unchanged actual pinned verifier and
-recorded engine, and prompt/result files. Mutate only eval formatting, lint
-and tests in independent controls so preceding checks pass and the named
-check refuses. A restored candidate must pass full dispatch. Assert result
-JSON as well as process status: the verifier may exit zero while writing
-`result: fail`. Run custom target/decoy env and artifact-selection controls,
-and preserve existing shim/identity proofs. No fake cargo/engine, edited gate
-algorithm, skip flag or command-string assertion substitutes for this proof.
-Proof cost is accepted; logs stay run-local. Root tests can assert wiring
-without launching this outer dispatch proof recursively.
+Exact erroneous external #149 wording is unavailable in inspected materials.
+Keep the operator follow-up with canonical replacement; do not fabricate a
+source quote, external edit or completion. Only demonstrated repository
+contradictions warrant further documentation edits.
 
-### Documentation reconciliation
+## Data model and contracts
 
-Update current prose only after wiring exists. Cite existing operator
-acceptance, active gates and provenance. Link the sole inventory rather than
-creating another authoritative list. Preserve historical dated entries and
-real deferred capabilities; explicitly supersede stale signing instructions
-with 0056. If explaining 0055's historical deferral requires a change, append
-a dated completion note grounded in actual gate evidence. Add the canonical
-#149 fixture path/subcommand to README, search for bad local references and
-record the precise external issue-text handoff if still unavailable. Do not
-mutate external issues or decide policy routing.
+No persistent/public schema changes. `Proc` retains optional one-shot
+`(SocketAddr, SocketAddr)` readiness; agents allocate no readiness queue.
+`StartupLine` retains at most 8192 bytes including newline and a discard flag.
+Overflow discards through newline; suffixes are never reparsed as new lines.
+Delivery or receiver closure drops framing; draining never awaits a consumer.
+`Log` retains at most 65536 bytes after append, with finite chunk/decoding
+allocation overhead. These are output-retention bounds, not whole-process
+memory or hostile-agent confinement promises.
+
+Evidence records remain run-local: candidate identity/diff, pin identity,
+command, selected binary, exit/result and diagnostic. This describes required
+facts, not a new public result schema or proof registry.
 
 ## Quickstart and validation
 
-From this checkout, run eval fmt/lint, then the root test artifact capture
-above and full eval tests with the selected absolute executable. The full
-suite includes boundary, fixture, runner, scoring/report and 16-oracle/
-16-null/overlapping-isolation proofs. Run targeted tests during development;
-collect red/restored-green evidence in isolated disposable candidates.
+From the checkout root, run the targeted runner control and eval fmt/clippy.
+For full eval tests use the root-test capture/selection sequence already in
+CI and pinned verify; do not manually substitute a stale executable. Targeted
+commands include:
 
-Run every command in [the house-rule inventory](../../docs/house-rules.md#gates--part-of-every-change),
-including the coverage selftest, publish/seal proofs, license and fail-closed
-native-TLS checks, plus design selftest, delivery tamper proof and the new
-outer eval dispatch proof. Use the digest-matched local Brokkr for compile
-and dispatch; compile inherited recipes affected by canonical resource edits.
-Record commands, candidate SHA, selected executable, exits and decisive logs.
-Do not claim CI-owned Docker/chart/advisory/tag/port-80 proofs locally.
-Failures and unavailable tools remain outstanding; no installation in verify.
+```bash
+cargo test --manifest-path evals/Cargo.toml --locked retained_server_drains_chatty_stdout_after_one_shot_readiness
+cargo fmt --manifest-path evals/Cargo.toml --all -- --check
+cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings
+SWARMAIL_BIN="$candidate_bin" cargo test --manifest-path evals/Cargo.toml --locked
+bash bundles/self/scripts/delivery-proof-test.sh eval-dispatch
+```
 
-This design commit stages only `specs/eval-gates/{spec,plan,tasks}.md`.
-Validate the committed HEAD with `bundles/self/scripts/design-check.sh check`
-and leave it last. Implementation later edits older specs and runtime owners;
-those edits do not belong in the chief commit. Run-local positions, gate logs
-and result JSON remain ignored.
+`candidate_bin` is set only by the successful root-test artifact selection
+above. The outer dispatch proof uses the recorded candidate-local engine;
+normal verification runs pinned resources, not candidate-selected helpers.
+Run the complete [house inventory](../../docs/house-rules.md#gates--part-of-every-change),
+design selftest, delivery tamper/identity proofs and any affected recipe
+compiles with the digest-matched `.forge/bin/brokkr`. Keep exact coverage,
+coverage selftest, publish/seal proofs and fail-closed native-TLS absence.
+Missing tools/cache or failed execution stay outstanding; verify installs
+nothing. CI-owned chart/history/selftest, Docker stop/kill smoke, network
+RustSec, tag rate proof and privileged port-80 checks remain distinct.
+
+This chief stages exactly these three design artifacts, commits unsigned and
+checks committed HEAD with `bundles/self/scripts/design-check.sh check`.
+Leave that commit last for the sequence's pinned final check. Implementation,
+full gate certification and protected review remain subsequent obligations;
+drafting does not claim them complete.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 |---|---|
-| Green eval uses stale or test-harness binary. | Canonical package artifact selection, root verdict first, absolute executable check, decoy/custom-target controls; refuse ambiguity. |
-| Captured output hides root failure or breaks on non-JSON tests. | Preserve Cargo exit with pipefail; parse only valid artifact records; retain human diagnostics. |
-| Pinned verify loses environment or executes candidate logic. | Explicit quoted path propagation, pinned script ownership, actual dispatch proofs and existing pin/shim controls. |
-| Added proof recursively launches itself. | Explicit outer eval-dispatch mode, nonrecursive default proof, real fixtures and result JSON assertions. |
-| Readiness fix stalls children or loses announcement. | One-shot parsed pair, no awaited send, whole-line bound, continuous draining and deterministic retained-server proof. |
-| Oversized suffix looks like readiness. | Discard through newline, exact-limit/oversize/forged-suffix tests. |
-| Root green is misrepresented as complete eval coverage. | Standalone boundary remains explicit; both suites required; no expansion of root denominator. |
-| Offline cache or platform dependencies are missing. | Fail visibly and record blocker; no install/skip fallback; both OS CI jobs run. |
-| MCP assertions accidentally tighten public compatibility. | Exact real-server shape tests separate from existing decoder refusals and tolerated extras. |
-| Stale documentation fabricates acceptance or external edits. | Cite recorded 2026-10-19 status, dated addendum only, explicit #149 handoff and no issue mutation. |
-| Concurrent eval work is overwritten. | Work only here; record baseline, inspect overlaps, integrate deliberately and rerun affected proofs. |
-| Gates become more expensive. | Reuse jobs, one root test build and existing test owners; keep finite deadlines and full required evidence. |
+| Regression hangs before diagnostic or during runtime shutdown. | Nonblocking/cancellable rendezvous, progress/cleanup deadlines, cleanup before assertion and stalled-drainer red/restored-green control; local test complexity. |
+| A timeout kills the proof but leaks children or masks its cause. | Record intended deadline diagnostic, explicitly reap owned children and finish tasks; outer timeout is a failed proof, not success. |
+| Old receipts certify changed code or conflict with earlier timeouts. | Preserve chronology and candidate/diff/pin identity, rerun missing/invalidated proofs and final gates; added runtime. |
+| Stale binary or hidden root failure gives false green. | Existing canonical artifact selection, pipefail, negative artifacts and custom-target/decoy controls. |
+| Candidate helpers choose verification or proof recurses. | Pinned canonical owners, explicit outer dispatch, actual JSON verdicts and tamper/engine controls. |
+| Fixing the test expands into a lifecycle or protocol redesign. | Keep runtime one-shot/log contracts and MCP tolerance; only demonstrated gaps justify edits. |
+| Root green is confused with eval or CI-only coverage. | Standalone suite and complete inventory remain mandatory; retain distinct proof ownership and limits. |
+| Offline prerequisites are unavailable. | Refuse and record exact missing proof; no installation or skip in verify. |
+| Documentation fabricates authority or #149 completion. | Cite recorded acceptance, retain historical prose and explicit external operator handoff. |
+| Concurrent eval work is overwritten. | Scoped checkout edits, deliberate overlap reconciliation, no reset/import and rerun affected proof. |
