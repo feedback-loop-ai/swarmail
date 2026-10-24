@@ -1,204 +1,204 @@
-# Continuation plan — matrix cancellation
+# Residual repair plan — matrix cancellation
 
-Implements [spec.md](spec.md), retaining proposed
-[0062](../../docs/decisions/0062-matrix-cancellation.md). The chief changes
-only these three design artifacts; subsequent implementation closes proof
-holes and repairs only defects exposed by the specified falsifiers.
+Implements [spec.md](spec.md), preserving existing proposed
+[0062](../../docs/decisions/0062-matrix-cancellation.md). This chief commits
+only the three design artifacts. Later implementation starts with falsifiers
+and changes runtime code only for a reproduced recorded contract violation.
 
 ## Technical context
 
-Rust 2024 standalone `evals/` workspace, existing Tokio process/signal/I/O,
-libc, serde and tempfile. Sequential matrix, one active trial, registered
-Unix process groups and independently retained reapers. No new dependency,
-feature, manifest or lock change. Evals has its own mandatory suite under
-0055; root exact coverage does not measure it. No plan template exists in
-this checkout; this plan supplies the required dialect sections directly.
+Rust 2024 standalone `evals/` workspace; existing Tokio signals/process/I/O,
+libc, serde and tempfile. One sequential producer, one active trial, retained
+waits and per-group cleanup owners/reapers. No dependency, feature, manifest
+or lock change. Accepted 0055 requires separate evals verification; root exact
+coverage does not measure evals. No plan template exists in this checkout;
+this plan supplies the required dialect sections directly.
 
-Inspected baseline: `1315846de12787f78a6f66b1885bbbc2aff72786`, following
-`1a2f36c` implementation and `1843c55` recovery design. This chief commit
-creates a successor even though executable source stays unchanged. Record
-actual candidate revisions throughout, never relabel exact-1a2f36c evidence.
-The run remains engine-class with independent verification and four protected
-review lenses; the engine, not this plan, selects phase transitions.
+Baseline: `29a661590fdca79ab77b6ab5f2f872ed1a98bb4e`, including completed
+`137e7e9`, merged main and accepted 0058. The chief commit creates a successor;
+record actual revision/tree for every receipt. Current local engine digest is
+`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`, matching
+`bundles/self/tooling.json`. Resolve `.forge/bin/brokkr` absolutely and check
+its hash before use. No install or pin edit; historical e525babf proof remains
+historical. This engine-class repair requires five distinct 0058 results.
 
 ## Constitution check
 
-Preserve accepted 0001–0005, 0055 lifecycle/schema/report contracts and 0020
-readiness/test-placement discipline. 0062 remains proposed; accepted 0045 §8
-allows compatible work, not contradiction of accepted rulings. This proof
-repair adds no semantic ruling, so no new ADR is needed. A discovered accepted
-contract conflict requires an operator ruling before contradictory work;
-frozen guarantees cannot weaken. No root source, gate, recipe, policy,
-coverage boundary or license allowance change. Commits unsigned under 0056;
-no push, merge, issue close or fabricated journal/result history.
+Preserve 0001–0005, AUTH, 0055 lifecycle/schema/report contracts, 0020 test
+placement/readiness and all house gates. Proposed 0062 is not accepted;
+0045 §8 permits only compatible implementation. No new semantic ruling or
+ADR is needed. A discovered conflict returns for the exact operator ruling;
+frozen guarantees cannot weaken. Root source, gates, policy/recipes,
+accepted decisions, dependencies, coverage exclusions and journals are outside
+scope. Commit unsigned under 0056; never push, merge or close the issue.
 
-## Research and current evidence
+## Research and evidence
 
-Read both current panel positions, current and predecessor intake framings,
-prior VERIFY-FAIL, decisions and source. The failure was host executable
-identity, not an executed signal failure. The candidate-local executable's
-SHA-256 is `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`,
-matching tooling.json. Invoke its absolute path; install nothing and change
-no pins. The prior chief's exact-1a2f36c green regression and 1315846
-implementer claims remain historical, not new verification.
+Current intake and all four retained 3e202f8a member results delimit the
+repair. Correctness/tests found missing falsifiers, not a demonstrated runtime
+defect; security/guarantees were clean. Exact seq 714 aggregate binding is
+unavailable in the box. Record this limit rather than inventing history.
 
-Current matrix has actual child-wait Pending and bypass controls, separately
-for TERM and INT. Current holds/injection are cfg(test)-only. Preserve those
-repairs. Current source still publishes the shell helper PID before trap
-installation, takes MatrixProbe's child out before an unbounded wait, and
-proves runner cleanup using entry/liveness followed by eventual death.
-Runner fallback also depends on finding the original group leader alive.
-These findings justify the narrow repairs below without asserting production
-cleanup is broken. Map every acceptance criterion to executable evidence;
-unmapped or unexecuted proof remains outstanding.
+Source inspection confirms both actual-Pending/bypass fences exist now.
+`pending_matrix_signal` can be bypassed by tests whose hold consumes a signal;
+new controls must leave it queued for the real check. `write_row` has one
+sender and sequential acknowledgement; its Full branch needs a reachability
+argument distinct from blocked stdout. `run_child` independently waits/reaps
+and times post-exit EOF. `cleanup_once` creates absolute deadlines after its
+existing hold, so repeats in that hold alone prove no deadline property.
+Current guard Drop can merely log rescue/survivors, requiring checked finish.
+
+Retain dated historical clarifications in spec.md. Supersede the inaccurate
+`.forge/implement-194/t1-map.md` output-coverage claim in a new dated run-local
+map, without rewriting that receipt. New T1–T10 track residual work, not a
+claim that previous unchecked implementation tasks were all complete.
 
 ## Project structure and touched files
 
-| Path | Work and evidence |
+| Path | Authorized work |
 | --- | --- |
-| `specs/matrix-cancellation/{spec,plan,tasks}.md` | This chief's exact commit scope; reconciled current design and paired obligations. |
-| `evals/src/main.rs` | Keep runtime child ownership and cfg(test) Pending/bypass controls; repair helper readiness, MatrixProbe bounded waits and failure ownership. |
-| `evals/src/runner.rs` | Add local actual-cleanup Pending/bypass proof; strengthen Probe survivor teardown; inspect deadline reuse and retained reapers. Runtime edits require a reproducer. |
-| `evals/tests/report.rs` | Preserve ordinary CLI PID-only cancellation, prefix/active/suffix accounting, aggregation and exit-time descendant assertions. |
-| `evals/tests/common/mod.rs` | Reuse atomic readiness, launch markers, identity observation and scoped failure cleanup. |
-| `evals/tests/runner.rs` | Preserve standalone signal, deadline, panic/server-death and ordinary lifecycle behavior. |
-| `evals/tests/proof.rs` | Run real oracle/null/isolation proof; edit only for a demonstrated issue-local test defect. |
-| `evals/README.md` | Clarify only demonstrated divergence from retained interruption, queue-commit and output-limit semantics. |
+| `specs/matrix-cancellation/{spec,plan,tasks}.md` | Exact chief commit scope; current scope, rulings and paired proof obligations. |
+| `evals/src/main.rs` | Owning cfg(test) admission/pending/forward/output probes, fallback count, MatrixProbe checked completion; runtime repair only after failing falsifier. |
+| `evals/src/runner.rs` | Owning cleanup-instance/deadline observations, error/expiry probes and checked Probe teardown; preserve actual-Pending/bypass tests. |
+| `evals/tests/report.rs` | Ordinary PID-only CLI regression, byte prefix/exact readiness, captured EPIPE diagnostic, local MatrixGuard completion checks. |
+| `evals/tests/runner.rs`, `evals/tests/common/mod.rs` | Reuse real lifecycle helpers and isolation; edit only as necessary for residual proof. |
+| `evals/README.md` | Correct only an actual divergence in documented output/cleanup limits. |
 
-Inspect `evals/src/report.rs`, TrialResult and refused_row as consumers;
-keep formulas/schema unchanged. 0062 and its existing index entry stay intact.
-Prefer owning cfg(test) modules; a sibling test harness requires a concrete
-cold-path reason under 0020. Do not export test APIs through the normal
-library: binary-unit cfg(test) does not enable the library's cfg(test).
+Read TrialResult/refused_row and `evals/src/report.rs` as unchanged consumers.
+Run `evals/tests/proof.rs`; no scoring/oracle rewrite. Existing 0062 and index
+remain unchanged. Default to owning inline cfg(test); any sibling cold-path
+harness needs a concrete 0020 reason, not denominator convenience. Binary
+cfg(test) does not enable library cfg(test): test each private owner within
+its own unit compilation and retain separate ordinary CLI regressions.
 
 ## Data model and contracts
 
-Retain schema-1 TrialResult, unique IDs and observed agent statuses. Matrix
-owns sticky stop state, ordered slot, aggregate status, output writer and at
-most one bootstrap/trial child. Trial owns registered group identities,
-shared cleanup results and direct reapers beyond abortable admission.
-Register ownership before an await; abort and join workload before cleanup
-inventory; normal completion also awaits that inventory's cleanup.
+No new persistent model or interface. Keep schema-1 TrialResult and immutable
+queued bytes. Matrix retains sticky stop, ordered slot, aggregate and one
+active child; runner retains registered identities, shared cleanup results and
+direct reapers beyond aborted admission. Running → stopping → cleaning →
+accounting → finished is descriptive, not a new framework or enum requirement.
 
-Running → Stopping → Cleaning → Accounting → Finished remains the interrupted
-path. First observed signal closes admission; concurrently admitted work
-remains owned. Both signals forward TERM once and exit 2. Repeated signals
-cannot discard ownership or restart cleanup. Remaining groups clean
-concurrently under five-second TERM and five-second cessation/reap budgets;
-no serial per-group multiplication or shorter matrix owner-kill timer.
+Subscribe before owned spawn; join aborted admission before cleanup; retain
+concurrently issued children. Forward TERM once and await the owner. Clean
+groups concurrently under fixed five-second TERM plus five-second cessation/
+reap bounds, never renewed by signals or multiplied serially. Each group can
+have its own start timestamp; prove fixed per-owner deadlines and concurrent
+progress, not mathematically identical start times. Linux observations prove
+identity and live state; other Unix remains conservative. Unknown is failure.
 
-Commit is row enqueue after child reap, validation and pending-signal check;
-write/flush acknowledgement is separate and is not crash durability. Prefix
-bytes never change. Active interruption is one harness_error after cleanup,
-with usable identity/observed statuses and elapsed lifetime. Without usable
-output, use a fresh refusal ID and unknown statuses. Unstarted ordered slots
-are zero-time refusals without launches. Preserve full cardinality, ordinary
-2/1/0 precedence and report attempts/success formulas. Bound retained child
-output at 64 KiB while draining independently. Progressing available stdout
-is required for complete accounting; output failure retains cleanup ownership.
+Queue enqueue commits the row after reap/validation/pending-signal decision;
+acknowledgement proves write/flush, not crash durability. Preserve prefix bytes,
+truthful active harness_error with measured elapsed lifetime/observed statuses,
+fresh unknown fallback if no usable row, and ordered unique zero-time refusal
+suffix. Preserve normal 2/1/0 precedence and report formulas. Output retention
+stays 64 KiB, output ack and post-child-exit EOF bounds five seconds. Complete
+JSONL needs progressing stdout; process cleanup and output completion are
+separate facts. No universal wall-time or escaped-command confinement claim.
 
 ## Implementation approach
 
-1. Record baseline revision/status, digest equality and current AC-to-test
-   inventory before source edits. Reproduce the real CLI issue regression
-   and current matrix causal control separately. Do not infer runner proof
-   from the shell-helper matrix control or old receipts.
-2. Publish helper readiness only after TERM/INT traps are installed. Write
-   complete PID/identity content to a temporary file and rename, or validate
-   an equally complete acknowledgement. Signal only after observing that
-   fact; exercise a controlled pre-ready hold to prove no early signal.
-3. Retain MatrixProbe's child in its guard until a deadline-bound try_wait
-   completes. Record owned identities before assertions can unwind. Release
-   holds idempotently without panicking in Drop. Bound normal post-release
-   completion at 30 seconds; on failure allow TERM/cleanup a further
-   15 seconds, then identity-checked forced teardown with a five-second
-   observation/reap deadline. Never use an unconditional final wait that can
-   hang forever. Forced teardown or unresolved identity/survivor is a test
-   failure; kernel refusal cannot become a fictitious successful reap.
-4. Test cleanup must work after owner bypass or leader-first exit. Retain
-   enough verified member/group identity evidence to clean only test-owned
-   work even when the original leader is gone. Revalidate before signalling,
-   retire empty/recycled groups and diagnose unknowns. Exercise readiness
-   failure, assertion unwind and stalled completion using isolated helper
-   processes; drain their output independently. This test ownership record
-   is not a second production supervisor.
-5. At the runner's actual awaited cleanup path, hold live owned work, poll
-   that future and acknowledge Pending. Release only after observing this
-   event. Before return, assert direct reaper completion and immediate
-   non-running owned identities. Apply to interruption by each signal,
-   panic and server death; preserve normal cleanup evidence. A cfg(test)
-   bypass of the same fence must produce early completion with live work
-   and fail the same ordering predicate. Restore the fence and rerun. Do
-   not use a marker before await, a separate toy supervisor or an eventual
-   check after completion as the causal proof.
-6. Preserve the matrix's existing actual-child-wait control and separately
-   run ordinary-binary CLI tests with real server/fixture/agent descendants,
-   passing prefix, ready active slot, PID-only signal and append-only launch
-   evidence. Immediate non-running observations at exit complement both
-   causal controls; a later eventual check cannot earn the claim.
-7. Map boundary and failure tests before adding cases: pre-admission,
-   pre-handler, spawn, between-row, simultaneous commit, final-row and mixed
-   repeated signals; TERM resistance, leader-first exit, observation failure
-   and expiry; real fallback Cargo, setup refusal and once-only offline/
-   locked resolution; malformed/extra/oversized output, exit mismatch,
-   inherited pipes, backpressure and broken stdout. Verify deadline creation
-   and sharing with deterministic seams: concurrent operations need not
-   have mathematically identical timestamps, but cannot restart or serialize
-   the cleanup budget. Repair runtime only where a reproducer fails 0062.
-8. Validate ordinary dev/release binaries ignore former test environment
-   controls. Keep seams cfg(test)-only with no feature flag or normal-library
-   API. Preserve standalone runner, schema/report and oracle/null/isolation
-   proof. Record command, revision, digest and exit for all checks; retain
-   failures. Independent hermetic verification and protected review must
-   evaluate the actual final candidate, not this design receipt.
+1. Map each review finding to existing tests and missing controls, record
+   revision/digest, and rerun both causal fences plus ordinary CLI regression.
+   Retain passing proof; do not repeat predecessor readiness/ownership fixes.
+2. Add local acknowledged barriers immediately before the real pending checks
+   and around synchronous spawn issuance. Release with a pending signal to
+   exercise the actual decision, not a pre-latched bool. Prove both issuance
+   outcomes and unstarted suffix. Bracket attempted-child timing with events
+   and inspect fresh fallback identity/unknown statuses; never guess a minimum
+   sleep or substitute trial status for agent status.
+3. Extend live cleanup controls with instance/deadline observations after
+   budget creation and actual Pending. Send TERM, acknowledge, INT,
+   acknowledge, TERM, acknowledge; standard signals may coalesce otherwise.
+   Observe forwarding count, retained owner and fixed deadlines, concurrent
+   groups, direct reaps and cessation. Keep existing bypass controls intact.
+4. Exercise real stdout pressure with an open unread pipe and enough bounded
+   rows to exceed its capacity. A local writer observation may acknowledge
+   the actual blocked operation; timeout exit/diagnostic supplies the failure
+   proof. Keep signal delivery observable and deadlines absolute. Separately
+   retain a real descriptor holder after its parent exits, prove parent reap,
+   EOF timeout/diagnostic and test-owned holder cleanup. Use existing executable
+   override for actual spawn failure without invalidating Swarmail resolution.
+   Capture EPIPE stderr, preserve validators and count fallback invocations.
+5. Inventory every writer sender/caller/return. Sequential successful ack
+   occurs after dequeue, so the next supported call should not find Full;
+   failed calls must not create an overlapping producer. Document the complete
+   argument. If useful, a narrow channel-state test covers Full's local signal
+   branches but cannot claim a supported end-to-end race. Do not remove Full/
+   Notify or enlarge queueing without a reproduced in-scope runtime defect.
+6. Inject observation error and forced deadline expiry at the owning cfg(test)
+   boundary with real processes retained. Require propagated harness failure
+   and diagnostic, then safely rescue test-owned work. Do not weaken identity
+   validation, alter global /proc or build a mock supervisor. Ordinary dev and
+   release isolation controls must cover every added environment seam.
+7. Add local checked finish results recording rescue, survivors and direct
+   wait status. Positive tests assert no rescue and no unresolved ownership.
+   Exercise forced failure inside a child probe whose parent requires nonzero
+   outcome. Drop stays bounded emergency cleanup during unwind, without a
+   second panic. Retain early identity snapshots, 30-second ordinary completion
+   and 15/5-second failure phases; never race the product with a shorter kill
+   deadline. Bypass negative controls explicitly separate expected product
+   failure from successful rescue. No generic guard framework is required.
+8. Tighten byte prefix/readiness assertions, remove tautology, ingest through
+   real report and reconcile evidence only after commands execute. If a new
+   control fails an existing contract, retain that failure and make only its
+   local repair before repeating affected proof. Broader discoveries follow
+   the bounded engine route, never an unrecorded scope expansion.
 
 ## Test map and quickstart
 
-AC1/3: from `evals/`, run
-`cargo test --locked --test report matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup`.
-AC2: run owner-unit matrix
-`matrix_completion_fence_is_observed_and_its_negative_control_exits_early`
-and the strengthened runner Pending/bypass controls for both signals and
-fault paths. The negative case must demonstrably violate the predicate the
-restored positive case satisfies. Keep readiness and teardown falsifiers
-(AC9) separate so a flaky helper cannot masquerade as a causal result.
+From `evals/`, reproduce these retained named tests before edits:
 
-AC4–7: retain named boundary/failure tests and add missing falsifiers under
-the owning compilation; record the exact mapping in run-local evidence.
-AC8/9: run `cargo test --locked --test report`,
-`cargo test --locked --test runner`, `cargo test --locked` (all owner units
-and proof.rs), `cargo fmt --all -- --check`, and
-`cargo clippy --all-targets --locked -- -D warnings` from `evals/`, plus
-ordinary dev/release former-control probes. Use real subprocesses/protocols,
-observed readiness and deadlines, never mocks or sleep-based synchronization.
+```bash
+cargo test --locked --test report matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup
+cargo test --locked matrix_completion_fence_is_observed_and_its_negative_control_exits_early
+cargo test --locked runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults
+```
 
-AC8/10: execute every [authoritative house gate](../../docs/house-rules.md#gates--part-of-every-change),
-with exact coverage and selftest, publish/keyless-seal proofs, licenses,
-pinned shim integrity and fail-closed native-tls absence. Compile with
-`/home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-194-fast/.forge/bin/brokkr compile --bundle bundles/self`.
-Hermetic verify runs pinned implementations and installs nothing. CI owns
-its listed chart/history/selftest, Docker, advisory, tag-rate and port-80
-proofs; local checks cannot claim those. Protected correctness/security/
-guarantees/tests review remains due, with the security hold intact.
+AC4 uses new pending/admission/fallback/repeated-signal controls (T2/T3).
+AC5 uses observation-error/expiry controls (T5). AC6/7 use spawn/fallback count,
+blocked stdout, inherited EOF and EPIPE controls (T4). AC9 uses isolated forced
+failure and checked-finish controls (T6). Bind final exact test names and
+revision/command/exit in run-local evidence; labels here are requirements,
+not claims those tests already exist. AC1/2/3 retain the three commands above
+and real report assertions (T7).
 
-Chief checks artifact links/diff/cleanliness and commits exactly the three
-spec artifacts unsigned. Run the structural design check against that HEAD;
-leave it the last commit. Only the sequence's pinned check owns the design
-verdict. Run-local logs and the mandatory drafted result stay uncommitted.
+For AC8 run full report and runner tests, then `cargo test --locked` (includes
+proof.rs oracle/null/isolation), `cargo fmt --all -- --check` and
+`cargo clippy --all-targets --locked -- -D warnings` from `evals/`. Exercise
+ordinary dev/release control-isolation binaries separately as needed. Use
+real subprocesses/protocols, isolated tempdirs/environments and atomic ready/
+release acknowledgements; polling observes those facts, not guessed delays.
+
+For AC10 run every [house gate](../../docs/house-rules.md#gates--part-of-every-change),
+using the absolute digest-matched `.forge/bin/brokkr` for compilation. Verify
+pinned shim integrity and fail-closed native-tls absence. Hermetic verification
+uses pinned implementations, including design-check selftest and delivery
+boundary proof, and installs nothing. Retain exact coverage plus selftest and
+publish/keyless-seal proofs. CI retains chart/history/selftest, Docker,
+network advisory, tag-rate and port-80 obligations; local success cannot claim
+those. Five separate accepted 0058 results remain mandatory; medium historical
+severity and no security residual do not justify a cheaper review route.
+
+Chief validates links/diff, commits exactly three artifacts unsigned and
+checks structural design against that HEAD, leaving it the final commit.
+Chief gate receipts do not close future implementation tasks. Run-local logs
+and mandatory drafted result remain uncommitted; only the sequence's final
+pinned check rules the design attempt.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 | --- | --- |
-| Stale findings cause a rewrite | Start at actual 1315846, preserve cfg(test)/matrix controls and map existing proofs. |
-| False causal green | Actual Pending acknowledgement, same-predicate bypass and immediate cessation/reap assertions at both links. |
-| Signal before trap or partial PID read | Atomic complete trap-ready acknowledgement; controlled pre-ready case. |
-| Failure guard drops ownership or hangs | Guard retains child/identities, bounded normal/failure waits and tested unwind/timeout paths. |
-| Leader exits, descendant survives | Member identity evidence survives leader loss; targeted fallback and survivor diagnostics. |
-| PID/group reuse or unknown observation | Revalidate identities, retire empty groups, fail closed; never broad process-name kills. |
-| Serial or renewed cleanup budgets | Concurrent cleanup and shared result reuse; deterministic deadline/repeated-signal checks. |
-| Runtime test-control leakage | Owner-local cfg(test) and ordinary dev/release former-control probes. |
-| Backpressure hides signals or loses ownership | Independent drainage/output, irreversible queue commitment and broken-output tests. |
-| Refusal suffix or scheduling extends exit | O(product) accounting and explicit output limits; no universal matrix wall-time promise. |
-| Linux proof overstated | Linux identity/zombie observations; conservative Unix absence and unsupported escape limits. |
-| Wrong engine or stale delivery receipts | Absolute digest-matched engine, candidate-bound logs, independent verify and protected review. |
+| Historical evidence mistaken for current proof | Preserve dated receipts, name missing seq binding, log actual revision/digest. |
+| Tests consume the signal before the production check | Hold without receiving it; assert actual pending-decision branch. |
+| Signals coalesce or repeats precede deadline creation | Per-delivery acknowledgements and post-creation owner/deadline observations. |
+| False cleanup proof or serial budgets | Preserve actual-Pending/bypass controls; prove fixed per-owner budgets and concurrent cleanup. |
+| Full-channel fixture mistaken for real pressure | Separate reachability inventory from real unread-pipe/ack-bound test; retain runtime path. |
+| Inherited pipe leaks a process | Retain descriptor-holder identity/handle before assertions, reap parent separately and check teardown. |
+| Guard rescue hides product failure | Checked finish and isolated nonzero forced-failure proof; bypass rescue is explicitly expected. |
+| Recycled identities or observer errors | Revalidate supported membership; unknown fails, empty groups retire, no process-name kills. |
+| New test controls leak into ordinary builds | Owner-local cfg(test), installing tests and ordinary dev/release isolation checks. |
+| Longer failure tests and platform limits | Accept real five-second bounds; Linux proof explicit, conservative other-Unix behavior unchanged. |
+| Overbroad runtime cleanup or semantic change | Failing residual control before runtime edit; no new protocol/schema/dependency or ruling. |
+| Output completeness overpromised | Preserve O(product) suffix and progressing-output condition, distinct from cleanup. |
