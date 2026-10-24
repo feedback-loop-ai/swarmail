@@ -107,6 +107,113 @@ fn runner_signal_event(event: &str) {
         let _ = writeln!(file, "{event}");
     }
 }
+// Private, per-probe IPC. No descriptor or parent environment is inherited by
+// trial descendants; the endpoint is installed by the isolated test entrypoint.
+#[cfg(all(test, target_os = "linux"))]
+mod cleanup_probe {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::sync::{mpsc, watch};
+
+    pub(super) const ENDPOINT: &str = "EVAL_TEST_CLEANUP_SOCKET";
+    pub(super) const DELAY: &str = "EVAL_TEST_CLEANUP_DELAY";
+    pub(super) static CURRENT: std::sync::OnceLock<Control> = std::sync::OnceLock::new();
+
+    pub(super) struct Control {
+        events: mpsc::UnboundedSender<String>,
+        entry: watch::Receiver<bool>,
+        release: watch::Receiver<bool>,
+        returned: watch::Receiver<bool>,
+    }
+
+    impl Control {
+        pub(super) async fn connect(path: &Path, delayed: bool) -> Self {
+            let stream = tokio::net::UnixStream::connect(path).await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let (events, mut rx) = mpsc::unbounded_channel::<String>();
+            tokio::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    write
+                        .write_all(format!("{event}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+            });
+            let (entry_tx, entry) = watch::channel(!delayed);
+            let (release_tx, release) = watch::channel(false);
+            let (returned_tx, returned) = watch::channel(false);
+            tokio::spawn(async move {
+                let mut lines = BufReader::new(read).lines();
+                while let Some(command) = lines.next_line().await.unwrap() {
+                    match command.as_str() {
+                        "permit-entry" => {
+                            entry_tx.send_replace(true);
+                        }
+                        "release" => {
+                            release_tx.send_replace(true);
+                        }
+                        "ack-return" => {
+                            returned_tx.send_replace(true);
+                        }
+                        _ => panic!("malformed cleanup probe command: {command}"),
+                    }
+                }
+                // EOF closes the senders, so blocked owners fail visibly.
+            });
+            Self {
+                events,
+                entry,
+                release,
+                returned,
+            }
+        }
+
+        pub(super) fn event(&self, event: String) {
+            self.events
+                .send(event)
+                .expect("cleanup probe event receiver");
+        }
+
+        async fn gate(mut rx: watch::Receiver<bool>) -> Result<(), String> {
+            loop {
+                if *rx.borrow_and_update() {
+                    return Ok(());
+                }
+                rx.changed()
+                    .await
+                    .map_err(|_| "cleanup probe controller disconnected".to_string())?;
+            }
+        }
+
+        pub(super) async fn hold(&self, pid: i32) -> Result<(), String> {
+            if !*self.entry.borrow() {
+                self.event(format!("pre-entry {pid}"));
+            }
+            Self::gate(self.entry.clone()).await?;
+            // Arm the retained latch before announcing entry. Release also
+            // applies to owners arriving after the parent has sent it.
+            let release = self.release.clone();
+            self.event(format!("held {pid}"));
+            Self::gate(release).await
+        }
+
+        pub(super) async fn acknowledge_return(&self) {
+            self.event("returned".into());
+            Self::gate(self.returned.clone()).await.unwrap();
+        }
+    }
+
+    pub(super) fn pending(kind: &str, pids: &[i32]) {
+        if let Some(control) = CURRENT.get() {
+            let ids = pids
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            control.event(format!("{kind} {ids}"));
+        }
+    }
+}
 /// The built-in agent labels.
 pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 
@@ -832,8 +939,19 @@ impl OwnedGroup {
                 let entered = dir.join(format!("entered-{}", self.pid));
                 std::fs::write(&entered, b"waiting")
                     .map_err(|e| format!("cleanup hold marker: {e}"))?;
-                while !dir.join("release").exists() {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                #[cfg(target_os = "linux")]
+                let signalled = if let Some(control) = cleanup_probe::CURRENT.get() {
+                    control.hold(self.pid).await?;
+                    true
+                } else {
+                    false
+                };
+                #[cfg(not(target_os = "linux"))]
+                let signalled = false;
+                if !signalled {
+                    while !dir.join("release").exists() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
                 }
             }
         }
@@ -971,6 +1089,12 @@ impl Groups {
             .collect::<Vec<_>>();
         let mut tasks = tokio::task::JoinSet::new();
         for group in groups {
+            #[cfg(all(test, target_os = "linux"))]
+            if cleanup_probe::CURRENT.get().is_some() {
+                // The bypass may abort its waiter before that waiter is first
+                // scheduled. Keep every independently owned hold observable.
+                group.ensure_cleanup();
+            }
             tasks.spawn(async move { group.await_cleanup().await });
         }
         #[cfg(test)]
@@ -991,6 +1115,8 @@ impl Groups {
                 })
                 .await;
                 let joined = if was_pending {
+                    #[cfg(target_os = "linux")]
+                    cleanup_probe::pending("sample-pending", pids);
                     if !pending_recorded {
                         if let Some(path) = std::env::var_os(CLEANUP_WAIT_PENDING_ENV) {
                             std::fs::write(path, b"owned cleanup future returned Pending")
@@ -1011,7 +1137,17 @@ impl Groups {
                         }
                         return Ok(());
                     }
-                    next.await
+                    let mut recorded = false;
+                    std::future::poll_fn(|cx| {
+                        let polled = next.as_mut().poll(cx);
+                        if polled.is_pending() && !recorded {
+                            #[cfg(target_os = "linux")]
+                            cleanup_probe::pending("await-pending", pids);
+                            recorded = true;
+                        }
+                        polled
+                    })
+                    .await
                 } else {
                     ready.expect("a completed join poll carries its result")
                 };
@@ -2300,7 +2436,23 @@ mod test_probes {
             .enable_all()
             .build()
             .unwrap();
-        let row = runtime.block_on(run_trial(req, Some(PathBuf::from(bin))));
+        let row = runtime.block_on(async {
+            if let Some(path) = std::env::var_os(cleanup_probe::ENDPOINT) {
+                let control = cleanup_probe::Control::connect(
+                    Path::new(&path),
+                    std::env::var_os(cleanup_probe::DELAY).is_some(),
+                )
+                .await;
+                assert!(cleanup_probe::CURRENT.set(control).is_ok());
+            }
+            let row = run_trial(req, Some(PathBuf::from(bin))).await;
+            if let Some(control) = cleanup_probe::CURRENT.get() {
+                // Publish actual return before retaining the runtime for the
+                // parent's live-work observation. This is not a cleanup fence.
+                control.acknowledge_return().await;
+            }
+            row
+        });
         assert_eq!(row.outcome, Outcome::HarnessError);
         println!("{}", serde_json::to_string(&row).unwrap());
     }
@@ -2357,6 +2509,8 @@ mod test_probes {
             owner,
             release,
             pending: dir.join("unused-pending"),
+            control: None,
+            returned: false,
             owned: vec![direct, survivor],
         };
         let error = probe
@@ -2415,11 +2569,98 @@ mod test_probes {
         );
     }
 
+    #[derive(Debug, PartialEq)]
+    enum CleanupEvent {
+        PreEntry(i32),
+        Held(i32),
+        SamplePending(Vec<i32>),
+        AwaitPending(Vec<i32>),
+        Returned,
+    }
+
+    impl CleanupEvent {
+        fn parse(line: &str) -> Result<Self, String> {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            let ids = |text: &str| {
+                text.split(',')
+                    .map(|id| id.parse::<i32>().map_err(|e| e.to_string()))
+                    .collect::<Result<Vec<_>, _>>()
+            };
+            match fields.as_slice() {
+                ["pre-entry", pid] => Ok(Self::PreEntry(
+                    pid.parse::<i32>().map_err(|e| e.to_string())?,
+                )),
+                ["held", pid] => Ok(Self::Held(pid.parse::<i32>().map_err(|e| e.to_string())?)),
+                ["sample-pending", pids] => Ok(Self::SamplePending(ids(pids)?)),
+                ["await-pending", pids] => Ok(Self::AwaitPending(ids(pids)?)),
+                ["returned"] => Ok(Self::Returned),
+                _ => Err(format!("malformed cleanup probe event: {line}")),
+            }
+        }
+    }
+
+    struct CleanupControl {
+        stream: std::os::unix::net::UnixStream,
+        events: std::sync::mpsc::Receiver<Result<CleanupEvent, String>>,
+        reader: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl CleanupControl {
+        fn new(stream: std::os::unix::net::UnixStream) -> Self {
+            use std::io::BufRead;
+            let read = stream.try_clone().unwrap();
+            let (tx, events) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                for line in std::io::BufReader::new(read).lines() {
+                    let event = line
+                        .map_err(|e| e.to_string())
+                        .and_then(|line| CleanupEvent::parse(&line));
+                    if tx.send(event).is_err() {
+                        break;
+                    }
+                }
+            });
+            Self {
+                stream,
+                events,
+                reader: Some(reader),
+            }
+        }
+
+        fn command(&mut self, command: &str) {
+            writeln!(self.stream, "{command}").expect("cleanup probe command");
+        }
+
+        fn recv(&self) -> CleanupEvent {
+            self.events
+                .recv_timeout(Duration::from_secs(120))
+                .expect("cleanup probe hang watchdog or unexpected EOF (not an ordering verdict)")
+                .expect("valid cleanup probe event")
+        }
+
+        fn release_all(&mut self) {
+            // Teardown tolerates EOF and unblocks every gate before rescue.
+            let _ = self
+                .stream
+                .write_all(b"permit-entry\nrelease\nack-return\n");
+        }
+    }
+
+    impl Drop for CleanupControl {
+        fn drop(&mut self) {
+            self.release_all();
+            let _ = self.stream.shutdown(std::net::Shutdown::Both);
+            self.reader.take().unwrap().join().unwrap();
+        }
+    }
+
     struct Probe {
         child: Option<std::process::Child>,
         owner: ProcessIdentity,
         release: PathBuf,
         pending: PathBuf,
+        control: Option<CleanupControl>,
+        returned: bool,
         owned: Vec<ProcessIdentity>,
     }
 
@@ -2428,8 +2669,29 @@ mod test_probes {
             self.child.as_ref().unwrap().id() as i32
         }
 
-        fn release(&self) {
+        fn release(&mut self) {
             let _ = std::fs::write(&self.release, b"release");
+            if let Some(control) = &mut self.control {
+                control.command("release");
+            }
+        }
+
+        fn event(&mut self) -> CleanupEvent {
+            let event = self.control.as_ref().unwrap().recv();
+            if event == CleanupEvent::Returned {
+                self.returned = true;
+            }
+            event
+        }
+
+        fn await_return(&mut self) {
+            while !self.returned {
+                self.event();
+            }
+        }
+
+        fn acknowledge_return(&mut self) {
+            self.control.as_mut().unwrap().command("ack-return");
         }
 
         fn wait_for(&mut self, limit: Duration) -> Option<std::process::ExitStatus> {
@@ -2476,10 +2738,14 @@ mod test_probes {
         }
 
         fn returned_after_owned_cleanup(&mut self) -> bool {
-            self.child
-                .as_mut()
-                .is_some_and(|child| child.try_wait().ok().flatten().is_some())
-                && self.owned.iter().all(|id| !alive(id))
+            let returned = if self.control.is_some() {
+                self.returned
+            } else {
+                self.child
+                    .as_mut()
+                    .is_some_and(|child| child.try_wait().ok().flatten().is_some())
+            };
+            returned && self.owned.iter().all(|id| !alive(id))
         }
 
         fn signal_owned_groups(&self, signal: i32) {
@@ -2574,7 +2840,11 @@ mod test_probes {
 
     impl Drop for Probe {
         fn drop(&mut self) {
-            self.release();
+            if let Some(control) = &mut self.control {
+                control.release_all();
+            }
+            // Preserve marker release even if the IPC peer has failed.
+            let _ = std::fs::write(&self.release, b"release");
             self.record_owned_from_tree();
             if self.child.is_some() && self.wait_for(Duration::from_secs(30)).is_none() {
                 let pid = self.pid();
@@ -2605,6 +2875,28 @@ mod test_probes {
         leader_first: bool,
         hold_bypass_return: bool,
     ) -> Probe {
+        launch_probe(
+            dir,
+            fault,
+            hold,
+            bypass_cleanup_wait,
+            leader_first,
+            hold_bypass_return,
+            None,
+        )
+    }
+
+    fn launch_probe(
+        dir: &Path,
+        fault: Option<&str>,
+        hold: bool,
+        bypass_cleanup_wait: bool,
+        leader_first: bool,
+        hold_bypass_return: bool,
+        handshake: Option<bool>,
+    ) -> Probe {
+        let listener = handshake
+            .map(|_| std::os::unix::net::UnixListener::bind(dir.join("control.sock")).unwrap());
         let script = dir.join("stall-agent.sh");
         std::fs::write(
             &script,
@@ -2684,6 +2976,12 @@ wait "$child"
             }
             None => {}
         }
+        if let Some(delayed) = handshake {
+            cmd.env(cleanup_probe::ENDPOINT, dir.join("control.sock"));
+            if delayed {
+                cmd.env(cleanup_probe::DELAY, "1");
+            }
+        }
         if hold {
             cmd.env(CLEANUP_HOLD_ENV, &hold_dir);
         }
@@ -2722,8 +3020,26 @@ wait "$child"
             owner,
             release: release.clone(),
             pending,
+            control: None,
+            returned: false,
             owned: Vec::new(),
         };
+        if let Some(listener) = listener {
+            // Probe already owns the child, so assertion failure runs rescue.
+            use std::os::fd::AsRawFd;
+            let mut fd = libc::pollfd {
+                fd: listener.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: fd names this live listener. This bound only diagnoses
+            // a child that never connects; it is not a cleanup-order oracle.
+            assert!(
+                unsafe { libc::poll(&mut fd, 1, 120_000) } > 0,
+                "cleanup probe connection hang watchdog"
+            );
+            probe.control = Some(CleanupControl::new(listener.accept().unwrap().0));
+        }
         eventually("the runner's agent readiness", || {
             probe.record_owned_from_tree();
             if pids.is_file() {
@@ -2787,57 +3103,230 @@ wait "$child"
     }
 
     #[test]
-    fn runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults() {
-        let cases = [
-            (None, Some(libc::SIGTERM)),
-            (None, Some(libc::SIGINT)),
-            (Some("panic"), None),
-            (Some("server_death"), None),
-        ];
-        for (fault, signal) in cases {
-            let dir = tempfile::tempdir().unwrap();
-            let mut probe =
-                launch_probe_with_controls(dir.path(), fault, true, false, false, false);
-            if let Some(signal) = signal {
-                unsafe { libc::kill(probe.pid(), signal) };
-            }
-            wait_for_cleanup_pending(&mut probe, dir.path());
-            assert!(probe.child.as_mut().unwrap().try_wait().unwrap().is_none());
-            assert!(probe.owned.iter().all(alive));
-            assert!(
-                probe.wait_for(Duration::from_millis(50)).is_none(),
-                "the runner remains pending while owned cleanup is held"
-            );
-            probe.release();
-            assert!(probe.wait().success());
-            assert_runner_returned_after_cleanup(&mut probe);
+    fn cleanup_handshake_retains_events_and_release_for_multiple_and_late_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let child = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let control = cleanup_probe::Control::connect(&path, true).await;
+                    let (first, second) = tokio::join!(control.hold(11), control.hold(22));
+                    first.unwrap();
+                    second.unwrap();
+                    // The parent has already released the latch. This late
+                    // owner must not need another permission or release.
+                    control.hold(33).await.unwrap();
+                    control.acknowledge_return().await;
+                });
+        });
+        let mut control = CleanupControl::new(listener.accept().unwrap().0);
+        let mut checkpoints = Vec::new();
+        for _ in 0..2 {
+            let CleanupEvent::PreEntry(pid) = control.recv() else {
+                panic!("entry checkpoint");
+            };
+            checkpoints.push(pid);
         }
+        checkpoints.sort();
+        assert_eq!(checkpoints, [11, 22]);
+        control.command("permit-entry");
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let CleanupEvent::Held(pid) = control.recv() else {
+                panic!("held owner");
+            };
+            held.push(pid);
+        }
+        held.sort();
+        assert_eq!(held, [11, 22]);
+        control.command("release");
+        // Both events may be queued before these receives; the channel retains them.
+        assert_eq!(control.recv(), CleanupEvent::Held(33));
+        assert_eq!(control.recv(), CleanupEvent::Returned);
+        control.command("ack-return");
+        child.join().unwrap();
+        assert!(
+            control
+                .events
+                .recv_timeout(Duration::from_secs(120))
+                .is_err()
+        );
+    }
 
-        for signal in [libc::SIGTERM, libc::SIGINT] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut probe = launch_probe_with_controls(dir.path(), None, true, true, false, false);
-            unsafe { libc::kill(probe.pid(), signal) };
-            wait_for_cleanup_pending(&mut probe, dir.path());
+    #[test]
+    fn cleanup_handshake_disconnect_and_malformed_events_fail_visibly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let child = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let control = cleanup_probe::Control::connect(&path, true).await;
+                    assert_eq!(
+                        control.hold(11).await.unwrap_err(),
+                        "cleanup probe controller disconnected"
+                    );
+                });
+        });
+        let mut control = CleanupControl::new(listener.accept().unwrap().0);
+        assert_eq!(control.recv(), CleanupEvent::PreEntry(11));
+        // Close without granting entry; the owner gets an error, not a hang.
+        control.stream.shutdown(std::net::Shutdown::Both).unwrap();
+        child.join().unwrap();
+        control.release_all();
+
+        let (read, mut write) = std::os::unix::net::UnixStream::pair().unwrap();
+        let control = CleanupControl::new(read);
+        for line in ["nonsense", "held invalid", "sample-pending 1,no", ""] {
+            writeln!(write, "{line}").unwrap();
             assert!(
-                probe.wait_for(Duration::from_secs(2)).is_some(),
-                "the negative control bypasses the actual pending cleanup fence"
+                control
+                    .events
+                    .recv_timeout(Duration::from_secs(120))
+                    .unwrap()
+                    .is_err()
             );
-            assert!(
-                !probe.returned_after_owned_cleanup(),
-                "the same completion predicate fails while owned work remains live"
-            );
-            assert!(probe.owned.iter().any(alive));
-            assert!(
-                probe.finish().is_err(),
-                "the completion predicate must reject live owned work"
-            );
-            probe.release();
-            assert!(
-                probe.cleanup_owned(),
-                "negative-control owned work is torn down"
-            );
-            assert!(probe.owned.iter().all(|id| !alive(id)));
-            assert!(probe.finish().is_ok(), "explicit expected rescue completed");
+        }
+        drop(write);
+        assert!(
+            control
+                .events
+                .recv_timeout(Duration::from_secs(120))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cleanup_handshake_failure_teardown_releases_all_gates_and_reaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut identities = Vec::new();
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut probe = launch_probe(dir.path(), None, true, false, false, false, Some(true));
+            identities.push(probe.owner.clone());
+            identities.extend(probe.owned.clone());
+            unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+            loop {
+                match probe.event() {
+                    CleanupEvent::PreEntry(_) => break,
+                    CleanupEvent::Returned => panic!("unexpected early runner return"),
+                    _ => {}
+                }
+            }
+            panic!("intentional failure with entry, cleanup and return gates closed");
+        }));
+        let failure = failed.expect_err("the injected failure must execute");
+        assert_eq!(
+            failure.downcast_ref::<&str>(),
+            Some(&"intentional failure with entry, cleanup and return gates closed")
+        );
+        assert!(
+            identities.iter().all(|id| !alive(id)),
+            "failure teardown stops owned identities"
+        );
+        assert!(
+            identity(identities[0].pid).is_none(),
+            "failure teardown reaps the probe"
+        );
+        let stderr = std::fs::read_to_string(dir.path().join("probe.stderr")).unwrap();
+        assert!(!stderr.contains("controller disconnected"), "{stderr}");
+        let stdout = std::fs::read_to_string(dir.path().join("probe.stdout")).unwrap();
+        assert!(stdout.contains("test result: ok. 1 passed"), "{stdout}");
+    }
+
+    fn causal_cleanup_pending(probe: &mut Probe, delayed: bool, bypass: bool) {
+        let leader = probe.owned[0].pid;
+        let (mut held, mut sampled, mut awaited, mut permitted) = (false, false, false, !delayed);
+        while !(held && sampled && (bypass || awaited)) {
+            match probe.event() {
+                CleanupEvent::PreEntry(pid) => {
+                    assert!(delayed);
+                    eprintln!("pre-entry({pid}); permit-entry");
+                    probe.control.as_mut().unwrap().command("permit-entry");
+                    permitted = true;
+                }
+                CleanupEvent::Held(pid) if pid == leader => {
+                    assert!(permitted, "hold entry requires explicit permission");
+                    held = true;
+                }
+                CleanupEvent::SamplePending(pids) if pids.contains(&leader) => sampled = true,
+                CleanupEvent::AwaitPending(pids) if pids.contains(&leader) => awaited = true,
+                CleanupEvent::Returned => assert!(
+                    bypass,
+                    "runner returned before the awaited cleanup fence: live owned work"
+                ),
+                _ => {}
+            }
+        }
+        assert!(
+            probe.owned.iter().all(alive),
+            "owned work is live at the held cleanup fence"
+        );
+        eprintln!("held({leader}); sample-pending; await-pending={awaited}");
+    }
+
+    #[test]
+    fn runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults() {
+        for delayed in [false, true] {
+            let cases = [
+                (None, Some(libc::SIGTERM)),
+                (None, Some(libc::SIGINT)),
+                (Some("panic"), None),
+                (Some("server_death"), None),
+            ];
+            for (fault, signal) in cases {
+                eprintln!("positive delayed={delayed} fault={fault:?} signal={signal:?}");
+                let dir = tempfile::tempdir().unwrap();
+                let mut probe =
+                    launch_probe(dir.path(), fault, true, false, false, false, Some(delayed));
+                if let Some(signal) = signal {
+                    unsafe { libc::kill(probe.pid(), signal) };
+                }
+                causal_cleanup_pending(&mut probe, delayed, false);
+                probe.release();
+                probe.await_return();
+                assert!(
+                    probe.returned_after_owned_cleanup(),
+                    "runner return requires owned cleanup"
+                );
+                probe.acknowledge_return();
+                assert!(probe.wait().success());
+                assert_runner_returned_after_cleanup(&mut probe);
+            }
+
+            for signal in [libc::SIGTERM, libc::SIGINT] {
+                eprintln!("bypass delayed={delayed} signal={signal}");
+                let dir = tempfile::tempdir().unwrap();
+                let mut probe =
+                    launch_probe(dir.path(), None, true, true, false, false, Some(delayed));
+                unsafe { libc::kill(probe.pid(), signal) };
+                causal_cleanup_pending(&mut probe, delayed, true);
+                probe.await_return();
+                assert!(
+                    !probe.returned_after_owned_cleanup(),
+                    "the same completion predicate fails while owned work remains live"
+                );
+                assert!(probe.owned.iter().any(alive));
+                assert!(
+                    probe.finish().is_err(),
+                    "completion rejects live owned work"
+                );
+                probe.release();
+                probe.acknowledge_return();
+                assert!(probe.wait().success());
+                assert!(
+                    probe.cleanup_owned(),
+                    "negative-control owned work is torn down"
+                );
+                assert!(probe.owned.iter().all(|id| !alive(id)));
+                assert!(probe.finish().is_ok(), "explicit expected rescue completed");
+            }
         }
     }
 
@@ -3141,6 +3630,8 @@ wait "$child"
             owner,
             release: hold.join("release"),
             pending: dir.path().join("pre-handler-pending"),
+            control: None,
+            returned: false,
             owned: Vec::new(),
         };
         eventually("trial pre-handler acknowledgement", || {
