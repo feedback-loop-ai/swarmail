@@ -34,9 +34,10 @@ commit; later documentation must explicitly mark the scoped supersession.
 Until acceptance, 0043 remains authoritative.
 
 **Acceptance recorded — 2026-10-24:** The operator accepted this ruling as
-0065. This satisfies the draft-time prerequisite above; dated supersession
-pointers now appear in 0043 §6 and the HTTP-plane spec and plan. Runtime
-behavior and its regression proofs remain outstanding.
+0065. This satisfied the draft-time prerequisite above; dated supersession
+pointers now appear in 0043 §6 and the HTTP-plane spec and plan. At acceptance, runtime behavior and regression proofs were outstanding; the
+later continuation receipt in [the plan](plan.md) records their implementation
+and verification.
 
 ## Requirements
 

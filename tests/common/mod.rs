@@ -11,6 +11,10 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
 use tokio_rustls::{TlsConnector, rustls};
 
+mod metrics;
+#[allow(unused_imports)]
+pub use metrics::parse_prometheus;
+
 #[allow(dead_code)]
 pub async fn start() -> RunningServer {
     start_with(|c| c).await

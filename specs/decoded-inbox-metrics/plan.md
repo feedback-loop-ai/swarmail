@@ -2,7 +2,8 @@
 
 Implements [spec.md](spec.md); the operator accepted the exact contract in
 [0065](../../docs/decisions/0065-decoded-inbox-metrics.md) on 2026-10-24.
-Runtime code and behavioral proofs remain outstanding.
+At the design baseline, runtime code and behavioral proofs were outstanding;
+the dated continuation receipt below records their later implementation.
 The checkout has no `.specify/templates/plan-template.md`; the required
 plan sections are supplied here directly.
 
@@ -24,8 +25,9 @@ Use real wire tests under 0004 and deterministic inline helper tests under
 0020; cold polling diagnostics belong in `tests/api.rs`, not measured inline
 code. Do not move existing inline modules or add coverage exclusions.
 Follow the authoritative house-rules gates, unsigned commits under 0056,
-and no push. This design commit contains exactly four files; index and
-historical-documentation changes belong to the later handoff.
+and no push. Design-phase scope: that design commit contained exactly four
+files; index and historical-documentation changes belonged to the later
+handoff.
 
 ## Project structure and files touched
 
@@ -33,15 +35,15 @@ historical-documentation changes belong to the later handoff.
 |---|---|
 | `src/api.rs` | Decode inside the existing helper's matching arm; correct its comment and extend its existing inline fixtures. |
 | `tests/api.rs` | Two parked awaits, full parsed scrape, completion and malformed-UTF-8 wire compatibility proofs; reuse existing parser/text HTTP helpers. |
-| `docs/decisions/0065-decoded-inbox-metrics.md` | Accepted scoped amendment; runtime behavior and proofs remain outstanding. |
+| `docs/decisions/0065-decoded-inbox-metrics.md` | Accepted scoped amendment; current runtime status is recorded in the continuation receipt below. |
 | `specs/decoded-inbox-metrics/{spec,plan,tasks}.md` | Owning design and later evidence/dated clarifications. |
 | `docs/decisions/README.md` | Index the accepted 0065 record with its matching date and scope. |
 | `specs/http-plane-edges/{spec,plan}.md` | Dated accepted-0065 pointers scope supersession of raw-key preservation; preserve historical text. |
 | `README.md` | Later metric-selector migration note and invalid-UTF-8 accounting limitation beside metrics documentation. |
 
-No production changes to guard callers, registries, admission, store, SMTP,
-MCP or renderer. The acceptance handoff adds only a dated marker to 0043 §6;
-gates and bundle policy remain unchanged.
+At the acceptance handoff, no production changes to guard callers, registries,
+admission, store, SMTP, MCP or renderer were in scope. That handoff added only
+a dated marker to 0043 §6; gates and bundle policy remain unchanged.
 
 ## Research and resolved choices
 
@@ -194,7 +196,10 @@ real port-80 bridge proofs were not run here; house rules assign them to CI.
 This receipt records documentation acceptance only. Runtime behavior, API
 regression work and independent review remain for the subsequent engine phases.
 
-## Recovery proof design — refused control request metrics (2026-10-24)
+## Recovery proof design — refused control request metrics (2026-10-24; state at `62e6496`)
+
+This section records the documentation-only recovery state. The continuation
+implementation and current proof status are recorded in the receipt below.
 
 The security residual concerns the future decoded request key before handler
 admission. A selected `%0D%00` segment with an exclusive safe prefix decodes
@@ -229,3 +234,99 @@ as synchronization nor client disconnect/unread-response tricks, and clean
 up clients/server after failures. Keep AC4's invalid-UTF-8 fallback/refusal
 proof separate because it exercises another contract path. All of these remain
 future obligations; no live refusal-window scrape is claimed here.
+
+
+## Continuation implementation receipt — 2026-10-24
+
+This receipt updates the recovery-state statements above for the continuation
+from `62e6496`. It preserves the recorded design, accepted ruling, earlier
+recovery receipts and historical decision text. Direct review confirms 0065
+still amends only 0043 §6's inbox-scoped HTTP request-label identity; the
+finite `store_contract_docs` pointer inventory still does not prove that
+semantic pointer, which remains a disclosed manual-review limitation.
+Reservations #180=0062, #181=0063, #174=0064 and #202=0065 remain unchanged.
+No decision, index, gate, policy, dependency, storage, SMTP, MCP or extraction
+contract was changed.
+
+The pre-change real-HTTP refusal capture pinned these exact body bytes:
+
+- selected `issue202-control-%0D%00`: HTTP 400,
+  `{"error":"inbox must not contain control characters"}`
+- selected `issue202-invalid-%FF`: HTTP 400,
+  "Invalid URL: Invalid UTF-8 in `inbox`"
+- selected `issue202-mixed-%20%FF`: HTTP 400,
+  "Invalid URL: Invalid UTF-8 in `inbox`"
+
+The refusal-byte assertions pass with the final helper. The invalid and mixed
+cases preserve the raw and would-be lossy identities without any active-await
+or cumulative-registration row. The strict helper matrix covers selected
+segment routing, empty components, ASCII, space, Unicode, padding, literal
+plus/percent, malformed escapes, encoded slash, double encoding, `%FF`, and
+whole-segment fallback after mixed valid escapes and invalid UTF-8.
+
+The API integration executable was audited for process-global registration
+headroom: it has 28 literal `/await` path spellings; bounded route fixtures
+expand to fewer than 64 possible successful inbox identities, including the
+three direct-router names and the two new exclusive names `issue202 space` and
+`issue202-café`. Malformed-query, blank/control, and invalid-UTF-8 refusals do
+not reach `park_await`. In the separate library-test executable, the only
+admitted wait fixture is the 16-name MCP batch test; other MCP wait calls
+reject before parking and the new refused-control harness registers none.
+Thus the new API fixtures use two of the 4096 cumulative-name slots, the
+library batch proof uses at most 16, and neither executable approaches the
+cap. No process isolation, registry reset or suite serialization was needed.
+
+The two-await regression first failed on the original helper after both
+active-await rows appeared: the same full scrape contained only encoded HTTP
+request labels, so the decoded request-row assertion failed directly (not by
+timeout or build error). After exactly-once strict segment decoding, one
+stable complete scrape had all six value-1 rows under the two decoded names,
+with no encoded aliases. Encoded seeds released both joined waits with
+`matched == 1`; the next scrape had no request or active-await rows and kept
+both cumulative rows at 1.
+
+The refused-control proof uses the real production router on an ephemeral
+TCP listener. A request-owned one-shot in the outer `cfg(test)` layer is
+consumed by `count_in_flight` and holds only the exact encoded request after
+the real handler has created its 400 response. The independent strict parser
+accepted the exact decoded CR/NUL label during the hold, found one value-1
+request sample, no raw alias or additional control/injected request sample,
+and no active or cumulative await registration before, during or after. The
+unchanged refusal bytes were joined after release, and the later scrape showed
+the request row removed. Scrapes passed while the hold was active. Separate
+bounded tests prove observer cancellation, dropped release and cancelled
+owner all free the hold. The old-helper experiment failed on the explicit
+wrong-label assertion; restored code passed. The parser's independent fixtures
+accept literal CR/NUL and continue to reject illegal escapes, raw LF and
+malformed syntax. No injection was demonstrated, and the residual awaits the
+protected security review rather than being declared cleared here.
+
+Targeted regressions passed:
+
+- `CARGO_NET_OFFLINE=true cargo test --locked --test api` — 66 passed
+- `CARGO_NET_OFFLINE=true cargo test --locked --lib api` — 33 passed
+- `CARGO_NET_OFFLINE=true cargo test --locked --test store_contract_docs` — 19 passed
+- `CARGO_NET_OFFLINE=true cargo test --locked --lib api::refusal_tests` — 2 passed
+
+The local house-rule inventory passed on this implementation:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --locked`
+- `.forge/bin/brokkr compile --bundle bundles/self` — pinned binary SHA-256
+  `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`
+- `bash scripts/coverage-gate.sh` — exact 100%: 12,981/12,981 lines,
+  764/764 branches and 1,437/1,437 functions
+- `bash scripts/coverage-gate.sh selftest`
+- `bash scripts/publish-guard-test.sh` — 51 mutation-red/restored-green receipts
+- `bash scripts/seal-branch-test.sh` — 7 cases and 10 mutants
+- `cargo deny check licenses`
+- `sha256sum -c bundles/self/scripts/shims.sha256` — all seven fixed shims match
+- fail-closed native-TLS absence proof — Cargo reported exactly
+  “package ID specification ‘native-tls’ did not match any packages”
+
+CI retains the chart/history and selftests, Docker lifecycle/context smoke,
+network RustSec audit, tag-only release-rate proof and real port-80 bridge.
+Those CI-owned proofs are not claimed locally. The engine's protected
+independent review and security disposition remain pending on this final
+candidate.

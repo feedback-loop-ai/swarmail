@@ -26,6 +26,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
+#[cfg(test)]
+mod refusal_tests;
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
@@ -318,10 +321,19 @@ pub(crate) fn park_delivery(inbox: &str) -> UnitGuard {
 /// connection drops the handler future — a bare fetch-sub after the await
 /// would leak the total forever).
 async fn count_in_flight(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    #[cfg(test)]
+    let mut req = req;
+    #[cfg(test)]
+    let refusal_hold = req.extensions_mut().remove::<refusal_tests::RequestHold>();
     let inbox = inbox_of_path(req.uri().path());
     let _label = inbox.as_deref().map(|i| UnitGuard::take(&REQUESTS, i));
     let _total = TotalGuard::take(&HTTP_REQUESTS_IN_FLIGHT);
-    next.run(req).await
+    let response = next.run(req).await;
+    #[cfg(test)]
+    if let Some(hold) = refusal_hold {
+        hold.after_response(response.status()).await;
+    }
+    response
 }
 
 /// Count one request against the router's total until the guard drops.
@@ -579,13 +591,21 @@ fn strict_authority(authority: &str) -> Option<(&str, Option<u16>)> {
     valid.then_some((host, port))
 }
 
-/// The inbox a request path scopes — `/api/v1/inboxes/<inbox>/…`, the wire
-/// segment as requested (untranslated): the labeled row a test polls is
-/// the path its own request carried.
+/// The inbox a request path scopes — `/api/v1/inboxes/<inbox>/…`. Select
+/// the existing non-empty path segment first, then use its one-pass strict
+/// percent-decoded UTF-8 identity for request metrics. An invalid UTF-8
+/// segment keeps its complete original spelling so extractor refusals do
+/// not acquire a partial or lossy label.
 fn inbox_of_path(path: &str) -> Option<String> {
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     match segments.as_slice() {
-        ["api", "v1", "inboxes", inbox, ..] => Some((*inbox).to_string()),
+        ["api", "v1", "inboxes", inbox, ..] => {
+            let decoded = percent_encoding::percent_decode_str(inbox).decode_utf8();
+            Some(match decoded {
+                Ok(decoded) => decoded.into_owned(),
+                Err(_) => (*inbox).to_string(),
+            })
+        }
         _ => None,
     }
 }
@@ -2935,13 +2955,32 @@ mod tests {
     /// anything else names none — a labeled poll must be satisfiable only
     /// by a request to the caller's own route.
     #[test]
-    fn an_inbox_scoped_path_names_its_label_and_any_other_names_none() {
-        assert_eq!(
-            inbox_of_path("/api/v1/inboxes/cov-path/seed"),
-            Some("cov-path".to_string())
-        );
-        assert_eq!(inbox_of_path("/metrics"), None);
-        assert_eq!(inbox_of_path("/api/v1/inboxes"), None);
-        assert_eq!(inbox_of_path("/"), None);
+    fn an_inbox_scoped_path_selects_then_decodes_one_segment_strictly() {
+        for (path, expected) in [
+            ("/api/v1/inboxes/cov-path/seed", Some("cov-path")),
+            ("/api/v1/inboxes/space%20name/await", Some("space name")),
+            (
+                "/api/v1/inboxes/issue202-caf%C3%A9/await",
+                Some("issue202-café"),
+            ),
+            ("/api/v1/inboxes/%20pad%20/await", Some(" pad ")),
+            ("/api/v1/inboxes/a+b/await", Some("a+b")),
+            ("/api/v1/inboxes/name%2Fpart/await", Some("name/part")),
+            ("/api/v1/inboxes/%252F/await", Some("%2F")),
+            ("/api/v1/inboxes/literal%/await", Some("literal%")),
+            ("/api/v1/inboxes/incomplete%/await", Some("incomplete%")),
+            ("/api/v1/inboxes/nonhex%GG/await", Some("nonhex%GG")),
+            ("/api/v1/inboxes/invalid-%FF/await", Some("invalid-%FF")),
+            ("/api/v1/inboxes/mixed%20%FF/await", Some("mixed%20%FF")),
+            // The pre-existing selector filters empty components before route
+            // recognition, so the next non-empty segment remains the label.
+            ("/api/v1/inboxes//await", Some("await")),
+            ("/api/v1/inboxes", None),
+            ("/api/v2/inboxes/name/await", None),
+            ("/metrics", None),
+            ("/", None),
+        ] {
+            assert_eq!(inbox_of_path(path).as_deref(), expected, "{path}");
+        }
     }
 }
