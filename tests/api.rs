@@ -33,6 +33,64 @@ async fn first_id(addr: std::net::SocketAddr, inbox: &str) -> String {
     body["emails"][0]["id"].as_str().unwrap().to_string()
 }
 
+async fn inbox_snapshot(
+    addr: std::net::SocketAddr,
+    inbox: &str,
+) -> (serde_json::Value, Vec<Vec<u8>>) {
+    let (status, body) = http_json(
+        addr,
+        "GET",
+        &format!("/api/v1/inboxes/{inbox}/messages"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let mut raw = Vec::new();
+    for email in body["emails"].as_array().unwrap() {
+        let id = email["id"].as_str().unwrap();
+        let (status, bytes) = http_bytes(addr, &format!("/api/v1/messages/{id}/raw")).await;
+        assert_eq!(status, 200, "raw bytes for {id}");
+        raw.push(bytes);
+    }
+    (body, raw)
+}
+
+async fn assert_named_query_refusal(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    route: &str,
+    key: &str,
+    supplied_value: &str,
+) {
+    let (status, body) = http_json(addr, method, path, None).await;
+    assert_eq!(status, 400, "{method} {path}: {body}");
+    let error = body["error"].as_str().unwrap_or_else(|| panic!("{body}"));
+    assert!(error.contains(&format!("invalid {route} query:")), "{body}");
+    assert!(error.contains(&format!("`{key}`")), "{body}");
+    if !supplied_value.is_empty() {
+        assert!(
+            !error.contains(supplied_value),
+            "query values must not be echoed: {body}"
+        );
+    }
+}
+
+async fn assert_named_query_refusal_with_body(
+    addr: std::net::SocketAddr,
+    method: &str,
+    path: &str,
+    body_text: &str,
+    route: &str,
+    key: &str,
+) {
+    let (status, body) = http_json(addr, method, path, Some(body_text)).await;
+    assert_eq!(status, 400, "{method} {path}: {body}");
+    let error = body["error"].as_str().unwrap_or_else(|| panic!("{body}"));
+    assert!(error.contains(&format!("invalid {route} query:")), "{body}");
+    assert!(error.contains(&format!("`{key}`")), "{body}");
+}
+
 #[tokio::test]
 async fn healthz_reports_ok() {
     let srv = start().await;
@@ -204,6 +262,685 @@ async fn await_endpoint_finds_and_times_out() {
     assert_eq!(st, 408);
     assert_eq!(body["matched"], 1);
     assert_eq!(body["emails"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn unknown_query_deletes_preserve_exact_mail() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    seed(addr, "scope-a", "a@example.com").await;
+    seed(addr, "scope-b", "b@example.com").await;
+    let before_a = inbox_snapshot(addr, "scope-a").await;
+    let before_b = inbox_snapshot(addr, "scope-b").await;
+    let id_a = before_a.0["emails"][0]["id"].as_str().unwrap().to_string();
+
+    for (method, path, route, key, value) in [
+        (
+            "DELETE",
+            "/api/v1/inboxes/scope-a/messages?subject=keep-this",
+            "DELETE /api/v1/inboxes/{inbox}/messages",
+            "subject",
+            "keep-this",
+        ),
+        (
+            "DELETE",
+            "/api/v1/delete-all?inbox=scope-a",
+            "DELETE /api/v1/delete-all",
+            "inbox",
+            "scope-a",
+        ),
+    ] {
+        assert_named_query_refusal(addr, method, path, route, key, value).await;
+        assert_eq!(inbox_snapshot(addr, "scope-a").await, before_a);
+        assert_eq!(inbox_snapshot(addr, "scope-b").await, before_b);
+    }
+    assert_named_query_refusal(
+        addr,
+        "DELETE",
+        &format!("/api/v1/messages/{id_a}?inbox=scope-a"),
+        "DELETE /api/v1/messages/{id}",
+        "inbox",
+        "scope-a",
+    )
+    .await;
+    assert_eq!(inbox_snapshot(addr, "scope-a").await, before_a);
+    assert_eq!(inbox_snapshot(addr, "scope-b").await, before_b);
+
+    let (status, deleted) =
+        http_json(addr, "DELETE", &format!("/api/v1/messages/{id_a}"), None).await;
+    assert_eq!(status, 200, "{deleted}");
+    assert_eq!(deleted["deleted"], true);
+    assert_eq!(
+        inbox_snapshot(addr, "scope-a").await.0["emails"],
+        serde_json::json!([])
+    );
+    assert_eq!(inbox_snapshot(addr, "scope-b").await, before_b);
+    seed(addr, "scope-a", "a@example.com").await;
+
+    let (status, cleared) =
+        http_json(addr, "DELETE", "/api/v1/inboxes/scope-a/messages", None).await;
+    assert_eq!(status, 200, "{cleared}");
+    assert_eq!(cleared["removed"], 1);
+    assert_eq!(
+        inbox_snapshot(addr, "scope-a").await.0["emails"],
+        serde_json::json!([])
+    );
+    assert_eq!(inbox_snapshot(addr, "scope-b").await, before_b);
+
+    seed(addr, "scope-a", "a@example.com").await;
+    let (status, removed) = http_json(addr, "DELETE", "/api/v1/delete-all?", None).await;
+    assert_eq!(status, 200, "{removed}");
+    assert_eq!(removed["removed"], 2);
+    assert_eq!(
+        inbox_snapshot(addr, "scope-a").await.0["emails"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        inbox_snapshot(addr, "scope-b").await.0["emails"],
+        serde_json::json!([])
+    );
+}
+
+#[tokio::test]
+async fn query_free_native_operations_refuse_by_name() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let mail = seed(addr, "matrix", "matrix@example.com").await;
+    let id = mail["id"].as_str().unwrap().to_string();
+    seed(addr, "clear-target", "clear@example.com").await;
+
+    let (st, chaos) = http_json(
+        addr,
+        "PUT",
+        "/api/v1/chaos",
+        Some(r#"{"data":{"probability":0,"error":"451 4.3.0 test"}}"#),
+    )
+    .await;
+    assert_eq!(st, 200, "{chaos}");
+    let webhook_body =
+        r#"[{"url":"http://user:pw@127.0.0.1:9/hook","inbox":"matrix","secret":"kept-secret"}]"#;
+    let (st, installed) = http_json(addr, "PUT", "/api/v1/webhooks", Some(webhook_body)).await;
+    assert_eq!(st, 200, "{installed}");
+
+    let rows = [
+        (
+            "DELETE",
+            "/api/v1/inboxes/clear-target/messages",
+            "DELETE /api/v1/inboxes/{inbox}/messages",
+            "subject",
+            "clear-target",
+        ),
+        (
+            "DELETE",
+            "/api/v1/delete-all",
+            "DELETE /api/v1/delete-all",
+            "inbox",
+            "matrix",
+        ),
+        (
+            "GET",
+            &format!("/api/v1/messages/{id}"),
+            "GET /api/v1/messages/{id}",
+            "subject",
+            "matrix",
+        ),
+        (
+            "DELETE",
+            &format!("/api/v1/messages/{id}"),
+            "DELETE /api/v1/messages/{id}",
+            "inbox",
+            "matrix",
+        ),
+        (
+            "GET",
+            &format!("/api/v1/messages/{id}/raw"),
+            "GET /api/v1/messages/{id}/raw",
+            "subject",
+            "matrix",
+        ),
+        ("GET", "/api/v1/chaos", "GET /api/v1/chaos", "event", "data"),
+        (
+            "DELETE",
+            "/api/v1/chaos",
+            "DELETE /api/v1/chaos",
+            "event",
+            "data",
+        ),
+        (
+            "GET",
+            "/api/v1/webhooks",
+            "GET /api/v1/webhooks",
+            "inbox",
+            "matrix",
+        ),
+        (
+            "DELETE",
+            "/api/v1/webhooks",
+            "DELETE /api/v1/webhooks",
+            "inbox",
+            "matrix",
+        ),
+    ];
+    for (method, route_path, label, selector, value) in rows {
+        let selected = format!("{route_path}?{selector}={value}");
+        assert_named_query_refusal(addr, method, &selected, label, selector, value).await;
+        let typo = format!("{route_path}?typo=");
+        assert_named_query_refusal(addr, method, &typo, label, "typo", "").await;
+    }
+    let seed_body = r#"{"to":"new@example.com","subject":"query proof","text":"Code 515151"}"#;
+    for path in [
+        "/api/v1/inboxes/matrix-new/seed?inbox=matrix-new",
+        "/api/v1/inboxes/matrix-new/seed?typo=",
+    ] {
+        assert_named_query_refusal_with_body(
+            addr,
+            "POST",
+            path,
+            seed_body,
+            "POST /api/v1/inboxes/{inbox}/seed",
+            if path.contains("?typo") {
+                "typo"
+            } else {
+                "inbox"
+            },
+        )
+        .await;
+    }
+
+    // Valid message read/raw contracts work with no query and an empty query.
+    for suffix in ["", "?"] {
+        let (status, message) =
+            http_json(addr, "GET", &format!("/api/v1/messages/{id}{suffix}"), None).await;
+        assert_eq!(status, 200, "{message}");
+        assert_eq!(message["id"], id);
+    }
+    let (status, raw_before) = http_bytes(addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(status, 200);
+    let (status, raw_empty) = http_bytes(addr, &format!("/api/v1/messages/{id}/raw?")).await;
+    assert_eq!(status, 200);
+    assert_eq!(raw_empty, raw_before);
+
+    for suffix in ["", "?"] {
+        let (status, config) =
+            http_json(addr, "GET", &format!("/api/v1/chaos{suffix}"), None).await;
+        assert_eq!(status, 200, "{config}");
+        assert_eq!(config, chaos);
+        let (status, targets) =
+            http_json(addr, "GET", &format!("/api/v1/webhooks{suffix}"), None).await;
+        assert_eq!(status, 200, "{targets}");
+        assert_eq!(targets[0]["secret"], serde_json::Value::Null);
+        assert_eq!(targets[0]["url"], "http://127.0.0.1:9/hook");
+    }
+
+    for (suffix, query_value) in [("", ""), ("?", "")] {
+        let seeded = format!("/api/v1/inboxes/matrix-control/seed{suffix}");
+        let (status, made) = http_json(addr, "POST", &seeded, Some(seed_body)).await;
+        assert_eq!(status, 200, "{made}");
+        assert_eq!(made["codes"], serde_json::json!(["515151"]));
+        assert_eq!(made["inbox"], "matrix-control");
+        assert_eq!(query_value, "");
+    }
+
+    let (status, cleared) = http_json(
+        addr,
+        "DELETE",
+        "/api/v1/inboxes/clear-target/messages",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{cleared}");
+    assert_eq!(cleared["removed"], 1);
+    seed(addr, "clear-target", "clear@example.com").await;
+    let (status, cleared) = http_json(
+        addr,
+        "DELETE",
+        "/api/v1/inboxes/clear-target/messages?",
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{cleared}");
+    assert_eq!(cleared["removed"], 1);
+
+    let (status, deleted) =
+        http_json(addr, "DELETE", &format!("/api/v1/messages/{id}"), None).await;
+    assert_eq!(status, 200, "{deleted}");
+    assert_eq!(deleted["deleted"], true);
+    let new_mail = seed(addr, "matrix", "matrix@example.com").await;
+    let new_id = new_mail["id"].as_str().unwrap();
+    let (status, deleted) =
+        http_json(addr, "DELETE", &format!("/api/v1/messages/{new_id}?"), None).await;
+    assert_eq!(status, 200, "{deleted}");
+    assert_eq!(deleted["deleted"], true);
+
+    for suffix in ["", "?"] {
+        let (status, result) =
+            http_json(addr, "DELETE", &format!("/api/v1/chaos{suffix}"), None).await;
+        assert_eq!(status, 200, "{result}");
+        assert_eq!(result["data"], serde_json::Value::Null);
+        if suffix.is_empty() {
+            let (status, restored) = http_json(
+                addr,
+                "PUT",
+                "/api/v1/chaos",
+                Some(r#"{"data":{"probability":0}}"#),
+            )
+            .await;
+            assert_eq!(status, 200, "{restored}");
+        }
+    }
+    for suffix in ["", "?"] {
+        let (status, result) =
+            http_json(addr, "DELETE", &format!("/api/v1/webhooks{suffix}"), None).await;
+        assert_eq!(status, 200, "{result}");
+        assert_eq!(result["cleared"], true);
+        if suffix.is_empty() {
+            let (status, restored) =
+                http_json(addr, "PUT", "/api/v1/webhooks", Some(webhook_body)).await;
+            assert_eq!(status, 200, "{restored}");
+        }
+    }
+
+    let (status, wiped) = http_json(addr, "DELETE", "/api/v1/delete-all", None).await;
+    assert_eq!(status, 200, "{wiped}");
+    assert!(wiped["removed"].as_u64().unwrap() > 0);
+    let (status, one) = http_json(
+        addr,
+        "POST",
+        "/api/v1/inboxes/wipe-control/seed",
+        Some(seed_body),
+    )
+    .await;
+    assert_eq!(status, 200, "{one}");
+    let (status, wiped) = http_json(addr, "DELETE", "/api/v1/delete-all?", None).await;
+    assert_eq!(status, 200, "{wiped}");
+    assert_eq!(wiped["removed"], 1);
+}
+
+#[tokio::test]
+async fn native_empty_query_shape_keeps_form_decoding() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    seed(addr, "decode-a", "a@example.com").await;
+    seed(addr, "decode-b", "b@example.com").await;
+    let before_a = inbox_snapshot(addr, "decode-a").await;
+    let before_b = inbox_snapshot(addr, "decode-b").await;
+    for (query, key, value) in [
+        ("%69nbox=not-a-filter", "inbox", "not-a-filter"),
+        ("inbox", "inbox", ""),
+        ("inbox=first&inbox=second", "inbox", ""),
+        ("=empty-key-value", "", "empty-key-value"),
+    ] {
+        assert_named_query_refusal(
+            addr,
+            "DELETE",
+            &format!("/api/v1/delete-all?{query}"),
+            "DELETE /api/v1/delete-all",
+            key,
+            value,
+        )
+        .await;
+        assert_eq!(inbox_snapshot(addr, "decode-a").await, before_a);
+        assert_eq!(inbox_snapshot(addr, "decode-b").await, before_b);
+    }
+
+    // The existing form decoder treats separator-only input as no fields.
+    let (status, empty) = http_json(addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(status, 200, "{empty}");
+    let (status, separators) = http_json(addr, "GET", "/api/v1/chaos?&&", None).await;
+    assert_eq!(status, 200, "{separators}");
+    assert_eq!(separators, empty);
+}
+
+fn generated_ca_pem() -> String {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+    params.self_signed(&key).unwrap().pem()
+}
+
+#[tokio::test]
+async fn unknown_query_config_deletes_preserve_complete_configuration() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let ca_pem = generated_ca_pem();
+    let targets = serde_json::json!([
+        {
+            "url": "http://user-one:password-one@127.0.0.1:9/first",
+            "inbox": "only-first",
+            "secret": "secret-one",
+            "ca_pem": ca_pem,
+        },
+        {
+            "url": "http://user-two:password-two@127.0.0.1:10/second",
+            "inbox": "only-second",
+            "secret": "secret-two",
+        }
+    ]);
+    let target_body = targets.to_string();
+    let (status, installed) = http_json(addr, "PUT", "/api/v1/webhooks", Some(&target_body)).await;
+    assert_eq!(status, 200, "{installed}");
+    let target_snapshot = || {
+        srv.webhooks
+            .current()
+            .into_iter()
+            .map(|target| (target.url, target.inbox, target.secret, target.ca_pem))
+            .collect::<Vec<_>>()
+    };
+    let before_targets = target_snapshot();
+    assert_eq!(before_targets.len(), 2);
+    assert!(before_targets[0].0.contains("user-one:password-one@"));
+    assert_eq!(before_targets[0].1.as_deref(), Some("only-first"));
+    assert_eq!(before_targets[0].2.as_deref(), Some("secret-one"));
+    assert!(
+        before_targets[0]
+            .3
+            .as_deref()
+            .unwrap()
+            .contains("BEGIN CERTIFICATE")
+    );
+    assert_eq!(before_targets[1].2.as_deref(), Some("secret-two"));
+
+    let (status, public_targets) = http_json(addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(status, 200, "{public_targets}");
+    assert_eq!(public_targets[0]["secret"], serde_json::Value::Null);
+    assert_eq!(public_targets[0]["url"], "http://127.0.0.1:9/first");
+    assert!(
+        public_targets[0]["ca_pem"]
+            .as_str()
+            .unwrap()
+            .contains("BEGIN CERTIFICATE")
+    );
+
+    assert_named_query_refusal(
+        addr,
+        "DELETE",
+        "/api/v1/webhooks?inbox=only-first",
+        "DELETE /api/v1/webhooks",
+        "inbox",
+        "only-first",
+    )
+    .await;
+    assert_eq!(target_snapshot(), before_targets);
+    let (status, public_after) = http_json(addr, "GET", "/api/v1/webhooks", None).await;
+    assert_eq!(status, 200, "{public_after}");
+    assert_eq!(public_after, public_targets);
+
+    let chaos_body =
+        r#"{"connect":{"probability":0},"data":{"probability":100,"error":"451 4.3.0 retained"}}"#;
+    let (status, chaos_before) = http_json(addr, "PUT", "/api/v1/chaos", Some(chaos_body)).await;
+    assert_eq!(status, 200, "{chaos_before}");
+    assert_eq!(srv.store.emails_inserted(), 0);
+    assert_named_query_refusal(
+        addr,
+        "DELETE",
+        "/api/v1/chaos?event=data",
+        "DELETE /api/v1/chaos",
+        "event",
+        "data",
+    )
+    .await;
+    assert_eq!(
+        serde_json::to_value(srv.chaos.current()).unwrap(),
+        chaos_before
+    );
+    let (status, chaos_after) = http_json(addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(status, 200, "{chaos_after}");
+    assert_eq!(chaos_after, chaos_before);
+
+    let refused = common::smtp_send(
+        srv.smtp_addr,
+        Some("chaos-kept"),
+        "sender@example.com",
+        "recipient@example.com",
+        "must refuse",
+        "no insertion",
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("451 4.3.0 retained"), "{refused}");
+    assert_eq!(srv.store.emails_inserted(), 0);
+    assert!(!srv.store.has_inbox("chaos-kept"));
+
+    let (status, cleared) = http_json(addr, "DELETE", "/api/v1/chaos", None).await;
+    assert_eq!(status, 200, "{cleared}");
+    assert!(srv.chaos.current().data.is_none());
+    assert!(srv.chaos.current().connect.is_none());
+    let accepted = common::smtp_send(
+        srv.smtp_addr,
+        Some("chaos-kept"),
+        "sender@example.com",
+        "recipient@example.com",
+        "stored after clear",
+        "normal delivery",
+    )
+    .await
+    .unwrap();
+    assert!(accepted.starts_with("250"), "{accepted}");
+    assert_eq!(srv.store.emails_inserted(), 1);
+    assert!(srv.store.has_inbox("chaos-kept"));
+
+    let (status, cleared) = http_json(addr, "DELETE", "/api/v1/webhooks", None).await;
+    assert_eq!(status, 200, "{cleared}");
+    assert_eq!(cleared["cleared"], true);
+    assert!(srv.webhooks.current().is_empty());
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn unknown_seed_query_has_no_ingest_effects() {
+    let srv = start_with(|mut config| {
+        config.max_per_inbox = 1;
+        config
+    })
+    .await;
+    let addr = srv.http_addr;
+    seed(addr, "existing", "old@example.com").await;
+    let before_existing = inbox_snapshot(addr, "existing").await;
+    let before_inboxes = srv.store.inboxes();
+    let inserted = srv.store.emails_inserted();
+    let dropped = srv.store.emails_dropped();
+    let body = r#"{"to":"new@example.com","subject":"not stored","text":"Code 616161"}"#;
+
+    assert_named_query_refusal_with_body(
+        addr,
+        "POST",
+        "/api/v1/inboxes/existing/seed?to=new@example.com",
+        body,
+        "POST /api/v1/inboxes/{inbox}/seed",
+        "to",
+    )
+    .await;
+    assert_eq!(inbox_snapshot(addr, "existing").await, before_existing);
+    assert_eq!(srv.store.inboxes(), before_inboxes);
+    assert_eq!(srv.store.emails_inserted(), inserted);
+    assert_eq!(srv.store.emails_dropped(), dropped);
+
+    assert_named_query_refusal_with_body(
+        addr,
+        "POST",
+        "/api/v1/inboxes/absent/seed?typo=",
+        body,
+        "POST /api/v1/inboxes/{inbox}/seed",
+        "typo",
+    )
+    .await;
+    assert_eq!(srv.store.inboxes(), before_inboxes);
+    assert_eq!(srv.store.emails_inserted(), inserted);
+    assert_eq!(srv.store.emails_dropped(), dropped);
+    assert!(!srv.store.has_inbox("absent"));
+
+    for (path, inbox) in [
+        ("/api/v1/inboxes/accepted/seed", "accepted"),
+        ("/api/v1/inboxes/empty-query/seed?", "empty-query"),
+    ] {
+        let (status, email) = http_json(addr, "POST", path, Some(body)).await;
+        assert_eq!(status, 200, "{email}");
+        assert_eq!(email["inbox"], inbox);
+        assert_eq!(email["subject"], "not stored");
+        assert_eq!(email["codes"], serde_json::json!(["616161"]));
+        let id = email["id"].as_str().unwrap();
+        let (status, stored) =
+            http_json(addr, "GET", &format!("/api/v1/messages/{id}"), None).await;
+        assert_eq!(status, 200, "{stored}");
+        assert_eq!(stored, email, "a successful seed is queryable immediately");
+    }
+    assert_eq!(srv.store.emails_inserted(), inserted + 2);
+    assert_eq!(srv.store.emails_dropped(), dropped);
+}
+
+#[tokio::test]
+async fn native_query_refusal_preserves_error_precedence() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+
+    for (method, path, route) in [
+        (
+            "GET",
+            "/api/v1/messages/missing?typo=sentinel",
+            "GET /api/v1/messages/{id}",
+        ),
+        (
+            "DELETE",
+            "/api/v1/messages/missing?typo=sentinel",
+            "DELETE /api/v1/messages/{id}",
+        ),
+        (
+            "GET",
+            "/api/v1/messages/missing/raw?typo=sentinel",
+            "GET /api/v1/messages/{id}/raw",
+        ),
+    ] {
+        assert_named_query_refusal(addr, method, path, route, "typo", "sentinel").await;
+    }
+    for (method, path) in [
+        ("GET", "/api/v1/messages/missing"),
+        ("GET", "/api/v1/messages/missing/raw"),
+    ] {
+        let (status, body) = http_json(addr, method, path, None).await;
+        assert_eq!(status, 404, "{method} {path}: {body}");
+        assert_eq!(body["error"], "message not found");
+    }
+    let (status, deleted) = http_json(addr, "DELETE", "/api/v1/messages/missing", None).await;
+    assert_eq!(status, 404, "{deleted}");
+    assert_eq!(deleted["error"], "message not found");
+
+    let (status, blank) = http_json(
+        addr,
+        "DELETE",
+        "/api/v1/inboxes/%20/messages?subject=selector",
+        None,
+    )
+    .await;
+    assert_eq!(status, 400, "{blank}");
+    assert!(
+        blank["error"].as_str().unwrap().contains("inbox"),
+        "{blank}"
+    );
+    assert!(
+        !blank["error"].as_str().unwrap().contains("invalid DELETE"),
+        "{blank}"
+    );
+
+    let (status, origin) = http_send_text_with_headers(
+        addr,
+        "GET",
+        "/api/v1/messages/missing?typo=sentinel",
+        &[("Origin", "https://evil.example")],
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "{origin}");
+    assert!(!origin.contains("invalid GET /api/v1/messages"), "{origin}");
+    let (status, host) = send_with_host(
+        addr,
+        "GET",
+        "/api/v1/messages/missing?typo=sentinel",
+        "attacker.example",
+        None,
+    )
+    .await;
+    assert_eq!(status, 403, "{host}");
+    assert!(!host.contains("invalid GET /api/v1/messages"), "{host}");
+
+    let malformed = raw_http(
+        addr,
+        "POST /api/v1/inboxes/body/seed?typo=sentinel HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 1\r\n",
+        b"{",
+    )
+    .await;
+    assert_eq!(malformed.0, 400, "{}", malformed.1);
+    assert!(
+        !malformed.1.contains("invalid POST /api/v1/inboxes"),
+        "{}",
+        malformed.1
+    );
+
+    let wrong_media = raw_http(
+        addr,
+        "POST /api/v1/inboxes/body/seed?typo=sentinel HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n",
+        b"{}",
+    )
+    .await;
+    assert_eq!(wrong_media.0, 415, "{}", wrong_media.1);
+    assert!(
+        !wrong_media.1.contains("invalid POST /api/v1/inboxes"),
+        "{}",
+        wrong_media.1
+    );
+
+    let too_large = vec![b'x'; 2_097_153];
+    let too_large_response = raw_http(
+        addr,
+        &format!("POST /api/v1/inboxes/body/seed?typo=sentinel HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n", too_large.len()),
+        &too_large,
+    )
+    .await;
+    assert_eq!(too_large_response.0, 413, "{}", too_large_response.1);
+    assert!(
+        !too_large_response
+            .1
+            .contains("invalid POST /api/v1/inboxes"),
+        "{}",
+        too_large_response.1
+    );
+
+    let (status, data_shape) = http_json(
+        addr,
+        "POST",
+        "/api/v1/inboxes/body/seed?typo=sentinel",
+        Some(r#"{"to":"valid@example.com","subjet":"wrong"}"#),
+    )
+    .await;
+    assert_eq!(status, 400, "{data_shape}");
+    assert!(
+        data_shape["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("invalid seed body:"),
+        "{data_shape}"
+    );
+
+    let (status, domain) = http_json(
+        addr,
+        "POST",
+        "/api/v1/inboxes/body/seed?typo=sentinel",
+        Some(r#"{"to":"bad\r\naddress@example.com"}"#),
+    )
+    .await;
+    assert_eq!(status, 400, "{domain}");
+    assert!(
+        domain["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("invalid POST /api/v1/inboxes/{inbox}/seed query:"),
+        "{domain}"
+    );
+    assert!(
+        !domain["error"].as_str().unwrap().contains("sentinel"),
+        "{domain}"
+    );
+    assert!(!srv.store.has_inbox("body"));
 }
 
 #[tokio::test]
@@ -3076,6 +3813,101 @@ async fn served_openapi(addr: std::net::SocketAddr) -> serde_json::Value {
     let (st, doc) = http_json(addr, "GET", "/openapi.json", None).await;
     assert_eq!(st, 200, "{doc}");
     doc
+}
+
+#[tokio::test]
+async fn query_free_native_contracts_match_served_docs() {
+    let srv = start().await;
+    let doc = served_openapi(srv.http_addr).await;
+    let rows = [
+        (
+            "DELETE",
+            "/api/v1/inboxes/{inbox}/messages",
+            ["inbox"].as_slice(),
+        ),
+        ("DELETE", "/api/v1/delete-all", [].as_slice()),
+        ("GET", "/api/v1/messages/{id}", ["id"].as_slice()),
+        ("DELETE", "/api/v1/messages/{id}", ["id"].as_slice()),
+        ("GET", "/api/v1/messages/{id}/raw", ["id"].as_slice()),
+        ("GET", "/api/v1/chaos", [].as_slice()),
+        ("DELETE", "/api/v1/chaos", [].as_slice()),
+        ("GET", "/api/v1/webhooks", [].as_slice()),
+        ("DELETE", "/api/v1/webhooks", [].as_slice()),
+        ("POST", "/api/v1/inboxes/{inbox}/seed", ["inbox"].as_slice()),
+    ];
+    for (method, path, expected_path_parameters) in rows {
+        let method = method.to_ascii_lowercase();
+        let operation = &doc["paths"][path][&method];
+        let parameters = operation["parameters"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let query_parameters: Vec<_> = parameters
+            .iter()
+            .filter(|parameter| parameter["in"] == "query")
+            .collect();
+        assert!(
+            query_parameters.is_empty(),
+            "{method} {path}: {query_parameters:?}"
+        );
+        let path_parameters: Vec<_> = parameters
+            .iter()
+            .filter(|parameter| parameter["in"] == "path")
+            .map(|parameter| parameter["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(path_parameters, expected_path_parameters, "{method} {path}");
+        let label = format!("{} {path}", method.to_ascii_uppercase());
+        let description = operation["description"].as_str().unwrap();
+        assert!(description.contains(&label), "{label}: {description}");
+        assert!(
+            description.contains("no query keys"),
+            "{label}: {description}"
+        );
+        let refusal = operation["responses"]["400"]["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("missing 400 description for {label}"));
+        assert!(refusal.contains("query key"), "{label}: {refusal}");
+        assert!(refusal.contains("native JSON"), "{label}: {refusal}");
+    }
+
+    let readme = include_str!("../README.md");
+    let (_, llms) = http_get_text(srv.http_addr, "/llms.txt").await;
+    for route in [
+        "DELETE /api/v1/inboxes/{inbox}/messages",
+        "DELETE /api/v1/delete-all",
+        "GET /api/v1/messages/{id}",
+        "DELETE /api/v1/messages/{id}",
+        "GET /api/v1/messages/{id}/raw",
+        "GET /api/v1/chaos",
+        "DELETE /api/v1/chaos",
+        "GET /api/v1/webhooks",
+        "DELETE /api/v1/webhooks",
+        "POST /api/v1/inboxes/{inbox}/seed",
+    ] {
+        assert!(readme.contains(route), "README omits {route}");
+        assert!(llms.contains(route), "served llms.txt omits {route}");
+    }
+    for (text, name) in [(readme, "README"), (llms.as_str(), "llms.txt")] {
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            normalized.contains("empty-valued"),
+            "{name} omits empty-valued refusal"
+        );
+        assert!(
+            normalized.contains("literal empty query"),
+            "{name} omits empty-query behavior"
+        );
+        assert!(
+            normalized.contains("tolerance of unknown keys")
+                || normalized.contains("list/search tolerance"),
+            "{name} omits compat tolerance"
+        );
+        assert!(
+            (normalized.contains("body-based") || normalized.contains("ids body"))
+                && normalized.contains("ids"),
+            "{name} omits selective delete guidance"
+        );
+    }
 }
 
 /// One documented query parameter's schema.
