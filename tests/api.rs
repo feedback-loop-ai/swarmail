@@ -2801,6 +2801,22 @@ fn the_strict_prometheus_reader_accepts_the_format_and_nothing_else() {
             1.0,
         )])
     );
+    let escaped_distinction = "m{inbox=\"literal\\\\n\"} 1\nm{inbox=\"line\\n\"} 2\n";
+    let distinct = parse_prometheus(escaped_distinction).expect("both legal spellings parse");
+    assert_eq!(distinct[0].1[0].1.as_bytes(), b"literal\\n");
+    assert_eq!(distinct[1].1[0].1.as_bytes(), b"line\n");
+    assert_ne!(distinct[0].1[0].1.as_bytes(), distinct[1].1[0].1.as_bytes());
+
+    for value in [
+        "\r\0", "\u{80}", "\u{9f}", "\u{061c}", "\u{200e}", "\u{200f}", "\u{202a}", "\u{202b}",
+        "\u{202c}", "\u{202d}", "\u{202e}", "\u{2066}", "\u{2067}", "\u{2068}", "\u{2069}",
+    ] {
+        let wire = format!("m{{inbox=\"{value}\"}} 1\n");
+        let parsed = parse_prometheus(&wire).expect("literal non-escape bytes parse");
+        assert_eq!(parsed.len(), 1, "one complete sample: {wire:?}");
+        assert_eq!(parsed[0].1[0].1.as_bytes(), value.as_bytes(), "{wire:?}");
+    }
+
     for invalid in [
         "m{inbox=\"tab\\tname\"} 1\n", // Rust's \t
         "m{inbox=\"\\u{7f}\"} 1\n",    // Rust's \u{…}
