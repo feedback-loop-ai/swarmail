@@ -367,9 +367,13 @@ fn fast_strategy_selectors_have_no_default_and_keep_one_two_or_five_reviewers() 
     }
     let implement = &recipe["seats"]["implement"]["select"]["cases"];
     for class in ["chore", "feature", "design", "engine"] {
+        assert_eq!(
+            implement[class]["agent"], "codex-fast-implementer",
+            "{class}: settled fast implementer office"
+        );
         let overlay = office(implement[class]["agent"].as_str().unwrap());
         assert_eq!(overlay["models"], json!(["luna"]), "{class}: Codex only");
-        assert_eq!(overlay["efforts"]["luna"], "xhigh");
+        assert_eq!(overlay["efforts"]["luna"], "xhigh", "{class}: effort");
     }
 }
 
