@@ -1,6 +1,6 @@
 # #179 follow-up: prove bridge reaping through its owning handle
 
-Created: 2026-10-23. Updated: 2026-10-24. Status: residual design draft.
+Created: 2026-10-23. Updated: 2026-10-24. Status: evidence-recovery design draft.
 Story: epic #192, #179 correctness-review residual only.
 Historical baseline: reviewed #179 source replay 86c851f on main df8630f.
 Current preservation baseline: c8364ed208612b72955cf271c2341e7c16f40c3f.
@@ -130,7 +130,8 @@ and apply accepted [0020](../../docs/decisions/0020-concurrency-tests-and-the-co
 
 ## Residual clarification and panel ruling — 2026-10-24
 
-Read both current positions under `.brokkr/state/design/positions/` and
+For predecessor run `epic-192-issue-179-residual-foll-c304165b`, the chief
+read its then-current positions under `.brokkr/state/design/positions/` and
 intake `.brokkr/state/tasks/epic-192-issue-179-residual-foll-c304165b.md`.
 Seq-375 correctness reported two information findings: the plan conflates a
 historical engine digest with the operative pin, and this review could not
@@ -207,6 +208,58 @@ two findings without reopening the completed implementation.
    on the resulting candidate before the policy-selected reviews. Keep
    CI-only obligations explicit and preserve the no-fallback provider
    assignments. No push, merge, tag or publication.
+
+## Evidence-recovery synthesis — 2026-10-24
+
+Current run: `epic-192-issue-179-evidence-reco-81b99d67`. Read both
+`.brokkr/state/design/positions/simplicity.md` and `robustness.md`, and
+current intake `.brokkr/state/tasks/epic-192-issue-179-evidence-reco-81b99d67.md`.
+The preceding dated clarifications remain history and AC1–AC8/R1–R6 remain
+binding, unchanged. The two stopped attempts in
+`epic-192-issue-179-residual-foll-c304165b` reported read-only artifact
+storage; this recovery corrects that instruction without reopening the
+completed candidate or treating stopped results as proof.
+
+- **Adopt simplicity's storage and scope:** raw evidence, search outcomes,
+  saved bytes and restoration records have one owner beneath
+  `target/bridge-reap-proof/receipts/epic-192-issue-179-evidence-reco-81b99d67/`.
+  Keep only a concise truthful index/reference in plan.md. No raw evidence
+  goes under `.forge`; the mandated engine result file is the explicit
+  control-record exception. Reject a second destination, permission-probe
+  loop, new runner, permanent selector, archive service or helper refactor.
+  Cost: manual four-row indexing and retained ignored files through review,
+  without a durability promise across arbitrary checkout transfer.
+- **Adopt robustness's restoration barrier:** save exact green bytes before
+  each attempt; keep the lifecycle guard and bounded same-handle cleanup;
+  restore, independently hash and compare before any next case. No concurrent
+  experiment or gate runs during a mutation window. After interruption,
+  source restoration does not establish that the interrupted child was
+  reaped; missing cleanup evidence stays a named gap. Reject saved-PID
+  recovery and treating kill-on-drop as observed success. Cost: interruption
+  bookkeeping and potentially an unresolved lifecycle receipt.
+- **Adopt both positions' recovery-first threshold:** recover authentic
+  receipts before regenerating only unproved rows, one mutant and one mode
+  at a time. Record exact searched paths and access outcomes. Newly executed
+  proof cannot manufacture original provenance; checksums authenticate
+  byte equality only. Original provenance and actual four-reviewer receipt
+  access must remain separately visible requirements even if fresh reds pass.
+- **Rule on the scope tension:** simplicity's plan-only implementation diff
+  wins after this chief step; the chief updates all three design artifacts
+  as required by the committed-spec contract. The losing literal plan-only
+  design alternative would leave the storage/restore handoff ambiguous.
+  Accepted cost: limited spec/tasks documentation churn. Both current
+  positions otherwise agree; there is no competing architecture to average.
+- **Reject path-only closure and broader hardening:** correcting storage alone
+  leaves AC5 and R5 unproved; expanding into mail/storage/webhook/TLS owners
+  adds unrelated contracts without resolving those receipts. Retain full
+  house gates, exact coverage, actual pinned offline verify and four actual
+  reviewers: DashScope Qwen Max, Claude Opus, official DeepSeek Flash and
+  DashScope GLM 5.3, in their existing roles. No fallback or DeepSeek Pro.
+
+This is an evidence-storage and execution clarification, not a semantic
+change to a public contract or accepted ruling; no new decision is needed.
+The [plan](plan.md) records the search reference and precise outstanding
+proof, and the [tasks](tasks.md) pair the remaining work with its tests.
 
 ## Completion boundary
 

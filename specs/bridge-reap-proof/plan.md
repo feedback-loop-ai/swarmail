@@ -5,9 +5,10 @@ The repository has no `.specify/templates/plan-template.md`; this plan
 includes the required technical context, constitution check, project
 structure, research, data model, contracts, quickstart and risks here.
 
-Updated: 2026-10-24 for the two residual findings on `c8364ed`. Original
-implementation mechanics remain historical rationale; only the residual
-procedure below is pending implementation work.
+Updated: 2026-10-24 for evidence recovery after the two stopped attempts.
+Run: `epic-192-issue-179-evidence-reco-81b99d67`. Original implementation
+mechanics remain historical rationale; only the residual procedure below
+is pending implementation work. Preserve `c8364ed` and all AC1–AC8/R1–R6.
 
 ## Technical context
 
@@ -31,16 +32,18 @@ concurrency proof, irrespective of the small diff. No new semantic ADR.
 | --- | --- |
 | `tests/binary/helper_reliability.rs` | Preserve completed candidate bytes; temporary mutants for missing proof only, restored after each execution. |
 | `specs/bridge-reap-proof/{spec,plan,tasks}.md` | Chief updates exactly these three; subsequent residual work only adds directly necessary evidence/clarifications to plan.md. |
-| `.forge/artifacts/epic-192-issue-179-residual-foll-c304165b/` | Ignored search record, provenance index, raw receipts and restoration records; explicitly handed to current reviewers. |
+| `target/bridge-reap-proof/receipts/epic-192-issue-179-evidence-reco-81b99d67/` | Ignored search record, provenance index, raw receipts and restoration records; explicitly handed to current reviewers. |
 | `tests/binary.rs` | Read-only owner of `McpChild`, `finish_with_deadline`, `kill_and_reap`. |
 | `Cargo.lock` and installed Tokio source | Read-only semantic evidence. |
 
 No other source/note files are authorized. Keep raw execution receipts in
-ignored run-local storage and summarize them in these notes if needed.
+the target receipt root above. Keep only a concise truthful index/reference
+in this plan; no embedded raw logs and no raw evidence writes under `.forge`.
+The mandated engine result is the explicit control-record exception.
 
 ## Research and source evidence
 
-Chief independently inspected installed Tokio 1.53.2:
+The original chief (2026-10-23) recorded inspection of installed Tokio 1.53.2:
 
 - `src/process/mod.rs:1216–1226`: `id()` reads `FusedChild`; it returns
   None only for Done and does not poll/reap. Documentation explicitly
@@ -87,7 +90,29 @@ Preserve the completed `c8364ed208612b72955cf271c2341e7c16f40c3f` bytes:
 | `tests/binary/helper_reliability.rs` | `5dc1b0573686e53d9444273dc14db8c292596cf12c8fd098c1d8ce962269ddcb` |
 | `tests/binary.rs` | `7da125cd5945bfc7f511c0c6fdaed52eb8baeb08497c5416ab29ede867752554` |
 
+The recovery chief independently rechecked both source hashes, their empty
+diff against `c8364ed`, and current local engine equality on 2026-10-24.
 These are inspection facts, not new mutation, gate or reviewer receipts.
+
+### Current evidence reference — 2026-10-24
+
+Run `epic-192-issue-179-evidence-reco-81b99d67` uses the ignored
+[index](../../target/bridge-reap-proof/receipts/epic-192-issue-179-evidence-reco-81b99d67/index.md) and
+[chief search record](../../target/bridge-reap-proof/receipts/epic-192-issue-179-evidence-reco-81b99d67/chief-search.txt)
+(search SHA-256 `05b622a9bdbea9d4f62ad1a7d4583806c26c22380300bf6865af46cbf9f34132`).
+The search record names exact inspected paths, methods, outcomes and read
+summary hashes. Local artifact storage was empty; local/predecessor journal
+and sibling receipt paths returned boxed FileNotFoundError. Accessible
+ledger/results provide leads and historical summaries, not raw reds.
+This bounded search does not establish host deletion or exhaust further
+accessible references; implementation records follow-up searches separately.
+
+All four matrix cells remain unproved here. Original provenance and actual
+reviewer access remain unestablished. No mutant, restoration execution,
+fresh test, full-gate or outer-verify receipt is claimed by this design.
+Update this reference with actual receipt/index hashes, restoration and
+fresh verification references during implementation; retain precise gaps
+until discharged. Never clean these target receipts before review completes.
 
 ## Residual implementation procedure — 2026-10-24
 
@@ -118,9 +143,13 @@ These are inspection facts, not new mutation, gate or reviewer receipts.
    interruption, restore and verify before any further proof; a trap alone
    is not crash-proof. Only the final finish invocation and temporary
    existing-loop mode selection may change. Keep the lifecycle guard and
-   explicit same-handle cleanup intact.
+   explicit same-handle cleanup intact. A mismatch blocks the next case;
+   never refresh the baseline from dirty source. If the owning process was
+   externally killed before cleanup was recorded, leave that lifecycle
+   receipt incomplete even after restoring source. Do not signal a saved PID.
 5. Assemble the small ignored index, all raw files and search/restoration
-   records under `.forge/artifacts/epic-192-issue-179-residual-foll-c304165b/`.
+   records, including saved candidate bytes, under the target receipt root
+   in the project table.
    Add a dated plan reference describing that current-run evidence when it
    exists; do not predeclare successful recovery or execution. Expose the
    files through the existing review evidence handoff, and require each
@@ -152,9 +181,9 @@ attributing them to predecessor history.
 | `bridge_timeout_returns_with_live_child` | `bridge-open` | Lifecycle diagnostic, mode, successful explicit cleanup, nonzero test exit. |
 | `bridge_timeout_returns_with_live_child` | `bridge-closed` | Same, after real readiness and closed-mode EOF. |
 
-Compilation failure, zero tests, setup failure, cleanup failure, wrong-mode
-output or a later string mismatch leaves a row unproved. No saved-PID probe,
-new dependency, permanent switch, sleep synchronization, suite serialization
+Compilation failure, zero tests, setup failure, cleanup failure, outer timeout,
+wrong-mode output or a later string mismatch leaves a row unproved.
+No saved-PID probe, new dependency, permanent switch, sleep synchronization, suite serialization
 or helper refactor is permitted. If proof requires exceeding this scope,
 report the evidence through the existing bounded return rather than weaken
 acceptance or silently enlarge the work.
@@ -237,14 +266,16 @@ Run fail-closed native-tls absence: Cargo tree command failure is failure,
 not evidence of absence. Execute actual outer offline verify through the
 pinned proof chain with checked shim digests, not a candidate-script-only
 substitute. Preserve failed receipts as well as restored green evidence.
-No prior candidate's verify receipt transfers.
+No prior candidate's verify receipt transfers. Verify stays offline and
+installs nothing; the engine dispatches it through the existing route.
 
 The chief may preflight `bash bundles/self/scripts/design-check.sh check .`
 after committing these three artifacts. The sequence's dispatched pinned
 check owns the design verdict. Implementation, mutation proof, full gates,
 outer verify and independent review remain subsequent delivery work.
 CI-only checks in the charter remain root/CI obligations, not waived or
-claimed here. Use the accepted four named reviewers; launch no alternate
+claimed here. Use DashScope Qwen Max correctness, Claude Opus security,
+official DeepSeek Flash guarantees and DashScope GLM 5.3 tests; launch no alternate
 route or nested delivery run. Root owns integration and issue closure.
 
 ## Risks
@@ -263,3 +294,6 @@ route or nested delivery run. Root owns integration and issue closure.
 | Copied or inaccessible logs falsely certify AC5 | Record actual origin/search boundaries, validate every row, and require read/hash checks in each dispatched reviewer workspace. Accept manual handoff, not a new archive service. |
 | Valid historical red is confused with current green | Label provenance separately; regenerate only unproved reds but require fresh complete verification on the final candidate. |
 | Crash or parallel gate observes mutated source | Run mutations sequentially; save exact bytes outside the target, restore on exits and independently check bytes after interruption before any green work. |
+| Read-only artifact destination repeats the stopped attempts | Use only the target receipt root for raw evidence; mandatory engine results are control records, not artifact-storage precedent. |
+| Ignored evidence is erased or new reds appear to repair history | Retain through review and prove each reviewer read/hash; report original provenance gaps separately from successful regeneration. |
+| External termination interrupts owned-child cleanup | Restore bytes before further work, retain incomplete receipt and report missing cleanup; source restoration and kill-on-drop do not prove reap. |
