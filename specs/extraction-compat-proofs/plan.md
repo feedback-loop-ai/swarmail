@@ -233,3 +233,36 @@ none of those seats and reports drafted only.
 | Proof edits shrink coverage or become shipping mechanisms | Existing 0020 harness, cfg(test)-only observations, exercised seams, unchanged exact gate and dependency policy. |
 | Mutation leaks into final gates | Saved bytes, finally/trap restoration, hashes, clean diff and separate red/restored logs. |
 | Historical receipts or proposed 0061 are treated as completion | Fresh source-bound receipts, explicit pending operator questions and downstream gate/review obligations. |
+
+## Implementation evidence — 2026-10-24
+
+The scoped implementation is commit `b3eba6e8b90c39702bf2d4b9c42c0ff99d4c2da8`
+(tree `2c3124b7b2c88baf70e8fb19cddefa6ef643989f`). Its only source edits
+are a raw-source premise assertion in `tests/compat.rs` and a precise
+reopen-scope explanation in `src/store.rs`; production behavior, dependencies,
+gates, decisions, and the entity source remain unchanged. The worktree was
+clean at the implementation commit. SHA-256 identities for all owned proof
+inputs are recorded in private `.brokkr/state/receipts/epic-192-issue-190/`
+receipts; the changed files are `tests/compat.rs`
+`28fb7f860ffcb6078f5750fe4ec8582cf0661158bbda4a3c0fd4de1a63ac3288` and
+`src/store.rs` `0b1c47493fafa7f58b12966d3f7e6e53a9f16795c128b077609c780e290fbc04`.
+
+| Proof | Executed evidence |
+|---|---|
+| Generator (AC1) | `python3 -I scripts/gen-entities.py scripts/data/html-entities.json`: exit 0; all 60,746 output bytes equal the full `static NAMED` declaration including its final LF. Generator SHA-256 `80541b78d56ec6ac6318adefc5bb8033f2c487fec375ad9118339b3856fb36d8`; snapshot SHA-256 remains `d741d877ac77c4194c4ad526b5b4a19aef8dfe411ab840a466891cdbb9f362e6`; entity source SHA-256 `4334e2e8f0af1ba8a6c0a65fa0b716f51a7ee70867018e350ff0b4d154cc6335`. The same generator received the snapshot plus LF on `/dev/stdin`: exit 1, zero stdout, and the pinned SHA refusal. |
+| Full entity map (AC2) | `cargo test --locked --lib all_whatwg_entities_match_snapshot`: 1 passed. The temporary valid-scalar `AElig` U+00C6→U+00C7 mutation kept the key and count, compiled, and failed the mapping equality assertion (exit 101); exact bytes were restored and the test passed again. |
+| Held response work (AC3–AC4) | Both `held_single_message_builds_leave_smtp_and_health_serving` and `actual_lookup_and_build_leave_the_async_worker` pass on the final source; the held test exercises all eleven routes and the SMTP/health/DATA/readback checks. A temporary split mutant ran lookup and projection/build work on the async worker, captured those actual invocation thread IDs, and kept the lookup hold plus deferred JSON serialization in `Store::offload`. The held test failed its intended `actual lookup/build work ran on async worker` assertion after the held routes completed; the independent callback witness failed at `lookup ran on async worker`. The mutant diff, logs, and exact restoration hashes are retained in private receipts; all three modified files were restored byte-for-byte. |
+| Search candidate (AC5) | `tests/compat.rs` now asserts both array-only needles are absent from raw source. The real-HTTP test passes with both dialects' 200/count-0 array-only misses, stored-array readback, and 200/count-1 subject/body controls. Temporarily adding stored links and codes to the haystack iterator compiled and failed with count 1 where 0 was required; `src/compat.rs` was restored byte-for-byte and the test passed. |
+| Shim delete prefix (AC6) | `cargo test --locked --test compat shim_delete_preserves_committed_prefix_across_reopen_and_retry`: 1 passed with the existing selective SQLite middle-id refusal, live/reopened A/B/C and unrelated checks, and exact removed=2 then removed=0 retries. |
+| Empty-entry regression (AC7) | The test comment now states that a new row re-mints the inbox before reopen, and names the retained-map-guard/same-shard deadlock. `timeout --signal=KILL 120s cargo test --locked --lib a_delete_that_empties_an_inbox_removes_the_entry_live_and_after_reopen`: exit 0, 1 passed. |
+| Final targeted proofs | All six commands in Quickstart were rerun on the restored implementation commit; each selected exactly one test and passed. The workspace suite passed 785 tests, with 0 failures and 3 ignored. |
+| House gates | All local inventory commands exited 0: fmt, workspace/all-target clippy with `-D warnings`, locked workspace tests, pinned Brokkr compile, exact coverage (100/100/100), coverage selftest, publish-guard test, seal-branch test, and `cargo deny check licenses`. The candidate-local Brokkr SHA-256 matched `bundles/self/tooling.json` (`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`). `cargo tree --locked --workspace --all-features` exited 0 and contained no `native-tls`. Detailed stdout/stderr is under the private receipt directory. |
+
+The CI-only chart/history checks, Docker smoke, network advisory audit,
+tag-only rate proof and port-80 bridge proof remain CI obligations; this run
+did not trigger a publication path. Proposed decision 0061 remains proposed,
+and no operator question is treated as accepted. The engine-selected four
+review receipts (Qwen Max, Opus, official DeepSeek Flash, DashScope GLM 5.3)
+are downstream of this sole implementation seat; this evidence does not claim
+they have run. The implementation result is handed back to the engine for
+its configured verify/review policy. No push, merge, tag or publication.
