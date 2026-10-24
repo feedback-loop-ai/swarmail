@@ -632,11 +632,52 @@ fn registry_rows(registry: &'static Registry, name: &str, kind: &str, total: u64
     render_rows(&units, name, kind, total)
 }
 
+// Observe actual lock acquisitions by one synchronous scrape. Taking the
+// thread-local slot at entry confines installation to that invocation; the
+// facade exposes only real locking, with the original guard and poison result.
+#[cfg(test)]
+thread_local! {
+    static CUMULATIVE_ACQUISITIONS: core::cell::Cell<Option<std::rc::Rc<core::cell::Cell<usize>>>> =
+        const { core::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn observe_next_cumulative_scrape() -> std::rc::Rc<core::cell::Cell<usize>> {
+    let acquisitions = std::rc::Rc::new(core::cell::Cell::new(0));
+    CUMULATIVE_ACQUISITIONS.with(|slot| slot.set(Some(acquisitions.clone())));
+    acquisitions
+}
+
+#[cfg(test)]
+struct ObservedCumulativeRegistry<'a> {
+    registry: &'a Registry,
+    acquisitions: Option<std::rc::Rc<core::cell::Cell<usize>>>,
+}
+
+#[cfg(test)]
+impl ObservedCumulativeRegistry<'_> {
+    fn lock(
+        &self,
+    ) -> std::sync::LockResult<std::sync::MutexGuard<'_, std::collections::BTreeMap<String, u64>>>
+    {
+        let guard = self.registry.lock();
+        if let Some(acquisitions) = &self.acquisitions {
+            acquisitions.set(acquisitions.get() + 1);
+        }
+        guard
+    }
+}
+
 /// A cumulative registry's rows with the total summed from the very rows
 /// rendered — one lock, one snapshot (decision 0047 §2), so a scrape's
 /// unlabeled total always equals the sum of its labeled samples, the
 /// overflow row's included, however many waits register meanwhile.
 fn cumulative_rows(registry: &Registry, name: &str) -> String {
+    #[cfg(test)]
+    let registry = ObservedCumulativeRegistry {
+        registry,
+        acquisitions: CUMULATIVE_ACQUISITIONS.with(|slot| slot.take()),
+    };
     let units = registry
         .lock()
         .expect("a readiness registry mutex cannot poison");
@@ -1928,40 +1969,21 @@ mod tests {
         for name in ["a", "b", "a", "c", "d", "_uncounted"] {
             raise_cumulative_with_cap(&registry, name, 3);
         }
-        let rendered = cumulative_rows(&registry, "t");
-        assert_eq!(
-            rendered,
-            "# TYPE t counter\nt 6\nt{inbox=\"\\n\"} 2\nt{inbox=\"a\"} 2\nt{inbox=\"b\"} 1\n\
-             t{inbox=\"c\"} 1\n"
-        );
+        let expected = "# TYPE t counter\nt 6\nt{inbox=\"\\n\"} 2\nt{inbox=\"a\"} 2\nt{inbox=\"b\"} 1\n\
+                        t{inbox=\"c\"} 1\n";
+        assert_eq!(cumulative_rows(&registry, "t"), expected);
 
-        // Idle output alone accepts split total/row locks. This structural
-        // guard pins the complete production function to one held snapshot;
-        // benign internal formatting changes require reviewing this fixture.
-        let normalized_source = include_str!("api.rs").replace("\r\n", "\n");
-        let production = normalized_source
-            .split_once("\n#[cfg(test)]\nmod tests {")
-            .expect("the inline tests follow production items")
-            .0;
-        let function_start = production
-            .find("\nfn cumulative_rows(registry: &Registry, name: &str) -> String {\n")
-            .expect("the production cumulative_rows definition is present")
-            + 1;
-        let after_function_start = &production[function_start..];
-        let function_end = after_function_start
-            .find("\nfn render_rows(\n")
-            .expect("render_rows immediately follows cumulative_rows");
-        let actual = after_function_start[..function_end].trim();
-        let expected = r#"fn cumulative_rows(registry: &Registry, name: &str) -> String {
-    let units = registry
-        .lock()
-        .expect("a readiness registry mutex cannot poison");
-    render_rows(&units, name, "counter", units.values().sum())
-}"#;
+        let acquisitions = observe_next_cumulative_scrape();
+        assert_eq!(cumulative_rows(&registry, "t"), expected);
         assert_eq!(
-            actual, expected,
+            acquisitions.get(),
+            1,
             "the cumulative total and rows must use one held registry snapshot"
         );
+
+        // The observer belongs only to the preceding scrape.
+        assert_eq!(cumulative_rows(&registry, "t"), expected);
+        assert_eq!(acquisitions.get(), 1);
     }
 
     /// The production cap is the documented constant.
