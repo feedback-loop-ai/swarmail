@@ -21,12 +21,14 @@ set -euo pipefail
 pin_dir="$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f Cargo.toml ] || { echo "delivery-proof-test: run from the candidate repository root" >&2; exit 1; }
 repo="$PWD"
+eval_dispatch_work=""
 
 eval_dispatch() {
-  local work evidence_dir candidate engine verify target_dir candidate_head
+  local evidence_dir candidate engine verify target_dir candidate_head patch_file
   mkdir -p "$repo/target/coverage"
-  work="$(mktemp -d "$repo/target/coverage/eval-dispatch-work.XXXXXX")"
-  trap 'rm -rf "$work"' EXIT
+  eval_dispatch_work="$(mktemp -d "$repo/target/coverage/eval-dispatch-work.XXXXXX")"
+  trap 'rm -rf -- "$eval_dispatch_work"' EXIT
+  local work="$eval_dispatch_work"
   evidence_dir="$repo/target/coverage/eval-dispatch-evidence"
   mkdir -p "$evidence_dir"
   engine="$repo/.forge/bin/brokkr"
@@ -43,7 +45,11 @@ eval_dispatch() {
 
   candidate="$work/candidate"
   git clone --quiet --local --no-hardlinks "$repo" "$candidate"
-  git diff --binary HEAD | git -C "$candidate" apply --binary
+  patch_file="$work/candidate.patch"
+  git diff --binary HEAD > "$patch_file"
+  if [ -s "$patch_file" ]; then
+    git -C "$candidate" apply --binary "$patch_file"
+  fi
   mkdir -p "$candidate/.forge/bin" "$candidate/.forge/results"
   cp "$engine" "$candidate/.forge/bin/brokkr"
   candidate_head="$(git -C "$candidate" rev-parse HEAD)"
@@ -227,7 +233,9 @@ candidate() { # $1: dir, $2: "covered" or "uncovered"
 }
 run_in() { # $1: dir, $2: output file, rest: command — prints the exit status
   local dir="$1" out="$2" status=0; shift 2
-  (cd "$dir" && "$@") >"$out" 2>&1 || status=$?
+  # Scratch fixtures must keep independent Cargo artifacts even when the
+  # enclosing verifier uses a candidate-specific custom target directory.
+  (cd "$dir" && unset CARGO_TARGET_DIR CARGO_LLVM_COV_TARGET_DIR && "$@") >"$out" 2>&1 || status=$?
   printf '%s' "$status"
 }
 integrity() { sha256sum --check --strict "$pin_dir/shims.sha256"; }
