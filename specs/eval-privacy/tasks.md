@@ -8,12 +8,20 @@ Unchecked work is downstream, not a claim all existing code is absent. The
 [spec](spec.md) owns every finding's disposition and unchanged contracts. No
 decision, dependency, root source, gate or recipe change is authorized.
 
+Return clarification — 2026-10-24: retained engine triage admits artifact
+permissions as a required repair. T5p–T5r below discharge AC21–AC23; inherited
+source edits are unverified, not task completion. The chief preserves those
+edits and commits only these three design artifacts. T4/macOS and T6/AC8 remain
+open until attributable actual proof, alongside all final-candidate gates/reviews.
+
 Tasks are ordered below; suffixes keep historical T4/T6/T8/T9 evidence references
 stable. Each paired proof needs candidate/platform/command/exit binding. Missing
 prerequisites or zero-test runs never check a task.
 
 - [ ] **T1 — Bind scope and evidence (AC9, AC11, AC19).** Verify packet hashes/
-  lengths, ancestry, clean starting source, OS and recorded engine identity;
+  lengths, ancestry, HEAD plus the five inherited source/test diffs, OS and
+  recorded engine identity; preserve inherited changes without claiming a clean
+  baseline;
   inventory every request/resolver caller and retain every finding disposition.
   **Test:** manifest equality, git ancestry/diff, tooling digest equality and
   unchanged proposed-0062/index status; record actual starting identities.
@@ -35,12 +43,15 @@ prerequisites or zero-test runs never check a task.
 - [ ] **T4a — Repair executed Cargo overflow proof (AC3, AC5, AC15).** Fix script
   newlines and literal path quoting. Emit valid >1 MiB JSON with an independent
   canary, followed by real Cargo records.
+  Collect the test CLI pipes concurrently with bounded capture and incremental
+  scans/counts across chunk boundaries; keep deadline, EOF joins and cleanup.
   **Test:** require launch, successful byte count, post-write completion, real
   offline/locked Cargo success and full drains under a bounded deadline/cleanup;
   oversized refusal is safe, short equivalent succeeds and no raw output reaches
   output/artifacts. Missing launch, short write, Cargo failure or missing completion
   fails. Bypassed overflow rejection fails the intended assertion; stopped drainage
-  fails completion/deadline.
+  fails completion/deadline. A deliberately echoed output mutation fails no-echo
+  or output-byte assertions rather than blocking the driver's own pipes.
 - [ ] **T5a — Repair portable canary and cfg (AC4–AC6, AC17).** Extend helper to
   count/complete >64 KiB split invalid-byte output per stream. Portable case uses
   unsafe_output and ordinary Fail/GaveUp with agent exit 0. Retain separate Linux
@@ -50,6 +61,31 @@ prerequisites or zero-test runs never check a task.
   both streams. Linux actually kills its owned server and yields HarnessError.
   All-target clippy uses -D warnings without suppression. T4 requires actual
   macOS execution, never inferred from Linux.
+- [ ] **T5p — Restore private artifact creation (AC21, AC22).** In the existing
+  runner create a fresh exclusive 0700 leaf and exclusive temporary files at no
+  broader than 0600, normalized through the descriptor before payload. Inspect
+  pinned tempfile APIs; preserve selected parents and safe contents.
+  **Test:** ordinary real failing CLI under subprocess umask 0002/0000 and 0777
+  produces all four artifacts including state.json, exact 0700/0600, actual
+  Fail/GaveUp/agent status 0/exit 1, null metadata and no canaries. Inspect actual
+  temporary modes before writes; existing parent modes stay unchanged. Restore
+  old writer narrowly: permissive-mask mode assertion fails; repair passes.
+- [ ] **T5q — Publish atomically without clobber (AC22, AC23).** Use the locked
+  tempfile no-replace publication operation, complete payload first, and cleanup
+  only owned names. Preserve artifact_write_failed and existing scoring/row/exit.
+  **Test:** existing leaf directory/file/live/dangling symlink refuses; temporary
+  collision and final file/directory/symlink/hard-link controls leave sentinel
+  bytes/modes untouched. Successful final payload is complete and 0600. Force
+  handled write/publication failures deterministically and inspect every retained
+  owned temporary/partial artifact for privacy. Real CLI artifact failure remains
+  value-free with established row/exit. No post-write chmod, global umask or sleeps.
+- [ ] **T5r — Bind artifact-platform evidence (AC13, AC21–AC23).** Record selected
+  primitive semantics, trusted ancestry, no-clobber behavior and private residual
+  limits; no whole-bundle/durability/confinement claim.
+  **Test:** Linux and actual macOS controls separately exercise private creation,
+  restrictive/permissive masks and conflict/failure behavior. Missing macOS
+  execution stays open with T4; source reading/cross-compilation is not a pass.
+  Continue independent Linux/evidence work while the platform receipt is absent.
 - [ ] **T5b — Complete adjacent worker controls (AC6, AC20).** Add independent
   wrong-label, exit-mismatch and CR-row cases in existing validation tests.
   **Test:** each refuses without echo; valid acceptance and existing wrong-task/
@@ -57,7 +93,7 @@ prerequisites or zero-test runs never check a task.
   group/drop behavior and explicitly retain its interruption debt.
 - [ ] **T4 — Complete supported-platform preparation proof (AC3, AC13, AC17).**
   Run system/rustup/toolchain, ordinary/custom-target, once-per-batch discovery
-  and repaired Cargo/default/canary controls on supported platforms.
+  and repaired Cargo/default/canary/artifact controls on supported platforms.
   **Test:** actual macOS eval all-target locked clippy/full tests and preparation
   receipts, separately from Linux. Leave T4 open until macOS genuinely executes;
   no cross-compile/assumed CI coverage closes it. Continue independent tasks while
@@ -73,7 +109,7 @@ prerequisites or zero-test runs never check a task.
 - [ ] **T6 — Bind or reproduce privacy discrimination (AC8, AC19).** Inspect old
   source/test regions and receipts; rerun missing inheritance, raw-publication
   and unsafe metadata/error controls. Reassess changed canary; keep AC15/16
-  controls separate.
+  controls and the AC21 permission control separate.
   **Test:** each mutation fails its intended assertion with nonzero counts, then
   restored code passes. Record command, source/test/diff, OS, exit and log; final
   diff has no mutation. Old blob names and empty logs alone are insufficient.

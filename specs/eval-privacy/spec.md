@@ -1,6 +1,6 @@
 # Eval privacy — Epic #192 / issue #196
 
-Date: 2026-10-24. Recorded-gap repair design for run
+Date: 2026-10-24. Returned artifact-privacy and recorded-gap repair design for run
 `continue-epic-192-issue-196-from-119060a2`; implementation, candidate verification
 and protected review remain downstream.
 
@@ -77,13 +77,15 @@ ingest extraction and both subscribe-before-scan sites remain unchanged.
 Continue SHIP-COMPLETE run `epic-192-issue-196-continuation--b77ca73c`, whose
 review transition was REVIEW-RESIDUAL-OK with a medium non-security residual.
 This design starts at 0f0613f8ee9cf050c7f59d7e42b79d6dbd992ace; historical
-reviewed candidate f6dbbb53/tree dd109014 is distinct. Triage classified this
-repair as engine: cross-platform execution and privacy proofs require the full
+reviewed candidate f6dbbb53/tree dd109014 is distinct. This is the historical
+first-design baseline; the return clarification below records the current baseline.
+Triage classified this repair as engine: cross-platform execution and privacy proofs require the full
 accepted [0058](../../docs/decisions/0058-codex-review-routing.md) high-risk route.
 
 Repair only the recorded Cargo producer/proof, OS-string worker transport,
 portable canary/cfg structure and lazy HOME defaults. Include closely coupled
-matrix rejection variants and evidence repair. This is restoration of the
+matrix rejection variants and evidence repair. The returned scope below also
+restores private artifact creation/publication. This is restoration of the
 existing lookup, preparation and publication contracts, not a new public
 contract or ruling. The unpublished Rust request type changes internally;
 JSON inputs/results, CLI syntax and accepted guarantees do not. No new decision
@@ -91,11 +93,10 @@ is declared, and no decision or index is edited or accepted. Proposed 0062
 remains proposed. Preserve the earlier dated design entries as provenance;
 this section and the revised acceptance criteria/plan/tasks govern this run.
 
-### Synthesis of the current positions
+### Synthesis of the first repair positions
 
-Both positions agree on the actual repairs; there is no substantive disagreement
-to manufacture. The following rulings resolve implementation and proof tradeoffs
-explicitly, including the cost of rejecting each cheaper or broader alternative.
+The first repair positions agreed on the actual repairs. The following rulings
+resolve implementation and proof tradeoffs explicitly, including the cost of rejecting each cheaper or broader alternative.
 
 | Question | Ruling and losing alternative's cost |
 |---|---|
@@ -133,6 +134,56 @@ Retained debt does not erase AC4/AC6 obligations or establish complete conforman
 Downstream reviewers must see each residual and rule under existing policy. No
 implementation-complete or supported-platform-complete claim is authorized while
 required repairs, gates, reviews or platform evidence remain outstanding.
+
+## Returned artifact-permission clarification — 2026-10-24
+
+This clarification follows the implement oversized return and retained engine
+triage, without resetting visits or changing route. It supersedes the earlier
+permission-scope exclusion and presumption that artifact modes were already
+private. Existing AC1–AC20 still apply; AC21–AC23 and the revised plan/tasks
+complete the bounded repair. The feature slug remains `eval-privacy`.
+
+Current baseline is b0ccd5a38f40d47b87817f9d09e7030b3fd953a9 plus five inherited,
+unverified modified files: evals/src/main.rs, evals/src/runner.rs,
+evals/tests/common/mod.rs, evals/tests/report.rs and evals/tests/runner.rs.
+Preserve those changes and assess their proofs; neither discard them nor infer
+execution from their presence. The chief reads them but commits only the three
+spec artifacts. The recovered packet's seven lengths/hashes were independently
+verified again for this synthesis, and every report was read in full.
+
+The implement return, as attributed by triage, reports a real trial under umask
+0002 producing a 0775 directory and four 0664 artifacts. The chief has not rerun
+that trial. Current write_artifacts source confirms create_dir_all, predictable
+std::fs::write temporaries and rename with umask-dependent modes. Issue #196
+explicitly requires 0600 artifacts. Private 0700 trial leaves and private
+before-payload temporaries implement that existing requirement; this is not a
+new environment, result, scoring or confinement contract. No decision is added,
+edited or accepted; 0062 remains a reference to an existing proposal. Any actual
+accepted-ruling conflict must return for an operator ruling, not be hidden here.
+
+### Synthesis of the returned positions
+
+Both positions adopt local repairs, exact modes and exclusive ownership. They
+prefer different publication primitives; robustness also identifies a concrete
+flood-driver gap. Rule as follows rather than averaging the suggestions.
+
+| Question | Ruling, rejected alternative and cost |
+|---|---|
+| Artifact owner and API | Adopt simplicity's existing runner owner and already locked tempfile dependency. Use exclusive private temporary creation and its persist_noclobber operation, after checking the pinned API's Linux/macOS behavior. Reject robustness's preferred hand-written hard-link/unlink sequence: it duplicates lifecycle/error ownership already available. Cost: reliance on tempfile's documented no-replace semantics and explicit handling of retained temporary files; unsupported filesystems refuse safely. Its guarantees must be demonstrated, not assumed from its name. |
+| Privacy and collisions | Adopt robustness's private-before-payload and no-clobber requirements, also endorsed by simplicity. Reject post-write chmod, check-then-rename, reuse of a trial leaf and final-only permission proof. Cost: exclusive creation and deterministic temporary/failure tests, and refusal of pre-existing trial identities instead of reuse. |
+| Atomicity and cleanup | Adopt both positions' complete-file atomic visibility. Reject direct writes to final names, recursive repairs and a whole-directory transaction/recovery protocol. Cost: private partial bundles/residual temporary names can remain after failure or kill; neither one final file nor a successful link proves the whole trial completed. No fsync/crash-durability promise. |
+| Namespace boundary | Adopt both positions' stable caller-selected root/ancestors and newly owned leaf model. Reject openat traversal, inode registries, filesystem confinement and same-user hostile namespace protection. Cost: symlinks in the caller-selected root are deliberate destinations; ancestor replacement, privileged readers and same-user children remain outside the guarantee. |
+| Flood-test collection | Rule for robustness's concurrent bounded collection of the test CLI's stdout/stderr. The inherited output_with_deadline waits for exit before reading, so a leak mutation can fill the driver's pipes and fail only by timeout. Retaining that simpler helper loses a discriminating no-echo failure. Cost: small test-local collectors that scan/count while draining, bounded capture and cleanup/join logic; no new production output framework. |
+| Native argv, HOME and portable canary | Adopt both positions' existing-owner native types, lazy defaults, portable ordinary Fail and separate Linux death proof. Reject codecs, inherited locator variables and fictional macOS death. Cost: local caller adaptations and actual supported-platform execution; Linux cannot close T4. |
+| Scope and evidence | Rule for simplicity against a universal audit/mutation framework; adopt robustness's separate source/test-bound controls and private creation proof. Cost to the narrow approach: more targeted tests; cost to broader hardening: lifecycle/category/HTTP/Python debts remain visible to fresh reviewers. |
+
+The returned permission finding is **repair now**, not retained LOW debt: it
+contradicts the explicit issue contract and touched privacy proof (AC21–AC23).
+The finding-disposition table above otherwise remains controlling. In particular,
+independent 4's separate safe-diagnostics cap discrepancy is still open debt;
+a filesystem-permission repair does not authorize a content-retention redesign.
+Historical security clean is not clearance for this changed boundary. AC8 binding,
+T4/macOS, final-candidate gates and all five high-risk reviews remain outstanding.
 
 ## Authority and scope
 
@@ -258,7 +309,7 @@ No child stdout/stderr, raw response body, library/OS error Display/Debug, panic
 payload, environment value, argv or executable/artifact/toolchain path enters
 a diagnostic. Apply this at validation, build/resolution, spawn/readiness,
 HTTP/MCP/admin, snapshot/scoring errors, server death, joins/panics, artifact
-write/rename, matrix launch/parse, and the CLI common failure path.
+creation/write/publication, matrix launch/parse, and the CLI common failure path.
 
 Use fallible Clap parsing and safe categories on failure; generated help/version
 remain. Install a value-free panic hook once at executable entry before parsing
@@ -291,8 +342,43 @@ claim bounds on child memory or a hostile child's independent resource use.
 
 Only safe content reaches final artifacts and temporary files. Preserve the
 validated secret-free fixture snapshot; do not rewrite mail, snapshot or scoring
-predicates. Per-file rename is not whole-bundle atomicity. SIGKILL/abort/unavailable
-stdout retain 0055's no-result limits; safe partial artifacts may remain.
+predicates. Per-file atomic publication is not whole-bundle atomicity.
+SIGKILL/abort/unavailable stdout retain 0055's no-result limits; private partial
+artifacts may remain.
+
+### Private artifact creation and publication
+
+Treat the caller-selected artifact root and stable ancestors as trusted local
+Unix destinations. Missing parents may be created; never chmod existing parents
+or historical artifacts. Exclusively create the final trial-id leaf, initially
+with no group/other permissions and normalized to exactly 0700 while empty.
+An existing leaf directory, file or live/dangling symlink refuses without reuse,
+following, permission repair or alternate trial identity.
+
+Inside that owned leaf create temporary files exclusively, initially at no more
+than 0600. Establish exact 0600 through the open descriptor before writing any
+payload; restrictive umasks may remove owner bits, never justify broad creation.
+Never mutate the process-global umask. Fully write each payload before publishing
+its absent final name without replacement. Existing files, directories, hard-link
+aliases and symlinks cannot be truncated, followed or overwritten. No racy
+existence-check plus ordinary rename fallback is allowed.
+
+Apply the same path to state.json when a snapshot exists, result.json,
+diagnostics.log and metadata.json. Preserve contents, schema, null executable
+metadata and diagnostic bounds. On handled creation, permission, write or
+publication failure, retain the existing value-free artifact_write_failed
+category and row/exit/scoring behavior; artifact failure does not rescore a trial.
+Remove only owned temporaries. Any retained temporary/partial file stays 0600
+under its 0700 leaf; never remove a conflicting entry to make a retry succeed.
+An empty object left by failed permission normalization may be more restrictive;
+it must contain no payload and grant no group/other access.
+
+The claim covers cooperative local Linux/macOS filesystems and stable selected
+ancestry. Unsupported no-replace operations refuse; no truncating fallback.
+No same-user adversary protection, hostile ancestor traversal defense, remote
+filesystem guarantee, child confinement, whole-bundle transaction or durability
+on crash is claimed. Temporary-name removal may fail after publication; a private
+residual is safer than broad cleanup or overwriting unrelated data.
 
 Privacy means no information flow from caller-only environment or discarded child
 output into harness publication. Explicit task/agent labels remain attribution,
@@ -422,3 +508,35 @@ deliberate child file writes, arbitrary hostile peers or filesystem/network acce
   still passes; wrong label, row/worker exit mismatch and a CR-containing row
   each refuse independently alongside existing wrong-task/extra/malformed cases.
   Rejected bytes are never echoed; result schema and protocol limits do not change.
+
+- **AC21 — Exact artifact modes under caller umask.** A real ordinary failed
+  trial with a snapshot runs in its own subprocess under permissive umask 0002
+  or 0000, and under a restrictive mask removing owner bits (for example 0777).
+  Use an already accessible selected parent so the restrictive case isolates
+  newly owned leaf/file creation. Require actual schema row, Fail/GaveUp, agent
+  status 0 and CLI exit 1, a fresh trial leaf and all four named files including
+  state.json. Assert exactly 0700 leaf and 0600 files, unchanged existing parent
+  modes, null executable metadata and absent independent output canaries in all
+  final/temporary files and CLI output. Do not mutate the runner's global umask.
+  The old writer must fail the permissive-mask mode assertion; repaired code
+  must pass both masks. Absence of artifacts or failure to launch cannot pass.
+- **AC22 — Privacy before payload and on failure.** Focused owning tests execute
+  the real directory/temporary creation path and inspect modes before any write.
+  Prove creation is restrictive, exact file mode is established through the
+  descriptor, and payload follows that step. Deterministically force handled
+  write and publication failures without sleeps. Every surviving owned artifact
+  or temporary remains 0600 under 0700, with unchanged safe content/category
+  behavior. Test the operation actually used, not an obsolete rename branch.
+  Final-file stat alone cannot satisfy this criterion; neither post-write chmod
+  nor a production test flag is permitted.
+- **AC23 — Exclusive ownership and atomic publication.** Existing trial leaf
+  directory/file/live or dangling symlink refuses safely. Exercise temporary
+  creation collisions and final file/directory/symlink/hard-link conflicts at
+  the owning helper boundary, with sentinel target bytes and modes unchanged.
+  A successful publication contains the complete expected payload at 0600;
+  the absent final name becomes visible only after the temporary is fully written.
+  Cleanup removes only owned names, preserving unrelated entries and private
+  residuals. Real CLI artifact-failure control preserves its established row,
+  exit and artifact_write_failed category without path/OS-error text. Linux and
+  actual macOS proofs separately establish selected primitive semantics; missing
+  macOS execution remains outstanding with T4.

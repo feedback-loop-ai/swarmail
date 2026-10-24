@@ -1,7 +1,8 @@
 # Implementation plan — eval privacy recorded-gap repair
 
 Date: 2026-10-24. Run: `continue-epic-192-issue-196-from-119060a2`.
-This plan implements the current clarification and AC1–AC20 in [spec.md](spec.md).
+This plan implements the returned artifact-permission clarification and
+AC1–AC23 in [spec.md](spec.md).
 It replaces the earlier verification-only plan: recovered review supplies concrete
 defects. Historical receipts remain historical; none is a new execution.
 
@@ -38,7 +39,8 @@ advancement. A draft is not implementation, gate, review or platform completion.
 Read all three intakes, both current positions, every recovered review, feature,
 issue and manifest; verified all seven hashes/lengths. Read the charter, decision
 index and applicable rulings, existing design and historical mutation record in
-`specs/agent-eval-harness/plan.md`. Starting source at 0f0613f confirms:
+`specs/agent-eval-harness/plan.md`. The first design inspected source at 0f0613f
+and established these historical defects (current inherited edits already attempt the first four, unverified):
 
 - `Cmd::Trial.argv`, `TrialRequest.argv`, `run_body` and `agent_argv` use String,
   although matrix/run_child carry OsString. Lookup-only tests miss worker Clap.
@@ -62,14 +64,23 @@ mutation framework. The spec's table owns every retained LOW/INFO disposition.
 |---|---|
 | specs/eval-privacy/spec.md, plan.md, tasks.md | Sole chief commit; preserve dated history, settle repairs and proofs. Later record truthful evidence disposition. |
 | evals/src/main.rs | Native trial argv, one conversion of textual matrix input, unchanged literal worker args; extend row tests. |
-| evals/src/runner.rs | Native TrialRequest/validation/run_body/agent_argv/resolver path; lazy HOME defaults. Preserve maps/readers/lifecycle. |
-| evals/tests/runner.rs | Producer/count/completion/short-control proof, portable artifact canary, Linux death proof, native argv and HOME regressions. |
+| evals/src/runner.rs | Native TrialRequest/validation/run_body/agent_argv/resolver path; lazy HOME defaults; private exclusive artifact creation/publication and focused owning tests. Preserve maps/readers/lifecycle. |
+| evals/tests/runner.rs | Producer/count/completion/short-control proof, portable artifact canary, Linux death proof, native argv and HOME regressions; subprocess umask/mode, conflict and artifact-failure controls; concurrent bounded test output collectors. |
 | evals/tests/report.rs | Real matrix CLI with non-UTF-8 PATH, markers/bytes/row/exit assertions; retain cardinality cases. |
 | evals/tests/common/mod.rs | Counted both-stream emission/completion, cfg-contained Linux probe/death; no production fault variables. |
 | Other existing eval request/resolver callers | Necessary type adaptations found with rg/compiler only, including proof/fixture callers if present. |
 | evals/README.md; specs/agent-eval-harness/plan.md | Downstream reconciliation of current evidence and historical claims only; preserve dated receipts/limits. No chief edit here. |
 | .forge/ evidence/results; .brokkr/state/ inputs | Uncommitted provenance/receipts; never fabricate or rewrite journal history. |
 | Tooling record, candidate-local .forge/bin/brokkr, pinned scripts/shims | Read-only proof inputs; never change gates to obtain a pass. |
+
+Returned research — 2026-10-24: HEAD is b0ccd5a plus the five inherited modified
+files listed in the spec. Full packet reread and seven manifest matches confirmed.
+Current write_artifacts still creates directories and writes predictable temporary
+paths without explicit private modes; rename preserves those modes. The returned
+0664/0775 CLI observation is attributed implementer evidence, not a chief rerun.
+Current output_with_deadline pipes both streams but waits before collecting them;
+repair that test-local helper for discriminating flood/mutation proof. Existing
+evals/Cargo.toml already locks tempfile 3.27.0; no new dependency is needed.
 
 No new tracked source file is planned. Extend existing helpers. Root protocols,
 Admin response allocation, matrix shutdown and general diagnostics stay excluded.
@@ -96,9 +107,60 @@ Checked complete writes of a known fixture >1 MiB, followed by a byte receipt,
 establish emission. Flush before completion. Missing markers, short writes or
 Cargo error fail. Test marker variables never become production map exceptions.
 
+## Private artifact implementation
+
+Keep write_artifacts as owner. Small private helpers beside it may separate leaf
+creation and one-file publication so tests can inspect the actual pre-payload
+operation. Avoid a filesystem trait/framework, new module or public option.
+
+1. Create missing selected-root parents as needed, without permission changes to
+   existing ancestors. Exclusively create the final trial leaf with Unix
+   DirBuilder mode 0700 and non-recursive leaf creation. Normalize only that
+   newly owned empty leaf to exact 0700 before any payload creation. A pre-existing
+   leaf of any kind refuses; no adopt/chmod/retry under another identity.
+2. Use the already locked tempfile builder/NamedTempFile operation inside that
+   private leaf, with restrictive exclusive creation. Verify its pinned Unix
+   implementation creates no broader than 0600; set exact 0600 through as_file's
+   descriptor before write_all. Temporary paths are owned by this operation,
+   not reused predictable names. No global umask changes or raw error formatting.
+3. Fully write one serialized payload, then use persist_noclobber for the final
+   name. Verify pinned Linux/macOS no-replace semantics, including any hard-link
+   implementation and temporary-unlink limitation. This is complete-file atomic
+   visibility, not guaranteed atomic removal of the temporary name or crash
+   durability. Never fall back to ordinary rename/truncation. Retain the existing
+   state/result/diagnostics/metadata order and safe content.
+4. Map all errors to existing artifact_write internally/artifact_write_failed
+   publication. Preserve run_trial's existing score/row/exit. Handle persistence
+   error ownership so only owned temporaries are dropped; any safe residual stays
+   private. A failed normalization may leave only a stricter empty object, never
+   payload or group/other access. Unsupported filesystems fail safely. Do not recursively remove a
+   directory, repair existing entries or add recovery/transaction behavior.
+
+Before implementation, confirm those tempfile guarantees from the already
+available locked source and test them on supported platforms. If the chosen API
+cannot meet AC22/23, report the exact obstacle rather than silently adopting
+weaker semantics or broadening scope. A local alternative no-replace primitive
+needs equally strong Linux/macOS proof; the default ruling remains tempfile.
+
+Proof uses an actual snapshot-producing ordinary failure in a subprocess with
+its own umask; pre-create an accessible selected root for the restrictive mask.
+Require four final files, exact modes and row/exit, plus canary and metadata
+checks. Source-order audit plus execution of the actual creation helper before
+write establishes no broad temporary window. Owning tests exercise collision and
+write/publication failure deterministically; if a seam is necessary, keep it
+cfg(test)-only at the owner with an installing test per 0020. Prefer existing
+inline eval unit tests, no production environment flag or global mutation.
+Temporary-name collision controls test the selected exclusive primitive without
+forcing predictable production names; final conflicts test no-clobber rather
+than an obsolete rename arm. Check unrelated sentinel bytes/modes and every
+owned residual. Record permission old-writer red/restored-green independently
+of AC8 inheritance/raw-publication/metadata-error controls.
+
 ## Implementation and proof sequence
 
-1. Bind clean source, packet and tool identities. Keep old reviews/gates separate;
+1. Bind HEAD plus inherited source-diff, packet and tool identities. Preserve the
+   five unverified modified files; do not misreport the baseline as clean.
+   Keep old reviews/gates separate;
    reproduce relevant failures with nonzero tests. Read every request/resolver
    caller before type changes; triage remains engine.
 2. Remove String transport in existing owners. Matrix CLI test uses a UTF-8 bare
@@ -117,7 +179,13 @@ Cargo error fail. Test marker variables never become production map exceptions.
    unchanged args. Require launch, count, post-write marker, real Cargo success
    and completed drains. Below-limit equivalent must succeed. Use a bounded
    test deadline and kill/reap cleanup: unbounded `.output()` is not a liveness
-   fence for blocking preparation. Scan outputs/artifacts for raw bytes. Removing
+   fence for blocking preparation. Collect the test CLI's two pipes concurrently
+   while waiting, with bounded
+   capture plus incremental byte/canary scanning and total counts; continue
+   discarding after the bound. Join collectors at EOF, retain a deadline and
+   kill/reap on expiry. A leak mutation must fail no-echo/byte assertions instead
+   of merely filling a driver's pipe. Keep scanner state across chunk boundaries.
+   Scan outputs/artifacts for raw bytes. Removing
    overflow rejection must fail the intended assertion; stopped drainage must
    fail completion/deadline, not hang the suite.
 5. Extend unsafe_output for >64 KiB each stream, split invalid bytes and canaries
@@ -128,12 +196,16 @@ Cargo error fail. Test marker variables never become production map exceptions.
    success of the runner's own server and HarnessError. Entire probe/oracle
    continuation lives in cfg blocks with complementary non-Linux expressions.
    No warning suppression or disabled portable coverage.
-6. Add independent wrong-label, exit-mismatch and CR row tests alongside existing
+6. Complete the private artifact implementation above and AC21–AC23 proofs,
+   including permissive/restrictive subprocess masks, initial modes, conflicts,
+   deterministic failure/residual modes and original-writer red/restored green.
+   Preserve private content and existing artifact-error scoring behavior.
+7. Add independent wrong-label, exit-mismatch and CR row tests alongside existing
    validation. Bind historical mutation regions/receipts or reproduce missing
    inheritance, raw-publication and unsafe metadata/error controls. Reassess the
    changed canary. Each mutation fails its intended assertion; restoration passes.
    Leave no mutation before final gates.
-7. Execute focused/full eval, root/pinned and available macOS proofs. Record Python
+8. Execute focused/full eval, root/pinned and available macOS proofs. Record Python
    availability for its existing readiness test. Resolve scoped regressions,
    reconcile evidence/docs and obtain five AC14 reviews on the changed verified
    candidate. Keep unrelated debt visible; engine owns review/shipping decisions.
@@ -176,7 +248,8 @@ worst verdict and security hold remain; historical clean reviews do not count.
 ## Supported-platform and CI handoff
 
 T4 stays open until actual macOS preparation with supported system/rustup/toolchain
-discovery, ordinary/custom targets and repaired controls. Actual macOS all-target
+discovery, ordinary/custom targets and repaired controls, including private artifact
+creation/publication under both umasks. Actual macOS all-target
 clippy/eval tests establish portable cfg/canary behavior. Linux or cross-compilation
 is not that evidence. Missing hardware is a gap, not a waived criterion; do not
 assume CI supplies it.
@@ -191,14 +264,19 @@ PR, merge, issue closure or model measurement.
 
 | Risk | Mitigation and accepted cost |
 |---|---|
+| Umask exposes temporary or final bytes. | Restrictive exclusive creation, descriptor-based exact modes before payload, private leaf and subprocess mask/pre-write tests; never post-write repair or global umask. |
+| Conflict clobbers unrelated data. | Exclusive leaf and temporary creation plus no-replace publication; directory/file/symlink/hard-link sentinels, owned cleanup only. |
+| Publication API overstates atomicity. | Inspect pinned tempfile and test Linux/macOS; complete-file visibility only, private residuals allowed, no whole-bundle or fsync claim. |
+| Restrictive mask removes owner access. | Normalize newly owned empty leaf/open descriptor before payload; accessible selected parent fixture, exact-mode proof under 0777. |
+| Hostile ancestry is mistaken for confinement. | State trusted stable caller-selected ancestry and unconfined/same-user limits; no recursive chmod or sandbox promise. |
 | Resolver succeeds but worker loses OS bytes. | Native types throughout; actual matrix/direct-trial CLI tests and byte markers; accept local caller adaptations. |
 | Spawn/parse failure masquerades as overflow proof. | Valid oversized/short records, counted writes, completion and real Cargo success; overflow mutation fails the intended assertion. |
-| Stopped drainage hangs the test. | Bounded external deadline, completion/join evidence and kill/reap cleanup; no sleep synchronization. |
+| Stopped drainage or a leak blocks test-driver pipes. | Concurrent bounded collectors with incremental scans/counts and EOF joins, deadline and kill/reap cleanup; timeout is failure, not overflow/no-echo proof. |
 | Marker overstates emitted bytes. | Count successful checked writes; flush before completion. Start marker or intended count alone is insufficient. |
 | MacOS asserts fictional death or loses coverage. | Portable ordinary-failure artifacts and cfg-contained Linux death control; actual macOS receipts, T4 open meanwhile. |
 | HOME repair changes policy/defaults. | Local lazy selector branches; explicit/missing/empty proofs and exact maps, no inheritance fallback. |
 | Changed tests inherit invalid mutation credit. | Bind exact regions/receipts or rerun missing controls; intended red/restored green, clean final diff. |
 | LOW debt disappears behind success claims. | Preserve every finding, including orphan cleanup and category/cap debt, for reviewers; return if inseparable. |
-| Fixtures leak output or widen maps. | Explicit test-owned files/wrappers, synthetic canaries, all-artifact scans and unchanged private modes/maps. |
+| Fixtures leak output or widen maps. | Explicit test-owned files/wrappers, synthetic canaries, all-artifact scans, restored exact private modes and unchanged maps. |
 | Wrong gate or reviewer identity supplies clearance. | Pinned identity plus actual dispatch; five separate 0058 roles, security hold and no invented fallback. |
 | Draft/Linux green becomes full completion. | Report drafted only here; required tasks/platform/CI evidence remain explicit. No decision acceptance or frozen weakening. |
