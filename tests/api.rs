@@ -4,7 +4,8 @@ mod common;
 
 use common::{
     SmtpConn, http_bytes, http_get_text, http_head_text, http_json, http_send_text,
-    http_send_text_with_headers, send_with_host, start, start_with, wait_for_metric_row,
+    http_send_text_with_headers, parse_prometheus, send_with_host, start, start_with,
+    wait_for_metric_row,
 };
 
 /// Seed one fixture mail into `inbox` (the default extractor path).
@@ -2769,101 +2770,7 @@ async fn a_portless_host_is_port_80_on_the_real_router() {
     assert_eq!(st, 200, "an explicit :80 Origin passes: {body}");
 }
 
-/// One Prometheus sample: metric name, label pairs, value.
-type Sample = (String, Vec<(String, String)>, f64);
-
-fn is_metric_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == ':')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
-}
-
-fn is_label_name(name: &str) -> bool {
-    !name.contains(':') && is_metric_name(name)
-}
-
-/// A strict reader for the Prometheus text-format subset `/metrics` emits,
-/// written from the format's grammar and independent of the server's
-/// encoder: `# TYPE <name> counter|gauge` lines; samples of a metric name,
-/// an optional `{label="value",…}` set whose values admit only the `\\`,
-/// `\"` and `\n` escapes and no raw LF, one space, a numeric value and an
-/// LF. Anything else fails the whole scrape, as a strict scraper would.
-fn parse_prometheus(text: &str) -> Result<Vec<Sample>, String> {
-    let mut samples = Vec::new();
-    let mut rest = text;
-    while !rest.is_empty() {
-        if let Some(comment) = rest.strip_prefix('#') {
-            let (line, tail) = comment.split_once('\n').ok_or("a comment without LF")?;
-            let words: Vec<&str> = line.split(' ').collect();
-            let typed = matches!(
-                words.as_slice(),
-                ["", "TYPE", name, "counter" | "gauge"] if is_metric_name(name)
-            );
-            if !typed {
-                return Err(format!("a malformed comment line: #{line:?}"));
-            }
-            rest = tail;
-            continue;
-        }
-        let end = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
-            .unwrap_or(rest.len());
-        let (name, tail) = rest.split_at(end);
-        if !is_metric_name(name) {
-            return Err(format!("a malformed metric name at {rest:?}"));
-        }
-        rest = tail;
-        let mut labels = Vec::new();
-        if let Some(tail) = rest.strip_prefix('{') {
-            rest = tail;
-            loop {
-                let (label, tail) = rest.split_once('=').ok_or("a label without '='")?;
-                if !is_label_name(label) {
-                    return Err(format!("a malformed label name {label:?}"));
-                }
-                let mut chars = tail
-                    .strip_prefix('"')
-                    .ok_or("an unquoted label value")?
-                    .chars();
-                let mut value = String::new();
-                loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') => match chars.next() {
-                            Some('\\') => value.push('\\'),
-                            Some('"') => value.push('"'),
-                            Some('n') => value.push('\n'),
-                            other => return Err(format!("an illegal escape \\{other:?}")),
-                        },
-                        Some('\n') => return Err("a raw LF inside a label value".into()),
-                        Some(c) => value.push(c),
-                        None => return Err("an unterminated label value".into()),
-                    }
-                }
-                rest = chars.as_str();
-                labels.push((label.to_string(), value));
-                if let Some(tail) = rest.strip_prefix(',') {
-                    rest = tail;
-                    continue;
-                }
-                rest = rest.strip_prefix('}').ok_or("a label set without '}'")?;
-                break;
-            }
-        }
-        let tail = rest.strip_prefix(' ').ok_or("no space before the value")?;
-        let (value, tail) = tail.split_once('\n').ok_or("a sample without LF")?;
-        let value: f64 = value
-            .parse()
-            .map_err(|_| format!("a non-numeric value {value:?}"))?;
-        samples.push((name.to_string(), labels, value));
-        rest = tail;
-    }
-    Ok(samples)
-}
-
-/// The reader itself is pinned before it is trusted (AC3): a known-valid
+/// The reader itself is pinned before it is trusted: a known-valid
 /// independent sample parses to its exact decoded labels, and the
 /// spellings Rust's `Debug` produced — `\t`, `\u{…}` — a raw LF inside a
 /// quoted label, an unterminated quote and malformed sample or value
@@ -2885,6 +2792,31 @@ fn the_strict_prometheus_reader_accepts_the_format_and_nothing_else() {
             ),
         ])
     );
+    let controls = "# TYPE m gauge\nm{inbox=\"prefix\r\0\"} 1\n";
+    assert_eq!(
+        parse_prometheus(controls),
+        Ok(vec![(
+            "m".to_string(),
+            vec![("inbox".to_string(), "prefix\r\0".to_string())],
+            1.0,
+        )])
+    );
+    let escaped_distinction = "m{inbox=\"literal\\\\n\"} 1\nm{inbox=\"line\\n\"} 2\n";
+    let distinct = parse_prometheus(escaped_distinction).expect("both legal spellings parse");
+    assert_eq!(distinct[0].1[0].1.as_bytes(), b"literal\\n");
+    assert_eq!(distinct[1].1[0].1.as_bytes(), b"line\n");
+    assert_ne!(distinct[0].1[0].1.as_bytes(), distinct[1].1[0].1.as_bytes());
+
+    for value in [
+        "\r\0", "\u{80}", "\u{9f}", "\u{061c}", "\u{200e}", "\u{200f}", "\u{202a}", "\u{202b}",
+        "\u{202c}", "\u{202d}", "\u{202e}", "\u{2066}", "\u{2067}", "\u{2068}", "\u{2069}",
+    ] {
+        let wire = format!("m{{inbox=\"{value}\"}} 1\n");
+        let parsed = parse_prometheus(&wire).expect("literal non-escape bytes parse");
+        assert_eq!(parsed.len(), 1, "one complete sample: {wire:?}");
+        assert_eq!(parsed[0].1[0].1.as_bytes(), value.as_bytes(), "{wire:?}");
+    }
+
     for invalid in [
         "m{inbox=\"tab\\tname\"} 1\n", // Rust's \t
         "m{inbox=\"\\u{7f}\"} 1\n",    // Rust's \u{…}
@@ -2907,6 +2839,180 @@ fn the_strict_prometheus_reader_accepts_the_format_and_nothing_else() {
             "{invalid:?} must reject"
         );
     }
+}
+
+#[tokio::test]
+async fn inbox_refusal_response_bytes_and_await_absence_are_preserved() {
+    let srv = start().await;
+    let cases = [
+        (
+            "control",
+            "/api/v1/inboxes/issue202-control-%0D%00/await?timeout_ms=60000",
+            vec![
+                "issue202-control-%0D%00".to_string(),
+                "issue202-control-\r\0".to_string(),
+            ],
+            br#"{"error":"inbox must not contain control characters"}"#.as_slice(),
+        ),
+        (
+            "invalid",
+            "/api/v1/inboxes/issue202-invalid-%FF/await?timeout_ms=60000",
+            vec![
+                "issue202-invalid-%FF".to_string(),
+                "issue202-invalid-�".to_string(),
+            ],
+            b"Invalid URL: Invalid UTF-8 in `inbox`".as_slice(),
+        ),
+        (
+            "mixed",
+            "/api/v1/inboxes/issue202-mixed-%20%FF/await?timeout_ms=60000",
+            vec![
+                "issue202-mixed-%20%FF".to_string(),
+                "issue202-mixed- �".to_string(),
+            ],
+            b"Invalid URL: Invalid UTF-8 in `inbox`".as_slice(),
+        ),
+    ];
+    for (case, path, forbidden, expected) in cases {
+        let (status, body) = http_bytes(srv.http_addr, path).await;
+        assert_eq!(status, 400, "{case}: {body:?}");
+        assert_eq!(body, expected, "{case} refusal bytes changed");
+
+        let (metrics_status, text) = http_get_text(srv.http_addr, "/metrics").await;
+        assert_eq!(metrics_status, 200);
+        let samples = parse_prometheus(&text).unwrap_or_else(|error| panic!("{error}:\n{text}"));
+        for identity in forbidden {
+            for family in ["swarmail_awaits_active", "swarmail_awaits_registered_total"] {
+                assert!(
+                    !samples.iter().any(|(name, labels, _)| {
+                        name == family && labels == &[("inbox".to_string(), identity.clone())]
+                    }),
+                    "{case} refusal registered {family} for {identity:?}:\n{text}"
+                );
+            }
+        }
+    }
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn decoded_request_and_await_metrics_share_the_same_identity_and_lifecycle() {
+    use tokio::task::JoinSet;
+
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let inboxes = [
+        ("issue202 space", "issue202%20space", "space@issue202.test"),
+        (
+            "issue202-café",
+            "issue202-caf%C3%A9",
+            "unicode@issue202.test",
+        ),
+    ];
+    let mut waits = JoinSet::new();
+    for (_, encoded, _) in inboxes {
+        let path = format!("/api/v1/inboxes/{encoded}/await?timeout_ms=60000");
+        waits.spawn(async move { http_json(addr, "GET", &path, None).await });
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let parked = loop {
+        let (status, text) = http_get_text(addr, "/metrics").await;
+        assert_eq!(status, 200);
+        let samples = parse_prometheus(&text).unwrap_or_else(|error| panic!("{error}:\n{text}"));
+        let both_active = inboxes.iter().all(|(decoded, _, _)| {
+            samples.iter().any(|(name, labels, value)| {
+                name == "swarmail_awaits_active"
+                    && labels == &[("inbox".to_string(), (*decoded).to_string())]
+                    && *value == 1.0
+            })
+        });
+        if both_active {
+            break samples;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the two awaits did not park:\n{text}"
+        );
+        tokio::task::yield_now().await;
+    };
+
+    let families = [
+        "swarmail_http_requests_in_flight",
+        "swarmail_awaits_active",
+        "swarmail_awaits_registered_total",
+    ];
+    for (decoded, encoded, _) in inboxes {
+        for family in families {
+            let exact: Vec<_> = parked
+                .iter()
+                .filter(|(name, labels, _)| {
+                    name == family && labels == &[("inbox".to_string(), decoded.to_string())]
+                })
+                .collect();
+            assert_eq!(
+                exact.len(),
+                1,
+                "{family} must have one decoded row for {decoded:?}: {parked:?}"
+            );
+            assert_eq!(exact[0].2, 1.0, "{family} row for {decoded:?}: {parked:?}");
+            assert!(
+                !parked.iter().any(|(name, labels, _)| {
+                    name == family && labels == &[("inbox".to_string(), encoded.to_string())]
+                }),
+                "{family} exposed the encoded alias {encoded:?}: {parked:?}"
+            );
+        }
+    }
+
+    for (_, encoded, to) in inboxes {
+        seed(addr, encoded, to).await;
+    }
+    for _ in 0..inboxes.len() {
+        let joined = tokio::time::timeout(std::time::Duration::from_secs(10), waits.join_next())
+            .await
+            .expect("a seeded await did not finish")
+            .expect("the JoinSet lost an await task")
+            .expect("an await client task panicked");
+        let (status, body) = joined;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["matched"], 1, "{body}");
+    }
+
+    let (status, text) = http_get_text(addr, "/metrics").await;
+    assert_eq!(status, 200);
+    let completed = parse_prometheus(&text).unwrap_or_else(|error| panic!("{error}:\n{text}"));
+    for (decoded, encoded, _) in inboxes {
+        for family in ["swarmail_http_requests_in_flight", "swarmail_awaits_active"] {
+            for alias in [decoded, encoded] {
+                assert!(
+                    !completed.iter().any(|(name, labels, _)| {
+                        name == family && labels == &[("inbox".to_string(), alias.to_string())]
+                    }),
+                    "{family} retained {alias:?} after the waits joined:\n{text}"
+                );
+            }
+        }
+        let registered: Vec<_> = completed
+            .iter()
+            .filter(|(name, labels, _)| {
+                name == "swarmail_awaits_registered_total"
+                    && labels == &[("inbox".to_string(), decoded.to_string())]
+            })
+            .collect();
+        assert_eq!(
+            registered.len(),
+            1,
+            "registration row for {decoded:?}: {text}"
+        );
+        assert_eq!(
+            registered[0].2, 1.0,
+            "registration row for {decoded:?}: {text}"
+        );
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(15), srv.stop())
+        .await
+        .expect("the test server did not stop after both awaits joined");
 }
 
 /// Issue #88's label defect on the wire (AC3): a wait parked on a

@@ -121,6 +121,13 @@ and the invalid examples in AC3. Park the encoded-name wait and poll its
 decoded awaits row, then satisfy/join it. The request registry intentionally
 uses raw path segments, so it need not have the same decoded key.
 
+**Accepted amendment — 2026-10-24:** [0065](../../docs/decisions/0065-decoded-inbox-metrics.md)
+supersedes only that raw-key rule for inbox-scoped HTTP request labels. Select
+the segment first, decode once with strict UTF-8, use its decoded label on
+success and the complete original segment on invalid UTF-8. Keep route,
+refusal/extraction, await, middleware, total, family, escaping, cap and overflow
+semantics unchanged. Runtime implementation and tests remain outstanding.
+
 AC4–AC8 bind through start_with/run_on to 0.0.0.0:0; dial 127.0.0.1 at the
 reported port. Assert the configured/listening address is nonloopback, not
 merely a manually disabled guard. Use fresh server state for chaos probes,

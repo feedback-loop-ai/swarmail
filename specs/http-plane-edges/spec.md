@@ -154,6 +154,15 @@ Keep synchronous accept-after-store, subscribe-before-scan, oldest-only
 pruning and ingest extraction. Keep the lock sidecar, webhook plane, stdio
 bridge, extraction fixes, 5000 ms SQLite busy bound and staged compat kind.
 Do not normalize raw-path versus decoded-inbox metric keys in this change.
+
+**Accepted amendment — 2026-10-24:** [0065](../../docs/decisions/0065-decoded-inbox-metrics.md)
+supersedes that sentence only for inbox-scoped HTTP request metric identity.
+Select the inbox segment before percent-decoding it exactly once with strict
+UTF-8; use the decoded label on success and the complete original segment on
+invalid UTF-8. Route recognition, refusals, await identity and all other metric
+semantics remain unchanged. This records the accepted contract, not runtime
+implementation or test completion.
+
 No authentication, CORS policy, proxy allowlist, port-forward bypass, new
 production module or metric framework. This design seat writes exactly four
 artifacts and does not implement, push, merge or close issues.

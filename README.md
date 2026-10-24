@@ -149,6 +149,16 @@ per-inbox readiness rows (`{inbox="…"}`) escape label values exactly as
 the Prometheus text format defines — `\\`, `\"` and `\n` — and pass every
 other character, tab and Unicode included, literally.
 
+Inbox-scoped HTTP request rows use the same selected, once-decoded inbox
+identity as the await rows ([decision 0065](docs/decisions/0065-decoded-inbox-metrics.md)).
+For example, requests to `/api/v1/inboxes/name%20with%20spaces/await` use
+`inbox="name with spaces"` in all three families; encoded aliases coalesce
+under that selector. The segment is selected before decoding, so `%2F` is
+label data. Strict UTF-8 decoding falls back to the complete original segment
+for invalid bytes. A refused request can therefore have request activity
+without an await registration or stored mail, and `%FF` can share a metric
+label with a valid literal-percent `%25FF` name.
+
 `swarmail_awaits_registered_total` keeps one row per awaited inbox name for
 the first 4,096 names. A name first seen after that has no row of its own:
 its waits are counted, exactly, in the overflow sample
