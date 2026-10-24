@@ -159,7 +159,12 @@ The stdout Pending acknowledgement seam now observes actual pipe pressure via
 poll, rather than merely an unscheduled writer thread. It does not change the
 production writer, five-second bound, unread-pipe test or signal assertions.
 This prevents the larger v2 representation from acknowledging a transient
-scheduling gap as the blocked write the regression needs to exercise.
+scheduling gap as the blocked write the regression needs to exercise. The
+cleanup bypass seam also waits for the existing hold-entry acknowledgement
+before dropping its waiter. Otherwise a faster cached finalizer could abort
+that waiter before it initialized its cleanup owner. The negative control
+still returns with live owned work and fails the same completion predicate;
+production cleanup registration, waits and budgets are unchanged.
 
 New composition tests cover both signals after real child retention and before
 commitment: full stdout accounting, unchanged child bytes, exit 2 and absent
