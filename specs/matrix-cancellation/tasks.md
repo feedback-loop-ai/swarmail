@@ -1,11 +1,15 @@
 # Ordered residual tasks — matrix cancellation
 
-Baseline inspected: `29a661590fdca79ab77b6ab5f2f872ed1a98bb4e`, including
-`137e7e9`, merged main and accepted 0058. These tasks supersede the previous
-continuation list as current obligations; they do not retroactively mark its
-unchecked T1–T10 complete. Historical receipts remain dated in spec.md.
-Every box stays open until actual revision/command/exit evidence earns it.
-A documentation-only chief check does not execute future missing falsifiers.
+Current baseline: `20c20b0d2a37e87d1e7ebc0a9281573155888a74`, including
+residual implementation e95f3d9 and accepted 0058. Retain the existing T1–T8
+checks as historical implementation evidence recorded in
+`.forge/implement-194/t1-map-d9c1d0eb.md`; they do not certify this successor.
+Their original baseline was 29a6615. Do not implement those controls again.
+Current work is R1–R4 followed by still-open T9/T10, in that order; every new
+box needs actual revision/command/exit evidence. A chief design check cannot
+earn implementation, gate or review completion.
+
+## Retained implementation record (T1–T8)
 
 - [x] T1 — Bind the residual and baseline before source edits; map all four retained member findings to AC1–AC10 and exact tests. Preserve the unavailable seq 714 binding and supersede the old T6 output-coverage claim with a dated evidence entry. **Test:** digest equals current tooling.json; ordinary PID-only CLI regression and both named actual-Pending/bypass tests in plan.md pass on recorded revision; distinguish absent controls from existing passing ones.
 - [x] T2 — Add actual pending-signal admission/commit and early-fallback controls. **Test:** cancellation before issuance launches nothing; already-issued child stays retained/cancelled/reaped; signal remains pending for production between-row/pre-enqueue checks; no suffix launch, immutable prefix, fresh fallback ID, unknown statuses and event-bracketed active elapsed lifetime; retained pre-handler/simultaneous/final-row controls pass (AC3–AC4).
@@ -15,5 +19,13 @@ A documentation-only chief check does not execute future missing falsifiers.
 - [x] T6 — Make guard completion verdicts explicit at their current owners. **Test:** ordinary positive tests fail on forced rescue, unreaped direct child or unresolved survivor; an isolated intentionally failing probe exits nonzero and its parent asserts the result; readiness failure, assertion unwind, stalled completion, bypass and leader-first teardown remain bounded by plan's 30/15/5-second phases, with no double panic or unrelated/recycled signalling. Bypass first proves product failure, then expected rescue (AC9).
 - [x] T7 — Reconcile accounting assertions and documentation locally. **Test:** real CLI TERM/INT cases assert byte-identical prefix, exact ready identities, ordered unique rows, truthful active error, zero-time refusal suffix and no launch marker; real report verifies both denominators, attempts/errors and normal 2/1/0 aggregation; remove tautological self-check and update README only for demonstrated divergence (AC1, AC3, AC6).
 - [x] T8 — Run independent evals verification and all new control-isolation probes, making runtime edits only after a recorded residual-specific failure. **Test:** targeted new falsifiers and retained fences, full report/runner suites, full locked evals suite including oracle/null/isolation, fmt and locked all-target clippy pass; ordinary dev/release binaries ignore every test control. Record exact names/commands/revision/exits, retain failures and rerun affected proof after repairs (AC1–AC9).
+
+## Ordered work after the return
+
+- [ ] R1 — Bind the returned evidence and reproduce the stale selector oracle before source changes. **Test:** on the recorded candidate, the named shared-selector command in plan.md fails specifically on Sol versus Luna; all four selected offices resolve to accepted codex-fast-implementer Luna/xhigh and the dedicated regression remains authoritative (AC11). Preserve failures, current engine hash and the unavailable exact seq-714 aggregate binding.
+- [ ] R2 — Correct the existing four-case test loop in tests/delivery_recipes.rs, pinning exact office identity, singleton Luna and xhigh with class diagnostics. **Test:** shared-selector and dedicated Luna/no-fallback tests, then the full delivery_recipes suite pass; retain assertions rejecting wrong office/provider/model/effort, fallback chains, case/default drift and changed one/two/five reviewer mappings (AC11). No runtime, recipe or policy change to make the oracle pass.
+- [ ] R3 — Investigate and locally repair the observed cleanup-hold-entry timeout in runner_probe_failure_teardown_handles_owner_and_leader_exit. **Test:** preserve 0b522d9's failed full-suite and isolated receipts and later passing rerun; establish actual Pending/task-entry/bypass/leader-exit ordering with acknowledged events, keep the negative cleanup predicate and checked-finish failure before identity-safe rescue, then pass the isolated regression and full locked evals suite with a deterministic ordering control (AC9, AC12). No timeout extension, sleep-as-sync, disabled/weakened assertion, speculative production redesign or retry-only closure.
+- [ ] R4 — Reproduce the retained residual controls and standalone verification on the repaired candidate. **Test:** plan.md's exact control map, both actual-Pending/bypass fences, ordinary PID-only TERM/INT regression, acknowledged post-budget mixed signals, no-row/spawn/pressure/EOF/error/guard tests, byte-prefix/cardinality/status/report checks, full locked evals with oracle/null/isolation, fmt, locked all-target clippy and ordinary dev/release control isolation all pass (AC1–AC9). Explicitly bound synthetic Full and forced-expiry claims; preserve failures and repair runtime only for a concrete recorded residual-specific failure.
+
 - [ ] T9 — Execute the full authoritative house gates on the actual candidate with matching absolute engine; leave any failed/unexecuted proof open. **Test:** clean current-candidate receipts for every docs/house-rules.md gate, exact coverage/selftest, publish/keyless-seal proofs, pinned shim integrity, fail-closed native-tls absence, design selftest and delivery boundary proof; independent hermetic verification uses pinned scripts and installs nothing. CI-only duties remain assigned to CI (AC8, AC10).
 - [ ] T10 — Present the verified candidate to the accepted 0058 high-risk route and resolve findings through the engine's bounded policy. **Test:** five separate current-candidate results — Astra correctness, official DeepSeek Flash security, Sonnet 5.5 tests, Astra guarantees, independent Fable 5.1 — with protected review/worst verdict/security hold; no DeepSeek Pro, unauthorized fallback, stale receipt, push, merge or issue close. Recheck affected proofs after any repair; only the engine rules advancement (AC10).
