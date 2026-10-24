@@ -22,9 +22,9 @@ capacity too small for the planted alternatives. Failed/parked deliveries,
 including decoys, remain infrastructure. No persistence, webhook durability,
 hostile MIME or thousand-session throughput claim follows from these evals.
 
-0062 amends 0055 §§1/2/9 and requires operator acceptance before conflicting
+0071 amends 0055 §§1/2/9 and requires operator acceptance before conflicting
 scoring/prompts/version changes. The index repair and baseline probes are
-compatible work. Accepted records stay unchanged. Add the proposed 0062 index
+compatible work. Accepted records stay unchanged. Add the proposed 0071 index
 row in the next seat, outside the exact four-file design commit. Do not
 suppress the resulting documentation-gate gap.
 
@@ -72,8 +72,8 @@ No unresolved research choice blocks this design.
 | evals/tests/boundary.rs | Retain dependency/publication proof; extend only for a concrete uncovered boundary |
 | evals/README.md, specs/agent-eval-harness/spec.md | Dated active v2 scoring and migration after acceptance |
 | specs/agent-eval-harness/plan.md and tasks.md | Reconcile obsolete active instructions, preserving historical entries |
-| docs/decisions/README.md | First compatible follow-up: one proposed 0062 index row |
-| specs/eval-trap-scoring/{spec,plan,tasks}.md and docs/decisions/0062-eval-trap-scoring.md | This chief's only committed artifacts |
+| docs/decisions/README.md | First compatible follow-up: one proposed 0071 index row |
+| specs/eval-trap-scoring/{spec,plan,tasks}.md and docs/decisions/0071-eval-trap-scoring.md | This chief's only committed artifacts |
 
 ## Data model
 
@@ -184,7 +184,7 @@ Executed cargo test --locked --test store_contract_docs against these draft
 artifacts: exit 101, 17 passed and 2 failed. Both
 every_decision_file_has_exactly_one_resolving_index_row and
 the_inventory_refuses_missing_dangling_duplicate_and_malformed_entries
-reported the added 0062-eval-trap-scoring.md has no index row. This is the
+reported the added 0071-eval-trap-scoring.md has no index row. This is the
 known T1 integration obligation under the chief's exact four-file limit,
 not a clean full-gate result. Artifact nonemptiness, required headings,
 checkbox presence, proposed status and relative links were checked locally.

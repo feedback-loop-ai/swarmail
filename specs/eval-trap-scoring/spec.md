@@ -5,7 +5,7 @@
 - Scope: Epic #192, issue #198; triage classification: engine.
 - Baseline: `dc1822a45e4d2ae8326b44baf22818187a8320e9`.
 
-Decision: 0062 — [Named eval traps invalidate a trial](../../docs/decisions/0062-eval-trap-scoring.md), proposed.
+Decision: 0071 — [Named eval traps invalidate a trial](../../docs/decisions/0071-eval-trap-scoring.md), proposed.
 
 ## Feature and rationale
 
@@ -29,11 +29,11 @@ evidence. No external issue body or newly executed reproduction is claimed.
 
 Accepted [0055](../../docs/decisions/0055-agent-eval-harness.md) §2 gives
 satisfied goals precedence, except isolation, and §§1/9 define v1 contracts.
-0062 proposes an amendment. Per
+0071 proposes an amendment. Per
 [0045](../../docs/decisions/0045-delivery-repairs.md) §8 and the
 [charter](../../docs/house-rules.md), incompatible scorer, prompt and version
 changes wait for explicit operator acceptance. Design and compatible proof
-scaffolding may proceed. Neither this draft nor green tests accepts 0062.
+scaffolding may proceed. Neither this draft nor green tests accepts 0071.
 
 Preserve 0001 synchronous accept/store, 0002 subscribe-before-check,
 0003 oldest-only pruning, 0004 AUTH inbox separation and 0005 ingest
@@ -147,7 +147,7 @@ metadata is not a substitute for required version boundaries.
 
 ## Acceptance Criteria
 
-- **AC1 — Authority:** this design's 0062 is proposed. Incompatible work has
+- **AC1 — Authority:** this design's 0071 is proposed. Incompatible work has
   explicit operator acceptance before proceeding. Accepted records remain
   unchanged. The subsequent index row resolves once and matches actual
   decision status, proved by tests/store_contract_docs.rs.
@@ -199,7 +199,7 @@ metadata is not a substitute for required version boundaries.
 
 ## Design handoff boundary
 
-This chief commits exactly spec.md, plan.md, tasks.md and 0062. The explicit
+This chief commits exactly spec.md, plan.md, tasks.md and 0071. The explicit
 four-file limit excludes docs/decisions/README.md although root inventory
 tests require its row. The next implementation/integration seat must add that
 row as its first compatible documentation change before any full gate success.

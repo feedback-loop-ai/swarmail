@@ -1,4 +1,4 @@
-# 0062 — Named eval traps invalidate a trial
+# 0071 — Named eval traps invalidate a trial
 
 - **Status:** proposed — awaiting the operator.
 - **Date:** 2026-10-24.
@@ -6,7 +6,7 @@
 - **Specification:** [Eval trap scoring](../../specs/eval-trap-scoring/spec.md).
 - **Amends upon acceptance:** [0055](0055-agent-eval-harness.md) §§1, 2 and 9 (catalogue/snapshot/result revision and named trap precedence).
 - **Preserves:** 0001–0005, closed failure taxonomy, isolation, runner lifecycle, root dependency/coverage policies and protected review.
-- **Number:** 0062 follows the highest existing record 0061; earlier reserved gaps are not reused.
+- **Number:** The operator assigned 0071 to issue #198, preserving issue #200 at 0063 and assigning issue #181 to 0070. Other reserved numbers remain unchanged.
 
 ## Context
 
