@@ -1,4 +1,4 @@
-# 0063 — Refuse positional REST seed and chaos bodies before mutation
+# 0070 — Refuse positional REST seed and chaos bodies before mutation
 
 - **Status:** proposed — awaiting the operator; not implementation authority.
 - **Date:** 2026-10-24.
