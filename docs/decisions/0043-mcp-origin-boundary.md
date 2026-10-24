@@ -60,6 +60,17 @@ and Debug-encoded labels; the scrape's own request makes issue #88's literal
    Do not narrow the inbox domain. Preserve metric names, cap, `_uncounted`,
    family lifetimes and existing raw-path versus decoded-inbox keys.
 
+## Accepted amendment marker — 2026-10-24
+
+[0065](0065-decoded-inbox-metrics.md) amends only §6's preservation of
+raw-path versus decoded-inbox keys for the HTTP request metric: select the
+existing inbox segment first, percent-decode it exactly once with strict
+UTF-8, use the decoded label when valid, and retain the entire original
+segment when it is invalid UTF-8. Existing route recognition, refusal and
+await behavior, middleware ownership, totals, metric families and escaping,
+cap and overflow semantics otherwise stand. This records the accepted
+contract; it does not claim runtime implementation or tests.
+
 ## Alternatives and costs
 
 Adopt robustness's always-active Origin leg off loopback; reject simplicity's

@@ -68,11 +68,12 @@ them. What may land while a decision is still proposed is stated in
 | [0061](0061-compat-webhook-proof.md) | Compat refusal recognition and extraction repair boundaries | proposed — awaiting the operator | (#170/#190, lane D) |
 | [0062](0062-rpc-edge-contracts.md) | RPC edge contracts and the supplied ID ruling | proposed — awaiting the operator | (Epic #192, issue #180) |
 | [0064](0064-coverage-reservation-tooling.md) | Direct exclusive coverage reservation with checked tooling | proposed — awaiting the operator | (Epic #192 issue #174) |
+| [0065](0065-decoded-inbox-metrics.md) | Decoded inbox identity for HTTP request metrics (amends 0043 §6 narrowly) | accepted (operator, 2026-10-24) | (Epic #192, issue #202) |
 | [0072](0072-delivery-proof-residuals.md) | Distinguish delivery proof completion from documented limits | proposed — awaiting the operator | (NEXT-171, epic #192) |
 | [0073](0073-matrix-cancellation.md) | Matrix cancellation stops admission and waits for owned cleanup with complete schema-1 accounting | proposed — awaiting the operator | (Epic #192, issue #194) |
 | [0074](0074-strict-native-queries.md) | Refuse unsupported queries before native operations | proposed — awaiting the operator | (Epic #192, issue #197) |
-
 | [0075](0075-eval-privacy.md) | Closed eval environments and safe diagnostics (renumbered from 0062) | proposed — awaiting the operator | (Epic #192, issue #196 on #194) |
+
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

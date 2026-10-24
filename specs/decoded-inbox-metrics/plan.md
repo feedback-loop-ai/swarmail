@@ -1,8 +1,8 @@
 # Implementation plan: decoded inbox metrics
 
-Implements [spec.md](spec.md); proposed
-[0062](../../docs/decisions/0062-decoded-inbox-metrics.md) must receive
-operator acceptance before changing the conflicting runtime behavior.
+Implements [spec.md](spec.md); the operator accepted the exact contract in
+[0065](../../docs/decisions/0065-decoded-inbox-metrics.md) on 2026-10-24.
+Runtime code and behavioral proofs remain outstanding.
 The checkout has no `.specify/templates/plan-template.md`; the required
 plan sections are supplied here directly.
 
@@ -33,14 +33,15 @@ historical-documentation changes belong to the later handoff.
 |---|---|
 | `src/api.rs` | Decode inside the existing helper's matching arm; correct its comment and extend its existing inline fixtures. |
 | `tests/api.rs` | Two parked awaits, full parsed scrape, completion and malformed-UTF-8 wire compatibility proofs; reuse existing parser/text HTTP helpers. |
-| `docs/decisions/0062-decoded-inbox-metrics.md` | Proposed scoped amendment; only the operator changes acceptance status. |
+| `docs/decisions/0065-decoded-inbox-metrics.md` | Accepted scoped amendment; runtime behavior and proofs remain outstanding. |
 | `specs/decoded-inbox-metrics/{spec,plan,tasks}.md` | Owning design and later evidence/dated clarifications. |
-| `docs/decisions/README.md` | Later index entry with the record's actual status, never assumed acceptance. |
-| `specs/http-plane-edges/{spec,plan}.md` | Later dated pointer explicitly scoping supersession of raw-key preservation after acceptance; preserve historical text. |
+| `docs/decisions/README.md` | Index the accepted 0065 record with its matching date and scope. |
+| `specs/http-plane-edges/{spec,plan}.md` | Dated accepted-0065 pointers scope supersession of raw-key preservation; preserve historical text. |
 | `README.md` | Later metric-selector migration note and invalid-UTF-8 accounting limitation beside metrics documentation. |
 
 No production changes to guard callers, registries, admission, store, SMTP,
-MCP or renderer. No changes to accepted 0043, gates or bundle policy.
+MCP or renderer. The acceptance handoff adds only a dated marker to 0043 §6;
+gates and bundle policy remain unchanged.
 
 ## Research and resolved choices
 
@@ -113,24 +114,24 @@ record the passing assertion before gates.
 
 ## Quickstart and validation
 
-After operator acceptance, run `cargo test --locked --test api` and
+With operator acceptance of 0065 recorded, run `cargo test --locked --test api` and
 `cargo test --locked --lib api` for wire/helper/lifecycle evidence. Execute
 every gate in [house rules](../../docs/house-rules.md#gates--part-of-every-change),
 using its pinned tools and fail-closed native-tls proof, offline with no
 installs. Keep 100% lines/branches/functions exact. CI-only proofs remain
 explicitly CI-owned; unavailable gates must be reported, never called green.
 
-For this draft, verify links, declared proposed status, exact staged paths
-and clean artifacts, commit unsigned, then run
-`bash bundles/self/scripts/design-check.sh check .`. The last commit must
-remain the four-file design commit; the sequence owns its final verdict.
-Write the phase result separately in the run-local engine result path.
+The design draft was committed as `29f8737`, and its deterministic check
+passed before this implementation phase. This phase records the supplied
+acceptance and scoped historical pointers; it does not complete runtime tasks.
+Run the full house-rule gates after these documentation edits and preserve the
+original design validation receipt below.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 |---|---|
-| Accepted contract silently overridden. | Proposed 0062 and explicit operator-acceptance prerequisite before runtime work; scoped later documentation pointers. |
+| Accepted contract silently overridden. | Accepted 0065 and dated scope pointers constrain runtime work; the runtime implementation and proof remain separate. |
 | Existing consumers poll encoded labels. | Document selector migration and intentional coalescing; no duplicate compatibility rows. |
 | Decode changes path structure or inbox identity. | Segment selection first, strict UTF-8, one pass; slash/percent/plus/padding/Unicode fixtures. |
 | Malformed bytes become a valid lossy name. | Complete raw fallback, unchanged extractor refusal and no-registration wire proof. Accept the documented literal-percent collision. |
@@ -157,3 +158,38 @@ The retry with `.forge/bin/brokkr compile --bundle bundles/self` passed
 (policy sweep: 0 unruled). Its SHA-256 matches the recorded pinned digest
 `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`.
 Run-local logs are under `.brokkr/state/design/chief-checks/`.
+
+
+## Acceptance-recording implementation receipt — 2026-10-24
+
+The task-supplied operator chat ruling (“accept that”) is recorded as accepted
+0065 and indexed with the same status/date. The former 0062 numbering was
+corrected while preserving reservations #180=0062, #181=0063 and #174=0064.
+The five ruling clauses and the original design validation receipt above were
+compared byte-for-byte and are unchanged. Relative links in the eight changed
+documents resolve; 0043 §6 and both HTTP-plane historical bodies remain intact
+apart from their dated scope markers. No runtime or test source changed.
+
+Targeted proof: `CARGO_NET_OFFLINE=true cargo test --locked --test
+store_contract_docs` passed (19 passed, 0 failed), including the decision-file
+inventory, matching status and missing/dangling/duplicate entry controls.
+
+The complete local house-rule inventory passed on this documentation state:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --locked`
+- `.forge/bin/brokkr compile --bundle bundles/self` (pinned binary SHA-256
+  `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`)
+- `bash scripts/coverage-gate.sh`: exact 100% — 12,953/12,953 lines,
+  762/762 branches and 1,437/1,437 functions
+- `bash scripts/coverage-gate.sh selftest`
+- `bash scripts/publish-guard-test.sh` (51 mutation-red/restored-green receipts)
+- `bash scripts/seal-branch-test.sh` (7 cases, 10 mutants)
+- `cargo deny check licenses`
+- fail-closed `cargo tree -i native-tls` absence proof
+
+The CI-owned chart/history, Docker, network advisory, tag release-rate and
+real port-80 bridge proofs were not run here; house rules assign them to CI.
+This receipt records documentation acceptance only. Runtime behavior, API
+regression work and independent review remain for the subsequent engine phases.

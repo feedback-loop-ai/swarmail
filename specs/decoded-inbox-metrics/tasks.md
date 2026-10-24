@@ -1,8 +1,9 @@
 # Ordered tasks: decoded inbox metrics
 
-These are implementation obligations, not completed design-seat tests.
+These tasks track the runtime feature. The 0065 acceptance and its index entry
+are recorded, but they do not complete any runtime proof.
 
-- [ ] T1 — Index proposed 0062 in `docs/decisions/README.md` and obtain the operator's explicit acceptance before conflicting runtime work. Proof: `cargo test --locked --test store_contract_docs` clears the two missing-index failures recorded in the plan, with recorded operator acceptance and matching ADR/index status; the design verdict alone is insufficient (AC6).
+- [x] T1 — Index accepted 0065 in `docs/decisions/README.md` and record its operator acceptance before conflicting runtime work. Proof: `cargo test --locked --test store_contract_docs` clears the two missing-index failures recorded in the plan, with recorded operator acceptance and matching ADR/index status; the design verdict alone is insufficient (AC6).
 - [ ] T2 — Capture the unchanged invalid-UTF-8 HTTP refusal using raw/text response handling and add its compatibility assertion with exclusive raw/lossy-alias labels. Proof: the new refusal test passes before changing `inbox_of_path`, pins the observed status/body and proves no await registration (AC4).
 - [ ] T3 — Audit process-global registry headroom and exclusive fixture names; add the two concurrent parked-await regression in `tests/api.rs` with structured cleanup and bounded requests. Proof: the old helper fails the explicit decoded HTTP-row assertion after both active awaits are observed, while the full scrape parses (AC2). Use a child server only if headroom cannot be established.
 - [ ] T4 — Decode the already selected inbox segment once in `src/api.rs`, with strict UTF-8 and whole-raw-segment fallback; update the helper comment and inline fixtures. Proof: exact AC1 matrix passes for ordinary/unrelated/empty-component paths, spaces, Unicode/padding, slash data, double encoding, literal plus/percent, malformed escapes and mixed invalid UTF-8; the AC2 regression turns green.

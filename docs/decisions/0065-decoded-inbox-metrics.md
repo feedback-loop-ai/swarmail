@@ -1,14 +1,18 @@
-# 0062 — Decoded inbox metric identity
+# 0065 — Decoded inbox metric identity
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-24).
 - **Date:** 2026-10-24
 - **Issues:** Epic #192, issue #202.
 - **Amends:** [0043 §6](0043-mcp-origin-boundary.md), only its preservation of raw-path versus decoded-inbox metric keys.
 - **Preserves:** [0047 §2](0047-storage-rpc.md) cap/overflow, [0046](0046-smtp-pop3-edges.md) verbatim admitted identities, and frozen guarantees 0001–0003 plus ingest extraction under 0005.
 - **Spec:** [Decoded inbox metrics](../../specs/decoded-inbox-metrics/spec.md).
 
-0062 is the next sequential number after the highest record present, 0061;
-earlier numbering gaps are left untouched.
+The draft was initially numbered 0062 on the mistaken assumption that it was
+the next sequential record after 0061. The operator-confirmed reservations are
+#180 = 0062, #181 = 0063, and #174 = 0064, so this amendment is numbered 0065.
+The operator accepted the exact ruling in chat on 2026-10-24 (“accept that”).
+This provenance records the task-supplied statement; no independent transcript
+inspection is claimed.
 
 ## Context
 
@@ -19,6 +23,10 @@ rows. 0043 intentionally preserved this distinction, so changing it needs
 an explicit amendment rather than silently treating it as a settled bug fix.
 
 ## Proposed ruling
+
+The five clauses below reproduce the original proposal verbatim. Their heading
+and clause 5's pending-acceptance language describe the draft before the
+operator accepted this exact ruling on 2026-10-24, as recorded below.
 
 1. Keep existing path selection and middleware scope. Percent-decode only
    the selected inbox segment, exactly once, with strict UTF-8 conversion.
@@ -63,6 +71,11 @@ analysis does not justify storage, SMTP, webhook, chaos or TLS changes.
 
 ## Proof and handoff
 
+The following handoff is preserved from the original proposal and describes
+its design-phase status before acceptance. The acceptance and documentation
+record below update that status; runtime code, regression tests and live
+refusal behavior are not implemented or proved here.
+
 The linked spec's AC1–AC6 are normative for implementation: exact helper
 fixtures; two real concurrent encoded space/Unicode awaits; one parsed
 scrape with all three decoded rows and no encoded aliases; successful seed/
@@ -75,3 +88,14 @@ This design commits only the three owning spec files and this proposal.
 A later documentation task indexes the record with its actual status and,
 after acceptance, adds scoped historical pointers and selector guidance.
 No acceptance, implementation or live refusal reproduction is claimed here.
+
+## Acceptance recorded — 2026-10-24
+
+The operator accepted this exact five-clause ruling in chat (“accept that”).
+This record assigns the amendment 0065 because #180=0062, #181=0063 and
+#174=0064 are reserved. It amends only the raw-path versus decoded-inbox
+request metric identity in 0043 §6. Select the inbox segment first, percent-
+decode it exactly once with strict UTF-8, use the decoded label on success and
+the whole original segment on invalid UTF-8. Route recognition, refusal and
+await semantics, and all other metric behavior remain unchanged. Acceptance
+records this contract only; runtime behavior and tests remain outstanding.

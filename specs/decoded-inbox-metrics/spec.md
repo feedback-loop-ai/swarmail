@@ -2,7 +2,11 @@
 
 Epic #192 / issue #202. Design draft, 2026-10-24.
 
-Decision: 0062 — [Decoded inbox metric identity](../../docs/decisions/0062-decoded-inbox-metrics.md), proposed.
+Decision: 0065 — [Decoded inbox metric identity](../../docs/decisions/0065-decoded-inbox-metrics.md), accepted (operator, 2026-10-24).
+
+The following design-status language records the position before that
+acceptance. The operator supplied the chat ruling “accept that” on 2026-10-24;
+this record does not claim runtime implementation or test completion.
 
 ## Feature and rationale
 
@@ -12,6 +16,8 @@ use the same decoded inbox identity as `swarmail_awaits_active` and
 counts the HTTP request under `issue202%20space` while the await families
 count `issue202 space`. Unicode names have the same mismatch. A caller
 observing one inbox must not need different label selectors for these rows.
+
+### Draft-time authority and supersession request (historical)
 
 Triage's `engine` classification stands: accepted
 [0043 §6](../../docs/decisions/0043-mcp-origin-boundary.md) explicitly
@@ -26,6 +32,11 @@ in `specs/http-plane-edges/spec.md` scope boundaries and its plan's AC3
 proof. Their historical text and accepted 0043 remain intact in this design
 commit; later documentation must explicitly mark the scoped supersession.
 Until acceptance, 0043 remains authoritative.
+
+**Acceptance recorded — 2026-10-24:** The operator accepted this ruling as
+0065. This satisfies the draft-time prerequisite above; dated supersession
+pointers now appear in 0043 §6 and the HTTP-plane spec and plan. Runtime
+behavior and its regression proofs remain outstanding.
 
 ## Requirements
 
@@ -122,9 +133,10 @@ this spec/ADR until that tracked handoff lands.
    storage, subscribe-before-scan, oldest-only pruning and ingest extraction.
    No new dependency, allowlist widening, runtime configuration or metric
    family is introduced.
-6. **AC6 — Authority and delivery.** Runtime change waits for recorded
-   operator acceptance of 0062. Implementation supplies targeted tests and
-   red-before/green-after evidence, reconciles dependent documentation, and
-   leaves the entire [house-rules gate inventory](../../docs/house-rules.md#gates--part-of-every-change)
+6. **AC6 — Authority and delivery.** Operator acceptance of 0065 is recorded
+   (2026-10-24); runtime implementation still requires targeted tests and
+   red-before/green-after evidence, remaining selector documentation, and the
+   entire [house-rules gate inventory](../../docs/house-rules.md#gates--part-of-every-change)
    clean, with exact coverage and its selftest. CI-only proofs remain CI's
-   responsibility. Design drafting is not a claim of implementation success.
+   responsibility. This acceptance record is not a claim of implementation
+   success.
