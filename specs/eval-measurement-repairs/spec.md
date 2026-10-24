@@ -4,7 +4,7 @@
 - Baseline: signed `4dac267`, following signed `fd66988`, on `epic164-harness`.
 - Scope: the three resume findings only; implementation remains pending.
 - Existing authority: [0055](../../docs/decisions/0055-agent-eval-harness.md)
-  (still proposed) and the [original specification](../agent-eval-harness/spec.md).
+  (accepted by the operator on 2026-10-19) and the [original specification](../agent-eval-harness/spec.md).
 
 ## Feature and rationale
 
@@ -17,7 +17,7 @@ harness error. Separately, repair the standalone crate's formatting failure.
 This is enforcement of existing contracts, not a semantic change to a frozen
 guarantee, public schema or ruling. 0055 sections 2, 3 and 9 already require
 infrastructure precedence, snapshot-based scoring and complete matrix rows.
-No new decision or amendment to proposed 0055 is required. This specification
+No new decision or amendment to accepted 0055 is required. This specification
 clarifies those requirements without accepting that decision on the operator's
 behalf. The code's current behavior is the defect, not a competing contract.
 
@@ -134,10 +134,9 @@ monitor, retries, scheduler, new schema, dependency or fault-injection API.
 - **AC8 — Scope and delivery:** Implementation changes stay under `evals/`;
   no dependency/lockfile changes and no edits under root `src/`, `scripts/`,
   `bundles/` or `.github/`. This design commit contains exactly this spec,
-  plan and tasks. Later commits are signed, append to `4dac267`, cite #148,
-  and leave `epic164-harness` checked out clean. Never push, open a PR,
-  merge or mutate issues. An unavailable signer blocks committing; an
-  unavailable gate blocks claiming implementation completion.
+  plan and tasks. Later commits append to `4dac267`, cite #148 and follow
+  accepted 0056's unsigned-commit policy. Never push, merge or mutate issues.
+  An unavailable gate blocks claiming implementation completion.
 
 ## Framing provenance
 

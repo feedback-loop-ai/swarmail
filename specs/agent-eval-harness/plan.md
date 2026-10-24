@@ -1,8 +1,8 @@
 # Implementation plan — agent eval harness
 
-Implements [spec.md](spec.md) and proposed
-[0055](../../docs/decisions/0055-agent-eval-harness.md). This is the design
-handoff, not a receipt for implemented functionality.
+Implements [spec.md](spec.md) under accepted
+[0055](../../docs/decisions/0055-agent-eval-harness.md). This is the original
+design handoff, not a receipt for implemented functionality.
 
 ## Active amendment — 2026-10-25, accepted 0071
 
@@ -44,11 +44,12 @@ live here rather than creating additional design-commit files.
 - The standalone ruling explicitly excludes evals from root measurement.
   No coverage attributes, denominator filtering or gate edits. Root exact
   100/100/100 remains literal missed == 0.
-- Until the follow-up after #120 batch 5, **evals is proven by its own suite
-  run by the implement seat and reproduced by reviewers**. Root green does
-  not prove evals. Keep this in delivery notes and proposed 0055.
-- This design commit contains exactly these three spec files and proposed
-  0055. No decision-index or historical decision edits belong to this run.
+- The accepted standalone boundary means root workspace green does not prove
+  evals. CI and pinned verify explicitly run the standalone eval suite, using
+  the absolute `swarmail` executable from the successful root test build.
+- The original design handoff contained these three spec files. Operator
+  acceptance of 0055 was recorded on 2026-10-19; its decision body remains
+  historical authority and was not rewritten by this implementation.
 
 ## Research and resolved questions
 
@@ -212,16 +213,16 @@ Do not override TMPDIR. Verify also runs the existing fail-closed native-tls
 absence proof and tooling-pinned `brokkr compile --bundle bundles/self`.
 This seat must record any sandbox gate failure honestly; it must not install
 tools, change gates or call an incomplete proof green. If cargo itself is
-refused, stop and preserve `.brokkr/state/epic164-harness.patch`; if signing
-is impossible, stop rather than committing unsigned. Design validation
-checks required headings, nonempty artifacts, task checkboxes, proposed
-status and relative links; it cannot prove the future implementation.
+refused, stop and preserve `.brokkr/state/epic164-harness.patch`. Commits are
+unsigned under accepted 0056; never push. Design validation checks required
+headings, nonempty artifacts, task checkboxes, status and relative links; it
+cannot prove the future implementation.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 |---|---|
-| Green root tests conceal broken evals. | Explicit separate suite, implement receipt and reviewer reproduction; follow-up CI/verify wiring after #120 batch 5. |
+| Green root tests conceal broken evals. | CI and pinned verify run the standalone suite against the absolute candidate binary produced by root tests. |
 | Lock resolution adds an uncached/transitive package. | Offline generation, exact direct pins and full name/version/source comparison to root lock; refuse rather than widen allowlist. |
 | Oracle only proves an internal fast path. | Execute both built-ins through the identical external child seam and real CLI. |
 | Fixture leaks answers or accepts arbitrary success. | Separate bearer admin listener, redacted types, token/identity validation and negative wire controls. Unconfined same-user access remains possible and disclosed. |

@@ -1404,3 +1404,47 @@ fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
     );
     fixture.assert_cleaned();
 }
+#[test]
+fn standalone_eval_gates_are_in_verify_ci_and_the_single_inventory() {
+    let seat = read_text("bundles/self/scripts/verify-seat.sh");
+    for required in [
+        "cargo fmt --manifest-path evals/Cargo.toml --all -- --check",
+        "cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings",
+        "cargo test --manifest-path evals/Cargo.toml --locked",
+        "run_root_test_and_capture()",
+        "compiler-artifact",
+        r#"profile.get("test") is False"#,
+        "delivery-proof-test.sh",
+    ] {
+        assert!(seat.contains(required), "pinned verify lacks {required:?}");
+    }
+    assert!(seat.contains("export CARGO_NET_OFFLINE=true"));
+    assert!(seat.contains("SWARMAIL_BIN=$candidate_bin_q cargo test"));
+
+    let inventory = read_text("docs/house-rules.md");
+    for required in [
+        "cargo fmt --manifest-path evals/Cargo.toml --all -- --check",
+        "cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings",
+        r#"SWARMAIL_BIN="$candidate_bin" cargo test --manifest-path evals/Cargo.toml --locked"#,
+        "outside the root\ncoverage denominator",
+    ] {
+        assert!(
+            inventory.contains(required),
+            "house-rule inventory lacks {required:?}"
+        );
+    }
+
+    let ci = read_text(".github/workflows/ci.yml");
+    for required in [
+        "cargo fmt --manifest-path evals/Cargo.toml --all -- --check",
+        "cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings",
+        "cargo test --manifest-path evals/Cargo.toml --locked",
+        "cargo test --workspace --locked --message-format=json-render-diagnostics",
+        r#"profile.get("test") is False"#,
+        "timeout-minutes: 30",
+    ] {
+        assert!(ci.contains(required), "CI lacks {required:?}");
+    }
+    assert!(ci.contains(r#"SWARMAIL_BIN="$candidate_bin" cargo test"#));
+}
+

@@ -43,8 +43,8 @@ Every unchecked item is required work; this design does not claim it ran.
   missed counts zero, and diff/lockfile inspection shows no forbidden root or
   dependency edits. Record a blocker rather than asserting unavailable proof.
 - [ ] **T8 — Land the repair without rewriting history (AC8).**
-  Append signed implementation commit(s) on epic164-harness with plain subjects
-  citing #148; never push or perform GitHub actions. **Proof:** signature
-  verification, ancestry retaining fd66988 and 4dac267, intended-path-only
-  commit inspection and clean tracked tree on the same branch. Signing failure
-  blocks landing; keep all run-local positions, results and logs uncommitted.
+  Append unsigned implementation commit(s) on epic164-harness with plain
+  subjects citing #148 under accepted 0056; never push or perform GitHub
+  actions. **Proof:** ancestry retaining fd66988 and 4dac267, intended-path-
+  only commit inspection and clean tracked tree on the same branch. Keep all
+  run-local positions, results and logs uncommitted.

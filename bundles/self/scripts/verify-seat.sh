@@ -23,7 +23,10 @@ done < "$prompt_file"
 mkdir -p "$(dirname "$result_path")"
 output="$(dirname "$result_path")/verify-output.$$"
 notes="$(dirname "$result_path")/verify-notes.$$"
-trap 'rm -f "$output" "$notes" "$result_path.tmp.$$"' EXIT
+artifact_log="$(dirname "$result_path")/verify-artifacts.$$"
+metadata_file="$(dirname "$result_path")/verify-metadata.$$"
+bin_file="$(dirname "$result_path")/verify-swarmail-bin.$$"
+trap 'rm -f "$output" "$notes" "$artifact_log" "$metadata_file" "$bin_file" "$result_path.tmp.$$"' EXIT
 : > "$notes"
 # Valid JSON with exactly result/inputs/notes, rendered by jq (no lossy
 # escaping) into a sibling temporary file and renamed into place, so a
@@ -107,7 +110,79 @@ pin_q="$(printf '%q' "$pin_dir")"
 # directory; nothing under the candidate's scripts/ or tools/ executes.
 run "cargo fmt --all -- --check"  'cargo fmt --all -- --check'
 run "cargo clippy -D warnings"    'cargo clippy --workspace --all-targets --locked -- -D warnings'
-run "cargo test"                  'cargo test --workspace --locked'
+run_root_test_and_capture() {
+  if (set -o pipefail; cargo test --workspace --locked --message-format=json-render-diagnostics 2>&1 | tee "$artifact_log" | awk 'substr($0, 1, 1) != "{"') > "$output" 2>&1; then
+    :
+  else
+    status=$?
+    printf 'cargo test --workspace --locked failed; captured output follows verbatim:\n' >> "$notes"
+    cat "$artifact_log" >> "$notes"
+    write_result fail; exit 0
+  fi
+  if ! cargo metadata --locked --format-version 1 --no-deps > "$metadata_file" 2> "$output"; then
+    printf 'cargo metadata could not identify the root package; output follows verbatim:\n' >> "$notes"
+    cat "$output" >> "$notes"
+    write_result fail; exit 0
+  fi
+  if ! python3 - "$artifact_log" "$metadata_file" "$(pwd -P)/Cargo.toml" > "$bin_file" 2> "$output" <<'SELECTOR'
+import json
+import os
+import sys
+
+artifact_path, metadata_path, manifest = sys.argv[1:]
+manifest = os.path.realpath(manifest)
+with open(metadata_path, encoding="utf-8") as handle:
+    metadata = json.load(handle)
+packages = [p for p in metadata["packages"] if os.path.realpath(p["manifest_path"]) == manifest]
+if len(packages) != 1:
+    raise SystemExit(f"expected one canonical root package for {manifest}, found {len(packages)}")
+package_id = packages[0]["id"]
+executables = set()
+with open(artifact_path, encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        target = message.get("target", {})
+        kind = target.get("kind", [])
+        profile = message.get("profile", {})
+        executable = message.get("executable")
+        if (message.get("reason") == "compiler-artifact"
+                and message.get("package_id") == package_id
+                and target.get("name") == "swarmail"
+                and isinstance(kind, list) and "bin" in kind
+                and profile.get("test") is False
+                and isinstance(executable, str)):
+            if not os.path.isabs(executable):
+                raise SystemExit(f"Cargo reported a non-absolute Swarmail executable: {executable!r}")
+            path = os.path.realpath(executable)
+            if not os.path.isfile(path) or not os.access(path, os.X_OK):
+                raise SystemExit(f"Cargo reported a missing or non-executable Swarmail artifact: {path}")
+            executables.add(path)
+if len(executables) != 1:
+    raise SystemExit(f"expected one distinct root swarmail executable, found {sorted(executables)!r}")
+print(next(iter(executables)))
+SELECTOR
+  then
+    printf 'root test artifact selection refused; output follows verbatim:\n' >> "$notes"
+    cat "$output" >> "$notes"
+    write_result fail; exit 0
+  fi
+  candidate_bin="$(cat "$bin_file")"
+  if [ -z "$candidate_bin" ] || [ ! -f "$candidate_bin" ] || [ ! -x "$candidate_bin" ]; then
+    fail_now "root test artifact selection returned no executable Swarmail path"
+  fi
+  printf 'candidate root-test artifact: %s\n' "$candidate_bin" >> "$notes"
+}
+run_root_test_and_capture
+run "eval cargo fmt --manifest-path evals/Cargo.toml --all -- --check" \
+  'cargo fmt --manifest-path evals/Cargo.toml --all -- --check'
+run "eval cargo clippy --all-targets --locked -- -D warnings" \
+  'cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings'
+printf -v candidate_bin_q '%q' "$candidate_bin"
+run "eval cargo test --locked with root test artifact" \
+  "SWARMAIL_BIN=$candidate_bin_q cargo test --manifest-path evals/Cargo.toml --locked"
 run "brokkr compile --bundle bundles/self"   "$launched_q compile --bundle bundles/self"
 # A compile that exits 0 but sweeps a rule as reading past a hard rule's facts
 # (#125's residual warning) is not a clean constitution: refuse it by name.
@@ -133,5 +208,5 @@ if [ "$integrity_failed" -ne 0 ]; then
   printf 'every gate passed, but wrapper integrity failed (above): not verified\n' >> "$notes"
   write_result fail; exit 0
 fi
-printf 'all gates passed from the pinned bundle (fmt, clippy, test, bundle, exact 100/100/100 coverage + selftest, design-check selftest, delivery tamper-boundary proof, publish-guard proof, seal-branch keyless proof, deny licenses, no native-tls fail-closed) with network denied; brokkr %s\n' "$launched_digest" > "$notes"
+printf 'all gates passed from the pinned bundle (root fmt/clippy/test, eval fmt/clippy/full suite against %s, bundle, exact 100/100/100 coverage + selftest, design-check selftest, delivery tamper-boundary proof, publish-guard proof, seal-branch keyless proof, deny licenses, no native-tls fail-closed) with network denied; brokkr %s\n' "$candidate_bin" "$launched_digest" > "$notes"
 write_result pass

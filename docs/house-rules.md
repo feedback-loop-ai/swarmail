@@ -48,6 +48,9 @@ Leave all of these clean before reporting success:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo fmt --manifest-path evals/Cargo.toml --all -- --check
+cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings
+SWARMAIL_BIN="$candidate_bin" cargo test --manifest-path evals/Cargo.toml --locked
 brokkr compile --bundle bundles/self   # the brokkr pinned in bundles/self/tooling.json
 bash scripts/coverage-gate.sh          # the floor may rise, never fall
 bash scripts/coverage-gate.sh selftest # the gate's verdict is untrusted without it
@@ -55,6 +58,15 @@ bash scripts/publish-guard-test.sh     # the publish guard's proof
 bash scripts/seal-branch-test.sh       # the seal tool's keyless proof (0056)
 cargo deny check licenses              # permissive-only tree
 ```
+
+`evals/` is an unpublished standalone workspace and remains outside the root
+coverage denominator. After the successful root test build, gates set
+`candidate_bin` to the unique absolute executable from Cargo's
+artifact records for the root package's non-test `swarmail` binary. Missing,
+ambiguous, non-executable or wrong-target artifacts refuse; a preexisting
+`SWARMAIL_BIN` is overwritten. The standalone tests include the lock-subset,
+no-native-tls/openssl and real MCP shape boundaries. Verify performs these
+checks offline and installs nothing.
 
 ### Required status checks on main
 
