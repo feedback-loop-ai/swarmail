@@ -2082,7 +2082,11 @@ while :; do :; done
         eventually("the already-issued child hold", || {
             spawned.join("entered").is_file()
         });
-        probe.record_ready_identity(&issued.path().join("trial.pid"));
+        let trial_ready = issued.path().join("trial.pid");
+        eventually("the issued trial's trap-ready identity", || {
+            trial_ready.is_file()
+        });
+        probe.record_ready_identity(&trial_ready);
         let active = probe.owned.last().unwrap().clone();
         assert!(matrix_identity_alive(&active));
         unsafe { libc::kill(probe.pid(), libc::SIGTERM) };

@@ -51,6 +51,8 @@ const CLEANUP_WAIT_PENDING_ENV: &str = "EVAL_TEST_CLEANUP_WAIT_PENDING";
 #[cfg(test)]
 const CLEANUP_WAIT_BYPASS_ENV: &str = "EVAL_TEST_CLEANUP_WAIT_BYPASS";
 #[cfg(test)]
+const CLEANUP_WAIT_BYPASS_HOLD_ENV: &str = "EVAL_TEST_CLEANUP_WAIT_BYPASS_HOLD_DIR";
+#[cfg(test)]
 const PRE_HANDLER_HOLD_ENV: &str = "EVAL_TEST_PRE_HANDLER_HOLD_DIR";
 #[cfg(test)]
 const PIDS_ENV_FOR_TESTS: &str = "EVAL_TEST_RUNNER_PIDS";
@@ -646,6 +648,16 @@ impl Groups {
                         pending_recorded = true;
                     }
                     if std::env::var_os(CLEANUP_WAIT_BYPASS_ENV).is_some() {
+                        if let Some(dir) = std::env::var_os(CLEANUP_WAIT_BYPASS_HOLD_ENV) {
+                            let dir = PathBuf::from(dir);
+                            std::fs::create_dir_all(&dir)
+                                .expect("create cleanup wait bypass hold directory");
+                            std::fs::write(dir.join("entered"), b"cleanup task retained")
+                                .expect("acknowledge cleanup wait bypass hold entry");
+                            while !dir.join("release").exists() {
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                            }
+                        }
                         return Ok(());
                     }
                     next.await
@@ -1503,6 +1515,14 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
                 _ = int.recv() => {},
             }
         };
+        #[cfg(test)]
+        if let Some(dir) = std::env::var_os(CLEANUP_WAIT_BYPASS_HOLD_ENV) {
+            std::fs::write(
+                PathBuf::from(dir).join("returned"),
+                b"cleanup bypass returned",
+            )
+            .expect("acknowledge cleanup wait bypass return");
+        }
         if let Err(e) = cleanup_result {
             eprintln!("swarmail-evals: interrupted trial cleanup failed: {e}");
         }
@@ -2011,6 +2031,7 @@ mod test_probes {
         hold: bool,
         bypass_cleanup_wait: bool,
         leader_first: bool,
+        hold_bypass_return: bool,
     ) -> Probe {
         let script = dir.join("stall-agent.sh");
         std::fs::write(
@@ -2097,6 +2118,10 @@ wait "$child"
         if bypass_cleanup_wait {
             cmd.env(CLEANUP_WAIT_BYPASS_ENV, "1");
         }
+        if hold_bypass_return {
+            assert!(bypass_cleanup_wait, "the return hold requires bypass mode");
+            cmd.env(CLEANUP_WAIT_BYPASS_HOLD_ENV, dir.join("cleanup-bypass"));
+        }
         if leader_first {
             cmd.env("EVAL_TEST_RUNNER_AGENT_MODE", "leader_first");
         }
@@ -2181,7 +2206,8 @@ wait "$child"
         ];
         for (fault, signal) in cases {
             let dir = tempfile::tempdir().unwrap();
-            let mut probe = launch_probe_with_controls(dir.path(), fault, true, false, false);
+            let mut probe =
+                launch_probe_with_controls(dir.path(), fault, true, false, false, false);
             if let Some(signal) = signal {
                 unsafe { libc::kill(probe.pid(), signal) };
             }
@@ -2199,7 +2225,7 @@ wait "$child"
 
         for signal in [libc::SIGTERM, libc::SIGINT] {
             let dir = tempfile::tempdir().unwrap();
-            let mut probe = launch_probe_with_controls(dir.path(), None, true, true, false);
+            let mut probe = launch_probe_with_controls(dir.path(), None, true, true, false, false);
             unsafe { libc::kill(probe.pid(), signal) };
             wait_for_cleanup_pending(&mut probe, dir.path());
             assert!(
@@ -2231,7 +2257,8 @@ wait "$child"
         let budget_hold = dir.path().join("cleanup-budget");
         std::fs::create_dir_all(&budget_hold).unwrap();
         std::fs::write(budget_hold.join("arm"), b"arm").unwrap();
-        let mut probe = launch_probe_with_controls(dir.path(), Some("panic"), false, false, true);
+        let mut probe =
+            launch_probe_with_controls(dir.path(), Some("panic"), false, false, true, false);
         probe.record_owned_from_tree();
 
         let budget_log = dir.path().join("cleanup-budgets.log");
@@ -2336,7 +2363,8 @@ wait "$child"
             ("forced_expiry", "cleanup timed out for process group"),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let mut probe = launch_probe_with_controls(dir.path(), Some(fault), false, false, true);
+            let mut probe =
+                launch_probe_with_controls(dir.path(), Some(fault), false, false, true, false);
             probe.record_owned_from_tree();
             let direct_agent = probe.owned.first().unwrap().clone();
             std::fs::write(dir.path().join("fault-release"), b"release").unwrap();
@@ -2380,12 +2408,30 @@ wait "$child"
     #[test]
     fn runner_probe_failure_teardown_handles_owner_and_leader_exit() {
         let dir = tempfile::tempdir().unwrap();
-        let mut probe = launch_probe_with_controls(dir.path(), None, true, true, true);
+        let bypass = dir.path().join("cleanup-bypass");
+        let mut probe = launch_probe_with_controls(dir.path(), None, true, true, true, true);
         unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
         wait_for_cleanup_pending(&mut probe, dir.path());
-        assert!(probe.wait_for(Duration::from_secs(2)).is_some());
         let leader = probe.owned.first().unwrap().clone();
         let descendant = probe.owned.get(1).unwrap().clone();
+        eventually("the agent cleanup task to enter its hold", || {
+            dir.path()
+                .join("cleanup")
+                .join(format!("entered-{}", leader.pid))
+                .is_file()
+        });
+        eventually("the bypass control to acknowledge actual Pending", || {
+            bypass.join("entered").is_file()
+        });
+        assert!(
+            probe.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+            "the owner remains live until the acknowledged bypass is released"
+        );
+        std::fs::write(bypass.join("release"), b"release").unwrap();
+        eventually("the cleanup bypass to return", || {
+            bypass.join("returned").is_file()
+        });
+        assert!(probe.wait_for(Duration::from_secs(2)).is_some());
         eventually(
             "the owner and group leader to exit before the resistant descendant",
             || !alive(&leader) && alive(&descendant),
