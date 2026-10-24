@@ -1,6 +1,6 @@
 # Gate evals against the candidate build
 
-- Status: continuation design for implementation; 2026-10-24.
+- Status: implemented; local gates and pinned verify passed; protected review pending; 2026-10-24.
 - Scope: epic #192, issue #201; fixture provenance follow-up for #149.
 - Original baseline: `dc1822a45e4d2ae8326b44baf22818187a8320e9`.
 - Continuation candidate: `26df727`, after inherited design `ae4d2bd`.
