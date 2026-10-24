@@ -1,6 +1,6 @@
 # 0071 — Named eval traps invalidate a trial
 
-- **Status:** proposed — awaiting the operator.
+- **Status:** accepted (operator, 2026-10-24).
 - **Date:** 2026-10-24.
 - **Issues:** Epic #192, issue #198.
 - **Specification:** [Eval trap scoring](../../specs/eval-trap-scoring/spec.md).
