@@ -60,14 +60,35 @@ $E report --input runs.jsonl                        # or --input - for stdin
 ```
 
 `trial` exits 0 pass, 1 fail, 2 harness error. `matrix` runs the product
-sequentially, one row per trial with no retries, continues after harness
-errors and exits 2 if any occurred, else 1 if any failed, else 0. Once its
-inputs are valid, every `(task, agent, trial)` element gets a row: if the
-Swarmail binary cannot be resolved, each element is a `harness_error` row
-(no child is launched) and the exit is 2. Invalid inputs (an unknown task,
-zero trials, an unreadable agents file) are refused with exit 2 and no rows.
-`check` exits 0 pass, 1 fail, 2 for unscorable state. Only machine output
-goes to stdout; diagnostics go to stderr.
+sequentially, one row per requested slot with no retries, continues after
+ordinary harness errors and exits 2 if any occurred, else 1 if any failed,
+else 0. Once its inputs are valid, every `(task, agent, trial)` element gets
+a row: if the Swarmail binary cannot be resolved, each element is a
+`harness_error` row (no trial child is launched) and the exit is 2. Invalid
+inputs (an unknown task, zero trials, an unreadable agents file) are refused
+with exit 2 and no rows.
+
+On matrix SIGTERM or SIGINT, the first observed signal stops admission. The
+matrix forwards one SIGTERM to its active trial PID and waits for that trial
+to reap its children and observe its owned process groups stopped. Trial
+cleanup sends TERM for up to five seconds, then KILL and observes cessation
+for up to five more seconds; matrix has no shorter competing kill timer.
+Matrix exits 2 for either signal. It keeps committed rows, writes one
+`harness_error` row for active work with any usable trial ID and observed
+agent statuses, then writes zero-time refusal rows for every unstarted slot
+in task → agent → repetition order. `report` counts these as requested
+attempts; that denominator may include slots whose agents never ran. A
+signal during the fallback offline Cargo build cancels and reaps that build
+before the refusal suffix is written.
+
+The matrix accepts exactly one matching schema-v1 result from a trial and
+checks its exit code. It drains child output while retaining at most 64 KiB;
+invalid, extra or oversized output stops admission with exit 2. Broken or
+non-progressing stdout also exits 2 after cleanup; unavailable output cannot
+promise complete JSONL. SIGKILL, host failure, daemonizing or hostile
+commands, escaped processes and uninterruptible kernel tasks remain outside
+the lifecycle guarantee. `check` exits 0 pass, 1 fail, 2 for unscorable
+state. Only machine output goes to stdout; diagnostics go to stderr.
 
 ## The external agent contract
 

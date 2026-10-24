@@ -463,3 +463,60 @@ fn the_catalogue_is_served_as_schema_version_one() {
     assert_eq!(cat.schema_version, 1);
     assert_eq!(cat.tasks, swarmail_evals::tasks::catalogue());
 }
+
+#[test]
+fn cleanup_escalates_after_a_leader_exits_and_a_descendant_ignores_term() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("pids.json");
+    let me = std::env::current_exe().unwrap();
+    let child = cli()
+        .env(HELPER_ENV, "resistant")
+        .env(MARKER_ENV, &marker)
+        .args(["trial", "--task", "signup", "--agent", "resistant", "--"])
+        .args([
+            me.to_str().unwrap(),
+            "--exact",
+            "helper_agent",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let child = ChildGuard { child: Some(child) };
+    eventually("the TERM-resistant descendant readiness marker", || {
+        marker.is_file()
+    });
+    let value: Value = serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+    let leader = ProcessIdentity {
+        pid: value["leader"].as_i64().unwrap() as i32,
+        parent: 0,
+        pgrp: value["leader_pgrp"].as_i64().unwrap() as i32,
+        session: value["leader_session"].as_i64().unwrap() as i32,
+        start_time: value["leader_start"].as_u64().unwrap(),
+        state: 'S',
+    };
+    let descendant = ProcessIdentity {
+        pid: value["descendant"].as_i64().unwrap() as i32,
+        parent: 0,
+        pgrp: value["descendant_pgrp"].as_i64().unwrap() as i32,
+        session: value["descendant_session"].as_i64().unwrap() as i32,
+        start_time: value["descendant_start"].as_u64().unwrap(),
+        state: 'S',
+    };
+    assert_eq!(leader.pgrp, descendant.pgrp);
+    assert!(identity_alive(&leader) && identity_alive(&descendant));
+    send_signal(child.pid(), libc::SIGTERM);
+    let out = child.wait_with_output();
+    let row = one_row(&out);
+    assert_eq!(row.outcome, Outcome::HarnessError);
+    assert!(
+        !identity_alive(&leader),
+        "the direct agent leader stopped before matrix cleanup completed"
+    );
+    assert!(
+        !identity_alive(&descendant),
+        "cleanup escalated and observed the descendant gone"
+    );
+}

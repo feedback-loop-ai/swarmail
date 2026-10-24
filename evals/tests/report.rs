@@ -11,6 +11,11 @@ use std::process::Stdio;
 use swarmail_evals::runner::TrialResult;
 use swarmail_evals::tasks::Outcome;
 
+#[test]
+fn helper_agent() {
+    maybe_run_helper();
+}
+
 fn rows(stdout: &[u8]) -> Vec<TrialResult> {
     String::from_utf8_lossy(stdout)
         .lines()
@@ -278,4 +283,692 @@ fn empty_and_all_error_inputs_give_null_estimates_and_bad_rows_refuse() {
         let (code, _) = report_of(&bad);
         assert_eq!(code, Some(2), "{bad}");
     }
+}
+
+struct MatrixGuard {
+    child: Option<std::process::Child>,
+    release: std::path::PathBuf,
+}
+
+impl MatrixGuard {
+    fn pid(&self) -> i32 {
+        self.child.as_ref().unwrap().id() as i32
+    }
+
+    fn wait(mut self) -> std::process::ExitStatus {
+        let _ = std::fs::write(&self.release, b"release");
+        self.child.take().unwrap().wait().unwrap()
+    }
+}
+
+impl Drop for MatrixGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.release, b"release");
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        if child.try_wait().ok().flatten().is_none() {
+            send_signal(child.id() as i32, libc::SIGTERM);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while child.try_wait().ok().flatten().is_none() && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if child.try_wait().ok().flatten().is_none() {
+                // SAFETY: this guard owns the matrix child it just spawned.
+                unsafe {
+                    libc::kill(child.id() as i32, libc::SIGKILL);
+                }
+                let _ = child.wait();
+            }
+        }
+    }
+}
+
+fn marker_identity(value: &Value, name: &str) -> ProcessIdentity {
+    ProcessIdentity {
+        pid: value[name].as_i64().unwrap() as i32,
+        parent: 0,
+        pgrp: value[format!("{name}_pgrp")].as_i64().unwrap() as i32,
+        session: value[format!("{name}_session")].as_i64().unwrap() as i32,
+        start_time: value[format!("{name}_start")].as_u64().unwrap(),
+        state: 'S',
+    }
+}
+
+fn matrix_signal_case(signal: i32, suffix: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let hold = dir.path().join("hold");
+    let marker = dir.path().join("active.json");
+    let launches = dir.path().join("launches.txt");
+    let rows_path = dir.path().join("matrix.jsonl");
+    let helper_exe = std::env::current_exe().unwrap();
+    let agents = agents_file(
+        dir.path(),
+        json!([
+            {"label": "oracle", "argv": []},
+            {"label": "stall", "argv": [helper_exe, "--exact", "helper_agent", "--nocapture", "--test-threads=1"]}
+        ]),
+    );
+    let stdout = std::fs::File::create(&rows_path).unwrap();
+    let child = cli()
+        .env(HELPER_ENV, "stall")
+        .env(MARKER_ENV, &marker)
+        .env(LAUNCH_LOG_ENV, &launches)
+        .env(swarmail_evals::runner::CLEANUP_HOLD_ENV, &hold)
+        .args([
+            "matrix",
+            "--tasks",
+            "signup,otp",
+            "--agents",
+            &agents,
+            "--trials",
+            "1",
+        ])
+        .stdout(stdout)
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let release = hold.join("release");
+    let mut matrix = MatrixGuard {
+        child: Some(child),
+        release,
+    };
+    let ready_deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !marker.is_file() && std::time::Instant::now() < ready_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        marker.is_file(),
+        "readiness missing; status={:?}, launches={:?}, rows={:?}",
+        matrix.child.as_mut().unwrap().try_wait(),
+        std::fs::read_to_string(&launches),
+        std::fs::read_to_string(&rows_path)
+    );
+
+    let ready: Value = serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+    let agent = marker_identity(&ready, "leader");
+    let descendant = marker_identity(&ready, "descendant");
+    assert!(
+        identity_alive(&agent),
+        "the ready agent identity is live: {agent:?}"
+    );
+    assert!(
+        identity_alive(&descendant),
+        "the ready descendant identity is live: {descendant:?}"
+    );
+    let before = process_descendants(matrix.pid());
+    assert!(
+        before.len() >= 5,
+        "trial, servers, fixture, agent and descendant are owned: {before:?}"
+    );
+    assert!(
+        before
+            .iter()
+            .any(|p| p.pid == agent.pid && p.start_time == agent.start_time)
+    );
+    assert!(
+        before
+            .iter()
+            .any(|p| p.pid == descendant.pid && p.start_time == descendant.start_time)
+    );
+
+    let prefix_before = std::fs::read_to_string(&rows_path).unwrap();
+    let prefix_lines: Vec<_> = prefix_before.lines().collect();
+    assert_eq!(
+        prefix_lines.len(),
+        1,
+        "only the completed prefix is committed before readiness"
+    );
+    let prefix: Value = serde_json::from_str(prefix_lines[0]).unwrap();
+    assert_eq!(
+        (
+            prefix["task"].as_str(),
+            prefix["agent"].as_str(),
+            prefix["outcome"].as_str()
+        ),
+        (Some("signup"), Some("oracle"), Some("pass"))
+    );
+
+    // The only signal is sent to the matrix PID. Its trial owns all of the
+    // process groups observed above and acknowledges its cleanup pause.
+    std::fs::create_dir_all(&hold).unwrap();
+    std::fs::write(hold.join("arm"), b"armed").unwrap();
+    send_signal(matrix.pid(), signal);
+    eventually("the trial cleanup acknowledgement", || {
+        std::fs::read_dir(&hold).ok().is_some_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().starts_with("entered-"))
+        })
+    });
+    assert!(
+        pid_alive(matrix.pid()),
+        "matrix must remain alive while cleanup is held"
+    );
+    assert!(
+        identity_alive(&agent),
+        "the agent remains live at the held cleanup boundary"
+    );
+    assert!(
+        identity_alive(&descendant),
+        "the descendant remains live at the held cleanup boundary"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&launches).unwrap().lines().count(),
+        1,
+        "no later matrix slot has launched"
+    );
+
+    let status = matrix.wait();
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "SIGTERM and SIGINT both use matrix exit 2"
+    );
+    for process in &before {
+        assert!(
+            !identity_alive(process),
+            "owned process was gone when matrix exited: {process:?}"
+        );
+    }
+    assert!(!identity_alive(&agent));
+    assert!(!identity_alive(&descendant));
+
+    let output = std::fs::read_to_string(rows_path).unwrap();
+    let parsed = rows(output.as_bytes());
+    assert_eq!(parsed.len(), 4, "full schema-v1 product accounting");
+    assert_eq!(
+        serde_json::to_value(&parsed[0]).unwrap(),
+        prefix,
+        "the completed prefix is immutable"
+    );
+    assert_eq!(
+        (
+            parsed[1].task.as_deref(),
+            parsed[1].agent.as_deref(),
+            parsed[1].outcome
+        ),
+        (Some("signup"), Some("stall"), Outcome::HarnessError)
+    );
+    assert_eq!(
+        parsed[1].agent_exits.len(),
+        1,
+        "active agent status is retained"
+    );
+    assert_eq!(parsed[1].agent_exits[0].signal, Some(libc::SIGTERM));
+    for (row, agent_label) in parsed[2..].iter().zip(["oracle", "stall"]) {
+        assert_eq!(row.task.as_deref(), Some("otp"));
+        assert_eq!(row.agent.as_deref(), Some(agent_label));
+        assert_eq!(row.outcome, Outcome::HarnessError);
+        assert_eq!(row.wall_time_ms, 0);
+        assert_eq!(row.agent_exit_status, None);
+        assert!(row.agent_exits.is_empty());
+    }
+    assert_eq!(
+        parsed
+            .iter()
+            .map(|row| row.trial_id.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        4
+    );
+    assert_eq!(
+        std::fs::read_to_string(launches).unwrap().lines().count(),
+        1,
+        "the refusal suffix never starts a trial"
+    );
+
+    let report_path = dir.path().join("matrix.jsonl");
+    let report = cli()
+        .args(["report", "--input", report_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(report.status.success(), "{}", stderr(&report));
+    let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+    let groups = report["groups"].as_array().unwrap();
+    let oracle: Vec<_> = groups.iter().filter(|g| g["agent"] == "oracle").collect();
+    assert_eq!(oracle.len(), 2);
+    assert_eq!(
+        oracle
+            .iter()
+            .map(|g| g["attempts"].as_u64().unwrap())
+            .sum::<u64>(),
+        2
+    );
+    let signup = oracle.iter().find(|g| g["task"] == "signup").unwrap();
+    let otp = oracle.iter().find(|g| g["task"] == "otp").unwrap();
+    assert_eq!(
+        (signup["passes"].as_u64(), signup["harness_errors"].as_u64()),
+        (Some(1), Some(0))
+    );
+    assert_eq!(
+        (otp["passes"].as_u64(), otp["harness_errors"].as_u64()),
+        (Some(0), Some(1))
+    );
+    assert_eq!(signup["passes_over_attempts"], 1.0);
+    assert_eq!(otp["passes_over_attempts"], 0.0);
+    let stall: Vec<_> = groups.iter().filter(|g| g["agent"] == "stall").collect();
+    assert_eq!(stall.len(), 2);
+    assert_eq!(
+        stall
+            .iter()
+            .map(|g| g["attempts"].as_u64().unwrap())
+            .sum::<u64>(),
+        2
+    );
+    assert!(
+        stall
+            .iter()
+            .all(|g| g["harness_errors"] == 1 && g["success_rate"].is_null())
+    );
+    assert_eq!(
+        signal,
+        if suffix == "term" {
+            libc::SIGTERM
+        } else {
+            libc::SIGINT
+        }
+    );
+}
+
+#[test]
+fn matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup() {
+    matrix_signal_case(libc::SIGTERM, "term");
+    matrix_signal_case(libc::SIGINT, "int");
+}
+
+#[test]
+fn a_broken_matrix_stdout_stops_after_the_owned_trial_finishes() {
+    let dir = tempfile::tempdir().unwrap();
+    let launches = dir.path().join("launches.txt");
+    let argv = vec![
+        "/bin/sh",
+        "-c",
+        "printf 'started\n' >> \"$0\"",
+        launches.to_str().unwrap(),
+    ];
+    let agents = agents_file(dir.path(), json!([{"label": "touch", "argv": argv}]));
+    let mut child = cli()
+        .args([
+            "matrix",
+            "--tasks",
+            "signup,otp",
+            "--agents",
+            &agents,
+            "--trials",
+            "1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take().unwrap());
+    let matrix = MatrixGuard {
+        child: Some(child),
+        release: dir.path().join("unused-release"),
+    };
+    let status = matrix.wait();
+    assert_eq!(status.code(), Some(2));
+    assert_eq!(
+        std::fs::read_to_string(&launches).unwrap().lines().count(),
+        1,
+        "stdout failure stops admission after the active trial is reaped"
+    );
+}
+
+#[test]
+fn matrix_signal_setup_failure_accounts_for_every_valid_slot_without_launching() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("agent-launched");
+    let argv = vec!["/bin/sh", "-c", "touch \"$0\"", marker.to_str().unwrap()];
+    let agents = agents_file(dir.path(), json!([{"label": "touch", "argv": argv}]));
+    let out = cli()
+        .env("EVAL_TEST_MATRIX_SIGNAL_SETUP_FAIL", "1")
+        .args([
+            "matrix",
+            "--tasks",
+            "signup,otp",
+            "--agents",
+            &agents,
+            "--trials",
+            "1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("injected matrix signal setup failure"));
+    assert!(
+        !marker.exists(),
+        "signal setup failure precedes every subprocess"
+    );
+    let rows = rows(&out.stdout);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter().map(|r| r.task.as_deref()).collect::<Vec<_>>(),
+        [Some("signup"), Some("otp")]
+    );
+    assert!(
+        rows.iter()
+            .all(|r| r.outcome == Outcome::HarnessError && r.wall_time_ms == 0)
+    );
+}
+
+#[test]
+fn matrix_sigterm_before_first_admission_emits_refusals_and_launches_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("admission");
+    let rows_path = dir.path().join("rows.jsonl");
+    let marker = dir.path().join("agent-launched");
+    let argv = vec!["/bin/sh", "-c", "touch \"$0\"", marker.to_str().unwrap()];
+    let agents = agents_file(dir.path(), json!([{"label": "touch", "argv": argv}]));
+    let child = cli()
+        .env("EVAL_TEST_MATRIX_ADMISSION_HOLD_DIR", &gate)
+        .args([
+            "matrix", "--tasks", "signup", "--agents", &agents, "--trials", "2",
+        ])
+        .stdout(std::fs::File::create(&rows_path).unwrap())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let matrix = MatrixGuard {
+        child: Some(child),
+        release: gate.join("release"),
+    };
+    eventually("matrix admission hold", || gate.join("entered").is_file());
+    send_signal(matrix.pid(), libc::SIGTERM);
+    eventually("matrix observed the pre-admission signal", || {
+        gate.join("signal-term").is_file()
+    });
+    std::fs::write(gate.join("release"), b"release").unwrap();
+    let status = matrix.wait();
+    assert_eq!(status.code(), Some(2));
+    assert!(
+        !marker.exists(),
+        "no process launched after cancellation was latched"
+    );
+    let result_rows = rows(&std::fs::read(rows_path).unwrap());
+    assert_eq!(result_rows.len(), 2);
+    assert!(
+        result_rows
+            .iter()
+            .all(|row| row.outcome == Outcome::HarnessError && row.wall_time_ms == 0)
+    );
+}
+
+#[test]
+fn matrix_sigterm_before_trial_handlers_are_installed_has_no_unowned_children() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("pre-handler");
+    let rows_path = dir.path().join("rows.jsonl");
+    let launched = dir.path().join("agent-launched");
+    let argv = vec!["/bin/sh", "-c", "touch \"$0\"", launched.to_str().unwrap()];
+    let agents = agents_file(dir.path(), json!([{"label": "touch", "argv": argv}]));
+    let child = cli()
+        .env(swarmail_evals::runner::PRE_HANDLER_HOLD_ENV, &gate)
+        .args([
+            "matrix",
+            "--tasks",
+            "signup,otp",
+            "--agents",
+            &agents,
+            "--trials",
+            "1",
+        ])
+        .stdout(std::fs::File::create(&rows_path).unwrap())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let matrix = MatrixGuard {
+        child: Some(child),
+        release: gate.join("release"),
+    };
+    eventually("the trial pre-handler readiness marker", || {
+        gate.join("entered").is_file()
+    });
+
+    let before = process_descendants(matrix.pid());
+    assert_eq!(
+        before.len(),
+        1,
+        "only the trial exists before handlers: {before:?}"
+    );
+    let trial = before[0].clone();
+    assert_eq!(trial.parent, matrix.pid());
+    assert!(!launched.exists(), "the agent has not started yet");
+
+    // Signal only the matrix. Its forwarding reaches a trial that has not
+    // registered handlers, so the process exits without leaving any child.
+    send_signal(matrix.pid(), libc::SIGTERM);
+    let status = matrix.wait();
+    assert_eq!(status.code(), Some(2));
+    assert!(!identity_alive(&trial), "the trial was gone at matrix exit");
+    assert!(!launched.exists(), "no agent launched after cancellation");
+
+    let result_rows = rows(&std::fs::read(rows_path).unwrap());
+    assert_eq!(
+        result_rows.len(),
+        2,
+        "the interrupted slot and suffix are accounted"
+    );
+    assert_eq!(
+        (
+            result_rows[0].task.as_deref(),
+            result_rows[0].agent.as_deref()
+        ),
+        (Some("signup"), Some("touch"))
+    );
+    assert_eq!(result_rows[0].outcome, Outcome::HarnessError);
+    assert_eq!(
+        result_rows[0].failure_class,
+        Some(swarmail_evals::state::FailureClass::HarnessError)
+    );
+    assert!(result_rows[0].wall_time_ms > 0);
+    assert_eq!(result_rows[0].agent_exit_status, None);
+    assert!(result_rows[0].agent_exits.is_empty());
+    assert_eq!(result_rows[1].task.as_deref(), Some("otp"));
+    assert_eq!(result_rows[1].outcome, Outcome::HarnessError);
+    assert_eq!(result_rows[1].wall_time_ms, 0);
+    assert_eq!(result_rows[1].agent_exit_status, None);
+    assert!(result_rows[1].agent_exits.is_empty());
+}
+
+#[test]
+fn matrix_sigterm_before_commit_normalizes_the_finished_trial_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("commit");
+    let launches = dir.path().join("launches.txt");
+    let rows_path = dir.path().join("rows.jsonl");
+    let argv = vec![
+        "/bin/sh",
+        "-c",
+        "printf 'started\n' >> \"$0\"",
+        launches.to_str().unwrap(),
+    ];
+    let agents = agents_file(dir.path(), json!([{"label": "touch", "argv": argv}]));
+    let child = cli()
+        .env("EVAL_TEST_MATRIX_COMMIT_HOLD_DIR", &gate)
+        .args([
+            "matrix",
+            "--tasks",
+            "signup,otp",
+            "--agents",
+            &agents,
+            "--trials",
+            "1",
+        ])
+        .stdout(std::fs::File::create(&rows_path).unwrap())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let matrix = MatrixGuard {
+        child: Some(child),
+        release: gate.join("release"),
+    };
+    eventually("matrix pre-commit hold", || gate.join("entered").is_file());
+    assert_eq!(
+        std::fs::read_to_string(&launches).unwrap().lines().count(),
+        1
+    );
+    assert!(
+        std::fs::read(&rows_path).unwrap().is_empty(),
+        "row is not committed yet"
+    );
+
+    send_signal(matrix.pid(), libc::SIGTERM);
+    eventually("matrix observed the pre-commit signal", || {
+        gate.join("signal-term").is_file()
+    });
+    let status = matrix.wait();
+    assert_eq!(status.code(), Some(2));
+
+    let result_rows = rows(&std::fs::read(rows_path).unwrap());
+    assert_eq!(result_rows.len(), 2);
+    assert_eq!(
+        (
+            result_rows[0].task.as_deref(),
+            result_rows[0].agent.as_deref()
+        ),
+        (Some("signup"), Some("touch"))
+    );
+    assert_eq!(result_rows[0].outcome, Outcome::HarnessError);
+    assert_eq!(
+        result_rows[0].failure_class,
+        Some(swarmail_evals::state::FailureClass::HarnessError)
+    );
+    assert_eq!(result_rows[0].agent_exit_status, Some(0));
+    assert_eq!(result_rows[0].agent_exits.len(), 1);
+    assert_eq!(result_rows[0].agent_exits[0].code, Some(0));
+    assert_eq!(result_rows[1].task.as_deref(), Some("otp"));
+    assert_eq!(result_rows[1].outcome, Outcome::HarnessError);
+    assert_eq!(result_rows[1].wall_time_ms, 0);
+    assert_eq!(result_rows[1].agent_exit_status, None);
+    assert!(result_rows[1].agent_exits.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(launches).unwrap().lines().count(),
+        1
+    );
+}
+
+#[test]
+fn matrix_signal_after_the_last_committed_row_still_exits_two() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = dir.path().join("final");
+    let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
+    let rows_path = dir.path().join("rows.jsonl");
+    let stdout = std::fs::File::create(&rows_path).unwrap();
+    let child = cli()
+        .env("EVAL_TEST_MATRIX_FINAL_HOLD_DIR", &gate)
+        .args([
+            "matrix", "--tasks", "signup", "--agents", &agents, "--trials", "1",
+        ])
+        .stdout(stdout)
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let matrix = MatrixGuard {
+        child: Some(child),
+        release: gate.join("release"),
+    };
+    eventually("matrix final-row hold", || gate.join("entered").is_file());
+    let prefix = std::fs::read_to_string(&rows_path).unwrap();
+    assert_eq!(
+        rows(prefix.as_bytes()).len(),
+        1,
+        "the final row is committed before the hold"
+    );
+    let pid = matrix.pid();
+    send_signal(pid, libc::SIGTERM);
+    eventually("matrix observed the post-final signal", || {
+        gate.join("signal-term").is_file()
+    });
+    let status = matrix.wait();
+    assert_eq!(status.code(), Some(2));
+    assert_eq!(
+        std::fs::read_to_string(rows_path).unwrap(),
+        prefix,
+        "no row is rewritten or added"
+    );
+}
+
+#[test]
+fn matrix_signal_cancels_and_reaps_the_fallback_cargo_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let hold = dir.path().join("hold");
+    let ready = dir.path().join("cargo-ready");
+    let script = dir.path().join("cargo-wrapper.sh");
+    std::fs::write(&script, format!(
+        "#!/bin/sh\nsleep 1000 &\nchild=$!\nprintf '%s %s\\n' \"$$\" \"$child\" > \"{}.tmp\"\nmv \"{}.tmp\" \"{}\"\nwait \"$child\"\n",
+        ready.display(), ready.display(), ready.display()
+    )).unwrap();
+    let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&script, permissions).unwrap();
+    let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
+    let rows_path = dir.path().join("rows.jsonl");
+    let child = cli()
+        .env_remove(swarmail_evals::runner::SWARMAIL_BIN_ENV)
+        .env("CARGO", &script)
+        .env(swarmail_evals::runner::CLEANUP_HOLD_ENV, &hold)
+        .args([
+            "matrix",
+            "--tasks",
+            "signup,otp",
+            "--agents",
+            &agents,
+            "--trials",
+            "1",
+        ])
+        .stdout(std::fs::File::create(&rows_path).unwrap())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let matrix = MatrixGuard {
+        child: Some(child),
+        release: hold.join("release"),
+    };
+    eventually("fallback build readiness", || ready.is_file());
+    let pids: Vec<i32> = std::fs::read_to_string(&ready)
+        .unwrap()
+        .split_whitespace()
+        .map(|p| p.parse().unwrap())
+        .collect();
+    assert_eq!(pids.len(), 2);
+    let owned: Vec<_> = pids
+        .iter()
+        .map(|pid| process_identity(*pid).unwrap())
+        .collect();
+    assert!(owned.iter().all(identity_alive));
+    std::fs::create_dir_all(&hold).unwrap();
+    std::fs::write(hold.join("arm"), b"armed").unwrap();
+    send_signal(matrix.pid(), libc::SIGTERM);
+    eventually("fallback cleanup acknowledgement", || {
+        std::fs::read_dir(&hold).ok().is_some_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().starts_with("entered-"))
+        })
+    });
+    assert!(
+        pid_alive(matrix.pid()),
+        "matrix waits for its fallback-build cleanup owner"
+    );
+    assert!(
+        owned.iter().all(identity_alive),
+        "the build group remains live at the held boundary"
+    );
+    let status = matrix.wait();
+    assert_eq!(status.code(), Some(2));
+    assert!(
+        owned.iter().all(|identity| !identity_alive(identity)),
+        "fallback children stopped before matrix exit"
+    );
+    let result_rows = rows(&std::fs::read(rows_path).unwrap());
+    assert_eq!(result_rows.len(), 2);
+    assert!(
+        result_rows
+            .iter()
+            .all(|row| row.outcome == Outcome::HarnessError && row.wall_time_ms == 0)
+    );
 }

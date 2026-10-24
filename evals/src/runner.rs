@@ -31,7 +31,7 @@ use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::sync::mpsc;
 
 /// The result row's schema.
@@ -43,12 +43,16 @@ pub const SWARMAIL_BIN_ENV: &str = "SWARMAIL_BIN";
 /// Test seam: inject a runner fault after the agents start (`panic`,
 /// `server_death`). Used only by the lifecycle proofs.
 pub const FAULT_ENV: &str = "EVAL_RUNNER_FAULT";
+/// Test-only acknowledged pause before group cleanup starts.
+pub const CLEANUP_HOLD_ENV: &str = "EVAL_TEST_CLEANUP_HOLD_DIR";
+/// Test-only pause before trial signal handlers and child admission.
+pub const PRE_HANDLER_HOLD_ENV: &str = "EVAL_TEST_PRE_HANDLER_HOLD_DIR";
 /// The built-in agent labels.
 pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 
 const STARTUP_DEADLINE: Duration = Duration::from_secs(30);
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 const LOG_RETENTION: usize = 64 * 1024;
+const CLEANUP_POLL: Duration = Duration::from_millis(100);
 
 /// One agent process's real exit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -176,33 +180,352 @@ pub fn resolve_swarmail_bin() -> Result<PathBuf, String> {
 
 /// The process groups this trial owns, for cleanup on any handled path.
 #[derive(Clone, Default)]
-pub struct Groups(Arc<Mutex<Vec<i32>>>);
+pub struct Groups(Arc<Mutex<Vec<Arc<OwnedGroup>>>>);
+
+type ExitWatch = tokio::sync::watch::Receiver<Option<Result<ExitStatus, String>>>;
+type CleanupWatch = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
+
+struct OwnedGroup {
+    pid: i32,
+    pgid: i32,
+    session: Option<i32>,
+    start_time: Option<u64>,
+    status: ExitWatch,
+    cleanup: Mutex<Option<CleanupWatch>>,
+    drains: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProcIdentity {
+    pid: i32,
+    pgrp: i32,
+    session: i32,
+    start_time: u64,
+    state: char,
+}
+
+fn parse_proc_stat(pid: i32, stat: &str) -> Result<ProcIdentity, String> {
+    let (_, tail) = stat
+        .rsplit_once(')')
+        .ok_or_else(|| format!("/proc/{pid}/stat has no closing command delimiter"))?;
+    let fields: Vec<_> = tail.split_whitespace().collect();
+    if fields.len() <= 19 {
+        return Err(format!("/proc/{pid}/stat has too few fields"));
+    }
+    Ok(ProcIdentity {
+        pid,
+        state: fields[0]
+            .chars()
+            .next()
+            .ok_or_else(|| format!("/proc/{pid}/stat has no state"))?,
+        pgrp: fields[2]
+            .parse()
+            .map_err(|_| format!("/proc/{pid}/stat has an invalid process group"))?,
+        session: fields[3]
+            .parse()
+            .map_err(|_| format!("/proc/{pid}/stat has an invalid session"))?,
+        start_time: fields[19]
+            .parse()
+            .map_err(|_| format!("/proc/{pid}/stat has an invalid start time"))?,
+    })
+}
+
+fn proc_identity(pid: i32) -> Option<ProcIdentity> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        parse_proc_stat(pid, &stat).ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+fn group_members(group: &OwnedGroup) -> Result<Vec<ProcIdentity>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let entries =
+            std::fs::read_dir("/proc").map_err(|e| format!("cannot inspect /proc: {e}"))?;
+        let mut members = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("cannot enumerate /proc: {e}"))?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Ok(pid) = name.parse::<i32>() else {
+                continue;
+            };
+            let stat_path = entry.path().join("stat");
+            let stat = match std::fs::read_to_string(&stat_path) {
+                Ok(stat) => stat,
+                // /proc enumeration races process exit. Linux may report
+                // either ENOENT or ESRCH when the stat file disappears
+                // between readdir and open; both prove this PID is gone.
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::NotFound
+                        || e.raw_os_error() == Some(libc::ESRCH) =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(format!("cannot inspect {}: {e}", stat_path.display())),
+            };
+            let identity = parse_proc_stat(pid, &stat)?;
+            if identity.pgrp == group.pgid {
+                let Some(session) = group.session else {
+                    return Err(format!(
+                        "cannot verify session identity for process group {}",
+                        group.pgid
+                    ));
+                };
+                if identity.session != session {
+                    continue;
+                }
+                if identity.pid == group.pid && Some(identity.start_time) != group.start_time {
+                    return Err(format!(
+                        "process-group leader identity changed for {} before the group was observed empty",
+                        group.pgid
+                    ));
+                }
+                if !matches!(identity.state, 'Z' | 'X') {
+                    members.push(identity);
+                }
+            }
+        }
+        Ok(members)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = group;
+        // Only ESRCH proves absence on other Unix systems. Unknown and EPERM
+        // are conservative presence, never cleanup success.
+        let rc = unsafe { libc::kill(-group.pgid, 0) };
+        if rc == 0 {
+            Ok(vec![ProcIdentity {
+                pid: group.pid,
+                pgrp: group.pgid,
+                session: group.session.unwrap_or_default(),
+                start_time: group.start_time.unwrap_or_default(),
+                state: 'R',
+            }])
+        } else {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                Ok(Vec::new())
+            } else if e.raw_os_error() == Some(libc::EPERM) {
+                Ok(vec![ProcIdentity {
+                    pid: group.pid,
+                    pgrp: group.pgid,
+                    session: group.session.unwrap_or_default(),
+                    start_time: group.start_time.unwrap_or_default(),
+                    state: 'R',
+                }])
+            } else {
+                Err(format!("cannot inspect process group {}: {e}", group.pgid))
+            }
+        }
+    }
+}
+
+fn signal_owned_group(group: &OwnedGroup, sig: i32) -> Result<(), String> {
+    let members = group_members(group)?;
+    if members.is_empty() {
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    if group.session.is_none() {
+        return Err(format!(
+            "cannot verify session identity for owned process group {}",
+            group.pgid
+        ));
+    }
+    let rc = unsafe { libc::kill(-group.pgid, sig) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let e = std::io::Error::last_os_error();
+    if e.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(format!(
+            "cannot signal owned process group {}: {e}",
+            group.pgid
+        ))
+    }
+}
+
+impl OwnedGroup {
+    fn status(&self) -> Option<Result<ExitStatus, String>> {
+        self.status.borrow().clone()
+    }
+
+    fn ensure_cleanup(
+        self: &Arc<Self>,
+    ) -> tokio::sync::watch::Receiver<Option<Result<(), String>>> {
+        let mut slot = self.cleanup.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(rx) = slot.as_ref() {
+            return rx.clone();
+        }
+        let (tx, rx) = tokio::sync::watch::channel(None);
+        *slot = Some(rx.clone());
+        let group = self.clone();
+        tokio::spawn(async move {
+            let result = group.cleanup_once().await;
+            tx.send_replace(Some(result));
+        });
+        rx
+    }
+
+    async fn await_cleanup(self: &Arc<Self>) -> Result<(), String> {
+        let mut rx = self.ensure_cleanup();
+        loop {
+            if let Some(result) = rx.borrow().clone() {
+                return result;
+            }
+            rx.changed()
+                .await
+                .map_err(|_| format!("cleanup owner for process group {} vanished", self.pgid))?;
+        }
+    }
+
+    async fn cleanup_once(self: Arc<Self>) -> Result<(), String> {
+        if let Some(dir) = std::env::var_os(CLEANUP_HOLD_ENV) {
+            let dir = std::path::PathBuf::from(dir);
+            if dir.join("arm").exists() {
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| format!("cleanup hold directory: {e}"))?;
+                let entered = dir.join(format!("entered-{}", self.pid));
+                std::fs::write(&entered, b"waiting")
+                    .map_err(|e| format!("cleanup hold marker: {e}"))?;
+                while !dir.join("release").exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        }
+        const TERM_GRACE: Duration = Duration::from_secs(5);
+        const KILL_WINDOW: Duration = Duration::from_secs(5);
+        let started = tokio::time::Instant::now();
+        let term_deadline = started + TERM_GRACE;
+        let final_deadline = started + TERM_GRACE + KILL_WINDOW;
+        let mut signal_errors = Vec::new();
+        if let Err(e) = signal_owned_group(&self, libc::SIGTERM) {
+            signal_errors.push(e);
+        }
+        loop {
+            let members = group_members(&self)?;
+            if members.is_empty() && self.status().is_some() {
+                break;
+            }
+            if tokio::time::Instant::now() >= term_deadline {
+                break;
+            }
+            tokio::time::sleep_until(
+                (tokio::time::Instant::now() + CLEANUP_POLL).min(term_deadline),
+            )
+            .await;
+        }
+        if (!group_members(&self)?.is_empty() || self.status().is_none())
+            && let Err(e) = signal_owned_group(&self, libc::SIGKILL)
+        {
+            signal_errors.push(e);
+        }
+        loop {
+            let members = group_members(&self)?;
+            if members.is_empty() && self.status().is_some() {
+                break;
+            }
+            if tokio::time::Instant::now() >= final_deadline {
+                return Err(format!(
+                    "cleanup timed out for process group {} ({} running member(s), direct child reaped: {})",
+                    self.pgid,
+                    members.len(),
+                    self.status().is_some()
+                ));
+            }
+            tokio::time::sleep_until(
+                (tokio::time::Instant::now() + CLEANUP_POLL).min(final_deadline),
+            )
+            .await;
+        }
+        if let Some(Err(e)) = self.status() {
+            return Err(format!("cannot reap process {}: {e}", self.pid));
+        }
+        let drains = std::mem::take(&mut *self.drains.lock().unwrap_or_else(|e| e.into_inner()));
+        for mut drain in drains {
+            if tokio::time::timeout_at(final_deadline, &mut drain)
+                .await
+                .is_err()
+            {
+                return Err(format!(
+                    "output pipe did not close after process group {} stopped",
+                    self.pgid
+                ));
+            }
+        }
+        if signal_errors.is_empty() {
+            Ok(())
+        } else {
+            Err(signal_errors.join("; "))
+        }
+    }
+}
 
 impl Groups {
-    fn add(&self, pgid: i32) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(pgid);
+    fn add(&self, group: Arc<OwnedGroup>) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(group);
     }
 
-    /// SIGKILL every owned group (the panic path's last resort).
-    pub fn kill_all(&self) {
-        for &pgid in self.0.lock().unwrap_or_else(|e| e.into_inner()).iter() {
-            signal_group(pgid, libc::SIGKILL);
+    fn status_for_pid(&self, pid: i32) -> Option<Result<ExitStatus, String>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|group| group.pid == pid)
+            .and_then(|group| group.status())
+    }
+
+    async fn cleanup_pids(&self, pids: &[i32]) -> Result<(), String> {
+        let wanted: std::collections::HashSet<_> = pids.iter().copied().collect();
+        let groups = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|g| wanted.contains(&g.pid))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut tasks = tokio::task::JoinSet::new();
+        for group in groups {
+            tasks.spawn(async move { group.await_cleanup().await });
         }
+        let mut errors = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => errors.push(e),
+                Err(e) => errors.push(format!("cleanup waiter failed: {e}")),
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    pub async fn cleanup_all(&self) -> Result<(), String> {
+        let pids = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|g| g.pid)
+            .collect::<Vec<_>>();
+        self.cleanup_pids(&pids).await
     }
 }
 
-fn signal_group(pgid: i32, sig: i32) {
-    if pgid > 0 {
-        // SAFETY: kill(2) on a negative pid signals a process group; an
-        // ESRCH for an already-empty group is the expected outcome.
-        unsafe {
-            libc::kill(-pgid, sig);
-        }
-    }
-}
-
-/// Bounded log retention: the newest `LOG_RETENTION` bytes survive, and
-/// the pipe is drained to EOF however chatty the child is.
 #[derive(Clone, Default)]
 pub struct Log(Arc<Mutex<VecDeque<u8>>>);
 
@@ -224,7 +547,7 @@ fn drain<R: AsyncRead + Unpin + Send + 'static>(
     reader: R,
     log: Log,
     lines: Option<mpsc::UnboundedSender<String>>,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut reader = BufReader::new(reader);
         let mut line = Vec::new();
@@ -241,16 +564,71 @@ fn drain<R: AsyncRead + Unpin + Send + 'static>(
                 }
             }
         }
-    });
+    })
 }
 
-/// A spawned child in its own process group.
+/// A process whose wait task and process-group record outlive the caller.
 pub struct Proc {
     pub label: String,
-    pub child: Child,
+    pub child: ProcessWait,
     pub pgid: i32,
+    pub pid: i32,
     pub log: Log,
-    lines: mpsc::UnboundedReceiver<String>,
+    group: Arc<OwnedGroup>,
+    pub lines: mpsc::UnboundedReceiver<String>,
+}
+
+pub struct ProcessWait {
+    group: Arc<OwnedGroup>,
+}
+
+impl Proc {
+    pub fn next_line(&mut self) -> impl std::future::Future<Output = Option<String>> + '_ {
+        self.lines.recv()
+    }
+
+    pub async fn cleanup(&self) -> Result<(), String> {
+        self.group.await_cleanup().await
+    }
+
+    async fn announce<T>(&mut self, parse: impl Fn(&str) -> Option<T>) -> Result<T, String> {
+        let deadline = tokio::time::Instant::now() + STARTUP_DEADLINE;
+        loop {
+            tokio::select! {
+                line = self.lines.recv() => match line {
+                    Some(line) => if let Some(value) = parse(&line) {
+                        self.lines.close();
+                        return Ok(value);
+                    },
+                    None => return Err(format!("{} exited before announcing its addresses", self.label)),
+                },
+                _ = tokio::time::sleep_until(deadline) => {
+                    return Err(format!("{} did not announce within {STARTUP_DEADLINE:?}", self.label));
+                }
+            }
+        }
+    }
+}
+
+impl ProcessWait {
+    pub async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        let mut rx = self.group.status.clone();
+        loop {
+            if let Some(result) = rx.borrow().clone() {
+                return result.map_err(std::io::Error::other);
+            }
+            rx.changed().await.map_err(|_| {
+                std::io::Error::other(format!(
+                    "wait owner for process {} vanished",
+                    self.group.pid
+                ))
+            })?;
+        }
+    }
+}
+
+pub fn spawn_owned_command(cmd: Command, label: &str, groups: &Groups) -> std::io::Result<Proc> {
+    spawn(cmd, label, groups)
 }
 
 fn spawn(mut cmd: Command, label: &str, groups: &Groups) -> std::io::Result<Proc> {
@@ -260,53 +638,44 @@ fn spawn(mut cmd: Command, label: &str, groups: &Groups) -> std::io::Result<Proc
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     let mut child = cmd.spawn()?;
-    let pgid = child.id().map(|p| p as i32).unwrap_or(0);
-    groups.add(pgid);
+    let pid = child
+        .id()
+        .ok_or_else(|| std::io::Error::other("spawned child has no pid"))? as i32;
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let identity = proc_identity(pid);
+    let (status_tx, status) = tokio::sync::watch::channel(None);
+    let group = Arc::new(OwnedGroup {
+        pid,
+        pgid: pid,
+        session: identity.map(|i| i.session),
+        start_time: identity.map(|i| i.start_time),
+        status,
+        cleanup: Mutex::new(None),
+        drains: Mutex::new(Vec::new()),
+    });
+    groups.add(group.clone());
+    tokio::spawn(async move {
+        let result = child.wait().await.map_err(|e| e.to_string());
+        status_tx.send_replace(Some(result));
+    });
     let log = Log::default();
     let (tx, rx) = mpsc::unbounded_channel();
-    drain(child.stdout.take().expect("piped"), log.clone(), Some(tx));
-    drain(child.stderr.take().expect("piped"), log.clone(), None);
+    let mut drains = group.drains.lock().unwrap_or_else(|e| e.into_inner());
+    drains.push(drain(stdout, log.clone(), Some(tx)));
+    drains.push(drain(stderr, log.clone(), None));
+    drop(drains);
     Ok(Proc {
         label: label.to_string(),
-        child,
-        pgid,
+        child: ProcessWait {
+            group: group.clone(),
+        },
+        pgid: pid,
+        pid,
         log,
+        group,
         lines: rx,
     })
-}
-
-impl Proc {
-    /// Read stdout lines until `parse` accepts one, within the startup
-    /// deadline; the child exiting first is an error.
-    async fn announce<T>(&mut self, parse: impl Fn(&str) -> Option<T>) -> Result<T, String> {
-        let deadline = tokio::time::Instant::now() + STARTUP_DEADLINE;
-        loop {
-            tokio::select! {
-                line = self.lines.recv() => match line {
-                    Some(line) => if let Some(v) = parse(&line) { return Ok(v) },
-                    None => return Err(format!("{} exited before announcing its addresses", self.label)),
-                },
-                _ = tokio::time::sleep_until(deadline) => {
-                    return Err(format!("{} did not announce within {STARTUP_DEADLINE:?}", self.label));
-                }
-            }
-        }
-    }
-
-    /// SIGTERM the group, wait out the grace, SIGKILL, reap; then sweep the
-    /// group once more for descendants that outlived their leader.
-    async fn stop(&mut self) -> Option<ExitStatus> {
-        signal_group(self.pgid, libc::SIGTERM);
-        let status = match tokio::time::timeout(SHUTDOWN_GRACE, self.child.wait()).await {
-            Ok(s) => s.ok(),
-            Err(_) => {
-                signal_group(self.pgid, libc::SIGKILL);
-                self.child.wait().await.ok()
-            }
-        };
-        signal_group(self.pgid, libc::SIGKILL);
-        status
-    }
 }
 
 /// Parse Swarmail's startup line (`smtp=… pop3=… http=…`), the same
@@ -396,20 +765,22 @@ fn deliveries_with(value: &Value, status: DeliveryStatus) -> Result<usize, Strin
 struct Trial {
     groups: Groups,
     servers: Vec<Proc>,
+    agents: Arc<Mutex<Vec<(String, i32)>>>,
     diagnostics: Vec<String>,
 }
 
 impl Trial {
-    async fn stop_servers(&mut self) {
-        // Fixture first (it may hold SMTP sessions), then Swarmail.
-        while let Some(mut p) = self.servers.pop() {
-            p.stop().await;
+    async fn stop_servers(&mut self) -> Result<(), String> {
+        let pids: Vec<_> = self.servers.iter().map(|p| p.pid).collect();
+        self.groups.cleanup_pids(&pids).await?;
+        while let Some(p) = self.servers.pop() {
             let log = p.log.text();
             if !log.is_empty() {
                 self.diagnostics
                     .push(format!("--- {} log (tail) ---\n{log}", p.label));
             }
         }
+        Ok(())
     }
 }
 
@@ -691,10 +1062,16 @@ async fn run_body(
                 label,
                 mut child,
                 pgid,
+                pid,
                 log,
                 ..
             }) => {
                 agent_groups.push(pgid);
+                trial
+                    .agents
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((id.identity.clone(), pid));
                 logs.push((label, log));
                 waits.spawn(async move { (index, child.wait().await.ok()) });
             }
@@ -710,7 +1087,9 @@ async fn run_body(
     } else {
         match std::env::var(FAULT_ENV).as_deref() {
             Ok("panic") => panic!("injected runner fault"),
-            Ok("server_death") => signal_group(trial.servers[0].pgid, libc::SIGKILL),
+            Ok("server_death") => {
+                let _ = signal_owned_group(&trial.servers[0].group, libc::SIGKILL);
+            }
             _ => {}
         }
         let deadline = tokio::time::Instant::now() + Duration::from_millis(task.deadline_ms);
@@ -730,27 +1109,11 @@ async fn run_body(
             }
         }
     };
-    // Every agent group is terminated and reaped on every ending, and swept
-    // for descendants that outlived their leader.
-    for &pgid in &agent_groups {
-        signal_group(pgid, libc::SIGTERM);
-    }
-    let reaped = tokio::time::timeout(SHUTDOWN_GRACE, async {
-        while let Some(joined) = waits.join_next().await {
-            if let Ok((i, status)) = joined {
-                statuses[i] = status;
-            }
-        }
-    })
-    .await;
-    for &pgid in &agent_groups {
-        signal_group(pgid, libc::SIGKILL);
-    }
-    if reaped.is_err() {
-        while let Some(joined) = waits.join_next().await {
-            if let Ok((i, status)) = joined {
-                statuses[i] = status;
-            }
+    // Stop every agent group concurrently and retain their direct waiters.
+    let cleanup_result = trial.groups.cleanup_pids(&agent_groups).await;
+    while let Some(joined) = waits.join_next().await {
+        if let Ok((i, status)) = joined {
+            statuses[i] = status;
         }
     }
     *exits = ids
@@ -768,6 +1131,9 @@ async fn run_body(
     }
     if let Some(e) = spawn_failed {
         return Err(e);
+    }
+    if let Err(e) = cleanup_result {
+        return Err(format!("agent cleanup failed: {e}"));
     }
     match end {
         AgentsEnd::ServerDied(why) => return Err(why),
@@ -837,8 +1203,19 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             return refused_row(&req, &trial_id);
         }
     };
+    if let Some(dir) = std::env::var_os(PRE_HANDLER_HOLD_ENV) {
+        let dir = PathBuf::from(dir);
+        if std::fs::create_dir_all(&dir).is_ok()
+            && std::fs::write(dir.join("entered"), b"waiting").is_ok()
+        {
+            while !dir.join("release").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
     let started = Instant::now();
     let groups = Groups::default();
+    let agents = Arc::new(Mutex::new(Vec::<(String, i32)>::new()));
     // Registered before any child starts, so an interrupt at any phase
     // takes the cleanup path and still yields the row.
     let signals = (
@@ -860,7 +1237,7 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
         }
     };
     let mut body = {
-        let (task, label, argv, trial_id, bin, scratch_path, groups) = (
+        let (task, label, argv, trial_id, bin, scratch_path, groups, agents) = (
             task.clone(),
             label.clone(),
             req.argv.clone(),
@@ -868,11 +1245,13 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             bin.clone(),
             scratch.path().to_path_buf(),
             groups.clone(),
+            agents.clone(),
         );
         tokio::spawn(async move {
             let mut trial = Trial {
                 groups,
                 servers: Vec::new(),
+                agents,
                 diagnostics: Vec::new(),
             };
             let mut exits = Vec::new();
@@ -889,28 +1268,64 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
                 &mut snap,
             )
             .await;
-            trial.stop_servers().await;
+            let outcome = match trial.stop_servers().await {
+                Ok(()) => outcome,
+                Err(e) => Err(format!("server cleanup failed: {e}")),
+            };
             (outcome, exits, snap, trial.diagnostics)
         })
     };
     let joined = tokio::select! {
-        joined = &mut body => Some(joined),
+        biased;
         _ = term.recv() => None,
         _ = int.recv() => None,
+        joined = &mut body => Some(joined),
     };
     let Some(joined) = joined else {
-        // Interrupted: stop the body (its children are kill-on-drop),
-        // then terminate every owned group and give them the grace.
+        // The body may be cancelled at any await point. Child waiters and
+        // cleanup owners live in the shared group registry, outside the body.
         body.abort();
         let _ = body.await;
-        groups.kill_all();
+        let cleanup = groups.cleanup_all();
+        tokio::pin!(cleanup);
+        let cleanup_result = loop {
+            tokio::select! {
+                biased;
+                result = &mut cleanup => break result,
+                _ = term.recv() => {},
+                _ = int.recv() => {},
+            }
+        };
+        if let Err(e) = cleanup_result {
+            eprintln!("swarmail-evals: interrupted trial cleanup failed: {e}");
+        }
+        let agent_exits: Vec<_> = agents
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(identity, pid)| {
+                exit_of(identity, groups.status_for_pid(*pid).and_then(Result::ok))
+            })
+            .collect();
         eprintln!("swarmail-evals: harness error: the trial was interrupted");
         return TrialResult {
+            schema_version: RESULT_SCHEMA,
+            trial_id,
+            task: req.task.clone(),
+            agent: req.agent.clone(),
+            outcome: Outcome::HarnessError,
+            failure_class: Some(FailureClass::HarnessError),
             wall_time_ms: started.elapsed().as_millis() as u64,
-            ..refused_row(&req, &trial_id)
+            agent_exit_status: if task.agent_count == 1 {
+                agent_exits.first().and_then(|e| e.code)
+            } else {
+                None
+            },
+            agent_exits,
+            confinement: CONFINEMENT.to_string(),
         };
     };
-    let (verdict, exits, snap, mut diagnostics) = match joined {
+    let (mut verdict, exits, snap, mut diagnostics) = match joined {
         Ok((outcome, exits, snap, diagnostics)) => {
             // Precedence (0055 §2): infrastructure — a process error, or a
             // snapshot that is absent or unscorable (a failed or parked
@@ -940,9 +1355,6 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             (verdict, exits, snap, diagnostics)
         }
         Err(join) => {
-            // A panic: the body's handles are gone, so its groups are
-            // killed through the shared registry.
-            groups.kill_all();
             eprintln!("swarmail-evals: harness error: the runner panicked: {join}");
             (
                 Verdict::harness_error(),
@@ -952,6 +1364,26 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             )
         }
     };
+    let cleanup = groups.cleanup_all();
+    tokio::pin!(cleanup);
+    let mut interrupted_during_cleanup = false;
+    let cleanup_result = loop {
+        tokio::select! {
+            biased;
+            result = &mut cleanup => break result,
+            _ = term.recv() => interrupted_during_cleanup = true,
+            _ = int.recv() => interrupted_during_cleanup = true,
+        }
+    };
+    if let Err(e) = cleanup_result {
+        diagnostics.push(format!("owned process cleanup failed: {e}"));
+        eprintln!("swarmail-evals: harness error: owned process cleanup failed: {e}");
+        verdict = Verdict::harness_error();
+    }
+    if interrupted_during_cleanup {
+        eprintln!("swarmail-evals: harness error: the trial was interrupted");
+        verdict = Verdict::harness_error();
+    }
     let agent_exit_status = if task.agent_count == 1 {
         exits.first().and_then(|e| e.code)
     } else {
