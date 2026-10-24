@@ -3,8 +3,8 @@
 mod common;
 
 use common::{
-    SmtpConn, http_get_text, http_json, http_send_text, metric_row_value, smtp_send, start,
-    start_with, wait_for_metric_row,
+    SmtpConn, http_bytes, http_get_text, http_json, http_send_text, metric_row_value, smtp_send,
+    start, start_with, wait_for_metric_row,
 };
 
 fn base64_of(s: &str) -> String {
@@ -1165,76 +1165,143 @@ async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
     let (snapshot_status, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
     assert_eq!(snapshot_status, 200, "{before}");
 
-    // 256 does not become 0: it does not fit u8.
-    for (args, label) in [
+    // Every staging/type failure preserves the complete multi-event config.
+    let cases: &[(&str, &str, &str)] = &[
         (
-            r#"{"event": "data", "probability": -1}"#,
-            "negative probability -1 refuses by name",
+            r#"{"event":"data","probability":-1}"#,
+            "negative probability",
+            "probability must be an integer between 0 and 100",
         ),
         (
-            r#"{"event": "data", "probability": 256}"#,
+            r#"{"event":"data","probability":256}"#,
             "256 must refuse, not narrow to 0",
+            "probability must be an integer between 0 and 100",
         ),
         (
-            r#"{"event": "data", "probability": "high"}"#,
-            "a string is a wrong-typed wire value",
+            r#"{"event":"data","probability":"high"}"#,
+            "a string probability",
+            "probability must be an integer between 0 and 100",
         ),
         (
-            r#"{"event": "data", "probability": 0.0}"#,
-            "a float would be a narrowing cast",
+            r#"{"event":"data","probability":[]}"#,
+            "an array probability",
+            "probability must be an integer between 0 and 100",
         ),
         (
-            r#"{"event": "data", "probability": 150}"#,
+            r#"{"event":"data","probability":{}}"#,
+            "an object probability",
+            "probability must be an integer between 0 and 100",
+        ),
+        (
+            r#"{"event":"data","probability":0.0}"#,
+            "a float probability",
+            "probability must be an integer between 0 and 100",
+        ),
+        (
+            r#"{"event":"data","probability":150}"#,
             "150 is over the 100 ceiling",
+            "probability must be an integer between 0 and 100",
         ),
         (
-            r#"{"event": "data"}"#,
-            "an absent probability is refused, not defaulted",
+            r#"{"event":"data"}"#,
+            "an absent probability",
+            "probability must be an integer between 0 and 100",
         ),
         (
-            r#"{"event": "data", "probability": null}"#,
-            "a supplied null is supplied, not omission",
+            r#"{"event":"data","probability":null}"#,
+            "a null probability",
+            "probability must be an integer between 0 and 100",
         ),
         (
-            r#"{"event": "data", "probability": 101}"#,
-            "101 is over the ceiling, refused by the shared validator",
+            r#"{"event":"data","probability":101}"#,
+            "101 is over the ceiling",
+            "probability must be an integer between 0 and 100",
         ),
         (
-            r#"{"event": "data", "probability": 255}"#,
-            "255 is the u8 ceiling, still over the domain's",
+            r#"{"event":"data","probability":255}"#,
+            "255 is the u8 ceiling",
+            "probability must be an integer between 0 and 100",
         ),
-    ] {
-        let (st, body) = rpc(
+        (
+            r#"{"event":[] ,"probability":0}"#,
+            "an array event",
+            "event must be a string",
+        ),
+        (
+            r#"{"event":{} ,"probability":0}"#,
+            "an object event",
+            "event must be a string",
+        ),
+        (
+            r#"{"event":null,"probability":0}"#,
+            "a null event",
+            "event must be a string",
+        ),
+        (
+            r#"{"event":"dns","probability":0}"#,
+            "an unknown event",
+            "unknown event: dns (use connect|mail_from|rcpt|data)",
+        ),
+        (
+            r#"{"event":"data","probability":0,"error":[]}"#,
+            "an array error",
+            "error must be a string",
+        ),
+        (
+            r#"{"event":"data","probability":0,"error":{}}"#,
+            "an object error",
+            "error must be a string",
+        ),
+        (
+            r#"{"event":"data","probability":0,"error":null}"#,
+            "a null error",
+            "error must be a string",
+        ),
+        (
+            r#"{"event":"data","probability":0,"delay_ms":"soon"}"#,
+            "a string delay",
+            "delay_ms must be a non-negative integer",
+        ),
+        (
+            r#"{"event":"data","probability":0,"delay_ms":[]}"#,
+            "an array delay",
+            "delay_ms must be a non-negative integer",
+        ),
+        (
+            r#"{"event":"data","probability":0,"delay_ms":{}}"#,
+            "an object delay",
+            "delay_ms must be a non-negative integer",
+        ),
+        (
+            r#"{"event":"data","probability":0,"delay_ms":null}"#,
+            "a null delay",
+            "delay_ms must be a non-negative integer",
+        ),
+    ];
+    for (args, label, expected_message) in cases {
+        let (status, installed) = http_json(
+            srv.http_addr, "PUT", "/api/v1/chaos",
+            Some(r#"{"connect": {"probability": 0, "error": "421 baseline connect", "delay_ms": 5}, "data": {"probability": 0, "error": "451 baseline data", "delay_ms": 15}}"#),
+        ).await;
+        assert_eq!(status, 200, "{installed}");
+        let (get_status, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{before}");
+        let (status, body) = rpc(
             srv.http_addr,
             "tools/call",
             &format!(r#"{{"name": "swarmail_set_chaos", "arguments": {args}}}"#),
         )
         .await;
-        assert_eq!(st, 200, "{label}: {body}");
+        assert_eq!(status, 200, "{label}: {body}");
+        assert_eq!(body["error"]["code"], -32602, "{label}: {body}");
         assert_eq!(
-            body["error"]["message"], "probability must be an integer between 0 and 100",
+            body["error"]["message"], *expected_message,
             "{label}: {body}"
         );
         let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
         assert_eq!(get_status, 200, "{label}: {after}");
         assert_eq!(after, before, "{label} changed active rules");
     }
-
-    // Wrong-typed delay_ms refuses by name; absent stays the honest zero.
-    let (st, body) = rpc(
-        srv.http_addr,
-        "tools/call",
-        r#"{"name": "swarmail_set_chaos", "arguments": {"event": "data", "probability": 10, "delay_ms": "soon"}}"#,
-    )
-    .await;
-    assert_eq!(st, 200);
-    assert_eq!(
-        body["error"]["message"], "delay_ms must be a non-negative integer",
-        "{body}"
-    );
-    let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
-    assert_eq!(get_status, 200, "{after}");
-    assert_eq!(after, before, "a rejected delay changed active rules");
 
     // A legal value sets the rule — the pole case is already pinned by the
     // chaos tests; this is the interior.
@@ -1258,6 +1325,18 @@ async fn set_chaos_refuses_every_malformed_wire_value_by_name() {
 #[tokio::test]
 async fn set_chaos_refuses_the_wire_text_rules_by_name() {
     let srv = start().await;
+    tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event":"connect","probability":0,"error":"421 kept"}"#,
+    )
+    .await;
+    tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event":"data","probability":100,"error":"554 kept"}"#,
+    )
+    .await;
     for (args, sentence) in [
         (
             r#"{"event": "data", "probability": 100, "error": "250 2.0.0 OK"}"#,
@@ -1276,6 +1355,8 @@ async fn set_chaos_refuses_the_wire_text_rules_by_name() {
             "delay_ms must be an integer between 0 and 300000",
         ),
     ] {
+        let (get_status, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{before}");
         let (st, body) = rpc(
             srv.http_addr,
             "tools/call",
@@ -1283,7 +1364,11 @@ async fn set_chaos_refuses_the_wire_text_rules_by_name() {
         )
         .await;
         assert_eq!(st, 200, "{args}: {body}");
+        assert_eq!(body["error"]["code"], -32602, "{args}: {body}");
         assert_eq!(body["error"]["message"], sentence, "{args}: {body}");
+        let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{after}");
+        assert_eq!(after, before, "{args} changed the config");
     }
 
     // The interior is legal: a 510-octet single-line 5xx reply (the cap is
@@ -1512,21 +1597,38 @@ async fn the_schemas_publish_the_wire_bounds() {
 
 // ---------- the validation family: #46 (arguments + envelope) ----------
 
-async fn assert_one_default_mail(addr: Http, expected_id: &str, when: &str) {
+#[derive(Debug, PartialEq)]
+struct DefaultMailSnapshot {
+    count: u64,
+    messages: serde_json::Value,
+    raw: Vec<(String, Vec<u8>)>,
+}
+
+async fn default_mail_snapshot(addr: Http) -> DefaultMailSnapshot {
     let (status, count) = http_json(addr, "GET", "/api/v1/inboxes/default/count", None).await;
-    assert_eq!(status, 200, "{when}: {count}");
-    assert_eq!(count["count"], 1, "{when}: {count}");
+    assert_eq!(status, 200, "{count}");
     let (status, messages) = http_json(addr, "GET", "/api/v1/inboxes/default/messages", None).await;
-    assert_eq!(status, 200, "{when}: {messages}");
-    assert_eq!(
-        messages["emails"].as_array().unwrap().len(),
-        1,
-        "{when}: {messages}"
-    );
-    assert_eq!(
-        messages["emails"][0]["id"], expected_id,
-        "{when}: {messages}"
-    );
+    assert_eq!(status, 200, "{messages}");
+    let emails = messages["emails"].as_array().expect("message list");
+    let count = count["count"].as_u64().expect("exact count");
+    assert_eq!(count, emails.len() as u64, "{messages}");
+    let mut raw = Vec::with_capacity(emails.len());
+    for email in emails {
+        let id = email["id"].as_str().expect("stored id").to_string();
+        let (status, bytes) = http_bytes(addr, &format!("/api/v1/messages/{id}/raw")).await;
+        assert_eq!(status, 200, "raw {id}");
+        raw.push((id, bytes));
+    }
+    DefaultMailSnapshot {
+        count,
+        messages,
+        raw,
+    }
+}
+
+async fn assert_default_snapshot(addr: Http, expected: &DefaultMailSnapshot, when: &str) {
+    let actual = default_mail_snapshot(addr).await;
+    assert_eq!(actual, *expected, "{when}");
 }
 
 /// A *present* argument of the wrong JSON type — or explicit `null` —
@@ -1545,13 +1647,38 @@ async fn a_wrong_typed_argument_refuses_by_name() {
     .await;
     assert_eq!(seed_status, 200, "{seeded}");
     let retained_id = seeded["id"].as_str().unwrap().to_string();
-    assert_one_default_mail(srv.http_addr, &retained_id, "before malformed clear probes").await;
+    let retained = default_mail_snapshot(srv.http_addr).await;
+    assert_eq!(retained.count, 1, "the keeper starts as one mail");
+    assert_eq!(retained.messages["emails"][0]["id"], retained_id);
     let legs: &[(&str, &str, &str)] = &[
         // (tool, arguments, field named in the refusal) — one leg per wrong
         // shape: string→int, int→string, array→string, explicit null,
         // a negative limit, and get_latest's refusing zero.
-        ("swarmail_clear_inbox", r#"{"inbox": 42}"#, "inbox"),
-        ("swarmail_clear_inbox", r#"{"inbox": null}"#, "inbox"),
+        (
+            "swarmail_clear_inbox",
+            r#"{"inbox": 42}"#,
+            "inbox must be a string",
+        ),
+        (
+            "swarmail_clear_inbox",
+            r#"{"inbox": null}"#,
+            "inbox must be a string",
+        ),
+        (
+            "swarmail_clear_inbox",
+            r#"{"inbox": []}"#,
+            "inbox must be a string",
+        ),
+        (
+            "swarmail_clear_inbox",
+            r#"{"inbox": {}}"#,
+            "inbox must be a string",
+        ),
+        (
+            "swarmail_clear_inbox",
+            r#"{"inbx": "typo"}"#,
+            "unknown argument: inbx",
+        ),
         ("swarmail_wait_for_email", r#"{"to": ["a@x.io"]}"#, "to"),
         (
             "swarmail_wait_for_email",
@@ -1563,17 +1690,32 @@ async fn a_wrong_typed_argument_refuses_by_name() {
         ("swarmail_get_latest_email", r#"{"count": "3"}"#, "count"),
         ("swarmail_get_latest_email", r#"{"count": 0}"#, "count"),
         ("swarmail_get_email", r#"{"id": 7}"#, "id"),
-        ("swarmail_seed_email", r#"{"to": 7}"#, "to"),
+        ("swarmail_seed_email", r#"{"to": 7}"#, "to must be a string"),
+        (
+            "swarmail_seed_email",
+            r#"{"to": null}"#,
+            "to must be a string",
+        ),
+        (
+            "swarmail_seed_email",
+            r#"{"to": []}"#,
+            "to must be a string",
+        ),
+        (
+            "swarmail_seed_email",
+            r#"{"to": {}}"#,
+            "to must be a string",
+        ),
+        (
+            "swarmail_seed_email",
+            r#"{"typo": "ignored", "to": "new@example.test"}"#,
+            "unknown argument: typo",
+        ),
     ];
-    for (name, args, field) in legs {
-        let clear_probe = *name == "swarmail_clear_inbox";
-        if clear_probe {
-            assert_one_default_mail(
-                srv.http_addr,
-                &retained_id,
-                "immediately before malformed clear",
-            )
-            .await;
+    for (name, args, expected_message) in legs {
+        let state_sensitive = *name == "swarmail_clear_inbox" || *name == "swarmail_seed_email";
+        if state_sensitive {
+            assert_default_snapshot(srv.http_addr, &retained, "immediately before refusal").await;
         }
         let (st, body) = rpc(
             srv.http_addr,
@@ -1584,26 +1726,21 @@ async fn a_wrong_typed_argument_refuses_by_name() {
         assert_eq!(st, 200, "{name} {args}");
         assert_eq!(body["error"]["code"], -32602, "{name} {args}: {body}");
         let message = body["error"]["message"].as_str().unwrap();
-        if *name == "swarmail_seed_email" {
-            assert_eq!(message, "to must be a string", "{name} {args}: {message}");
+        if state_sensitive {
+            assert_eq!(message, *expected_message, "{name} {args}: {message}");
+            assert_default_snapshot(srv.http_addr, &retained, "immediately after refusal").await;
         } else {
-            assert!(message.contains(field), "{name} {args}: {message}");
+            assert!(
+                message.contains(expected_message),
+                "{name} {args}: {message}"
+            );
             assert!(message.contains("must be"), "{name} {args}: {message}");
-        }
-        if clear_probe {
-            assert_one_default_mail(
-                srv.http_addr,
-                &retained_id,
-                "immediately after malformed clear",
-            )
-            .await;
         }
     }
 
-    // The seeded identity remains after every refusal, including both clear probes.
-    assert_one_default_mail(
+    assert_default_snapshot(
         srv.http_addr,
-        &retained_id,
+        &retained,
         "after all malformed argument probes",
     )
     .await;
@@ -1617,47 +1754,38 @@ async fn a_wrong_typed_argument_refuses_by_name() {
 #[tokio::test]
 async fn a_malformed_arguments_container_refuses_before_any_effect() {
     let srv = start().await;
-    for container in ["[]", "42", "\"clear\"", "null"] {
-        let (st, body) = rpc(
-            srv.http_addr,
-            "tools/call",
-            &format!(r#"{{"name": "swarmail_clear_inbox", "arguments": {container}}}"#),
-        )
-        .await;
-        assert_eq!(st, 200, "{container}");
-        assert_eq!(body["error"]["code"], -32602, "{container}: {body}");
-        let message = body["error"]["message"].as_str().unwrap();
-        assert!(
-            message.contains("arguments"),
-            "{container}: the refusal names the container: {message}"
-        );
-        assert!(
-            message.contains("must be"),
-            "{container}: the refusal names the domain: {message}"
-        );
-    }
+    let (seed_status, keeper) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/default/seed",
+        Some(r#"{"to":"keeper@example.com","subject":"keeper","text":"still here 778899"}"#),
+    )
+    .await;
+    assert_eq!(seed_status, 200, "{keeper}");
+    let retained = default_mail_snapshot(srv.http_addr).await;
+    assert_eq!(
+        retained.count, 1,
+        "the clear victim is seeded before refusals"
+    );
 
-    // The refusal is not just words: the seeded mail survives a refused
-    // clear — the silent default would have destroyed it.
-    let (st, body) = rpc(
-        srv.http_addr,
-        "tools/call",
-        r#"{"name": "swarmail_seed_email", "arguments": {"inbox": "default", "to": "keeper@example.com", "subject": "keeper", "text": "still here 778899"}}"#,
-    )
-    .await;
-    assert_eq!(st, 200, "{body}");
-    assert_eq!(body["result"]["isError"], false, "{body}");
-    let (st, body) = rpc(
-        srv.http_addr,
-        "tools/call",
-        r#"{"name": "swarmail_clear_inbox", "arguments": []}"#,
-    )
-    .await;
-    assert_eq!(st, 200);
-    assert_eq!(body["error"]["code"], -32602, "{body}");
-    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
-    assert_eq!(st, 200);
-    assert_eq!(body["count"], 1, "a refused clear_inbox cleared nothing");
+    for name in ["swarmail_clear_inbox", "swarmail_seed_email"] {
+        for container in ["[]", "42", "\"clear\"", "null"] {
+            assert_default_snapshot(srv.http_addr, &retained, "before malformed container").await;
+            let (st, body) = rpc(
+                srv.http_addr,
+                "tools/call",
+                &format!(r#"{{"name": "{name}", "arguments": {container}}}"#),
+            )
+            .await;
+            assert_eq!(st, 200, "{name} {container}");
+            assert_eq!(body["error"]["code"], -32602, "{name} {container}: {body}");
+            assert_eq!(
+                body["error"]["message"], "arguments must be an object of named arguments",
+                "{name} {container}: {body}"
+            );
+            assert_default_snapshot(srv.http_addr, &retained, "after malformed container").await;
+        }
+    }
 }
 
 /// A refused wait registers no waiter (0025 §5 through the MCP plane): the
@@ -2259,6 +2387,20 @@ async fn get_latest_count_zero_is_refused_and_a_legal_count_is_honored() {
 #[tokio::test]
 async fn set_chaos_refuses_an_unknown_argument_key_by_name() {
     let srv = start().await;
+    tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event":"connect","probability":0,"error":"421 prior connect"}"#,
+    )
+    .await;
+    tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event":"data","probability":100,"error":"554 prior data"}"#,
+    )
+    .await;
+    let (snapshot_status, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(snapshot_status, 200, "{before}");
     let (st, body) = rpc(
         srv.http_addr,
         "tools/call",
@@ -2271,6 +2413,9 @@ async fn set_chaos_refuses_an_unknown_argument_key_by_name() {
         body["error"]["message"], "unknown argument: solus (use event|probability|error|delay_ms)",
         "{body}"
     );
+    let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(get_status, 200, "{after}");
+    assert_eq!(after, before, "unknown key changed active rules");
 }
 
 /// Arguments that are not an object at all refuse as a malformed
@@ -2280,7 +2425,28 @@ async fn set_chaos_refuses_an_unknown_argument_key_by_name() {
 #[tokio::test]
 async fn set_chaos_with_unreadable_arguments_refuse_as_a_container() {
     let srv = start().await;
-    for arguments in ["\"data\"", "7", "null"] {
+    tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event":"connect","probability":0,"error":"421 prior connect"}"#,
+    )
+    .await;
+    tool(
+        srv.http_addr,
+        "swarmail_set_chaos",
+        r#"{"event":"data","probability":100,"error":"554 prior data"}"#,
+    )
+    .await;
+    let (snapshot_status, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+    assert_eq!(snapshot_status, 200, "{before}");
+
+    for arguments in ["[]", "\"data\"", "7", "null"] {
+        let (get_status, current) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{current}");
+        assert_eq!(
+            current, before,
+            "the config is installed before each shape refusal"
+        );
         let (st, body) = rpc(
             srv.http_addr,
             "tools/call",
@@ -2293,13 +2459,13 @@ async fn set_chaos_with_unreadable_arguments_refuse_as_a_container() {
             body["error"]["message"], "arguments must be an object of named arguments",
             "{arguments}: {body}"
         );
+        let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{after}");
+        assert_eq!(after, before, "{arguments} changed active rules");
     }
 
-    // An object container without an event still reaches the event lookup:
-    // the container guard only refuses the shape, not a well-formed
-    // absence — "missing event" is the staging sentence for that. Absent
-    // arguments land on the same sentence: absence is legal shape, a
-    // missing event is the defect.
+    // An object container without an event still reaches the event lookup;
+    // absence is a staging refusal, and it also leaves the installed rules.
     for call in [
         r#"{"name": "swarmail_set_chaos", "arguments": {}}"#,
         r#"{"name": "swarmail_set_chaos"}"#,
@@ -2308,13 +2474,9 @@ async fn set_chaos_with_unreadable_arguments_refuse_as_a_container() {
         assert_eq!(st, 200, "{call}");
         assert_eq!(body["error"]["code"], -32602, "{call}: {body}");
         assert_eq!(body["error"]["message"], "missing event", "{call}: {body}");
-    }
-
-    // Nothing was armed by any refused call: every chaos slot stays null.
-    let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
-    assert_eq!(st, 200, "{body}");
-    for (slot, armed) in body.as_object().expect("the chaos shape") {
-        assert!(armed.is_null(), "a refused set_chaos armed {slot}: {armed}");
+        let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{after}");
+        assert_eq!(after, before, "{call} changed active rules");
     }
 }
 

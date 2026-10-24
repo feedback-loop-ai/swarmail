@@ -588,8 +588,26 @@ async fn https_target_is_delivered_over_tls() {
         "ca_pem": ca_pem.clone(),
     }])
     .to_string();
-    let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
-    assert_eq!(st, 200);
+    let (st, echoed) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
+    assert_eq!(st, 200, "{echoed}");
+    let put_ca = echoed[0]["ca_pem"]
+        .as_str()
+        .expect("PUT echo retains public CA material");
+    assert!(ca_pem.contains('\n'), "generated PEM includes line breaks");
+    assert_eq!(
+        put_ca.as_bytes(),
+        ca_pem.as_bytes(),
+        "ca_pem PUT echo is byte-for-byte"
+    );
+    assert_eq!(
+        echoed[0]["secret"],
+        serde_json::Value::Null,
+        "PUT echo withholds secret"
+    );
+    assert!(
+        !echoed.to_string().contains("topsecret"),
+        "PUT echo never returns secret"
+    );
     let (get_status, listed) = http_json(srv.http_addr, "GET", "/api/v1/webhooks", None).await;
     assert_eq!(get_status, 200, "{listed}");
     let returned_ca = listed[0]["ca_pem"]
@@ -1898,6 +1916,10 @@ fn installed(srv: &swarmail::RunningServer) -> Vec<[Option<String>; 4]> {
         .collect()
 }
 
+fn without_json_location(text: &str) -> &str {
+    text.split_once(" at line ").map_or(text, |(head, _)| head)
+}
+
 /// A prior target carrying URL credentials and a secret, filtered to
 /// `inbox` and pointed at a fresh sink: the configuration every refusal
 /// below must leave whole.
@@ -1999,10 +2021,48 @@ async fn webhook_unknown_and_null_fields_preserve_configuration() {
     assert_eq!(echo[0]["ca_pem"], serde_json::Value::Null, "{echo}");
 
     let fine = r#"{"url": "http://127.0.0.1:9/fine"}"#;
-    for (bad, named) in [
+    for (body, expected) in [
         (
-            r#"{"url": "http://127.0.0.1:9/x", "secrt": "s3cret"}"#,
-            "[1].secrt: unknown field `secrt`",
+            r#"{"url":"http://127.0.0.1:9/root"}"#,
+            "invalid webhooks body: Failed to deserialize the JSON body into the target type: expected a JSON array of webhook targets, found an object",
+        ),
+        (
+            "null",
+            "invalid webhooks body: Failed to deserialize the JSON body into the target type: expected a JSON array of webhook targets, found null",
+        ),
+        (
+            r#""root string""#,
+            r#"invalid webhooks body: Failed to deserialize the JSON body into the target type: expected a JSON array of webhook targets, found a string"#,
+        ),
+    ] {
+        let (status, response) =
+            http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(body)).await;
+        assert_eq!(status, 400, "{body}: {response}");
+        assert_eq!(
+            without_json_location(response["error"].as_str().unwrap()),
+            expected,
+            "{body}: {response}"
+        );
+        assert!(
+            !response.to_string().contains("hunter2")
+                && !response.to_string().contains("kept-secret"),
+            "root shape refusal does not reveal installed credentials: {response}"
+        );
+        assert_eq!(installed(&srv), before, "{body}");
+    }
+
+    let bad_rows = [
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "secrt": "DO_NOT_ECHO_181"}"#,
+            "[1].secrt: unknown field `secrt`, expected one of `url`, `inbox`, `secret`, `ca_pem`",
+        ),
+        (
+            r#"{"url": [], "secrt": "DO_NOT_ECHO_181"}"#,
+            "[1].url: expected a string, found an array",
+        ),
+        (
+            r#"{"secrt": "DO_NOT_ECHO_181", "url": []}"#,
+            "[1].secrt: unknown field `secrt`, expected one of `url`, `inbox`, `secret`, `ca_pem`",
         ),
         (
             r#"{"url": "http://127.0.0.1:9/x", "inbox": null}"#,
@@ -2016,15 +2076,104 @@ async fn webhook_unknown_and_null_fields_preserve_configuration() {
             r#"{"url": "http://127.0.0.1:9/x", "ca_pem": null}"#,
             "[1].ca_pem: expected a string, found null",
         ),
-    ] {
+        (
+            r#"{"url": []}"#,
+            "[1].url: expected a string, found an array",
+        ),
+        (
+            r#"{"url": {}}"#,
+            "[1].url: expected a string, found an object",
+        ),
+        (r#"{"url": null}"#, "[1].url: expected a string, found null"),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "inbox": []}"#,
+            "[1].inbox: expected a string, found an array",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "inbox": {}}"#,
+            "[1].inbox: expected a string, found an object",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "inbox": ["DO_NOT_ECHO_181"]}"#,
+            "[1].inbox: expected a string, found an array",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "secret": []}"#,
+            "[1].secret: expected a string, found an array",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "secret": {}}"#,
+            "[1].secret: expected a string, found an object",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "secret": ["DO_NOT_ECHO_181"]}"#,
+            "[1].secret: expected a string, found an array",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "ca_pem": []}"#,
+            "[1].ca_pem: expected a string, found an array",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "ca_pem": {}}"#,
+            "[1].ca_pem: expected a string, found an object",
+        ),
+        (
+            r#"{"url": "http://127.0.0.1:9/x", "ca_pem": ["DO_NOT_ECHO_181"]}"#,
+            "[1].ca_pem: expected a string, found an array",
+        ),
+        (
+            "[]",
+            "[1]: expected a webhook target object, found an array",
+        ),
+        (
+            "42",
+            "[1]: expected a webhook target object, found a number",
+        ),
+        ("null", "[1]: expected a webhook target object, found null"),
+        (
+            r#""http://user:hunter2@127.0.0.1:9/x""#,
+            "[1]: expected a webhook target object, found a string",
+        ),
+        (r#"{"inbox": "a"}"#, "[1]: missing field `url`"),
+    ];
+    for (bad, path_and_diagnostic) in bad_rows {
         let body = format!("[{fine}, {bad}]");
-        let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
-        assert_eq!(st, 400, "{bad}: {resp}");
-        let error = resp["error"].as_str().unwrap();
-        assert!(error.contains(named), "{bad}: {resp}");
-        assert!(!error.contains("s3cret"), "{bad}: {resp}");
+        let (status, response) =
+            http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+        assert_eq!(status, 400, "{bad}: {response}");
+        let error = response["error"].as_str().unwrap();
+        let expected = format!(
+            "invalid webhooks body: Failed to deserialize the JSON body into the target type: {path_and_diagnostic}"
+        );
+        assert_eq!(without_json_location(error), expected, "{bad}: {response}");
+        assert!(
+            !response.to_string().contains("hunter2")
+                && !response.to_string().contains("kept-secret")
+                && !response.to_string().contains("DO_NOT_ECHO_181"),
+            "data refusal does not disclose credentials or values: {response}"
+        );
         assert_eq!(installed(&srv), before, "{bad}");
     }
+
+    // Duplicate keys must be raw request text: a JSON value builder would
+    // erase the order-sensitive failure this row preserves.
+    let duplicate = format!(
+        "[{fine}, {{\"url\":\"http://127.0.0.1:9/first\",\"url\":\"http://127.0.0.1:9/second\"}}]"
+    );
+    let (status, response) =
+        http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&duplicate)).await;
+    assert_eq!(status, 400, "{duplicate}: {response}");
+    assert_eq!(
+        without_json_location(response["error"].as_str().unwrap()),
+        "invalid webhooks body: Failed to deserialize the JSON body into the target type: [1]: duplicate field `url`",
+        "{response}"
+    );
+    assert_eq!(
+        installed(&srv),
+        before,
+        "duplicate target field replaced nothing"
+    );
+
     let (st, resp) = http_json(
         srv.http_addr,
         "PUT",

@@ -34,6 +34,10 @@ async fn first_id(addr: std::net::SocketAddr, inbox: &str) -> String {
     body["emails"][0]["id"].as_str().unwrap().to_string()
 }
 
+fn without_json_location(text: &str) -> &str {
+    text.split_once(" at line ").map_or(text, |(head, _)| head)
+}
+
 async fn inbox_snapshot(
     addr: std::net::SocketAddr,
     inbox: &str,
@@ -1211,6 +1215,12 @@ async fn machine_docs_are_served_from_the_binary() {
     let (st, text) = http_get_text(srv.http_addr, "/openapi.json").await;
     assert_eq!(st, 200);
     let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let pinned: serde_json::Value =
+        serde_json::from_str(include_str!("../src/static/openapi.json")).unwrap();
+    assert_eq!(
+        doc, pinned,
+        "the real HTTP payload is the pinned OpenAPI document"
+    );
     assert_eq!(doc["openapi"], "3.1.0");
 
     let (st, text) = http_get_text(srv.http_addr, "/llms.txt").await;
@@ -1481,20 +1491,19 @@ async fn await_total_is_counted_after_the_wait_in_both_arms() {
 #[tokio::test]
 async fn chaos_probability_out_of_domain_is_refused_and_leaves_the_rules_unchanged() {
     let srv = start().await;
+    let prior = r#"{"connect": {"probability": 0, "error": "421 baseline connect", "delay_ms": 5}, "data": {"probability": 0, "error": "451 baseline data", "delay_ms": 15}}"#;
 
     // Install two valid, distinguishable baseline rules.
-    let (st, body) = http_json(
-        srv.http_addr,
-        "PUT",
-        "/api/v1/chaos",
-        Some(r#"{"connect": {"probability": 0, "error": "421 baseline connect", "delay_ms": 5}, "data": {"probability": 0, "error": "451 baseline data", "delay_ms": 15}}"#),
-    )
-    .await;
+    let (st, body) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(prior)).await;
     assert_eq!(st, 200, "{body}");
     let (st, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
     assert_eq!(st, 200);
 
     for probability in [101, 150, 255] {
+        let (install_status, installed) =
+            http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(prior)).await;
+        assert_eq!(install_status, 200, "{installed}");
+
         let put = format!(r#"{{"data": {{"probability": {probability}}}}}"#);
         let (st, body) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(&put)).await;
         assert_eq!(st, 400, "{probability}: {body}");
@@ -1556,63 +1565,404 @@ async fn chaos_probability_out_of_domain_is_refused_and_leaves_the_rules_unchang
 #[tokio::test]
 async fn chaos_wrong_typed_probability_keeps_the_extractor_envelope_and_the_rules() {
     let srv = start().await;
-    let (st, body) = http_json(
-        srv.http_addr,
-        "PUT",
-        "/api/v1/chaos",
-        Some(r#"{"connect": {"probability": 0, "error": "421 baseline connect", "delay_ms": 5}, "data": {"probability": 0, "error": "451 baseline data", "delay_ms": 15}}"#),
-    )
-    .await;
+    let prior = r#"{"connect": {"probability": 0, "error": "421 baseline connect", "delay_ms": 5}, "data": {"probability": 0, "error": "451 baseline data", "delay_ms": 15}}"#;
+    let (st, body) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(prior)).await;
     assert_eq!(st, 200, "{body}");
-    let (st, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
-    assert_eq!(st, 200);
-
-    for (put, status, label) in [
+    for (put, status, label, expected) in [
         (
             r#"{"data": {"probability": -1}}"#,
             422,
             "negative probability",
+            "Failed to deserialize the JSON body into the target type: data.probability: invalid value: integer `-1`, expected u8",
         ),
-        (r#"{"data": {}}"#, 422, "omitted required probability"),
+        (
+            r#"{"data": {}}"#,
+            422,
+            "omitted required probability",
+            "Failed to deserialize the JSON body into the target type: data: missing field `probability`",
+        ),
         (
             r#"{"data": {"probability": "high"}}"#,
             422,
             "string probability",
+            r#"Failed to deserialize the JSON body into the target type: data.probability: invalid type: string "high", expected u8"#,
         ),
         (
             r#"{"data": {"probability": 1.5}}"#,
             422,
             "fractional probability",
+            "Failed to deserialize the JSON body into the target type: data.probability: invalid type: floating point `1.5`, expected u8",
         ),
         (
             r#"{"data": {"probability": null}}"#,
             422,
             "null probability",
+            "Failed to deserialize the JSON body into the target type: data.probability: invalid type: null, expected u8",
         ),
         (
             r#"{"data": {"probability": 256}}"#,
             422,
             "probability beyond u8",
+            "Failed to deserialize the JSON body into the target type: data.probability: invalid value: integer `256`, expected u8",
         ),
-        ("not json", 400, "malformed JSON"),
+        (
+            "not json",
+            400,
+            "malformed JSON",
+            "Failed to parse the request body as JSON: expected ident",
+        ),
     ] {
+        let (install_status, installed) =
+            http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(prior)).await;
+        assert_eq!(install_status, 200, "{installed}");
         // The extractor's rejection is plain text, never a JSON envelope —
-        // no `{"error": …}` is synthesized for a malformed body — so the
-        // text cousin reads it honestly; `http_json` would refuse the body
-        // (and the old `{}` coercion made the envelope assertion vacuous).
+        // its path and existing serde sentence are pinned independently of
+        // the source location decoration.
+        let (get_status, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200);
         let (st, body) = http_send_text(srv.http_addr, "PUT", "/api/v1/chaos", Some(put)).await;
         assert_eq!(st, status, "{label} ({put}): {body}");
-        assert!(
-            body.starts_with("Failed to deserialize the JSON body")
-                || body.starts_with("Failed to parse the request body"),
-            "{label}: the rejection is the extractor's own text: {body:?}"
-        );
-        if label == "negative probability" || label == "omitted required probability" {
-            assert!(body.contains("probability"), "{label}: {body:?}");
-        }
+        assert_eq!(without_json_location(&body), expected, "{label}: {body:?}");
         let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
         assert_eq!(get_status, 200);
         assert_eq!(before, after, "{label} changed the active rules");
+    }
+}
+
+/// Accepted 0070's REST chaos reader is map-only. Every formerly successful
+/// positional config/rule is refused with the extractor's plain-text 422;
+/// legacy malformed arrays retain their original serde/path or syntax
+/// diagnostic. A populated two-event config is read back after each row.
+#[tokio::test]
+async fn positional_chaos_bodies_refuse_before_replacing_rules() {
+    let srv = start().await;
+    let prior = r#"{"connect":{"probability":0,"error":"421 prior connect","delay_ms":2},"data":{"probability":100,"error":"554 prior data","delay_ms":3}}"#;
+    let (status, body) = http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(prior)).await;
+    assert_eq!(status, 200, "{body}");
+    let (seed_status, keeper) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/shape181-chaos/seed",
+        Some(r#"{"to":"keeper@example.test","subject":"keeper 181 chaos","text":"stored bytes 887766"}"#),
+    )
+    .await;
+    assert_eq!(seed_status, 200, "{keeper}");
+
+    let rows: &[(&str, u16, &str, bool)] = &[
+        (
+            "[]",
+            422,
+            "Failed to deserialize the JSON body into the target type: invalid type: sequence, expected struct ChaosConfig",
+            false,
+        ),
+        (
+            "[null]",
+            422,
+            "Failed to deserialize the JSON body into the target type: invalid type: sequence, expected struct ChaosConfig",
+            false,
+        ),
+        (
+            "[null,null,null,null]",
+            422,
+            "Failed to deserialize the JSON body into the target type: invalid type: sequence, expected struct ChaosConfig",
+            false,
+        ),
+        (
+            "[null,null,null,null,null]",
+            400,
+            "Failed to parse the request body as JSON: trailing characters",
+            true,
+        ),
+        (
+            r#"[{"probability":0},null,null,null]"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: invalid type: sequence, expected struct ChaosConfig",
+            false,
+        ),
+        (
+            r#"[{"probability":0},null,null,null,{}]"#,
+            400,
+            "Failed to parse the request body as JSON: trailing characters",
+            true,
+        ),
+        (
+            r#"[[0,"421",0],null,null,null]"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: [0]: invalid type: sequence, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"[[0,"421",0,4],null,null,null]"#,
+            400,
+            "Failed to parse the request body as JSON: [0]: trailing characters",
+            true,
+        ),
+        (
+            r#"{"connect":{"probability":0},"data":[0,"451",0,{}]}"#,
+            400,
+            "Failed to parse the request body as JSON: data: trailing characters",
+            true,
+        ),
+        (
+            r#"{"data":[]}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data: invalid length 0, expected struct ChaosRule with 3 elements",
+            false,
+        ),
+        (
+            "[42]",
+            422,
+            "Failed to deserialize the JSON body into the target type: [0]: invalid type: integer `42`, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"{"data":null,"data":{"probability":0}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: duplicate field `data`",
+            false,
+        ),
+        (
+            r#"{"data":[0,"451 kept",0]}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data: invalid type: sequence, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"{"connect":[0,"421 kept",0]}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: connect: invalid type: sequence, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"{"mail_from":[0,"451 kept",0]}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: mail_from: invalid type: sequence, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"{"rcpt":[0,"450 kept",0]}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: rcpt: invalid type: sequence, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"{"data":[0]}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data: invalid type: sequence, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"{"connect":[0]}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: connect: invalid type: sequence, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"{"mail_from":[0]}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: mail_from: invalid type: sequence, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"{"rcpt":[0]}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: rcpt: invalid type: sequence, expected struct ChaosRule",
+            false,
+        ),
+        (
+            r#"{"data":["bad","451",0]}"#,
+            422,
+            r#"Failed to deserialize the JSON body into the target type: data[0]: invalid type: string "bad", expected u8"#,
+            false,
+        ),
+        (
+            r#"{"connect":["bad","421",0]}"#,
+            422,
+            r#"Failed to deserialize the JSON body into the target type: connect[0]: invalid type: string "bad", expected u8"#,
+            false,
+        ),
+        (
+            r#"{"mail_from":["bad","451",0]}"#,
+            422,
+            r#"Failed to deserialize the JSON body into the target type: mail_from[0]: invalid type: string "bad", expected u8"#,
+            false,
+        ),
+        (
+            r#"{"rcpt":["bad","450",0]}"#,
+            422,
+            r#"Failed to deserialize the JSON body into the target type: rcpt[0]: invalid type: string "bad", expected u8"#,
+            false,
+        ),
+        (
+            r#"{"data":[0,"451",0,4]}"#,
+            400,
+            "Failed to parse the request body as JSON: data: trailing characters",
+            true,
+        ),
+        (
+            r#"{"connect":[0,"421",0,4]}"#,
+            400,
+            "Failed to parse the request body as JSON: connect: trailing characters",
+            true,
+        ),
+        (
+            r#"{"mail_from":[0,"451",0,4]}"#,
+            400,
+            "Failed to parse the request body as JSON: mail_from: trailing characters",
+            true,
+        ),
+        (
+            r#"{"rcpt":[0,"450",0,4]}"#,
+            400,
+            "Failed to parse the request body as JSON: rcpt: trailing characters",
+            true,
+        ),
+        (
+            "null",
+            422,
+            "Failed to deserialize the JSON body into the target type: invalid type: null, expected struct ChaosConfig",
+            false,
+        ),
+        (
+            "42",
+            422,
+            "Failed to deserialize the JSON body into the target type: invalid type: integer `42`, expected struct ChaosConfig",
+            false,
+        ),
+        (
+            r#""scalar""#,
+            422,
+            r#"Failed to deserialize the JSON body into the target type: invalid type: string "scalar", expected struct ChaosConfig"#,
+            false,
+        ),
+        (
+            r#"{"data":{}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data: missing field `probability`",
+            false,
+        ),
+        (
+            r#"{"data":{"probability":[]}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.probability: invalid type: sequence, expected u8",
+            false,
+        ),
+        (
+            r#"{"data":{"probability":{}}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.probability: invalid type: map, expected u8",
+            false,
+        ),
+        (
+            r#"{"data":{"probability":null}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.probability: invalid type: null, expected u8",
+            false,
+        ),
+        (
+            r#"{"data":{"error":[] ,"probability":0}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.error: invalid type: sequence, expected a string",
+            false,
+        ),
+        (
+            r#"{"data":{"error":{} ,"probability":0}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.error: invalid type: map, expected a string",
+            false,
+        ),
+        (
+            r#"{"data":{"error":null,"probability":0}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.error: invalid type: null, expected a string",
+            false,
+        ),
+        (
+            r#"{"data":{"delay_ms":[],"probability":0}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.delay_ms: invalid type: sequence, expected u64",
+            false,
+        ),
+        (
+            r#"{"data":{"delay_ms":{},"probability":0}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.delay_ms: invalid type: map, expected u64",
+            false,
+        ),
+        (
+            r#"{"data":{"delay_ms":null,"probability":0}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.delay_ms: invalid type: null, expected u64",
+            false,
+        ),
+        (
+            r#"{"solo":{"probability":0}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: solo: unknown field `solo`, expected one of `connect`, `mail_from`, `rcpt`, `data`",
+            false,
+        ),
+        (
+            r#"{"data":{"probability":0,"solo":1}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.solo: unknown field `solo`, expected one of `probability`, `error`, `delay_ms`",
+            false,
+        ),
+        (
+            r#"{"data":{"probability":0,"probability":100}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data: duplicate field `probability`",
+            false,
+        ),
+        (
+            r#"{"connect":{"probability":100},"data":{"probability":-1}}"#,
+            422,
+            "Failed to deserialize the JSON body into the target type: data.probability: invalid value: integer `-1`, expected u8",
+            false,
+        ),
+    ];
+
+    for (request, expected_status, expected, syntax_error) in rows {
+        let (install_status, installed) =
+            http_json(srv.http_addr, "PUT", "/api/v1/chaos", Some(prior)).await;
+        assert_eq!(install_status, 200, "{installed}");
+        let (get_status, before) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{before}");
+        let mail_before = inbox_snapshot(srv.http_addr, "shape181-chaos").await;
+        let (count_status, count_before) = http_json(
+            srv.http_addr,
+            "GET",
+            "/api/v1/inboxes/shape181-chaos/count",
+            None,
+        )
+        .await;
+        assert_eq!(count_status, 200, "{count_before}");
+        assert_eq!(count_before["count"], 1, "the keeper faces every refusal");
+        let (status, response) =
+            http_send_text(srv.http_addr, "PUT", "/api/v1/chaos", Some(request)).await;
+        assert_eq!(status, *expected_status, "{request}: {response}");
+        if *syntax_error {
+            assert!(response.starts_with(expected), "{request}: {response}");
+        } else {
+            assert_eq!(
+                without_json_location(&response),
+                *expected,
+                "{request}: {response}"
+            );
+        }
+        let (get_status, after) = http_json(srv.http_addr, "GET", "/api/v1/chaos", None).await;
+        assert_eq!(get_status, 200, "{after}");
+        assert_eq!(after, before, "{request} replaced the populated rules");
+        let mail_after = inbox_snapshot(srv.http_addr, "shape181-chaos").await;
+        assert_eq!(mail_after, mail_before, "{request} changed inbox contents");
+        let (count_status, count_after) = http_json(
+            srv.http_addr,
+            "GET",
+            "/api/v1/inboxes/shape181-chaos/count",
+            None,
+        )
+        .await;
+        assert_eq!(count_status, 200, "{count_after}");
+        assert_eq!(count_after, count_before, "{request} changed inbox count");
     }
 }
 
@@ -3301,7 +3651,7 @@ async fn null_strings_refuse_on_rest_like_mcp() {
         (
             "subject",
             "null",
-            "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: null, expected a string at line 1 column 32",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: null, expected a string",
         ),
         (
             "subject",
@@ -3340,7 +3690,11 @@ async fn null_strings_refuse_on_rest_like_mcp() {
         // Decision 0048 §2: decode the native 400 error and pin the complete
         // field path and JSON kind, not Axum's generic prefix.
         assert_eq!(st, 400, "{body}: {response}");
-        assert_eq!(response["error"], expected, "{body}: {response}");
+        assert_eq!(
+            without_json_location(response["error"].as_str().unwrap()),
+            without_json_location(expected),
+            "{body}: {response}"
+        );
     }
     let (_, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/nulls/count", None).await;
     assert_eq!(count["count"], 0, "no refused seed stored anything");
@@ -3548,6 +3902,264 @@ async fn raw_http(addr: std::net::SocketAddr, head: &str, body: &[u8]) -> (u16, 
     (status, body.to_string())
 }
 
+/// Positional seed arrays, including the previously successful five-field
+/// request, refuse before constructing or inserting a message. Every row
+/// faces keeper mail and reads back its complete view and raw RFC 5322 bytes
+/// immediately after the refusal (accepted 0070; AC5/AC6).
+#[tokio::test]
+async fn positional_seed_bodies_refuse_before_inserting_and_preserve_mail() {
+    let srv = start().await;
+    let (seed_status, keeper) = http_json(
+        srv.http_addr,
+        "POST",
+        "/api/v1/inboxes/shape181/seed",
+        Some(r#"{"to":"keeper@example.test","subject":"keeper 181","text":"stored bytes 998877"}"#),
+    )
+    .await;
+    assert_eq!(seed_status, 200, "{keeper}");
+    let keeper_id = keeper["id"].as_str().unwrap();
+
+    let rows: &[(&str, &str, bool)] = &[
+        (
+            "null",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: invalid type: null, expected struct SeedRequest",
+            false,
+        ),
+        (
+            "42",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: invalid type: integer `42`, expected struct SeedRequest",
+            false,
+        ),
+        (
+            r#""scalar""#,
+            r#"invalid seed body: Failed to deserialize the JSON body into the target type: invalid type: string "scalar", expected struct SeedRequest"#,
+            false,
+        ),
+        (
+            "[]",
+            "invalid seed body: Failed to deserialize the JSON body into the target type: invalid length 1, expected struct SeedRequest with 5 elements",
+            false,
+        ),
+        (
+            r#"["sender@example.test"]"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: invalid length 1, expected struct SeedRequest with 5 elements",
+            false,
+        ),
+        (
+            r#"["sender@example.test","recipient@example.test"]"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: invalid type: sequence, expected struct SeedRequest",
+            false,
+        ),
+        (
+            r#"["sender@example.test","recipient@example.test","positional subject","positional body","<p>positional html</p>"]"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: invalid type: sequence, expected struct SeedRequest",
+            false,
+        ),
+        (
+            r#"["sender@example.test","recipient@example.test","subject","text","html","extra"]"#,
+            "Failed to parse the request body as JSON: trailing characters",
+            true,
+        ),
+        (
+            r#"["sender@example.test",7]"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: [1]: invalid type: integer `7`, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","from":[]}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: from: invalid type: sequence, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","from":{}}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: from: invalid type: map, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","from":null}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: from: invalid type: null, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":[]}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: to: invalid type: sequence, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":{}}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: to: invalid type: map, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":null}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: to: invalid type: null, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","subject":[]}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: sequence, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","subject":{}}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: map, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","subject":null}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: null, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","text":[]}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: text: invalid type: sequence, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","text":{}}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: text: invalid type: map, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","text":null}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: text: invalid type: null, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","html":[]}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: html: invalid type: sequence, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","html":{}}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: html: invalid type: map, expected a string",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","html":null}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: html: invalid type: null, expected a string",
+            false,
+        ),
+        (
+            r#"{"text":"missing to"}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: missing field `to`",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","unknown":"DO_NOT_ECHO_181"}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: unknown: unknown field `unknown`, expected one of `from`, `to`, `subject`, `text`, `html`",
+            false,
+        ),
+        (
+            r#"{"to":[],"unknown":"DO_NOT_ECHO_181"}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: to: invalid type: sequence, expected a string",
+            false,
+        ),
+        (
+            r#"{"unknown":"DO_NOT_ECHO_181","to":[]}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: unknown: unknown field `unknown`, expected one of `from`, `to`, `subject`, `text`, `html`",
+            false,
+        ),
+        (
+            r#"{"to":"first@example.test","to":"second@example.test"}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: duplicate field `to`",
+            false,
+        ),
+        (
+            r#"{"to":"recipient@example.test","from":["DO_NOT_ECHO_181"]}"#,
+            "invalid seed body: Failed to deserialize the JSON body into the target type: from: invalid type: sequence, expected a string",
+            false,
+        ),
+    ];
+
+    for (body, expected, syntax_error) in rows {
+        let before = inbox_snapshot(srv.http_addr, "shape181").await;
+        let (count_status, count_before) =
+            http_json(srv.http_addr, "GET", "/api/v1/inboxes/shape181/count", None).await;
+        assert_eq!(count_status, 200, "{count_before}");
+        assert_eq!(
+            count_before["count"], 1,
+            "keeper {keeper_id} must face every refusal"
+        );
+        let (status, response) = http_send_text(
+            srv.http_addr,
+            "POST",
+            "/api/v1/inboxes/shape181/seed",
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, 400, "{body}: {response}");
+        if *syntax_error {
+            assert!(response.starts_with(expected), "{body}: {response}");
+        } else {
+            let envelope: serde_json::Value = serde_json::from_str(&response).unwrap();
+            let error = envelope["error"].as_str().unwrap();
+            assert_eq!(
+                without_json_location(error),
+                *expected,
+                "{body}: {response}"
+            );
+        }
+        assert!(
+            !response.contains("DO_NOT_ECHO_181")
+                && !response.contains("positional subject")
+                && !response.contains("positional body"),
+            "seed refusals do not echo supplied values: {response}"
+        );
+        let after = inbox_snapshot(srv.http_addr, "shape181").await;
+        assert_eq!(after, before, "{body} changed keeper mail");
+        let (count_status, count_after) =
+            http_json(srv.http_addr, "GET", "/api/v1/inboxes/shape181/count", None).await;
+        assert_eq!(count_status, 200, "{count_after}");
+        assert_eq!(count_after, count_before, "{body} changed inbox count");
+    }
+}
+
+/// Body admission precedes #197's query check, which precedes seed
+/// construction. Both mixed-defect requests face the same populated inbox.
+#[tokio::test]
+async fn positional_seed_refusal_preserves_query_error_precedence() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    seed(addr, "shape181-query", "keeper@example.test").await;
+    let before = inbox_snapshot(addr, "shape181-query").await;
+    let (status, count_before) =
+        http_json(addr, "GET", "/api/v1/inboxes/shape181-query/count", None).await;
+    assert_eq!(status, 200, "{count_before}");
+    assert_eq!(count_before["count"], 1);
+    let path = "/api/v1/inboxes/shape181-query/seed?typo=sentinel";
+
+    let (status, body) = http_json(
+        addr, "POST", path,
+        Some(r#"["sender@example.test","recipient@example.test","positional subject","positional body","<p>positional html</p>"]"#),
+    ).await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        without_json_location(body["error"].as_str().unwrap()),
+        "invalid seed body: Failed to deserialize the JSON body into the target type: invalid type: sequence, expected struct SeedRequest",
+    );
+    assert_eq!(inbox_snapshot(addr, "shape181-query").await, before);
+    let (status, count_after) =
+        http_json(addr, "GET", "/api/v1/inboxes/shape181-query/count", None).await;
+    assert_eq!(status, 200, "{count_after}");
+    assert_eq!(count_after, count_before);
+
+    assert_named_query_refusal_with_body(
+        addr,
+        "POST",
+        path,
+        r#"{"to":"bad\r\naddress@example.com"}"#,
+        "POST /api/v1/inboxes/{inbox}/seed",
+        "typo",
+    )
+    .await;
+    assert_eq!(inbox_snapshot(addr, "shape181-query").await, before);
+    let (status, count_after) =
+        http_json(addr, "GET", "/api/v1/inboxes/shape181-query/count", None).await;
+    assert_eq!(status, 200, "{count_after}");
+    assert_eq!(count_after, count_before);
+}
+
 /// Issue #134: the REST seed body is closed (decision 0048 §2). `subjet`
 /// used to answer 200 and store "(no subject)"; it is now a 400 naming the
 /// key, nothing is stored and no inbox is minted. The legal spelling still
@@ -3602,24 +4214,42 @@ async fn seed_and_webhook_data_errors_are_local_400s() {
     let (st, installed) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(prior)).await;
     assert_eq!(st, 200, "{installed}");
 
-    for (body, named, exact) in [
+    for (body, _named, exact) in [
         (
             r#"{"to": "a@x.io", "subject": null}"#,
             "subject",
             Some(
-                "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: null, expected a string at line 1 column 32",
+                "invalid seed body: Failed to deserialize the JSON body into the target type: subject: invalid type: null, expected a string",
             ),
         ),
         (
             r#"{"to": 7}"#,
             "to",
             Some(
-                "invalid seed body: Failed to deserialize the JSON body into the target type: to: invalid type: integer `7`, expected a string at line 1 column 8",
+                "invalid seed body: Failed to deserialize the JSON body into the target type: to: invalid type: integer `7`, expected a string",
             ),
         ),
-        (r#"{"text": "x"}"#, "missing field `to`", None),
-        (r#"["a@x.io"]"#, "invalid seed body", None),
-        (r#""a@x.io""#, "invalid seed body", None),
+        (
+            r#"{"text": "x"}"#,
+            "missing field `to`",
+            Some(
+                "invalid seed body: Failed to deserialize the JSON body into the target type: missing field `to`",
+            ),
+        ),
+        (
+            r#"["a@x.io"]"#,
+            "invalid seed body",
+            Some(
+                "invalid seed body: Failed to deserialize the JSON body into the target type: invalid length 1, expected struct SeedRequest with 5 elements",
+            ),
+        ),
+        (
+            r#""a@x.io""#,
+            "invalid seed body",
+            Some(
+                r#"invalid seed body: Failed to deserialize the JSON body into the target type: invalid type: string "a@x.io", expected struct SeedRequest"#,
+            ),
+        ),
     ] {
         let (st, resp) = http_json(
             srv.http_addr,
@@ -3630,21 +4260,21 @@ async fn seed_and_webhook_data_errors_are_local_400s() {
         .await;
         assert_eq!(st, 400, "{body}: {resp}");
         let error = resp["error"].as_str().unwrap();
-        if let Some(exact) = exact {
-            assert_eq!(error, exact, "{body}: {resp}");
-        } else {
-            assert!(error.contains(named), "{body}: {resp}");
-        }
+        let exact = exact.expect("every seed refusal pins its full diagnostic");
+        assert_eq!(without_json_location(error), exact, "{body}: {resp}");
     }
     let (_, count) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/dataerr/count", None).await;
     assert_eq!(count["count"], 0, "no refused seed stored anything");
 
-    for (body, named) in [
+    for (body, diagnostic) in [
         (
             r#"{"url": "http://127.0.0.1:9/x"}"#,
             "expected a JSON array of webhook targets, found an object",
         ),
-        (r#""http://user:hunter2@127.0.0.1:9/x""#, "found a string"),
+        (
+            r#""http://user:hunter2@127.0.0.1:9/x""#,
+            "expected a JSON array of webhook targets, found a string",
+        ),
         (
             r#"["http://user:hunter2@127.0.0.1:9/x"]"#,
             "[0]: expected a webhook target object, found a string",
@@ -3657,7 +4287,7 @@ async fn seed_and_webhook_data_errors_are_local_400s() {
             r#"[{"url": "http://127.0.0.1:9/x", "secret": 4242}]"#,
             "[0].secret: expected a string, found a number",
         ),
-        (r#"[{"inbox": "a"}]"#, "missing field `url`"),
+        (r#"[{"inbox": "a"}]"#, "[0]: missing field `url`"),
     ] {
         let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(body)).await;
         assert_eq!(st, 400, "{body}: {resp}");
@@ -3666,7 +4296,10 @@ async fn seed_and_webhook_data_errors_are_local_400s() {
             error.starts_with("invalid webhooks body: "),
             "{body}: {resp}"
         );
-        assert!(error.contains(named), "{body}: {resp}");
+        let expected = format!(
+            "invalid webhooks body: Failed to deserialize the JSON body into the target type: {diagnostic}"
+        );
+        assert_eq!(without_json_location(error), expected, "{body}: {resp}");
         assert!(
             !error.contains("hunter2") && !error.contains("4242"),
             "no value echoed: {resp}"
