@@ -8,14 +8,31 @@ Decision: 0062 — [Matrix cancellation and cleanup completion](../../docs/decis
 
 ## Feature and rationale
 
-Close only the retained review's missing falsifiers and inaccurate proof
-claims. Preserve the implemented SIGTERM/SIGINT lifecycle and JSONL behavior
-below. Inspected baseline is `29a661590fdca79ab77b6ab5f2f872ed1a98bb4e`,
-which includes proved cleanup candidate `137e7e9`, merged main and accepted
-0058. Existing real CLI signal and actual-Pending/bypass controls remain
-required. Neither retained correctness nor tests review reproduced a runtime
-defect; source changes outside test code require a failing residual-specific
-control first. No cancellation redesign or new public contract is requested.
+Close the recorded cancellation proof residual and the returned selector-test
+blocker without changing the implemented SIGTERM/SIGINT contract. Inspected
+baseline is `20c20b0d2a37e87d1e7ebc0a9281573155888a74`, including residual
+implementation `e95f3d9`, design `18f5acc`, merged main and accepted 0058.
+The returned framing and both current positions supersede the earlier
+29a6615-baseline work list. T1–T8 record predecessor implementation evidence;
+their controls must be reproduced, not implemented again. T9/T10 remain open.
+
+The returned blocker is in `tests/delivery_recipes.rs`: its shared fast
+selector test still expects Sol/high, while all four selectors choose
+`codex-fast-implementer`, whose singleton model is Luna/xhigh. Accepted
+[0057's dated model clarification](../../docs/decisions/0057-codex-delivery-recipes.md)
+and the dedicated Luna/no-fallback test settle that contract. Correct the
+existing expectation and bind each selector to that exact office. Do not
+change the recipe to satisfy the stale test or derive expectations from the
+configuration under test. Existing one/two/five-reviewer checks remain.
+
+The oversized return `.forge/results/ddf345e5-9ab0-41eb-8524-e7e3303ed0f7.json`
+records root test and coverage failure at that assertion. This is a test
+oracle repair under accepted policy, not a new policy decision. Retain all
+existing residual controls and require current-candidate verification.
+Further runtime edits require a concrete recorded residual-specific failure;
+no cancellation redesign or new public contract is requested. Fresh chief
+checks also reproduce an inconsistent teardown-control failure (AC12), which
+belongs to the existing AC9 proof scope and must not be hidden by a retry.
 
 The intake names aggregate review sequence 714. Read all four retained
 `.forge/results/3e202f8a-5be6-48a3-89f1-1e58415614a7-{correctness,tests,security,guarantees}.json`
@@ -50,44 +67,46 @@ HEAD and verification to executed evidence on the actual candidate.
 
 ## Panel rulings and their costs
 
-Read both current run-local positions, `simplicity.md` and `robustness.md`.
-The following rulings replace the predecessor's current-work claims while
-preserving its dated history.
+Read both returned run-local positions, `simplicity.md` and `robustness.md`,
+and the updated intake framing. They now agree on the immediate repair;
+do not invent a disagreement or carry withdrawn advice forward as current.
 
-- Adopt both positions' local falsifiers first, sequential matrix, one active
-  trial, retained waits/reapers and deduplicated cleanup owners. Reject a
-  second production registry/supervisor, startup handshake, parallel
-  scheduler, retry/resume, cgroup or subreaper. Cost: waiting for the existing
-  owner and retaining the explicit unsupported-escape/kernel limits.
-- Adopt robustness's full residual proof set over stopping at another signal
-  smoke test. Simplicity agrees on these local gaps; its restriction against
-  a generic guard framework governs implementation. Cost: narrow test-only
-  seams and real failure-bound runs, even if runtime behavior stays unchanged.
-- Rule against simplicity's optional deletion of Full-channel retry/Notify
-  machinery merely because it appears unreachable. Intake authorizes runtime
-  edits only for a demonstrated defect. First document the single producer,
-  sequential enqueue/ack invariant and every return. Retain the path if the
-  invariant excludes it; label a focused channel-state control as synthetic,
-  never end-to-end proof. Robustness's distinction between true stdout
-  pressure and artificial channel fullness wins. Cost: retaining redundant
-  complexity rather than widening this repair into cleanup refactoring. A
-  reachable unbounded path must be reproduced before its minimal repair.
-- Adopt post-budget-creation observation for repeated signals: the existing
-  pre-budget cleanup hold cannot prove no renewal. Acknowledge TERM, INT,
-  TERM separately, preserving one forwarding action and each owner's fixed
-  deadlines. Reject three unacknowledged kill calls as evidence. Cost: local
-  observations at actual production boundaries; no new runtime protocol.
-- Adopt explicit checked test completion with identity-safe bounded rescue.
-  Reject logging-only Drop as a success verdict and reject a second panic on
-  unwind. Positive tests fail when rescue is needed; bypass controls first
-  assert the product predicate failed, then verify their expected rescue.
-  Cost: isolated failing probes and extra ownership bookkeeping in tests.
-- Adopt simplicity's existing spec directory and existing proposed 0062;
-  replace stale baseline/four-lens instructions. Reject a new ADR, schema,
-  skipped outcome, denominator, dependency or coverage exception. Cost:
-  O(product) refusal output, attempts including unstarted slots, and full
-  independent evals plus house gates. Robustness's wider failure analysis
-  supplies preservation constraints, not server-hardening work.
+- Adopt simplicity's in-place selector correction and robustness's exact
+  selected-office binding. All four cases must name `codex-fast-implementer`,
+  resolve to exactly `["luna"]` and use `efforts.luna == "xhigh"`. Retain the
+  adapter/provider and no-fallback checks. Reject a generic routing validator,
+  new fixture family, weakened "some Codex model" assertion, or Sol rollback.
+  Cost: local explicit assertions must be maintained when the operator next
+  changes the contract; a policy rollback would contradict accepted 0057.
+- Adopt simplicity's restriction against reimplementing completed T1–T8 and
+  robustness's requirement to reproduce their causal lifecycle proofs. A
+  smaller source patch does not reduce the delivery argument to a model test.
+  Reject treating prior checked tasks or predecessor clean security review as
+  current proof. Cost: real-process suites and five-role review latency remain.
+- Reconcile the prior Full-channel disagreement explicitly: simplicity has
+  withdrawn optional deletion for this return. Preserve the current writer.
+  Robustness's distinction between real stdout pressure and synthetic channel
+  fullness governs claims. Cost: retaining possibly redundant machinery;
+  deletion without a demonstrated residual defect would expand scope.
+- Adopt robustness's limits on forced expiry: the current seam returns an
+  error before the ordinary deadline loop. It proves failure propagation with
+  real owned work, not the real clock branch or an unkillable kernel task.
+  Require causal owner/event evidence for no deadline renewal; logged budget
+  constants alone are insufficient. Cost: honest proof limits remain visible
+  to reviewers rather than being concealed by a green test name.
+- Adopt both positions' sequential matrix, retained waits/reapers and single
+  cleanup owner per group. Reject a startup handshake, second registry,
+  supervisor framework, cgroup/subreaper or root-server hardening absent a
+  concrete residual failure. Cost: conservative unknown/expiry failures and
+  explicit unsupported escape/kernel limits; ownership is not confinement.
+- Adopt the existing spec directory and proposed 0062. No new semantic ADR,
+  schema, outcome, report denominator, dependency or coverage exception is
+  warranted. Preserve O(product) refusal output and attempts including
+  unstarted slots. Broader failure analysis supplies preservation constraints.
+- Rule for the accepted 0058 high-risk panel despite the tiny immediate patch:
+  delivery-gate assertions and the enclosing concurrency/cleanup residual
+  exclude a cheaper route. Cost: five separate results; the rejected shortcut
+  would leave the current lifecycle and delivery evidence independently unreviewed.
 
 ## Required behavior
 
@@ -219,7 +238,8 @@ hostile commands and unkillable kernel tasks remain explicit residuals under
   zero-time refusal suffix. Real report ingestion retains attempts including
   refusals, passes/(pass+fail), passes/attempts and error counts. Keep queued
   row immutability, final-row exit 2, normal 2/1/0 aggregate precedence and
-  ordinary-error continuation. Remove the tautological signal assertion.
+  ordinary-error continuation. Keep the already removed tautological signal
+  assertion absent.
 - **AC4 — Admission and repeated signals:** deterministic controls leave a
   signal pending at the real `pending_matrix_signal` check between rows and
   before enqueue; a helper consuming it and pre-latching interruption does
@@ -239,6 +259,8 @@ hostile commands and unkillable kernel tasks remain explicit residuals under
   processes. Unknown membership is never absence; kill success, leader exit
   and EOF are never sufficient cleanup proof. Test direct waits separately.
   Do not manipulate host /proc permissions or manufacture unkillable tasks.
+  The existing forced-expiry seam proves error propagation before the ordinary
+  timeout loop; it does not prove the real deadline branch or kernel survival.
 - **AC6 — Bootstrap/spawn:** retain signal-setup refusal, real fallback Cargo
   cancellation and complete missing-binary/invalid-input behavior. Count
   fallback invocations to prove once-only offline/locked resolution. Using
@@ -262,7 +284,8 @@ hostile commands and unkillable kernel tasks remain explicit residuals under
   binaries ignore all corresponding controls. Use owning cfg(test) modules,
   fresh temp state, isolated environments and acknowledged readiness; no
   mocks, sleep-as-sync, feature flags, new dependencies or lock changes.
-  Root code, accepted guarantees, report math, schemas and gates are unchanged.
+  Root production code, accepted guarantees, report math, schemas and gates
+  are unchanged. The root test-only correction in AC11 is explicitly in scope.
 - **AC9 — Honest test teardown:** retain handles/identities before fallible
   assertions and use checked finish on positive paths. Forced rescue,
   unreaped direct children or unresolved survivors fail the test. An isolated
@@ -282,6 +305,30 @@ hostile commands and unkillable kernel tasks remain explicit residuals under
   absence. Verify against actual candidate and matching engine digest. Require
   the five separate accepted 0058 review results and protected security hold.
   CI-only duties stay with CI. No journal fabrication, push, merge or issue close.
+- **AC11 — Settled fast-selector contract:** the existing shared selector
+  regression covers chore/feature/design/engine, each pinned to the exact
+  `codex-fast-implementer` office, singleton `["luna"]` and `luna/xhigh`, with
+  class-specific diagnostics. Keep exact case sets, absent/unknown-default
+  refusal, independent one/two/five-review mappings, dedicated Luna adapter
+  resolution to `gpt-6-luna` and no fallback. Applicable assertions reject a
+  different office, Sol/high, wrong provider/model/effort or a fallback chain.
+  Reproduce the old expectation failure before correction, then pass the
+  shared test, dedicated Luna test and complete delivery_recipes suite with
+  command/revision/exit evidence. No recipe, adapter or policy edit is needed.
+- **AC12 — Teardown proof reproducibility:** investigate and repair the
+  current `runner_probe_failure_teardown_handles_owner_and_leader_exit`
+  timeout waiting for cleanup-hold entry. It failed in the full evals suite
+  and in isolation at 0b522d9, then passed in a subsequent full-suite run.
+  Preserve those receipts; a later pass does not discharge the failure.
+  Establish the causal order between actual cleanup-future Pending, cleanup
+  task/hold entry, bypass return and leader exit using acknowledged events.
+  The negative control must still prove owner exit with live owned work and
+  checked-finish refusal before identity-safe rescue. Retain both actual-Pending
+  fences and their bypass falsifiers. Neither sleeps, longer timeouts, weaker
+  assertions, disabled tests nor a second runtime cleanup owner are remedies.
+  Require the isolated regression and full locked evals suite to pass after
+  the local repair, plus a deterministic control demonstrating the repaired
+  ordering. No production defect is inferred solely from this harness timeout.
 
 ## Historical evidence and current delivery boundary
 
@@ -315,6 +362,32 @@ local `.forge/bin/brokkr` hashes to
 `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`, matching
 current `bundles/self/tooling.json`; predecessor e525babf receipts are not
 fresh evidence. The chief's design-only successor requires its own evidence.
+
+2026-10-24, returned synthesis at 20c20b0: read both revised positions, returned
+framing, all four retained member results and oversized ddf345e5 result.
+Inspected the stale shared assertion, dedicated Luna regression, implementer
+configuration and current residual controls. The implementation map
+`.forge/implement-194/t1-map-d9c1d0eb.md` records T1–T8 evidence at e95f3d9;
+it supersedes the older output-coverage claim, not current verification.
+The current work is AC11/AC12 plus reproduction of AC1–AC10, not adding
+those controls anew. Exact seq-714 aggregate binding remains unavailable. No
+historical receipt is promoted, bounded return counts are not reset, and
+0062 remains proposed. Current chief checks are recorded separately under
+`.forge/design-194-selector/`; their results cannot close future repair tasks.
+
+2026-10-24, chief execution at initial draft 0b522d9: the shared-selector test
+and root workspace tests exit 101 on actual Luna versus expected Sol; coverage
+exits 1 at that same instrumented test. The dedicated Luna regression passes.
+All other house gates, shim/native-tls checks, design check/selftest and delivery
+boundary proof pass. Evals fmt/clippy pass; the first locked suite and isolated
+teardown test exit 101 waiting for runner cleanup hold entry. A subsequent
+`cargo test --locked --no-fail-fast` passes. These are inconsistent observations,
+not proof that the defect disappeared or a claim of a production failure.
+AC12 makes this existing AC9 failure explicit. Receipts are in
+`.forge/design-194-selector/{summary,followup}.json` and sibling logs; later
+documentation changes do not relabel their executed revision. T9/T10 and
+current verification remain open. The final chief commit changes only design
+artifacts, and its own structural check is recorded separately.
 
 Commit exactly this directory's spec.md, plan.md and tasks.md. Existing 0062
 stays clean, committed, declared and proposed; no new decision is needed.
