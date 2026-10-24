@@ -656,7 +656,8 @@ Twelve tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`. Except for the supplied
+`swarmail_set_chaos`, `swarmail_clear_chaos`. Except for malformed seed fixture
+content and the supplied
 `timeout_ms` refusal described below, every tool validates its supplied
 arguments at the envelope: a wrong-typed or malformed value — the
 `arguments` container included — returns JSON-RPC `-32602` in HTTP 200
@@ -683,8 +684,19 @@ An elapsed `swarmail_wait_for_email` timeout is a normal tool result:
 content. On `swarmail_wait_for_email`, a supplied `timeout_ms` must be an
 integer from 0 through 60000; malformed values and values above 60000
 return an HTTP-200 tool result with `isError: true` and refusal text, not
-a JSON-RPC `error` object. Tool failures such as `shutting down` return
-`isError: true` with an error message in text content. Other protocol and
+a JSON-RPC `error` object.
+`swarmail_seed_email` refuses `CR/LF/NUL` in its `to`, `from` or
+`subject` fixture strings before insertion under decision
+[0010 §2](docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md);
+for a call with an `id`, it returns HTTP 200 with a tool result
+`isError: true` whose text names the offending field and its reason;
+no message is inserted. Wrong-typed seed arguments and unknown keys
+remain JSON-RPC `-32602`; id-less notifications stay silent.
+
+Tool failures such as `shutting down` return
+`isError: true` with an error message in text content.
+An unknown MCP argument key returns JSON-RPC `-32602` in HTTP 200 for a call
+with an `id`, before any effect. Other protocol and
 argument refusals use a JSON-RPC `error` envelope as described above.
 
 Wire it up:

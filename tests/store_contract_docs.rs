@@ -1603,21 +1603,183 @@ fn the_corrected_release_and_runtime_claims_stay_corrected() {
     );
 }
 
-// Issue #182: these claims describe existing handlers; they must not turn
-// HTTP refusals, JSON-RPC errors and normal tool results into one envelope.
+// Issue #182: keep each documented claim tied to its complete owning clause.
+fn issue_182_normalized(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(char::from(96), "")
+        .to_ascii_lowercase()
+}
+
+fn issue_182_has_all(text: &str, clauses: &[&str]) -> bool {
+    let normalized = issue_182_normalized(text);
+    clauses
+        .iter()
+        .all(|clause| normalized.contains(&issue_182_normalized(clause)))
+}
+
+fn issue_182_mcp_section(text: &str) -> String {
+    let normalized = issue_182_normalized(text);
+    let rest = normalized
+        .split_once("### mcp — agents drive the mail")
+        .map(|(_, rest)| rest)
+        .or_else(|| normalized.split_once("## mcp").map(|(_, rest)| rest))
+        .expect("the document has an MCP section");
+    let end = rest
+        .find("### pop3")
+        .or_else(|| rest.find("## chaos"))
+        .unwrap_or(rest.len());
+    rest[..end].to_string()
+}
+
+fn issue_182_unknown_arguments(text: &str) -> bool {
+    let mcp = issue_182_mcp_section(text);
+    issue_182_has_all(
+        &mcp,
+        &[
+            "An unknown MCP argument key returns JSON-RPC -32602 in HTTP 200 for a call with an id, before any effect",
+        ],
+    )
+}
+
+fn issue_182_data_envelopes(text: &str) -> bool {
+    issue_182_has_all(
+        text,
+        &[
+            "Seed and webhook JSON data errors are 400 with a JSON error",
+            "Malformed JSON syntax stays the extractor's plain-text 400",
+            "missing/wrong media type its plain-text 415",
+            "oversize its plain-text 413",
+            "Chaos JSON data errors stay the extractor's 422",
+        ],
+    ) && !issue_182_has_all(
+        text,
+        &["A seed or webhook body error is a 400 with a JSON error"],
+    ) && !issue_182_has_all(
+        text,
+        &["Seed and webhook body errors are 400 with a JSON error"],
+    )
+}
+
+fn issue_182_mcp_wait_and_seed_envelopes(text: &str) -> bool {
+    let mcp = issue_182_mcp_section(text);
+    issue_182_has_all(
+        &mcp,
+        &[
+            "Except for malformed seed fixture content and the supplied timeout_ms refusal described below",
+            "swarmail_seed_email refuses CR/LF/NUL in its to, from or subject fixture strings before insertion under decision [0010 §2]",
+            "for a call with an id, it returns HTTP 200 with a tool result isError: true whose text names the offending field and its reason",
+            "no message is inserted",
+            "Wrong-typed seed arguments and unknown keys remain JSON-RPC -32602",
+            "id-less notifications stay silent",
+            "An elapsed swarmail_wait_for_email timeout is a normal tool result: isError: false",
+            "with matched, total and timed_out: true in its text content",
+            "On swarmail_wait_for_email, a supplied timeout_ms must be an integer from 0 through 60000",
+            "malformed values and values above 60000 return an HTTP-200 tool result with isError: true and refusal text, not a JSON-RPC error object",
+            "Tool failures such as shutting down return isError: true with an error message in text content",
+            "Other protocol and argument refusals use a JSON-RPC error",
+        ],
+    )
+}
+
+fn issue_182_thread_case_limit(text: &str) -> bool {
+    issue_182_has_all(
+        text,
+        &[
+            "Unicode lowercasing is not full case folding: ß and ss remain distinct in subject fallback keys",
+        ],
+    )
+}
+
+fn issue_182_pop3_snapshot_skew(text: &str) -> bool {
+    issue_182_has_all(
+        text,
+        &[
+            "a snapshot taken at successful PASS, not a lock",
+            "numbering stays stable",
+            "new arrivals appear in the next session",
+            "Listings read the snapshot",
+            "RETR, TOP and DELE consult the live store",
+            "mail removed elsewhere can remain listed",
+            "-ERR no such message",
+        ],
+    )
+}
+
+fn issue_182_wrapped_ascii_uppercase(text: &str) -> String {
+    text.to_ascii_uppercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("\n    ")
+}
+
+fn issue_182_assert_stable(check: fn(&str) -> bool, text: &str, what: &str) {
+    assert!(check(text), "{what}: corrected document must pass");
+    assert!(
+        check(&issue_182_wrapped_ascii_uppercase(text)),
+        "{what}: wrapping and ASCII capitalization must preserve the pass"
+    );
+}
+
+fn issue_182_edit_once(text: &str, old: &str, replacement: &str) -> String {
+    let text = issue_182_normalized(text);
+    let old = issue_182_normalized(old);
+    let replacement = issue_182_normalized(replacement);
+    assert_eq!(
+        text.matches(&old).count(),
+        1,
+        "the in-memory control must identify exactly one clause: {old:?}"
+    );
+    let edited = text.replacen(&old, &replacement, 1);
+    assert_ne!(edited, text, "the in-memory control must change its input");
+    edited
+}
+
+fn issue_182_assert_rejected_edit(
+    check: fn(&str) -> bool,
+    original: &str,
+    old: &str,
+    replacement: &str,
+    what: &str,
+) {
+    issue_182_assert_stable(check, original, what);
+    let edited = issue_182_edit_once(original, old, replacement);
+    assert!(!check(&edited), "{what}: the edited defect must fail");
+    assert!(
+        !check(&issue_182_wrapped_ascii_uppercase(&edited)),
+        "{what}: wrapping and ASCII capitalization must preserve the failure"
+    );
+    issue_182_assert_stable(check, original, what);
+}
+
+fn issue_182_assert_rejected_append(
+    check: fn(&str) -> bool,
+    original: &str,
+    defect: &str,
+    what: &str,
+) {
+    issue_182_assert_stable(check, original, what);
+    let edited = format!("{} {}", issue_182_normalized(original), defect);
+    assert_ne!(edited, issue_182_normalized(original));
+    assert!(!check(&edited), "{what}: the appended defect must fail");
+    assert!(
+        !check(&issue_182_wrapped_ascii_uppercase(&edited)),
+        "{what}: wrapping and ASCII capitalization must preserve the failure"
+    );
+    issue_182_assert_stable(check, original, what);
+}
+
 #[test]
 fn issue_182_unknown_mcp_arguments_keep_their_json_rpc_envelope() {
     for path in ["README.md", "src/static/llms.txt"] {
-        let text = doc(path);
-        states(
+        let text = raw(path);
+        issue_182_assert_rejected_edit(
+            issue_182_unknown_arguments,
             &text,
+            "An unknown MCP argument key returns JSON-RPC -32602 in HTTP 200 for a call with an id, before any effect",
+            "Unknown MCP argument keys are refused.",
             path,
-            &["`-32602` in HTTP 200 for a call with an `id`"],
-        );
-        refuses(
-            &text,
-            path,
-            &["an MCP argument key (`{\"inbx\": \"zz\"}`), or an unknown key"],
         );
     }
 }
@@ -1625,25 +1787,18 @@ fn issue_182_unknown_mcp_arguments_keep_their_json_rpc_envelope() {
 #[test]
 fn issue_182_seed_and_webhook_data_errors_do_not_cover_extractor_refusals() {
     for path in ["README.md", "src/static/llms.txt"] {
-        let text = doc(path);
-        states(
+        let text = raw(path);
+        issue_182_assert_rejected_append(
+            issue_182_data_envelopes,
             &text,
+            "A seed or webhook body error is a 400 with a JSON error.",
             path,
-            &[
-                "Seed and webhook JSON data errors are `400` with a JSON `error`",
-                "Malformed JSON syntax stays the extractor's plain-text `400`",
-                "missing/wrong media type its plain-text `415`",
-                "oversize its plain-text `413`",
-                "Chaos JSON data errors stay the extractor's `422`",
-            ],
         );
-        refuses(
+        issue_182_assert_rejected_append(
+            issue_182_data_envelopes,
             &text,
+            "Seed and webhook body errors are 400 with a JSON error.",
             path,
-            &[
-                "A seed or webhook body error is a `400` with a JSON `error`",
-                "Seed and webhook body errors are 400 with a JSON `error`",
-            ],
         );
     }
 }
@@ -1651,60 +1806,86 @@ fn issue_182_seed_and_webhook_data_errors_do_not_cover_extractor_refusals() {
 #[test]
 fn issue_182_mcp_wait_results_keep_distinct_envelopes() {
     for path in ["README.md", "src/static/llms.txt"] {
-        let text = doc(path);
-        states(
+        let text = raw(path);
+        issue_182_assert_rejected_edit(
+            issue_182_mcp_wait_and_seed_envelopes,
             &text,
+            "Except for malformed seed fixture content and the supplied timeout_ms refusal described below",
+            "Except for the supplied timeout_ms refusal described below",
             path,
-            &[
-                "Except for the supplied `timeout_ms` refusal described below",
-                "returns JSON-RPC `-32602` in HTTP 200 for a call with an `id`",
-                "before any effect",
-                "An elapsed `swarmail_wait_for_email` timeout is a normal tool result",
-                "`isError: false`",
-                "with `matched`, `total` and `timed_out: true`",
-                "On `swarmail_wait_for_email`, a supplied `timeout_ms`",
-                "must be an integer from 0 through 60000",
-                "malformed values and values above 60000 return an HTTP-200 tool result",
-                "with `isError: true` and refusal text",
-                "not a JSON-RPC `error` object",
-                "Other protocol and argument refusals use a JSON-RPC `error`",
-                "`shutting down`",
-            ],
         );
-        refuses(
+        issue_182_assert_rejected_edit(
+            issue_182_mcp_wait_and_seed_envelopes,
             &text,
+            "swarmail_seed_email refuses CR/LF/NUL in its to, from or subject fixture strings before insertion under decision [0010 §2]",
+            "swarmail_seed_email fixture handling is described below",
             path,
-            &[
-                "Errors are always JSON-RPC",
-                "Protocol and argument refusals use a JSON-RPC `error`",
-                "Every tool validates its supplied arguments at the envelope: a wrong-typed or malformed value",
-            ],
+        );
+        issue_182_assert_rejected_edit(
+            issue_182_mcp_wait_and_seed_envelopes,
+            &text,
+            "for a call with an id, it returns HTTP 200 with a tool result isError: true",
+            "for a call with an id, it returns JSON-RPC -32602 in HTTP 200",
+            path,
+        );
+        issue_182_assert_rejected_edit(
+            issue_182_mcp_wait_and_seed_envelopes,
+            &text,
+            "text names the offending field and its reason",
+            "text describes the refusal",
+            path,
+        );
+        issue_182_assert_rejected_edit(
+            issue_182_mcp_wait_and_seed_envelopes,
+            &text,
+            "no message is inserted",
+            "the refusal is reported",
+            path,
+        );
+        issue_182_assert_rejected_edit(
+            issue_182_mcp_wait_and_seed_envelopes,
+            &text,
+            "malformed values and values above 60000 return an HTTP-200 tool result with isError: true and refusal text, not a JSON-RPC error object",
+            "malformed values and values above 60000 return a JSON-RPC -32602 error in HTTP 200",
+            path,
+        );
+        issue_182_assert_rejected_edit(
+            issue_182_mcp_wait_and_seed_envelopes,
+            &text,
+            "timeout is a normal tool result: isError: false",
+            "timeout is a normal tool result: isError: true",
+            path,
         );
     }
 }
 
 #[test]
 fn issue_182_thread_keys_name_the_full_case_folding_limit() {
-    states(
-        &doc("README.md"),
-        "README",
-        &["not full case folding: `ß` and `ss` remain distinct in subject fallback keys"],
+    let readme = raw("README.md");
+    issue_182_assert_rejected_edit(
+        issue_182_thread_case_limit,
+        &readme,
+        "full case folding: ß and ss remain distinct in subject fallback keys",
+        "full case folding: Unicode subjects are equivalent",
+        "README thread subject limit",
     );
 }
 
 #[test]
 fn issue_182_pop3_documents_the_snapshot_and_live_store_skew() {
-    states(
-        &doc("README.md"),
-        "README",
-        &[
-            "a snapshot taken at successful `PASS`, not a lock",
-            "numbering stays stable",
-            "new arrivals appear in the next session",
-            "Listings read the snapshot",
-            "`RETR`, `TOP` and `DELE` consult the live store",
-            "mail removed elsewhere can remain listed",
-            "`-ERR no such message`",
-        ],
+    let readme = raw("README.md");
+    issue_182_assert_rejected_edit(
+        issue_182_pop3_snapshot_skew,
+        &readme,
+        "a snapshot taken at successful PASS, not a lock",
+        "a snapshot of the maildrop",
+        "README POP3 snapshot qualification",
+    );
+    issue_182_assert_rejected_edit(
+        issue_182_pop3_snapshot_skew,
+        &readme,
+        "RETR, TOP and DELE consult the live store",
+        "RETR, TOP and DELE consult one view",
+        "README POP3 live-store qualification",
     );
 }

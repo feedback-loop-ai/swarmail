@@ -109,7 +109,8 @@
 `swarmail_wait_for_email`, `swarmail_extract_links`, `swarmail_extract_codes`,
 `swarmail_seed_email`, `swarmail_set_chaos`, `swarmail_clear_chaos`.
 stdio transport: `swarmail mcp --url http://127.0.0.1:8025` (launch as an MCP
-subprocess; talks to the same server). Except for the supplied `timeout_ms`
+subprocess; talks to the same server). Except for malformed seed fixture
+content and the supplied `timeout_ms`
 refusal described below, wrong-typed or malformed MCP arguments and unknown
 argument keys return JSON-RPC `-32602` in HTTP 200 for a call with an `id`,
 before any effect. An elapsed `swarmail_wait_for_email` timeout is a normal
@@ -117,8 +118,19 @@ tool result: `isError: false`, with `matched`, `total` and `timed_out: true`
 in its text content. On `swarmail_wait_for_email`, a supplied `timeout_ms`
 must be an integer from 0 through 60000; malformed values and values above
 60000 return an HTTP-200 tool result with `isError: true` and refusal text,
-not a JSON-RPC `error` object. Tool failures such as `shutting down` return
-`isError: true` with an error message in text content. Other protocol and
+not a JSON-RPC `error` object.
+`swarmail_seed_email` refuses `CR/LF/NUL` in its `to`, `from` or
+`subject` fixture strings before insertion under decision
+[0010 §2](docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md);
+for a call with an `id`, it returns HTTP 200 with a tool result
+`isError: true` whose text names the offending field and its reason;
+no message is inserted. Wrong-typed seed arguments and unknown keys
+remain JSON-RPC `-32602`; id-less notifications stay silent.
+
+Tool failures such as `shutting down` return
+`isError: true` with an error message in text content.
+An unknown MCP argument key returns JSON-RPC `-32602` in HTTP 200 for a call
+with an `id`, before any effect. Other protocol and
 argument refusals use a JSON-RPC `error`: bad JSON
 or invalid UTF-8 is HTTP 400 `-32700`, a body over 2 MiB is HTTP 413 `-32600`, a
 non-object value — or an id-less object without a string `method` — is
