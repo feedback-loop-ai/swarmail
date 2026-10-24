@@ -6,9 +6,9 @@ Original run: `part-of-epic-192-close-every-ope-0db51b58`.
 Recovery: `epic-192-issue-171-recovery-on-t-181c6f9c`, fresh intake on
 `a76c5e5bdf82663a35ac0553e173a1bc7dac8e84`; not a linked continuation.
 
-Decision: 0062
+Decision: 0072
 
-Proposed clarification: [0062](../../docs/decisions/0062-delivery-proof-residuals.md).
+Proposed clarification: [0072](../../docs/decisions/0072-delivery-proof-residuals.md).
 Accepted authorities: [0050](../../docs/decisions/0050-delivery-gates.md),
 [0045 §8](../../docs/decisions/0045-delivery-repairs.md),
 [0056](../../docs/decisions/0056-signing-policy.md) and
@@ -35,13 +35,13 @@ completion follows from a committed design.
 Read both recovery positions, `simplicity.md` and `robustness.md`, under
 `.brokkr/state/design/positions/`, both intake framings, the existing design,
 delivery-gates artifacts, accepted authorities and copied root evidence.
-The recovery preserves this slug and proposed 0062. It does not reserve a
+The recovery preserves this slug and proposed 0072. It does not reserve a
 second decision number or infer NEXT-187 coordination from a dated snapshot.
 Only these three artifacts and the existing proposal change in chief's commit.
 
 | Question | Ruling and losing alternative's cost |
 |---|---|
-| Preserve or recreate | Adopt both recovery positions: revise `delivery-proof-residuals` and 0062 in place, preserving the prior design history below. Reject another slug, ADR or framework: it would duplicate ownership without discharging any proof. Root must reconcile 0062 with NEXT-187 before integration. |
+| Preserve or recreate | Adopt both recovery positions: revise `delivery-proof-residuals` and 0072 in place, preserving the prior design history below. Reject another slug, ADR or framework: it would duplicate ownership without discharging any proof. Root must reconcile 0072 with NEXT-187 before integration. |
 | Exact evaluator | Adopt both positions' exact rule/destination/severity oracle and robustness's complete-count/unique-case assertions. The copied real-core probe is useful but its broad stop/refused/park predicate cannot close AC8. Reuse its source/API approach in a new run-local child. Cost: provenance, aggregation ingress and a failing permissive-policy control remain mandatory. |
 | Diagnostic reachability | Rule for robustness against simplicity's unchanged-runtime preference. Strong shim tests fail the ordinary Rust suite before verify reaches coverage; coverage then fails again at its own instrumented tests before producing counts. Coordinate a bounded change to both canonical owners: continue after test failure only to collect canonical coverage diagnostics, never to permit success. Reject hiding the test, restoring the shim during the red run, skipping a suite, or attaching an unrelated coverage run. Cost: two narrowly changed pinned scripts, renewed hash review, additional diagnostic execution and ownership coordination. |
 | Pins and scope | Adopt simplicity's existing integration-test owner, fixed approved hashes and no new dependency; adopt robustness's named disabled/commented/deleted-call controls and actual dispatch evidence. Reject a general shell parser or hashes computed from arbitrary candidate bytes. Cost: legitimate canonical edits require explicit reviewed hash updates. |
@@ -82,7 +82,7 @@ are superseded by the recovery rulings above; its proof obligations remain.
 | Live self run | Adopt both positions' historical-receipt reconciliation first, then a real isolated run if no qualifying evidence exists. Reject compile success, inherited self resources and this codex-fast run as substitutes. Cost: providers and a complete self lifecycle, including a real retry, may be necessary. |
 | Pins | Adopt simplicity's fixed reviewed SHA-256 expectations and robustness's deleted/commented/disabled-call mutants. Pin complete canonical validator and verify-seat bytes in the existing Rust test; compare public shim bytes with the protected manifest. Reject a universal shell parser or self-derived expected hash. Cost: legitimate canonical edits require explicit digest review and ownership coordination. |
 | Comparator | Choose simplicity's dated factual marker, the alternative explicitly offered by the issue. Reject robustness's immediate strict-comparison repair: no demonstrated small provenance mechanism separates honest debug assertions from ordinary if-shaped debug flags in the present expansion. Do not remove Store assertions or change production behavior. Cost: the existing false acceptance remains; finding 3.4 closes as documented, never repaired or an accepted exemption. Adopt robustness's insistence that any future semantic exception waits for operator acceptance. This explicitly supersedes intake's preference for a red comparator fixture; it does not supersede 0050's normative equality requirement. |
-| Scope and process | Choose a new slug rather than simplicity's reuse of the old one, to isolate NEXT-171 from the wider AC1–AC13 repair history in the chief's identifiable commit. Keep this continuation small and link the old owner. Draft 0062 because the clarification touches a ruling, while preserving accepted semantics. Cost: one proposed record and later index/dated-pointer maintenance. Retain the engine lane and full four-seat review. |
+| Scope and process | Choose a new slug rather than simplicity's reuse of the old one, to isolate NEXT-171 from the wider AC1–AC13 repair history in the chief's identifiable commit. Keep this continuation small and link the old owner. Draft 0072 because the clarification touches a ruling, while preserving accepted semantics. Cost: one proposed record and later index/dated-pointer maintenance. Retain the engine lane and full four-seat review. |
 
 ## Requirements
 
@@ -172,7 +172,7 @@ planned paths, not evidence asserted to exist.
    referring to 0050 §2, without rewriting its accepted body: the release
    comparator admits equal-indentation `if true {` → `if false {` without
    establishing macro provenance, including ordinary `cfg!(debug_assertions)`
-   branches. Link proposed 0062 and a retained observation. State that this
+   branches. Link proposed 0072 and a retained observation. State that this
    documents a known limit, grants no exception and does not prove release
    equivalence or refusal of arbitrary flips. Preserve the existing comparator,
    exact coverage floor and honest debug-assert controls. A synthetic textual
@@ -183,7 +183,7 @@ planned paths, not evidence asserted to exist.
    claimed by this option.
 6. **AC6 — Reconciliation and completion.** Update current instructions in
    `specs/delivery-gates/{spec,plan,tasks}.md` to accepted 0050/0056/0057 while
-   preserving dated history and original obligations. Index 0062 as proposed.
+   preserving dated history and original obligations. Index 0072 as proposed.
    Link every T08/R04/D04 sub-obligation to matching receipts, including the
    broader old AC1–AC13 obligations of D04. Check those boxes only when all
    their proofs exist; unresolved historical work remains explicitly open and
@@ -218,7 +218,7 @@ establish launch provenance or live-provider success.
 The copied fleet snapshot is dated 2026-10-23T20:05:53Z. The canonical shared
 journal and sibling workspaces are unavailable in this box. Root refreshes
 reservations before overlapping writes, specifically NEXT-172's verifier
-preflight, NEXT-206's tooling/digest hunk and NEXT-187's 0062 reservation.
+preflight, NEXT-206's tooling/digest hunk and NEXT-187's 0072 reservation.
 The only additional runtime surface authorized by this recovery is the bounded
 post-test diagnostic path in verify and coverage; tooling, providers, policy,
 comparator and engine patches remain unchanged. Unavailable coordination
@@ -232,7 +232,7 @@ attempt's provider/model, timestamp, run/attempt/event IDs and exact diagnostic
 if still blocked. Do not assert today's provider availability from history.
 
 Historical chief-check logs under `.forge/epic192/next-171/chief-checks/`
-record workspace test exit 101 and coverage exit 1 for unindexed 0062.
+record workspace test exit 101 and coverage exit 1 for unindexed 0072.
 Other historical component passes are not this recovery's final gate proof.
 Implementation must add the proposed index entry and satisfy all remaining
 criteria; chief's strict four-file artifact boundary cannot repair that index.

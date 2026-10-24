@@ -191,4 +191,4 @@ unchecked proof tasks do not request rebuilding their existing implementation.
 
 The 2026-10-19 resume sections above are preserved as history. For this
 recovery, accepted 0056 supersedes their signed-commit wording; no task here
-accepts proposed 0062 or closes an issue.
+accepts proposed 0072 or closes an issue.

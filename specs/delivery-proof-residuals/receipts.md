@@ -2,7 +2,7 @@
 
 Run: `epic-192-issue-171-recovery-on-t-181c6f9c`. This is fresh codex-fast
 triage and implementation, not a linked continuation. The committed design
-and proposed 0062 are preserved; only the operator accepts the proposal.
+and proposed 0072 are preserved; only the operator accepts the proposal.
 
 Raw run artifacts are retained under the ignored path
 `.forge/epic192/next-171/epic-192-issue-171-recovery-on-t-181c6f9c/`.
@@ -64,7 +64,7 @@ fail the fixed digest pin and the original verify-seat bytes must be restored.
 
 ## AC4 — 0050 §2 dated marker
 
-**Documented, not repaired.** The dated addendum in 0050 links proposed 0062
+**Documented, not repaired.** The dated addendum in 0050 links proposed 0072
 and the retained `ac8/comparator-observation.json`. That observation invokes
 the actual pinned comparator with a synthetic textual release-shape example;
 it records that the equal-indentation `if true` to `if false` shape is

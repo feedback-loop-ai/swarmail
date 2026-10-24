@@ -1,7 +1,7 @@
 # Implementation plan — delivery proof residuals
 
 Recovery revision: 2026-10-24, `epic-192-issue-171-recovery-on-t-181c6f9c`.
-Implements [spec.md](spec.md); proposed [0062](../../docs/decisions/0062-delivery-proof-residuals.md).
+Implements [spec.md](spec.md); proposed [0072](../../docs/decisions/0072-delivery-proof-residuals.md).
 
 ## Technical context
 
@@ -22,7 +22,7 @@ mapping are distinct: do not relabel or modify one to impersonate the other.
 Any provider incompatibility in the self route is a precise execution block,
 not permission to rewrite its recipe. No nested run is launched by chief.
 0056 requires unsigned commits and no push. 0045 §8 allows compatible proof
-and factual documentation work while 0062 remains proposed. The marker does
+and factual documentation work while 0072 remains proposed. The marker does
 not permit semantic deviation from 0050. No new measured production code,
 workspace member, dependency, exclusion or gate bypass is needed.
 
@@ -33,7 +33,7 @@ canonical `.forge/forge.db` read-only and actual active candidate diffs.
 Record timestamp, journal sequence, reserved paths and candidate identities
 in preflight.json. Coordinate the bounded verify/coverage diagnostic edits
 with #172; leave #172 preflight and #206 tooling/digest ownership intact.
-Explicitly reconcile existing 0062 with NEXT-187 before integration; never
+Explicitly reconcile existing 0072 with NEXT-187 before integration; never
 renumber or duplicate it speculatively. The dated snapshot establishes no
 current overlap clearance. Independent test/oracle/document work may proceed
 while an overlapping script hunk or live provider remains blocked. Do not
@@ -65,8 +65,8 @@ These are execution prerequisites, not reasons to change the intended proof.
 | `.forge/epic192/next-171/<attempt>/` | Recorded-core harness, literal cases, isolated mutants, real engine dispatch fixture driver, logs, exports and receipts. Retain source/build/command hashes for audit. No application Cargo dependency on brokkr. |
 | `specs/delivery-proof-residuals/receipts.md` | Implementation adds one compact evidence index with durable retained locations/hashes and the complete obligation map. |
 | `specs/delivery-gates/{spec,plan,tasks}.md` | Append a current controlling clarification, supersede stale current signing/status/predicate instructions, preserve historical entries, link receipts and tick only proven work. |
-| `docs/decisions/0050-delivery-gates.md`, `docs/decisions/README.md` | Dated known-limit addendum pointing specifically to §2 and 0062; proposed index entry. Preserve accepted historical body/status. |
-| `docs/decisions/0062-delivery-proof-residuals.md` | Proposed clarification authored by chief; no self-acceptance. |
+| `docs/decisions/0050-delivery-gates.md`, `docs/decisions/README.md` | Dated known-limit addendum pointing specifically to §2 and 0072; proposed index entry. Preserve accepted historical body/status. |
+| `docs/decisions/0072-delivery-proof-residuals.md` | Proposed clarification authored by chief; no self-acceptance. |
 
 ### 1. Real evaluator and aggregation
 
@@ -145,7 +145,7 @@ Implement the chosen bounded continuation, not a general gate runner rewrite:
    Keep dispatch orchestration outside components already called by verify.
 
 This is compatible implementation of accepted 0050 §1, carried in revised
-proposed 0062. It adds diagnostic execution cost without changing which
+proposed 0072. It adds diagnostic execution cost without changing which
 candidates may pass. Root coordinates both canonical hunks before implementation;
 then review the new canonical verify bytes and update their fixed test hash.
 No self-referential hash is embedded in a script it hashes. Preserve comparator
@@ -199,7 +199,7 @@ Retain the existing real-build debug-assert green and bare-boolean red controls
 under the mandatory selftest. Do not broaden the allowance, normalize more
 text, remove production debug assertions or present the textual observation
 as a real-build gate result. Append a dated addendum titled for 0050 §2,
-link 0062 and identify this unresolved false acceptance without changing the
+link 0072 and identify this unresolved false acceptance without changing the
 normative body. Review new/current documentation for contradictory claims.
 
 Reconcile T08, R04 and D04 separately; D04 includes all old AC1–AC13 and final
@@ -241,14 +241,14 @@ receipt. Never install from the offline verifier, suppress warnings, lower
 the floor or claim a gate passed from structural validation.
 
 Chief commits exactly the three revised design files and revised proposed
-0062, unsigned;
+0072, unsigned;
 HEAD remains that commit for the final check. Implementation later adds the
 index/marker and evidence links. The chief's local structural check is not
 the engine's final design verdict or an implementation completion claim.
 The exact four-file chief boundary defers the ADR index update; until T07,
 the decision-inventory tests cannot pass. The prior run's chief checks on
 2026-10-24
-confirmed both inventory tests fail for unindexed 0062; workspace tests and
+confirmed both inventory tests fail for unindexed 0072; workspace tests and
 coverage therefore fail. Formatting, Clippy, pinned compile, coverage
 selftest, publish/seal proofs, licenses, native-tls absence, design selftest
 and delivery component proof passed. Logs are retained under
@@ -260,7 +260,7 @@ not a green final-tree gate verdict.
 All house inventory commands and the additional native-tls, design selftest
 and delivery component proof were executed on the precommit design tree.
 Workspace tests exited 101 and coverage exited 1: both name unindexed
-`0062-delivery-proof-residuals.md` in the two decision-inventory tests.
+`0072-delivery-proof-residuals.md` in the two decision-inventory tests.
 Coverage stops at the instrumented test failure, so no exact 100/100/100
 success is claimed. The remaining ten invoked checks exited zero; pinned
 compile reported zero unruled valuations without a policy-sweep warning.
@@ -286,6 +286,6 @@ All AC1–AC7 implementation tasks remain open.
 | Honest debug assertions fail under naive hardening | No comparator algorithm change or Store edits in this design; retain existing green controls. |
 | Live proof costs providers or stalls | Reconcile history first, identify exact missing provider/core/receipt, retain attempt state, no fallback or fabricated success. |
 | Fixtures recurse or contaminate other runs | External actual-seat harness, isolated candidates/builds/results, bounded subprocesses, no verify-from-component recursion or candidate skip control. |
-| Concurrent pin/preflight or decision-number changes | Root refreshes reservations for the two diagnostic hunks and NEXT-187/0062; leave tooling/preflight ownership intact, reconcile approved hashes after integration and rerun gates. |
+| Concurrent pin/preflight or decision-number changes | Root refreshes reservations for the two diagnostic hunks and NEXT-187/0072; leave tooling/preflight ownership intact, reconcile approved hashes after integration and rerun gates. |
 | Earlier test failure hides coverage or becomes success | Two bounded continuations preserve nonzero status, validate fresh exports, and require covered-failing/uncovered-failing/restored controls; identity failures still execute nothing. Additional diagnostics consume the existing seat budget. |
 | Old checkbox is broader than this story | Sub-obligation evidence map; missing AC1–AC13 proof blocks D04 completion without authorizing unrelated code work. |

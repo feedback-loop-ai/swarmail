@@ -350,13 +350,13 @@ folder.
   `epic-192-issue-171-live-self-bun-c69c9fa3` stopped before design after DSH
   transport failures and is not a qualifying design/refusal/retry/pass run.
   No actual pinned verify-seat combined red receipt or clean live control was
-  produced here. The canonical script edits in 0062 also remain unperformed
+  produced here. The canonical script edits in 0072 also remain unperformed
   pending current ownership reconciliation.
 - **D04:** remains open because its proof obligation spans all original
   AC1–AC13, beyond the evaluator slice. No broader delivery completion follows
   from T08 or the issue-specific local receipts.
 
 Current work follows accepted 0050, unsigned commits under accepted 0056, and
-the engine route under accepted 0057. Proposed 0062 remains proposed; the
+the engine route under accepted 0057. Proposed 0072 remains proposed; the
 index entry is not acceptance. No runtime, wire, dependency, license or
 coverage-floor contract changed.

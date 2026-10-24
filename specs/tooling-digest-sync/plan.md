@@ -16,7 +16,7 @@ and ingest extraction (0001–0005). Preserve fixed independent proof identities
 and actual pinned execution (0050), full engine routing and independent review
 (0057), the exact coverage floor and dependency policy. Commit unsigned under
 0056 and never push. The work enforces existing rules, so it requires no new
-ADR and grants no acceptance to proposed 0062. Required checks remain in the
+ADR and grants no acceptance to proposed 0072. Required checks remain in the
 single house-rules inventory; a design draft is not a green implementation.
 
 ## Research and evidence
@@ -127,5 +127,5 @@ this design commit; the engine's pinned final check remains authoritative.
 | Hash agreement mistaken for engine execution | Candidate-local binary identity plus canonical gate execution and retained actual exits. Compilation alone does not close live proofs. |
 | Small diff used to bypass review | Preserve recorded engine classification and full protected review; accept its execution/provider cost. Official DeepSeek Flash only where assigned, never Pro/fallback. |
 | Unrelated gate failure or unavailable tool | Retain diagnostics and leave the proof outstanding; do not widen this correction into script/product fixes or claim success. |
-| False #171 closure or reuse of stale receipts | Preserve AC2/R04/D04 and proposed 0062 status; tie new evidence to current inputs and make no live-self claim. |
+| False #171 closure or reuse of stale receipts | Preserve AC2/R04/D04 and proposed 0072 status; tie new evidence to current inputs and make no live-self claim. |
 | Design selected from stale artifacts | Chief HEAD touches one spec directory, exactly three clean committed files; local structural check followed by the pinned sequence check. |

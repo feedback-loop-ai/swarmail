@@ -88,7 +88,7 @@ this hash repair provides no new runtime or durability guarantee.
    Those names belong to the earlier spec, not this spec's numbered criteria.
    No separate live self-bundle receipt, operator acceptance, issue/epic
    completion, push or merge is inferred or fabricated. Existing
-   [proposed 0062](../../docs/decisions/0062-delivery-proof-residuals.md)
+   [proposed 0072](../../docs/decisions/0072-delivery-proof-residuals.md)
    remains proposed and supplies no exception.
 6. **AC6 — Reviewable design handoff.** Chief HEAD touches exactly
    `specs/tooling-digest-sync/spec.md`, `plan.md` and `tasks.md`, all committed,

@@ -1,7 +1,8 @@
-# 0062 — Distinguish delivery proof completion from documented limits
+# 0072 — Distinguish delivery proof completion from documented limits
 
 - **Status:** proposed — acceptance is the operator's.
 - **Date:** 2026-10-24
+- **Number:** renumbered from 0062 when epic #192 group A was integrated; 0062 is [RPC edge contracts](0062-rpc-edge-contracts.md).
 - **Clarifies:** [0050](0050-delivery-gates.md) §§2, 4–5 and its proof
   obligations; preserves [0045 §8](0045-delivery-repairs.md),
   [0056](0056-signing-policy.md) and [0057](0057-codex-delivery-recipes.md).

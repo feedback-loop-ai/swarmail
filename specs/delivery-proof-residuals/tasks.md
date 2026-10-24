@@ -11,7 +11,7 @@ not an implementation receipt. Acceptance references are to [spec.md](spec.md).
   active candidate diffs/reservations, candidate-local binary hash matching
   tooling, exact base/ordered patch identities, accessible core API and either
   qualifying retained self receipts or the precise live provider blocker.
-  Reconcile #172/#206 diagnostic hunk ownership and NEXT-187/0062 before
+  Reconcile #172/#206 diagnostic hunk ownership and NEXT-187/0072 before
   integration; supplied source is available but its applicability is checked.
   Missing inputs name only the dependent blocked execution;
   no fabricated local journal. AC1/AC2.
@@ -55,7 +55,7 @@ not an implementation receipt. Acceptance references are to [spec.md](spec.md).
   c69c9fa3 pre-design transport failure and this codex-fast run do not qualify;
   unavailable providers leave AC2 open with exact available diagnostics and
   run/attempt/event IDs. AC2/old AC7.
-- [ ] T07 — Document comparator limitation and index proposed 0062.
+- [ ] T07 — Document comparator limitation and index proposed 0072.
   **Test:** dated addendum explicitly points to 0050 §2 and describes ordinary
   if-shaped debug-flag false acceptance without normative exemption; observation
   receipt distinguishes text from real-build proof; actual comparator textual

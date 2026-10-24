@@ -417,4 +417,4 @@ seat limitation and prior DSH transport report recorded in preflight.
 D04 stays open for all unsatisfied parts of AC1–AC13. Existing older text
 requesting signed author commits is historical: accepted 0056 governs this
 recovery, so its implementation commit is unsigned. This addendum does not
-accept 0062, authorize a provider fallback, or claim ship readiness.
+accept 0072, authorize a provider fallback, or claim ship readiness.
