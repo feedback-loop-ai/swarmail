@@ -49,10 +49,22 @@
   serialization) run off the async workers on the blocking pool; the MCP
   seed build, the REST list/await pages and SSE thread-view serialization
   stay inline (none is on the ingest path).
-- Strict native input: an unknown query key on a native route (`assert?too=`,
-  `count?limit=`, `assert?timeout_ms=`, any key on `threads`, `threads/{key}`
-  or `feed`), an MCP argument key (`{"inbx": "zz"}`), or an unknown key in a
-  seed or webhook body (`subjet`, `secrt`) is refused by name with 400; a
+- Strict native input: existing closed list/count/await/assert/thread/feed
+  query shapes accept only their documented keys. Ten further methods take
+  no query keys: `DELETE /api/v1/inboxes/{inbox}/messages`,
+  `DELETE /api/v1/delete-all`, `GET /api/v1/messages/{id}`,
+  `DELETE /api/v1/messages/{id}`, `GET /api/v1/messages/{id}/raw`,
+  `GET /api/v1/chaos`, `DELETE /api/v1/chaos`, `GET /api/v1/webhooks`,
+  `DELETE /api/v1/webhooks`, and `POST /api/v1/inboxes/{inbox}/seed`. Each
+  unknown, bare or empty-valued key is a native JSON 400 naming method,
+  route and decoded key; no query and a literal empty query preserve behavior.
+  A bad seed query follows syntax/media/size/data-shape body errors but
+  precedes domain validation of a deserializable body. Unsupported destructive
+  selectors never scope clears; body-based selective deletion uses the ids body.
+  Compat list/search tolerance, selective DELETE, chaos/webhook PUT and
+  health/metrics/UI/document routes keep their own contracts. An MCP argument
+  key (`{"inbx": "zz"}`), or an unknown key in a seed or webhook body
+  (`subjet`, `secrt`) is refused by name with 400; a
   present JSON `null` for an optional string (seed `from`/`subject`/`text`/
   `html`, webhook `inbox`/`secret`/`ca_pem`, chaos `error`) is refused,
   omission takes the default. Seed and webhook body errors are 400 with a

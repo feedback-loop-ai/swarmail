@@ -67,6 +67,7 @@ them. What may land while a decision is still proposed is stated in
 | [0058](0058-codex-review-routing.md) | Exact operator-directed Codex review routing and fast-feature dispatch fallback (amends 0057) | accepted (operator, 2026-10-24) | (operator directive, 2026-10-24) |
 | [0061](0061-compat-webhook-proof.md) | Compat refusal recognition and extraction repair boundaries | proposed — awaiting the operator | (#170/#190, lane D) |
 | [0073](0073-matrix-cancellation.md) | Matrix cancellation stops admission and waits for owned cleanup with complete schema-1 accounting | proposed — awaiting the operator | (Epic #192, issue #194) |
+| [0074](0074-strict-native-queries.md) | Refuse unsupported queries before native operations | proposed — awaiting the operator | (Epic #192, issue #197) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

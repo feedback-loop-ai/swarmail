@@ -11,7 +11,7 @@ use crate::threads;
 use crate::ui;
 use crate::webhook::{WebhookTarget, WebhookTargets, Webhooks, ca_cache_stats};
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -921,10 +921,9 @@ impl AssertQuery {
     }
 }
 
-/// The view routes' domain — threads, one thread, feed — is empty (decision
-/// 0048 §4, issue #134): they take no query, so any key refuses by name
-/// where it used to be ignored. Parsed after the inbox is admitted and
-/// before any read or subscription.
+/// Empty query domain shared by native operations that take no query keys.
+/// `deny_unknown_fields` makes every decoded key refuse through the same
+/// route-labeled parser, before the operation reads or changes domain state.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewQuery {}
@@ -1337,12 +1336,17 @@ async fn assert_messages(
 async fn clear_inbox(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
+    raw: RawQuery,
 ) -> ApiResult<Json<serde_json::Value>> {
     // A failed commit is the answer (decision 0014): the clear did not
     // commit, so the caller must hear a failure — `503`, the cause usually
     // transient — instead of a count for work that never happened. A blank
     // inbox refuses first (decision 0044 §3): it clears nothing.
     admit(&inbox)?;
+    let ViewQuery {} = parse_query(
+        raw.0.as_deref().unwrap_or(""),
+        "DELETE /api/v1/inboxes/{inbox}/messages",
+    )?;
     match state.store.clone().clear_async(inbox).await {
         Ok(removed) => Ok(Json(serde_json::json!({ "removed": removed }))),
         Err(_) => Err(ApiError(
@@ -1352,7 +1356,12 @@ async fn clear_inbox(
     }
 }
 
-async fn get_message(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
+async fn get_message(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    raw: RawQuery,
+) -> ApiResult<Response> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "GET /api/v1/messages/{id}")?;
     // The store already holds the mail behind an `Arc`; the response
     // serializes it in place — a deep clone here would copy the bytes the
     // wire is byte-identical without (`raw` is skipped, decision 0030 §1).
@@ -1365,7 +1374,12 @@ async fn get_message(State(state): State<AppState>, Path(id): Path<String>) -> A
 async fn delete_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    raw: RawQuery,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let ViewQuery {} = parse_query(
+        raw.0.as_deref().unwrap_or(""),
+        "DELETE /api/v1/messages/{id}",
+    )?;
     // A failed commit is the answer (decision 0014): the delete did not
     // commit, so the mail is still there — `503`, the cause usually
     // transient — never a `200` for work that never happened. `404` stays
@@ -1380,15 +1394,24 @@ async fn delete_message(
     }
 }
 
-async fn get_raw(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Response> {
+async fn get_raw(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    raw: RawQuery,
+) -> ApiResult<Response> {
+    let ViewQuery {} = parse_query(
+        raw.0.as_deref().unwrap_or(""),
+        "GET /api/v1/messages/{id}/raw",
+    )?;
     // The exact received bytes — no charset re-encoding, no newline
     // translation — in the one shape that owns them: message/rfc822, copied
     // on the blocking pool (decision 0049 §7).
     compat::render_by_id(&state, id, compat::raw_response).await
 }
 
-async fn get_chaos(State(state): State<AppState>) -> Json<ChaosConfig> {
-    Json(state.chaos.current())
+async fn get_chaos(State(state): State<AppState>, raw: RawQuery) -> ApiResult<Json<ChaosConfig>> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "GET /api/v1/chaos")?;
+    Ok(Json(state.chaos.current()))
 }
 
 async fn set_chaos(
@@ -1403,9 +1426,10 @@ async fn set_chaos(
     Ok(Json(state.chaos.current()))
 }
 
-async fn clear_chaos(State(state): State<AppState>) -> Json<ChaosConfig> {
+async fn clear_chaos(State(state): State<AppState>, raw: RawQuery) -> ApiResult<Json<ChaosConfig>> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "DELETE /api/v1/chaos")?;
     state.chaos.clear();
-    Json(state.chaos.current())
+    Ok(Json(state.chaos.current()))
 }
 
 // ---------- threads & feed ----------
@@ -1486,9 +1510,14 @@ pub struct SeedRequest {
 async fn seed_inbox(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
+    raw: RawQuery,
     body: Result<Json<SeedRequest>, JsonRejection>,
 ) -> Result<Json<Arc<Email>>, BodyError> {
     let seed = json_body(body, "seed")?;
+    let ViewQuery {} = parse_query(
+        raw.0.as_deref().unwrap_or(""),
+        "POST /api/v1/inboxes/{inbox}/seed",
+    )?;
     let email = Store::offload(move || {
         smtp::build_seed_email(
             &inbox,
@@ -1570,15 +1599,19 @@ fn json_body<T>(body: Result<Json<T>, JsonRejection>, what: &str) -> Result<T, B
 /// batch. A certificate is public material and `ca_pem` stays, it is the
 /// diagnostic. The round-trip loss is deliberate: PUT is the only writer,
 /// and the operator retains their own payload.
-async fn get_webhooks(State(state): State<AppState>) -> Json<Vec<WebhookTarget>> {
-    Json(
+async fn get_webhooks(
+    State(state): State<AppState>,
+    raw: RawQuery,
+) -> ApiResult<Json<Vec<WebhookTarget>>> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "GET /api/v1/webhooks")?;
+    Ok(Json(
         state
             .webhooks
             .current()
             .iter()
             .map(WebhookTarget::redacted)
             .collect(),
-    )
+    ))
 }
 
 /// PUT validates every supplied value before any effect (decision 0029 §5):
@@ -1617,9 +1650,13 @@ async fn set_webhooks(
     ))
 }
 
-async fn clear_webhooks(State(state): State<AppState>) -> Json<serde_json::Value> {
+async fn clear_webhooks(
+    State(state): State<AppState>,
+    raw: RawQuery,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "DELETE /api/v1/webhooks")?;
     state.webhooks.set(vec![]);
-    Json(serde_json::json!({ "cleared": true }))
+    Ok(Json(serde_json::json!({ "cleared": true })))
 }
 
 // ---------- MCP ----------
