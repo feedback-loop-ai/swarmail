@@ -1,6 +1,6 @@
 {
   "name": "codex-careful",
-  "description": "Codex delivery with Astra robustness and chief design, Sol xhigh implementation, and the same independent Qwen Max, Opus, DeepSeek Flash and GLM 5.3 review panel.",
+  "description": "Codex Sol xhigh implementation; five required reviewers: Astra correctness, official Flash security, Sonnet 5.5 tests, Astra guarantees and independent Fable 5.1. Inherits all protected shell gates.",
   "extends": "codex",
   "override": {
     "bundle": [
@@ -8,7 +8,8 @@
     ],
     "seats": [
       "intake",
-      "implement"
+      "implement",
+      "review"
     ]
   },
   "seats": {
@@ -30,6 +31,46 @@
       "limits": {
         "max_attempts": 3,
         "timeout_seconds": 7200
+      }
+    },
+    "review": {
+      "results": [
+        "clean",
+        "residual",
+        "security-hold"
+      ],
+      "inputs": [
+        "fixes_applied",
+        "has_security_residual",
+        "max_residual_severity",
+        "spec_defect"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 3600
+      },
+      "aggregate": "review-panel",
+      "panel": {
+        "correctness": {
+          "agent": "codex-review-astra-correctness",
+          "class": "gate"
+        },
+        "security": {
+          "agent": "codex-review-security",
+          "class": "gate"
+        },
+        "tests": {
+          "agent": "codex-review-tests",
+          "class": "gate"
+        },
+        "guarantees": {
+          "agent": "codex-review-guarantees",
+          "class": "gate"
+        },
+        "independent": {
+          "agent": "codex-review-independent",
+          "class": "gate"
+        }
       }
     }
   }

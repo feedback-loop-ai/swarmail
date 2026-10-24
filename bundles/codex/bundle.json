@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "description": "Codex leads intake, design and implementation; independent DashScope, Claude and DeepSeek Flash reviewers judge the verified change. Inherits swarmail's pinned proof chain and protected policy.",
+  "description": "Codex leads intake, design and implementation; Standard review uses Claude Fable 5.1 correctness, official DeepSeek Flash security and Claude Sonnet 5.5 tests. Inherits the pinned proof chain and protected policy.",
   "extends": "self",
   "override": {
     "bundle": [
@@ -57,10 +57,6 @@
         },
         "security": {
           "agent": "codex-review-security",
-          "class": "gate"
-        },
-        "guarantees": {
-          "agent": "codex-review-guarantees",
           "class": "gate"
         },
         "tests": {

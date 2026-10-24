@@ -1,6 +1,9 @@
 {
   "extends": "review-tests",
   "models": [
-    "glm53"
-  ]
+    "sonnet"
+  ],
+  "efforts": {
+    "sonnet": "high"
+  }
 }

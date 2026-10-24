@@ -1,9 +1,9 @@
 {
   "extends": "review-guarantees",
   "models": [
-    "flash"
+    "astra"
   ],
   "efforts": {
-    "flash": "high"
+    "astra": "high"
   }
 }

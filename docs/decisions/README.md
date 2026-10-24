@@ -64,6 +64,7 @@ them. What may land while a decision is still proposed is stated in
 | [0055](0055-agent-eval-harness.md) | Prove the agent eval harness before measuring agents: oracle and null controls through the real agent-command path, brokkr-hosted trials with an interim unconfined driver | accepted (operator, 2026-10-19) | (Epic #164: issues #148, #149, #150) |
 | [0056](0056-signing-policy.md) | Commit unsigned and seal the branch before merge: seats never sign, push or stop for a key; the operator re-signs every PR-branch commit in place on the same merge-base with `scripts/seal-branch.sh` (supersedes the mid-run signing rule and 0045 §9's branch-author sentence) | accepted (operator, 2026-10-20) | (operator ruling in chat, 2026-10-20) |
 | [0057](0057-codex-delivery-recipes.md) | Codex triages and authors; fast bugs use one or two independent reviewers, risky work the full panel; up to eight isolated runs | accepted (operator directive, 2026-10-23) | (Codex-led recipes before epic #192; GLM 5.3 test review; Flash only) |
+| [0058](0058-codex-review-routing.md) | Exact operator-directed Codex review routing and fast-feature dispatch fallback (amends 0057) | accepted (operator, 2026-10-24) | (operator directive, 2026-10-24) |
 | [0061](0061-compat-webhook-proof.md) | Compat refusal recognition and extraction repair boundaries | proposed — awaiting the operator | (#170/#190, lane D) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that

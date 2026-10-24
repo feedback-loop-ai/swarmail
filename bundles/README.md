@@ -16,8 +16,8 @@ effort and records its evidence and reason before choosing the path:
 | Triage result  | Work path            | Independent review           |
 +----------------+----------------------+------------------------------+
 | chore          | Implement -> verify  | DeepSeek Flash               |
-| feature        | Implement -> verify  | Qwen Max + Claude Opus       |
-| design/engine  | Design -> implement  | Qwen + Opus + Flash + GLM5.3  |
+| feature        | Implement -> verify  | Qwen Max + official Flash       |
+| design/engine  | Design -> implement  | Astra (2) + Flash + Sonnet + Fable  |
 | escalate       | Stop                 | Operator ruling needed       |
 +----------------+----------------------+------------------------------+
 ```
@@ -26,7 +26,7 @@ Here `chore` means an isolated, understood bug and `feature` means a broader
 understood fix within existing contracts; these are the engine's route keys,
 not permission to add an unrequested feature. Small lanes use triage's framing
 instead of a spec package. Security, concurrency, persistence, gate/policy
-and normative contract work default to the full design and four-seat review.
+and normative contract work default to the full design and five-role review.
 Every lane runs the complete deterministic verification and ship gates.
 Missing or unknown strategies have no selector default and cannot select a
 cheap lane. Implementation can return oversized scope once to triage; the
@@ -49,10 +49,11 @@ they are useful when the operator has already ruled that path necessary:
 | Design: check       | Offline exec gate     | Offline exec gate     |
 | Implement           | Sol / high            | Sol / xhigh           |
 | Verify              | Pinned offline gates  | Pinned offline gates  |
-| Review: correctness | DashScope Qwen Max    | DashScope Qwen Max    |
-| Review: security    | Claude Opus / high    | Claude Opus / high    |
-| Review: guarantees  | DeepSeek Flash / high | DeepSeek Flash / high |
-| Review: tests       | DashScope GLM 5.3     | DashScope GLM 5.3     |
+| Review: correctness | Claude Fable 5.1 / high | Codex Astra / high |
+| Review: security    | Official Flash / high | Official Flash / high |
+| Review: guarantees  | absent                | Codex Astra / high    |
+| Review: tests       | Sonnet 5.5 / high     | Sonnet 5.5 / high     |
+| Review: independent | absent                | Fable 5.1 / high      |
 | Ship                | Pinned exec gate      | Pinned exec gate      |
 +---------------------+-----------------------+-----------------------+
 ```
@@ -65,19 +66,27 @@ they are useful when the operator has already ruled that path necessary:
 | luna      | gpt-6-luna            | Codex CLI                  |
 | astra     | gpt-6-astra           | Codex CLI                  |
 | qwen-max  | dashscope/qwen3.8-max | DashScope through dsh      |
-| opus      | claude-opus-5-5       | Claude CLI                 |
+| fable     | claude-fable-5-1      | Claude CLI                 |
+| sonnet    | claude-sonnet-5-5     | Claude CLI                 |
 | flash     | deepseek-flash        | Official DeepSeek platform |
-| glm53     | dashscope/glm-5.3     | DashScope through dsh      |
 +-----------+-----------------------+----------------------------+
 ```
 
-Every new office has a single-model chain: unavailable providers stop the
-attempt rather than silently replacing an independent reviewer with the
-author's model. DeepSeek uses Flash only; no Pro route or fallback is hired.
-DashScope uses provider defaults: the installed custom-model metadata does
-not advertise an explicit reasoning-effort control for either Qwen Max or
-GLM 5.3. DeepSeek Flash and Claude Opus keep high effort. All four reviewers
-retain their existing read-only charters and `class: gate`.
+Standard means `codex`; High-risk means fast `design`/`engine`, with the same
+five required role assignments as Careful. Both Astra roles retain distinct
+offices, charters and results; independent Fable is a separately required
+correctness reading. Five roles do not mean five model families. See proposed
+[0058](../docs/decisions/0058-codex-review-routing.md), sourced from the current
+operator directive; the seat does not accept that record.
+
+Every Codex reviewer has a single-model chain except dedicated fast-feature
+correctness: `[qwen-max, sonnet]`. Only a settled pre-session dispatch failure
+(no accepted session, checkpoint or watchdog kill) advances that chain. Valid
+adverse verdicts and malformed facts cannot trigger substitution; exhaustion
+refuses shipping. Flash security never substitutes. DeepSeek uses official
+Flash only; Pro is forbidden. DashScope Qwen keeps provider-default effort;
+other requested reviewers use high. All reviewers retain read-only charters
+and `class: gate`; only panel security or the combined chore reviewer owns hold.
 The dsh adapter does not claim native tool confinement: those reviewers'
 read-only conduct is a charter obligation, and the delivery gates detect tree
 changes. A security hold remains a hard stop, and unknown residual safety

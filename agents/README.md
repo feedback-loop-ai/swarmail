@@ -44,11 +44,20 @@ operator's Codex work models and independent external reviewers. The shared
 design council now uses those Codex offices. See the
 [recipe tables](../bundles/README.md) for exact chains, efforts and launch
 commands. The `self` intake/implement and review offices above retain their
-original chains; the Codex recipes use singleton reviewer chains with no
-fallback and never select DeepSeek Pro.
+original chains. The operator-directed amendment in proposed
+[0058](../docs/decisions/0058-codex-review-routing.md) assigns Fable correctness,
+Flash security and Sonnet tests to Standard; Careful and fast full-risk lanes
+add distinct Astra correctness/guarantees and independent Fable offices.
+`codex-review-independent` and `codex-review-correctness` both directly inherit
+the full correctness base charter; the engine permits only one overlay level.
+Independent Fable has its own required verdict.
+All reviewer chains are single-model except dedicated fast-feature correctness:
+Qwen Max then Sonnet 5.5 on pre-session dispatch failure only. No completed
+verdict or malformed facts trigger substitution. DeepSeek Pro is forbidden.
 
 `codex-fast` adds `codex-triage`, `codex-fast-implementer` and
 `codex-bug-reviewer`: triage records scope, the implementer returns broader
 work for reclassification, and the single reviewer owns correctness and
-security together. Broader fixes use the existing correctness/security
-offices; full design and engine work retain all four review lenses.
+security together. Broader fixes use dedicated Qwen correctness and official
+Flash security offices; full design and engine work require all five roles.
+Only the security member (or combined chore reviewer) owns security hold.
