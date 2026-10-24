@@ -87,7 +87,7 @@ the semantic assertion:
 
     runner returned before the awaited cleanup fence: live owned work
 
-Test runtime was 0.27 seconds; compilation succeeded. No EOF or watchdog
+Test runtime was 0.33 seconds on the committed candidate; compilation succeeded. No EOF or watchdog
 expiry supplied the verdict. The candidate starts independent cleanup owners
 before spawning their test waiters, so bypass cannot discard a waiter
 before its owned hold has even been scheduled.
@@ -95,9 +95,11 @@ before its owned hold has even been scheduled.
 The mutation was restored with an EXIT trap from a saved source copy.
 target/issue225/mutant.patch, mutant-filter.log and mutant-filter.exit
 retain the precise patch, output and exit. The identical restored filter
-passed one test with all twelve cases (4.44 seconds); see restored-filter.log.
-The subsequent refinement checks the intentional teardown panic's exact
-payload, so an unrelated panic cannot satisfy that teardown test.
+passed one test with all twelve cases (4.26 seconds); see restored-filter.log.
+The teardown test also checks the intentional panic's exact payload, so
+an unrelated panic cannot satisfy it. After that refinement was committed,
+the mutant and restored pass were repeated on the exact committed source;
+the restored source is byte-identical to that commit.
 
 ## Production equivalence
 
@@ -119,10 +121,49 @@ hunk is test-only; shipping cleanup loops and budgets are unchanged.
 
 ## Final candidate gates
 
-Implementation is committed before final standalone and root gates.
-The completed command/exit receipt and exact coverage counts will be recorded
-here after those runs. Root coverage excludes the standalone evals crate
-under accepted 0055; it does not prove coverage of these inline eval tests.
+All final gates ran offline on implementation commit
+5e49874c8d86931fc328f86a38bfbf5a868c573a. Full command, exit, duration,
+log hash, all twelve case/checkpoint records and comparison facts are in
+[implementation-verification.json](implementation-verification.json).
+The follow-up commit changes only this proof, its receipt and task status.
+
+| Required check | Result |
+| --- | --- |
+| evals fmt and locked all-targets clippy with -D warnings | pass |
+| evals full tests | initial exit 101 at the intake-recorded matrix stdout backpressure test; complete retry with --no-fail-fast exit 0 |
+| Exact regression filter | one test passes, all twelve ordinary/delayed cases |
+| Engine digest and fixed shim integrity | pass |
+| Root fmt, locked all-targets clippy and locked workspace tests | pass |
+| Candidate-local pinned brokkr compile --bundle bundles/self | pass, no policy-sweep warning |
+| Exact coverage | 13,878/13,878 lines; 782/782 branches; 1,508/1,508 functions |
+| Coverage selftest | pass |
+| Pinned design selftest and delivery tamper-boundary proof | pass |
+| Publish guard proof and seal-branch keyless proof | pass |
+| cargo deny check licenses and fail-closed native-tls absence | pass |
+
+The first final full evals invocation reproduced the same baseline
+matrix_stdout_backpressure_is_bounded_and_still_observes_signals failure
+at main.rs:2312 (NotFound), after all 37 library tests passed. Its output
+remains in target/issue225/evals-test.log. The explicit complete retry was:
+
+    CARGO_NET_OFFLINE=true cargo test --manifest-path evals/Cargo.toml --workspace --locked --no-fail-fast
+
+It exited zero: 37 library tests, 13 binary tests and all six integration
+targets (2 + 14 + 5 + 14 + 32 + 13), 130 tests total, including the
+previously failing test. No source change or silent retry hides the first
+failure; the intermittent baseline issue remains outside #225.
+
+Coverage evidence is target/coverage/run.W6xtfk/coverage-summary.json and
+lcov.info, with zero missed lines, branches or functions. Public scripts
+were used after validating their pinned shim bytes; the additional design
+and delivery proofs ran directly from bundles/self/scripts. Root coverage
+excludes standalone evals under accepted 0055 and does not prove coverage
+of these inline eval tests.
+
+The final production expansion comparison still passes byte for byte with
+the SHA-256 above. After all gates, the mutant/restored proof was repeated
+on the committed source and restoration checked with cmp and git diff;
+no executable candidate bytes changed.
 
 CI owns chart/history/selftest, real Docker smoke, network RustSec audit,
 tag-only rate proof and port-80 exchange. The operator owns sealing, hosted
