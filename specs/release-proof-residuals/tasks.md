@@ -2,12 +2,17 @@
 
 ## Continuation — 2026-10-24
 
-Run `epic-192-issue-186-residual-foll-fa975081`, inspected base `f00d8b5`.
-These are ordered implementation/delivery tasks, not checkmarks earned by the
-chief's design commit. The boxed workspace exposes no authentic journal; supplied
-context proves triage and panel positions only. No historical task is newly checked.
-Every later checkmark needs a run/event or journal-attached receipt locator plus
-candidate applicability. Missing evidence stays open; no journal is fabricated.
+Run `epic-192-issue-186-residual-foll-fa975081`. Triage inspected
+`f00d8b5`; the committed design candidate
+`52fba989db2ddabf1028e7a4bd5a0d1f7bd6a77e`, tree
+`a049858200923dadaee25442d60e8ef5a4526c2c`, is the actual implementation
+base. These are ordered implementation/delivery tasks, not checkmarks earned
+by the chief's design commit. The boxed workspace exposes no authentic run
+journal. Local command logs can establish their stated candidate proof but do
+not substitute for journal evidence required by the task checks. No historical
+task is newly checked. Every checkmark needs a run/event or journal-attached
+receipt locator plus candidate applicability; missing evidence stays open and
+no journal is fabricated.
 
 - [ ] **R1 — Bind current base and evidence (AC11–AC12).** Capture actual
   head/tree/worktree/changed files, script/shim hashes, local engine and ordered
