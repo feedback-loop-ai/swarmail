@@ -5,8 +5,10 @@ Status: Draft
 Story: [Epic #192 issue #174](https://github.com/feedback-loop-ai/swarmail/issues/174)
 Preservation baseline: `ff9bf8aba26fabaeea89876d5257b58198a12601` (reviewed issue #173 candidate)
 Follow-up baseline: `16841aa4f503ad8eb83e36208ff5fd125fe25b95`
-Updated: 2026-10-24 — recovery after two stopped implementation attempts
+Updated: 2026-10-24 — evidence-backed resolver scope return
 Recovery baseline: `310b9695fa03cec63bd06bb1b01e1697a5f5d984`
+Inspection HEAD: `f3cee46622c93881078af0614f088e2c460c7a59`
+Decision: 0062 — [Exclusive coverage reservation tooling](../../docs/decisions/0062-coverage-reservation-tooling.md) (proposed)
 
 ## Feature and rationale
 
@@ -24,14 +26,19 @@ is not evidence of successful verification. Selftest success requires every
 intended diagnostic, premise and green control. Actual application coverage
 remains a separate verdict.
 
-This is test/selftest work inside `selftest()` in
-`bundles/self/scripts/coverage-gate.sh`. Preserve every reviewed #173 change,
-the scanner, production gate checks, diagnostics and exact verdict. No
-application, dependency, shim, checksum, toolchain, policy or recipe change is
-authorized. Issue #175, derive-provenance analysis, generic accounting and
-other coverage residuals remain outside scope. If a new proof reveals a
-production defect, preserve the evidence and return through the established
-scope process; do not weaken the assertion or silently repair production.
+The returned T1 evidence attributes double admission to the production resolver:
+uutils mkdir 0.8.0 can report success after its leaf-creation syscall returns
+EEXIST. This design now permits the narrow explicit-leaf creation repair in
+`resolve_build_dir`, its checked tool/error handling and necessary comments,
+plus the local selftest repair in `bundles/self/scripts/coverage-gate.sh`.
+Parent creation, default allocation, cleanup ownership, free-space checks,
+scanner, coverage arithmetic and all other #173 behavior remain preserved.
+No application, Cargo dependency, shim/checksum, Rust toolchain, recipe or
+policy edits are authorized. The one added host-tool prerequisite is explicitly
+proposed in 0062. Implementation may add its proposed-status index entry in
+`docs/decisions/README.md`; no accepted record is edited. Issue #175,
+derive-provenance analysis, generic accounting and other residuals remain
+outside scope.
 
 ## Authority and semantic assessment
 
@@ -39,9 +46,15 @@ Accepted [0020](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gat
 [0035](../../docs/decisions/0035-coverage-gate-refuses-by-effect.md) and
 [0050](../../docs/decisions/0050-delivery-gates.md) already establish exact
 coverage, real compiler inventories and pinned proof ownership. This design
-adds evidence for those contracts, not a new refusal policy; no proposed
-decision is required. Their derive-provenance and uninstantiated-generic limits
-remain explicit limits, not permission to exclude production code.
+restores exclusive reservation and adds evidence for those contracts. The
+Python prerequisite for explicit reservation and selftest is a tooling-contract
+change, so proposed 0062 records it rather than treating it as incidental.
+Under [0045 §8](../../docs/decisions/0045-delivery-repairs.md), compatible work
+may land while proposed; no accepted ruling is contradicted or accepted here.
+A discovered supported-environment conflict requires an explicit scope return,
+not an install, silent fallback or platform removal. The accepted coverage
+rulings retain their explicit derive-provenance and uninstantiated-generic
+limits, not permission to exclude production code.
 
 Synchronous acceptance, subscribe-before-check, oldest-only pruning and
 extraction-at-ingest remain unchanged. Coverage does not replace the existing
@@ -50,6 +63,14 @@ real-protocol, concurrency or persistence proofs.
 selected `engine` lane. Gate work retains the full design and independent
 four-provider review, including official DeepSeek Flash, never Pro or fallback.
 The chief does not choose the next phase or certify delivery.
+
+## Historical design rulings
+
+The three dated syntheses below preserve the sequence's reasoning. Their
+selftest-only scope, unresolved-causality statements and no-new-decision
+assessment describe the evidence available at those steps. The later
+**Attributed scope-return synthesis** and current acceptance criteria replace
+those constraints; historical text is not a second current implementation plan.
 
 ## Initial panel synthesis — 2026-10-24
 
@@ -197,6 +218,79 @@ the exact 100/100/100 floor stands, and the existing engine lane retains all
 gates and its four protected reviewers. Runtime failure examples in the panel
 are preservation arguments, not additional implementation tasks.
 
+## Attributed scope-return synthesis — 2026-10-24
+
+Read both current run-local positions and the revised intake for
+`epic-192-issue-174-recovery-afte-190349d3`. Reuse `coverage-selftest` to keep
+one reconciled requirements set. The returned implementation receipt is
+`.forge/results/5bc4c948-a82b-4f5b-98c7-f2bfac29eb2d.json`; retained evidence
+is `.forge/epic192/issue174-recovery-t1/attributed/`. This chief read the summary
+and the actual full-context `.212/.213` and direct-injected `.25/.26` traces.
+Both pairs show one kernel mkdir success, one EEXIST, then two utility exits 0
+for the same exact leaf. The full trace is an accumulated canonical selftest
+failure; the direct trace uses the same resolver and an investigative strace
+delay. The ordinary direct {0,1} pass does not refute either failure. The
+summary records no removal before outcomes. These are retained observations,
+not a fresh reproduction or blanket closure of unchecked T1 obligations.
+
+**Adopt the shared causal scope finding.** Readiness changes cannot repair a
+utility's false success. AC8 now expressly allows the evidenced resolver
+exception before implementation. Preserve the prior receipts, stopped-run
+identities and engine return count; this is a scope reconciliation, not a reset.
+
+**Rule for robustness's direct primitive.** Use a tiny pinned inline Python 3
+operation in the canonical script, isolated with `-I -S`, calling `os.mkdir`
+once on the argv-supplied exact path with mode 0777 subject to inherited umask.
+Never translate EEXIST into success. Assign the winner path and ownership 0
+only after success; preserve the fresh-leaf category, path and status-1 refusal.
+Parent mkdir stays idempotent. No retry, canonicalization or alternate leaf.
+The current box resolves `/usr/bin/python3` 3.14.4 and successfully imports
+stdlib `os`, `sys` and `time` with `-I -S`; this is an availability observation,
+not proof for every supported runner. Existing publish-guard use of Python is
+supporting context, not proof of standalone coverage prerequisites. AC16 and
+0062 make missing/broken-tool refusal and environment verification explicit.
+
+**Reject simplicity's permanent no-clobber marker.** It avoids an interpreter
+but introduces a second reservation fact inside a tree passed to
+`cargo llvm-cov clean`. A contender delayed after apparent mkdir success would
+need that marker to remain present throughout downstream operations. Neither
+position supplied that lifecycle proof. Direct directory creation preserves
+one arbitration event and the existing retained-leaf contract without adding
+marker retention or reclamation rules. This is a design risk assessment, not
+an observed claim that this Cargo version deletes that particular marker.
+The cost of rejecting the simpler Bash patch is Python startup, checked
+availability and a newly documented tool prerequisite. Reject pre/post checks
+alone, GNU-only selection, version blacklists, compiled bootstrap helpers,
+scanner changes, locks/leases and silent fallback. Their portability or
+lifetime costs are unjustified for this one operation.
+
+**Adopt simplicity's local owner and robustness's finite attributable proof.**
+Keep one specialized two-worker controller inside the selftest, reused by the
+real race and failure controls. Use a 30-second monotonic failure deadline
+from controller entry through joins, plus at most 5 seconds teardown grace.
+No sleep establishes readiness. Explicitly cover opens, writes, reads, nested
+resolver children, record delivery and waits, preserving inherited descriptors
+and conditional-shell behavior. The plan permits a local inline stdlib
+supervisor with owned process groups; no reusable service or extra executable
+is introduced. Its extra proof code is the accepted cost of finite failure.
+A hard host failure may prevent reaping; that cannot earn a successful proof
+or authorize deleting a root still used by children.
+
+**Reconcile red/green with replacing the faulty boundary.** The old mkdir-only
+resolver under a scoped false-success utility override must yield the known
+0/0 failure through the same controller/assertions. The current resolver must
+pass with that override installed and use the direct primitive instead. The
+red run must prove the override was reached; the green run must prove the new
+primitive was reached. An unused override alone is not a regression proof.
+Separately test direct EEXIST refusal and real concurrent admission. No
+production injection flag, rewritten fake resolver or timing lottery.
+
+Keep AC1–AC15 binding with the narrow scope correction, add AC16 for the new
+tool boundary, and leave T1–T8 unchecked until candidate-bound evidence closes
+each entire task. All house gates and four protected engine reviews remain
+required downstream. The chief drafts; it does not certify implementation,
+accept a decision, or select the next phase.
+
 ## Acceptance Criteria
 
 - **AC1 — Every refusal has a cause.** Remove `expect_refuse` and every call.
@@ -251,8 +345,13 @@ are preservation arguments, not additional implementation tasks.
   helpers. Setup/compile failure fails the selftest; overrides, deliberate
   helper failures and cleanup cannot contaminate subsequent arms or runs.
 - **AC8 — Preserve the candidate and verifier contract.** Diff against
-  `ff9bf8a` shows implementation edits confined to selftest helpers/fixtures.
-  Scanner and production gate logic remain byte-identical. Retain #173's fresh
+  `ff9bf8a` shows implementation edits confined to selftest helpers/fixtures
+  and the explicit-leaf operation in `resolve_build_dir`, its checked Python
+  handling and necessary local/header comments. This is the sole production
+  exception, justified by the returned T1 evidence. The scanner and all other
+  non-selftest executable regions remain byte-identical. Parent/default
+  allocation, cleanup, free-space and counting behavior remain unchanged.
+  Retain #173's fresh
   target reservations, failed-inventory/partial-output, clean-boundary and
   raw-identifier proofs. Actual coverage remains fail-closed, with positive
   counts and integer covered == count for lines, branches and functions
@@ -273,8 +372,11 @@ are preservation arguments, not additional implementation tasks.
   the same resolver outside that context. Reproduce and attribute the recorded
   two-success/no-refusal fault before choosing a patch. Static inspection,
   successful retries and a passing approximation cannot close the residual;
-  unreplicated causality must remain explicitly unresolved. When shell evidence
-  is inconclusive, obtain process-attributed filesystem evidence from the
+  unreplicated causality must remain explicitly unresolved. The retained
+  f3cee46 full-context and direct-injected traces now supply the causal basis;
+  audit their identity/lifetime receipts and any missing T1 fields before
+  patching rather than discarding them or demanding a lucky new reproduction.
+  When shell evidence is inconclusive, obtain process-attributed filesystem evidence from the
   failing execution; a passing instrumented run cannot explain a different
   failure. Distinguish actual command results from recorded resolver outcomes.
 - **AC11 — One attributable winner and loser.** Two live children share one
@@ -288,9 +390,9 @@ are preservation arguments, not additional implementation tasks.
 - **AC12 — Infrastructure failure fails finitely.** Explicitly check setup,
   descriptor opens, readiness/release I/O, output writes and worker waits,
   including under conditional Bash execution. Missing/malformed records, wrong
-  tokens, unrelated exits and worker death fail the proof. A finite deadline
-  or watchdog covers setup through joins, every blocking coordination
-  operation and nested resolver processes; expiry is failure,
+  tokens, unrelated exits and worker death fail the proof. A 30-second
+  monotonic deadline plus at most 5 seconds teardown grace covers setup through
+  joins, every blocking coordination operation and nested resolver processes; expiry is failure,
   never successful synchronization. Stop and reap fixture children and finish
   any watchdog before root cleanup; teardown cannot hide an unbounded final wait or signal
   unrelated processes. Controls for death before readiness, failure after
@@ -308,13 +410,21 @@ are preservation arguments, not additional implementation tasks.
   parent/leaf failure and owned-default cleanup controls.
 - **AC14 — Causal red/green regression.** A focused control through actual
   canonical functions fails when the demonstrated fault is restored and passes
-  after repair. Also run the canonical full selftest in normal context.
+  after repair. Deterministically force EEXIST-to-success at the old utility
+  boundary in an isolated baseline control, proving both leaf calls reached
+  it and returned success; require the same assertion path to reject 0/0.
+  Run the repaired resolver under that override and prove direct creation
+  was executed, with one status-1 loser. Separately prove direct EEXIST and
+  normal concurrent admission. Also run the canonical full selftest in normal
+  context.
   Controls use the actual local assertion/coordination code, with child-local
   overrides/counters that cannot reset the real parent's failure count.
   Bounded repetition may supplement isolation evidence; it cannot replace
   this control or AC12's infrastructure controls.
 - **AC15 — Preservation and delivery.** Compare the follow-up diff to
-  `16841aa` and preserved scanner/non-selftest bytes to `ff9bf8a` under AC8.
+  `16841aa` and preserved scanner/non-selftest bytes to `ff9bf8a`, excluding
+  only AC8's explicitly audited resolver/tooling exception. Do not claim byte
+  identity for a deliberately changed resolver.
   Retain AC1–AC9, including offline locked real compiler fixtures, failed
   inventory/partial-output, raw identifiers and clean boundaries. All AC9
   final-candidate gates must pass, including separate exact application
@@ -324,9 +434,30 @@ are preservation arguments, not additional implementation tasks.
   DashScope GLM 5.3 tests, never Pro or fallback. Keep security hold and
   CI-owned obligations. Drafting is not repair or verification completion.
 
+- **AC16 — Direct creation and honest tooling.** Explicit reservation requires
+  installed Python 3 supporting isolated stdlib execution; selftest requires
+  its POSIX subprocess/deadline facilities. Missing or broken interpreter
+  refuses status 1 with a distinct stable `reservation tool unavailable`
+  category before reservation; there is no install or fallback. A checked
+  startup probe is not sufficient alone: operation startup/protocol errors
+  also fail closed and cannot masquerade as a fresh-leaf collision. One
+  `os.mkdir(path, 0o777)` succeeds; any OSError refuses, preserving umask,
+  exact argv path spelling, parent/leaf distinction and caller evidence.
+  Use checked private operation statuses/records to distinguish filesystem
+  failure from tool failure, never localized stderr. Test missing executable,
+  failed startup, malformed/absent completion, existing-leaf and other I/O
+  failures, spaces/relative/trailing-slash paths and representative umasks.
+  Assert no success metadata on failure and no build before refusal.
+  Unset/empty default allocation remains independent of Python; the selftest
+  tool preflight does not redefine default resolver behavior. Verify installed
+  capability in the hermetic verifier; retain Linux/macOS compatibility,
+  document unexecuted platform evidence honestly and return any actual
+  availability conflict. No Cargo dependency or license allowance changes.
+
 ## Design handoff
 
-This commit contains only this spec, [plan.md](plan.md) and [tasks.md](tasks.md).
+This commit contains this spec, [plan.md](plan.md), [tasks.md](tasks.md) and
+[proposed 0062](../../docs/decisions/0062-coverage-reservation-tooling.md).
 The panel positions and result receipt remain ignored run-local evidence.
 All implementation tasks stay unchecked until executed and proved. Structural
 draft validation does not claim issue #174 is implemented or SHIP-COMPLETE.
