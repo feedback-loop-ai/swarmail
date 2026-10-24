@@ -133,6 +133,26 @@ this spec/ADR until that tracked handoff lands.
    storage, subscribe-before-scan, oldest-only pruning and ingest extraction.
    No new dependency, allowlist widening, runtime configuration or metric
    family is introduced.
+
+**Dated AC1/AC5 clarification — refused control requests (2026-10-24).**
+The future runtime regression must cover a selected inbox segment with an
+exclusive prefix followed by `%0D%00`. Before changing the helper, capture
+and pin the current real-HTTP refusal status and raw/text response body; the
+current contract is HTTP 400 with `inbox must not contain control characters`.
+After the accepted decoding change, hold the request-accounting guard
+deterministically after it is acquired and before it drops. During that hold,
+obtain one complete real-HTTP scrape and parse it with the existing independent
+Prometheus parser. Require exactly one request-family sample with value 1 for
+the exact decoded label containing CR and NUL, no encoded alias and no extra
+injected sample. Prove that the identity has no active-await row and no
+cumulative await-registration increment before, during or after the refusal.
+Release the hold, join the identical refusal, then prove the request row has
+been removed and await registration remains absent. Use bounded operations,
+exclusive names, proved cumulative-cap headroom or process isolation, and
+failure-safe cleanup. Preserve the separate invalid-UTF-8 raw/text refusal
+proof in AC4. This clarification is a future proof obligation: recovery has
+not implemented or exercised decoded control-label behavior.
+
 6. **AC6 — Authority and delivery.** Operator acceptance of 0065 is recorded
    (2026-10-24); runtime implementation still requires targeted tests and
    red-before/green-after evidence, remaining selector documentation, and the

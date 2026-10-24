@@ -193,3 +193,39 @@ The CI-owned chart/history, Docker, network advisory, tag release-rate and
 real port-80 bridge proofs were not run here; house rules assign them to CI.
 This receipt records documentation acceptance only. Runtime behavior, API
 regression work and independent review remain for the subsequent engine phases.
+
+## Recovery proof design — refused control request metrics (2026-10-24)
+
+The security residual concerns the future decoded request key before handler
+admission. A selected `%0D%00` segment with an exclusive safe prefix decodes
+strictly to CR/NUL for request accounting, then the existing handler refuses
+it. This is a transient request row under the accepted escaping rules, not an
+await row, admission receipt or demonstrated injection. Do not alter escaping,
+refusal, accounting order or accepted identity to hide it.
+
+Before changing `inbox_of_path`, issue the real HTTP request and capture the
+current refusal's exact status and raw/text body. Pin the observed result; the
+current contract is status 400 and body `inbox must not contain control
+characters`. Do not infer a JSON envelope. The future changed-path test must
+hold execution after request guards are acquired and until a complete scrape
+has been read. If no public mechanism can provide that deterministic interval,
+resolve a test-only seam at the middleware owner under decision 0020 and keep
+the real router and HTTP request in the proof. Branch-stable tests remain
+inline; cold failure diagnostics belong in the owner's `*_tests.rs` harness.
+No seam or source change is part of this recovery.
+
+Use the existing independent `tests/api.rs` parser for the full scrape and
+add an independent valid CR/NUL quoted-label fixture plus malformed-input
+controls. During the hold, require exactly one request sample of value 1 for
+the exact decoded CR/NUL label, no encoded alias and no additional injected
+sample. Confirm no active-await row or cumulative registration increment for
+the identity before, during or after the refusal. Audit exclusive names and
+headroom for the whole API test executable; use process isolation if named
+headroom cannot be proved, and never substitute the overflow row for the named
+sample. Release the hold, join the same refusal, then parse a later full scrape
+to prove the request row disappears while await registration remains absent.
+Bound readiness, requests, scrape, release, join and cleanup; use neither sleep
+as synchronization nor client disconnect/unread-response tricks, and clean
+up clients/server after failures. Keep AC4's invalid-UTF-8 fallback/refusal
+proof separate because it exercises another contract path. All of these remain
+future obligations; no live refusal-window scrape is claimed here.

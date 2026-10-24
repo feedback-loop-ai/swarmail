@@ -162,6 +162,7 @@ UTF-8; use the decoded label on success and the complete original segment on
 invalid UTF-8. Route recognition, refusals, await identity and all other metric
 semantics remain unchanged. This records the accepted contract, not runtime
 implementation or test completion.
+
 No authentication, CORS policy, proxy allowlist, port-forward bypass, new
 production module or metric framework. This design seat writes exactly four
 artifacts and does not implement, push, merge or close issues.

@@ -168,3 +168,81 @@ Fresh logs and exit results are under
 was not edited. The committed design's structural check runs after this
 commit and is reported in the run-local phase result; the sequence's check
 remains the authority on advancement.
+
+
+## Recovery implementation receipt — 2026-10-24
+
+Recovery baseline: `faef809`, following the concluded run
+`epic-192-issue-202-record-the-op-6b55bb9e`; the current design artifacts
+passed their deterministic check at `7fdeba6`. This receipt distinguishes
+that prior candidate's retained claims from fresh evidence on the recovery
+worktree. No runtime behavior, accepted decision or test source changed.
+
+The prior four review results remain historical evidence. The recovery framing
+and design confirm three LOW residuals: the HTTP-plane paragraph boundary,
+missing owning evidence/task reconciliation, and the future refused-control
+request-label proof. The tests INFO limitation remains explicit: the finite
+`AMENDMENTS` test list does not prove the semantic 0065-to-0043 marker. It is
+covered by direct comparison; no validator or test inventory was expanded.
+
+Task evidence reconciliation for the original recording run:
+
+- **T1 checked:** the `59a37f2` comparison fixtures, supplied acceptance and
+  reservations, prior framing/reviews, and bounded prior path inventory were
+  inspected. The `faef809` candidate is the historical baseline; these facts
+  are not reused as fresh gate results.
+- **T2 checked:** only the decoded-inbox amendment moved to 0065; the old
+  0062 path is absent, status/date/reservations agree, and clauses 1–5 compare
+  byte-for-byte with the original proposal at `59a37f2`. The explanatory
+  paragraph outside those clauses is not miscounted as a ruling clause.
+- **T3 checked:** fresh `CARGO_NET_OFFLINE=true cargo test --locked --test
+  store_contract_docs` passed 19/19, including inventory, status and existing
+  refusal controls. Its finite amendment-pair limitation remains disclosed.
+- **T4 checked:** removing the dated 0065 blocks reconstructs the original
+  0043 and HTTP-plane plan bodies exactly. The HTTP-plane spec also reconstructs
+  exactly after removing its dated block and the single AC1 paragraph separator;
+  a focused `faef809` negative/corrected-candidate positive comparison passed.
+- **T5 checked:** owning links/status/provenance were reviewed, the prior
+  decoded-plan content including both historical receipts remains a byte-for-byte
+  prefix of the recovery version, and decoded runtime T2–T8 plus new T9 remain
+  unchecked. No runtime or test success is asserted.
+- **T6 checked:** the six recovery edits are confined to the allowed spec/plan/task
+  documents. Decision files/index, source, tests, dependencies, gates, policy,
+  recipes, reserved lanes and the unrelated 0017 reference are unchanged.
+  Relative links resolve.
+- **T7 checked:** the targeted suite and full local gate inventory passed;
+  exact fresh outcomes are recorded below. CI-only proofs remain CI-owned.
+
+The original task's review T8 remains open for independent review. For this
+recovery, its dated route clarification allows only the task-authorized Haiku
+dispatch fallback for GLM 5.3 tests; official DeepSeek Flash remains the
+guarantees reviewer, never Pro, and no dispatch fallback substitutes for a
+substantive verdict. The security residual is not cleared by this receipt.
+
+## Final recovery gate receipt — 2026-10-24
+
+Fresh gate run with `CARGO_NET_OFFLINE=true` on the finalized recovery diff
+passed: `cargo fmt --all -- --check`;
+`cargo clippy --workspace --all-targets --locked -- -D warnings`;
+`cargo test --workspace --locked`; pinned `.forge/bin/brokkr compile --bundle
+bundles/self`; `bash scripts/coverage-gate.sh`;
+`bash scripts/coverage-gate.sh selftest`; `bash scripts/publish-guard-test.sh`;
+`bash scripts/seal-branch-test.sh`; and `cargo deny check licenses`. The
+worktree brokkr SHA-256 matched tooling.json
+`e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`; bundle
+compilation reported zero unruled valuations. Coverage was exact: 12,953/12,953
+lines, 762/762 branches, and 1,437/1,437 functions. Coverage selftest passed;
+publish guard reported 51 mutation-red/restored-green receipts; seal proof
+reported 7 cases and 10 mutants. `cargo tree --locked -i native-tls` refused
+with Cargo's explicit “did not match any packages” result (exit 101), proving
+absence; an unrecognized error would have failed this check. The targeted
+`CARGO_NET_OFFLINE=true cargo test --locked --test store_contract_docs` passed
+19/19.
+
+After this receipt and task-state reconciliation were finalized, the complete
+local gate inventory was rerun; all commands returned zero with the same exact
+coverage totals. No tracked file changed after that final rerun. The CI-owned
+chart/history, Docker, network advisory, tag release-rate and real port-80
+bridge proofs were not run here; house rules assign them to CI. Independent
+review and security disposition remain downstream, and this receipt does not
+claim runtime decoding or transient refused-control behavior.
