@@ -472,3 +472,66 @@ Tests, parser conformance, implementation completion and dispatch cannot clear
 that hold. If disposition conflicts with accepted semantics, surface the
 conflict for the operator rather than changing escaping/identity/refusal.
 No push, merge, issue close or delivery acceptance is claimed.
+
+
+## Implementation receipt — 2026-10-25
+
+The implementation is committed in
+f937b676511f91484c8209b5d77477b42615f7fc
+(tree 76246d130f07261592bf27b7a656bd8e87fca804). It changes only
+src/api/refusal_tests.rs and tests/api.rs: no production behavior,
+dependency, lockfile, decision, policy, gate, or coverage-floor change.
+
+The real-router held /count matrix independently specifies encoded URI
+segments, decoded labels, and expected exposition bytes. It covers backslash,
+quote, literal backslash-n versus LF, CR, NUL, their pair, all 32 C1 scalars,
+all 12 requested bidi scalars, and a mixed escape/control/bidi value. Each
+fixture observes before, response-held, and released scrapes; checks full
+Content-Length framing, complete strict-reader parsing, exact sample bytes,
+decoded label bytes, response status/body, absence of aliases and await
+registrations, and request-row cleanup. The existing held CR/NUL /await
+refusal remains and now checks its exact raw exposition line. The existing
+space/café three-family lifecycle and invalid/mixed-invalid UTF-8 regressions
+remain unchanged.
+
+The cap audit found that the added matrix issues only /count requests and
+therefore adds zero cumulative await-registration keys. The existing held
+/await CR/NUL case remains a 400 refusal before registration. New fixture
+names are exclusive and are checked absent before use; requests run
+sequentially, the hold is request-owned, and no lock spans a scrape. The
+normal parallel API and library suites passed. No production registry reset
+or global-total assertion was added.
+
+Targeted results on the committed implementation tree:
+
+- cargo test --locked --test api — exit 0, 66 passed.
+- cargo test --locked --lib api — exit 0, 34 passed.
+- cargo test --locked --lib api::refusal_tests — exit 0, 3 passed.
+- cargo test --locked --test store_contract_docs — exit 0, 19 passed.
+- cargo test --locked --test delivery_recipes — exit 0, 14 passed.
+- cargo test --workspace --locked — exit 0.
+
+Sensitivity proof: temporarily changed the expected backslash sample to
+contain \\wrong; the focused matrix test exited 101 at the exact
+“unexpected exposition bytes” assertion for
+issue202-label-conformance-backslash. The original fixture was restored
+immediately; the focused suite then passed. No mutation remains.
+
+All house gates passed on the committed candidate: formatting; locked
+workspace/all-target Clippy with warnings denied; locked workspace tests;
+.forge/bin/brokkr compile --bundle bundles/self; exact coverage at
+12,981/12,981 lines, 764/764 branches, and 1,437/1,437 functions; coverage
+selftest; publish-guard proof (51 mutation-red/restored-green cases);
+seal-branch keyless proof (7 cases, 10 mutants); and cargo deny check
+licenses. The candidate-local engine digest matched the required
+ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f;
+bundle compilation reported 76 policy valuations, 14 groups, and zero
+unruled. All seven public shim hashes matched, and the fail-closed
+cargo tree -i native-tls probe returned its exact package-absence result.
+
+The historical has_security_residual=true and
+max_residual_severity=low facts remain unchanged; implementation tests do
+not clear them. The five separate protected 0058 results remain with the
+engine review route. Chart/history, Docker, network RustSec, release-rate,
+real port-80/platform evidence, external settings, and sealing remain owned
+by CI or the operator as recorded in the design and house rules.
