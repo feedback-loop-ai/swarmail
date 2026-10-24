@@ -542,7 +542,7 @@ async fn query_free_native_operations_refuse_by_name() {
 
     let (status, wiped) = http_json(addr, "DELETE", "/api/v1/delete-all", None).await;
     assert_eq!(status, 200, "{wiped}");
-    assert!(wiped["removed"].as_u64().unwrap() > 0);
+    assert_eq!(wiped["removed"], 2); // only the two matrix-control seeds remain
     let (status, one) = http_json(
         addr,
         "POST",
@@ -3869,6 +3869,55 @@ async fn query_free_native_contracts_match_served_docs() {
         assert!(refusal.contains("query key"), "{label}: {refusal}");
         assert!(refusal.contains("native JSON"), "{label}: {refusal}");
     }
+
+    let list_path = &doc["paths"]["/api/v1/inboxes/{inbox}/messages"];
+    let list_get = &list_path["get"];
+    let effective_parameters = list_path["parameters"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .chain(
+            list_get["parameters"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default(),
+        )
+        .collect::<Vec<_>>();
+    let mut list_query_names = effective_parameters
+        .iter()
+        .filter(|parameter| parameter["in"] == "query")
+        .map(|parameter| parameter["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    list_query_names.sort_unstable();
+    assert_eq!(
+        list_query_names,
+        ["from", "limit", "offset", "since_ms", "subject", "to"]
+    );
+    let list_path_names = effective_parameters
+        .iter()
+        .filter(|parameter| parameter["in"] == "path")
+        .map(|parameter| parameter["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(list_path_names, ["inbox"]);
+    let inbox_path_parameter = effective_parameters
+        .iter()
+        .find(|parameter| parameter["in"] == "path" && parameter["name"] == "inbox")
+        .expect("list GET retains its inbox path parameter");
+    assert_eq!(inbox_path_parameter["required"], true);
+    let list_refusal = list_get["responses"]["400"]["description"]
+        .as_str()
+        .expect("list GET publishes its 400 contract");
+    assert!(
+        !list_refusal.contains("every native query shape is closed"),
+        "list GET must not claim universal native query closure: {list_refusal}"
+    );
+    assert!(
+        list_refusal.contains(
+            "GET /api/v1/inboxes/{inbox}/messages accepts only the query keys to, from, subject, since_ms, limit and offset"
+        ),
+        "list GET must name its own allowed query keys: {list_refusal}"
+    );
 
     let readme = include_str!("../README.md");
     let (_, llms) = http_get_text(srv.http_addr, "/llms.txt").await;
