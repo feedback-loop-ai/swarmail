@@ -253,44 +253,20 @@ fn a_noisy_agent_is_drained_and_does_not_hang_the_trial() {
 }
 
 #[test]
-fn server_death_during_the_trial_is_a_harness_error() {
-    let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("pids.json");
-    let (row, out) = helper_trial(
-        "stall",
-        &["--task", "signup", "--agent", "stall"],
-        &[
-            (MARKER_ENV, marker.to_str().unwrap()),
-            ("EVAL_RUNNER_FAULT", "server_death"),
-        ],
-    );
-    assert_eq!(row.outcome, Outcome::HarnessError);
-    assert!(
-        stderr(&out).contains("swarmail exited during the trial"),
-        "{}",
-        stderr(&out)
-    );
-}
-
-#[test]
-fn a_runner_panic_cleans_up_and_still_emits_one_row() {
-    let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("pids.json");
-    let (row, out) = helper_trial(
-        "stall",
-        &["--task", "signup", "--agent", "stall"],
-        &[
-            (MARKER_ENV, marker.to_str().unwrap()),
-            ("EVAL_RUNNER_FAULT", "panic"),
-        ],
-    );
-    assert_eq!(row.outcome, Outcome::HarnessError);
-    assert!(stderr(&out).contains("panicked"), "{}", stderr(&out));
-    if marker.exists() {
-        let (leader, descendant) = read_pids(&marker);
-        eventually("the agent group is killed after the panic", || {
-            !pid_alive(leader) && !pid_alive(descendant)
-        });
+fn normal_trial_binary_ignores_the_former_runner_fault_control() {
+    for fault in ["panic", "server_death"] {
+        let (row, out) = helper_trial(
+            "echo",
+            &["--task", "signup", "--agent", "echo"],
+            &[("EVAL_RUNNER_FAULT", fault)],
+        );
+        assert_ne!(
+            row.outcome,
+            Outcome::HarnessError,
+            "{fault}: {}",
+            stderr(&out)
+        );
+        assert!(!stderr(&out).contains("injected runner fault"));
     }
 }
 

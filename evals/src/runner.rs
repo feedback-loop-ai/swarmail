@@ -40,13 +40,12 @@ pub const RESULT_SCHEMA: u32 = 1;
 pub const CONFINEMENT: &str = "unconfined";
 /// The env var naming the Swarmail binary under test.
 pub const SWARMAIL_BIN_ENV: &str = "SWARMAIL_BIN";
-/// Test seam: inject a runner fault after the agents start (`panic`,
-/// `server_death`). Used only by the lifecycle proofs.
-pub const FAULT_ENV: &str = "EVAL_RUNNER_FAULT";
-/// Test-only acknowledged pause before group cleanup starts.
-pub const CLEANUP_HOLD_ENV: &str = "EVAL_TEST_CLEANUP_HOLD_DIR";
-/// Test-only pause before trial signal handlers and child admission.
-pub const PRE_HANDLER_HOLD_ENV: &str = "EVAL_TEST_PRE_HANDLER_HOLD_DIR";
+#[cfg(test)]
+const FAULT_ENV: &str = "EVAL_RUNNER_FAULT";
+#[cfg(test)]
+const CLEANUP_HOLD_ENV: &str = "EVAL_TEST_CLEANUP_HOLD_DIR";
+#[cfg(test)]
+const PRE_HANDLER_HOLD_ENV: &str = "EVAL_TEST_PRE_HANDLER_HOLD_DIR";
 /// The built-in agent labels.
 pub const BUILTINS: [&str; 2] = ["oracle", "null"];
 
@@ -390,6 +389,7 @@ impl OwnedGroup {
     }
 
     async fn cleanup_once(self: Arc<Self>) -> Result<(), String> {
+        #[cfg(test)]
         if let Some(dir) = std::env::var_os(CLEANUP_HOLD_ENV) {
             let dir = std::path::PathBuf::from(dir);
             if dir.join("arm").exists() {
@@ -827,9 +827,17 @@ fn identities(trial_id: &str, count: u8) -> Vec<Identity> {
 }
 
 /// The trial's resolved agent argv (built-ins run as our own child).
+fn evals_executable() -> Result<PathBuf, String> {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("EVAL_TEST_RUNNER_EXECUTABLE") {
+        return Ok(PathBuf::from(path));
+    }
+    std::env::current_exe().map_err(|e| format!("current_exe: {e}"))
+}
+
 fn agent_argv(label: &str, argv: &[String]) -> Result<Vec<String>, String> {
     if BUILTINS.contains(&label) {
-        let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+        let exe = evals_executable()?;
         Ok(vec![
             exe.display().to_string(),
             "agent".to_string(),
@@ -950,7 +958,7 @@ async fn run_body(
             .map(char::from)
             .collect()
     };
-    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let exe = evals_executable()?;
     let mut cmd = Command::new(&exe);
     cmd.args([
         "fixture",
@@ -1085,6 +1093,7 @@ async fn run_body(
     let end = if spawn_failed.is_some() {
         AgentsEnd::Done
     } else {
+        #[cfg(test)]
         match std::env::var(FAULT_ENV).as_deref() {
             Ok("panic") => panic!("injected runner fault"),
             Ok("server_death") => {
@@ -1203,6 +1212,7 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             return refused_row(&req, &trial_id);
         }
     };
+    #[cfg(test)]
     if let Some(dir) = std::env::var_os(PRE_HANDLER_HOLD_ENV) {
         let dir = PathBuf::from(dir);
         if std::fs::create_dir_all(&dir).is_ok()
@@ -1414,4 +1424,299 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
     }
     drop(scratch);
     row
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod test_probes {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Command;
+
+    const PROBE_ENV: &str = "EVAL_TEST_RUNNER_PROBE";
+    const SCRIPT_ENV: &str = "EVAL_TEST_RUNNER_SCRIPT";
+    const PIDS_ENV: &str = "EVAL_TEST_RUNNER_PIDS";
+    const BIN_ENV: &str = "EVAL_TEST_RUNNER_BIN";
+
+    #[derive(Clone, Debug)]
+    struct ProcessIdentity {
+        pid: i32,
+        pgrp: i32,
+        start_time: u64,
+        state: char,
+    }
+
+    fn identity(pid: i32) -> Option<ProcessIdentity> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, tail) = stat.rsplit_once(')')?;
+        let fields: Vec<_> = tail.split_whitespace().collect();
+        Some(ProcessIdentity {
+            pid,
+            state: fields.first()?.chars().next()?,
+            pgrp: fields.get(2)?.parse().ok()?,
+            start_time: fields.get(19)?.parse().ok()?,
+        })
+    }
+
+    fn alive(want: &ProcessIdentity) -> bool {
+        identity(want.pid)
+            .is_some_and(|now| now.start_time == want.start_time && !matches!(now.state, 'Z' | 'X'))
+    }
+
+    fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !condition() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn runner_probe_entrypoint() {
+        if std::env::var_os(PROBE_ENV).is_none() {
+            return;
+        }
+        let script = std::env::var_os(SCRIPT_ENV).expect("probe script path");
+        let bin = std::env::var_os(BIN_ENV).expect("Swarmail binary path");
+        let req = TrialRequest {
+            task: Some("signup".into()),
+            agent: Some("runner-probe".into()),
+            argv: vec!["/bin/sh".into(), script.to_string_lossy().into_owned()],
+            deadline_ms: Some(60_000),
+            artifacts_dir: None,
+        };
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let row = runtime.block_on(run_trial(req, Some(PathBuf::from(bin))));
+        assert_eq!(row.outcome, Outcome::HarnessError);
+        println!("{}", serde_json::to_string(&row).unwrap());
+    }
+
+    struct Probe {
+        child: Option<std::process::Child>,
+        release: PathBuf,
+        owned: Vec<ProcessIdentity>,
+    }
+
+    impl Probe {
+        fn pid(&self) -> i32 {
+            self.child.as_ref().unwrap().id() as i32
+        }
+
+        fn release(&self) {
+            let _ = std::fs::write(&self.release, b"release");
+        }
+
+        fn wait(&mut self) -> std::process::ExitStatus {
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                if let Some(status) = self.child.as_mut().unwrap().try_wait().unwrap() {
+                    return status;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "runner probe exceeded its wait deadline"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.release();
+            let Some(child) = self.child.as_mut() else {
+                return;
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            while child.try_wait().ok().flatten().is_none() && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if child.try_wait().ok().flatten().is_none() {
+                unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                while child.try_wait().ok().flatten().is_none()
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            if child.try_wait().ok().flatten().is_none() {
+                unsafe { libc::kill(child.id() as i32, libc::SIGKILL) };
+                let _ = child.wait();
+            }
+            if let Some(leader) = self.owned.iter().find(|p| p.pid == p.pgrp) {
+                let still_same_group = identity(leader.pid).is_some_and(|now| {
+                    now.start_time == leader.start_time && now.pgrp == leader.pgrp
+                });
+                if still_same_group {
+                    unsafe { libc::kill(-leader.pgrp, libc::SIGKILL) };
+                }
+            }
+        }
+    }
+
+    fn launch_probe(dir: &std::path::Path, fault: Option<&str>, hold: bool) -> Probe {
+        let script = dir.join("stall-agent.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nsleep 1000 &\nchild=$!\nprintf '%s %s\\n' \"$$\" \"$child\" > \"$EVAL_TEST_RUNNER_PIDS\"\nwait \"$child\"\n",
+        )
+        .unwrap();
+        let pids = dir.join("agent-pids");
+        let hold_dir = dir.join("cleanup");
+        let release = if hold {
+            hold_dir.join("release")
+        } else {
+            dir.join("release")
+        };
+        if hold {
+            std::fs::create_dir_all(&hold_dir).unwrap();
+            std::fs::write(hold_dir.join("arm"), b"arm").unwrap();
+        }
+        let bin = resolve_swarmail_bin().expect("root Swarmail binary resolves");
+        let output = std::fs::File::create(dir.join("probe.stdout")).unwrap();
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args([
+            "--exact",
+            "runner::test_probes::runner_probe_entrypoint",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(PROBE_ENV, "1")
+        .env(SCRIPT_ENV, &script)
+        .env(PIDS_ENV, &pids)
+        .env(BIN_ENV, &bin)
+        .env(SWARMAIL_BIN_ENV, &bin)
+        .env(
+            "EVAL_TEST_RUNNER_EXECUTABLE",
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(env!("CARGO_PKG_NAME")),
+        )
+        .stdout(output)
+        .stderr(std::process::Stdio::inherit());
+        if let Some(fault) = fault {
+            cmd.env(FAULT_ENV, fault);
+        }
+        if hold {
+            cmd.env(CLEANUP_HOLD_ENV, &hold_dir);
+        }
+        let child = cmd.spawn().unwrap();
+        let mut probe = Probe {
+            child: Some(child),
+            release: release.clone(),
+            owned: Vec::new(),
+        };
+        eventually("the runner's agent readiness", || {
+            if pids.is_file() {
+                return true;
+            }
+            if let Some(status) = probe.child.as_mut().unwrap().try_wait().unwrap() {
+                panic!(
+                    "runner probe exited before agent readiness ({status}); stdout={}",
+                    std::fs::read_to_string(dir.join("probe.stdout")).unwrap_or_default()
+                );
+            }
+            false
+        });
+        let ids: Vec<i32> = std::fs::read_to_string(&pids)
+            .unwrap()
+            .split_whitespace()
+            .map(|p| p.parse().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        probe.owned = ids.iter().filter_map(|pid| identity(*pid)).collect();
+        assert_eq!(probe.owned.len(), 2);
+        probe
+    }
+
+    #[test]
+    fn panic_and_server_death_keep_runner_cleanup_owned_until_release() {
+        for fault in ["panic", "server_death"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut probe = launch_probe(dir.path(), Some(fault), true);
+            let hold = dir.path().join("cleanup");
+            eventually("runner cleanup acknowledgement", || {
+                std::fs::read_dir(&hold).ok().is_some_and(|entries| {
+                    entries
+                        .flatten()
+                        .any(|entry| entry.file_name().to_string_lossy().starts_with("entered-"))
+                })
+            });
+            assert!(
+                probe.owned.iter().all(alive),
+                "{fault}: owned agents remain alive at the held boundary"
+            );
+            assert!(
+                identity(probe.pid()).is_some(),
+                "{fault}: trial owner remains alive while cleanup is held"
+            );
+            probe.release();
+            assert!(probe.wait().success(), "{fault}: runner probe completed");
+            eventually("runner-owned agents to stop", || {
+                probe.owned.iter().all(|id| !alive(id))
+            });
+        }
+    }
+
+    #[test]
+    fn trial_pre_handler_control_runs_before_owned_children_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("must-not-start.sh");
+        std::fs::write(&script, "#!/bin/sh\ntouch \"$EVAL_TEST_RUNNER_PIDS\"\n").unwrap();
+        let hold = dir.path().join("pre-handler");
+        std::fs::create_dir_all(&hold).unwrap();
+        let bin = resolve_swarmail_bin().expect("root Swarmail binary resolves");
+        let stdout = std::fs::File::create(dir.path().join("pre.stdout")).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "runner::test_probes::runner_probe_entrypoint",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(PROBE_ENV, "1")
+            .env(SCRIPT_ENV, &script)
+            .env(PIDS_ENV, dir.path().join("agent-pids"))
+            .env(BIN_ENV, &bin)
+            .env(SWARMAIL_BIN_ENV, &bin)
+            .env(
+                "EVAL_TEST_RUNNER_EXECUTABLE",
+                std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join(env!("CARGO_PKG_NAME")),
+            )
+            .env(PRE_HANDLER_HOLD_ENV, &hold)
+            .stdout(stdout)
+            .stderr(std::process::Stdio::null());
+        let child = child.spawn().unwrap();
+        let mut probe = Probe {
+            child: Some(child),
+            release: hold.join("release"),
+            owned: Vec::new(),
+        };
+        eventually("trial pre-handler acknowledgement", || {
+            hold.join("entered").is_file()
+        });
+        assert!(!dir.path().join("agent-pids").exists());
+        unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        let status = probe.wait();
+        assert_eq!(status.signal(), Some(libc::SIGTERM));
+        assert!(!dir.path().join("agent-pids").exists());
+    }
 }
