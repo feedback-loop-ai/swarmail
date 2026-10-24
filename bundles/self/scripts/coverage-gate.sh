@@ -590,26 +590,33 @@ selftest() {
       failures=$((failures + 1))
     fi
   }
-  expect_refuse() {
-    local label="$1"; shift
-    local out status=0
-    out="$("$@" 2>&1)" || status=$?
-    if [ "$status" -eq 0 ]; then
-      printf 'coverage gate: selftest failure — %s: expected refusal, got success:\n%s\n' "$label" "$out" >&2
-      failures=$((failures + 1))
-    fi
-  }
+  local observed_refusal_status=-1
   expect_refuse_naming() {
-    # A refusal whose message must name $2 — the preflight's refusal is only
-    # useful when it says where, and what the escape is.
+    # Every refusal arm names its reason, not merely a nonzero status.
     local label="$1" needle="$2"; shift 2
     local out status=0
     out="$("$@" 2>&1)" || status=$?
+    observed_refusal_status="$status"
     if [ "$status" -eq 0 ]; then
       printf 'coverage gate: selftest failure — %s: expected refusal, got success:\n%s\n' "$label" "$out" >&2
       failures=$((failures + 1))
     elif [[ "$out" != *"$needle"* ]]; then
-      printf 'coverage gate: selftest failure — %s: the refusal does not name "%s":\n%s\n' "$label" "$needle" "$out" >&2
+      printf 'coverage gate: selftest failure — %s: refusal did not contain expected reason "%s":\n%s\n' "$label" "$needle" "$out" >&2
+      failures=$((failures + 1))
+    fi
+  }
+  expect_refuse_naming_context() {
+    # Require both the refusal category and its fixture-specific discriminator
+    # from the same captured invocation.
+    local label="$1" reason="$2" context="$3"; shift 3
+    local out status=0
+    out="$("$@" 2>&1)" || status=$?
+    observed_refusal_status="$status"
+    if [ "$status" -eq 0 ]; then
+      printf 'coverage gate: selftest failure — %s: expected refusal, got success:\n%s\n' "$label" "$out" >&2
+      failures=$((failures + 1))
+    elif [[ "$out" != *"$reason"* || "$out" != *"$context"* ]]; then
+      printf 'coverage gate: selftest failure — %s: refusal must contain "%s" and "%s":\n%s\n' "$label" "$reason" "$context" "$out" >&2
       failures=$((failures + 1))
     fi
   }
@@ -617,17 +624,19 @@ selftest() {
     local label="$1" needle="$2" forbidden="$3"; shift 3
     local out status=0
     out="$("$@" 2>&1)" || status=$?
+    observed_refusal_status="$status"
     if [ "$status" -eq 0 ]; then
       printf 'coverage gate: selftest failure — %s: expected refusal, got success:\n%s\n' "$label" "$out" >&2
       failures=$((failures + 1))
     elif [[ "$out" != *"$needle"* ]]; then
-      printf 'coverage gate: selftest failure — %s: the refusal does not name "%s":\n%s\n' "$label" "$needle" "$out" >&2
+      printf 'coverage gate: selftest failure — %s: refusal did not contain expected reason "%s":\n%s\n' "$label" "$needle" "$out" >&2
       failures=$((failures + 1))
     elif [[ "$out" == *"$forbidden"* ]]; then
       printf 'coverage gate: selftest failure — %s: the failed inventory consumed partial row "%s":\n%s\n' "$label" "$forbidden" "$out" >&2
       failures=$((failures + 1))
     fi
   }
+
   expect_eq() {
     local label="$1" got="$2" want="$3"
     if [ "$got" != "$want" ]; then
@@ -636,14 +645,45 @@ selftest() {
     fi
   }
 
+  # Exercise the real assertion helper in a child-local failure counter. The
+  # expected refusal passes, an unrelated exit 127 fails, and expected text
+  # paired with success also fails; none may mutate the parent's count.
+  refusal_helper_control() {
+    local failures=0 observed_refusal_status=-1
+    case "$1" in
+      intended)
+        expect_refuse_naming 'helper control: intended refusal' 'coverage refusal: intended control reason' \
+          bash -c 'printf "%s\n" "coverage refusal: intended control reason" >&2; exit 42'
+        ;;
+      unrelated)
+        expect_refuse_naming 'helper control: unrelated exit' 'coverage refusal: intended control reason' \
+          bash -c 'printf "%s\n" "unrelated command failure" >&2; exit 127'
+        ;;
+      success)
+        expect_refuse_naming 'helper control: text with success' 'coverage refusal: intended control reason' \
+          bash -c 'printf "%s\n" "coverage refusal: intended control reason" >&2; exit 0'
+        ;;
+      *) return 2 ;;
+    esac
+    printf '%s %s\n' "$failures" "$observed_refusal_status"
+  }
+  local helper_parent_failures="$failures" helper_control
+  helper_control="$(refusal_helper_control intended 2>/dev/null)"
+  expect_eq 'the naming helper accepts its intended refusal and preserves status' "$helper_control" '0 42'
+  helper_control="$(refusal_helper_control unrelated 2>/dev/null)"
+  expect_eq 'the naming helper rejects unrelated exit 127 in child state' "$helper_control" '1 127'
+  helper_control="$(refusal_helper_control success 2>/dev/null)"
+  expect_eq 'the naming helper rejects expected text with status zero in child state' "$helper_control" '1 0'
+  expect_eq 'refusal helper controls leave the parent failure count intact' "$failures" "$helper_parent_failures"
+
   # 1. The floor has no percentage knob: anything but 100 refuses before any
   #    toolchain work (a re-entry with a bad floor refuses at the top).
-  expect_refuse 'COVERAGE_FLOOR=99 is refused' env COVERAGE_FLOOR=99 bash "$SELF" selftest
+  expect_refuse_naming 'COVERAGE_FLOOR=99 is refused' 'COVERAGE_FLOOR=99 refused' env COVERAGE_FLOOR=99 bash "$SELF" selftest
 
   # 2. coverage(off): the attribute refuses; clean source passes.
   local fx="$root/co-off"; mkdir -p "$fx/src"
   printf '#[coverage(off)]\nfn hot() {}\n' > "$fx/src/lib.rs"
-  expect_refuse 'coverage(off) in src is refused' check_no_coverage_off "$fx/src"
+  expect_refuse_naming_context 'coverage(off) in src is refused' 'attribute-based source exclusions are forbidden' "$fx/src/lib.rs" check_no_coverage_off "$fx/src"
   fx="$root/co-raw-off"; mkdir -p "$fx/src"
   printf '#[coverage(r#off)]\nfn raw_hot() {}\n' > "$fx/src/lib.rs"
   expect_refuse_naming 'the source grep refuses raw-off' 'attribute-based source exclusions are forbidden' check_no_coverage_off "$fx/src"
@@ -660,7 +700,7 @@ selftest() {
   #    refusal fires; a production-only report passes.
   : > "$root/empty-set.txt"
   printf 'SF:/repo/src/tests/leaked.rs\nDA:1,1\nend_of_record\n' > "$root/leak.info"
-  expect_refuse 'harness source in the report is refused' check_no_harness_leak "$root/leak.info" "$root/empty-set.txt" "$PWD"
+  expect_refuse_naming_context 'harness source in the report is refused' 'test harness source measured as production while absent from the production build file set' '/repo/src/tests/leaked.rs' check_no_harness_leak "$root/leak.info" "$root/empty-set.txt" "$PWD"
   printf 'SF:/repo/src/api.rs\nDA:1,1\nend_of_record\n' > "$root/clean.info"
   expect_pass 'a production-only report passes the leak check' check_no_harness_leak "$root/clean.info" "$root/empty-set.txt" "$PWD"
 
@@ -678,7 +718,7 @@ selftest() {
     return "$injected_find_status"
   }
   expect_refuse_naming 'hidden-directory find failure has a named refusal' 'hidden-directory inventory failed' check_no_hidden_harness_dirs "$fx/src"
-  expect_refuse_naming 'hidden-directory find diagnostics are preserved' 'injected find failure' check_no_hidden_harness_dirs "$fx/src"
+  expect_refuse_naming_context 'hidden-directory find diagnostics are preserved' 'hidden-directory inventory failed' 'injected find failure' check_no_hidden_harness_dirs "$fx/src"
   injected_find_output="$fx/src/tests/partial.rs"
   expect_refuse_naming_without 'partial hidden-directory output is not consumed' 'hidden-directory inventory failed' "$fx/src/tests/partial.rs" check_no_hidden_harness_dirs "$fx/src"
   conditional_hidden_inventory() {
@@ -692,7 +732,7 @@ selftest() {
   printf 'fn row_from_partial_find() {}\n' > "$fx/src/store/partial_tests.rs"
   injected_find_output=""
   expect_refuse_naming 'harness find failure has a named refusal' 'harness declaration inventory failed' check_harness_declarations "$fx/src"
-  expect_refuse_naming 'harness find diagnostics are preserved' 'injected find failure' check_harness_declarations "$fx/src"
+  expect_refuse_naming_context 'harness find diagnostics are preserved' 'harness declaration inventory failed' 'injected find failure' check_harness_declarations "$fx/src"
   injected_find_output="$fx/src/store/partial_tests.rs"
   expect_refuse_naming_without 'partial harness output is not interpreted' 'harness declaration inventory failed' "$fx/src/store/partial_tests.rs" check_harness_declarations "$fx/src"
   conditional_harness_inventory() {
@@ -715,13 +755,13 @@ selftest() {
     return 43
   }
   expect_refuse_naming 'harness sort failure has a named refusal' 'harness declaration inventory failed' check_harness_declarations "$fx/src"
-  expect_refuse_naming 'harness sort diagnostics are preserved' 'injected sort failure' check_harness_declarations "$fx/src"
+  expect_refuse_naming_context 'harness sort diagnostics are preserved' 'harness declaration inventory failed' 'injected sort failure' check_harness_declarations "$fx/src"
   unset -f find sort
 
   # 4. Production source parked in a harness directory refuses.
   fx="$root/hidden"; mkdir -p "$fx/src/tests"
   printf 'fn prod() {}\n' > "$fx/src/tests/prod.rs"
-  expect_refuse 'production source under src/tests/ is refused' check_no_hidden_harness_dirs "$fx/src"
+  expect_refuse_naming_context 'production source under src/tests/ is refused' 'production source under a harness directory' "$fx/src/tests/prod.rs" check_no_hidden_harness_dirs "$fx/src"
   fx="$root/visible"; mkdir -p "$fx/src"
   printf 'fn prod() {}\n' > "$fx/src/prod.rs"
   expect_pass 'production source on a measured path passes' check_no_hidden_harness_dirs "$fx/src"
@@ -732,7 +772,7 @@ selftest() {
   printf 'fn persisted() {}\n' > "$fx/src/store/persist_tests.rs"
 
   printf 'mod persist_tests;\n' > "$fx/src/store/mod.rs"
-  expect_refuse 'an unguarded harness declaration is refused' check_harness_declarations "$fx/src"
+  expect_refuse_naming_context 'an unguarded harness declaration is refused' 'harness-named file(s) under src/ must be declared by their parent module under #[cfg(test)]' 'persist_tests.rs: declared without #[cfg(test)]' check_harness_declarations "$fx/src"
 
   printf '#[cfg(test)]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
   expect_pass 'a guarded harness declaration passes' check_harness_declarations "$fx/src"
@@ -741,20 +781,20 @@ selftest() {
   expect_pass 'blank and comment lines may intervene in the guard stack' check_harness_declarations "$fx/src"
 
   printf '#[cfg(test)] mod persist_tests;\n' > "$fx/src/store/mod.rs"
-  expect_refuse 'a same-line attribute is not a stack guard' check_harness_declarations "$fx/src"
+  expect_refuse_naming_context 'a same-line attribute is not a stack guard' 'harness-named file(s) under src/ must be declared by their parent module under #[cfg(test)]' 'persist_tests.rs: not declared by any parent module' check_harness_declarations "$fx/src"
 
   printf '#[cfg(test)]\n#[path = "elsewhere.rs"]\nmod persist_tests;\n' > "$fx/src/store/mod.rs"
-  expect_refuse 'a #[path] harness declaration is refused' check_harness_declarations "$fx/src"
+  expect_refuse_naming_context 'a #[path] harness declaration is refused' 'harness-named file(s) under src/ must be declared by their parent module under #[cfg(test)]' 'declared via #[path]' check_harness_declarations "$fx/src"
 
   printf 'fn persisted() {}\n' > "$fx/src/store/persist_tests.rs"
   printf 'fn other() {}\n' > "$fx/src/store.rs"
   printf '#[cfg(test)]\nmod persist_tests;\n' > "$fx/src/store.rs"
   printf 'mod persist_tests;\n' > "$fx/src/store/mod.rs"
-  expect_refuse 'one guarded declaration cannot launder an unguarded one' check_harness_declarations "$fx/src"
+  expect_refuse_naming_context 'one guarded declaration cannot launder an unguarded one' 'harness-named file(s) under src/ must be declared by their parent module under #[cfg(test)]' 'persist_tests.rs: declared without #[cfg(test)]' check_harness_declarations "$fx/src"
 
   printf 'fn other() {}\n' > "$fx/src/store.rs"
   rm "$fx/src/store/mod.rs"
-  expect_refuse 'a harness file with no declaration at all is refused' check_harness_declarations "$fx/src"
+  expect_refuse_naming_context 'a harness file with no declaration at all is refused' 'harness-named file(s) under src/ must be declared by their parent module under #[cfg(test)]' 'persist_tests.rs: not declared by any parent module' check_harness_declarations "$fx/src"
 
   # 6. Canonical counting: DA hits, BRDA taken (the '-' record counts and can
   #    never be covered), and the file + start-line function identity across
@@ -887,10 +927,23 @@ selftest() {
   #    floor the filesystem holds passes.
   local fsname
   fsname="$(df -Pk "$root" | awk 'NR == 2 { print $1 }')"
-  expect_refuse_naming 'a short filesystem refusal names the path' "$root has" check_free_space "$root" 999999999999
-  expect_refuse_naming 'a short filesystem refusal names the filesystem' "filesystem $fsname" check_free_space "$root" 999999999999
-  expect_refuse_naming 'a short filesystem refusal names the escape variable' 'CARGO_LLVM_COV_TARGET_DIR' check_free_space "$root" 999999999999
-  expect_refuse_naming 'an unstatable path refuses naming the escape variable' 'CARGO_LLVM_COV_TARGET_DIR' check_free_space "$root/absent/dir" 1
+  expect_refuse_naming_context 'a short filesystem refusal names the path' 'KiB free on filesystem' "$root has" check_free_space "$root" 999999999999
+  expect_refuse_naming_context 'a short filesystem refusal names the filesystem' 'KiB free on filesystem' "filesystem $fsname" check_free_space "$root" 999999999999
+  expect_refuse_naming_context 'a short filesystem refusal names the escape variable' 'KiB free on filesystem' 'CARGO_LLVM_COV_TARGET_DIR' check_free_space "$root" 999999999999
+  expect_refuse_naming_context 'an unstatable path names the stat refusal and escape variable' 'free-space preflight could not stat' 'CARGO_LLVM_COV_TARGET_DIR' check_free_space "$root/absent/dir" 1
+  mkdir -p "$root/non-numeric-df"
+  non_numeric_free_space() {
+    local fixture_path="$1" min_kib="$2"
+    df() {
+      if [ "$#" -ne 2 ] || [ "$1" != -Pk ] || [ "$2" != "$fixture_path" ]; then
+        printf 'unexpected df invocation\n' >&2
+        return 97
+      fi
+      printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nfixture-fs 100000 1000 unavailable 1%% %s\n' "$fixture_path"
+    }
+    check_free_space "$fixture_path" "$min_kib"
+  }
+  expect_refuse_naming_context 'successful df with non-numeric availability refuses by parse reason' 'could not read the free space of' "$root/non-numeric-df" non_numeric_free_space "$root/non-numeric-df" 1
   expect_pass 'a preflight floor of 1 KiB passes' check_free_space "$root" 1
 
   # 9. The by-effect refusals (decision 0035), proven from REAL cargo builds —
@@ -929,7 +982,7 @@ selftest() {
     esac
   }
   expect_refuse_naming 'llvm-cov clean failure has a named refusal' 'llvm-cov clean failed' run_llvm_cov_clean "$root/clean-failure.log"
-  expect_refuse_naming 'llvm-cov clean failure preserves its diagnostic' 'injected llvm-cov clean failure' run_llvm_cov_clean "$root/clean-failure.log"
+  expect_refuse_naming_context 'llvm-cov clean failure preserves its diagnostic' 'llvm-cov clean failed' 'injected llvm-cov clean failure' run_llvm_cov_clean "$root/clean-failure.log"
   conditional_clean() {
     if run_llvm_cov_clean "$1"; then : > "$2"; fi
   }
@@ -965,19 +1018,55 @@ selftest() {
     fx_cmd "$2" "$4-exp.log" "the $1 expansion" "$root/$4-exp.rs" cargo +"$coverage_toolchain" rustc --lib --offline --locked --target-dir "$3" -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
   done
   for arm in 'src/inc_tests.rs:#101 D' 'src/path_tests.rs:#101 A' 'src/cfg_tests.rs:#101 B' 'src/guard_tests.rs:#101 C' 'src/split_tests.rs:#101 G' 'src/macros_tests.rs:the macro/const inventory'; do
-    expect_refuse_naming "stage 1 refuses the ${arm#*:} harness load" "${arm%%:*}" check_report_covers_production_files "$root/bypass.info" "$root/bypass-prod.txt" "$fxb"
+    expect_refuse_naming_context "stage 1 refuses the ${arm#*:} harness load" 'production file(s) the build compiled are absent from the report' "${arm%%:*}" check_report_covers_production_files "$root/bypass.info" "$root/bypass-prod.txt" "$fxb"
   done
   for arm in 'direct_hidden:direct' 'macro_hidden:macro-emitted' 'attr_hidden:cfg_attr-resolved' 'cfg_gated_hidden:coverage-cfg-gated' 'derived_shadow_hidden:derive-shadowed'; do
-    expect_refuse_naming "stage 2 refuses the ${arm#*:} exclusion" "${arm%%:*}" check_no_coverage_exclusions "$root/bypass-exp.rs"
+    expect_refuse_naming_context "stage 2 refuses the ${arm#*:} exclusion" 'coverage exclusion survived into the canonical expansion' "on fn ${arm%%:*}" check_no_coverage_exclusions "$root/bypass-exp.rs"
   done
-  expect_refuse 'the inner-attribute exclusion refuses (the fn name is not adjacent to an inner attr)' check_no_coverage_exclusions "$root/bypass-exp.rs"
+  # The isolated inner-only fixture below owns this assertion; the aggregate dump has other offenders.
+
   expect_pass 'stage 1 passes the green twin (declarations-only file, asset, derive, const fn)' check_report_covers_production_files "$root/green.info" "$root/green-prod.txt" "$fxg"
+  # Before scanner success can stand as proof of the derive carve-out, inspect
+  # the real stage-2 dump for the compiler-minted method exclusion inside its
+  # automatically_derived Eq impl. The association is local to that impl.
+  if ! awk '
+    function brace_delta(line, copy, opens, closes) {
+      copy = line; opens = gsub(/\{/, "{", copy)
+      copy = line; closes = gsub(/\}/, "}", copy)
+      return opens - closes
+    }
+    {
+      if ($0 ~ /^[[:space:]]*#\[automatically_derived\][[:space:]]*$/) {
+        auto_pending = 1
+        next
+      }
+      if (auto_pending && $0 ~ /^[[:space:]]*#\[/) next
+      if (auto_pending && $0 ~ /^[[:space:]]*impl .*::core::cmp::Eq/) {
+        in_eq = 1
+        auto_pending = 0
+      } else if (auto_pending && $0 !~ /^[[:space:]]*$/) {
+        auto_pending = 0
+      }
+      if (in_eq) {
+        if ($0 ~ /#\[coverage\(off\)\]/) coverage_pending = 1
+        if ($0 ~ /fn assert_fields_are_eq[[:space:]]*\(/ && coverage_pending) method_is_covered = 1
+        else if (coverage_pending && $0 !~ /^[[:space:]]*$/ && $0 !~ /^[[:space:]]*#\[/) coverage_pending = 0
+        depth += brace_delta($0)
+        if (depth == 0) in_eq = 0
+      }
+    }
+    END { exit !(method_is_covered) }
+  ' "$root/green-exp.rs"; then
+    printf 'coverage gate: selftest failure — green stage-2 dump lacks coverage(off) on assert_fields_are_eq inside its automatically_derived Eq impl; expansion context:\n' >&2
+    rg -n -C 5 'automatically_derived|assert_fields_are_eq|coverage\(off\)' "$root/green-exp.rs" >&2 || true
+    failures=$((failures + 1))
+  fi
   expect_pass 'stage 2 passes the green twin (the minted exclusion carved, the const fn silent)' check_no_coverage_exclusions "$root/green-exp.rs"
 
   # 10. Fast arms: validate-before-consume, the leak check's membership axis,
   #     a hostile dep-info entry, a dep-info-less dir, an empty expansion.
   : >"$root/empty.info"
-  expect_refuse_naming 'an empty report refuses naming the artifact' "$root/empty.info" validate_report "$root/empty.info"
+  expect_refuse_naming_context 'an empty report refuses naming the artifact' 'missing, empty or carries no SF: records' "$root/empty.info" validate_report "$root/empty.info"
   printf 'DA:1,1\nend_of_record\n' >"$root/sfless.info"
   expect_refuse_naming 'an SF-less report refuses naming the artifact' 'no SF:' validate_report "$root/sfless.info"
   expect_pass 'a real report passes validation' validate_report "$root/bypass.info"
@@ -986,16 +1075,17 @@ selftest() {
   expect_pass 'a harness-named SF record inside the production set passes' \
     check_no_harness_leak "$root/measured.info" "$root/prod-set.txt" "$fxb"
   printf 'SF:%s/src/leaked_tests.rs\nDA:1,1\nend_of_record\n' "$fxb" >"$root/unmeasured.info"
-  expect_refuse 'a harness-named SF record outside the production set refuses' \
+  expect_refuse_naming_context 'a harness-named SF record outside the production set refuses' \
+    'test harness source measured as production while absent from the production build file set' 'leaked_tests.rs' \
     check_no_harness_leak "$root/unmeasured.info" "$root/prod-set.txt" "$fxb"
   mkdir -p "$root/hostile" "$root/empty-target"
   sed 's|src/lib\.rs|src/vanished.rs|g' "$root/bypass-depinfo/"*.d >"$root/hostile/lib.d"
-  expect_refuse_naming 'a hostile dep-info entry refuses naming it' 'src/vanished.rs' \
+  expect_refuse_naming_context 'a hostile dep-info entry refuses naming it' 'does not resolve to an existing regular file under' 'src/vanished.rs' \
     "$FN_SCAN_BIN" files --workspace "$fxb" --build-dir "$root/hostile" --package fxbypass
-  expect_refuse_naming 'a harvest over a dep-info-less dir refuses naming the path' 'empty-target' \
+  expect_refuse_naming_context 'a harvest over a dep-info-less dir refuses naming the path' 'no dep-info (.d) file under' 'empty-target' \
     "$FN_SCAN_BIN" files --workspace "$fxb" --build-dir "$root/empty-target" --package fxbypass
   : >"$root/empty-exp.rs"
-  expect_refuse_naming 'an empty expansion refuses naming the artifact' "$root/empty-exp.rs" \
+  expect_refuse_naming_context 'an empty expansion refuses naming the artifact' 'is missing or empty' "$root/empty-exp.rs" \
     check_no_coverage_exclusions "$root/empty-exp.rs"
 
   # 11. #140's remaining bypasses, each a REAL cargo fixture with its clean
@@ -1013,6 +1103,129 @@ selftest() {
     fx_cmd "$dir" "$(basename "$out").log" "the $(basename "$dir") expansion" "$out" \
       cargo +"$coverage_toolchain" rustc --offline --target-dir "$dir/target" "$@"
   }
+  # A real derived impl must finish before a later author exclusion. Otherwise
+  # a broad derive-state carry can wrongly carve the independent offender.
+  mkfx derive-order-red '#![feature(coverage_attribute)]' '#![allow(dead_code)]' \
+    '#[derive(PartialEq, Eq)]' 'struct Derived { value: u8 }' \
+    '#[coverage(off)]' 'fn post_derive_hidden() {}'
+  mkfx derive-order-green '#![allow(dead_code)]' \
+    '#[derive(PartialEq, Eq)]' 'struct Derived { value: u8 }' 'fn post_derive_clean() {}'
+  for fixture in derive-order-red derive-order-green; do
+    fx_cmd "$root/$fixture" "$fixture-lock.log" "the $fixture offline lock" "$root/$fixture-lock.out" \
+      cargo +"$coverage_toolchain" generate-lockfile --offline
+  done
+  for fixture in derive-order-red derive-order-green; do
+    fx_cmd "$root/$fixture" "$fixture-exp.log" "the $fixture canonical expansion" "$root/$fixture-exp.rs" \
+      cargo +"$coverage_toolchain" rustc --lib --offline --locked --target-dir "$root/$fixture-target" -- \
+        -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
+  done
+  if ! awk '
+    function brace_delta(line, copy, opens, closes) {
+      copy = line; opens = gsub(/\{/, "{", copy)
+      copy = line; closes = gsub(/\}/, "}", copy)
+      return opens - closes
+    }
+    {
+      if ($0 ~ /^[[:space:]]*#\[automatically_derived\][[:space:]]*$/) {
+        auto_pending = 1
+        next
+      }
+      if (auto_pending && $0 ~ /^[[:space:]]*#\[/) next
+      if (auto_pending && $0 ~ /^[[:space:]]*impl .*PartialEq/) {
+        in_derived_impl = 1
+        derived_impl_seen = 1
+        auto_pending = 0
+      } else if (auto_pending && $0 !~ /^[[:space:]]*$/) {
+        auto_pending = 0
+      }
+      if (in_derived_impl) {
+        depth += brace_delta($0)
+        if (depth == 0) {
+          derived_impl_end = NR
+          in_derived_impl = 0
+        }
+      }
+      if ($0 ~ /fn post_derive_hidden[[:space:]]*\(/) offender_line = NR
+    }
+    END { exit !(derived_impl_seen && derived_impl_end && offender_line > derived_impl_end) }
+  ' "$root/derive-order-red-exp.rs"; then
+    printf 'coverage gate: selftest failure — derive-order red expansion does not show a closed compiler-generated PartialEq impl before post_derive_hidden; expansion context:\n' >&2
+    rg -n -C 5 'automatically_derived|PartialEq|post_derive_hidden' "$root/derive-order-red-exp.rs" >&2 || true
+    failures=$((failures + 1))
+  fi
+  expect_refuse_naming_context 'stage 2 catches an offender after the derived impl' 'coverage exclusion survived into the canonical expansion' 'on fn post_derive_hidden' \
+    check_no_coverage_exclusions "$root/derive-order-red-exp.rs"
+  expect_pass 'the same derive and post-derive function pass without an author exclusion' \
+    check_no_coverage_exclusions "$root/derive-order-green-exp.rs"
+
+  # Binary-only red/green fixtures exercise the independent bin dep-info path.
+  # Integration tests spawn their built executable so the ordinary included
+  # function contributes real report records.
+  local fxbr="$root/fx-bin-red" fxbg="$root/fx-bin-green" fxbrt="$root/fx-bin-red-target" fxbgt="$root/fx-bin-green-target"
+  for fixture in "$fxbr" "$fxbg"; do
+    mkdir -p "$fixture/src" "$fixture/tests"
+  done
+  printf '[package]\nname = "fxbin_red"\nversion = "0.1.0"\nedition = "2021"\n[[bin]]\nname = "fxbin_red"\npath = "src/main.rs"\n' >"$fxbr/Cargo.toml"
+  printf '#![feature(coverage_attribute)]\n#![allow(dead_code)]\ninclude!("main_tests.rs");\nfn main() { println!("{}", red_value()); }\n' >"$fxbr/src/main.rs"
+  printf 'fn red_value() -> &'"'"'static str { "red" }\n#[coverage(off)]\npub fn bin_only_hidden() {}\n' >"$fxbr/src/main_tests.rs"
+  printf '[package]\nname = "fxbin_green"\nversion = "0.1.0"\nedition = "2021"\n[[bin]]\nname = "fxbin_green"\npath = "src/main.rs"\n' >"$fxbg/Cargo.toml"
+  printf '#![allow(dead_code)]\ninclude!("support.rs");\nfn main() { println!("{}", green_value()); }\n' >"$fxbg/src/main.rs"
+  printf 'fn green_value() -> &'"'"'static str { "green" }\n' >"$fxbg/src/support.rs"
+  printf '#[test]\nfn executes_the_binary() {\n    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fxbin_red")).output().unwrap();\n    assert!(output.status.success());\n    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "red");\n}\n' >"$fxbr/tests/exec_bin.rs"
+  printf '#[test]\nfn executes_the_binary() {\n    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fxbin_green")).output().unwrap();\n    assert!(output.status.success());\n    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "green");\n}\n' >"$fxbg/tests/exec_bin.rs"
+  for fx in "$fxbr" "$fxbg"; do
+    fx_cmd "$fx" "$(basename "$fx")-lock.log" "the $(basename "$fx") offline lock" "$root/$(basename "$fx")-lock.out" \
+      cargo +"$coverage_toolchain" generate-lockfile --offline
+  done
+  for spec in "fxbin_red:$fxbr:$fxbrt:red" "fxbin_green:$fxbg:$fxbgt:green"; do
+    IFS=: read -r bin_name fixture target color <<<"$spec"
+    fx_cmd "$fixture" "$bin_name-build.log" "the $bin_name executable build" "$root/$bin_name-build.out" \
+      cargo +"$coverage_toolchain" build --bin "$bin_name" --offline --locked --target-dir "$target"
+    fx_cmd "$fixture" "$bin_name-test.log" "the $bin_name executable integration test" "$root/$bin_name-test.out" \
+      cargo +"$coverage_toolchain" test --test exec_bin --offline --locked --target-dir "$target"
+    fx_cmd "$fixture" "$bin_name-cov.log" "the $bin_name coverage report" "$root/$bin_name-cov.out" \
+      env CARGO_LLVM_COV_TARGET_DIR="$target" cargo +"$coverage_toolchain" llvm-cov --lcov --offline --locked --output-path "$root/$bin_name.info"
+    fx_cmd "$root" "$bin_name-harvest.log" "the $bin_name bin harvest" "$root/$bin_name-prod.txt" \
+      "$FN_SCAN_BIN" files --workspace "$fixture" --build-dir "$target" --package "$bin_name" \
+      --bin-root=src/main.rs --capture "$root/$bin_name-depinfo"
+    grep -Fxq 'src/main.rs' "$root/$bin_name-prod.txt" || {
+      printf 'coverage gate: selftest failure — %s harvest omitted bin root src/main.rs\n' "$bin_name" >&2
+      failures=$((failures + 1))
+    }
+    if [ "$color" = green ]; then
+      grep -Fxq 'src/support.rs' "$root/$bin_name-prod.txt" || {
+        printf 'coverage gate: selftest failure — green bin harvest omitted src/support.rs\n' >&2
+        failures=$((failures + 1))
+      }
+      grep -Fq "$fixture/src/main.rs" "$root/$bin_name.info" || {
+        printf 'coverage gate: selftest failure — green bin report omitted src/main.rs\n' >&2
+        failures=$((failures + 1))
+      }
+      grep -Fq "$fixture/src/support.rs" "$root/$bin_name.info" || {
+        printf 'coverage gate: selftest failure — green bin report omitted src/support.rs\n' >&2
+        failures=$((failures + 1))
+      }
+    else
+      grep -Fxq 'src/main_tests.rs' "$root/$bin_name-prod.txt" || {
+        printf 'coverage gate: selftest failure — red bin harvest omitted src/main_tests.rs\n' >&2
+        failures=$((failures + 1))
+      }
+    fi
+    fx_cmd "$fixture" "$bin_name-exp.log" "the $bin_name bin expansion" "$root/$bin_name-exp.rs" \
+      cargo +"$coverage_toolchain" rustc --bin "$bin_name" --offline --locked --target-dir "$target" -- \
+        -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
+  done
+  expect_refuse_naming_context 'binary stage 1 refuses the red harness-named include' \
+    'production file(s) the build compiled are absent from the report' 'src/main_tests.rs' \
+    check_report_covers_production_files "$root/fxbin_red.info" "$root/fxbin_red-prod.txt" "$fxbr"
+  expect_refuse_naming_context 'binary stage 2 refuses the bin-only exclusion' \
+    'coverage exclusion survived into the canonical expansion' 'on fn bin_only_hidden' \
+    check_no_coverage_exclusions "$root/fxbin_red-exp.rs"
+  expect_pass 'the green binary production set is covered by its report' \
+    check_report_covers_production_files "$root/fxbin_green.info" "$root/fxbin_green-prod.txt" "$fxbg"
+  expect_pass 'the green binary expansion has no surviving exclusion' \
+    check_no_coverage_exclusions "$root/fxbin_green-exp.rs"
+
   # v1: a three-arm function only where coverage is off, a stub where it is on.
   mkfx v1-cfg-not-coverage '#[cfg(not(coverage))]' 'pub fn sign(x: i32) -> i32 { if x > 0 { 1 } else if x < 0 { -1 } else { 0 } }' \
     '#[cfg(coverage)]' 'pub fn sign(_x: i32) -> i32 { 0 }'
@@ -1088,9 +1301,9 @@ selftest() {
   mkfx v6-test-helper-off '#![cfg_attr(test, feature(coverage_attribute))]' 'pub fn visible() -> i32 { 1 }' '#[cfg(test)]' 'mod t {' \
     '    #[coverage( off )]' '    fn helper() -> i32 { if super::visible() > 0 { 1 } else { 0 } }' \
     '    #[test]' '    fn proves() { assert_eq!(helper(), 1); }' '}'
-  expect_refuse 'v6-test-helper-off: the spaced spelling refuses statically' check_no_coverage_off "$root/v6-test-helper-off/src"
+  expect_refuse_naming_context 'v6-test-helper-off: the spaced spelling refuses statically' 'attribute-based source exclusions are forbidden' 'src/lib.rs' check_no_coverage_off "$root/v6-test-helper-off/src"
   expand "$root/v6-test-helper-off" "$root/v6-test.rs" --lib --profile test -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
-  expect_refuse_naming 'v6-test-helper-off: the test-unit expansion scan refuses, naming the fn' 'on fn helper' check_test_unit_expansion "$root/v6-test.rs"
+  expect_refuse_naming_context 'v6-test-helper-off: the test-unit expansion scan refuses, naming the fn' 'coverage exclusion survived into the canonical expansion' 'on fn helper' check_test_unit_expansion "$root/v6-test.rs"
   mkfx v6-green 'pub fn visible() -> i32 { 1 }' '#[cfg(test)]' 'mod t {' '    #[test]' '    fn proves() { assert_eq!(super::visible(), 1); }' '}'
   expand "$root/v6-green" "$root/v6g-test.rs" --lib --profile test -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
   expect_pass 'a clean test module passes the test-unit scan (harness carved)' check_test_unit_expansion "$root/v6g-test.rs"
@@ -1106,21 +1319,21 @@ selftest() {
   fx_cmd "$root/raw-exclusions" raw-exclusions-codegen.log 'raw-identifier exclusion codegen' "$root/raw-exclusions-codegen.out" \
     cargo +"$coverage_toolchain" rustc --lib --offline --locked --target-dir "$root/raw-exclusions-target" -- --emit=llvm-ir
   expand "$root/raw-exclusions" "$root/raw-exclusions.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
-  expect_refuse_naming 'the canonical scanner refuses raw-off' 'on fn raw_argument_hidden' check_no_coverage_exclusions "$root/raw-exclusions.rs"
-  expect_refuse_naming 'the canonical scanner refuses a raw coverage name' 'on fn raw_name_hidden' check_no_coverage_exclusions "$root/raw-exclusions.rs"
+  expect_refuse_naming_context 'the canonical scanner refuses raw-off' 'coverage exclusion survived into the canonical expansion' 'on fn raw_argument_hidden' check_no_coverage_exclusions "$root/raw-exclusions.rs"
+  expect_refuse_naming_context 'the canonical scanner refuses a raw coverage name' 'coverage exclusion survived into the canonical expansion' 'on fn raw_name_hidden' check_no_coverage_exclusions "$root/raw-exclusions.rs"
   mkfx raw-exclusions-green '#![allow(dead_code)]' 'pub fn r#off() -> &'"'"'static str { "r#coverage(r#off)" }'
   expand "$root/raw-exclusions-green" "$root/raw-exclusions-green.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
   expect_pass 'raw identifiers in ordinary names and string literals are not exclusions' check_no_coverage_exclusions "$root/raw-exclusions-green.rs"
 
   mkfx inner-only '#![feature(coverage_attribute)]' 'pub fn inner_only() { #![coverage(off)] }'
   expand "$root/inner-only" "$root/inner-only.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
-  expect_refuse_naming 'the inner-attribute exclusion refuses on its own fixture' 'coverage(off)' check_no_coverage_exclusions "$root/inner-only.rs"
+  expect_refuse_naming_context 'the inner-attribute exclusion refuses on its own fixture' 'coverage exclusion survived into the canonical expansion' 'coverage(off)' check_no_coverage_exclusions "$root/inner-only.rs"
   mkfx inner-allow 'pub fn inner_allowed() { #![allow(unused)] }'
   expand "$root/inner-allow" "$root/inner-allow.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
   expect_pass 'its inner-allow twin passes' check_no_coverage_exclusions "$root/inner-allow.rs"
   mkfx pub-fn '#![feature(coverage_attribute)]' '#[coverage(off)]' '#[inline]' 'pub(crate) const fn named_pub() -> i32 { 1 }'
   expand "$root/pub-fn" "$root/pub-fn.rs" --lib -- -Zunpretty=expanded --cfg coverage --cfg coverage_nightly
-  expect_refuse_naming 'a pub(crate) const fn exclusion names its function' 'on fn named_pub' check_no_coverage_exclusions "$root/pub-fn.rs"
+  expect_refuse_naming_context 'a pub(crate) const fn exclusion names its function' 'coverage exclusion survived into the canonical expansion' 'on fn named_pub' check_no_coverage_exclusions "$root/pub-fn.rs"
 
   if [ "$failures" -ne 0 ]; then
     printf 'coverage gate: selftest failed with %s arm(s)\n' "$failures" >&2
