@@ -1,7 +1,8 @@
 # Port eval privacy onto matrix cancellation
 
-Date: 2026-10-24. Status: design draft; implementation and delivery proof remain open.
-Feature: Epic #192, issue #196 on the #194 candidate at 509a0c7.
+Date: 2026-10-24. Status: continuation design draft; fresh verification and review remain open.
+Feature: Epic #192, issue #196; preserve the committed port at unreviewed handoff
+529d916 on #194, framed by a87fb96.
 
 Decision: 0075
 
@@ -16,41 +17,57 @@ and the complete [matrix cancellation specification](../matrix-cancellation/spec
 ## Feature and rationale
 
 Keep caller-only environment and arbitrary child output out of eval trials and
-their published diagnostics. Reapply the verified privacy behavior onto #194's
-existing ownership and sequential matrix structure. A trial currently inherits
-credentials/configuration and publishes raw tails, error details and executable
-paths. Loopback HTTP can use ambient proxies. Artifacts can be permissive or
-replace another entry. Fix those paths without losing cancellation, cleanup
-ordering, status honesty or result cardinality.
+their published diagnostics while preserving #194 cancellation, cleanup ordering,
+status honesty and result cardinality. Handoff 529d916 already contains the port;
+this continuation corrects platform-proof ownership, verifies every remaining
+criterion, and repairs only demonstrated defects at their existing owners.
+Replaying the packet or redesigning the runner is not authorized.
 
-Evidence is the checksum-verified local issue packet (all ten SHA256SUMS entries),
-its ordered patches 0001–0008, and both run-local simplicity/robustness positions.
-The expected intake directory .brokkr/state/tasks/ is absent; intake framing is
-../eval-privacy/framing.md. Historical passes identify behavior to port, not
-verification of this candidate. Patch 0008's routing assertion repair is already
-upstream and must not be replayed. No journal, sibling tree or external service
-is needed. The candidate-local engine digest was verified during design.
+Evidence is the checksum-verified local issue packet (all eleven SHA256SUMS
+entries), both current run-local simplicity/robustness positions, and the
+[current intake framing](framing.md). The expected .brokkr/state/tasks/ directory
+is absent. The packet README's older candidate description and prior green
+summaries are historical evidence, not fresh verification of 529d916. The
+candidate-local engine digest matches the pinned digest in plan.md. No journal,
+sibling tree, GitHub or CI access is needed or authorized.
+
+## Clarification — 2026-10-24 platform ownership
+
+The operator's dated row **macOS evidence for `evals/`** in
+[operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md) rules:
+`evals/` is outside CI on every OS until #201; #201's CI gating owns macOS-only
+eval proof. AC13 and AC23 below supersede the former requirement to obtain
+macOS receipts in #196. This records ownership, not execution or portability.
+Every Linux preparation/toolchain/custom-target, artifact, mutation and gate
+obligation remains. The previous run's macOS blocker remains historical; it is
+not rewritten as a pass. Proposed 0075 is updated in place for this same feature;
+no new decision number or acceptance of 0075 or 0073 follows from this ruling.
 
 ## Explicit synthesis
 
+The current positions agree on behavior. Their tension is between minimizing
+change and demanding enough evidence; the ruling is a small repair scope with
+complete proof, not a smaller proof obligation.
+
 | Question | Ruling | Accepted cost / rejected alternative |
 | --- | --- | --- |
-| Runner ownership | Adopt both positions: #194 owns admission, waits, groups, drains and cleanup; graft privacy at those owners. | Reject wholesale old-runner replacement and a second supervisor. Adapting helper signatures and tests costs more than applying the old diff. |
-| Minimal privacy scope | Adopt robustness's complete command/output audit; accept simplicity's local implementation shape. | An agent-only env_clear/log patch leaves build, worker, parser and panic leaks. Extra local helpers and proofs are necessary; no new crate/framework follows. |
-| Diagnostics | Adopt omission of arbitrary output, finite categories and numeric facts. Reject redaction dictionaries, regex catalogs and raw-debug options. | Transcripts, external error text and ambient-auth troubleshooting disappear. Useful stage/status evidence remains. |
-| Preparation | Clear Cargo too, using the named selectors below. Reject any trusted-build inheritance exception. | Reduced ambient build compatibility and explicit discovery/platform proof. No credential forwarding API. |
-| Bounded protocol state | Adopt robustness's typed producer storage and distinct bounds. Reject closing an unbounded readiness queue only after startup. | Small parsers are required; readiness, Cargo and matrix are different protocols. No generic parser framework. |
-| Matrix bound | Retain #194's 64 KiB row capture, superseding the old privacy spec's 1 MiB matrix bound. Cargo remains 1 MiB per record. | Oversized explicit labels can cause a safe infrastructure refusal; increasing the limit would regress #194. |
-| HOME/PWD | Exclude caller values; construct fresh private HOME for every child and PWD equal to each agent's actual workdir. | Historical no-PWD assertions must change to exact generated-PWD assertions. This satisfies the issue's env-echo requirement without inheritance. |
-| Ownership of private directories | Adopt robustness's lifetime requirement inside the existing #194 owners. | Directory owners must outlive aborted work, drains and cleanup; a short-lived local in run_body is insufficient. No new descendant registry. |
-| Artifacts | Adopt exclusive private creation and complete-file no-clobber publication from patch 0007. | Small tempfile helpers and failure tests are justified; reject global umask changes, replacing rename, recovery machinery and a whole-trial transaction. |
-| Frozen runtime examples | Preserve robustness's SMTP/store/await/prune/chaos/webhook/DATA/TLS boundaries. | They constrain regressions, not scope for new root-server features or performance claims. |
-| Review | Use the five distinct accepted-0058 careful roles. | Earlier packet four-role/GLM/Haiku descriptions are superseded, not options. Reviews and platform evidence cost real executions. |
+| Continuation scope | Adopt simplicity's preservation of 529d916 and robustness's candidate-bound verification. Repair only an identified failed criterion/test. | Reject a second port, speculative hardening and treating unchecked historical tasks as missing code. Existing code may need no change, but Linux proof still costs execution. |
+| Platform ownership | Adopt both positions' dated #201 correction across spec, plan, tasks and 0075. | Reject local macOS receipts as a #196 blocker and any inference of CI success. Platform execution remains unproved here and owned by #201; Linux work stays mandatory. |
+| Evidence reuse | Adopt simplicity's reuse of the existing test map and robustness's lineage/assertion audit of the eleven supplied mutation receipts. Reproduce missing, stale or insufficient evidence. | Reject both blind historical-green reuse and an unnecessary new proof framework. Receipt audit and fresh final gates cost time; valid discriminating evidence need not be recreated merely for a new date. |
+| Runner ownership | Adopt both positions: retain #194 admission, waits, groups, drains and cleanup; retain private runtime owners through those same fences. | Reject another supervisor, descendant registry or shorter parent timer. Lifetime proofs must observe actual cleanup Pending, not eventual death. |
+| Closed commands | Retain exact runtime and separate Cargo preparation maps, native argv and generated agent PWD. | Reject trusted-build inheritance and credential forwarding. Ambient auth/config discovery is lost; explicit wrappers/private config or a prebuilt binary remain the setup paths. |
+| Diagnostics and bounds | Retain omission, finite facts, honest numeric statuses and distinct typed readiness/Cargo/matrix storage. | Reject raw-debug options, redaction dictionaries and a generic parser framework. Transcripts are lost; readiness stays 8192 bytes, Cargo 1 MiB per record, matrix and safe diagnostics 64 KiB. |
+| Artifacts | Retain exclusive private leaf/temp creation, descriptor normalization before payload and complete-file no-clobber publication. | Reject global umask changes, replacing rename and durable multi-file transactions. Per-file atomic visibility does not promise crash recovery. |
+| Runtime preservation | Adopt robustness's SMTP/store/await/prune/chaos/webhook/DATA/TLS examples as preservation constraints. | Reject expanding them into new root-server features, namespaces or performance promises. Existing suites retain their assertions and accepted limits. |
+| Review | Adopt both positions' five separate accepted-0058 careful results in the review phase. | Reject author verdicts and historical reviews as substitutes. Five fresh invocations remain required; this design supplies none. |
 
-There is no demonstrated conflict between the required behaviors. Source/test
-shape conflicts are adaptation work. If a true behavior or accepted-rule
-contradiction appears, record the exact incompatible requirements and stop that
-choice for the operator; never silently weaken either contract.
+When economy of edits conflicts with complete privacy/cancellation proof, rule
+for proof; the losing shortcut costs confidence in the handoff and is refused.
+When extra robustness mechanisms conflict with the existing single ownership
+model without a demonstrated defect, rule for simplicity; the accepted cost is
+the documented unconfined and per-file boundary, not a new isolation guarantee.
+Any actual contradiction with an accepted ruling waits for the operator rather
+than weakening either contract. No frozen guarantee may be weakened.
 
 ## Closed command contract
 
@@ -118,7 +135,8 @@ clears its environment and uses the common private map with only:
 These are intentional preparation inputs, not runtime inheritance. No general
 CARGO_/RUST_ families, tokens, flags, proxies, loaders or wrappers. Selectors
 never enter metadata/runtime children. Ordinary system/rustup installations and
-offline caches need Linux and actual macOS proof. Unsupported layouts may use
+offline caches need Linux proof here; #201 owns actual macOS execution under
+AC13. Unsupported layouts may use
 an explicit prebuilt SWARMAIL_BIN. Cargo config/build scripts are trusted file
 inputs; this is not supply-chain confinement.
 
@@ -243,9 +261,14 @@ generated PWD and the stricter matrix limit explicitly supersede stale wording.
   test proves the actual executable under its chosen custom target. Every eval
   reqwest builder has no_proxy; dead HTTP/HTTPS/ALL proxy settings still permit
   real oracle success and never receive admin Authorization.
-- **AC13 — Platforms:** actual macOS toolchain preparation, clippy/tests and
-  selected artifact primitive execution are required separately from Linux.
-  Missing macOS evidence remains open; do not presume existing CI provides it.
+- **AC13 — Platforms:** retain every Linux preparation/toolchain/custom-target,
+  standalone eval fmt/locked clippy/full tests and selected artifact-primitive
+  proof required here. Under the 2026-10-24 operator ruling, row **macOS evidence
+  for `evals/`**, in [operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md),
+  `evals/` is outside CI on every OS until #201. #201's CI gating owns macOS eval
+  preparation/toolchain, clippy/tests and selected artifact-primitive execution;
+  those macOS receipts are not a completion prerequisite for #196. Record that
+  ownership without claiming macOS execution or existing CI proof.
 - **AC14 — Review:** five fresh accepted-0058 careful results: Astra correctness,
   official DeepSeek Flash security, Sonnet 5.5 tests, Astra guarantees, independent
   Fable 5.1. No Pro, author substitute, combined result or unauthorized fallback.
@@ -287,7 +310,8 @@ generated PWD and the stricter matrix limit explicitly supersede stale wording.
   file/directory/symlink/hard-link collisions without touching sentinels.
   Final name appears only with complete private payload; cleanup removes only
   owned names. Real CLI failure retains safe category/row/exit semantics.
-  Linux/macOS primitive receipts are separate.
+  Linux primitive receipts remain mandatory here; macOS primitive execution
+  belongs to #201 under AC13, separately from Linux evidence.
 - **AC24 — Cancellation:** all #194 fence, both-signal, repeated-signal,
   queued admission/commit/final-row, bootstrap/Cargo, leader-first/resistant-child,
   pressure/EOF, observation/expiry and checked-test-teardown proofs remain,

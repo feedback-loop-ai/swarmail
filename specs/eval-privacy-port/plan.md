@@ -5,7 +5,9 @@
 Standalone unpublished Rust evals crate, Tokio Unix subprocesses, reqwest,
 serde and already-locked tempfile 3.27.0. Linux and macOS are supported Unix
 targets. Root manifests/locks and standalone coverage boundary remain unchanged
-under accepted 0055. Start at 509a0c7, preserving #194's runner/main architecture.
+under accepted 0055. Continue from unreviewed handoff 529d916 and intake a87fb96,
+preserving the already-ported #194 runner/main architecture. Linux proof is due
+here; macOS eval proof belongs to #201 under spec AC13, not to this seat.
 
 The usual .specify/templates/plan-template.md is absent in this workspace.
 This plan supplies the required technical context, constitution check, project
@@ -24,45 +26,49 @@ accepted by this work. Commit unsigned, never push (0056).
 
 The chief commit contains exactly spec.md, plan.md, tasks.md in this directory
 and docs/decisions/0075-eval-privacy.md. It deliberately excludes the index and
-earlier owning specs to obey the exact design-commit boundary. Implementation
-T1 adds the one proposed index row before inventory/full gates. This leaves a
-known pending documentation gate, not permission to claim all gates pass.
-The intake framing stays untouched outside this design directory; position
-files stay ignored. Structural design validation alone can pass this phase.
+earlier owning specs to obey the exact design-commit boundary. The proposed 0075
+index row already exists: T1 verifies it rather than duplicating it. T1 also
+reconciles the dependent current platform sentences in evals/README.md and
+specs/agent-eval-harness/{spec,plan}.md, outside this four-file design commit;
+those sentences are superseded by spec AC13 and are not an additional blocker.
+The intake framing stays untouched; position files stay ignored. Structural
+design validation is distinct from implementation, hermetic verify and review.
 
 ## Research and settled choices
 
-All ten packet checksums and .forge/bin/brokkr digest matched:
+All eleven packet checksums and .forge/bin/brokkr digest matched:
 ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f.
-Read the packet README, both positions, local intake framing, accepted authorities,
-0073, ordered patch evolution, baseline source and test declarations. The final
-packet diff and available local blobs identify the historical test inventory;
-they are read-only source evidence, not a replacement worktree or a test receipt.
+Read the packet README and operator-rulings, both current positions, framing.md,
+decision index and accepted 0055/0058 plus proposed 0073/0075. The packet's
+relative SHA256SUMS paths must be checked from its directory. The earlier root
+invocation's missing-file results are not packet corruption; the corrected
+packet-directory invocation passes every entry.
 
-Current Proc/OwnedGroup retains waiters/drains beyond abort. Log stores raw tails
-and startup uses an unbounded string channel. Main run_child already separates
-wait/capture but inherits stderr/environment. resolve_matrix_bin owns Cargo
-signals/cleanup and needs the privacy preparation/parser inserted there.
-Admin::call exposes response/error details; runner/mcp/oracle clients need
-no_proxy. Existing artifact writes need patch 0007's exclusive private primitive.
+The current source already has RuntimeDirs::apply, retained runtime owners,
+private no-clobber publication, all three no_proxy builders and the integrated
+ownership/cancellation tests named below. The previous implementation gaps are
+historical rationale, not instructions to recreate those changes. Historical
+127-test and eleven-mutation summaries require candidate/assertion binding;
+neither aggregate counts nor digest equality proves fresh execution.
 
-Reject the old blocking Cargo/Command::output path, a replacement supervisor,
-extra production module/dependency and a universal sanitizer/parser. Small helpers
-in existing owners suffice. Preserve 64 KiB matrix capture, use 8192-byte readiness
-lines and 1 MiB Cargo records. Explicit wrapper auth is the supported migration.
+Adopt the current panel synthesis in spec.md: preserve existing owners and
+code unless a criterion fails, keep complete Linux evidence, and apply the
+operator's #201 ownership correction consistently. No new parser framework,
+supervisor, dependency, raw-output option or proof schema is needed. Keep all
+existing bounds and explicit wrapper authentication.
 
 ## Project structure and touched files
 
-| Owner | Change |
+| Owner | Existing responsibility; permitted repair only after a demonstrated failure |
 | --- | --- |
 | evals/src/runner.rs | Native caller lookup and closed role/preparation maps; private runtime owners; typed drains; safe errors/Admin; metadata; private publication; existing inline seams and tests |
 | evals/src/main.rs | Native CLI/worker handoff, safe parsing/panic/error publication; closed worker/build commands; bounded row validation while retaining signal/admission/wait/output owners |
 | evals/src/mcp.rs, evals/src/oracle.rs | Direct no_proxy HTTP; audit error propagation at publishing callers |
 | evals/tests/common/mod.rs | Explicit test-owned wrappers/config and byte-aware probes/collectors |
-| evals/tests/runner.rs, report.rs, proof.rs and owning inline tests | Port every privacy test and preserve every cancellation proof, exact environments and discriminating controls |
+| evals/tests/runner.rs, report.rs, proof.rs and owning inline tests | Verify every privacy test and preserve every cancellation proof, exact environments and discriminating controls |
 | evals/tests/fixture.rs, boundary.rs, scoring.rs; other existing inline tests | Retain all regression tests and real-protocol behavior; edit only if helper signature adaptation requires it |
-| evals/README.md; specs/agent-eval-harness/spec.md and plan.md | Replace obsolete inheritance/tail/path statements with dated current contract; preserve clarification history |
-| docs/decisions/0075-eval-privacy.md; docs/decisions/README.md | Proposed renumbered record and one proposed index row; no accepted-decision rewrite |
+| evals/README.md; specs/agent-eval-harness/spec.md and plan.md | T1 aligns current platform ownership with AC13 and audits maps/output contract; preserve dated clarification history |
+| docs/decisions/0075-eval-privacy.md; docs/decisions/README.md | Correct proposed proof ownership; validate the existing exact-one proposed index row, edit index only if defective; no accepted-decision rewrite |
 | specs/eval-privacy-port/spec.md, plan.md, tasks.md | Owning contract, test mapping and honest task/receipt updates |
 
 No root production/manifests/locks, bundles, shims, policy or dependencies change.
@@ -97,30 +103,32 @@ entries. Do not convert complete-file atomicity into a durability claim.
 
 ## Implementation sequence
 
-1. Index proposed 0075 and reconcile current docs. Review the packet AC1–AC23
-   against spec.md, including the explicit supersessions. Bind the complete
-   test map below before edits. Preserve baseline assertions, not only names.
-2. Adapt test launch helpers to explicit synthetic argv/config/wrappers.
-   Probes inspect the actual harness-supplied map before wrappers add helper
-   controls. Production maps never forward EVAL_TEST_* or former faults.
-3. Introduce native lookup and private maps in runner; retain owners at group/
-   trial fences. Port native CLI/worker handoff and exact generated PWD.
-4. Prepare cleared Cargo commands with lazy defaults; reuse those commands and
-   bounded record parsing in #194's existing cancellation-aware main path.
-   Preserve once-per-batch build, pre-spawn handlers, status/EOF separation,
-   independent cleanup and custom-target executable discovery.
-5. Replace raw Log/startup queue with concurrent discard drains and typed first
-   announcement storage. Keep drains registered in OwnedGroup. Preserve signal
-   responsiveness, waiters and post-exit bounds under floods.
-6. Map all publishing errors, install CLI-only safe panic hook, suppress Admin
-   details, add all three no_proxy calls, null metadata, cap safe diagnostics
-   and validate worker variants without altering #194's 64 KiB capture.
-7. Port exclusive private artifact helpers into the existing post-cleanup writer.
-   Keep ordering/failure semantics. Prove actual creation/publication operations
-   under adverse umasks, deterministic errors and collision sentinels.
-8. Reproduce privacy mutations and #194's causal cleanup bypass controls;
-   integrate cancellation during output/build pressure and verify directory
-   lifetime and complete rows. Restore mutations before full gates/reviews.
+1. Reconcile the #201 ruling in this design and proposed 0075; validate the
+   existing index row. T1 then aligns the three dependent current documentation
+   sentences outside the chief commit. Preserve dated historical receipts and
+   explain the reassigned former blocker without turning it into a pass.
+2. Bind every AC and named baseline/packet test below to the committed handoff
+   and actual assertions. Existing unchecked tasks mean proof is due, not that
+   the implementation is absent. Record a concrete failing criterion/test before
+   any code repair; otherwise keep source and tests unchanged.
+3. Verify complete runtime/preparation maps, native CLI/worker handoff, generated
+   PWD, lazy toolchain-home defaults, once-per-matrix offline/locked custom-target
+   build and normal dev/release fault-control inertness.
+4. Verify typed readiness and Cargo bounds, discard drains, safe CLI/Admin/panic/
+   cleanup publication, all-client direct HTTP, null metadata and worker variants.
+   Preserve actual waits/statuses, EOF bounds and cancellation under pressure.
+5. Verify exclusive private artifacts before payload, adverse umasks, no-clobber
+   collisions, partial-write failures and ownership-specific cleanup on Linux.
+6. Execute all retained #194 and integrated privacy tests: both signals, admission/
+   commitment races, actual-Pending holds/releases and bypass controls, Cargo
+   ownership, private-directory lifetimes, exact rows and report denominators.
+7. Audit the eleven supplied mutation receipts against source/test regions and
+   candidate lineage using the existing map below. Reproduce missing, stale or
+   insufficient intended-assertion failures and restored-green controls; retain
+   valid evidence. Restore all mutations before final gates.
+8. Repair only demonstrated defects at their current owners and rerun affected
+   proofs plus all final gates. The independent hermetic verify and five careful
+   review results belong to their phases; this chief supplies no review verdict.
 
 ## Requirements-to-proof map
 
@@ -132,7 +140,7 @@ entries. Do not convert complete-file atomicity into a durability claim.
 | AC6–7, AC24–25 | All #194 inline and wire lifecycle/accounting tests; full proof/fixture/scoring suites |
 | AC8, AC19 | Independent exposure, Cargo-overflow and native-worker red/restored-green controls |
 | AC9 | store_contract_docs inventory/status tests plus live-link/map review |
-| AC10–14 | Pinned final-candidate gates, real platform receipts and five careful reviews |
+| AC10–14 | Pinned final-candidate Linux gates/receipts, dated #201 platform-ownership citation and five careful reviews |
 | AC21–23 | Pre-payload, failure/collision helper tests and real adverse-umask failed trial |
 | AC26 | Complete named baseline/packet mapping below, reconciled with final test listing |
 
@@ -153,8 +161,8 @@ and its discriminating assertions; helpers may change as described above.
 Earlier server-death/panic integration cases move to test-only inline owners,
 where #194's compiled-only controls can exercise them without production flags.
 The two older matrix parser tests remain distinct adapted tests over current
-64 KiB owners; they do not replace #194's tests. This is a planned mapping,
-not a claim the destinations have been implemented or executed.
+64 KiB owners; they do not replace #194's tests. This is the preserved required mapping; audit it against 529d916 and the final
+candidate rather than inferring either missing code or executed proof from it.
 
 | Origin | Required source test | Planned retained/adapted target |
 | --- | --- | --- |
@@ -281,8 +289,8 @@ not a claim the destinations have been implemented or executed.
 | B | evals/tests/scoring.rs::unknown_enum_values_and_fields_refuse_at_deserialization | evals/tests/scoring.rs::unknown_enum_values_and_fields_refuse_at_deserialization |
 | B | evals/tests/scoring.rs::validation_refuses_every_malformed_declaration | evals/tests/scoring.rs::validation_refuses_every_malformed_declaration |
 
-Additional required focused names (implementation supplies these when no existing
-test covers the whole conjunction):
+Additional required focused names already present in the handoff; verify the
+whole conjunction rather than using existence as proof:
 
 | Target | Required assertions |
 | --- | --- |
@@ -363,11 +371,15 @@ error refuses. Exact coverage means zero missed lines, branches and functions.
 All standalone eval targets, including inline, boundary, fixture, runner, report,
 scoring and proof, execute. Never infer eval success from root green.
 
-Actual Linux and macOS preparation/artifact/toolchain receipts are separate.
-Missing macOS execution cannot be supplied by Linux inspection/cross-compilation
-or historical pass summaries. CI owns charter chart/history/selftest, Docker
-smoke, network RustSec, tag release-rate and privileged port-80 proofs; record
-their status separately without accessing CI here.
+All Linux preparation/toolchain/custom-target and selected artifact-primitive
+receipts remain mandatory. The 2026-10-24 operator ruling linked in spec AC13
+places evals outside CI on every OS until #201 and assigns macOS eval preparation,
+toolchain, clippy/tests and artifact execution to #201's CI gating. Those macOS
+receipts do not block #196. Linux inspection/cross-compilation and historical
+summaries do not establish macOS execution; do not claim such execution here.
+CI separately owns charter chart/history/selftest, Docker smoke, network RustSec,
+tag release-rate and privileged port-80 proofs. Record ownership without querying
+CI or inventing receipts. Retain every Linux proof and all five careful reviews.
 
 After implementation/verification, use the existing bundles/codex-careful route:
 separate Astra correctness, official Flash security, Sonnet 5.5 tests, Astra
@@ -388,7 +400,7 @@ again. No push, merge, tag, publication, issue closure or decision acceptance.
 | Restrictive umask prevents access; permissive mask exposes bytes | Normalize newly owned directory/file before payload via handles, exact-mode tests in isolated subprocesses |
 | Collision clobbers another writer or temp cleanup removes a sentinel | Exclusive leaf/temp, persist_noclobber, ownership-specific cleanup and file/link/directory sentinel tests |
 | Loss of diagnostics/ambient authentication surprises users | Document finite facts, private-file wrapper migration and prebuilt binary option; no raw-output escape hatch |
-| macOS preparation or primitive differs | Require actual platform execution and keep missing evidence open; preserve conservative non-Linux cleanup behavior |
+| macOS preparation or primitive differs | #201 owns actual macOS CI execution under the dated ruling in AC13; do not infer portability from Linux green, and preserve conservative non-Linux cleanup behavior |
 | More code weakens coverage/dependency constraints | Existing owners and locked dependencies only; exact root gate unchanged, eval suite separately mandatory |
 | Apparent cross-feature contradiction | Stop exact incompatible choice for operator; no weakening either suite or accepted ruling |
-| Draft mistaken for shipped feature | All implementation tasks remain unchecked; distinguish structural check, gates, platform proof and five reviews |
+| Draft or prior green mistaken for verified handoff | Checkboxes remain fresh proof obligations; distinguish code already in 529d916, current Linux receipts, #201-owned macOS work, structural validation and five independent reviews |

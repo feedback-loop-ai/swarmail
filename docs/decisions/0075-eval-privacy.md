@@ -106,13 +106,27 @@ lazy-home/custom-target builds, counted overflow controls, safe Admin failures,
 pre-payload modes/collisions, causal cleanup bypass and real wire scoring.
 
 All house gates, exact coverage/selftest, pinned candidate-local engine/proof
-chain, independent eval checks and actual Linux/macOS preparation/artifact proof
-remain mandatory. Five accepted-0058 careful results are required: Astra
-correctness, official Flash security, Sonnet 5.5 tests, Astra guarantees and
-independent Fable 5.1. Missing platform/CI evidence stays explicit; historical
-receipts and a structural design pass cannot stand in for execution.
+chain, independent eval checks and every Linux preparation/toolchain/custom-target
+and selected artifact-primitive proof remain mandatory.
 
-The exact four-file chief commit excludes the decision index. Implementation T1
-adds one proposed 0075 row before documentation/full gates; until then that
-inventory obligation is open. Commit unsigned and never push. Only the operator
-accepts this proposal; the engine alone advances delivery.
+Clarification, 2026-10-24: the operator's row **macOS evidence for `evals/`** in
+[operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md) places
+`evals/` outside CI on every OS until #201. #201's CI gating owns macOS eval
+preparation/toolchain, clippy/tests and selected artifact-primitive execution;
+those macOS receipts are not a #196 completion prerequisite. This records
+ownership, not a macOS pass, portability conclusion or existing CI execution.
+Historical blocked receipts remain historical and no Linux proof is dropped.
+
+Five accepted-0058 careful results remain required from the review phase: Astra
+correctness, official Flash security, Sonnet 5.5 tests, Astra guarantees and
+independent Fable 5.1. Historical receipts and a structural design pass cannot
+stand in for execution or independent review. The continuation preserves the
+unreviewed implementation at 529d916 and repairs only demonstrated defects;
+its spec explicitly reconciles both current panel positions.
+
+The exact four-file chief commit excludes the decision index, whose proposed
+0075 row already exists. Implementation T1 validates its exact-one-row/status
+contract and reconciles dependent current documentation outside that commit.
+This clarification adds no accepted ruling and allocates no new decision number.
+Commit unsigned and never push. Only the operator accepts this proposal; the
+engine alone advances delivery.
