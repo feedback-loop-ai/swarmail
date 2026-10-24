@@ -234,5 +234,12 @@ Native OS paths and later arguments survive CLI and matrix worker handoff;
 agent JSON remains textual. Build homes are explicit nonempty locators or lazy
 original HOME/.cargo and HOME/.rustup defaults. Optional nonempty toolchain and
 target selectors apply only to preparation; there is no inheritance fallback.
-Linux proof cannot substitute for actual macOS execution. The current port's
-proof obligations are in specs/eval-privacy-port; prior receipts are historical.
+Under the 2026-10-24 operator ruling, row **macOS evidence for `evals/`**, in
+[operator-rulings.md](../.forge/epic192/issue196/operator-rulings.md), `evals/`
+is outside CI on every OS until #201. #201's CI gating owns macOS eval
+preparation/toolchain, clippy/tests and artifact-primitive execution; those
+receipts are not a completion prerequisite for #196. Every Linux preparation,
+custom-target, artifact, mutation and gate proof remains required by
+[the port contract](../specs/eval-privacy-port/spec.md#acceptance-criteria).
+This records ownership, not macOS execution or CI success; prior receipts
+remain historical.

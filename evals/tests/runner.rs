@@ -375,6 +375,12 @@ fn an_external_agent_gets_literal_argv_and_identical_prompt_and_env() {
 
     let launch_env_path = format!("{}.launch-env", marker.display());
     let launch_env = std::fs::read(launch_env_path).unwrap();
+    assert!(
+        !launch_env
+            .windows(b"NONUTF8_PARENT_\xff".len())
+            .any(|w| w == b"NONUTF8_PARENT_\xff"),
+        "caller native environment canary crossed the closed command boundary"
+    );
     let pairs: Vec<(&str, &str)> = launch_env
         .split(|b| *b == 0)
         .filter(|entry| !entry.is_empty())
@@ -646,6 +652,12 @@ fn swarmail_gets_only_its_fixed_runtime_map() {
         .unwrap();
     assert_eq!(one_row(&out).outcome, Outcome::Pass, "{}", stderr(&out));
     let bytes = std::fs::read(dir.path().join("swarmail.env")).unwrap();
+    assert!(
+        !bytes
+            .windows(b"NONUTF8_PARENT_\xff".len())
+            .any(|w| w == b"NONUTF8_PARENT_\xff"),
+        "caller native environment canary crossed the closed command boundary"
+    );
     let pairs: Vec<(String, String)> = bytes
         .split(|b| *b == 0)
         .filter(|part| !part.is_empty())
