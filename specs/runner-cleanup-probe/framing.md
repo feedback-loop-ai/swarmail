@@ -10,7 +10,7 @@ Make the runner cleanup regression test independent of machine load by synchroni
 
 Read `docs/house-rules.md`, the decision index, accepted 0020 and 0055, and proposed 0073. The issue packet's `README.md` and `operator-rulings.md` both pass `sha256sum --check SHA256SUMS` from `.forge/epic192/issue225/`; there are no prior-run entries after the README's prior-runs heading. The operator's macOS ruling assigns evals macOS proof to #201's CI gating. No decision is accepted by this work.
 
-The recorded failure is `timed out waiting for runner cleanup hold entry` under heavy machine load, followed by isolated and full-suite passes. Spot-check confirms `wait_for_cleanup_pending` in `evals/src/runner.rs` uses `eventually` to poll `entered-*` markers and the actual Pending marker; `eventually` asserts a 30-second wall-clock deadline and sleeps. `Group::cleanup_once` owns the cfg(test) cleanup hold. The inline Linux-only `runner::test_probes` module drives real child processes. Its named regression covers SIGTERM, SIGINT, panic and server-death positive paths, actual cleanup-future Pending, plus SIGTERM/SIGINT bypass negative controls and identity-safe rescue. The test also currently uses timed child waits as evidence of pending/return; synchronization repairs must preserve the causal assertions without making elapsed time their oracle.
+The recorded failure is `timed out waiting for runner cleanup hold entry` under heavy machine load, followed by isolated and full-suite passes. Spot-check confirms `wait_for_cleanup_pending` in `evals/src/runner.rs` uses `eventually` to poll `entered-*` markers and the actual Pending marker; `eventually` asserts a 30-second wall-clock deadline and sleeps. `OwnedGroup::cleanup_once` owns the cfg(test) cleanup hold. The inline Linux-only `runner::test_probes` module drives real child processes. Its named regression covers SIGTERM, SIGINT, panic and server-death positive paths, actual cleanup-future Pending, plus SIGTERM/SIGINT bypass negative controls and identity-safe rescue. The test also currently uses timed child waits as evidence of pending/return; synchronization repairs must preserve the causal assertions without making elapsed time their oracle.
 
 Relevant history: `8e61ab4` (#194/#216) introduced the cleanup fence and probes; `ef8a3dd` (#196/#222) subsequently changed runner privacy. Scope is the test and owner-local cfg(test) seam in `evals/src/runner.rs`, with focused proof evidence. Do not change root production sources, dependencies, accepted decisions, coverage policy or bundle routing.
 
@@ -36,7 +36,7 @@ export CARGO_NET_OFFLINE=true
 cargo fmt --manifest-path evals/Cargo.toml --all -- --check
 cargo clippy --manifest-path evals/Cargo.toml --workspace --all-targets --locked -- -D warnings
 cargo test --manifest-path evals/Cargo.toml --workspace --locked
-cargo test --manifest-path evals/Cargo.toml --locked --bin swarmail-evals runner::test_probes::runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults -- --exact --nocapture
+cargo test --manifest-path evals/Cargo.toml --locked --lib runner::test_probes::runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults -- --exact --nocapture
 ```
 
 Use that exact regression filter for the deliberately delayed seam case and the temporary mutant. Design/implementation must record how each is selected, the mutant patch, and its assertion-level failure; rerun the unmutated filter after restoring. Keep all existing real-process test controls; no mock replacement. No benchmark is required.
@@ -79,3 +79,13 @@ CI owns chart verification/history/selftest, real Docker smoke, network RustSec 
 ## Delivery boundary
 
 Intake records this framing and returns `resolved`; it does not implement or claim the repair is complete. Preserve the same text at `.forge/tasks/epic-192-issue-225-make-the-runn-02c2231f.md` and `.brokkr/state/tasks/epic-192-issue-225-make-the-runn-02c2231f.md` for inherited council readers; these are framing evidence, not journal records. The tracked copy is `specs/runner-cleanup-probe/framing.md`. Commit authorized framing unsigned, never push. Later seats must commit implementation before verification and satisfy all proof obligations above.
+
+## Intake baseline observations
+
+The framing-only candidate `3c661f8` passed every root/pinned gate listed above: engine identity, shim integrity, fmt, locked all-targets clippy, locked workspace tests, bundle compile without policy-sweep warnings, exact 100/100/100 coverage, coverage selftest, design-check selftest, delivery proof, publish-guard proof, seal keyless proof, licenses and fail-closed native-tls absence. Coverage evidence is `target/coverage/run.cNFNgq`. Evals fmt and locked all-targets clippy passed.
+
+The first full evals run exited 101: `tests::matrix_stdout_backpressure_is_bounded_and_still_observes_signals` failed at `evals/src/main.rs:2312` with `NotFound` from `Result::unwrap`. Its library tests, including the issue #225 regression, all passed. A full retry using `cargo test --manifest-path evals/Cargo.toml --workspace --locked --no-fail-fast` exited 0, including that matrix test and all integration suites. Preserve the initial intermittent failure as baseline evidence; no out-of-scope repair was made and this issue does not assert it is resolved.
+
+The initial isolated invocation mistakenly selected `--bin swarmail-evals` and ran zero tests; it is invalid proof. The corrected `--lib` command above ran exactly one regression and passed (33 filtered out). A later Linux targeted run must likewise show one executed test, never accept an exit-zero empty selection.
+
+Machine-readable command/exit evidence is committed in `specs/runner-cleanup-probe/intake-verification.json`; full logs remain under `.forge/tasks/epic-192-issue-225-make-the-runn-02c2231f-intake-gates/`. Long workspace calls exceeded the client's response window, but the saved driver status reached `done`; the recorded verdicts come from completed command logs, not transport timeouts. These observations assess the unchanged implementation at intake and do not prove the requested delay/mutant repair. The final intake changes only framing and this receipt, so those source/gate observations still apply; implementation needs fresh verification on its own committed candidate.

@@ -1,0 +1,147 @@
+{
+  "phase": "intake",
+  "run_id": "epic-192-issue-225-make-the-runn-02c2231f",
+  "assessed_commit": "3c661f8",
+  "scope": "Framing only; no implementation or delayed-hold/mutant proof.",
+  "engine_sha256": "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
+  "logs_directory": ".forge/tasks/epic-192-issue-225-make-the-runn-02c2231f-intake-gates",
+  "initial_results": [
+    {
+      "name": "engine-sha",
+      "command": "test \"$(sha256sum .forge/bin/brokkr | cut -d' ' -f1)\" = ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
+      "exit": 0,
+      "seconds": 0.11
+    },
+    {
+      "name": "shim-integrity",
+      "command": "sha256sum --check --strict bundles/self/scripts/shims.sha256",
+      "exit": 0,
+      "seconds": 0.01
+    },
+    {
+      "name": "root-fmt",
+      "command": "cargo fmt --all -- --check",
+      "exit": 0,
+      "seconds": 0.72
+    },
+    {
+      "name": "root-clippy",
+      "command": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "exit": 0,
+      "seconds": 14.54
+    },
+    {
+      "name": "root-test",
+      "command": "cargo test --workspace --locked",
+      "exit": 0,
+      "seconds": 146.51
+    },
+    {
+      "name": "bundle-compile",
+      "command": ".forge/bin/brokkr compile --bundle bundles/self",
+      "exit": 0,
+      "seconds": 0.02
+    },
+    {
+      "name": "coverage",
+      "command": "bash bundles/self/scripts/coverage-gate.sh",
+      "exit": 0,
+      "seconds": 228.73
+    },
+    {
+      "name": "coverage-selftest",
+      "command": "bash bundles/self/scripts/coverage-gate.sh selftest",
+      "exit": 0,
+      "seconds": 12.38
+    },
+    {
+      "name": "design-selftest",
+      "command": "bash bundles/self/scripts/design-check.sh selftest",
+      "exit": 0,
+      "seconds": 4.67
+    },
+    {
+      "name": "delivery-proof",
+      "command": "bash bundles/self/scripts/delivery-proof-test.sh",
+      "exit": 0,
+      "seconds": 8.78
+    },
+    {
+      "name": "publish-proof",
+      "command": "bash bundles/self/scripts/publish-guard-test.sh",
+      "exit": 0,
+      "seconds": 6.07
+    },
+    {
+      "name": "seal-proof",
+      "command": "bash bundles/self/scripts/seal-branch-test.sh",
+      "exit": 0,
+      "seconds": 4.87
+    },
+    {
+      "name": "licenses",
+      "command": "cargo deny check licenses",
+      "exit": 0,
+      "seconds": 0.71
+    },
+    {
+      "name": "native-tls-absence",
+      "command": "out=$(cargo tree -i native-tls 2>&1); code=$?; if [ \"$code\" -eq 0 ]; then echo \"$out\" >&2; exit 1; elif printf \"%s\" \"$out\" | grep -q \"did not match any packages\"; then echo \"native-tls absent\"; exit 0; else echo \"$out\" >&2; exit 1; fi",
+      "exit": 0,
+      "seconds": 0.16
+    },
+    {
+      "name": "evals-fmt",
+      "command": "cargo fmt --manifest-path evals/Cargo.toml --all -- --check",
+      "exit": 0,
+      "seconds": 0.26
+    },
+    {
+      "name": "evals-clippy",
+      "command": "cargo clippy --manifest-path evals/Cargo.toml --workspace --all-targets --locked -- -D warnings",
+      "exit": 0,
+      "seconds": 11.53
+    },
+    {
+      "name": "evals-test",
+      "command": "cargo test --manifest-path evals/Cargo.toml --workspace --locked",
+      "exit": 101,
+      "seconds": 59.47
+    },
+    {
+      "name": "evals-target",
+      "command": "cargo test --manifest-path evals/Cargo.toml --locked --bin swarmail-evals runner::test_probes::runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults -- --exact --nocapture",
+      "exit": 0,
+      "seconds": 0.16
+    }
+  ],
+  "initial_evals_failure": {
+    "test": "tests::matrix_stdout_backpressure_is_bounded_and_still_observes_signals",
+    "location": "evals/src/main.rs:2312",
+    "error": "Result::unwrap on NotFound (os error 2)"
+  },
+  "invalid_proof": {
+    "step": "evals-target",
+    "reason": "Wrong target selected; zero tests ran. Superseded by evals-target-corrected."
+  },
+  "corrected_results": [
+    {
+      "name": "evals-target-corrected",
+      "command": "cargo test --manifest-path evals/Cargo.toml --locked --lib runner::test_probes::runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults -- --exact --nocapture",
+      "exit": 0,
+      "executed_tests": 1
+    },
+    {
+      "name": "evals-test-retry",
+      "command": "cargo test --manifest-path evals/Cargo.toml --workspace --locked --no-fail-fast",
+      "exit": 0,
+      "initially_failing_matrix_test_passed": true
+    }
+  ],
+  "coverage": {
+    "verdict": "exact 100/100/100 passed",
+    "evidence_directory": "target/coverage/run.cNFNgq",
+    "selftest_exit": 0
+  },
+  "limitation": "Baseline passes do not establish an issue #225 implementation; preserve the initial intermittent matrix failure."
+}
