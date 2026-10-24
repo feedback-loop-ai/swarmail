@@ -1,73 +1,107 @@
-# Ordered proof tasks — eval privacy continuation
+# Ordered tasks — eval privacy recorded-gap repair
 
-Clarification — 2026-10-24: these tasks replace the original prospective
-implementation checklist after cf3aa2f/c232602. Unchecked means this continuation
-still needs an attributable proof disposition, not that committed code is absent.
-Existing semantic [spec](spec.md) and proposed [0062](../../docs/decisions/0062-eval-privacy.md)
-remain; historical results are preserved. T4 keeps its supported-platform meaning.
+Clarification — 2026-10-24: the earlier continuation checklist required evidence
+for preserved cf3aa2f/c232602. This revision follows recovered review of f6dbbb53
+and intake `continue-epic-192-issue-196-from-119060a2`; it adds demonstrated
+repairs while preserving historical receipts and T4's supported-platform meaning.
+Unchecked work is downstream, not a claim all existing code is absent. The
+[spec](spec.md) owns every finding's disposition and unchanged contracts. No
+decision, dependency, root source, gate or recipe change is authorized.
 
-- [ ] **T1 — Bind the candidate and authority (AC9, AC11).** Preserve c232602;
-  record ancestry, candidate commit/tree, clean tracked state, OS and candidate-local
-  engine digest against tooling.json. Confirm existing 0062 index/status agreement.
-  **Test:** git ancestry/diff checks, SHA-256 equality, and root
-  `cargo test --locked --test store_contract_docs`; no duplicate index addition.
-- [ ] **T2 — Execute c232602's focused controls (AC4, AC12).** Run
-  `admin_error_categories_discard_injected_response_text` and
-  `automatic_build_uses_a_cleared_named_preparation_map` without zero-test success.
-  **Test:** non-200 response canary absent with admin_response_status and
-  admin_response_rejected, plus an actual debug/swarmail file under custom target;
-  capture commands, exits and candidate identity.
-- [ ] **T3 — Prove runtime maps and compatibility (AC1, AC2).** Exercise actual
-  Swarmail, fixture, agent and matrix roles with complete environment observations
-  and execution markers, synthetic arbitrary/non-UTF-8/stale/admin values, private
-  directories, eight inputs and prompt equality. **Test:** existing runner/report
-  cases for role maps, caller-boundary resolution, literal argv and explicit
-  synthetic file-config wrapper authentication; no inherited helper exceptions.
-- [ ] **T4 — Prove preparation on supported platforms (AC3, AC13).** Verify closed
-  named preparation maps, offline/locked ordinary/custom targets, once-per-matrix
-  discovery and safe malformed/oversized/failed build handling. **Test:** real
-  automatic-build and Cargo protocol controls on owning system/rustup toolchains;
-  require macOS execution for macOS. Record Linux results separately and leave this
-  task open while the macOS system/rustup/toolchain receipt is missing. Do not
-  assume current CI provides it or invent a platform pass; continue independent
-  Linux tasks while this obligation stays open.
-- [ ] **T5 — Prove publication, draining and lifecycle (AC4–AC6, AC12).** Keep
-  independent both-stream canaries absent from stdout/stderr and final/temp
-  artifacts while preserving useful categories and actual outcomes. **Test:**
-  runner/report flood/readiness, bad CLI/path/HTTP input, spawn/startup failure,
-  deadline, panic, interruption, service-death, artifact and matrix failure cases;
-  assert cleanup, exit precedence and full matrix cardinality. HTTP non-200 proof
-  alone does not cover transport/read/invalid-response paths or response allocation.
-- [ ] **T6 — Establish discriminating controls and real behavior (AC7, AC8).**
-  Preserve prior red/green evidence only with exact relevant source/test binding;
-  reproduce missing necessary controls narrowly using synthetic inputs and restore
-  source before final proofs. **Test:** role inheritance, raw publication and
-  metadata/error mutations fail their focused controls; restored tests pass.
-  Full proof.rs proves oracle, null idle classes, wrong actions and overlapping
-  real SMTP/HTTP/MCP isolation; no mock acceptance or sleep-based interleaving.
-- [ ] **T7 — Run separate eval checks and reconcile documentation (AC9, AC10).**
-  Verify README and earlier owning eval docs agree with exact maps, wrapper auth,
-  safe metadata and unconfined limits. **Test:** eval fmt, locked all-target clippy,
-  full locked tests including proof.rs; retain commands/exits/source identities.
-  Root tests cannot replace this suite. Only a demonstrated defect permits code
-  repair; preserve its failing proof and rerun affected checks after repair.
-- [ ] **T8 — Execute the complete pinned house proof chain (AC10, AC11).** Follow
-  the sole inventory in docs/house-rules.md, with actual recorded-engine compile,
-  checked shims, exact coverage/selftest, design-check selftest, delivery tamper
-  boundary, publish/seal proofs, licenses and fail-closed native-tls absence.
-  **Test:** each actual command exits successfully on the final candidate, compile
-  has no policy-sweep refusal warning, and actual pinned design/verify dispatch and
-  policy-evaluator proofs produce attributable receipts. Offline verify installs
-  nothing; missing execution remains outstanding, never a substituted green.
-- [ ] **T9 — Complete protected independent review (AC14).** Run correctness and
-  security plus official DeepSeek Flash guarantees and GLM 5.3 tests review on
-  the verified candidate. **Test:** engine/journal receipts bind identities and
-  verdicts to that candidate; Haiku only after documented GLM dispatch failure,
-  never after an adverse verdict. Resolve returns and preserve security hold;
-  no recipe/policy edits or author self-certification.
-- [ ] **T10 — Publish an honest evidence handoff (AC10, AC13, AC14).** Report local
-  executions, historical receipts, macOS T4 and charter CI obligations separately.
-  **Test:** each claimed pass resolves to a candidate/platform-bound receipt;
-  unrun chart/history/selftest, Docker, advisory, tag/rate/publication and privileged
-  port-80 proofs stay attributed to CI with their actual status. Do not mark full
-  completion while required evidence/review remains; no push, merge or issue close.
+Tasks are ordered below; suffixes keep historical T4/T6/T8/T9 evidence references
+stable. Each paired proof needs candidate/platform/command/exit binding. Missing
+prerequisites or zero-test runs never check a task.
+
+- [ ] **T1 — Bind scope and evidence (AC9, AC11, AC19).** Verify packet hashes/
+  lengths, ancestry, clean starting source, OS and recorded engine identity;
+  inventory every request/resolver caller and retain every finding disposition.
+  **Test:** manifest equality, git ancestry/diff, tooling digest equality and
+  unchanged proposed-0062/index status; record actual starting identities.
+- [ ] **T2 — Repair native worker transport (AC2, AC16).** Carry OsString through
+  trial CLI, TrialRequest, validation/run_body/agent_argv and resolution; convert
+  AgentSpec JSON once and adapt necessary callers.
+  **Test:** actual matrix CLI executes a bare program in non-UTF-8 PATH, records
+  completion/literal bytes, emits one matching schema-1 row with real status and
+  correct aggregate exit. Direct trial preserves native later args; old String
+  worker boundary fails the matrix control. Built-in/missing/relative/absolute/
+  literal-wrapper cases still pass.
+- [ ] **T3 — Repair lazy HOME defaults and prove maps (AC1–AC3, AC18).** Consult
+  HOME only for missing Cargo/Rustup home, preserving empty refusal and locators.
+  Keep exact per-role maps and private directories.
+  **Test:** real preparation with both absolute homes and no HOME succeeds;
+  each missing default without HOME and each empty selector safely refuses.
+  Actual role-map, prompt equality, custom-target and synthetic wrapper-auth
+  controls pass without new environment exceptions.
+- [ ] **T4a — Repair executed Cargo overflow proof (AC3, AC5, AC15).** Fix script
+  newlines and literal path quoting. Emit valid >1 MiB JSON with an independent
+  canary, followed by real Cargo records.
+  **Test:** require launch, successful byte count, post-write completion, real
+  offline/locked Cargo success and full drains under a bounded deadline/cleanup;
+  oversized refusal is safe, short equivalent succeeds and no raw output reaches
+  output/artifacts. Missing launch, short write, Cargo failure or missing completion
+  fails. Bypassed overflow rejection fails the intended assertion; stopped drainage
+  fails completion/deadline.
+- [ ] **T5a — Repair portable canary and cfg (AC4–AC6, AC17).** Extend helper to
+  count/complete >64 KiB split invalid-byte output per stream. Portable case uses
+  unsafe_output and ordinary Fail/GaveUp with agent exit 0. Retain separate Linux
+  death control and cfg-contain probe/oracle code.
+  **Test:** portable CLI exits 1 with private artifacts, null executable metadata
+  and no raw/canary bytes in output or any final/temp artifact. Completion follows
+  both streams. Linux actually kills its owned server and yields HarnessError.
+  All-target clippy uses -D warnings without suppression. T4 requires actual
+  macOS execution, never inferred from Linux.
+- [ ] **T5b — Complete adjacent worker controls (AC6, AC20).** Add independent
+  wrong-label, exit-mismatch and CR-row cases in existing validation tests.
+  **Test:** each refuses without echo; valid acceptance and existing wrong-task/
+  extra/malformed/overflow/cardinality/aggregate-exit cases pass. Preserve process
+  group/drop behavior and explicitly retain its interruption debt.
+- [ ] **T4 — Complete supported-platform preparation proof (AC3, AC13, AC17).**
+  Run system/rustup/toolchain, ordinary/custom-target, once-per-batch discovery
+  and repaired Cargo/default/canary controls on supported platforms.
+  **Test:** actual macOS eval all-target locked clippy/full tests and preparation
+  receipts, separately from Linux. Leave T4 open until macOS genuinely executes;
+  no cross-compile/assumed CI coverage closes it. Continue independent tasks while
+  that evidence is unavailable.
+- [ ] **T5c — Preserve publication/lifecycle proofs (AC4–AC6, AC12).** Run scoped
+  runner/report safe CLI/path/panic/admin errors, readiness/floods, server death,
+  deadline/interruption, artifact failure and cleanup controls.
+  **Test:** nonzero counts, safe categories/outcomes, drained pipes and actual
+  exits; run admin_error_categories_discard_injected_response_text and
+  automatic_build_uses_a_cleared_named_preparation_map with a real built
+  custom-target executable. Record /usr/bin/python3 availability for its existing
+  readiness test; absence is failed/missing evidence, never skipped success.
+- [ ] **T6 — Bind or reproduce privacy discrimination (AC8, AC19).** Inspect old
+  source/test regions and receipts; rerun missing inheritance, raw-publication
+  and unsafe metadata/error controls. Reassess changed canary; keep AC15/16
+  controls separate.
+  **Test:** each mutation fails its intended assertion with nonzero counts, then
+  restored code passes. Record command, source/test/diff, OS, exit and log; final
+  diff has no mutation. Old blob names and empty logs alone are insufficient.
+- [ ] **T7 — Reconcile docs and prove evals separately (AC7, AC9, AC10).** Preserve
+  dated evidence, update only affected owning docs/evidence and retain each
+  LOW/INFO disposition.
+  **Test:** separate eval fmt, locked all-target clippy/full tests including
+  proof.rs real oracle/null/wrong-action/overlapping isolation. Every production
+  change has executing regression proof; no exclusions or root denominator change.
+  Root green cannot substitute for eval proof.
+- [ ] **T8 — Execute complete pinned house proof (AC10, AC11).** Follow the sole
+  house-rules inventory on the final restored candidate; preserve exact coverage/
+  selftest, publish/seal, licenses, native-tls absence, shims/tooling identity.
+  **Test:** every required command succeeds, plus warning-free pinned compile,
+  design-check/selftest, actual prescribed design/verify dispatch and policy/
+  delivery tamper proofs with receipts. Offline verify installs nothing; old
+  run passes remain distinct.
+- [ ] **T9 — Obtain accepted five-role review (AC14).** Run Astra correctness,
+  official DeepSeek Flash security, Sonnet 5.5 tests, Astra guarantees and Fable
+  5.1 independent as five separate offices/results on the changed verified
+  candidate.
+  **Test:** engine/journal receipts bind exact routes, candidate and verdicts;
+  preserve worst verdict, bounded returns and security hold. Never DeepSeek Pro,
+  author substitution or invented fallback; superseded GLM/Haiku does not apply.
+- [ ] **T10 — Hand off evidence honestly (AC10, AC13, AC14, AC19).** Distinguish
+  fixed defects, retained residuals, local execution, bound historical controls
+  and outstanding macOS/CI evidence.
+  **Test:** every claimed pass resolves to actual candidate/platform receipts;
+  unrun chart/history/selftest, Docker, RustSec, tag/rate/publication and privileged
+  port-80 proofs remain with charter owners and actual status. Never mark required
+  incomplete work complete. No push, PR, merge or issue close.

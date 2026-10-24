@@ -1,9 +1,10 @@
 # Eval privacy — Epic #192 / issue #196
 
-Date: 2026-10-24. Continuation design; committed implementation preserved,
-candidate verification and delivery proofs outstanding.
+Date: 2026-10-24. Recorded-gap repair design for run
+`continue-epic-192-issue-196-from-119060a2`; implementation, candidate verification
+and protected review remain downstream.
 
-Decision: 0062 — [Closed eval environments and safe diagnostics](../../docs/decisions/0062-eval-privacy.md), proposed; only the operator accepts.
+Existing proposal: 0062 — [Closed eval environments and safe diagnostics](../../docs/decisions/0062-eval-privacy.md), proposed; only the operator accepts.
 
 ## Feature and rationale
 
@@ -12,8 +13,9 @@ and arbitrary subprocess text out of eval diagnostics. These are independent
 boundaries: a child can print a secret from a file even with an empty environment.
 The original fault was inherited arbitrary variables, raw output tails in
 artifacts/errors, and Cargo/matrix stderr and path-bearing errors bypassing
-collection. Commits cf3aa2f and c232602 implement the repair; their presence is
-not a receipt that this continuation has verified them.
+collection. Commits cf3aa2f and c232602 implement that boundary. Recovered review of
+f6dbbb53 identified execution and proof gaps; this continuation repairs those
+gaps while preserving the reviewed environment and publication policy.
 
 Construct closed environments and drain then discard arbitrary child output.
 Keep harness-authored failure facts, real exit statuses and secret-free snapshots.
@@ -21,11 +23,19 @@ Preserve literal external commands, eight agent inputs, scoring, cleanup,
 schema 1 and `confinement:"unconfined"`.
 
 This continuation reads intake
-`.brokkr/state/tasks/epic-192-issue-196-continuation--f920b5a8.md`, its prior-run
-framing, and both `.brokkr/state/design/positions/{simplicity,robustness}.md`.
-Those files remain uncommitted run-local evidence.
+`.brokkr/state/tasks/continue-epic-192-issue-196-from-119060a2.md`, both earlier
+intake records, both `.brokkr/state/design/positions/{simplicity,robustness}.md`,
+and all five reports plus feature/issue/manifest under
+`.forge/epic192/issue196/recovered-review-evidence/`. All seven manifest byte
+lengths and SHA-256 values were verified before drafting. These inputs remain
+uncommitted evidence. Historical security clearance and gate passes do not
+verify the changed candidate.
 
-## Continuation clarification — 2026-10-24
+## Earlier continuation clarification — 2026-10-24
+
+Historical record for `epic-192-issue-196-continuation--f920b5a8`; the repair
+clarification below supplies the current scope and review route. Preserve this
+dated history without treating its old starting tree as this run's candidate.
 
 Preserve c232602e92b008c6c7ee2f92eaaab9c022adb773 (starting tree
 9ccd6767ccb56ee9b1cbeea58420cc2c8246e974). The previous run concluded after a
@@ -62,10 +72,73 @@ duplicates; memory-only restart is not durability. Waiters need not recover mail
 legitimately evicted by the cap. Existing TLS verification, raw DATA parsing,
 ingest extraction and both subscribe-before-scan sites remain unchanged.
 
+## Recorded-gap repair clarification — 2026-10-24
+
+Continue SHIP-COMPLETE run `epic-192-issue-196-continuation--b77ca73c`, whose
+review transition was REVIEW-RESIDUAL-OK with a medium non-security residual.
+This design starts at 0f0613f8ee9cf050c7f59d7e42b79d6dbd992ace; historical
+reviewed candidate f6dbbb53/tree dd109014 is distinct. Triage classified this
+repair as engine: cross-platform execution and privacy proofs require the full
+accepted [0058](../../docs/decisions/0058-codex-review-routing.md) high-risk route.
+
+Repair only the recorded Cargo producer/proof, OS-string worker transport,
+portable canary/cfg structure and lazy HOME defaults. Include closely coupled
+matrix rejection variants and evidence repair. This is restoration of the
+existing lookup, preparation and publication contracts, not a new public
+contract or ruling. The unpublished Rust request type changes internally;
+JSON inputs/results, CLI syntax and accepted guarantees do not. No new decision
+is declared, and no decision or index is edited or accepted. Proposed 0062
+remains proposed. Preserve the earlier dated design entries as provenance;
+this section and the revised acceptance criteria/plan/tasks govern this run.
+
+### Synthesis of the current positions
+
+Both positions agree on the actual repairs; there is no substantive disagreement
+to manufacture. The following rulings resolve implementation and proof tradeoffs
+explicitly, including the cost of rejecting each cheaper or broader alternative.
+
+| Question | Ruling and losing alternative's cost |
+|---|---|
+| Implementation shape | Adopt simplicity's existing main/runner/test owners and robustness's end-to-end OS-string requirement. Reject an argv codec, worker IPC, new supervisor, environment framework or crate. Cost: local Rust caller adaptations; broader abstractions receive no general extensibility work. A resolver-only fix loses because worker Clap would still reject valid native paths. |
+| Cargo proof | Adopt robustness's successful byte-count/completion evidence and simplicity's valid oversized JSON followed by real Cargo. Reject the cheaper newline-only repair, start marker alone, and a NUL flood whose malformed JSON masks missing overflow checks. Cost: a larger fixture and real build execution; generic spawn/build failure cannot count as drain proof. |
+| Portable canary | Adopt both positions' portable ordinary Fail/GaveUp case plus separate Linux server-death case. Reject weakening all assertions to ordinary failure or cfg-skipping all non-Linux privacy tests. Cost: two controls and explicit platform evidence; neither false macOS death nor lost Linux error-path coverage is acceptable. |
+| HOME defaults | Adopt both positions' local lazy defaults. Reject leaving this LOW/INFO defect merely because the three medium code/test defects dominate. Cost: a small preparation change and explicit/empty/missing-selector tests; the closed map remains exact. |
+| Evidence breadth | Rule for simplicity against a fresh universal mutation/audit framework; adopt robustness's requirement that every retained receipt binds to its actual source/test and intended assertion. Reproduce missing controls and reassess raw-publication proof after changing it. Cost to simplicity: additional execution; cost to broader hardening: unrelated diagnostics/lifecycle/HTTP work remains debt. |
+| Scope and review | Adopt robustness's frozen-guarantee constraints and both positions' five separate candidate-bound reviews. Reject root/server rewrites, reduced panels, raw output escape hatches and ambient environment fallback. Cost: existing unconfined/HTTP/lifecycle limits and reduced diagnostic detail remain visible; review or unavailable macOS evidence may prevent full completion. |
+
+### Every recovered finding has a disposition
+
+Identifiers below refer to the numbered findings in the manifest's correctness,
+tests and independent reports and guarantees G1. Security reported clean on the
+historical candidate, not on this repair.
+
+| Finding | Disposition for this run and reason |
+|---|---|
+| Correctness 1; tests 1; guarantees G1 | Repair the nonexecuting Cargo script and require actual counted >1 MiB output, post-write completion, successful real Cargo, full drain and no echo (AC15). |
+| Correctness 2 | Carry OS strings through the actual matrix worker CLI/request/runner path and prove execution from non-UTF-8 PATH plus literal bytes (AC16). |
+| Correctness 3 | Repair portable canary outcome and cfg ownership; retain Linux server-death proof. Actual macOS clippy/tests and T4 preparation stay open until run (AC17, AC13). |
+| Correctness 4; independent 5 | Repair lazy HOME lookup with explicit absolute selector success and missing/empty refusal controls (AC18). |
+| Correctness 5; independent 6 | Establish exact historical mutation source/test/receipt binding or reproduce narrowly missing controls. Existing pre-c232602 blob/exit claims are leads, not current proof; reassess changed canary (AC8, AC19). |
+| Independent 1 | Retain LOW matrix process_group/kill_on_drop interruption debt. Detached workers may continue to deadlines; killing a worker can orphan its independently grouped children. Deadline is not orphan-cleanup proof. Process ownership redesign is separate; expose it to reviewers, and return through the bounded route if inseparable. |
+| Independent 2 | Retain LOW unreachable fixture_index/safe_trial_category specificity debt. The finite fallback protects privacy; category redesign is unrelated. |
+| Independent 3 | Retain LOW generic main::fail, dead formatting and silent matrix launch-category debt. Preserve safe publication and row cardinality; do not expand logging here. |
+| Independent 4 | Repair the touched canary's absent >64 KiB both-stream artifact proof (AC17). Retain the separate LOW safe-diagnostics replacement-versus-cap wording/untested branch discrepancy: practically unreachable finite strings do not justify artifact-policy redesign. This is open debt against the existing cap requirement, not a waiver or claim of conformance. |
+| Tests 2 | Retain LOW untested help/version, operation_failed, oracle_failed and startup/service-readiness diagnostic branches. Add repair-required coverage only; broad category coverage is separate. |
+| Tests 3 | Retain LOW hardcoded /usr/bin/python3 readiness-test availability debt. Record interpreter availability during the existing test; absence is failed/missing proof, never skipped success. No new interpreter dependency. |
+| Tests 4 | Add wrong-agent-label, exit mismatch and CR-containing row cases in the existing worker validation test (AC20); these constrain the unchanged protocol at the touched boundary. |
+| Tests 5 | Retain INFO canned HTTP-500 injector as real HTTP/reqwest hostile-response proof; it is not business acceptance. Keep real oracle/null/wrong-action/isolation proofs. |
+| Security and all reports' limitations | Historical clean is not clearance. Preserve documented Admin::call response-body collection under timeout and unconfined filesystem/network limits. Separate actual local evidence, outstanding macOS T4 and charter CI-owned proofs. No zero-byte log or old gate pass supplies missing execution. |
+
+Retained debt does not erase AC4/AC6 obligations or establish complete conformance.
+Downstream reviewers must see each residual and rule under existing policy. No
+implementation-complete or supported-platform-complete claim is authorized while
+required repairs, gates, reviews or platform evidence remain outstanding.
+
 ## Authority and scope
 
-This tightens the public README environment/diagnostic contract, hence proposed
-0062. It supplements accepted [0055](../../docs/decisions/0055-agent-eval-harness.md)
+The original feature tightened the public README environment/diagnostic contract,
+recorded in proposed 0062. This continuation repairs its implementation/proofs.
+It supplements accepted [0055](../../docs/decisions/0055-agent-eval-harness.md)
 §§6–9, which requires sanitized settings, eight inputs, draining, automatic
 offline/locked preparation and honest lifecycle/results, not ambient credentials
 or raw transcripts. No accepted ruling is contradicted. A contradiction discovered
@@ -271,8 +344,8 @@ deliberate child file writes, arbitrary hostile peers or filesystem/network acce
   and status agreement before gates; do not duplicate it. No forbidden scope,
   dependency, gate or acceptance change.
 - **AC10 — Delivery.** Separate eval fmt, locked clippy/full tests including
-  proof.rs, all pinned house verification gates and four independent reviews with
-  security hold precede implementation completion. CI-only obligations stay with
+  proof.rs, all pinned house verification gates and the five separate AC14 reviews
+  with security hold precede implementation completion. CI-only obligations stay with
   CI. Structural design validation is none of these receipts.
 
 - **AC11 — Pinned continuation.** Every new receipt names the tested commit/tree,
@@ -294,9 +367,58 @@ deliberate child file writes, arbitrary hostile peers or filesystem/network acce
   for a macOS runner/CI; do not assert current CI already provides it. Report
   charter CI-only obligations separately from local passes. Do not mark T4 or
   overall supported-platform verification complete without that receipt.
-- **AC14 — Protected reviews and bounded returns.** Candidate-bound correctness,
-  security, guarantees and tests reviews actually execute. Guarantees uses
-  official DeepSeek Flash, never Pro. Tests uses GLM 5.3 with the task-specific
-  Haiku exception only after recorded dispatch failure, never an adverse verdict;
-  record the actual fallback identity. Preserve the security hold and engine
-  policy; no recipe edit, push, merge, issue close or signing in this run.
+- **AC14 — Protected reviews and bounded returns.** Execute five separate
+  candidate-bound results under accepted 0058: Astra correctness, official
+  DeepSeek Flash security, Sonnet 5.5 tests, Astra guarantees and Fable 5.1
+  independent review. This supersedes earlier GLM/Haiku/Flash-guarantees routing
+  for this continuation. Never DeepSeek Pro, author substitution or invented
+  fallback. Preserve protected review, worst verdict, hard security hold and
+  bounded returns; no recipe/decision edit, push, PR, merge or issue close.
+- **AC15 — Executed Cargo overflow.** A real executable wrapper writes a valid
+  JSON record longer than 1,048,576 bytes with an independently supplied
+  synthetic canary, followed by successful real offline/locked Cargo output.
+  Assert launch, actual successful byte count, post-write completion and real
+  Cargo success; drains finish through EOF under a bounded test deadline and
+  yield the intended safe build refusal without publishing raw bytes anywhere.
+  Missing launch, short write, missing completion or unrelated Cargo failure
+  fails the test. Preparation succeeds with the below-limit equivalent; removing overflow
+  rejection makes the oversized control fail its intended assertion. Stopping
+  drainage must fail completion or deadline, never satisfy expected refusal.
+- **AC16 — Native worker arguments.** Launch the actual matrix CLI with an
+  unchanged agents JSON naming a UTF-8 bare program in a non-UTF-8 Unix PATH
+  directory. Require execution/completion and literal-argument byte markers,
+  exactly one matching schema-1 row, actual child status and correct aggregate
+  exit. Reinstating the String worker boundary fails the regression. Direct
+  trial preserves OS-string arguments too. Retain caller cwd/PATH lookup,
+  built-ins, missing-command refusal, all matrix cardinality and scoring rules;
+  no lossy path conversion or runtime PATH forwarding.
+- **AC17 — Portable nonpublication.** On supported Unix, an ordinary noisy
+  signup agent exits 0 without completing the task: assert Fail/GaveUp, real
+  status 0 and trial exit 1, with artifacts present. Successfully emit >64 KiB
+  per stream, including independent canaries in the retained-tail region,
+  split writes, invalid bytes and no required newline; count both streams and
+  mark completion after full writes. Scan CLI output and every remaining final
+  or temporary artifact for raw/canary bytes, with null swarmail_bin metadata
+  and private modes. Retain a distinct Linux-only actual server-death
+  HarnessError test with verified kill of the runner's own server. Entire
+  Linux-specific probe/oracle continuation lives in cfg blocks; no unreachable
+  non-Linux code or warning suppression. Actual macOS clippy/tests, not Linux
+  inspection or cross-compilation, establish the macOS portion.
+- **AC18 — Lazy preparation defaults.** With executable discovery otherwise
+  supplied, real preparation succeeds with explicit nonempty absolute
+  CARGO_HOME/RUSTUP_HOME and HOME removed. HOME is consulted only for a missing
+  selector's default. Missing HOME for either required default and explicit
+  empty selectors refuse safely. Exact preparation/runtime maps and existing
+  relative-locator semantics remain unchanged; no locator enters metadata.
+- **AC19 — Evidence remains falsifiable.** Bind separate inheritance,
+  raw-publication and unsafe metadata/error red/restored-green controls to
+  source/test regions, actual commands, nonzero counts, exits and OS. Historical
+  receipts may count only after explicit binding; reproduce missing controls
+  and changed raw-publication proof. Keep their mutations out of final code and
+  run all final-candidate gates after restoration. Record AC15 overflow and
+  AC16 old-worker controls independently. No aggregate green or empty log
+  replaces an intended-assertion failure.
+- **AC20 — Worker validation variants.** Existing matching single-row acceptance
+  still passes; wrong label, row/worker exit mismatch and a CR-containing row
+  each refuse independently alongside existing wrong-task/extra/malformed cases.
+  Rejected bytes are never echoed; result schema and protocol limits do not change.
