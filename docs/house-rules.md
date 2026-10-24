@@ -73,7 +73,7 @@ The operator's assistant read main branch protection through the GitHub API on 2
 These are the displayed status context names. The test context expands to both listed operating systems. This is the operator-supplied observation for 2026-10-24, not a continuous read of GitHub settings.
 
 This is the one gate inventory: CI and the verify seat both run all of it,
-plus a fail-closed proof that native-tls is absent from the tree. The absence
+plus a fail-closed proof that `native-tls` is absent from the tree. The absence
 proof runs inside CI's deny job and is not a separate status context. The
 required-on-main contexts above include the CI-owned Helm chart, Docker smoke
 and RustSec jobs. CI also owns the chart-bump check against the event's

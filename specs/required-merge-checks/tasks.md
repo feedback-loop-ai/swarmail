@@ -60,7 +60,10 @@ T1–T4 are complete: packet hashes and pinned engine identity matched, the
 house rules and contributor wording are aligned, the baseline comparison and
 all seven independent negative controls passed, and current scope/evidence
 was reconciled across these three artifacts. The comparator source and output
-are retained under .forge/epic192/issue205/implement-47e37eec/.
+are retained under .forge/epic192/issue205/implement-47e37eec/. The initial
+gate run found that a docs test requires the literal wording “`native-tls` is
+absent”; its failed receipts are retained under
+.forge/epic192/issue205/implement-47e37eec/gates-03e7bd2-initial/.
 
 T5 records the committed-candidate gate and integrity proofs at the run-local
 receipt path. T6 is the handoff to the engine's protected verification and
