@@ -210,15 +210,49 @@ selftest() {
   fresh ok; expect 'a valid committed design passes' designed
   git -C "$repo" worktree add -q "$root/linked" HEAD >/dev/null 2>&1
   repo="$root/linked"; expect 'a linked worktree of the valid design passes' designed
-  fresh newline-second
+  repo="$root/newline-second"; mkdir -p "$repo"; git init -q "$repo"
+  mkdir -p "$repo/specs/a-design"
+  printf '# Design\n## Acceptance Criteria\n' >"$repo/specs/a-design/spec.md"
+  printf '# Plan\n## Risks\n' >"$repo/specs/a-design/plan.md"
+  printf -- '- [ ] T1\n' >"$repo/specs/a-design/tasks.md"
+  g add -A; g commit -m design
   local newline_slug=$'evil\nname' legacy_count
   mkdir -p "$repo/specs/$newline_slug"
   printf 'x\n' >"$repo/specs/$newline_slug/file.md"
-  printf 'same HEAD commit\n' >"$repo/specs/new-design/extra.md"
+  printf 'same HEAD commit\n' >"$repo/specs/a-design/extra.md"
   g add -A; g commit -m newline-second-slug
+  local git_bin="$root/git-wrapper" real_git baseline_status=0
+  mkdir -p "$git_bin"
+  real_git="$(command -v git)"
+  cat >"$git_bin/git" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = diff-tree ]; then
+    case "${DESIGN_GIT_MODE:-}" in
+      legacy)
+        legacy_stream="$("$REAL_GIT" "$@" 2>/dev/null | tr '\0' '\n')"
+        printf '%s\0' "$legacy_stream"
+        exit 0
+        ;;
+      fail) exit 23 ;;
+      partial)
+        printf 'specs/new-design/spec.md\0specs/evil\nname/file.md\0'
+        exit 23
+        ;;
+    esac
+  fi
+done
+exec "$REAL_GIT" "$@"
+EOF
+  chmod +x "$git_bin/git"
   legacy_count="$(legacy_slug_count)"
   if [ "$legacy_count" -ne 1 ]; then
     printf 'design-check selftest failure — legacy newline parser saw %s slugs, expected its known false count of 1\n' "$legacy_count" >&2
+    failures=$((failures + 1))
+  fi
+  out="$(REAL_GIT="$real_git" DESIGN_GIT_MODE=legacy PATH="$git_bin:$PATH" bash "$pin_dir/design-check.sh" check "$repo" 2>&1)" || baseline_status=$?
+  if [ "$baseline_status" -ne 0 ] || [[ "$out" != designed:* ]]; then
+    printf 'design-check selftest failure — legacy boundary loss did not admit the otherwise valid fixture:\n%s\n' "$out" >&2
     failures=$((failures + 1))
   fi
   expect 'a valid design plus a newline-bearing second slug refuses' fail 'touches 2 spec directories'
@@ -304,25 +338,6 @@ selftest() {
   repo="$root/nogit"; mkdir -p "$repo"
   expect 'a non-Git directory refuses' fail 'not a Git work tree'
   fresh git-errors
-  local git_bin="$root/git-wrapper" real_git
-  mkdir -p "$git_bin"
-  real_git="$(command -v git)"
-  cat >"$git_bin/git" <<'EOF'
-#!/usr/bin/env bash
-for arg in "$@"; do
-  if [ "$arg" = diff-tree ]; then
-    case "${DESIGN_GIT_MODE:-}" in
-      fail) exit 23 ;;
-      partial)
-        printf 'specs/new-design/spec.md\0specs/evil\nname/file.md\0'
-        exit 23
-        ;;
-    esac
-  fi
-done
-exec "$REAL_GIT" "$@"
-EOF
-  chmod +x "$git_bin/git"
   local command_status=0
   out="$(REAL_GIT="$real_git" DESIGN_GIT_MODE=fail PATH="$git_bin:$PATH" bash "$pin_dir/design-check.sh" check "$repo" 2>&1)" || command_status=$?
   if [ "$command_status" -eq 0 ] || [[ "$out" != *"git diff-tree HEAD failed"* ]]; then
