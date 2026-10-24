@@ -218,3 +218,136 @@ No release tag, registry credential, GHCR publication/deletion, push, merge or
 issue closure occurred. Registry-outage refusal, the concurrent check/push
 window and possible image-success/chart-failure remain the accepted costs.
 Local fixtures do not discharge any part of the future receipt.
+
+## Addendum — 2026-10-24 — residual follow-up run fa975081
+
+This dated addendum binds the current local rerun to the implementation base
+and candidate recorded below. The preceding receipt body remains historical
+evidence; none of its identities or results is rewritten or reused as current
+proof.
+
+### Historical applicability
+
+The preceding receipt belongs to run
+epic-192-186-close-the-locally-p-6fc4f549. Its source pin
+597f4868e3fb971b62e6a368a2d8aa23271f4531, executable digest
+e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c,
+784 passed tests, design 2c6f3e1 and implementation 2dce0b4 remain claims
+about that historical run. Its executable path
+/home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-186/.forge/bin/brokkr
+names a sibling worktree and is historical; it was not invoked here. PR212
+and df8630f remain original-design ancestry.
+
+Triage inspected f00d8b532d7e255086913a53b21aa47c27fbe7c6, tree
+1c4d0f3edc82a037033386e8a7f09802c77d7351. The continuation design commit
+52fba989db2ddabf1028e7a4bd5a0d1f7bd6a77e, tree
+a049858200923dadaee25442d60e8ef5a4526c2c, is the actual implementation
+base. The code change is commit 4d26a0ca077510627bef1077c4324fbb01a1df24,
+tree 497a26cf6d00b3f602c680c07c087337cafa9ff9. The candidate gate run
+used HEAD 764b740c32381e70dbb04ded4487236aa498786c, tree
+8d44f121d5a410ca2696efc2bb20001623b1a820, in the current worktree
+/home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-186-residual.
+At that candidate the changed files relative to the implementation base were
+bundles/self/scripts/publish-guard-test.sh, this directory's plan.md and
+tasks.md. This addendum and the final task evidence are later documentation
+only; they do not change the tested shell, Rust, bundle or gate inputs.
+
+### Pinned engine and test counts
+
+Before compile, the candidate-local executable
+/home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-186-residual/.forge/bin/brokkr
+was checked against bundles/self/tooling.json. Its SHA-256 is
+ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f.
+The recorded Brokkr source is
+731189f9097308c01ae4f2b4c9caea5f41224844. The ordered patches and
+their SHA-256 values, also checked against tooling.json, are:
+
+| Order | Path relative to bundles/self | SHA-256 |
+|---|---|---|
+| 1 | tooling-patches/0001-preserve-review-residual-facts.patch | 5d4da2217135c5a2ca14354ae9907623cf67ff0076b078277cb77a09ad3020b5 |
+| 2 | tooling-patches/0002-preserve-review-scope-and-fixes.patch | 361272eff344a5d5e05b832281407a99c3f1a77fc1fbc5216e19fb4ce7487173 |
+| 3 | tooling-patches/0003-bind-verified-candidate.patch | 4098228e7649d1bda8961bb491aa29d982b462c420470e265f8b9acf0a148d96 |
+
+This is candidate-local executable and patch identity evidence. The engine was
+not rebuilt or independently checked out from its source.
+
+The requested 785-test base was freshly run at commit
+52fba989db2ddabf1028e7a4bd5a0d1f7bd6a77e and tree
+a049858200923dadaee25442d60e8ef5a4526c2c with
+CARGO_NET_OFFLINE=true cargo test --workspace --locked: exit 0,
+785 passed, 0 failed and 3 ignored. Per-suite output is
+.forge/implement/base-tests.log. The candidate command
+cargo test --workspace --locked ran at gate HEAD 764b740c32381e70dbb04ded4487236aa498786c
+with CARGO_NET_OFFLINE=true and RUSTUP_OFFLINE=1: exit 0, also
+785 passed, 0 failed and 3 ignored. Per-suite output is
+.forge/implement/tests.log. The shell-only assertion adds no Rust test, so
+the unchanged count is expected; neither count is copied from the old 784
+receipt.
+
+### Mode refusal proof
+
+At gate candidate 764b740c32381e70dbb04ded4487236aa498786c, the canonical
+script bundles/self/scripts/publish-guard-test.sh has SHA-256
+70162444310f204148c43daad0d6f1a192f15c90c5df0afb4eb7ef10d4fa4d04.
+Its helper now accepts only none, token and manifest, calling fail with the
+description and invalid mode before comparing request bytes. The new case
+reuses the real token-only log from the token-exchange-500 fixture. It
+requires a nonzero refusal and a diagnostic naming token-only-typo.
+
+The full real loopback proof passed directly with
+bash bundles/self/scripts/publish-guard-test.sh, exit 0. In a disposable
+adjacent copy, removing only the mode guard while retaining the regression
+made the proof exit 1 with
+“invalid mode 'token-only-typo' was accepted”. The guard-reverted output and
+exit are .forge/implement/mode-guard-red.log and
+.forge/implement/mode-guard-red.exit. Restored full proof output and exit
+are .forge/implement/publish-guard-restored.log and
+.forge/implement/publish-guard-restored.exit. The final shim-dispatched
+publish proof also passed; its log is listed below.
+
+### Candidate gate receipts
+
+The recorded gate runner is .forge/implement/gates.json. It identifies base,
+base tree, candidate HEAD/tree, changed files, exact commands, exits and
+per-command logs. It ran offline with CARGO_NET_OFFLINE=true and
+RUSTUP_OFFLINE=1. Every house-inventory command exited 0:
+
+| Command | Exit | Log |
+|---|---:|---|
+| cargo fmt --all -- --check | 0 | .forge/implement/fmt.log |
+| cargo clippy --workspace --all-targets --locked -- -D warnings | 0 | .forge/implement/clippy.log |
+| cargo test --workspace --locked | 0 | .forge/implement/tests.log |
+| /home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-186-residual/.forge/bin/brokkr compile --bundle bundles/self | 0 | .forge/implement/compile.log |
+| bash scripts/coverage-gate.sh | 0 | .forge/implement/coverage.log |
+| bash scripts/coverage-gate.sh selftest | 0 | .forge/implement/coverage-selftest.log |
+| bash scripts/publish-guard-test.sh | 0 | .forge/implement/publish-proof.log |
+| bash scripts/seal-branch-test.sh | 0 | .forge/implement/seal-proof.log |
+| cargo deny check licenses | 0 | .forge/implement/licenses.log |
+
+The exact coverage was 12,953/12,953 lines, 762/762 branches and
+1,437/1,437 functions. The coverage selftest passed. The compile reported
+76 valuations across 14 groups, with 0 unruled. The checked public shims
+passed via sha256sum -c bundles/self/scripts/shims.sha256, exit 0; see
+.forge/implement/shims.log. The additional fail-closed native-tls proof
+successfully generated the complete locked offline workspace tree at
+.forge/implement/dependency-tree.txt, then required rg to return exactly
+the no-match status for ^native-tls v; the wrapper exited 0 and its command
+is in .forge/implement/gates.json.
+
+### Journal and release boundary
+
+No .forge/forge.db or authentic run journal was available in this boxed
+worktree. The supplied run context proves the design-to-implement transition,
+not per-task completion, immutable verify, independent review, protected ship
+or root CI. The local command receipts above therefore do not create task
+checkmarks. The corrected tasks.md records these results and leaves every
+task checkbox open until the journal proves its whole obligation. Immutable
+verify and the configured full engine review remain later owners; the smallest
+permitted independent panel for this engine classification is DashScope Qwen
+Max correctness, Claude Opus security, official DeepSeek Flash guarantees
+and DashScope GLM 5.3 tests. No DeepSeek Pro or fallback is selected.
+
+18.5 remains EXPLICIT EXTERNAL PENDING. The existing six-category future
+GHCR 404-then-publish receipt checklist and external checkbox remain
+unchanged and open. No GHCR access, publication, push, merge, tag,
+release-policy change, decision acceptance, or #186/#192 closure is claimed.

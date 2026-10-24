@@ -123,3 +123,32 @@ partially proved compound tasks stay unchecked or are split without erasing duti
   linked release evidence against that checklist. This is outside this lane,
   remains unchecked after compatible local delivery, and grants no publication
   permission to any seat.
+
+## Current implementation evidence — 2026-10-24
+
+The base test log is bound to design/base commit 52fba989db2ddabf1028e7a4bd5a0d1f7bd6a77e,
+tree a049858200923dadaee25442d60e8ef5a4526c2c: the locked workspace suite
+passed 785, failed 0, ignored 3. The candidate suite at
+764b740c32381e70dbb04ded4487236aa498786c, tree
+8d44f121d5a410ca2696efc2bb20001623b1a820, also passed 785, failed 0,
+ignored 3. Logs: .forge/implement/base-tests.log and
+.forge/implement/tests.log.
+
+R2–R4 now have local implementation evidence: the loopback proof passed,
+the token-log collision failed specifically when only the new mode guard was
+removed, the restored proof passed, and every house gate passed. Exact
+commands, exits, engine/patch identity and log paths are recorded in
+proof-receipt.md's 2026-10-24 addendum and .forge/implement/gates.json.
+The changed canonical proof digest is
+70162444310f204148c43daad0d6f1a192f15c90c5df0afb4eb7ef10d4fa4d04.
+
+No .forge/forge.db or authentic run journal was available to establish these
+as phase events or to complete the whole compound task obligations. Therefore
+R1–R5 and historical T1–T9 remain unchecked, despite the stated local command
+evidence. R6/T7/T8 remain open for immutable verify, the four configured
+independent engine reviews, protected ship and root-owned CI. Those reviewers
+are DashScope Qwen Max correctness, Claude Opus security, official DeepSeek
+Flash guarantees and DashScope GLM 5.3 tests; no Pro or fallback. External
+18.5 remains unchecked with its six future receipt categories. No GHCR
+access, publication, push, merge, tag, release-policy change or issue closure
+occurred.

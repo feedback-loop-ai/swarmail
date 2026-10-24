@@ -177,7 +177,6 @@ publication proof requirements remain AC1–AC8 in spec.md and T1–T9 in tasks.
 this clarification neither erases them nor marks them complete. Historical
 receipt bytes are preserved by the later append-only addendum, not edited here.
 
-
 ## Implementation-base correction — 2026-10-24
 
 The earlier continuation clarification named `f00d8b5` as the inspected
