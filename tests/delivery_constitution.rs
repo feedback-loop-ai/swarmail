@@ -278,7 +278,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         ),
         (
             "bundles/self/tooling.json",
-            "e6eaeff867eb71fab5a1ce93f4ff1d46ae9deb2944b517867787a63a966f3fa3",
+            "6e4d19c03dc40b59ed48c9a23156f9bd63bf3d29ecee68068a3f707a8fda507d",
         ),
         (
             "bundles/self/scripts/shims.sha256",
