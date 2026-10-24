@@ -1,10 +1,10 @@
-# 0062 — Refuse unsupported queries before native operations
+# 0074 — Refuse unsupported queries before native operations
 
 - **Status:** proposed — acceptance belongs to the operator.
 - **Date:** 2026-10-24
 - **Scope:** Epic #192, issue #197.
 - **Spec:** [strict native queries](../../specs/strict-native-queries/spec.md).
-- **Numbering:** 0062 follows the highest existing record, 0061, on this branch; historical gaps are not reused.
+- **Numbering:** proposed as 0062; renumbered to 0074 at integration, because 0062, 0072 and 0073 went to other epic #192 decisions first. Historical gaps are not reused.
 - **Extends:** accepted [0044 §3](0044-compat-validation.md) and [0048 §§4–5](0048-rest-webhook-validation.md)'s method-specific closed query posture.
 - **Preserves:** 0001–0005; [0011](0011-shim-delete-contract.md)'s selective body deletion and explicit global wipe; ordered mutation/refusal/shutdown; 0025/0029 domain admission; 0041 redaction; 0048 body mappings and compat tolerance.
 
@@ -37,4 +37,4 @@ Synchronous acceptance, subscribe-before-check, oldest-only pruning and ingest e
 
 Spec AC1–AC10 and paired tasks require red-to-green wire proof, all ten controls, exact state, precedence/compatibility and method-aware documentation tests plus all house-rules gates. Artifact validation cannot prove behavior.
 
-Only this proposed record and three spec artifacts belong in the design commit. Implementation indexes 0062 as proposed. Acceptance/amendment markers await the operator. Compatible work may proceed under house rules; discovered contradictions wait for the appropriate accepted amendment.
+Only this proposed record and three spec artifacts belong in the design commit. Implementation indexes 0074 as proposed. Acceptance/amendment markers await the operator. Compatible work may proceed under house rules; discovered contradictions wait for the appropriate accepted amendment.

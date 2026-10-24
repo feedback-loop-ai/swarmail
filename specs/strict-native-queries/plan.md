@@ -10,7 +10,7 @@ No plan template exists in this checkout (`.specify/templates/plan-template.md` 
 
 ## Constitution check
 
-Preserve accepted 0001–0005, 0011, ordered mutation/refusal/shutdown, domain admission, 0044/0048 closed sets and compat exceptions. Accepted 0045 §8 allows these compatible corrections; 0062 stays proposed, unamended and unaccepted. No new semantic ruling is needed. A concrete contradiction of an accepted contract requires operator resolution; frozen weakening is refused regardless of tests.
+Preserve accepted 0001–0005, 0011, ordered mutation/refusal/shutdown, domain admission, 0044/0048 closed sets and compat exceptions. Accepted 0045 §8 allows these compatible corrections; 0074 stays proposed, unamended and unaccepted. No new semantic ruling is needed. A concrete contradiction of an accepted contract requires operator resolution; frozen weakening is refused regardless of tests.
 
 Use existing real HTTP/SMTP/SQLite integration tests under 0004/0020. Keep fresh servers, per-test inboxes and temporary databases, exact full-state witnesses, generated CA material and deterministic chaos at 0/100. No mocks, sleep synchronization, shared global mutable fixtures, cold-path exclusions or coverage denominator changes. Keep accepted 0058's five-office high-risk review and protected gate/security boundaries. Commit unsigned under 0056; never push.
 
@@ -38,7 +38,7 @@ The chief commit touches exactly this directory's spec.md, plan.md and tasks.md.
 | `specs/strict-native-queries/{spec,plan,tasks}.md` | Reconcile design and ordered continuation tasks; preserve dated old validation as historical evidence. |
 | `README.md`, `src/static/llms.txt`, `tests/store_contract_docs.rs` | Inspect/run existing witnesses; no planned edits. |
 | `tests/compat.rs`, existing runtime/lifecycle/burst suites | Execute existing preservation and trigger/reopen proofs; no planned edits. |
-| `docs/decisions/0062-strict-native-queries.md`, decision index | Preserve byte-for-byte; proposed index row already exists. |
+| `docs/decisions/0074-strict-native-queries.md`, decision index | Preserve byte-for-byte; proposed index row already exists. |
 
 Do not edit src/api.rs, src/compat.rs, store, SMTP, extraction, webhook internals, dependencies, gates, tooling or recipe routing. Broader defects must be surfaced with concrete evidence rather than hidden in this repair.
 
@@ -103,13 +103,13 @@ Then execute every gate in the sole [house-rules inventory](../../docs/house-rul
 
 ## Historical validation provenance
 
-The following dated entries are preserved verbatim from earlier design passes. The returned-scope clarification after them governs the current disposition; their two-file restriction and unresolved-model statements describe their dates only. Their paths/receipts describe those runs only. The current candidate already has the 0062 index row; its former T10 is not a pending index edit. None of these old receipts proves this continuation.
+The following dated entries are preserved verbatim from earlier design passes. The returned-scope clarification after them governs the current disposition; their two-file restriction and unresolved-model statements describe their dates only. Their paths/receipts describe those runs only. The current candidate already has the 0074 index row; its former T10 is not a pending index edit. None of these old receipts proves this continuation.
 
 ## Design-stage validation — 2026-10-24
 
 Formatting, all-targets locked Clippy, pinned bundle compilation, coverage selftest, publish-guard proof, seal-branch keyless proof, license check, fail-closed native-tls absence, shim integrity and design-validator selftest passed. The candidate-local `.forge/bin/brokkr` digest matches tooling.json; the initial PATH lookup failure was resolved by using that binary without installation.
 
-Full locked tests and the full instrumented coverage run both fail the two decision-inventory tests in `tests/store_contract_docs.rs` because proposed 0062 has no decisions-index row yet. The design instruction permits exactly the three spec files and proposed decision in this commit, so the index update remains T10 rather than an unauthorized fifth file. No all-green or exact-coverage verdict is claimed. Initial 120-second test/coverage attempts timed out; subsequent longer runs establish the actual inventory failure. Run-local receipts are under `.brokkr/state/design/chief-gates/`; coverage also preserves `target/coverage/run.YpkNjM/run.log`. Implementation must index 0062 and run the complete gates afresh.
+Full locked tests and the full instrumented coverage run both fail the two decision-inventory tests in `tests/store_contract_docs.rs` because proposed 0074 has no decisions-index row yet. The design instruction permits exactly the three spec files and proposed decision in this commit, so the index update remains T10 rather than an unauthorized fifth file. No all-green or exact-coverage verdict is claimed. Initial 120-second test/coverage attempts timed out; subsequent longer runs establish the actual inventory failure. Run-local receipts are under `.brokkr/state/design/chief-gates/`; coverage also preserves `target/coverage/run.YpkNjM/run.log`. Implementation must index 0074 and run the complete gates afresh.
 
 
 ## Continuation design-stage checks — 2026-10-24
@@ -130,18 +130,18 @@ The missing candidate-local engine remains a launch setup block under accepted 0
 
 All seven recovered hashes passed before synthesis; the 19 store-contract documentation tests also passed after reconciliation. Fresh design-stage commands and exits are retained in `.brokkr/state/design/returned-chief/gates/results.json`, with the starting HEAD and candidate diff. Formatting, locked all-targets Clippy, coverage selftest, publish-guard proof, seal-branch keyless proof, license check, shim integrity, design-check selftest, delivery tamper-boundary proof and fail-closed native-tls absence passed. Full locked tests exited 101 at the unchanged selector test's Sol expectation (`tests/delivery_recipes.rs:371`); instrumented coverage exited 1 for that same failing test, preserving `target/coverage/run.cJPwDc/run.log`. No exact-coverage verdict exists. Candidate-local engine preflight failed because `.forge/bin/brokkr` is absent, so bundle compilation was not executed.
 
-These are diagnostics from the candidate's bundle copies, not the dispatched pinned hermetic verifier's receipt. The chief changed only this directory's three artifacts; hash checks preserve the inherited source/test edits, untouched delivery test, proposed 0062 and both position files. Full repaired-tree verification and five fresh review results remain mandatory. No current all-green, implementation-complete or shipment claim follows from this draft.
+These are diagnostics from the candidate's bundle copies, not the dispatched pinned hermetic verifier's receipt. The chief changed only this directory's three artifacts; hash checks preserve the inherited source/test edits, untouched delivery test, proposed 0074 and both position files. Full repaired-tree verification and five fresh review results remain mandatory. No current all-green, implementation-complete or shipment claim follows from this draft.
 
 ## Current chief reconciliation — 2026-10-24, run 77052a74
 
 This section supersedes earlier current-tense tooling-absence and missing-assertion statements while retaining their historical receipts. HEAD at entry was dd043c6; all three permitted implementation files already carry the proposed repairs. Path requiredness and both Luna/xhigh assertions are present. The candidate-local engine digest matches tooling.json. Both positions support the bounded implementation; the chief adopts simplicity's local machinery and robustness's complete exact-state/failure evidence. Spec AC1–AC15 and the full issue acceptance remain mandatory. No runtime or decision change is needed, and all three info findings remain disclosed.
 
-This chief preserves the three pending implementation files, both panel positions, proposed 0062 and the decision index byte-for-byte. Only spec.md, plan.md and tasks.md are committed. Later implementation must supply the isolated negative controls and restored-green receipts, then the hermetic verification and five separate accepted-0058 reviews on its resulting candidate. Chief diagnostics below cannot substitute for those phase results.
+This chief preserves the three pending implementation files, both panel positions, proposed 0074 and the decision index byte-for-byte. Only spec.md, plan.md and tasks.md are committed. Later implementation must supply the isolated negative controls and restored-green receipts, then the hermetic verification and five separate accepted-0058 reviews on its resulting candidate. Chief diagnostics below cannot substitute for those phase results.
 
 ## Current chief diagnostics — 2026-10-24, run 77052a74
 
 All house-rule gate commands passed on the inherited repaired worktree during this design step: formatting, locked all-targets Clippy, full locked workspace tests, digest-matched candidate-local bundle compilation (zero unruled valuations, no policy-sweep warning), exact coverage and its selftest, publish-guard proof, seal-branch keyless proof and permissive license check. The design-validator selftest, delivery tamper-boundary proof, shim integrity and diagnostic-specific fail-closed native-tls absence also passed. Coverage reports 12,992/12,992 lines, 762/762 branches and 1,441/1,441 functions; evidence is `target/coverage/run.kNgsTW`. No old failure receipt is relabeled.
 
-Commands, exits, logs and entry HEAD/diff are retained under `.brokkr/state/design/chief-77052a74/` (`gates-initial.json`, `gates-proof.json`, `before.json`, `before.diff`). Cargo ran offline with no installation. Scripts ran from the candidate's unchanged bundle copies because `/runtime/bundle` is unavailable to this chief; these are local diagnostics, not the dispatched hermetic verify seat's pinned receipt. CI-owned checks were not run. The three inherited implementation-file hashes, both positions, 0062 and its index are unchanged.
+Commands, exits, logs and entry HEAD/diff are retained under `.brokkr/state/design/chief-77052a74/` (`gates-initial.json`, `gates-proof.json`, `before.json`, `before.diff`). Cargo ran offline with no installation. Scripts ran from the candidate's unchanged bundle copies because `/runtime/bundle` is unavailable to this chief; these are local diagnostics, not the dispatched hermetic verify seat's pinned receipt. CI-owned checks were not run. The three inherited implementation-file hashes, both positions, 0074 and its index are unchanged.
 
 Only documentation reconciliation follows these behavioral checks. The chief's final structural audit checks the committed three-file design and clean artifacts. Implementation's isolated negative controls/restored-green evidence, final pinned verification and all five fresh review results remain outstanding; green chief diagnostics do not grant phase advancement or shipment.
