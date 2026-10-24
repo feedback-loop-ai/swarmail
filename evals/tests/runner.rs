@@ -253,44 +253,80 @@ fn a_noisy_agent_is_drained_and_does_not_hang_the_trial() {
 }
 
 #[test]
-fn server_death_during_the_trial_is_a_harness_error() {
+fn normal_trial_binary_ignores_the_former_runner_fault_control() {
+    for fault in ["panic", "server_death"] {
+        let (row, out) = helper_trial(
+            "echo",
+            &["--task", "signup", "--agent", "echo"],
+            &[("EVAL_RUNNER_FAULT", fault)],
+        );
+        assert_ne!(
+            row.outcome,
+            Outcome::HarnessError,
+            "{fault}: {}",
+            stderr(&out)
+        );
+        assert!(!stderr(&out).contains("injected runner fault"));
+    }
     let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("pids.json");
-    let (row, out) = helper_trial(
-        "stall",
-        &["--task", "signup", "--agent", "stall"],
-        &[
-            (MARKER_ENV, marker.to_str().unwrap()),
-            ("EVAL_RUNNER_FAULT", "server_death"),
-        ],
-    );
-    assert_eq!(row.outcome, Outcome::HarnessError);
-    assert!(
-        stderr(&out).contains("swarmail exited during the trial"),
-        "{}",
-        stderr(&out)
-    );
-}
-
-#[test]
-fn a_runner_panic_cleans_up_and_still_emits_one_row() {
-    let dir = tempfile::tempdir().unwrap();
-    let marker = dir.path().join("pids.json");
-    let (row, out) = helper_trial(
-        "stall",
-        &["--task", "signup", "--agent", "stall"],
-        &[
-            (MARKER_ENV, marker.to_str().unwrap()),
-            ("EVAL_RUNNER_FAULT", "panic"),
-        ],
-    );
-    assert_eq!(row.outcome, Outcome::HarnessError);
-    assert!(stderr(&out).contains("panicked"), "{}", stderr(&out));
-    if marker.exists() {
-        let (leader, descendant) = read_pids(&marker);
-        eventually("the agent group is killed after the panic", || {
-            !pid_alive(leader) && !pid_alive(descendant)
-        });
+    let controls = [
+        ("EVAL_TEST_CLEANUP_WAIT_BYPASS", "1".to_string()),
+        (
+            "EVAL_TEST_CLEANUP_HOLD_DIR",
+            dir.path().join("cleanup-hold").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_PRE_HANDLER_HOLD_DIR",
+            dir.path().join("pre-handler-hold").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_RUNNER_EXECUTABLE",
+            dir.path().join("runner-exe").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_CLEANUP_WAIT_PENDING",
+            dir.path().join("must-not-be-created").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_RUNNER_PIDS",
+            dir.path().join("agent-pids").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_RUNNER_FAULT_RELEASE",
+            dir.path().join("fault-release").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_CLEANUP_BUDGET_HOLD_DIR",
+            dir.path().join("budget-hold").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_CLEANUP_BUDGET_RELEASE",
+            dir.path().join("budget-release").display().to_string(),
+        ),
+        (
+            "EVAL_TEST_CLEANUP_BUDGET_LOG",
+            dir.path().join("budget-log").display().to_string(),
+        ),
+        ("EVAL_TEST_CLEANUP_OBSERVE_ERROR", "1".to_string()),
+        ("EVAL_TEST_CLEANUP_FORCE_EXPIRY", "1".to_string()),
+        (
+            "EVAL_TEST_RUNNER_SIGNAL_LOG",
+            dir.path().join("signal-log").display().to_string(),
+        ),
+    ];
+    let env = controls
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect::<Vec<_>>();
+    let (row, out) = helper_trial("echo", &["--task", "signup", "--agent", "echo"], &env);
+    assert_ne!(row.outcome, Outcome::HarnessError, "{}", stderr(&out));
+    for (name, value) in &controls {
+        if value != "1" {
+            assert!(
+                !std::path::Path::new(value).exists(),
+                "normal binary ignored test-only control {name}"
+            );
+        }
     }
 }
 
@@ -462,4 +498,61 @@ fn the_catalogue_is_served_as_schema_version_one() {
     let cat: swarmail_evals::tasks::Catalogue = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(cat.schema_version, 1);
     assert_eq!(cat.tasks, swarmail_evals::tasks::catalogue());
+}
+
+#[test]
+fn cleanup_escalates_after_a_leader_exits_and_a_descendant_ignores_term() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("pids.json");
+    let me = std::env::current_exe().unwrap();
+    let child = cli()
+        .env(HELPER_ENV, "resistant")
+        .env(MARKER_ENV, &marker)
+        .args(["trial", "--task", "signup", "--agent", "resistant", "--"])
+        .args([
+            me.to_str().unwrap(),
+            "--exact",
+            "helper_agent",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let child = ChildGuard { child: Some(child) };
+    eventually("the TERM-resistant descendant readiness marker", || {
+        marker.is_file()
+    });
+    let value: Value = serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+    let leader = ProcessIdentity {
+        pid: value["leader"].as_i64().unwrap() as i32,
+        parent: 0,
+        pgrp: value["leader_pgrp"].as_i64().unwrap() as i32,
+        session: value["leader_session"].as_i64().unwrap() as i32,
+        start_time: value["leader_start"].as_u64().unwrap(),
+        state: 'S',
+    };
+    let descendant = ProcessIdentity {
+        pid: value["descendant"].as_i64().unwrap() as i32,
+        parent: 0,
+        pgrp: value["descendant_pgrp"].as_i64().unwrap() as i32,
+        session: value["descendant_session"].as_i64().unwrap() as i32,
+        start_time: value["descendant_start"].as_u64().unwrap(),
+        state: 'S',
+    };
+    assert_eq!(leader.pgrp, descendant.pgrp);
+    assert!(identity_alive(&leader) && identity_alive(&descendant));
+    send_signal(child.pid(), libc::SIGTERM);
+    let out = child.wait_with_output();
+    let row = one_row(&out);
+    assert_eq!(row.outcome, Outcome::HarnessError);
+    assert!(
+        !identity_alive(&leader),
+        "the direct agent leader stopped before matrix cleanup completed"
+    );
+    assert!(
+        !identity_alive(&descendant),
+        "cleanup escalated and observed the descendant gone"
+    );
 }

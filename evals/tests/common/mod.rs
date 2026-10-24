@@ -18,6 +18,7 @@ pub const HELPER_ENV: &str = "EVAL_TEST_HELPER";
 pub const MARKER_ENV: &str = "EVAL_TEST_MARKER";
 pub const BARRIER_DIR_ENV: &str = "EVAL_TEST_BARRIER_DIR";
 pub const BARRIER_COUNT_ENV: &str = "EVAL_TEST_BARRIER_COUNT";
+pub const LAUNCH_LOG_ENV: &str = "EVAL_TEST_LAUNCH_LOG";
 
 pub fn exe() -> &'static str {
     env!("CARGO_BIN_EXE_swarmail-evals")
@@ -31,6 +32,43 @@ pub fn swarmail_bin() -> &'static Path {
 }
 
 /// The CLI with SWARMAIL_BIN pinned (no per-trial build).
+pub struct ChildGuard {
+    pub child: Option<std::process::Child>,
+}
+
+impl ChildGuard {
+    pub fn pid(&self) -> i32 {
+        self.child.as_ref().unwrap().id() as i32
+    }
+
+    pub fn wait_with_output(mut self) -> Output {
+        self.child.take().unwrap().wait_with_output().unwrap()
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        send_signal(child.id() as i32, libc::SIGTERM);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if child.try_wait().ok().flatten().is_none() {
+            // SAFETY: this guard owns the child process it spawned.
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGKILL);
+            }
+            let _ = child.wait();
+        }
+    }
+}
+
 pub fn cli() -> Command {
     let mut cmd = Command::new(exe());
     cmd.env(runner::SWARMAIL_BIN_ENV, swarmail_bin())
@@ -98,14 +136,72 @@ pub fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
 }
 
 /// Whether `pid` names a live (not zombie) process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub pid: i32,
+    pub parent: i32,
+    pub pgrp: i32,
+    pub session: i32,
+    pub start_time: u64,
+    pub state: char,
+}
+
+pub fn process_identity(pid: i32) -> Option<ProcessIdentity> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, tail) = stat.rsplit_once(')')?;
+    let fields: Vec<_> = tail.split_whitespace().collect();
+    Some(ProcessIdentity {
+        pid,
+        state: fields.first()?.chars().next()?,
+        parent: fields.get(1)?.parse().ok()?,
+        pgrp: fields.get(2)?.parse().ok()?,
+        session: fields.get(3)?.parse().ok()?,
+        start_time: fields.get(19)?.parse().ok()?,
+    })
+}
+
+pub fn identity_alive(identity: &ProcessIdentity) -> bool {
+    process_identity(identity.pid)
+        .is_some_and(|now| now.start_time == identity.start_time && !matches!(now.state, 'Z' | 'X'))
+}
+
 pub fn pid_alive(pid: i32) -> bool {
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Err(_) => false,
-        Ok(stat) => !stat
-            .rsplit(')')
-            .next()
-            .is_some_and(|rest| rest.trim_start().starts_with('Z')),
+    process_identity(pid).is_some_and(|process| !matches!(process.state, 'Z' | 'X'))
+}
+
+/// Read the Linux process table and return every process below `root`, using
+/// PID/start-time identities so the exit proof is safe against PID reuse.
+pub fn process_descendants(root: i32) -> Vec<ProcessIdentity> {
+    let mut all = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return all;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<i32>() else {
+            continue;
+        };
+        if let Some(identity) = process_identity(pid) {
+            all.push(identity);
+        }
     }
+    let mut found = Vec::new();
+    let mut parents = std::collections::HashSet::from([root]);
+    loop {
+        let children: Vec<_> = all
+            .iter()
+            .filter(|p| parents.contains(&p.parent))
+            .cloned()
+            .collect();
+        let added = children.iter().filter(|p| parents.insert(p.pid)).count();
+        if added == 0 {
+            break;
+        }
+        found.extend(children);
+    }
+    found
 }
 
 pub fn send_signal(pid: i32, sig: i32) {
@@ -157,7 +253,39 @@ async fn helper(mode: &str) -> i32 {
             std::fs::write(marker().unwrap(), report.to_string()).unwrap();
             3
         }
+        "resistant" => {
+            // The agent leader exits on TERM; this same-group descendant
+            // ignores TERM so the owning cleanup must escalate to KILL.
+            #[allow(clippy::zombie_processes)]
+            let child = std::process::Command::new("/bin/sh")
+                .args(["-c", "trap '' TERM; exec sleep 1000"])
+                .spawn()
+                .unwrap();
+            let leader = process_identity(std::process::id() as i32).unwrap();
+            let descendant = process_identity(child.id() as i32).unwrap();
+            let path = marker().unwrap();
+            let pids = json!({
+                "leader": leader.pid, "leader_start": leader.start_time,
+                "leader_pgrp": leader.pgrp, "leader_session": leader.session,
+                "descendant": descendant.pid, "descendant_start": descendant.start_time,
+                "descendant_pgrp": descendant.pgrp, "descendant_session": descendant.session,
+            });
+            std::fs::write(path.with_extension("tmp"), pids.to_string()).unwrap();
+            std::fs::rename(path.with_extension("tmp"), &path).unwrap();
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        }
         "stall" => {
+            if let Ok(path) = std::env::var(LAUNCH_LOG_ENV) {
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .unwrap();
+                writeln!(file, "{}", std::process::id()).unwrap();
+            }
             // Deliberately never waited on: a descendant that outlives its
             // leader is what the runner's group sweep must reap.
             #[allow(clippy::zombie_processes)]
@@ -165,7 +293,14 @@ async fn helper(mode: &str) -> i32 {
                 .arg("1000")
                 .spawn()
                 .unwrap();
-            let pids = json!({ "leader": std::process::id(), "descendant": child.id() });
+            let leader = process_identity(std::process::id() as i32).unwrap();
+            let descendant = process_identity(child.id() as i32).unwrap();
+            let pids = json!({
+                "leader": leader.pid, "leader_start": leader.start_time,
+                "leader_pgrp": leader.pgrp, "leader_session": leader.session,
+                "descendant": descendant.pid, "descendant_start": descendant.start_time,
+                "descendant_pgrp": descendant.pgrp, "descendant_session": descendant.session,
+            });
             let path = marker().unwrap();
             std::fs::write(path.with_extension("tmp"), pids.to_string()).unwrap();
             std::fs::rename(path.with_extension("tmp"), &path).unwrap();
