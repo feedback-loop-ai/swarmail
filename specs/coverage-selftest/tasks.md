@@ -1,7 +1,7 @@
 # Ordered tasks — coverage selftest recovery
 
 Updated: 2026-10-24 — attributed scope return. Follow [spec.md](spec.md),
-[plan.md](plan.md) and [proposed 0062](../../docs/decisions/0062-coverage-reservation-tooling.md).
+[plan.md](plan.md) and [proposed 0064](../../docs/decisions/0064-coverage-reservation-tooling.md).
 Preserve all dated spec clarifications and the engine's existing return count.
 
 T1's retained full-context/direct traces now justify the chosen production
@@ -26,7 +26,7 @@ candidate-bound evidence where applicable. Initial #174 code is not a pass.
   Replace only the explicit leaf operation with checked isolated inline Python
   `os.mkdir`, preserve parent/default paths, exact spelling, umask and caller
   ownership. Distinguish tool/protocol failure from filesystem refusal; add
-  truthful comments and index 0062 as proposed without accepting it.
+  truthful comments and index 0064 as proposed without accepting it.
   **Test:** actual resolver admits a fresh leaf, refuses retained/file/symlink
   targets and other creation errors with category/path, and sets success
   metadata only after validated completion. Missing/broken Python and malformed

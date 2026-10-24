@@ -8,7 +8,7 @@ Follow-up baseline: `16841aa4f503ad8eb83e36208ff5fd125fe25b95`
 Updated: 2026-10-24 — evidence-backed resolver scope return
 Recovery baseline: `310b9695fa03cec63bd06bb1b01e1697a5f5d984`
 Inspection HEAD: `f3cee46622c93881078af0614f088e2c460c7a59`
-Decision: 0062 — [Exclusive coverage reservation tooling](../../docs/decisions/0062-coverage-reservation-tooling.md) (proposed)
+Decision: 0064 — [Exclusive coverage reservation tooling](../../docs/decisions/0064-coverage-reservation-tooling.md) (proposed)
 
 ## Feature and rationale
 
@@ -35,7 +35,7 @@ Parent creation, default allocation, cleanup ownership, free-space checks,
 scanner, coverage arithmetic and all other #173 behavior remain preserved.
 No application, Cargo dependency, shim/checksum, Rust toolchain, recipe or
 policy edits are authorized. The one added host-tool prerequisite is explicitly
-proposed in 0062. Implementation may add its proposed-status index entry in
+proposed in 0064. Implementation may add its proposed-status index entry in
 `docs/decisions/README.md`; no accepted record is edited. Issue #175,
 derive-provenance analysis, generic accounting and other residuals remain
 outside scope.
@@ -48,7 +48,7 @@ Accepted [0020](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gat
 coverage, real compiler inventories and pinned proof ownership. This design
 restores exclusive reservation and adds evidence for those contracts. The
 Python prerequisite for explicit reservation and selftest is a tooling-contract
-change, so proposed 0062 records it rather than treating it as incidental.
+change, so proposed 0064 records it rather than treating it as incidental.
 Under [0045 §8](../../docs/decisions/0045-delivery-repairs.md), compatible work
 may land while proposed; no accepted ruling is contradicted or accepted here.
 A discovered supported-environment conflict requires an explicit scope return,
@@ -248,7 +248,7 @@ The current box resolves `/usr/bin/python3` 3.14.4 and successfully imports
 stdlib `os`, `sys` and `time` with `-I -S`; this is an availability observation,
 not proof for every supported runner. Existing publish-guard use of Python is
 supporting context, not proof of standalone coverage prerequisites. AC16 and
-0062 make missing/broken-tool refusal and environment verification explicit.
+0064 make missing/broken-tool refusal and environment verification explicit.
 
 **Reject simplicity's permanent no-clobber marker.** It avoids an interpreter
 but introduces a second reservation fact inside a tree passed to
@@ -457,7 +457,7 @@ accept a decision, or select the next phase.
 ## Design handoff
 
 This commit contains this spec, [plan.md](plan.md), [tasks.md](tasks.md) and
-[proposed 0062](../../docs/decisions/0062-coverage-reservation-tooling.md).
+[proposed 0064](../../docs/decisions/0064-coverage-reservation-tooling.md).
 The panel positions and result receipt remain ignored run-local evidence.
 All implementation tasks stay unchecked until executed and proved. Structural
 draft validation does not claim issue #174 is implemented or SHIP-COMPLETE.

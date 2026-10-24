@@ -2,7 +2,7 @@
 
 Updated: 2026-10-24 — attributed scope return from `f3cee46`, descending from
 recovery HEAD `310b969`. Implements [spec.md](spec.md) AC1–AC16 and
-[proposed 0062](../../docs/decisions/0062-coverage-reservation-tooling.md).
+[proposed 0064](../../docs/decisions/0064-coverage-reservation-tooling.md).
 This replaces the unresolved-causality plan; dated spec history remains.
 No implementation, gate or review completion is certified here.
 
@@ -18,7 +18,7 @@ status-only records and combined-log refusal matching. Both need repair.
 Choose inline Python 3 stdlib under `-I -S` for direct leaf creation. This box
 has `/usr/bin/python3` 3.14.4 with isolated stdlib imports; that does not certify
 every verifier/platform. Publish-guard's Python use does not establish a
-standalone coverage prerequisite. AC16/0062 explicitly add that prerequisite
+standalone coverage prerequisite. AC16/0064 explicitly add that prerequisite
 for explicit reservation and selftest. Default resolution stays independent.
 No Cargo dependency, Rust line, scanner command or compiled bootstrap helper.
 
@@ -48,14 +48,14 @@ Verify runs the pinned transitive proof chain and checks public shims.
 | Path | Role and permitted change |
 |---|---|
 | `specs/coverage-selftest/{spec,plan,tasks}.md` | Reconciled requirements, design and paired tasks |
-| `docs/decisions/0062-coverage-reservation-tooling.md` | Proposed checked Python prerequisite |
+| `docs/decisions/0064-coverage-reservation-tooling.md` | Proposed checked Python prerequisite |
 | `bundles/self/scripts/coverage-gate.sh` | Downstream explicit-leaf operation, directly supporting tool/error handling and comments; local selftest/controller |
 | `.forge/epic192/issue174-recovery-t1/attributed/` | Retained ignored evidence; never overwrite |
 | `.forge/`, `.brokkr/state/` | Ignored receipts, framing and positions; never stage |
 | `target/coverage/selftest.XXXXXX` | Existing unique disk-backed root for generated workers, channels and records |
 
 Chief commits exactly the three spec files and proposed decision. Later
-implementation may index 0062 in `docs/decisions/README.md` as proposed for
+implementation may index 0064 in `docs/decisions/README.md` as proposed for
 index integrity; this metadata-only exception permits no accepted-record edit.
 No separate permanent helper, shell executable, fixture crate or research file.
 Inline Python remains pinned. Parent/default allocation, cleanup, preflight,
@@ -95,7 +95,7 @@ preserved. #175 is excluded.
    Linux/macOS stdlib compatibility. No auto-install or silent fallback. Test
    representative umasks, relative/space/trailing paths, files/symlinks and
    parent/leaf failures. Adapt old mkdir fault injection to the live boundary
-   and witness it. Index 0062 as proposed, never accepted.
+   and witness it. Index 0064 as proposed, never accepted.
 3. **One finite two-worker controller.** Keep it inside selftest, shared by
    the race and controls. A local inline stdlib supervisor may launch generated
    Bash workers containing actual canonical function definitions. Private
@@ -194,7 +194,7 @@ failed/blocked/not-run checks stay outstanding. Chief reports only drafted.
 | Risk | Mitigation and accepted cost |
 |---|---|
 | Scope drifts from causal defect | Explicit-leaf operation/support plus selftest only; audit #173 regions and initial #174 diff. |
-| Python breaks standalone coverage | Proposed 0062, capability/completion checks, actual verifier proof and named failure controls; accept explicit prerequisite and startup cost. |
+| Python breaks standalone coverage | Proposed 0064, capability/completion checks, actual verifier proof and named failure controls; accept explicit prerequisite and startup cost. |
 | Probe masks operation/report failure | Validate exit plus complete protocol; no success metadata on partial output, retain created leaf on failure. |
 | Changed umask/path behavior | argv-only exact spelling, mode 0777 with inherited umask; path/mode and parent/leaf tests. |
 | New tool surface | Inline stdlib only, pinned source, no third-party packages/network/compiler bootstrap/fallback. |

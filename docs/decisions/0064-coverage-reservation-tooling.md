@@ -1,4 +1,4 @@
-# 0062 — Direct exclusive coverage reservation with checked tooling
+# 0064 — Direct exclusive coverage reservation with checked tooling
 
 - **Status:** proposed
 - **Date:** 2026-10-24
