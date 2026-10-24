@@ -2,169 +2,152 @@
 
 ## Technical context
 
-One Rust 2024 crate, existing Tokio networking/time support, real HTTP/SMTP
-integration servers, and a `Mutex<BTreeMap<String, u64>>` cumulative registry.
-No dependency, feature, migration or production API change. Linux and macOS
-are the refusal proof platforms. Start from inspected `db0b517`, not the
-pre-repair integrated `34eb99f` used to audit the retained implementation.
+One Rust 2024 crate with existing Tokio networking/time support, real HTTP/SMTP
+fixtures and a mutex-protected cumulative registry. No new dependencies,
+features, schemas or runtime API. Inspected HEAD is `ffca01b`; compare the
+three earlier draft commits against integrated rollup-a `c3d124d`.
+Linux is the local proof platform; macOS is CI-owned.
 
-No plan template is present under `.specify` or `bundles`; this plan provides
-the required technical context, constitution check, structure, research,
-data model, contracts, quickstart and risks directly. No additional document
-set or generic proof framework is needed.
+No plan template exists under `.specify` or `bundles` in this candidate.
+This plan supplies the required context, constitution check, structure,
+research, data model, contracts, quickstart and risks directly. No separate
+research or contract document set is needed for this bounded cleanup.
 
 ## Constitution check
 
-Preserve frozen 0001–0003 and ingest extraction (0005), real isolated protocol
-observations (0004/0010), independent webhook delivery (0041/0048), Host/Origin
-fixtures (0043) and one cumulative snapshot (0047 §2). Keep branch-stable
-assertions inline and measured under 0020; no exclusions, feature seams or
-coverage-floor changes. Follow pinned proof ownership under 0050, existing
-`engine` triage/protected review under 0057, and unsigned author commits under
-0056. No semantic amendment and no new decision record.
+Preserve 0001–0005, webhook delivery and final ledger (0041/0048), verbatim
+Host/Origin fixtures (0043), and the one-snapshot contract (0047 §2).
+Keep the existing branch-stable snapshot test inline and measured (0020).
+No exclusions, denominator reduction, feature seams, dependencies or allowlist
+changes. Use pinned proofs (0050), unsigned author commits (0056) and current
+candidate routing (0057). No semantic amendment or decision document.
 
 ## Project structure and files
 
-| File | Evidence-backed role |
+| File | Implementation role |
 |---|---|
-| `Dockerfile` | Preserve current AC52.2 comment and digest; compare bytes with `34eb99f`. |
-| `tests/common/mod.rs` | Preserve corrected helper prose and the removal of only `wait_for_metric`; no body/signature change. |
-| `tests/webhook.rs` | Preserve the held non-listening socket and bounded refusal probe in `refused_connection_never_blocks_the_smtp_path`. |
-| `src/api.rs` | Preserve the inline `cumulative_scrape_uses_one_registry_snapshot` assertion; production remains unchanged. |
-| `specs/residual-test-proofs/{spec,plan,tasks}.md` | Exactly the three artifacts revised and committed by the chief. |
+| `Dockerfile` | Inspect AC52.2 and byte equality with `c3d124d`; preserve it. |
+| `tests/common/mod.rs` | Preserve corrected prose and deleted wrapper; audit unchanged live helper behavior. |
+| `tests/binary.rs` | Repair only the refused-target setup/comment and ownership lifetime in `sigterm_with_a_delivery_in_flight_prints_the_final_counts`. |
+| `tests/webhook.rs` | Preserve the distinct held-port, pre-trigger-baseline and count proof. |
+| `src/api.rs` | Preserve inline `cumulative_scrape_uses_one_registry_snapshot`; production is unchanged except during a restored negative control. |
+| `specs/residual-test-proofs/{spec,plan,tasks}.md` | The chief's only three committed artifacts. |
 
-These implementation roles are not instructions to manufacture edits.
-Production `cumulative_rows`, `render_rows`, store, SMTP, dispatcher, validation,
-Cargo, gates and decisions are read-only context except the explicitly
-uncommitted, restored mutation proof in a later authorized implementation phase.
+Store, SMTP, dispatcher, rendering, validation, Cargo, decisions, gates and
+routing are context, not implementation targets. No new source files.
 
 ## Research and resolved choices
 
-Both current panel positions and intake agree that all five repairs appear
-present at `db0b517`. The inspected comparison with `34eb99f` changes only
-helper prose/deletion, the refusal fixture and inline snapshot test. Dockerfile
-has no diff. Exact reference search found only spec prose for the removed
-wrapper. These observations are not execution receipts.
+Packet checksum and candidate-local engine digest match. Both current panel
+positions and intake correctly identify the still-released binary port.
+The draft changed the separate webhook test instead. The wrapper deletion and
+source guard are already present. Reuse this design and replace contradictory
+active requirements while retaining the dated historical clarification.
 
-Reuse the owning design rather than create a competing slug. Preserve the
-simple implementations and demand robustness's discriminating evidence. The
-current panel has no substantive conflict; remove the prior design's stale
-attribution of tolerant normalization to the current simplicity position.
-Accept strict source-fixture maintenance and one held socket descriptor.
-Platform behavior and mutation discrimination remain empirical obligations.
+Choose a local socket over a shared reservation abstraction. Choose the small
+existing source fixture over runtime acquisition instrumentation. These choices
+accept a little duplicated fixture code and deliberate refactoring sensitivity;
+they still require actual refusal and mutation discrimination. The spec records
+the adopted/rejected alternatives and their costs.
 
-## Implementation and proof approach
+## Implementation approach
 
-1. Record candidate identity and clean starting state. Inspect the retained
-   diff against `34eb99f` and compare Dockerfile bytes. Repeat exact reference
-   search including relevant hidden sources; exclude `.git`, `target`,
-   `.brokkr` and `.forge`. Classify documentary hits separately. Preserve
-   existing helper documentation and live pollers. No deletion is needed at
-   the inspected baseline; never restore the dead wrapper merely to delete it.
-2. Confirm the existing refusal fixture uses `TcpSocket::new_v4()`,
-   `set_reuseaddr(false)`, `bind(127.0.0.1:0)` and `local_addr()`.
-   It neither listens nor connects the reservation socket. A separate
-   `TcpStream::connect` under `HELPER_DEADLINE` must produce
-   `ConnectionRefused`. Keep ownership through PUT, baseline, SMTP, first
-   count, exhaustion observation and final count. Explicit final `drop` makes
-   lifetime reviewable. Run the same test on Linux and macOS; no skip,
-   listener or retry fallback closes a failure.
-3. Confirm the existing source assertion normalizes CRLF, restricts source
-   to the prefix before `#[cfg(test)] mod tests`, and requires the full
-   `cumulative_rows` signature plus following `render_rows` boundary. It
-   compares the complete function with outer trim only. Preserve the exact
-   output assertion before the source assertion and this reviewed body:
-
-   ```rust
-   fn cumulative_rows(registry: &Registry, name: &str) -> String {
-       let units = registry
-           .lock()
-           .expect("a readiness registry mutex cannot poison");
-       render_rows(&units, name, "counter", units.values().sum())
-   }
-   ```
-
-   No token counter, parser, callback, new harness or runtime instrumentation.
-   Extraction cannot use its own embedded expected literal as production.
-4. Run the focused snapshot test green, confirming exactly one named test ran.
-   Save the exact original `src/api.rs` bytes in ignored run evidence before
-   temporarily replacing only production `cumulative_rows`. The mutant sums
-   under a scoped guard, releases it, takes another guard and renders with the
-   saved total. Leave the expected literal unchanged. Run the identical test:
-   it must compile and reach the source assertion failure after its exact
-   output assertion passes. Capture that diagnostic and exit status. Arrange
-   restoration even on proof failure; restore saved bytes, verify byte equality
-   and empty production diff, then rerun green. Do not stage mutants or accept
-   compilation failure as proof. Execute this only in the later phase authorized
-   to mutate implementation, not during chief synthesis.
-5. Run existing affected consumer suites against real fixtures. Record command,
-   candidate identity, platform, exit status and diagnostic in ignored run-local
-   evidence. Inspect scope again after proof restoration. If all criteria hold,
-   no additional implementation commit is required. If a criterion fails,
-   make only an evidence-backed repair within its named region; escalate before
-   introducing runtime changes, live caller migration, new seams/harnesses,
-   incompatible platform handling, dependencies or unrelated files.
-6. Run the complete house gate inventory with pinned ownership, then hand
-   evidence to independent verify/review. Do not infer a pass from compilation,
-   earlier inspection, unchecked tasks or an unavailable platform. Report a
-   blocked proof accurately; do not widen this patch to repair unrelated gates.
+1. Record HEAD, platform and status; inspect the draft diff from `c3d124d`.
+   Compare Dockerfile bytes. Search exact `wait_for_metric` references across
+   relevant source/imports, distinguishing documentation and excluded run/build
+   evidence. Confirm helper paragraph ownership and unchanged bytes/deadlines.
+   Do not recreate the wrapper or change already-correct implementation.
+2. In the named binary test replace the temporary listener with
+   `tokio::net::TcpSocket::new_v4()`, `set_reuseaddr(false)`, and binding to
+   `127.0.0.1:0` without listening. Save `local_addr()` as the refused target.
+   A separate `TcpStream::connect` under `common::HELPER_DEADLINE` must yield
+   `ErrorKind::ConnectionRefused`. Keep the reservation variable in the test
+   and explicitly drop it after all cause/redaction assertions. RAII releases
+   it on failure. Preserve the stalled sink, child lifecycle, zero baseline,
+   exact ledger and secrets checks. Add no retry, sleep, skip or fallback.
+3. Preserve the webhook fixture's existing held socket/probe and pre-trigger
+   baseline. Its final stored count and explicit drop remain. Run both named
+   tests on Linux. Their macOS execution belongs to CI when the PR opens.
+4. Review the `/metrics` call to `cumulative_rows` and its `render_rows`
+   callee. Preserve the snapshot test's output-first assertion and complete
+   function comparison with mandatory production-only anchors and CRLF/outer
+   trim only. Run exactly the named library test and confirm one test ran.
+5. During implementation, save the original `src/api.rs` bytes in ignored
+   evidence. Arrange restoration on failure before changing anything. Replace
+   only production `cumulative_rows` with a compiling scoped-lock total
+   calculation, guard release, second lock and render with saved total.
+   Leave the expected literal untouched. Run the identical named test: output
+   must pass, then the structural assertion must fail with its named message.
+   Capture exit and diagnostic; compilation errors or zero tests refuse proof.
+   Restore exact bytes even on failure, compare bytes, check no production
+   diff, and rerun green. Never stage the mutant. No implementation mutation
+   occurs in this chief design phase.
+6. Run affected real-server consumers and inspect final scope. Record receipts
+   (candidate, command, platform, exit, diagnostic) in ignored evidence. Any
+   newly necessary wider change returns for scope evaluation; it is not grounds
+   to introduce runtime instrumentation or repair unrelated gates here.
+7. Run every local house gate on the repaired candidate and hand the receipts
+   to independent verify/review. Preserve current candidate recipe routing and
+   hard security hold. Do not infer completion from inspection or old receipts.
 
 ## Data model and contracts
 
-No persistent data, schema, metric family or public contract changes. The
-reservation is one test-local socket whose lifetime is setup → probe → PUT →
-baseline → SMTP → first count → exhaustion observation → final count → drop.
-The deadline bounds failure; it is not a latency success assertion. One fresh
-server isolates the default inbox. Both stored counts remain exactly one and
-exhaustion is one new event over the pre-mail baseline.
+No stored data, schema or metric family changes. The binary test owns one
+reservation across setup → refusal probe → configuration → SMTP → stalled
+request/exhaustion observations → SIGTERM → EOF/reap → ledger/cause/redaction
+assertions → drop. Fresh-child metrics justify the existing zero baseline.
 
-The snapshot test owns its private registry. Exact output includes disjoint
-LF overflow, while the complete-body source assertion pins the reviewed
-single-guard implementation. It does not count arbitrary runtime acquisitions
-or prove uninspected callees. Queryability before observing exhaustion does
-not establish SMTP-versus-retry temporal ordering. Best-effort webhook loss,
-storage ordering and acceptance semantics remain as ruled.
+The webhook test separately owns setup → probe → PUT → baseline → SMTP →
+count one → new exhaustion → count one → drop. Observation order proves stored
+mail at those moments, not temporal ordering of SMTP receipt and background
+exhaustion. Delivery remains best-effort and independent of stored-mail truth.
+
+The snapshot test owns a private registry and verifies exact total/rows with
+LF overflow. Its source guard pins a reviewed small function, not arbitrary
+callee acquisitions or every possible endpoint change. Deadlines bound fixture
+failure; no latency success contract is added.
 
 ## Quickstart and verification
 
 ```bash
-cargo test --locked --lib api::tests::cumulative_scrape_uses_one_registry_snapshot -- --exact
-# Repeat with the compiling split-lock mutant, require source-assertion failure,
-# restore exact saved bytes, then repeat the same test green.
+cargo test --locked --test binary sigterm_with_a_delivery_in_flight_prints_the_final_counts -- --exact
 cargo test --locked --test webhook refused_connection_never_blocks_the_smtp_path -- --exact
-cargo test --locked --test api --test lifecycle --test binary --test webhook --test mcp
+cargo test --locked --lib api::tests::cumulative_scrape_uses_one_registry_snapshot -- --exact
+# Repeat the snapshot command for the compiling negative control and exact restoration.
+cargo test --locked --test api --test lifecycle --test binary --test webhook --test mcp --test smtp_edges
 ```
 
-Confirm each focused command executes its named test, not zero filtered tests.
-Execute refusal on both Linux and macOS. Existing API tests cover Host/Origin;
-lifecycle and binary cover helper deadlines/HTTP reliability; webhook and MCP
-cover counter/labeled-row consumers. No new tests are needed for moved prose
-or an unused-wrapper deletion.
+Confirm focused commands run one named test. The consumer suites exercise raw
+Host/Origin inputs, deadlines, counter baselines and labeled gauge observations.
+No new test is needed for moved prose or an unused function's deletion.
 
-Then execute [the sole house gate inventory](../../docs/house-rules.md#gates--part-of-every-change)
-in full, with the candidate-local digest-matched `.forge/bin/brokkr` and pinned
-proof scripts/checked shims as required. Include exact coverage and selftest,
-publish/seal proofs and fail-closed native-tls absence; unrelated Cargo failure
-is not evidence of absence. CI-only chart/history/selftest, Docker smoke,
-RustSec, tag release-rate and real port-80 evidence remain distinct per the
-house rules. Record unavailable proofs as outstanding, never local passes.
+Execute [the sole house gate inventory](../../docs/house-rules.md#gates--part-of-every-change)
+in full. Use `.forge/bin/brokkr compile --bundle bundles/self` after checking
+its SHA-256 against the spec and tooling manifest. Verify pinned shim ownership;
+independent verify runs the pinned copies. Coverage must exit successfully with
+zero missed lines, branches and functions and pass its selftest. Publish-guard,
+seal-branch and licenses are mandatory. For native-tls, successful `cargo tree
+-i native-tls` means refusal; an error passes only when it explicitly reports
+no matching package. Other errors cannot prove absence.
 
-Chief validation is limited to artifact/link/diff checks and the committed
-structure check; implementation mutation and delivery gates remain later work.
-Keep the chief design commit last and write the ignored result through workspace
-hands. The sequence's final pinned check owns advancement.
+CI owns macOS, chart history/selftest, Docker smoke, RustSec, tag release-rate
+and real port-80 proof as specified by the house inventory. These are CI-owned,
+not pending local tasks or claimed passes. Design-phase gate receipts concern
+the unrepaired candidate and never replace final implementation/verify runs.
+The chief checks links, scoped diff and committed structure and leaves its
+design commit last; the sequence's final check owns advancement.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 |---|---|
-| Existing code is mistaken for completed acceptance. | Keep tasks unchecked until actual receipts; permit zero extra edits but require all proofs. |
-| Listener or early release changes the failure mode. | Bound non-listening socket, reuse disabled, bounded real refusal, explicit final drop; one held descriptor. |
-| Linux results are presented as macOS proof. | Execute both; missing platform evidence stays outstanding, no fallback or skip. |
-| Idle output hides separate snapshots. | Require compiling split-lock failure at the source assertion and restored green. |
-| Extraction finds its expected fixture or silently loses anchors. | Production prefix, mandatory full signature/next declaration, complete-body comparison. |
-| Benign formatting/refactoring fails the guard. | Accept maintenance cost; review literal updates and rerun discrimination. No claim of general runtime lock counting. |
-| Inline changes evade or break coverage. | Keep straight-line assertions measured; full exact gate/selftest, no exclusion or gratuitous harness move. |
-| Helper cleanup changes security or event observations. | Preserve request bytes, deadlines, pre-trigger baselines and labeled pollers; execute real consumers. |
-| Temporary mutant leaks into delivery. | Save/restore exact bytes even on failure, verify byte equality and scope before staging or gates. |
-| Unrelated failures provoke scope growth. | Record evidence and return for scope escalation; no runtime, TLS, dependency or gate repair under this design. |
+| A separate webhook fix is mistaken for binary acceptance. | AC4 names the actual binary test and requires its continuous ownership. |
+| A listener or early release changes the failure mode. | Bound non-listening socket, reuse disabled, exact bounded refusal, explicit final drop. |
+| Platform assumptions are reported as measured facts. | Linux local execution; macOS CI ownership, no skip/fallback or fabricated pass. |
+| Idle output hides split locks. | Compiling split-lock negative control must fail the structural assertion after output passes. |
+| Source extraction finds its own expected literal. | Exclude the test suffix and require full production signature/next-declaration anchors. |
+| Benign refactoring fails the literal. | Accept maintenance burden; review and re-prove intentional updates. |
+| Mutant survives a failed proof. | Save exact bytes, install cleanup before mutation, verify restoration and rerun green. |
+| Helper cleanup alters boundary fixtures. | Preserve bytes, signatures, deadlines, baselines and live pollers; run real consumers. |
+| Coverage or a timed-out gate is misreported. | Require zero missed counts plus successful gate exit and selftest; preserve measured placement. |
+| Old draft claims substitute for current evidence. | Keep provenance labeled historical; use current receipts and unchecked implementation tasks. |
