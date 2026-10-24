@@ -1,20 +1,26 @@
-# Reject unsupported native query keys
+# Repair strict native query documentation and proof
 
-- **Created:** 2026-10-24
-- **Status:** Draft for implementation
-- **Scope:** Epic #192, issue #197; Swarmail only.
-- **Triage:** ENGINE, already ruled by TRIAGE-ENGINE. Admission and destructive behavior retain the full design/review lane; patch size does not downgrade the classification.
-- **Evidence:** intake in `.brokkr/state/tasks/epic-192-issue-197-reject-unknow-e287e0df.md` and both run-local `design/positions/simplicity.md` and `robustness.md`. Those ignored files are evidence, not required dependencies of this specification.
-
-Decision: 0062 — [proposed closed query admission](../../docs/decisions/0062-strict-native-queries.md).
+- **Created:** 2026-10-24; continuation synthesis 2026-10-24.
+- **Status:** Draft for bounded continuation implementation; final verification/review outstanding.
+- **Scope:** Epic #192, issue #197; feature slug `strict-native-queries` retained.
+- **Triage:** ENGINE. Destructive admission remains high-risk despite the small repair.
+- **Baseline:** `9af6b2856298818a20d169d158e87897f4c77539`, including current main, accepted 0058 and previous #197 design/implementation commits.
 
 ## Feature and rationale
 
-A client sending `DELETE /api/v1/delete-all?inbox=a` currently wipes every inbox. An unsupported subject selector on inbox clear, or a selector on configuration DELETE, is silently discarded. Success conceals the mismatch between the client's apparent intent and the operation performed.
+The ten native operations below already reject unsupported queries before domain effects. This continuation repairs two confirmed low residuals: the list GET's OpenAPI 400 description still claims universal native strictness, and one deterministic global wipe test accepts any positive removal count instead of exactly two. Correct the published account and strengthen its proof without changing HTTP behavior.
 
-Close the empty query shapes of the ten operations below. Unsupported selectors and typos receive a named native JSON 400 before domain reads or effects. Valid requests keep their behavior. This extends accepted [0044 §3](../../docs/decisions/0044-compat-validation.md) and [0048 §§4–5](../../docs/decisions/0048-rest-webhook-validation.md); it creates no filtering capability.
+Accepted [0048 §5](../../docs/decisions/0048-rest-webhook-validation.md) requires method-specific documentation; accepted [0010](../../docs/decisions/0010-exact-count-asserts-and-the-shared-seed.md) supports exact isolated assertions. The original public-contract extension is recorded in existing [0062](../../docs/decisions/0062-strict-native-queries.md), still **proposed**, untouched and unaccepted. This continuation introduces no semantic change and declares no new decision. Under accepted [0045 §8](../../docs/decisions/0045-delivery-repairs.md), compatible work can proceed without treating a proposal as accepted. Stop for the operator only if a concrete fix requires changing an accepted semantic contract; never weaken a frozen guarantee.
 
-This changes a public contract, so 0062 is explicitly proposed despite preserving accepted rulings. Operator acceptance is separate. Compatible implementation may proceed under [house rules](../../docs/house-rules.md); any discovered contradiction requires resolution before the contradictory implementation.
+The existing admission feature prevents a selector typo from silently widening destructive scope: `DELETE /api/v1/delete-all?inbox=a` must refuse, not wipe every inbox. Preserve that behavior and all original AC1–AC10 below. The migration section describes the original feature, not a new compatibility change in this continuation.
+
+## Evidence and issue reconciliation — 2026-10-24
+
+Verified all seven root-relative entries in `.forge/epic192/issue197/recovered-review-evidence/SHA256SUMS`, then read README, issue-197.json, exact old-run-ledger.md and all four original reports before synthesis. An initial invocation from inside the packet directory failed path resolution; the corrected repository-root check passed all entries without modifying evidence. Read both `.brokkr/state/design/positions/{simplicity,robustness}.md` and the current/previous intake framings. Run-local evidence stays ignored; this spec carries the necessary facts independently.
+
+Old run `epic-192-issue-197-reject-unknow-e287e0df` shipped `d1c6a738e98fc9548a08a877f42020ac8a1f8319` (design `0cbcb23`) under a pre-0058 panel. Correctness/security were clean; tests/guarantees retained maximum low residual, `has_security_residual=false`, `fixes_applied=false`, `spec_defect=false`. The ledger's gate/shipment receipts concern that old tree. Current implementation commit IDs differ; no historical receipt certifies this candidate.
+
+The earlier evidence-limited intake stopped for unavailable journal/issue evidence. The recovered packet resolves that gap without fabricating a journal or resetting returns. Its issue body confirms all four issue criteria: ten empty-query methods (AC1–2/6–7), destructive-selector named refusals with unchanged data (AC3–4), configuration refusals with unchanged settings (AC5), and method-specific README/llms/OpenAPI kept in step by tests (AC9/11). AC8 and AC10 preserve the wider accepted validation/proof boundary.
 
 ## Exact method scope
 
@@ -33,7 +39,7 @@ Every row accepts **zero query keys**. Its diagnostic label is the literal metho
 | DELETE | `/api/v1/webhooks` | `api::clear_webhooks` |
 | POST | `/api/v1/inboxes/{inbox}/seed` | `api::seed_inbox` |
 
-The intake derived this matrix from handlers; no fuller issue-body route list was supplied or fetched. This matrix is the design's explicit bounded scope.
+The recovered issue #197 body explicitly names these ten operations. This existing matrix satisfies its bounded empty-query scope; the title does not authorize closing excluded writers. The handlers already implement this matrix on the continuation baseline.
 
 No query and a literal empty query preserve behavior. Any key produced by the existing form-query decoder is unsupported, including bare, empty-valued, encoded, repeated and empty keys such as `=value`. Retain the existing parser's handling of malformed escapes and separator-only input; introduce no new URI grammar or blacklist.
 
@@ -63,30 +69,44 @@ Chaos/webhook PUT, selective DELETE, other compat aliases, MCP, health, metrics,
 
 Keep synchronous accept/store, subscribe-before-check, oldest-only pruning, ingest extraction, ordered commit/refusal/shutdown, emptied-inbox semantics, raw bytes, off-worker rendering, webhook redaction and best-effort delivery unchanged. No store/persistence/SMTP/extraction redesign, dependencies, license changes, validation subsystem, new filters, confirmation/force/dry-run switches, cache or global resource budget.
 
-## Panel synthesis and rulings
+## Continuation panel synthesis and rulings — 2026-10-24
 
-| Position or conflict | Ruling and cost |
+Both current positions agree on the two low repairs, unchanged runtime behavior, retained info findings and full high-risk review. Their different proof emphasis is resolved as follows.
+
+| Position or tension | Chief ruling and cost |
 |---|---|
-| Both propose ten local calls to the existing parser. | Adopt. Keep one empty shape and parser; accept repetition so admission order remains visible. Reject middleware, custom extractors, registries and per-route empty structs. Excluded methods retain tolerance. |
-| Simplicity limits new decoder semantics; robustness requests encoded/repeated/bare/empty-key probes. | Adopt the probes against existing serde behavior, including empty-key refusal; reject a new decoder policy. Cost: a small test matrix, without a new malformed-encoding grammar. |
-| Simplicity favors minimal fixtures; robustness asks for exact records, hidden configuration, persistence and failure-path evidence. | Robustness wins on proof strength. Require exact snapshots and one existing rejecting-commit/restart fixture. Counts or redacted GET equality cannot prove non-mutation. Cost: additional test setup and execution. |
-| Hidden webhook proof through delivery versus an existing owned handle. | Choose simplicity's `srv.webhooks.current()` comparison of every stored target field after real HTTP refusal. Source confirms the handle and public fields. Reject new receiver/TLS/auth machinery here; cost: no new end-to-end credential delivery proof, which existing delivery tests retain. |
-| Earliest query rejection versus seed body-error preservation. | Keep body precedence, as both ultimately recommend. Reject query-first middleware; accept bounded body extraction. Robustness's broad “before work” promise applies to domain work. |
-| Robustness's failure analysis versus widening the repair. | Carry residuals into plan risks; retain existing burst/lifecycle/protocol/webhook proofs. Add a deterministic chaos behavioral check because it directly proves retained active rules. No unrelated subsystem work. |
-| Compatible extension might be treated as needing no decision. | Draft 0062 because a public contract changes. Neither panel nor chief accepts it; no accepted decision is rewritten. |
+| Simplicity: repair only OpenAPI and the existing API tests; robustness: preserve the entire destructive-admission proof. | Adopt both. The implementation diff stays in two files, while existing exact-state, configuration, persistence and precedence suites must run. Reject counts-only or status-only substitutes. Cost: full proof/review time despite a small diff. |
+| Simplicity: a local prose pin; robustness: also pin the actual six GET query parameters and retained inbox path parameter. | Robustness wins this narrow proof choice. Extend the same served-doc test with independent expected names plus positive method-specific prose and negative stale-claim checks. Reject a prose-only assertion. Cost: a few additional coupled assertions to update if a future approved contract changes. |
+| Stronger proof versus more machinery. | Simplicity wins the implementation boundary: no registry, generic prose checker, new server, parser abstraction, receiver/TLS fixture or introspection seam. Preserve complete existing owned configuration snapshots. Cost: no new end-to-end credential-delivery or general natural-language proof. |
+| Exact destructive count versus tolerance. | Adopt both positions' literal numeric two. The isolated fixture leaves precisely two matrix-control seeds; clear-target and matrix are already empty. Reject response-derived expectations or merely positive counts. Cost: intentional maintenance when the fixture changes. |
+| Three info observations versus opportunistic cleanup. | Retain all three unchanged and disclosed. Reject helper/envelope refactoring in this repair. Cost: known non-blocking test weaknesses remain; existing seed sentinel and other preservation checks remain required. |
+| Reuse artifacts versus duplicate feature design. | Adopt simplicity's reuse of this directory. Replace obsolete future-tense implementation instructions and preserve dated historical receipts. Cost: readers must distinguish old proof from candidate-bound continuation proof. |
+| Proposed 0062 versus operator stop. | Adopt both: accepted 0045 §8 permits these compatible corrections. No new semantic behavior is designed, so no new ADR, amendment or acceptance is warranted. A concrete semantic conflict requires operator resolution; frozen weakening remains refused. |
+| Robustness failure scenarios versus subsystem expansion. | Retain the limitations in plan risks and the existing suites. Reject new durability, resource or concurrency mechanisms. Cost: best-effort webhook delivery, retention limits and existing availability residuals remain. |
 
 ## Acceptance Criteria
 
 1. **AC1 — Ten named refusals.** Real HTTP tests cover every matrix row with a meaningful unsupported selector and typo, using nonempty and empty values. Each returns 400, JSON `error`, its exact method/route label and decoded key, excluding a distinctive supplied value. GET/raw refusals return error JSON instead of normal payloads.
 2. **AC2 — Decoder and valid controls.** Real HTTP probes cover `%69nbox`, a bare key, repeated unknown keys and `=value`; each refuses through the existing parser. Do not prescribe a winning repeated occurrence. Every row has no-query and empty-query controls preserving status/shape. Raw success remains byte-identical.
 3. **AC3 — Exact mail preservation.** Seed distinct messages in two inboxes; snapshot IDs, complete records and raw bytes. After each refused inbox/global/individual DELETE both snapshots remain identical. Valid controls then remove precisely the intended scope and preserve removal/deleted responses and missing-ID 404.
-4. **AC4 — No commit on refusal.** Extend the real SQLite rejecting-delete-trigger fixture for delete-all: bad query gets named 400, valid control gets fixed 503, and exact original records/IDs survive stop/reopen. No store/persistence implementation change.
+4. **AC4 — No commit on refusal.** Retain and execute the existing real SQLite rejecting-delete-trigger fixture for delete-all: bad query gets named 400, valid control gets fixed 503, and exact original records/IDs survive stop/reopen. No store/persistence implementation change.
 5. **AC5 — Complete configuration preservation.** Install nonempty complete chaos with probabilities 0/100 and multiple webhook targets carrying secret, URL userinfo, inbox filter and valid CA material. Refused DELETEs preserve every field. Compare complete webhook snapshots via the existing server handle; separately retain redacted GET checks. A retained DATA rule at 100 causes real SMTP refusal and no insertion; valid clear restores normal delivery. Valid webhook clear retains its response and empties targets.
 6. **AC6 — Seed has no effects.** Valid body plus unknown query, against existing and absent inboxes, preserves exact records, creates no inbox and moves no insertion/pruning counters. Valid no-query/empty-query seed follows ingest and is immediately queryable with extracted fields. Observe isolated per-instance counters, not process-global totals.
 7. **AC7 — Defined precedence.** Pin unknown-query/missing-ID for message GET/raw/DELETE; blank/control inbox admission for clear; Origin/Host guards before query; seed bad-query combinations with syntax, media, size, data-shape and deserializable domain/envelope defects. Preserve the order and envelopes stated above.
 8. **AC8 — Existing validation preserved.** Existing strict-query, invalid-value, caps, inbox, inert assert-limit, strict latest, tolerant compat list/search, selective-delete body and shutdown/commit refusal suites remain green. No method-sharing expansion or filters.
 9. **AC9 — Accurate published contracts.** README, served llms.txt and OpenAPI name all ten empty query sets, named 400s, empty-value refusal, unchanged absent/empty query behavior, unsupported destructive selectors and seed precedence. Preserve compat exceptions and existing nonempty closed sets. Each OpenAPI operation retains path parameters/responses, declares no query parameters, describes refusal explicitly and includes 400. Method-aware served-contract tests cover all rows; README/llms pins cover the boundary.
-10. **AC10 — Complete implementation proof.** Record an initial failing destructive-selector wire regression and repaired green result. Satisfy every [house-rules gate](../../docs/house-rules.md#gates--part-of-every-change), exact missed == 0 coverage, fail-closed native-tls absence and pinned verifier obligations. Separate local from CI-owned receipts. No exclusions, denominator reduction, dependency widening or push; artifact validation is not implementation proof.
+10. **AC10 — Complete implementation proof.** Preserve the historical destructive-selector red/green account with its original candidate binding; do not present it as a newly executed receipt. Record fresh red/green proof for the continuation repairs in AC11–AC12. Satisfy every [house-rules gate](../../docs/house-rules.md#gates--part-of-every-change), exact missed == 0 coverage, fail-closed native-tls absence and pinned verifier obligations. Separate local from CI-owned receipts. No exclusions, denominator reduction, dependency widening or push; artifact validation is not implementation proof.
+
+11. **AC11 — Repair the escaped OpenAPI claim.** The served list GET's 400 description names `GET /api/v1/inboxes/{inbox}/messages` and only `to`, `from`, `subject`, `since_ms`, `limit`, `offset`; it retains blank-inbox, over-cap, malformed-value and named unknown-key refusal. Remove the universal native-query claim. The existing served-doc regression positively pins the scoped statement, independently compares the exact six query parameter names and retained required `inbox` path parameter, and rejects the old universal sentence. It fails on the old prose and passes on the correction. Existing schemas, bounds, response shapes, ten-method pins and README/served-llms checks remain.
+12. **AC12 — Exact destructive success control.** `query_free_native_operations_refuse_by_name` asserts numeric `removed == 2` for its first successful global wipe. A partial result of one (or zero) cannot pass. The following literal-empty-query wipe still asserts exactly one. Retain a controlled temporary mutation failure receipt and a restored green run; no mutation remains in the delivered tree.
+13. **AC13 — Honest scope and provenance.** Only `src/static/openapi.json` and `tests/api.rs` require implementation edits. No runtime, dependency, gate, recipe or decision changes. The old correctness/security reports remain clean historical reports; tests/guarantees remain historical low residuals with no security residual, no fixes applied and no spec defect. Retain the three info findings below. Fresh fix/review facts must identify their own tree. Decision 0062 remains byte-for-byte unchanged and proposed.
+14. **AC14 — Fresh high-risk review.** After all mandatory gates on the repaired tree, obtain five separate accepted-0058 results: Astra correctness, official DeepSeek Flash security via `deepseek-official`, Sonnet 5.5 tests, Astra guarantees, independent Fable 5.1. Astra offices are separate invocations. No DeepSeek Pro, fallback or author substitution. Bind review to the verified candidate; changes require renewed affected proof and binding. Unknown/malformed facts cannot become clean; worst verdict and hard security hold remain binding. No push, merge, tag, publication, issue closure or decision acceptance.
+
+## Historical findings retained
+
+The original issue's destructive-query finding was **medium**, its documentation finding **low**. The old run's remaining two findings were **low**: universal OpenAPI wording and `removed > 0`. Repairing those now does not rewrite their historic severity or attribute a fix to the old reviewers.
+
+The original test report's three **info** findings remain: `assert_eq!(query_value, "")` compares a loop constant; `assert_named_query_refusal_with_body` lacks its sibling's general supplied-value non-echo assertion (separate seed sentinel coverage exists); malformed seed syntax precedence is pinned negatively without a positive syntax-envelope assertion. Retention is deliberate, not an inference that they were fixed. No old report identified a spec defect or applied fixes.
 
 ## Migration
 
