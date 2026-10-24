@@ -1,10 +1,16 @@
 # Pin SMTP and POP3 session edges
 
-Date: 2026-10-23. Status: retry2 draft design for NEXT-188, issue #188, epic #192.
-Base: `cc30ea2`, the review-clean #177 integration candidate. Repository:
-Swarmail, one Rust crate. Reuse the implementation already committed at
-`e7d1d8142c3e24b2a817822969ab0dae6619680a`, following design `150c84a`.
-This design does not close epic #192.
+Date: 2026-10-24. Status: residual draft design for NEXT-188, issue #188,
+epic #192. Feature slug: `session-edge-proofs` (retain the existing family).
+Residual input candidate: `11134f1`; actual reviewed Swarmail base: `45d68df`;
+accepted engine-pin commit: `238372d`. Each execution must resolve its own
+current HEAD/tree after subsequent documentation commits.
+
+Historical ancestry only: `cc30ea2` was the review-clean #177 integration
+candidate for the earlier design `150c84a` and implementation
+`e7d1d8142c3e24b2a817822969ab0dae6619680a`. These identifiers explain
+inherited work; they are not the current reviewed base or execution binding.
+Swarmail remains one Rust crate. This design does not close epic #192.
 
 ## Feature and rationale
 
@@ -16,17 +22,32 @@ has a same-session continuation and an observable state witness. Accepted
 mail is queried by the exact ID returned by DATA, immediately and without
 polling, so the tests cannot conceal an acceptance-before-storage gap.
 
-Triage selected full design and four reviewers because session state,
-authentication precedence, persistence refusal and listener observation need
-contract interpretation. Test-only scope does not reduce that review burden.
-No production defect has been reproduced by this design phase.
+The 2026-10-24 residual corrects the review record: the quickstart borrowed a
+sibling executable and superseded digest, ancestry was not labeled historical,
+and a tracked source description could be mistaken for a committed build
+receipt. Correct these bindings together so isolated execution proves its
+actual candidate and engine. See [tracked provenance](plan.md#engine-provenance).
+
+Triage classified this residual as `engine` because executable gate guidance
+and delivery provenance are affected. Under accepted 0057, four independent
+reviews remain the smallest permitted route despite the small Markdown diff.
 
 ## Scope and accepted authority
 
-Implementation is confined to tests and test-only fixtures. Preserve #177's
-owned admission, reap, backoff and task-completion events. No production
-behavior, public interface, storage schema, dependency, policy, gate,
-OpenAPI, metrics, MCP or unrelated product-documentation change is authorized.
+This residual edits only `spec.md`, `plan.md` and `tasks.md` in this directory.
+Keep AC1–AC6 and their existing witnesses unchanged. The inherited test-only
+implementation is a preservation reference, not authorization for fixture
+repair in this residual. Preserve #177's owned admission, reap, backoff and
+task-completion events. No source, test, public interface, schema, dependency,
+engine pin, tooling patch, policy, gate, provider mapping, accepted decision
+or unrelated documentation change is authorized. No rebuild, receipt copying
+or new provenance machinery is required.
+
+Delivery authorities are accepted
+[0045](../../docs/decisions/0045-delivery-repairs.md),
+[0050](../../docs/decisions/0050-delivery-gates.md),
+[0056](../../docs/decisions/0056-signing-policy.md) and
+[0057](../../docs/decisions/0057-codex-delivery-recipes.md).
 
 This is additional proof of accepted semantics, not a semantic amendment;
 no new decision is declared. Authorities are accepted
@@ -52,40 +73,41 @@ authority. A weakening of a frozen guarantee is refused.
 
 ## Panel synthesis and rulings
 
-Read both current run-local positions, `.brokkr/state/design/positions/simplicity.md`
-and `robustness.md`, and intake
-`.brokkr/state/tasks/epic-192-residual-lane-next-188--0658a130.md`.
-The current panel agrees on all six protocol expectations and on retaining
-full4. There is no genuine semantic conflict to average or invent. Replace
-the prior design's attributed API-adapter and serialized-JSON disagreements:
-neither current position advocates them. Rule on the alternatives explicitly:
+The chief read both `.brokkr/state/design/positions/simplicity.md` and
+`.brokkr/state/design/positions/robustness.md`, and intake
+`.brokkr/state/tasks/epic-192-issue-188-residual-foll-84aa1533.md`.
+Both positions support the same bounded correction; there is no genuine
+conflict between them to average. The following rulings choose explicitly
+among their supported and rejected alternatives.
 
 | Question | Ruling and cost |
 |---|---|
-| Reimplement or reuse | Adopt simplicity's reuse of the existing candidate and spec family, supported by robustness. Reject duplicate tests, new source files and a second design family. Cost: independently audit inherited implementation and obtain fresh receipts rather than treating prior work as verified. |
-| Proof depth | Adopt robustness's same-session state transitions and immediate accepted-ID/raw/provenance witnesses, also supported by simplicity. Reject prefix-only, count-only and reconnect substitutes. Cost: longer exchanges and distinct fixtures; the cheaper alternative could conceal envelope loss or changed identity. |
-| Health ownership and JSON | Adopt both positions' POP3-local probe, one owner-observed failure and held retry readiness, with exact parsed JSON equality. Reject a new API-side adapter, manually toggled flag, polling and JSON member-order contract. Cost: local HTTP wiring and no detection of harmless object-key reorderings. |
-| Harness placement | Keep the existing stable health proof inline and measured, as both positions advise: its unconditional Drop release/abort and explicit success joins need no cold-arm migration. If a concrete failure-only arm becomes necessary, 0020 wins over a strict four-file budget; move only that proof/helper into a declared sibling harness. Cost: every inline line remains an exact-coverage obligation; a justified migration requires explicit review. |
-| Fixture architecture | Adopt simplicity's bounded raw reader, local SMTP assertion helpers, two explicit 451 scenarios and real SQLite triggers. Reject a general state enum, scenario framework, public seam or feature flag. Cost: small readable duplication and schema-coupled fixtures. |
-| Robustness boundary | Adopt robustness's failure analysis as explicit limits, not new crash/webhook/TLS/burst implementation. Reject widening this lane without a reproduced regression and re-triage. Cost: these finite traces do not establish arbitrary scheduling, exactly-once SMTP, durable webhook delivery or exhaustive transport behavior. |
-| Review and provenance | Adopt both positions' full four independent reviews and source-bound pinned verification. Reject reduced review based on test-only size and reject version-only engine identity. Cost: provider/cache/tool prerequisites can stop delivery. |
+| Artifact scope | Adopt simplicity's correction of the existing three-document family, supported by robustness. Reject a second spec family, standalone provenance file or new validator. Cost: history and current instructions coexist and need explicit labels. |
+| Binding depth | Adopt robustness's joint correction of candidate identity, executable identity and evidence provenance, also supported by simplicity. Reject a pathname/hash-only patch. Cost: each execution repeats identity checks; the cheaper alternative leaves misleading ancestry and receipt claims. |
+| Provenance ownership | Adopt one plan section with tooling.json owning patch order/checksums; name the three patches for navigation as robustness recommends. Reject a second manifest and new rebuild/attestation machinery. Cost: the recorded source composite is not independently reproduced here, and the ignored receipt is not durable tracked evidence. |
+| Historical record | Adopt both positions' explicit historical/superseded labels and preserve the dated retry2 observation. Reject global SHA replacement or deletion of history. Cost: some repetition remains, but old observations cannot masquerade as current receipts. |
+| Runtime and tests | Adopt both positions' preservation of all six criteria and witnesses. Robustness's crash, webhook, pruning, load, chaos, hostile-byte and certificate analysis sets limits, not new implementation. Reject duplicate tests, fixture repair and broader hardening in this residual. Cost: finite existing traces retain their original coverage limits. |
+| Review and gates | Retain the recorded engine route and four configured independent lenses. Reject a one-reviewer shortcut, author self-review, provider fallback and old receipts as fresh proof. Cost: full gates and provider prerequisites exceed the effort of the text correction, as accepted 0057 requires. |
 
-### Clarification — 2026-10-23, retry2
+### Clarification — 2026-10-23, retry2 (historical)
 
+This dated observation describes the earlier retry2 candidate only.
 The source already contains all six implementations. The chief independently
 resolved workspace Git HEAD to the exact source SHA above, found a clean
 starting worktree, and inspected its four-file diff (405 additions, 30
 deletions); `src/pop3.rs` additions are inside its existing cfg(test) module.
-The source's parent is `150c84a`, whose parent is `cc30ea2`. The earlier
+That historical source's parent is `150c84a`, whose parent is `cc30ea2`. The earlier
 panel/intake alternate-object visibility failure remains historical evidence;
 it did not recur in this chief workspace and is not a current observed block.
 Every later verification environment must still resolve and bind its own
 candidate; this observation is not a hermetic verification receipt.
 
-The chief also checked the tracked `recipes -> bundles` symlink (mode
+The retry2 chief also checked the tracked `recipes -> bundles` symlink (mode
 120000), and the candidate `.forge/bin/brokkr` digest
 `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`
-against tooling.json; it reports 0.12.0. No prior completed gate or four-review
+against the then-current tooling.json; it reported 0.12.0. This historical
+preflight and e525 digest are superseded by pin commit `238372d` and the
+active ab935558 digest in the plan; they prove nothing about this residual. No prior completed gate or four-review
 receipt was found in the available run-local evidence. Tasks below therefore
 require retention, validation and fresh delivery proof, not duplicate coding.
 Design preflights do not substitute for the pinned verify/check seats.
@@ -179,6 +201,32 @@ retain existing persistence witnesses. Follow every new TOP refusal with
 NOOP's exact `+OK` on the same stream to expose leaked headers/body/dot
 terminators. Preserve the existing external-clear TOP proof. Out-of-range
 numbers and pending DELE marks cannot substitute for a committed-gone slot.
+
+## Residual record acceptance
+
+These additional record checks preserve, rather than replace, AC1–AC6:
+
+- R1: The active quickstart runs from the candidate root, hashes its own
+  `.forge/bin/brokkr` against unchanged tooling.json and the full active
+  `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`,
+  resolves that executable absolutely for boxed checks, and compiles with it.
+  No active sibling path, PATH fallback or e525 instruction remains.
+- R2: Spec and tasks identify `45d68df` as reviewed base and `238372d` as
+  pin commit, with `11134f1` as residual input, and label cc30ea2, 150c84a
+  and e7d1d81 ancestry historical. Every retained e525 reference is historical
+  and superseded. Current execution binds its own HEAD/tree and ancestry.
+- R3: The tracked plan names the engine base, ordered patches, recorded source
+  composite, compiler and binary digest consistently with tooling.json. It
+  states that `.forge/epic192/engine-main-entry/build-receipt.json` is
+  gitignored run-local evidence, not tracked or committed, and attributes
+  historical build claims without asserting a fresh rebuild or receipt inspection.
+- R4: Diff review against `11134f1` finds only these three documents changed,
+  with AC1–AC6 and T2–T7 witnesses semantically intact and every protected
+  implementation, pin, gate, policy and accepted ruling unchanged.
+- R5: Targeted suites, all house gates and protected independent reviews are
+  recorded against the actual execution candidate before delivery. Missing
+  evidence stays outstanding; inspection, hashing or compile success alone
+  cannot satisfy verification or review.
 
 ## Proof discipline and delivery boundary
 

@@ -2,14 +2,15 @@
 
 Implements [spec.md](spec.md); ordered proof obligations are in [tasks.md](tasks.md).
 
-## Retry2 execution posture
+## Residual execution posture
 
-Retain source `e7d1d8142c3e24b2a817822969ab0dae6619680a`; it already
-implements AC1–AC6. No duplicate implementation is planned. This chief
-commit revises only spec.md, plan.md and tasks.md in this directory.
-Implementation work now means auditing the existing tests, running them and
-retaining them unless a demonstrated fixture defect needs a narrow test-only
-repair. A runtime regression returns to triage/full panel before repair.
+Correct only the existing three-document family on input candidate `11134f1`.
+The actual reviewed Swarmail base is `45d68df`, followed by accepted engine-pin
+commit `238372d`; bind each later execution to its own current HEAD/tree.
+Historical implementation `e7d1d8142c3e24b2a817822969ab0dae6619680a`
+following design `150c84a` and base `cc30ea2` explains inherited AC1–AC6.
+It is not the current candidate binding. No new implementation or fixture
+repair is authorized here; retain failures and return to triage before repair.
 
 ## Technical context
 
@@ -36,10 +37,10 @@ subscribe-before-check, oldest-only pruning, ingest extraction and
 writer contract; never open a second cooperating server on a database alias.
 Keep #177's actual timer, owner-local observation and task-completion fixes.
 
-Use 0020 placement: public wire tests in `tests/`, branch-stable positive
+Preserve 0020 placement: public wire tests in `tests/`, branch-stable positive
 library assertions inline and measured. Only a concrete failure-only arm
-warrants the narrow declared `src/pop3/health_tests.rs` alternative. Record
-that arm and move only the test/helper needing it; no broad module migration.
+would warrant the narrow declared `src/pop3/health_tests.rs` alternative
+after re-triage authorizes new work; this residual permits no such move.
 All seams remain cfg(test), privately owned and exercised. The exact
 coverage gate still measures all production code and inline tests.
 
@@ -50,23 +51,22 @@ selected under the existing delivery policy; this document dispatches none.
 
 ## Project structure and files touched
 
-| File | Implementation scope |
+| File | Residual edit |
 |---|---|
-| `tests/smtp_edges.rs` | Retain sequencing and valid transaction-AUTH tests and focused DATA-chaos, SQLite DATA-refusal and PLAIN-cancellation flows (AC1, AC3–AC5). |
-| `tests/pop3.rs` | Retain existing selective partial-QUIT/RSET flows with TOP/refusal/NOOP and exact surviving-content witnesses (AC6). |
-| `tests/common/mod.rs` | Retain the existing bounded, untrimmed single SMTP reply reader; reuse existing server, raw HTTP and SQLite trigger helpers. Preserve all #177 helper timeout ownership. |
-| `src/pop3.rs` | Retain only the existing cfg(test) health proof and local helper/wiring using its private ListenerProbe (AC2); optional cfg(test) declaration for the cold-path alternative below. |
-| `src/pop3/health_tests.rs` | Conditional, narrow alternative only when concrete failure-safe cleanup/diagnostics contain a cold arm. Do not create merely for private seam access. |
+| `specs/session-edge-proofs/spec.md` | Correct current/historical identities, synthesize the current panel, define residual record acceptance while preserving AC1–AC6. |
+| `specs/session-edge-proofs/plan.md` | Correct candidate-local quickstart, add the single tracked provenance note, bound implementation and verification scope. |
+| `specs/session-edge-proofs/tasks.md` | Correct current execution binding and add paired record checks while retaining T2–T7 witness mappings and delivery obligations. |
 
-`tests/persistence.rs`, `src/smtp.rs`, store/persist/API runtime code,
-existing POP3 progress/maildrop harnesses, bundle, locks, dependencies and
-product documentation are read-only preservation references. No new test
-framework or public fixture API is needed.
+Read-only preservation references: `tests/smtp_edges.rs` (AC1, AC3–AC5),
+`tests/pop3.rs` (AC6), `tests/common/mod.rs` (raw replies and helpers),
+`src/pop3.rs`'s inline health proof (AC2), `tests/persistence.rs`, runtime
+modules, tooling.json and its patches, scripts, bundles and accepted decisions.
+No harness move or test framework is part of this residual.
 
 ## Research and evidence baseline
 
 The following gaps describe the historical pre-implementation base, not the
-current candidate. The source commit closes them with the tests mapped in
+current candidate. The inherited implementation closes them with the witnesses mapped in
 [tasks.md](tasks.md); that source inspection does not establish passing gates.
 
 At `cc30ea2`, `sequencing_errors_need_mail_then_rcpt` checks only a 503 prefix
@@ -105,12 +105,13 @@ Subscribe to the backoff event before arming/triggering it. Keep the probe
 inside one `LISTENER_PROBE.scope(...serve...)`. Use release-on-drop/owned
 cleanup to remove holds and abort outstanding tasks on failure, and explicit
 stop/join on success. If a cold diagnostic is needed to preserve joining on
-failure, use the narrow harness allowed above. EOF is not task completion.
+failure, record it for re-triage under 0020 before changing a harness. EOF is not task completion.
 
 ## Contracts and implementation approach
 
-Audit and execute the existing implementation below; do not repeat these
-changes. Only a proven fixture defect justifies a narrow test-only edit.
+Audit and execute the inherited implementation below; do not repeat these
+changes. These are preserved contract/witness descriptions, not residual
+edit targets. Any fixture or runtime defect returns to triage before repair.
 
 1. Retain an untrimmed SMTP single-line reader delegating to existing
    `read_line_named`, without altering reply/reply_multi callers. Use it for
@@ -149,22 +150,59 @@ the limits detect hangs, not protocol latency. No sleeps, arbitrary failure
 counts, retry-until-visible reads, global injection state or auto-reconnect.
 No certificate fixture is needed for these plaintext loopback proofs.
 
+## Engine provenance
+
+The committed [tooling.json](../../bundles/self/tooling.json) and its ordered,
+checksum-pinned patches describe reproducible source inputs: Brokkr base
+`731189f9097308c01ae4f2b4c9caea5f41224844`, then
+`0001-preserve-review-residual-facts.patch`,
+`0002-preserve-review-scope-and-fixes.patch`, and
+`0003-bind-verified-candidate.patch` under `bundles/self/tooling-patches/`.
+Tooling.json alone owns exact patch paths, order and checksums; do not copy
+or change that manifest for this correction. Its recorded source-composite
+SHA-256 is `c972dde7785915743fb8d7365ad5bb5efecafd29be78520911f0cb4d74a75e5b`,
+compiler is `rustc 1.98.0`, and binary SHA-256 is
+`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
+The Brokkr source base is distinct from Swarmail's reviewed base `45d68df`.
+
+Tooling.json's provenance declaration reports a release `--locked --offline`
+build, core/runtime tests, formatting, workspace all-targets clippy and four
+bundle compiles. Those are attributed historical claims, not fresh residual
+execution receipts. The named
+`.forge/epic192/engine-main-entry/build-receipt.json` is gitignored run-local
+build evidence: it is not tracked or committed. A tracked reference does not
+make its contents durable or available in another checkout. The chief checked
+ignore/untracked status, not receipt contents or the original build. This
+residual does not independently rebuild/reconstruct the source composite or
+prove bit-for-bit reproducibility across environments. Declared reproducible
+inputs and executed reproducibility proof remain distinct.
+
 ## Quickstart and verification
 
-Before any execution receipt, resolve HEAD in the actual workspace and prove
-its ancestry through the source SHA, design parent and #177 base. Record the
-candidate commit/tree, diff and command exits. Git resolved successfully in
-this chief workspace; earlier panel failures do not establish later visibility.
-Do not modify Git metadata or certify a different tree to bypass a failure.
-Check `recipes` remains the tracked `bundles` symlink. Verify the binary
-against tooling.json (not version alone), then invoke this exact executable:
+Run from this candidate's repository root. Before any execution receipt,
+resolve current HEAD/tree, prove ancestry through reviewed base `45d68df`
+and engine-pin commit `238372d`, and record the actual diff and command exits.
+Input `11134f1` and historical cc30ea2/150c84a/e7d1d81 do not replace the
+current HEAD binding. Do not modify Git metadata or certify another tree to
+bypass a failure. Check `recipes` remains the tracked mode-120000 `bundles`
+symlink. Hash the candidate-local engine before invoking it; use its resolved
+absolute path in boxed checks. Missing/mismatched binaries are setup blocks,
+never permission to borrow a sibling binary or substitute PATH.
 
 ```bash
-/home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-188-retry2/.forge/bin/brokkr compile --bundle bundles/self
+set -euo pipefail
+git rev-parse HEAD HEAD^{tree}
+git merge-base --is-ancestor 45d68df HEAD
+git merge-base --is-ancestor 238372d HEAD
+brokkr_candidate_bin="$(pwd -P)/.forge/bin/brokkr"
+brokkr_pinned_digest="$(jq -er '.brokkr.binary_sha256' bundles/self/tooling.json)"
+test "$brokkr_pinned_digest" = ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f
+printf '%s  %s\n' "$brokkr_pinned_digest" "$brokkr_candidate_bin" | sha256sum --check --strict -
+"$brokkr_candidate_bin" compile --bundle bundles/self
 ```
 
-Its required SHA256 is
-`e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`.
+The root-relative equivalent is `.forge/bin/brokkr compile --bundle bundles/self`;
+boxed checks receive the absolute candidate-local path resolved above.
 Keep network disabled (`CARGO_NET_OFFLINE=true`) and install nothing.
 Run targeted tests and record nonzero executed-test counts:
 
@@ -200,6 +238,22 @@ chart/history/selftest, Docker, network RustSec, real port-80 and tag-only
 rate obligations in their proper contexts. No seat publishes or tags.
 
 ## Risks
+
+Residual-specific risks and mitigations:
+
+- A valid digest can still name the wrong candidate: resolve HEAD/tree and
+  reviewed-base/pin ancestry separately from hashing the local executable.
+- Historical SHAs or preflights can appear current: inspect every surviving
+  occurrence in context; preserve dated labels rather than globally replacing.
+- A tracked receipt reference can imply committed evidence: check both
+  `git check-ignore` and `git ls-files` and retain the provenance limits above.
+- Broader cleanup can change six sensitive criteria: compare AC1–AC6 and
+  T2–T7 with input `11134f1` and restrict the diff to these three documents.
+- Full gates/providers can be unavailable: retain actual failures as run-local
+  evidence, never weaken checks, install into hermetic verify or substitute
+  a reviewer. The engine route's four-review cost remains accepted.
+
+Inherited protocol-proof risks (preservation guidance, not new edit scope):
 
 | Risk | Mitigation and accepted cost |
 |---|---|
