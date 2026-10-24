@@ -1,6 +1,6 @@
 # 0058 — Exact Codex reviewer routing amendment
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-10-24)
 - **Date:** 2026-10-24
 - **Amends:** [0057](0057-codex-delivery-recipes.md) §§2, 6 and the role-count reference in §8, solely for the operator-directed Codex reviewer matrix and fast-feature dispatch fallback.
 - **Source:** current operator directive, run `update-the-codex-delivery-recipe-c79c3f2d`; this record does not invent an earlier fallback acceptance date or receipt.
