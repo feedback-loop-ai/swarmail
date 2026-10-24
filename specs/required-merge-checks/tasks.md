@@ -1,68 +1,91 @@
-# Tasks — Require the missing merge checks
+# Tasks — Reconcile the required merge checks
 
-Ordered downstream tasks for [spec.md](spec.md). All start open: this design
-has not changed settings or proved implementation. The 2026-10-24 scope
-clarification replaces the old watcher/probe tasks; their historical obligations
-remain outstanding in the spec and Git history, not executable instructions.
-External operations require the authorized capability, never host workarounds.
+Ordered implementation tasks for [spec.md](spec.md). All start open; chief's
+packet inspection and design commit do not prove the final implementation.
+The dated 2026-10-24 host-evidence clarification supersedes the previous
+settings mutation plan. The settings additions are observed in the supplied
+packet, not a task to replay. No API mutation or external capability acquisition
+is required for this documentation repair. Tests below prove only their stated
+scope; no predicate fixture counts as a server-refusal experiment.
 
-- [ ] **T1 — Capture the live baseline (AC1, AC5).** Through the authorized
-  executor, retain fresh permission, full main protection/effective rules and
-  genuine producer receipts. Separate branch/ruleset sources and confirm both
-  exact names, all existing app constraints, admin permission and strict/admin
-  enforcement. Preserve prior failure records.
-  **Test:** raw timestamped complete responses identify the target and all
-  tuples; malformed/partial/unreadable observations refuse mutation. Missing
-  capability is reported as an unmet prerequisite, never a fabricated baseline.
-- [ ] **T2 — Prepare a coordinated narrow operation (AC2).** Record one writer
-  and interval, compute the two-context union and retain the intended supported
-  payload. Preserve legacy unbound and bound identities, strict mode and policy
-  ownership; reconcile conflicting bindings. Do not use full protection PUT.
-  **Test:** reproducible baseline/request comparison shows every old tuple plus
-  exactly the additions, no ruleset migration or unrelated field change; an
-  equivalent already-applied state yields no write.
-- [ ] **T3 — Prove comparison and recovery controls (AC2, AC3).** Retain a small
-  run-local comparison and adversarial observations before live mutation.
-  **Test:** exact union/no-op pass; missing each addition separately, removed
-  old tuple, changed app, strict/admin false, unrelated or ruleset change,
-  malformed/incomplete state and stale baseline refuse. An interrupted response
-  followed by already-applied fresh state reconciles without duplicate write;
-  unavailable read-back remains UNKNOWN. These controls prove no live refusal.
-- [ ] **T4 — Apply and read back (AC1–AC3).** Re-read immediately under
-  coordination; recompute on drift, then execute only the narrow required-check
-  update or verified no-op. Retain response and fresh full/effective read-back.
-  Resolve ambiguous outcomes from remote truth without blind retry/rollback.
-  **Test:** real raw before/immediate-before/after receipts and comparison prove
-  `B1 = B0 union A`, unchanged rulesets/other fields, strict/admin true and both
-  exact names with their established producer constraints. A missing read-back
-  cannot complete this task.
-- [ ] **T5 — Align the sole inventory (AC4).** After verified read-back, update
-  `docs/house-rules.md` Gates with the full exact effective blocker set and
-  relevant producer constraints; preserve every local/CI/tag distinction.
-  **Test:** retained identity-aware set comparison proves documentation equals
-  effective read-back; diff review shows no additional inventory, gate command,
-  CI job, runtime, dependency, accepted-decision or recipe change.
-- [ ] **T6 — Commit and verify the candidate (AC6).** Commit the scoped
-  documentation unsigned and execute all required house gates with the recorded
-  candidate-local engine and pinned proof ownership; retain existing delivery
-  constitution/recipe regression evidence and distinct CI-only obligations.
-  **Test:** final-candidate command exits/logs and hermetic verify prove the
-  complete authoritative inventory, exact coverage/selftest, locked operations,
-  publish/seal proofs, licenses/native-tls and shim checks. Unexecuted or failed
-  proof remains outstanding; targeted regressions are no substitute.
-- [ ] **T7 — Obtain the selected engine review (AC6).** Let the protected engine
-  dispatch distinct Astra correctness, official DeepSeek Flash security,
-  Sonnet 5.5 tests, Astra guarantees and independent Fable 5.1 reviewers.
-  **Test:** five genuine result identities bind to the candidate under accepted
-  0058, with worst-verdict/security-hold behavior and no fallback or DeepSeek
-  Pro. Missing results cannot be inferred from this design or another review.
-- [ ] **T8 — Re-read and hand off honestly (AC3–AC6).** Retain final fresh
-  protection/effective-rule comparison, receipt checksums and durable evidence
-  handoff. Record both live refusal experiments PENDING under the no-probe
-  charter and watcher/cleanup/root-integration obligations unclaimed. Keep
-  issue #205 open; perform no PR/ref creation, push, merge, bypass or release.
-  **Test:** final state still matches the intended union and one inventory;
-  evidence index distinguishes verified configuration from pending behavior,
-  links candidate/gate/review receipts, preserves historical failures and
-  records no prohibited external action. Drift or unavailable final observation
-  prevents a current-state verification claim and requires reconciliation.
+- [ ] **T1 — Retain reproducible packet validation (AC1).** Verify all nine
+  manifest lengths/hashes, exact unique context/app tuples and context/check
+  agreement, target/head, strict/admin booleans and explicit empty rules arrays.
+  Preserve raw inputs and distinguish the separate historical action receipt.
+  **Test:** retained run-local script/output passes the supplied packet and
+  rejects altered bytes, mismatched/duplicate identities, wrong/missing apps,
+  false/missing strict/admin and malformed/missing rules. Record capture and
+  manifest digest without claiming a new live API read.
+- [ ] **T2 — Repair the sole Gates inventory (AC2).** Add the exact captured
+  nine context names and common Actions app 15368 binding, dated observation
+  and provenance to `docs/house-rules.md`. Preserve all commands and CI proofs;
+  clarify rate/chart tag scope and image publication on main and tags.
+  **Test:** retained documented-versus-captured tuple comparison proves exact
+  equality and uniqueness; controls reject each new check missing separately,
+  an old check missing, extra/duplicate context, wrong/missing app and tag-only
+  addition. Diff review confirms one inventory and unchanged workflow semantics.
+- [ ] **T3 — Reconcile evidence and external handoff (AC3, AC4).** Update these
+  artifacts with actual implementation receipts; preserve dated history,
+  exact helper path/hash, search revision/scope, unknown driver identity,
+  persistent owner/launcher/consumer/activation and outstanding issue map.
+  **Test:** reproduce the AST-extracted actual helper predicate accepting each
+  missing-check fixture separately without executing the helper/network calls;
+  inspect source for app/head/timeout limitations. Review all three artifacts
+  for consistent pending statuses, no obsolete executable PATCH/probe plan,
+  no claimed deployment and no erased live-proof/cleanup/integration criteria.
+- [ ] **T4 — Verify the implementation candidate (AC5).** Run the complete
+  authoritative house inventory and pinned hermetic verification, retaining
+  candidate-bound exits/logs and separate CI-only obligations. Commit authorized
+  files unsigned under 0056; never push. Do not weaken gates for Markdown.
+  **Test:** actual complete gate/verify receipts establish all required proofs,
+  including exact coverage/selftest, locked commands and pinned proof identity;
+  delivery constitution/recipe regressions run in the workspace suite. Failures
+  and unexecuted checks remain outstanding, not inferred from a design check.
+- [ ] **T5 — Obtain the five engine-review results (AC5).** Let the protected
+  engine dispatch Astra correctness, official DeepSeek Flash security, Sonnet
+  5.5 tests, Astra guarantees and independent Fable 5.1.
+  **Test:** five distinct candidate-bound invocation/result identities satisfy
+  accepted 0058, worst-verdict and hard security-hold behavior. No fallback,
+  DeepSeek Pro or counting design positions as reviewer results.
+- [ ] **T6 — Deliver the scoped evidence handoff (AC1, AC4, AC5).** Record the
+  candidate, gate/review receipts and operator-accessible raw evidence archive
+  receipt, or explicitly mark missing archival retention outstanding. Leave
+  issue #205 open and carry every external obligation below forward.
+  **Test:** evidence index binds packet/manifest hashes and source revision to
+  accessible retained receipts, distinguishes observed/scoped/external work,
+  and contains no unsupported current-state, deployment or issue-completion
+  claim. No push, PR/ref creation, merge, bypass, release or API mutation occurs.
+
+## External obligations — not executable authorization in this run
+
+These remain unchecked even if the scoped documentation candidate passes.
+Their eventual owner must obtain appropriate authority; this design does not
+create a remote-operation permission or a tracked watcher implementation.
+
+- [ ] **E1 — Identify and repair the actual owned watcher (AC3).** Establish
+  whether the recorded host helper is the issue's intended driver, its persistent
+  owner, launcher and real consumer; separately scope the smallest authorized
+  change and prove activation. No speculative second watcher.
+  **Test:** source/launcher/deployment receipts plus tests through the actual
+  consumer prove full successful current name/app/head readiness, refusal for
+  each missing name, wrong/missing app, pending/non-success, stale/ambiguous
+  rerun, malformed/read failure and timeout; restart revalidation and concurrent
+  evidence isolation pass. A new unconsumed predicate does not satisfy E1.
+- [ ] **E2 — Independent Brokkr-red live refusal (AC4). PENDING.** An authorized
+  external owner obtains a genuine red `brokkr bundle (pinned)` on a throwaway
+  PR, excluding other blockers as the reason for refusal.
+  **Test:** linked PR/run/head and attributable server refusal establish that
+  this check prevented merging; configuration, generic BLOCKED and fixtures
+  are insufficient. This run creates no PR/ref and performs no merge attempt.
+- [ ] **E3 — Independent Docker-red live refusal (AC4). PENDING.** Separately
+  obtain genuine red `docker smoke` with other blockers excluded.
+  **Test:** separate linked PR/run/head and attributable server refusal prove
+  this check blocked merging. E2 evidence cannot stand in for E3, and neither
+  is claimed here.
+- [ ] **E4 — Historical cleanup and root integration (AC4, AC5).** Preserve
+  unproved old AC7/AC8 obligations until the authorized owner supplies probe
+  receipt retention/cleanup and integrated CI/issue evidence.
+  **Test:** attributable cleanup receipts and integrated candidate CI plus
+  complete issue evidence establish these obligations. No cleanup of others'
+  resources, integration, issue closure or missing evidence is inferred from
+  the scoped repository commit.
