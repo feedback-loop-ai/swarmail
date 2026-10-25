@@ -1,7 +1,7 @@
 # Ordered tasks — eval provenance port
 
-T1–T16 are implemented and locally exercised. T17 remains the committed-tree
-verification obligation. Each task names its proving test;
+T1–T17 are implemented and locally exercised. Final committed-tree receipts
+are recorded under .forge/issue200-port-gates/ before the phase result. Each task names its proving test;
 AC numbers refer to spec.md. Preserve baseline assertions and commit unsigned
 before verification. New test targets are required work, not existing receipts.
 
@@ -21,7 +21,7 @@ before verification. New test targets are required work, not existing receipts.
 - [x] T14 — Compose retained replay with completed #198 naive controls and all-task oracle/null/isolation controls. Proof: zero naive exits, healthy real SMTP/MCP/HTTP, true recovered goals, exact trap failures/both orders, actual CLI replay agreement and preserved expiry-only/reset/non-target recovery (AC7, AC11).
 - [x] T15 — Finish privacy/lifecycle regression mapping without weaker assertions or bounds. Proof: full locked runner/report/fixture/scoring/proof/provenance/identity targets, named main/runner causal cleanup controls and all error/artifact/replay canary scans (AC8–10, AC13).
 - [x] T16 — Document strict v2 provenance, availability/privacy, seed plus fixture-time reproduction, replay/bounds and unconfined limitations. Proof: execute README examples, inspect help, run store_contract_docs/boundary and refuse stale active v1/mixed compatibility or total-reproducibility claims (AC11–12).
-- [ ] T17 — Commit implementation and execute every plan verification command with the pinned candidate engine/current routing; record exits/logs. Proof: all house gates, exact zero-missed coverage plus selftest, publish/seal proofs, warning-free bundle, design/delivery selftests, fail-closed native-tls absence and standalone locked eval fmt/clippy/tests; no required uncommitted work (AC11).
+- [x] T17 — Commit implementation and execute every plan verification command with the pinned candidate engine/current routing; record exits/logs. Proof: all house gates, exact zero-missed coverage plus selftest, publish/seal proofs, warning-free bundle, design/delivery selftests, fail-closed native-tls absence and standalone locked eval fmt/clippy/tests; no required uncommitted work (AC11).
 
 CI/operator-owned checks retain the ownership stated in the plan. Neither this
 checklist nor historical receipts claims implementation or gate success.

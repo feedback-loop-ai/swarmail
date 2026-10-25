@@ -41,7 +41,7 @@ and its supersession by accepted 0071. No proposal is accepted.
   and bounded offline replay through the existing tasks::score. Tests retain
   64 KiB capture/drain, original-byte bindings, every boundary, wrong/rehashed
   associations, absent state, bad-last-cell zero output and no saved execution.
-- T14–T16: all baseline tests remain in their original files; the private
+- T14–T16: all 136 baseline tests remain in their original files; the private
   preservation receipt inventories their names. Completed naive controls retain
   zero exits, healthy SMTP/MCP/HTTP, true recovered goals and exact trap failures,
   now also checked through the retained CLI replay. Oracle/null/isolation,
@@ -65,12 +65,25 @@ owned cleanup, and cancellation there prevents subsequent Cargo admission.
 
 ## Verification and limits
 
-Focused identity/provenance/fixture/scoring/proof and main/runner owner tests,
-plus runner/report/provenance integration targets, have run locally. Final T17
-requires fresh committed-candidate house gates and the full standalone eval
-suite; actual commands, exits and commit identifiers are recorded under
-`.forge/issue200-port-gates/`, separately from the immutable historical packet.
-The mandatory phase result is written only after those checks and commits.
+Every house gate and the plan's supplementary checks passed locally with the
+candidate-local pinned engine: format, locked Clippy/tests, warning-free bundle
+compile, exact coverage/selftest, publish/seal proofs, license check, fail-closed
+native-tls absence, design/delivery selftests and standalone eval format/Clippy/
+tests. Exact coverage measured 14009/14009 lines, 788/788 branches and 1527/1527
+functions. The complete eval suite passed 181 tests. The README's eight-cell
+matrix and individual/bare-state checks ran successfully; offline ordered replay
+returned the original rows with the original binary unavailable.
+
+A full eval run exposed a readiness race in the existing cleanup-fault fixture:
+the parent published a child PID before that child installed its TERM disposition.
+The test-only script now acknowledges that setup before publishing readiness.
+The original live-survivor, direct-reap, refusal and rescue assertions remain.
+Three focused runs and the subsequent full suite pass without altered bounds.
+
+Commands, exits and commit identifiers are recorded under
+`.forge/issue200-port-gates/`, separately from the immutable historical packet;
+pre-final receipts are archived there. All gates are rerun against the commit
+containing this record before the mandatory phase result is written.
 
 No root production, manifest/lock, dependency allowlist, bundle, routing or gate
 changes. CI owns macOS eval proof through #201, privileged port-80, chart/history,

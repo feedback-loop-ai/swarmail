@@ -3439,8 +3439,9 @@ mod test_probes {
             &script,
             r#"#!/bin/sh
 if [ "$EVAL_TEST_RUNNER_AGENT_MODE" = leader_first ]; then
-  /bin/sh -c 'trap "" TERM; exec sleep 1000' &
+  /bin/sh -c 'trap "" TERM; : > "$1"; exec sleep 1000' sh "$EVAL_TEST_RUNNER_PIDS.child-ready" &
   child=$!
+  while [ ! -f "$EVAL_TEST_RUNNER_PIDS.child-ready" ]; do :; done
   trap 'exit 0' TERM
 else
   sleep 1000 &
