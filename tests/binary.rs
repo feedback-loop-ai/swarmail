@@ -1651,18 +1651,32 @@ async fn the_ca_pem_client_ignores_proxy_environment() {
 #[tokio::test]
 async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
     let (stalled, request) = one_request_sink(None).await;
-    // Hold a bound, non-listening target through the final assertions so a
-    // parallel test cannot claim it between setup and the webhook dial.
+    // An established client's local endpoint refuses unrelated connects on
+    // Linux and macOS. Hold both ends through the final assertions so a
+    // parallel test cannot claim the target before the webhook dial.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let reservation = tokio::net::TcpSocket::new_v4().unwrap();
     reservation.set_reuseaddr(false).unwrap();
     reservation
         .bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
         .unwrap();
+    let reservation = tokio::time::timeout(
+        common::HELPER_DEADLINE,
+        reservation.connect(listener.local_addr().unwrap()),
+    )
+    .await
+    .expect("the reservation must connect promptly")
+    .unwrap();
+    let (peer, _) = tokio::time::timeout(common::HELPER_DEADLINE, listener.accept())
+        .await
+        .expect("the reservation's peer must be accepted promptly")
+        .unwrap();
+    drop(listener);
     let refused = reservation.local_addr().unwrap();
     let refusal = tokio::time::timeout(common::HELPER_DEADLINE, TcpStream::connect(refused))
         .await
-        .expect("the reserved non-listening target must refuse promptly")
-        .expect_err("a bound non-listening target must not accept connections");
+        .expect("the reserved client endpoint must refuse promptly")
+        .expect_err("an established client endpoint must not accept connections");
     assert_eq!(
         refusal.kind(),
         std::io::ErrorKind::ConnectionRefused,
@@ -1755,7 +1769,16 @@ async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
     for secret in ["hunter2", "hunter3", "marker-secret"] {
         assert!(!rest.contains(secret), "no {secret} on stdout: {rest}");
     }
-    drop(reservation);
+    // Even a reuse-enabled contender cannot take the held client endpoint.
+    for reuseaddr in [false, true] {
+        let contender = tokio::net::TcpSocket::new_v4().unwrap();
+        contender.set_reuseaddr(reuseaddr).unwrap();
+        let error = contender
+            .bind(refused)
+            .expect_err("the client endpoint must remain exclusively owned");
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+    }
+    drop((reservation, peer));
 }
 
 // ---------- the fallible EOF helper (issue #102, 0018 §2) ----------
