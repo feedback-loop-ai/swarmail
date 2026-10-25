@@ -2013,19 +2013,39 @@ fn ca_workers_survive_runtime_replacement() {
         done_b.await.unwrap();
         // Observe actual reclamation; never retry an admission to mask refusal.
         wait_ca_idle().await;
+        server
+            .webhooks
+            .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
+        let mut entries = Vec::new();
+        let mut releases = Vec::new();
+        let mut finishes = Vec::new();
+        let mut jobs = Vec::new();
         for _ in 0..2 {
             let (entry, release, done) = install_ca_build_pause(&pem);
-            server
-                .webhooks
-                .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
             let hooks = server.webhooks.clone();
-            let job = tokio::spawn(async move { redacted_targets(&hooks).await });
-            let thread = entry.await.unwrap();
-            assert!(threads.contains(&thread));
+            jobs.push(tokio::spawn(async move { redacted_targets(&hooks).await }));
+            entries.push(entry);
+            releases.push(release);
+            finishes.push(done);
+        }
+        let cleanup = BuildWatchdog::new(releases.clone());
+        let mut reused = Vec::new();
+        for entry in entries {
+            reused.push(entry.await.unwrap());
+        }
+        assert_ne!(reused[0], reused[1]);
+        assert!(
+            reused.iter().all(|thread| threads.contains(thread)),
+            "the original worker pair survives"
+        );
+        for (release, done) in releases.into_iter().zip(finishes) {
             release.send(()).unwrap();
             done.await.unwrap();
+        }
+        for job in jobs {
             drop(job.await.unwrap().unwrap());
         }
+        cleanup.assert_unused();
         server.stop().await;
     });
     watchdog.assert_unused();
