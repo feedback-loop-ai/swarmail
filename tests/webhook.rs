@@ -755,21 +755,37 @@ async fn non_2xx_over_tls_is_retried_four_times_not_more() {
 async fn refused_connection_never_blocks_the_smtp_path() {
     let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
-    // Own a bound, non-listening port through the final observation. Reuse
-    // is disabled so another local test cannot take the refused target.
+    // Hold both ends through the final assertions to retain the client
+    // endpoint and exclude reuse-disabled binders. On macOS, reuse-enabled
+    // listeners (including parallel Tokio listeners) can still claim it;
+    // this fixture does not fully close that reuse race. The exact refusal
+    // probe below observes setup only, not every later webhook attempt.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let reservation = tokio::net::TcpSocket::new_v4().unwrap();
     reservation.set_reuseaddr(false).unwrap();
     reservation
         .bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
         .unwrap();
+    let reservation = tokio::time::timeout(
+        common::HELPER_DEADLINE,
+        reservation.connect(listener.local_addr().unwrap()),
+    )
+    .await
+    .expect("the reservation must connect promptly")
+    .unwrap();
+    let (peer, _) = tokio::time::timeout(common::HELPER_DEADLINE, listener.accept())
+        .await
+        .expect("the reservation's peer must be accepted promptly")
+        .unwrap();
+    drop(listener);
     let addr = reservation.local_addr().unwrap();
     let refused = tokio::time::timeout(
         common::HELPER_DEADLINE,
         tokio::net::TcpStream::connect(addr),
     )
     .await
-    .expect("the reserved non-listening target must refuse promptly")
-    .expect_err("a bound non-listening target must not accept connections");
+    .expect("the reserved client endpoint must refuse promptly")
+    .expect_err("an established client endpoint must not accept connections");
     assert_eq!(
         refused.kind(),
         std::io::ErrorKind::ConnectionRefused,
@@ -809,7 +825,7 @@ async fn refused_connection_never_blocks_the_smtp_path() {
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1, "retries must not touch the store");
-    drop(reservation);
+    drop((reservation, peer));
 }
 
 /// The redirect e2e: a target that answers 302 Found with an absolute
