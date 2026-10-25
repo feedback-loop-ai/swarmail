@@ -38,6 +38,7 @@ fn agents_file(dir: &std::path::Path, agents: Value) -> String {
 
 #[test]
 fn the_matrix_runs_the_whole_product_and_aggregates_exits() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let agents = agents_file(
         dir.path(),
@@ -101,6 +102,7 @@ fn the_matrix_runs_the_whole_product_and_aggregates_exits() {
 #[cfg(target_os = "linux")]
 #[test]
 fn matrix_workers_are_closed_and_child_output_is_not_published() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("worker-env");
     let wrapper = dir.path().join("observe-worker.sh");
@@ -189,6 +191,7 @@ fn matrix_workers_are_closed_and_child_output_is_not_published() {
 
 #[test]
 fn matrix_preserves_non_utf8_path_discovery_through_the_worker_cli() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let path_dir = dir.path().join(OsString::from_vec(b"agents-\xff".to_vec()));
     std::fs::create_dir(&path_dir).unwrap();
@@ -229,6 +232,7 @@ fn matrix_preserves_non_utf8_path_discovery_through_the_worker_cli() {
 
 #[test]
 fn the_matrix_keeps_counting_after_a_harness_error_and_exits_two() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let agents = agents_file(
         dir.path(),
@@ -260,6 +264,7 @@ fn the_matrix_keeps_counting_after_a_harness_error_and_exits_two() {
 /// product element, in product order, with no trial child launched.
 #[test]
 fn a_missing_swarmail_binary_still_emits_the_whole_product() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("launched");
     let touch = vec!["/bin/sh", "-c", "touch \"$0\"", marker.to_str().unwrap()];
@@ -310,6 +315,7 @@ fn a_missing_swarmail_binary_still_emits_the_whole_product() {
 
 #[test]
 fn the_matrix_refuses_bad_inputs_before_running_anything() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let good = agents_file(dir.path(), json!([{"label": "null", "argv": []}]));
     for args in [
@@ -353,7 +359,7 @@ fn row(task: &str, outcome: &str, class: Option<&str>, ms: u64) -> String {
         ..Default::default()
     };
     json!({
-        "schema_version": 2, "trial_id": format!("{ms:032x}"), "task": task, "agent": "a",
+        "schema_version": 2, "concurrency": 1, "trial_id": format!("{ms:032x}"), "task": task, "agent": "a",
         "outcome": outcome, "failure_class": class, "wall_time_ms": ms,
         "agent_exit_status": 0, "agent_exits": [], "confinement": "unconfined",
         "provenance": swarmail_evals::runner::make_provenance(&req, None, None)
@@ -377,6 +383,7 @@ fn report_of(input: &str) -> (Option<i32>, Value) {
 
 #[test]
 fn the_report_separates_harness_errors_from_the_success_rate() {
+    let _trial_scope = trial_scope();
     let mut lines = Vec::new();
     for ms in 1..=8 {
         lines.push(row("t", "pass", None, ms * 100));
@@ -412,6 +419,7 @@ fn the_report_separates_harness_errors_from_the_success_rate() {
 
 #[test]
 fn empty_and_all_error_inputs_give_null_estimates_and_bad_rows_refuse() {
+    let _trial_scope = trial_scope();
     let (code, v) = report_of("");
     assert_eq!((code, v), (Some(0), json!({"groups": []})));
     let (code, v) = report_of(&row("t", "harness_error", Some("harness_error"), 3));
@@ -855,18 +863,21 @@ fn matrix_signal_case(signal: i32, noisy: bool) {
 
 #[test]
 fn matrix_sigterm_and_sigint_wait_for_the_active_trials_owned_cleanup() {
+    let _trial_scope = trial_scope();
     matrix_signal_case(libc::SIGTERM, false);
     matrix_signal_case(libc::SIGINT, false);
 }
 
 #[test]
 fn privacy_cancellation_preserves_owned_runtime_and_suffix_accounting() {
+    let _trial_scope = trial_scope();
     matrix_signal_case(libc::SIGTERM, true);
     matrix_signal_case(libc::SIGINT, true);
 }
 
 #[test]
 fn a_broken_matrix_stdout_stops_after_the_owned_trial_finishes() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let launches = dir.path().join("launches.txt");
     let argv = vec![
@@ -924,6 +935,7 @@ fn a_broken_matrix_stdout_stops_after_the_owned_trial_finishes() {
 
 #[test]
 fn normal_matrix_binary_ignores_test_control_environment_variables() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
     let mut cmd = cli();
@@ -997,6 +1009,7 @@ fn normal_matrix_binary_ignores_test_control_environment_variables() {
 
 #[test]
 fn matrix_signal_cancels_and_reaps_the_fallback_cargo_group() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let ready = dir.path().join("cargo-ready");
     let invocation = dir.path().join("cargo-invocations.log");
@@ -1138,4 +1151,122 @@ fn report_refuses_pre_provenance_v2_rows_without_partial_aggregation() {
         assert_eq!(code, Some(2));
         assert_eq!(output, Value::Null);
     }
+}
+
+#[test]
+fn sequential_rows_reject_missing_or_invalid_concurrency() {
+    let _trial_scope = trial_scope();
+    let valid: Value = serde_json::from_str(&row("signup", "pass", None, 1)).unwrap();
+    let mut invalid = Vec::new();
+    let mut missing = valid.clone();
+    missing.as_object_mut().unwrap().remove("concurrency");
+    invalid.push(missing);
+    for value in [
+        json!(0),
+        json!(2),
+        json!(-1),
+        json!(1.0),
+        json!("1"),
+        Value::Null,
+    ] {
+        let mut bad = valid.clone();
+        bad["concurrency"] = value;
+        invalid.push(bad);
+    }
+    let mut old = valid.clone();
+    old["schema_version"] = json!(1);
+    invalid.push(old);
+    for bad in invalid {
+        let text = bad.to_string();
+        assert!(swarmail_evals::report::parse_rows(&text).is_err(), "{bad}");
+        let (status, output) = report_of(&text);
+        assert_eq!(status, Some(2), "{bad}");
+        assert_eq!(output, Value::Null);
+    }
+}
+
+#[test]
+fn sequential_matrix_refuses_overlap_and_unsupported_concurrency() {
+    let _trial_scope = trial_scope();
+    let dir = tempfile::tempdir().unwrap();
+    for concurrency in ["0", "2"] {
+        let out = cli()
+            .args([
+                "matrix",
+                "--tasks",
+                "signup",
+                "--agents",
+                "/nonexistent/agents",
+                "--trials",
+                "1",
+                "--concurrency",
+                concurrency,
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(out.stdout.is_empty());
+        assert!(stderr(&out).contains("concurrency_unsupported"));
+    }
+    let ready = dir.path().join("matrix-ready");
+    let (command, _wrapper) =
+        helper_command("held_idle", &[], &[(MARKER_ENV, ready.to_str().unwrap())]);
+    let wrapper = command.get_args().last().unwrap().to_str().unwrap();
+    let agents = agents_file(dir.path(), json!([{"label":"held-idle","argv":[wrapper]}]));
+    let mut command = cli();
+    command
+        .args([
+            "matrix",
+            "--tasks",
+            "signup",
+            "--agents",
+            &agents,
+            "--trials",
+            "1",
+            "--concurrency",
+            "1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let matrix = ChildGuard {
+        child: Some(command.spawn().unwrap()),
+    };
+    eventually("matrix agent readiness", || ready.exists());
+    let (row, out) = trial(&["--task", "signup", "--agent", "oracle"]);
+    assert_eq!(row.outcome, Outcome::HarnessError);
+    assert!(stderr(&out).contains("concurrent_trials_refused"));
+    let launched = dir.path().join("contender-launch");
+    let agents = agents_file(
+        dir.path(),
+        json!([{"label":"inert","argv":["/usr/bin/touch", launched]}]),
+    );
+    let out = cli()
+        .args([
+            "matrix",
+            "--tasks",
+            "signup,otp",
+            "--agents",
+            &agents,
+            "--trials",
+            "2",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("concurrent_trials_refused"));
+    let refused = rows(&out.stdout);
+    assert_eq!(refused.len(), 4);
+    assert!(
+        refused
+            .iter()
+            .all(|row| row.outcome == Outcome::HarnessError
+                && row.concurrency == 1
+                && row.wall_time_ms == 0
+                && row.agent_exits.is_empty())
+    );
+    assert!(!launched.exists());
+    std::fs::write(ready.with_extension("release"), b"release").unwrap();
+    let out = matrix.wait_with_output();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(rows(&out.stdout)[0].outcome, Outcome::Fail);
 }

@@ -77,6 +77,7 @@ fn facts(exe: &Path, cwd: &Path) -> TrialResult {
 }
 #[test]
 fn runtime_checkout_cannot_supply_harness_source_or_external_target_source() {
+    let _trial_scope = common::trial_scope();
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-b", "unrelated"]);
     git(
@@ -165,6 +166,7 @@ fn an_owned_real_cargo_build_that_changes_source_refuses_association() {
 }
 #[test]
 fn rebuilds_follow_source_git_indirection_packed_refs_and_archive_unavailability() {
+    let _trial_scope = common::trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("repo");
     std::fs::create_dir(&root).unwrap();
@@ -254,6 +256,7 @@ fn rebuilds_follow_source_git_indirection_packed_refs_and_archive_unavailability
 #[cfg(target_os = "linux")]
 #[test]
 fn runtime_git_helpers_have_closed_maps_and_private_source_locators_never_publish() {
+    let _trial_scope = common::trial_scope();
     use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
     let dir = tempfile::tempdir().unwrap();
     let discovery = dir.path().join("private-discovery-canary-200");

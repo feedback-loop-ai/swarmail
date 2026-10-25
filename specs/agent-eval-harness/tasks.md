@@ -64,10 +64,11 @@ pinned `brokkr compile --bundle bundles/self` remains the verify seat's.
   runs all 16 null cases, all fail with their declared idle class; real
   wrong-message/stale-code/wrong-link/tool-misuse children produce their
   classes, deadline produces budget, and harness faults produce harness_error.
-- [x] **T11 / AC6:** Add the three-child isolation coordinator and concurrent
-  trial proof. **Proof:** two overlapping isolation trials both pass with
-  two servers and six agents, each server's three distinct AUTH inboxes;
-  foreign-token control fails, and all raw child statuses are preserved.
+- [x] **T11 / AC6 (updated 2026-10-25 under #199):** Preserve the three-child
+  inbox task and foreign-token failure. Replace the historical cooperative
+  overlap proof with an idle-victim/refused-competitor control and subsequent
+  oracle success; all raw child statuses remain honest. Historical overlap
+  receipts are not isolation evidence; baseline trials run sequentially.
 - [x] **T12 / AC9, AC10:** Add reproducible `check`, matrix and report CLI.
   **Proof:** retained snapshot yields the same business verdict, invalid
   state refuses, matrix emits product cardinality despite trial errors,

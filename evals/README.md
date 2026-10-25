@@ -10,6 +10,39 @@ The harness is proven able to fail before it measures anything: every task
 passes with the scripted `oracle` and fails with the do-nothing `null`
 (`tests/proof.rs`).
 
+## Sequential baseline (#199)
+
+The baseline runs sequentially with a fresh HOME per trial (and per agent).
+Every result row records `concurrency: 1`, the supported trial execution limit,
+including refused and unstarted rows; it is neither an executed-agent count nor
+an observation of host activity. Multiple agents inside one inbox-isolation
+trial still run together.
+
+Concurrent trials are not isolated: a same-uid agent can read a concurrent trial's prompt from the shared TMPDIR, use its MCP URL, app URL, identity and inbox context, and complete that trial's task, so the victim's do-nothing agent passes.
+Private TMPDIRs under fixed `/tmp` remain readable by the same uid. Namespace
+isolation belongs to #221. Admission is an advisory, nonblocking reservation
+for cooperating current runners with the same effective uid and shared `/tmp`,
+independent of caller HOME, TMPDIR, cwd, checkout and artifacts. It is not
+confinement across hosts, uids, mount namespaces, old binaries or hostile
+lock bypass. A contender refuses with `concurrent_trials_refused`; unsafe
+admission refuses with `trial_admission_unavailable`. Trial and matrix accept
+`--concurrency 1` (the default); other parsed integers refuse as
+`concurrency_unsupported`, never silently downgrade. A parsed trial emits one
+harness-error row and exits 2; an invalid matrix emits no rows and exits 2.
+
+Admission stays held through owned cleanup, reaping, drains and private-state
+disposal, including a dropped library waiter on a surviving runtime. Unproved
+cleanup stops matrix admission and accounts for its unstarted suffix. Forced
+runner death (SIGKILL/abort), runtime destruction or host failure may release
+the lock without stopping children: these runs are invalid baseline evidence.
+The operator must confirm cleanup before resuming. Lock release is not proof
+of cessation. CI-only house proofs remain CI-owned; #201 owns macOS eval proof.
+
+The local [#151 run plan](run-plan.md) defines baseline controls and accounting.
+Result schema 2 rejects historical schema-1 rows and missing or invalid
+concurrency; use their historical reader rather than inventing metadata.
+Catalogue and snapshot versions are unchanged.
+
 ## Layout and gates
 
 `evals/` is a **standalone crate**: its own `[workspace]` and `Cargo.lock`,
@@ -25,7 +58,7 @@ the implement seat and reproduced by reviewers**. From `evals/`:
 cargo fmt --all -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked                  # everything; the proof alone:
-cargo test --locked --test proof     # oracle 16/16 pass, null 16/16 fail, isolation ×2
+cargo test --locked --test proof     # oracle 16/16 pass, null 16/16 fail, sequential refusal control
 ```
 
 The tests locate the Swarmail under test through `SWARMAIL_BIN`; when it is
@@ -164,7 +197,7 @@ carries a token, code, password, challenge or calendar capability.
 
 ## The result row
 
-One JSON line per trial: `schema_version` (2), `trial_id`, `task`, `agent`,
+One JSON line per trial: `schema_version` (2), required integer `concurrency` (1), `trial_id`, `task`, `agent`,
 `outcome` (`pass|fail|harness_error`), `failure_class` (null only on pass),
 `wall_time_ms` (provisioning through cleanup, excluding the binary build),
 `agent_exit_status` (the single agent's numeric code, else null — always
@@ -277,7 +310,7 @@ agent JSON remains textual. Build homes are explicit nonempty locators or lazy
 original HOME/.cargo and HOME/.rustup defaults. Optional nonempty toolchain and
 target selectors apply only to preparation; there is no inheritance fallback.
 Under the 2026-10-24 operator ruling, row **macOS evidence for `evals/`**, in
-[operator-rulings.md](../.forge/epic192/issue196/operator-rulings.md), `evals/`
+[operator-rulings.md](../.forge/epic192/issue199/operator-rulings.md), `evals/`
 is outside CI on every OS until #201. #201's CI gating owns macOS eval
 preparation/toolchain, clippy/tests and artifact-primitive execution; those
 receipts are not a completion prerequisite for #196. Every Linux preparation,

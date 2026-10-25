@@ -11,7 +11,6 @@ mod common;
 
 use common::*;
 use serde_json::Value;
-use std::thread;
 use swarmail_evals::state::FailureClass;
 use swarmail_evals::tasks::{self, Outcome};
 
@@ -20,24 +19,23 @@ fn helper_agent() {
     maybe_run_helper();
 }
 
-/// Run `f` for every task concurrently and collect the results by id.
-fn per_task<T: Send + 'static>(
-    f: impl Fn(String) -> T + Send + Sync + Copy + 'static,
-) -> Vec<(String, T)> {
+/// Run every task sequentially through the real command path.
+fn per_task<T>(f: impl Fn(String) -> T) -> Vec<(String, T)> {
     swarmail_bin();
-    let handles: Vec<_> = tasks::catalogue()
+    tasks::catalogue()
         .into_iter()
-        .map(|t| {
-            let id = t.id.clone();
-            thread::spawn(move || (id.clone(), f(id)))
+        .map(|task| {
+            let id = task.id;
+            let result = f(id.clone());
+            (id, result)
         })
-        .collect();
-    handles.into_iter().map(|h| h.join().unwrap()).collect()
+        .collect()
 }
 
 /// (a) The positive control: every task passes with the oracle.
 #[test]
 fn every_task_passes_with_the_oracle() {
+    let _trial_scope = trial_scope();
     let results = per_task(|id| {
         let dir = tempfile::tempdir().unwrap();
         let (row, out) = trial(&[
@@ -131,6 +129,7 @@ fn no_goal_completed(state: &Value) -> bool {
 /// idle class the task declares, and nothing was completed.
 #[test]
 fn every_task_fails_with_null_and_its_declared_idle_class() {
+    let _trial_scope = trial_scope();
     let results = per_task(|id| {
         let dir = tempfile::tempdir().unwrap();
         let (row, out) = trial(&[
@@ -168,6 +167,7 @@ fn every_task_fails_with_null_and_its_declared_idle_class() {
 /// Deliberate wrong actions fail in their observable classes.
 #[test]
 fn wrong_actions_fail_in_their_observable_classes() {
+    let _trial_scope = trial_scope();
     swarmail_bin();
     let cases = [
         (
@@ -180,63 +180,80 @@ fn wrong_actions_fail_in_their_observable_classes() {
         ("reset-login", "tool_misuse", FailureClass::ToolMisuse),
         ("inbox-isolation", "foreign", FailureClass::WrongMessage),
     ];
-    let handles: Vec<_> = cases
-        .into_iter()
-        .map(|(task, mode, class)| {
-            thread::spawn(move || {
-                let (row, out) = helper_trial(mode, &["--task", task, "--agent", mode], &[]);
-                (task, class, row, stderr(&out))
-            })
-        })
-        .collect();
-    for h in handles {
-        let (task, class, row, err) = h.join().unwrap();
-        assert_eq!(row.outcome, Outcome::Fail, "{task}: {row:?}\n{err}");
-        assert_eq!(row.failure_class, Some(class), "{task}: {row:?}\n{err}");
+    for (task, mode, class) in cases {
+        let (row, out) = helper_trial(mode, &["--task", task, "--agent", mode], &[]);
+        assert_eq!(
+            row.outcome,
+            Outcome::Fail,
+            "{task}: {row:?}\n{}",
+            stderr(&out)
+        );
+        assert_eq!(row.failure_class, Some(class), "{task}: {row:?}");
     }
 }
 
-/// (c) Isolation: two isolation trials, both live at once (all six agents
-/// meet at a barrier before any acts), both pass.
+/// (c) Sequential admission prevents a competing agent from being launched
+/// while an idle victim is active. No cross-trial attack client is needed.
 #[test]
-fn two_concurrent_isolation_trials_both_pass() {
-    swarmail_bin();
-    let barrier = tempfile::tempdir().unwrap();
-    let dir = barrier.path().to_str().unwrap().to_string();
-    let handles: Vec<_> = (0..2)
-        .map(|_| {
-            let dir = dir.clone();
-            thread::spawn(move || {
-                helper_trial(
-                    "barrier_oracle",
-                    &["--task", "inbox-isolation", "--agent", "oracle-at-barrier"],
-                    &[(BARRIER_DIR_ENV, &dir), (BARRIER_COUNT_ENV, "6")],
-                )
-            })
-        })
-        .collect();
-    let rows: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-    for (row, out) in &rows {
-        assert_eq!(row.outcome, Outcome::Pass, "{row:?}\n{}", stderr(out));
-        assert_eq!(row.agent_exits.len(), 3);
-        assert!(row.agent_exits.iter().all(|e| e.code == Some(0)));
-    }
-    assert_ne!(rows[0].0.trial_id, rows[1].0.trial_id);
-    let idents: std::collections::HashSet<_> = rows
-        .iter()
-        .flat_map(|(r, _)| r.agent_exits.iter().map(|e| e.identity.clone()))
-        .collect();
-    assert_eq!(
-        idents.len(),
-        6,
-        "six distinct identities across the two trials"
+fn sequential_poacher_control_refuses_competing_trial() {
+    let _trial_scope = trial_scope();
+    let dir = tempfile::tempdir().unwrap();
+    let ready = dir.path().join("victim-ready");
+    let (mut command, _wrapper) = helper_command(
+        "held_idle",
+        &[
+            "--task",
+            "signup",
+            "--agent",
+            "idle-victim",
+            "--artifacts-dir",
+            dir.path().to_str().unwrap(),
+        ],
+        &[(MARKER_ENV, ready.to_str().unwrap())],
     );
-    assert_eq!(std::fs::read_dir(barrier.path()).unwrap().count(), 6);
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let victim = ChildGuard {
+        child: Some(command.spawn().unwrap()),
+    };
+    eventually("idle victim readiness", || ready.exists());
+    let launch = dir.path().join("competitor-launched");
+    let (row, out) = trial(&[
+        "--task",
+        "signup",
+        "--agent",
+        "inert-competitor",
+        "--",
+        "/usr/bin/touch",
+        launch.to_str().unwrap(),
+    ]);
+    assert_eq!(row.outcome, Outcome::HarnessError);
+    assert_eq!(row.wall_time_ms, 0);
+    assert!(stderr(&out).contains("concurrent_trials_refused"));
+    assert!(!launch.exists(), "competing agent must never launch");
+    std::fs::write(ready.with_extension("release"), b"release").unwrap();
+    let out = victim.wait_with_output();
+    let row = one_row(&out);
+    assert_eq!(row.outcome, Outcome::Fail, "{}", stderr(&out));
+    assert_eq!(row.failure_class, Some(FailureClass::GaveUp));
+    let state = retained_state(dir.path(), &row);
+    assert!(no_goal_completed(&state));
+    assert!(
+        state["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["accepted"] != true)
+    );
+    let (row, out) = trial(&["--task", "signup", "--agent", "oracle"]);
+    assert_eq!(row.outcome, Outcome::Pass, "{}", stderr(&out));
 }
 
 /// Completed try-all commands must lose even though the real app goal is true.
 #[test]
 fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
+    let _trial_scope = common::trial_scope();
     use swarmail_evals::state::{DeliveryStatus, Flow, Role, Snapshot, action};
     let cases = [
         (

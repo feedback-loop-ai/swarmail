@@ -5,6 +5,7 @@
 //! trial runner that #148's brokkr recipe will wrap. Outside the shipped
 //! crate and its coverage denominator by the operator's 2026-10-18 ruling.
 
+mod admission;
 pub mod fixture;
 pub mod mail;
 pub mod mcp;
@@ -18,3 +19,7 @@ pub mod artifacts;
 pub mod identity;
 pub mod provenance;
 pub mod results;
+
+#[cfg(test)]
+#[path = "../tests/common/coordination.rs"]
+pub(crate) mod test_support;

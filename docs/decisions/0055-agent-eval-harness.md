@@ -176,3 +176,51 @@ historical evidence needs its matching historical binary. The #200 port
 adds required typed provenance and retained replay without changing the
 accepted v2 scorer or accepting any proposal. Original text/status above
 remains historical evidence. Proposed 0073/0075 remain proposed.
+
+
+## Dated addendum — 2026-10-25, operator-directed sequential baseline (#199)
+
+The operator's 2026-10-24 ruling, reproduced in the checksum-verified
+[operator packet](../../.forge/epic192/issue199/operator-rulings.md), directs
+sequential refusal. [0076](0076-sequential-eval-trials.md) records the bounded
+amendment and remains proposed; this addendum accepts no decision. The
+original §6/§9 and overlapping-trial proof above record the historical contract;
+the current sequential contract replaces that overlap requirement. Main already
+uses version 2 under accepted 0071 with required provenance from #200; #199 adds
+required concurrency to those rows without another version bump or legacy reader. The three agents inside a single inbox-isolation task remain supported.
+
+Local replacement for **issue #148 AC4** (“trials can't see each other”):
+The baseline runs sequentially with a fresh HOME per trial (and per agent).
+Every result row records `concurrency: 1`, the supported trial execution limit,
+including refused and unstarted rows; it is neither an executed-agent count nor
+an observation of host activity. Multiple agents inside one inbox-isolation
+trial still run together.
+
+Concurrent trials are not isolated: a same-uid agent can read a concurrent trial's prompt from the shared TMPDIR, use its MCP URL, app URL, identity and inbox context, and complete that trial's task, so the victim's do-nothing agent passes.
+Private TMPDIRs under fixed `/tmp` remain readable by the same uid. Namespace
+isolation belongs to #221. Admission is an advisory, nonblocking reservation
+for cooperating current runners with the same effective uid and shared `/tmp`,
+independent of caller HOME, TMPDIR, cwd, checkout and artifacts. It is not
+confinement across hosts, uids, mount namespaces, old binaries or hostile
+lock bypass. A contender refuses with `concurrent_trials_refused`; unsafe
+admission refuses with `trial_admission_unavailable`. Trial and matrix accept
+`--concurrency 1` (the default); other parsed integers refuse as
+`concurrency_unsupported`, never silently downgrade. A parsed trial emits one
+harness-error row and exits 2; an invalid matrix emits no rows and exits 2.
+
+Admission stays held through owned cleanup, reaping, drains and private-state
+disposal, including a dropped library waiter on a surviving runtime. Unproved
+cleanup stops matrix admission and accounts for its unstarted suffix. Forced
+runner death (SIGKILL/abort), runtime destruction or host failure may release
+the lock without stopping children: these runs are invalid baseline evidence.
+The operator must confirm cleanup before resuming. Lock release is not proof
+of cessation. CI-only house proofs remain CI-owned; #201 owns macOS eval proof.
+
+Result schema is 2 with required integer concurrency 1 on every row, including
+artifacts, interruptions and unstarted refusals. Missing/invalid metadata and
+schema-1 input refuse; no concurrency evidence is inferred. Catalogue/snapshot
+versions, scoring, report formulas and accepted guarantees 0001–0005 stay
+unchanged. Replace the cooperative overlapping-trial proof with the sequential
+idle-victim/refused-competitor control in `evals/tests/proof.rs`, retaining all
+oracle/null and within-trial foreign-token controls. See the local
+[#151 run plan](../../evals/run-plan.md).

@@ -160,11 +160,9 @@ environment. Every catalogue entry has a scripted oracle solution.
 | `inbox-isolation` | multi_step | wrong_message | gave_up | Three concurrent children each confirm their own identity; all three confirmed and no foreign-identity token presentations. |
 
 These are 15 ordinary tasks plus one isolation task. Inside an isolation
-trial there is one Swarmail/app and three distinct AUTH inboxes. Two
-concurrent isolation trials have two Swarmails, two apps and six agents;
-they share no ports, identities or temporary state. The ambiguous intake
-wording about concurrent trials sharing one server is superseded by this
-distinction and the explicit fresh-server-per-trial requirement.
+trial there is one Swarmail/app and three distinct AUTH inboxes. Trials run
+sequentially; distinct ports and identities do not isolate concurrent same-uid
+processes. See the current issue-#148 AC4 replacement below.
 
 ## Scoring and failure taxonomy
 
@@ -245,7 +243,7 @@ and an unwritable result stream cannot promise a line. Commands must not
 daemonize or leave their process groups; unconfined cleanup is not a sandbox.
 
 Exactly one stdout JSON line per attempted trial, diagnostics on stderr:
-`schema_version:2`, `trial_id`, `task`, `agent`, `outcome`
+`schema_version:2`, required integer `concurrency:1`, `trial_id`, `task`, `agent`, `outcome`
 (`pass|fail|harness_error`), `failure_class` (null only on pass),
 `wall_time_ms` (monotonic, provisioning through cleanup, excluding binary
 build), `agent_exit_status` (integer or null), `agent_exits` (ordered records
@@ -304,9 +302,10 @@ Empty denominators/inputs produce null estimates, never NaN or invented
   null; all 16 fail with the row's idle class and zero goal completion.
   Focused wrong-action children provoke wrong_message, stale_code,
   wrong_link and tool_misuse; a nonterminating child proves budget.
-- **AC6 — Isolation:** Two simultaneously active isolation trials both
-  pass, with six agent children, distinct trial resources and three AUTH
-  inboxes per server. A foreign-token control makes isolation fail.
+- **AC6 — Sequential admission and within-trial inboxes:** A held idle
+  victim fails after a competing trial refuses before agent launch. A later
+  oracle passes. Each inbox-isolation trial retains three AUTH inboxes on
+  one server, and its foreign-token control fails.
 - **AC7 — Trap fidelity:** Wire proofs establish both OTP generations,
   Confirm/Unsubscribe/Report, sibling messages, entity URLs, Unicode
   subject, initial wait timeout before release, observed 451 then 250,
@@ -400,8 +399,46 @@ Historical receipts above are not proof of this port. Five fresh 0058 careful
 reviews and every Linux preparation/toolchain/custom-target, eval fmt/locked
 clippy/full-test, artifact, mutation and gate proof remain obligations. Under
 the 2026-10-24 operator ruling, row **macOS evidence for `evals/`**, in
-[operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md), `evals/`
+[operator-rulings.md](../../.forge/epic192/issue199/operator-rulings.md), `evals/`
 is outside CI on every OS until #201. #201's CI gating owns macOS eval
 preparation/toolchain, clippy/tests and selected artifact-primitive execution;
 those receipts do not block #196 (port spec AC13/AC23). This records ownership,
 not macOS execution or existing CI proof.
+
+## 2026-10-25 — local replacement for issue #148 AC4 (#199)
+
+The harness's AC4 above remains the oracle positive control. The issue's
+“trials can't see each other” claim is replaced under the verified operator
+ruling, recorded by [proposed 0076](../../docs/decisions/0076-sequential-eval-trials.md):
+
+The baseline runs sequentially with a fresh HOME per trial (and per agent).
+Every result row records `concurrency: 1`, the supported trial execution limit,
+including refused and unstarted rows; it is neither an executed-agent count nor
+an observation of host activity. Multiple agents inside one inbox-isolation
+trial still run together.
+
+Concurrent trials are not isolated: a same-uid agent can read a concurrent trial's prompt from the shared TMPDIR, use its MCP URL, app URL, identity and inbox context, and complete that trial's task, so the victim's do-nothing agent passes.
+Private TMPDIRs under fixed `/tmp` remain readable by the same uid. Namespace
+isolation belongs to #221. Admission is an advisory, nonblocking reservation
+for cooperating current runners with the same effective uid and shared `/tmp`,
+independent of caller HOME, TMPDIR, cwd, checkout and artifacts. It is not
+confinement across hosts, uids, mount namespaces, old binaries or hostile
+lock bypass. A contender refuses with `concurrent_trials_refused`; unsafe
+admission refuses with `trial_admission_unavailable`. Trial and matrix accept
+`--concurrency 1` (the default); other parsed integers refuse as
+`concurrency_unsupported`, never silently downgrade. A parsed trial emits one
+harness-error row and exits 2; an invalid matrix emits no rows and exits 2.
+
+Admission stays held through owned cleanup, reaping, drains and private-state
+disposal, including a dropped library waiter on a surviving runtime. Unproved
+cleanup stops matrix admission and accounts for its unstarted suffix. Forced
+runner death (SIGKILL/abort), runtime destruction or host failure may release
+the lock without stopping children: these runs are invalid baseline evidence.
+The operator must confirm cleanup before resuming. Lock release is not proof
+of cessation. CI-only house proofs remain CI-owned; #201 owns macOS eval proof.
+
+Every row and retained result uses schema 2 and required integer concurrency 1;
+old-version or missing/invalid metadata refuses in matrix and report. No
+catalogue/snapshot version or scoring change follows. The baseline procedure
+is the local [#151 run plan](../../evals/run-plan.md). Historical overlap proof
+is not current isolation evidence.

@@ -124,6 +124,7 @@ mod cleanup_probe {
         entry: watch::Receiver<bool>,
         release: watch::Receiver<bool>,
         returned: watch::Receiver<bool>,
+        groups: Mutex<Vec<std::sync::Weak<OwnedGroup>>>,
     }
 
     impl Control {
@@ -165,6 +166,7 @@ mod cleanup_probe {
                 entry,
                 release,
                 returned,
+                groups: Mutex::new(Vec::new()),
             }
         }
 
@@ -195,6 +197,38 @@ mod cleanup_probe {
             let release = self.release.clone();
             self.event(format!("held {pid}"));
             Self::gate(release).await
+        }
+
+        pub(super) fn record_group(&self, group: &Arc<OwnedGroup>) {
+            self.groups.lock().unwrap().push(Arc::downgrade(group));
+        }
+
+        // The failed-cleanup probes observe only the background failure owner:
+        // no caller, reaper or ordinary output task may mask an early release.
+        pub(super) async fn failed_owners_only(&self) {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let ready = self.groups.lock().unwrap().iter().all(|weak| {
+                    weak.upgrade().is_none_or(|group| {
+                        Arc::strong_count(&group) == 2
+                            && group.status().is_some_and(|status| status.is_ok())
+                            && group
+                                .drains
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .all(|drain| drain.is_finished())
+                    })
+                });
+                if ready {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "unrelated cleanup owners finished"
+                );
+                tokio::task::yield_now().await;
+            }
         }
 
         pub(super) async fn acknowledge_return(&self) {
@@ -236,6 +270,8 @@ pub struct AgentExit {
 #[serde(deny_unknown_fields)]
 pub struct TrialResult {
     pub schema_version: u32,
+    /// Supported trial execution limit, including refused/unstarted rows.
+    pub concurrency: u32,
     pub trial_id: String,
     #[serde(deserialize_with = "crate::provenance::nullable")]
     pub task: Option<String>,
@@ -325,6 +361,9 @@ impl TrialResult {
                 self.schema_version
             ));
         }
+        if self.concurrency != 1 {
+            return Err("concurrency must be 1".into());
+        }
         if self.confinement != CONFINEMENT {
             return Err(format!(
                 "confinement {:?} is not {CONFINEMENT:?}",
@@ -357,6 +396,7 @@ pub struct TrialRequest {
     pub argv: Vec<OsString>,
     pub deadline_ms: Option<u64>,
     pub artifacts_dir: Option<PathBuf>,
+    pub concurrency: Option<u32>,
     pub fixture: crate::provenance::FixtureInputs,
     pub matrix: Option<crate::provenance::MatrixCoordinates>,
     pub trial_id: Option<String>,
@@ -774,7 +814,11 @@ pub fn resolve_swarmail_bin() -> Result<PathBuf, String> {
 
 /// The process groups this trial owns, for cleanup on any handled path.
 #[derive(Clone, Default)]
-pub struct Groups(Arc<Mutex<Vec<Arc<OwnedGroup>>>>);
+pub struct Groups(
+    Arc<Mutex<Vec<Arc<OwnedGroup>>>>,
+    Option<Arc<crate::admission::Admission>>,
+    #[cfg(all(test, target_os = "linux"))] Option<Arc<DrainTestControl>>,
+);
 
 type ExitWatch = tokio::sync::watch::Receiver<Option<Result<ExitStatus, String>>>;
 type CleanupWatch = tokio::sync::watch::Receiver<Option<Result<(), String>>>;
@@ -788,6 +832,32 @@ struct OwnedGroup {
     cleanup: Mutex<Option<CleanupWatch>>,
     drains: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     _runtime: Option<Arc<tempfile::TempDir>>,
+    _admission: Option<Arc<crate::admission::Admission>>,
+    #[cfg(all(test, target_os = "linux"))]
+    drain_probe: Option<Arc<DrainTestControl>>,
+}
+
+// Per-spawn holds for the actual specialized stdout consumers. These carry
+// no admission, runtime or process owner; tests retain only non-owning observers.
+#[cfg(all(test, target_os = "linux"))]
+#[derive(Default)]
+struct DrainHold {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+impl DrainHold {
+    async fn wait(&self) {
+        self.entered.notify_one();
+        self.release.notified().await;
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+struct DrainTestControl {
+    stdout: DrainHold,
+    progress: tokio::sync::mpsc::UnboundedSender<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -991,8 +1061,49 @@ impl OwnedGroup {
         *slot = Some(rx.clone());
         let group = self.clone();
         tokio::spawn(async move {
-            let result = group.cleanup_once().await;
+            let result = group.clone().cleanup_once().await;
+            let failed = result.is_err();
             tx.send_replace(Some(result));
+            if failed {
+                // Keep this existing cleanup owner, private state and admission
+                // alive after an unproved cleanup. Reporting an error is not
+                // evidence that a child stopped. Do not change the cached verdict.
+                loop {
+                    if group_members(&group).is_ok_and(|members| members.is_empty())
+                        && group.status().is_some_and(|status| status.is_ok())
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(CLEANUP_POLL).await;
+                }
+                let drains =
+                    std::mem::take(&mut *group.drains.lock().unwrap_or_else(|e| e.into_inner()));
+                for mut drain in drains {
+                    #[cfg(all(test, target_os = "linux"))]
+                    if let Some(probe) = &group.drain_probe {
+                        let mut reported = false;
+                        let _ = std::future::poll_fn(|cx| {
+                            let result = std::pin::Pin::new(&mut drain).poll(cx);
+                            if result.is_pending() && !reported {
+                                let _ = probe.progress.send("drain-pending");
+                                reported = true;
+                            }
+                            result
+                        })
+                        .await;
+                        continue;
+                    }
+                    let _ = (&mut drain).await;
+                }
+            }
+            #[cfg(all(test, target_os = "linux"))]
+            {
+                let probe = group.drain_probe.clone();
+                drop(group);
+                if let Some(probe) = probe {
+                    let _ = probe.progress.send("owner-disposed");
+                }
+            }
         });
         rx
     }
@@ -1124,11 +1235,17 @@ impl OwnedGroup {
             return Err(format!("cannot reap process {}: {e}", self.pid));
         }
         let drains = std::mem::take(&mut *self.drains.lock().unwrap_or_else(|e| e.into_inner()));
-        for mut drain in drains {
+        let mut drains = drains.into_iter();
+        while let Some(mut drain) = drains.next() {
             if tokio::time::timeout_at(final_deadline, &mut drain)
                 .await
                 .is_err()
             {
+                // The failed-cleanup owner must join this handle and the
+                // unvisited suffix before releasing private state or admission.
+                let mut retained = self.drains.lock().unwrap_or_else(|e| e.into_inner());
+                retained.push(drain);
+                retained.extend(drains);
                 return Err(format!(
                     "output pipe did not close after process group {} stopped",
                     self.pgid
@@ -1330,8 +1447,13 @@ fn drain<R: AsyncRead + Unpin + Send + 'static>(
     mut reader: R,
     role: Option<ServerRole>,
     announcement: Option<oneshot::Sender<Announcement>>,
+    lifetime: (
+        Option<Arc<tempfile::TempDir>>,
+        Option<Arc<crate::admission::Admission>>,
+    ),
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let _lifetime = lifetime;
         let mut announcement = announcement;
         let mut chunk = [0u8; 8192];
         let mut line = Vec::with_capacity(ANNOUNCEMENT_LINE_LIMIT);
@@ -1466,10 +1588,18 @@ fn spawn_extended(
         cleanup: Mutex::new(None),
         drains: Mutex::new(Vec::new()),
         _runtime: runtime.clone(),
+        _admission: groups.1.clone(),
+        #[cfg(all(test, target_os = "linux"))]
+        drain_probe: groups.2.clone(),
     });
+    #[cfg(all(test, target_os = "linux"))]
+    if let Some(control) = cleanup_probe::CURRENT.get() {
+        control.record_group(&group);
+    }
     groups.add(group.clone());
+    let admission = groups.1.clone();
     tokio::spawn(async move {
-        let _runtime = runtime;
+        let _lifetime = (runtime, admission);
         let result = child.wait().await.map_err(|_| "process_wait_failed".into());
         status_tx.send_replace(Some(result));
     });
@@ -1481,6 +1611,8 @@ fn spawn_extended(
     };
     let mut drains = group.drains.lock().unwrap_or_else(|e| e.into_inner());
     let mut captured = None;
+    #[cfg(all(test, target_os = "linux"))]
+    let stdout_probe = groups.2.clone();
     let cargo_records = if capture {
         let (tx, rx) = oneshot::channel();
         captured = Some(rx);
@@ -1507,6 +1639,10 @@ fn spawn_extended(
                     Err(_) => break Err("helper_output_failed".into()),
                 }
             };
+            #[cfg(all(test, target_os = "linux"))]
+            if let Some(probe) = stdout_probe {
+                probe.stdout.wait().await;
+            }
             let _ = tx.send(result);
         }));
         None
@@ -1523,14 +1659,28 @@ fn spawn_extended(
                     Err(_) => break Err("cargo_output_read_failed".into()),
                 }
             };
+            #[cfg(all(test, target_os = "linux"))]
+            if let Some(probe) = stdout_probe {
+                probe.stdout.wait().await;
+            }
             let _ = tx.send(result);
         }));
         Some(rx)
     } else {
-        drains.push(drain(stdout, role, sender));
+        drains.push(drain(
+            stdout,
+            role,
+            sender,
+            (group._runtime.clone(), groups.1.clone()),
+        ));
         None
     };
-    drains.push(drain(stderr, None, None));
+    drains.push(drain(
+        stderr,
+        None,
+        None,
+        (group._runtime.clone(), groups.1.clone()),
+    ));
     drop(drains);
     Ok(Proc {
         child: ProcessWait {
@@ -1843,6 +1993,9 @@ fn agent_argv(label: &str, argv: &[OsString], caller: &CallerEnv) -> Result<Vec<
 
 /// Validate the request before anything starts.
 pub fn validate_request(req: &TrialRequest) -> Result<(Task, String), String> {
+    if req.concurrency.unwrap_or(1) != 1 {
+        return Err("concurrency_unsupported".into());
+    }
     let task_id = req.task.as_deref().ok_or("--task is required")?;
     let mut task = tasks::find(task_id).ok_or_else(|| format!("unknown task {task_id}"))?;
     let label = req.agent.as_deref().ok_or("--agent is required")?;
@@ -1896,6 +2049,7 @@ pub fn validate_request(req: &TrialRequest) -> Result<(Task, String), String> {
 pub fn refused_row(req: &TrialRequest, trial_id: &str) -> TrialResult {
     TrialResult {
         schema_version: RESULT_SCHEMA,
+        concurrency: 1,
         trial_id: trial_id.to_string(),
         task: req
             .task
@@ -2331,13 +2485,38 @@ fn safe_trial_category(error: &str) -> &'static str {
 }
 
 /// Run one trial to its one result row. Diagnostics go to stderr.
-pub async fn run_trial(mut req: TrialRequest, swarmail_bin: Option<PathBuf>) -> TrialResult {
+pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> TrialResult {
     let id = req.trial_id.clone().unwrap_or_else(new_trial_id);
+    if req.concurrency.unwrap_or(1) != 1 {
+        eprintln!("swarmail-evals: harness error: concurrency_unsupported");
+        return finalize(&req, refused_row(&req, &id), None);
+    }
+    let admission = match crate::admission::Admission::acquire() {
+        Ok(guard) => Arc::new(guard),
+        Err(category) => {
+            eprintln!("swarmail-evals: harness error: {category}");
+            return finalize(&req, refused_row(&req, &id), None);
+        }
+    };
+    let fallback = refused_row(&req, &id);
+    // A dropped library waiter detaches this owner on a surviving runtime.
+    // Admission encloses target recheck and retention as well as owned cleanup.
+    tokio::spawn(run_admitted_trial(req, swarmail_bin, id, admission))
+        .await
+        .unwrap_or(fallback)
+}
+
+async fn run_admitted_trial(
+    mut req: TrialRequest,
+    swarmail_bin: Option<PathBuf>,
+    id: String,
+    admission: Arc<crate::admission::Admission>,
+) -> TrialResult {
     eprintln!(
         "swarmail-evals: seed={} fixture_time={}",
         req.fixture.seed, req.fixture.fixture_time
     );
-    let (mut row, snap) = execute_trial(&mut req, swarmail_bin, id).await;
+    let (mut row, snap) = execute_trial(&mut req, swarmail_bin, id, admission.clone()).await;
     if req
         .target_build
         .as_ref()
@@ -2346,7 +2525,15 @@ pub async fn run_trial(mut req: TrialRequest, swarmail_bin: Option<PathBuf>) -> 
         row.outcome = Outcome::HarnessError;
         row.failure_class = Some(FailureClass::HarnessError);
     }
-    finalize(&req, row, snap.as_ref())
+    let row = finalize(&req, row, snap.as_ref());
+    #[cfg(test)]
+    if let Some(dir) = std::env::var_os("EVAL_TEST_FINALIZE_HOLD_DIR").map(PathBuf::from) {
+        std::fs::write(dir.join("finalized"), &row.trial_id).unwrap();
+        while !dir.join("finalize-release").exists() {
+            tokio::task::yield_now().await;
+        }
+    }
+    row
 }
 
 pub fn finalize(req: &TrialRequest, mut row: TrialResult, snap: Option<&Snapshot>) -> TrialResult {
@@ -2370,6 +2557,7 @@ async fn execute_trial(
     req: &mut TrialRequest,
     swarmail_bin: Option<PathBuf>,
     trial_id: String,
+    admission: Arc<crate::admission::Admission>,
 ) -> (TrialResult, Option<Snapshot>) {
     let (task, label) = match validate_request(req) {
         Ok(v) => v,
@@ -2397,7 +2585,12 @@ async fn execute_trial(
         }
     }
     let started = Arc::new(Mutex::new(None::<Instant>));
-    let groups = Groups::default();
+    let groups = Groups(
+        Default::default(),
+        Some(admission),
+        #[cfg(all(test, target_os = "linux"))]
+        None,
+    );
     let agents = Arc::new(Mutex::new(Vec::<(String, i32)>::new()));
     // Registered before any child starts, so an interrupt at any phase
     // takes the cleanup path and still yields the row.
@@ -2526,6 +2719,7 @@ async fn execute_trial(
             .expect("acknowledge cleanup wait bypass return");
         }
         if let Err(e) = cleanup_result {
+            eprintln!("swarmail-evals: harness error: trial_cleanup_unproved");
             eprintln!(
                 "swarmail-evals: interrupted trial cleanup failed: {}",
                 safe_cleanup_category(&e)
@@ -2547,6 +2741,7 @@ async fn execute_trial(
         return (
             TrialResult {
                 schema_version: RESULT_SCHEMA,
+                concurrency: 1,
                 trial_id,
                 task: req.task.clone(),
                 agent: req.agent.clone(),
@@ -2644,6 +2839,7 @@ async fn execute_trial(
         }
     };
     if let Err(e) = cleanup_result {
+        eprintln!("swarmail-evals: harness error: trial_cleanup_unproved");
         diagnostics.push(format!(
             "owned process cleanup failed: {}",
             safe_cleanup_category(&e)
@@ -2669,6 +2865,7 @@ async fn execute_trial(
         .clone();
     let row = TrialResult {
         schema_version: RESULT_SCHEMA,
+        concurrency: 1,
         trial_id: trial_id.clone(),
         task: Some(task.id.clone()),
         agent: Some(label),
@@ -2898,6 +3095,7 @@ fn recheck_digest(
 #[cfg(all(test, target_os = "linux"))]
 mod test_probes {
     use super::*;
+    use std::io::Write as _;
     use std::os::unix::process::{CommandExt, ExitStatusExt};
     use std::process::Command;
 
@@ -2984,6 +3182,11 @@ mod test_probes {
             }
             let row = run_trial(req, Some(PathBuf::from(bin))).await;
             if let Some(control) = cleanup_probe::CURRENT.get() {
+                if std::env::var_os(CLEANUP_OBSERVE_ERROR_ENV).is_some()
+                    || std::env::var_os(CLEANUP_FORCE_EXPIRY_ENV).is_some()
+                {
+                    control.failed_owners_only().await;
+                }
                 // Publish actual return before retaining the runtime for the
                 // parent's live-work observation. This is not a cleanup fence.
                 control.acknowledge_return().await;
@@ -2992,6 +3195,274 @@ mod test_probes {
         });
         assert_eq!(row.outcome, Outcome::HarnessError);
         println!("{}", serde_json::to_string(&row).unwrap());
+    }
+
+    async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(25), future)
+            .await
+            .expect("cleanup regression hang watchdog")
+    }
+
+    async fn finished(handle: &tokio::task::AbortHandle) {
+        within(async {
+            while !handle.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+
+    fn drain_timeout_retention(cargo: bool, suffix: bool) {
+        let _trial_scope = crate::test_support::trial_scope();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (progress, mut events) = tokio::sync::mpsc::unbounded_channel();
+                let probe = Arc::new(DrainTestControl {
+                    stdout: DrainHold::default(),
+                    progress,
+                });
+                let admission = Arc::new(crate::admission::Admission::acquire().unwrap());
+                let groups = Groups(Default::default(), Some(admission), Some(probe.clone()));
+                let private = Arc::new(private_tempdir("swarmail-eval-drain-").unwrap());
+                let private_path = private.path().to_path_buf();
+                let mut cmd = tokio::process::Command::new("/bin/sh");
+                cmd.args([
+                    "-c",
+                    if cargo {
+                        r#"printf '%s\n' '{"reason":"build-finished","success":true}'"#
+                    } else {
+                        "printf helper-output"
+                    },
+                ]);
+                let mut proc = if cargo {
+                    spawn_owned_cargo(cmd, &groups, private.clone()).unwrap()
+                } else {
+                    spawn_extended(cmd, &groups, None, Some(private.clone()), false, true).unwrap()
+                };
+                within(probe.stdout.entered.notified()).await;
+                assert!(within(proc.child.wait()).await.unwrap().success());
+                assert!(group_members(&proc.group).unwrap().is_empty());
+                let (stdout, stderr) = {
+                    let drains = proc.group.drains.lock().unwrap();
+                    (drains[0].abort_handle(), drains[1].abort_handle())
+                };
+                finished(&stderr).await;
+                assert!(!stdout.is_finished());
+                let later = Arc::new(DrainHold::default());
+                let later_task = if suffix {
+                    let hold = later.clone();
+                    let task = tokio::spawn(async move { hold.wait().await });
+                    let observer = task.abort_handle();
+                    proc.group.drains.lock().unwrap().push(task);
+                    within(later.entered.notified()).await;
+                    Some(observer)
+                } else {
+                    None
+                };
+                let weak = Arc::downgrade(&proc.group);
+                let mut verdict = proc.group.ensure_cleanup();
+                let error = within(async {
+                    loop {
+                        if let Some(result) = verdict.borrow_and_update().clone() {
+                            break result.unwrap_err();
+                        }
+                        verdict.changed().await.unwrap();
+                    }
+                })
+                .await;
+                assert!(error.starts_with("output pipe did not close after process group"));
+                // Neither observers nor the cached verdict own the process group.
+                // Wait for the failure owner to poll a retained drain or dispose
+                // itself: an unscheduled owner cannot make the baseline pass.
+                drop(proc);
+                drop(groups);
+                drop(private);
+                let transition = within(events.recv()).await.unwrap();
+                assert!(matches!(transition, "drain-pending" | "owner-disposed"));
+                assert!(
+                    matches!(crate::admission::Admission::acquire(), Err("concurrent_trials_refused")),
+                    "pending stdout must retain admission after the failed cleanup owner progresses ({transition})"
+                );
+                assert!(private_path.is_dir(), "pending stdout retains private state");
+                assert_eq!(weak.strong_count(), 1, "only the cleanup owner remains");
+
+                probe.stdout.release.notify_one();
+                finished(&stdout).await;
+                if let Some(later_task) = later_task {
+                    let transition = within(events.recv()).await.unwrap();
+                    assert!(matches!(transition, "drain-pending" | "owner-disposed"));
+                    assert!(!later_task.is_finished());
+                    assert!(
+                        matches!(crate::admission::Admission::acquire(), Err("concurrent_trials_refused")),
+                        "the unvisited suffix must retain admission after stdout finishes"
+                    );
+                    assert!(private_path.is_dir(), "the suffix retains private state");
+                    later.release.notify_one();
+                    finished(&later_task).await;
+                }
+                assert_eq!(within(events.recv()).await, Some("owner-disposed"));
+                assert_eq!(weak.strong_count(), 0);
+                assert!(!private_path.exists(), "private state disposed before admission release");
+                drop(crate::admission::Admission::acquire().unwrap());
+                assert_eq!(verdict.borrow().as_ref().unwrap(), &Err(error));
+                assert!(!verdict.has_changed().unwrap_or(false), "the failed verdict stays cached");
+            });
+    }
+
+    #[test]
+    fn cleanup_drain_timeout_retains_helper_stdout() {
+        drain_timeout_retention(false, false);
+    }
+
+    #[test]
+    fn cleanup_drain_timeout_retains_cargo_stdout() {
+        drain_timeout_retention(true, false);
+    }
+
+    #[test]
+    fn cleanup_drain_timeout_retains_unjoined_suffix() {
+        drain_timeout_retention(false, true);
+    }
+
+    #[test]
+    fn sequential_library_probe_entrypoint() {
+        let Some(dir) = std::env::var_os("EVAL_TEST_LIBRARY_DROP_DIR").map(PathBuf::from) else {
+            return;
+        };
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let req = TrialRequest {
+                task: Some("signup".into()),
+                agent: Some("held-library-agent".into()),
+                artifacts_dir: Some(dir.join("artifacts")),
+                argv: vec!["/bin/sh".into(), dir.join("agent.sh").into_os_string()],
+                ..Default::default()
+            };
+            let waiter = tokio::spawn(run_trial(
+                req,
+                Some(PathBuf::from(std::env::var_os(BIN_ENV).unwrap())),
+            ));
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !dir.join("ready").exists() {
+                assert!(Instant::now() < deadline);
+                tokio::task::yield_now().await;
+            }
+            waiter.abort();
+            assert!(waiter.await.unwrap_err().is_cancelled());
+            let refused = run_trial(
+                TrialRequest {
+                    task: Some("signup".into()),
+                    agent: Some("null".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
+            assert_eq!(refused.outcome, Outcome::HarnessError);
+            assert_eq!(refused.wall_time_ms, 0);
+            assert!(refused.agent_exits.is_empty());
+            assert_eq!(refused.concurrency, 1);
+            assert!(matches!(
+                crate::admission::Admission::acquire(),
+                Err("concurrent_trials_refused")
+            ));
+            std::fs::write(dir.join("waiter-dropped"), b"dropped").unwrap();
+            loop {
+                match crate::admission::Admission::acquire() {
+                    Ok(guard) => {
+                        drop(guard);
+                        break;
+                    }
+                    Err("concurrent_trials_refused") => {
+                        assert!(Instant::now() < deadline);
+                        tokio::task::yield_now().await;
+                    }
+                    Err(other) => panic!("unexpected admission: {other}"),
+                }
+            }
+            let home = std::fs::read_to_string(dir.join("ready")).unwrap();
+            assert!(
+                !Path::new(&home).exists(),
+                "private state disposed before admission release"
+            );
+        });
+    }
+
+    #[test]
+    fn sequential_admission_library_and_cleanup_lifetime() {
+        let _trial_scope = crate::test_support::trial_scope();
+        let dir = tempfile::tempdir().unwrap();
+        let script = format!(
+            "#!/bin/sh\nprintf '%s' \"$HOME\" > '{}'\nwhile [ ! -e '{}' ]; do :; done\n",
+            dir.path().join("ready").display(),
+            dir.path().join("release").display()
+        );
+        std::fs::write(dir.path().join("agent.sh"), script).unwrap();
+        let output = std::fs::File::create(dir.path().join("output")).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "runner::test_probes::sequential_library_probe_entrypoint",
+                "--nocapture",
+            ])
+            .env("EVAL_TEST_LIBRARY_DROP_DIR", dir.path())
+            .env("EVAL_TEST_FINALIZE_HOLD_DIR", dir.path())
+            .env(BIN_ENV, resolve_swarmail_bin().unwrap())
+            .env(
+                "EVAL_TEST_RUNNER_EXECUTABLE",
+                std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("swarmail-evals"),
+            )
+            .stdout(output.try_clone().unwrap())
+            .stderr(output);
+        struct LibraryProbe(std::process::Child, PathBuf);
+        impl Drop for LibraryProbe {
+            fn drop(&mut self) {
+                let _ = std::fs::write(self.1.join("release"), b"release");
+                let _ = std::fs::write(self.1.join("finalize-release"), b"release");
+                let _ = self.0.wait();
+            }
+        }
+        let mut probe = LibraryProbe(command.spawn().unwrap(), dir.path().to_path_buf());
+        eventually("dropped library waiter", || {
+            dir.path().join("waiter-dropped").exists()
+        });
+        assert!(matches!(
+            crate::admission::Admission::acquire(),
+            Err("concurrent_trials_refused")
+        ));
+        std::fs::write(dir.path().join("release"), b"release").unwrap();
+        eventually("detached trial finalized", || {
+            dir.path().join("finalized").exists()
+        });
+        assert!(
+            matches!(
+                crate::admission::Admission::acquire(),
+                Err("concurrent_trials_refused")
+            ),
+            "admission encloses finalization after execute_trial returns"
+        );
+        let trial_id = std::fs::read_to_string(dir.path().join("finalized")).unwrap();
+        let retained =
+            crate::artifacts::trial(&dir.path().join("artifacts").join(trial_id)).unwrap();
+        assert_eq!(retained.row.outcome, Outcome::Fail);
+        assert_eq!(retained.row.concurrency, 1);
+        std::fs::write(dir.path().join("finalize-release"), b"release").unwrap();
+        assert!(
+            probe.0.wait().unwrap().success(),
+            "{}",
+            std::fs::read_to_string(dir.path().join("output")).unwrap()
+        );
+        drop(crate::admission::Admission::acquire().unwrap());
     }
 
     #[test]
@@ -3059,6 +3530,7 @@ mod test_probes {
 
     #[test]
     fn runner_guard_finish_rejection_fails_in_isolated_process_and_rescues() {
+        let _trial_scope = crate::test_support::trial_scope();
         let dir = tempfile::tempdir().unwrap();
         let child = Command::new(std::env::current_exe().unwrap())
             .args([
@@ -3534,6 +4006,11 @@ wait "$child"
             cmd.env("EVAL_TEST_RUNNER_AGENT_MODE", "leader_first");
         }
         let mut script_text = std::fs::read_to_string(&script).unwrap();
+        if matches!(fault, Some("observation_error" | "forced_expiry")) {
+            // The surviving descendant must not keep ordinary pipe drains (and
+            // their independent lifetime captures) alive in the retention proof.
+            script_text = script_text.replace("exec sleep 1000", "exec sleep 1000 >/dev/null 2>&1");
+        }
         let mut setup = format!(
             "#!/bin/sh\n/usr/bin/env -0 > '{}'\n",
             dir.join("runtime-env").display()
@@ -3743,6 +4220,7 @@ wait "$child"
 
     #[test]
     fn cleanup_handshake_failure_teardown_releases_all_gates_and_reaps() {
+        let _trial_scope = crate::test_support::trial_scope();
         let dir = tempfile::tempdir().unwrap();
         let mut identities = Vec::new();
         let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -3811,6 +4289,7 @@ wait "$child"
 
     #[test]
     fn runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults() {
+        let _trial_scope = crate::test_support::trial_scope();
         for delayed in [false, true] {
             let cases = [
                 (None, Some(libc::SIGTERM)),
@@ -3827,6 +4306,13 @@ wait "$child"
                     unsafe { libc::kill(probe.pid(), signal) };
                 }
                 causal_cleanup_pending(&mut probe, delayed, false);
+                assert!(
+                    matches!(
+                        crate::admission::Admission::acquire(),
+                        Err("concurrent_trials_refused")
+                    ),
+                    "admission remains held through acknowledged pending cleanup"
+                );
                 probe.release();
                 probe.await_return();
                 assert!(
@@ -3870,6 +4356,7 @@ wait "$child"
 
     #[test]
     fn mixed_signals_after_cleanup_budget_creation_keep_one_owner_and_fixed_budgets() {
+        let _trial_scope = crate::test_support::trial_scope();
         let dir = tempfile::tempdir().unwrap();
         let budget_hold = dir.path().join("cleanup-budget");
         std::fs::create_dir_all(&budget_hold).unwrap();
@@ -3975,30 +4462,31 @@ wait "$child"
 
     #[test]
     fn cleanup_observation_error_and_forced_expiry_fail_with_live_owned_processes() {
+        let _trial_scope = crate::test_support::trial_scope();
         for (fault, expected) in [
             ("observation_error", "cleanup_observation_failed"),
             ("forced_expiry", "cleanup_expired"),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let mut probe =
-                launch_probe_with_controls(dir.path(), Some(fault), false, false, true, false);
+            let mut probe = launch_probe(
+                dir.path(),
+                Some(fault),
+                false,
+                false,
+                true,
+                false,
+                Some(false),
+            );
             probe.record_owned_from_tree();
             let direct_agent = probe.owned.first().unwrap().clone();
             std::fs::write(dir.path().join("fault-release"), b"release").unwrap();
             eventually("the actual cleanup join to become Pending", || {
                 probe.pending.is_file()
             });
-            let status = probe.wait_for(Duration::from_secs(12));
+            probe.await_return();
             assert!(
-                status.is_some_and(|status| status.success()),
-                "cleanup probe did not finish; stdout={}; stderr={}; owned={:?}",
-                std::fs::read_to_string(dir.path().join("probe.stdout")).unwrap_or_default(),
-                std::fs::read_to_string(dir.path().join("probe.stderr")).unwrap_or_default(),
-                probe
-                    .owned
-                    .iter()
-                    .map(|id| (id.pid, identity(id.pid)))
-                    .collect::<Vec<_>>()
+                probe.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+                "the failure verdict is observed on a surviving runtime"
             );
             assert!(
                 identity(direct_agent.pid).is_none(),
@@ -4007,6 +4495,23 @@ wait "$child"
             assert!(
                 probe.owned.iter().any(alive),
                 "the test observed a real surviving owned process"
+            );
+            let bytes = std::fs::read(dir.path().join("runtime-env")).unwrap();
+            let home = bytes
+                .split(|byte| *byte == 0)
+                .find_map(|entry| entry.strip_prefix(b"HOME="))
+                .map(|value| PathBuf::from(OsStr::from_bytes(value)))
+                .unwrap();
+            assert!(
+                matches!(
+                    crate::admission::Admission::acquire(),
+                    Err("concurrent_trials_refused")
+                ),
+                "failed cleanup must retain admission with live owned work: {fault}"
+            );
+            assert!(
+                home.is_dir(),
+                "failed cleanup retains private state: {fault}"
             );
             assert!(
                 probe.finish().is_err(),
@@ -4019,6 +4524,17 @@ wait "$child"
                 "the test guard safely terminates the retained group"
             );
             assert!(probe.owned.iter().all(|identity| !alive(identity)));
+            eventually(
+                "failed owner to release admission after actual cleanup",
+                || crate::admission::Admission::acquire().is_ok(),
+            );
+            assert!(
+                !home.exists(),
+                "private state disposed before reuse: {fault}"
+            );
+            probe.acknowledge_return();
+            assert!(probe.wait().success());
+            assert!(probe.finish().is_ok());
         }
     }
 
@@ -4037,16 +4553,19 @@ wait "$child"
 
     #[test]
     fn server_death_during_the_trial_is_a_harness_error() {
+        let _trial_scope = crate::test_support::trial_scope();
         fault_privacy_case("server_death", "service_exited_during_trial");
     }
 
     #[test]
     fn a_runner_panic_cleans_up_and_still_emits_one_row() {
+        let _trial_scope = crate::test_support::trial_scope();
         fault_privacy_case("panic", "runner_panicked");
     }
 
     #[test]
     fn trial_runtime_owner_survives_aborted_body() {
+        let _trial_scope = crate::test_support::trial_scope();
         let dir = tempfile::tempdir().unwrap();
         let mut probe = launch_probe_with_controls(dir.path(), None, true, false, false, false);
         let bytes = std::fs::read(dir.path().join("runtime-env")).unwrap();
@@ -4085,6 +4604,7 @@ wait "$child"
 
     #[test]
     fn runner_probe_failure_teardown_handles_owner_and_leader_exit() {
+        let _trial_scope = crate::test_support::trial_scope();
         let dir = tempfile::tempdir().unwrap();
         let bypass = dir.path().join("cleanup-bypass");
         let mut probe = launch_probe_with_controls(dir.path(), None, true, true, true, true);
@@ -4128,6 +4648,7 @@ wait "$child"
 
     #[test]
     fn trial_pre_handler_control_runs_before_owned_children_exist() {
+        let _trial_scope = crate::test_support::trial_scope();
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("must-not-start.sh");
         std::fs::write(&script, "#!/bin/sh\ntouch \"$EVAL_TEST_RUNNER_PIDS\"\n").unwrap();

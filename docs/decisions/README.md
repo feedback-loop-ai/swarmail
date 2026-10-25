@@ -79,6 +79,7 @@ them. What may land while a decision is still proposed is stated in
 | [0073](0073-matrix-cancellation.md) | Matrix cancellation stops admission and waits for owned cleanup with complete schema-1 accounting | proposed — awaiting the operator | (Epic #192, issue #194) |
 | [0074](0074-strict-native-queries.md) | Refuse unsupported queries before native operations | proposed — awaiting the operator | (Epic #192, issue #197) |
 | [0075](0075-eval-privacy.md) | Closed eval environments and safe diagnostics (renumbered from 0062) | proposed — awaiting the operator | (Epic #192, issue #196 on #194) |
+| [0076](0076-sequential-eval-trials.md) | Sequential eval trials with explicit concurrency evidence | proposed — awaiting the operator | (Epic #192, issue #199) |
 | [0077](0077-webhook-ca-port.md) | Compatible webhook CA port and LOW repairs | proposed — awaiting the operator | (Epic #192, issue #195) |
 | [0078](0078-ca-executor-ownership.md) | Bounded CA ownership, logical accounting and admission | proposed — awaiting the operator | (Epic #192, issue #220; compatible choices under accepted 0069) |
 

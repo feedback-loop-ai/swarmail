@@ -203,6 +203,7 @@ fn permission_mode(path: &Path) -> u32 {
 
 #[test]
 fn artifacts_are_private_under_permissive_and_restrictive_umasks() {
+    let _trial_scope = trial_scope();
     let canary = "synthetic-artifact-umask-canary-196";
     for mask in ["0002", "0000", "0777"] {
         let owner = tempfile::tempdir().unwrap();
@@ -288,6 +289,7 @@ fn helper_agent() {
 
 #[test]
 fn an_external_agent_gets_literal_argv_and_identical_prompt_and_env() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("echo.json");
     let (row, out) = helper_trial(
@@ -456,6 +458,7 @@ fn an_external_agent_gets_literal_argv_and_identical_prompt_and_env() {
 
 #[test]
 fn relative_and_bare_agent_programs_resolve_at_the_caller_boundary() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let tool_dir = dir.path().join("tools");
     std::fs::create_dir(&tool_dir).unwrap();
@@ -563,6 +566,7 @@ fn capture_then_exec(
 #[cfg(target_os = "linux")]
 #[test]
 fn fixture_gets_only_its_private_runtime_map_and_generated_admin_input() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("fixture-env");
     let (row, out) = helper_trial(
@@ -641,6 +645,7 @@ fn fixture_gets_only_its_private_runtime_map_and_generated_admin_input() {
 
 #[test]
 fn swarmail_gets_only_its_fixed_runtime_map() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let wrapper = capture_then_exec(dir.path(), "swarmail", swarmail_bin());
     let out = cli()
@@ -696,6 +701,7 @@ fn swarmail_gets_only_its_fixed_runtime_map() {
 
 #[test]
 fn readiness_discards_an_oversized_preannouncement_flood() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let binary = swarmail_bin();
     let wrapper = dir.path().join("noisy-swarmail.sh");
@@ -722,6 +728,7 @@ fn readiness_discards_an_oversized_preannouncement_flood() {
 
 #[test]
 fn readiness_continues_draining_after_the_first_valid_announcement() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let wrapper = dir.path().join("post-announcement-flood.py");
     let binary = swarmail_bin().to_str().unwrap();
@@ -747,6 +754,7 @@ fn readiness_continues_draining_after_the_first_valid_announcement() {
 
 #[test]
 fn automatic_build_uses_a_cleared_named_preparation_map() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let custom_target = dir.path().join("custom-cargo-target");
     let cargo = runner::resolve_agent_command(&["cargo".into()])
@@ -909,6 +917,7 @@ fn automatic_build_uses_a_cleared_named_preparation_map() {
 
 #[test]
 fn automatic_build_accepts_explicit_homes_without_caller_home() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let cargo_home = dir.path().join("selected-cargo-home");
     let rustup_home = dir.path().join("selected-rustup-home");
@@ -997,6 +1006,7 @@ cat "$base/compiler-artifact.json"
 
 #[test]
 fn oversized_cargo_record_is_drained_and_fails_without_echo() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let cargo = runner::resolve_agent_command(&["cargo".into()])
         .unwrap()
@@ -1184,6 +1194,7 @@ exit "$status"
 
 #[test]
 fn agent_argv_stays_literal_and_wrapper_config_is_explicit() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let arg_marker = dir.path().join("literal-args");
     let literal = [
@@ -1224,6 +1235,7 @@ fn agent_argv_stays_literal_and_wrapper_config_is_explicit() {
 
 #[test]
 fn two_trials_use_fresh_ports_and_identities() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let trials: Vec<(String, String, std::collections::HashSet<Vec<u8>>)> = (0..2)
         .map(|i| {
@@ -1234,6 +1246,12 @@ fn two_trials_use_fresh_ports_and_identities() {
                 &[(MARKER_ENV, marker.to_str().unwrap())],
             );
             let report: Value = serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+            assert_ne!(
+                report["home"].as_str().unwrap(),
+                std::env::var("HOME").unwrap()
+            );
+            assert_eq!(report["home_sentinel_was_present"], false);
+            assert_eq!(report["home_sentinel_written"], true);
             let env: Vec<(String, String)> = serde_json::from_value(report["env"].clone()).unwrap();
             let get = |k: &str| env.iter().find(|(n, _)| n == k).unwrap().1.clone();
             let launch_env = std::fs::read(format!("{}.launch-env", marker.display())).unwrap();
@@ -1256,6 +1274,7 @@ fn two_trials_use_fresh_ports_and_identities() {
 
 #[test]
 fn a_spawn_failure_is_a_harness_error_with_null_statuses() {
+    let _trial_scope = trial_scope();
     let (row, _) = trial(&[
         "--task",
         "signup",
@@ -1275,6 +1294,7 @@ fn a_spawn_failure_is_a_harness_error_with_null_statuses() {
 
 #[test]
 fn direct_trial_preserves_non_utf8_later_arguments() {
+    let _trial_scope = trial_scope();
     use std::ffi::OsString;
     use std::os::unix::fs::PermissionsExt;
 
@@ -1307,6 +1327,7 @@ fn direct_trial_preserves_non_utf8_later_arguments() {
 
 #[test]
 fn missing_program_and_bad_clap_values_do_not_echo_input_text() {
+    let _trial_scope = trial_scope();
     let path = "/tmp/synthetic-missing-program-path-196";
     let (row, out) = trial(&["--task", "signup", "--agent", "missing", "--", path]);
     assert_eq!(row.outcome, Outcome::HarnessError);
@@ -1342,6 +1363,7 @@ fn missing_program_and_bad_clap_values_do_not_echo_input_text() {
 
 #[test]
 fn artifact_write_failures_use_safe_categories() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let not_directory = dir.path().join("caller-selected-artifact-path-196");
     std::fs::write(&not_directory, b"file").unwrap();
@@ -1360,6 +1382,7 @@ fn artifact_write_failures_use_safe_categories() {
 
 #[test]
 fn a_swarmail_that_never_comes_up_is_a_harness_error() {
+    let _trial_scope = trial_scope();
     let out = cli()
         .env("SWARMAIL_BIN", "/bin/false")
         .args(["trial", "--task", "signup", "--agent", "oracle"])
@@ -1381,6 +1404,7 @@ fn a_swarmail_that_never_comes_up_is_a_harness_error() {
 
 #[test]
 fn invalid_inputs_are_one_harness_error_row_with_the_supplied_labels() {
+    let _trial_scope = trial_scope();
     for (args, task, agent) in [
         (vec!["--task", "signup"], Some("signup"), None),
         (vec!["--agent", "oracle"], None, Some("oracle")),
@@ -1430,6 +1454,7 @@ fn read_pids(marker: &std::path::Path) -> (i32, i32) {
 
 #[test]
 fn a_deadline_is_budget_and_reaps_the_agents_descendants() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("pids.json");
     let (row, out) = helper_trial(
@@ -1463,6 +1488,7 @@ fn a_deadline_is_budget_and_reaps_the_agents_descendants() {
 
 #[test]
 fn an_agent_that_succeeds_then_crashes_still_passes_with_its_real_status() {
+    let _trial_scope = trial_scope();
     let (row, out) = helper_trial(
         "succeed_then_crash",
         &["--task", "signup", "--agent", "crashy"],
@@ -1474,6 +1500,7 @@ fn an_agent_that_succeeds_then_crashes_still_passes_with_its_real_status() {
 
 #[test]
 fn child_output_canaries_are_drained_without_publication() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("emitter.marker");
     let canary_file = dir.path().join("independent-canary.txt");
@@ -1559,6 +1586,7 @@ fn child_output_canaries_are_drained_without_publication() {
 #[cfg(target_os = "linux")]
 #[test]
 fn child_output_server_death_remains_a_harness_error_on_linux() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("emitter.marker");
     let canary_file = dir.path().join("independent-canary.txt");
@@ -1581,6 +1609,7 @@ fn child_output_server_death_remains_a_harness_error_on_linux() {
 
 #[test]
 fn a_noisy_agent_is_drained_and_does_not_hang_the_trial() {
+    let _trial_scope = trial_scope();
     let (row, out) = helper_trial("noisy", &["--task", "signup", "--agent", "noisy"], &[]);
     assert_eq!(row.outcome, Outcome::Pass, "{}", stderr(&out));
     assert!(
@@ -1591,6 +1620,7 @@ fn a_noisy_agent_is_drained_and_does_not_hang_the_trial() {
 
 #[test]
 fn normal_trial_binary_ignores_the_former_runner_fault_control() {
+    let _trial_scope = trial_scope();
     for fault in ["panic", "server_death"] {
         let (row, out) = helper_trial(
             "echo",
@@ -1669,6 +1699,7 @@ fn normal_trial_binary_ignores_the_former_runner_fault_control() {
 
 #[test]
 fn sigterm_interrupts_cleans_up_and_emits_one_row() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("pids.json");
     let (mut command, _owner) = helper_command(
@@ -1695,6 +1726,7 @@ fn sigterm_interrupts_cleans_up_and_emits_one_row() {
 
 #[test]
 fn a_retained_snapshot_reproduces_the_verdict_and_bad_state_refuses() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let (row, _) = trial(&[
         "--task",
@@ -1813,12 +1845,14 @@ fn parked_after_provisioning(mode: &str, deadline: &str) -> TrialResult {
 
 #[test]
 fn a_delivery_parked_after_provisioning_outranks_the_business_check() {
+    let _trial_scope = common::trial_scope();
     let row = parked_after_provisioning("chaos_release", "20000");
     assert_eq!(row.agent_exit_status, Some(0), "the agent's real exit");
 }
 
 #[test]
 fn a_delivery_parked_after_provisioning_outranks_the_deadline() {
+    let _trial_scope = common::trial_scope();
     let row = parked_after_provisioning("chaos_release_stall", "8000");
     assert_eq!(row.agent_exits[0].signal, Some(libc::SIGTERM));
 }
@@ -1834,6 +1868,7 @@ fn the_catalogue_is_served_as_schema_version_two() {
 
 #[test]
 fn cleanup_escalates_after_a_leader_exits_and_a_descendant_ignores_term() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("pids.json");
     let (mut command, _owner) = helper_command(
@@ -1885,6 +1920,7 @@ fn cleanup_escalates_after_a_leader_exits_and_a_descendant_ignores_term() {
 
 #[test]
 fn loopback_clients_ignore_caller_proxy_settings() {
+    let _trial_scope = trial_scope();
     let out = cli()
         .env("HTTP_PROXY", "http://127.0.0.1:9")
         .env("HTTPS_PROXY", "http://127.0.0.1:9")
@@ -1904,6 +1940,7 @@ fn loopback_clients_ignore_caller_proxy_settings() {
 
 #[test]
 fn v2_check_refuses_v1_state_with_a_safe_version_diagnostic() {
+    let _trial_scope = common::trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let (row, _) = trial(&[
         "--task",
@@ -1933,6 +1970,7 @@ fn v2_check_refuses_v1_state_with_a_safe_version_diagnostic() {
 
 #[test]
 fn trap_bearing_trials_preserve_deadline_and_delivery_precedence() {
+    let _trial_scope = common::trial_scope();
     for (mode, class, receipt) in [
         ("naive_deadline", FailureClass::Budget, "delivered"),
         ("naive_parked", FailureClass::HarnessError, "parked"),
@@ -2014,5 +2052,142 @@ fn trap_bearing_trials_preserve_deadline_and_delivery_precedence() {
             check.status.code(),
             Some(if class == FailureClass::Budget { 1 } else { 2 })
         );
+    }
+}
+
+#[test]
+fn sequential_trial_concurrency_requests() {
+    let _trial_scope = trial_scope();
+    for concurrency in ["0", "2"] {
+        let (row, out) = trial(&[
+            "--task",
+            "signup",
+            "--agent",
+            "null",
+            "--concurrency",
+            concurrency,
+        ]);
+        assert_eq!(row.outcome, Outcome::HarnessError);
+        assert_eq!(row.wall_time_ms, 0);
+        assert!(row.agent_exits.is_empty());
+        assert!(stderr(&out).contains("concurrency_unsupported"));
+        let req = runner::TrialRequest {
+            concurrency: Some(concurrency.parse().unwrap()),
+            ..Default::default()
+        };
+        assert_eq!(
+            runner::validate_request(&req).unwrap_err(),
+            "concurrency_unsupported"
+        );
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let row = runtime.block_on(runner::run_trial(req, None));
+        assert_eq!(row.concurrency, 1);
+        assert_eq!(row.wall_time_ms, 0);
+    }
+    for invalid in ["no", "-1", "4294967296"] {
+        let out = cli()
+            .args(["trial", "--concurrency", invalid])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(out.stdout.is_empty());
+        assert!(stderr(&out).contains("arguments_invalid"));
+    }
+    let (row, out) = trial(&[
+        "--task",
+        "signup",
+        "--agent",
+        "oracle",
+        "--concurrency",
+        "1",
+    ]);
+    assert_eq!(row.outcome, Outcome::Pass, "{}", stderr(&out));
+}
+
+#[test]
+fn sequential_rows_record_concurrency() {
+    let _trial_scope = trial_scope();
+    let dir = tempfile::tempdir().unwrap();
+    for agent in ["oracle", "null", "missing-command"] {
+        let args = if agent == "missing-command" {
+            vec![
+                "--task",
+                "signup",
+                "--agent",
+                agent,
+                "--artifacts-dir",
+                dir.path().to_str().unwrap(),
+                "--",
+                "/nonexistent/agent",
+            ]
+        } else {
+            vec![
+                "--task",
+                "signup",
+                "--agent",
+                agent,
+                "--artifacts-dir",
+                dir.path().to_str().unwrap(),
+            ]
+        };
+        let (row, _) = trial(&args);
+        assert_eq!(row.schema_version, 2);
+        assert_eq!(row.concurrency, 1);
+        let retained: TrialResult = serde_json::from_slice(
+            &std::fs::read(dir.path().join(&row.trial_id).join("result.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(retained, row);
+    }
+}
+
+#[test]
+fn sequential_admission_refuses_independent_cli_trials() {
+    let _trial_scope = trial_scope();
+    let dir = tempfile::tempdir().unwrap();
+    for signal in [libc::SIGTERM, libc::SIGINT] {
+        let ready = dir.path().join(format!("ready-{signal}"));
+        let (mut command, _wrapper) = helper_command(
+            "held_idle",
+            &["--task", "signup", "--agent", "idle"],
+            &[(MARKER_ENV, ready.to_str().unwrap())],
+        );
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let victim = ChildGuard {
+            child: Some(command.spawn().unwrap()),
+        };
+        eventually("live trial", || ready.exists());
+        let artifacts = dir.path().join(format!("unused-artifacts-{signal}"));
+        let launch = dir.path().join(format!("unused-agent-{signal}"));
+        let out = cli()
+            .current_dir(dir.path())
+            .env("HOME", dir.path().join("other-home"))
+            .env("TMPDIR", dir.path().join("other-tmp"))
+            .args([
+                "trial",
+                "--task",
+                "signup",
+                "--agent",
+                "contender",
+                "--artifacts-dir",
+                artifacts.to_str().unwrap(),
+                "--",
+                "/usr/bin/touch",
+                launch.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        let row = one_row(&out);
+        assert_eq!(row.wall_time_ms, 0);
+        assert!(row.agent_exits.is_empty());
+        assert!(stderr(&out).contains("concurrent_trials_refused"));
+        let retained = swarmail_evals::artifacts::trial(&artifacts.join(&row.trial_id)).unwrap();
+        assert_eq!(retained.row, row);
+        assert!(!launch.exists());
+        send_signal(victim.pid(), signal);
+        let out = victim.wait_with_output();
+        assert_eq!(one_row(&out).outcome, Outcome::HarnessError);
+        let (row, out) = trial(&["--task", "signup", "--agent", "oracle"]);
+        assert_eq!(row.outcome, Outcome::Pass, "{}", stderr(&out));
     }
 }
