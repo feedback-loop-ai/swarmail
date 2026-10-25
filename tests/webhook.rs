@@ -755,10 +755,42 @@ async fn non_2xx_over_tls_is_retried_four_times_not_more() {
 async fn refused_connection_never_blocks_the_smtp_path() {
     let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
-    // A port with nothing behind it: every attempt is refused on connect.
-    let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = dead.local_addr().unwrap();
-    drop(dead);
+    // Hold both ends through the final assertions to retain the client
+    // endpoint and exclude reuse-disabled binders. On macOS, reuse-enabled
+    // listeners (including parallel Tokio listeners) can still claim it;
+    // this fixture does not fully close that reuse race. The exact refusal
+    // probe below observes setup only, not every later webhook attempt.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let reservation = tokio::net::TcpSocket::new_v4().unwrap();
+    reservation.set_reuseaddr(false).unwrap();
+    reservation
+        .bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+        .unwrap();
+    let reservation = tokio::time::timeout(
+        common::HELPER_DEADLINE,
+        reservation.connect(listener.local_addr().unwrap()),
+    )
+    .await
+    .expect("the reservation must connect promptly")
+    .unwrap();
+    let (peer, _) = tokio::time::timeout(common::HELPER_DEADLINE, listener.accept())
+        .await
+        .expect("the reservation's peer must be accepted promptly")
+        .unwrap();
+    drop(listener);
+    let addr = reservation.local_addr().unwrap();
+    let refused = tokio::time::timeout(
+        common::HELPER_DEADLINE,
+        tokio::net::TcpStream::connect(addr),
+    )
+    .await
+    .expect("the reserved client endpoint must refuse promptly")
+    .expect_err("an established client endpoint must not accept connections");
+    assert_eq!(
+        refused.kind(),
+        std::io::ErrorKind::ConnectionRefused,
+        "the webhook target must fail at connect rather than during TLS or reading"
+    );
 
     let targets = format!(r#"[{{"url": "https://{addr}/hook"}}]"#);
     let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&targets)).await;
@@ -767,8 +799,8 @@ async fn refused_connection_never_blocks_the_smtp_path() {
     // The exhaustion baseline is taken before the mail that will exhaust
     // its budget: only a NEW exhaustion satisfies the poll below (issue #51).
     let exhausted_base = metric_now(srv.http_addr, "swarmail_webhook_exhausted_total").await;
-    // Acceptance must not wait on the (failing) delivery: 250 comes back
-    // immediately and the mail is queryable while the retries still run.
+    // Acceptance must not wait on the (failing) delivery: SMTP returned and
+    // the mail is queryable before exhaustion is observed below.
     smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "refused", "x")
         .await
         .unwrap();
@@ -793,6 +825,7 @@ async fn refused_connection_never_blocks_the_smtp_path() {
     let (st, body) = http_json(srv.http_addr, "GET", "/api/v1/inboxes/default/count", None).await;
     assert_eq!(st, 200);
     assert_eq!(body["count"], 1, "retries must not touch the store");
+    drop((reservation, peer));
 }
 
 /// The redirect e2e: a target that answers 302 Found with an absolute
