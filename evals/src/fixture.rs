@@ -708,7 +708,7 @@ impl Private {
             self.record(
                 Some(claimed),
                 Some(Flow::Otp),
-                "superseded_code",
+                action::SUPERSEDED_CODE,
                 false,
                 Some(FailureClass::StaleCode),
             );
@@ -873,7 +873,7 @@ async fn follow_link(
             p.record(
                 Some(&claimed),
                 flow,
-                "decoy_link",
+                action::DECOY_LINK,
                 false,
                 Some(FailureClass::WrongLink),
             );
@@ -883,7 +883,7 @@ async fn follow_link(
             p.record(
                 Some(&claimed),
                 flow,
-                "decoy_message",
+                action::DECOY_MESSAGE,
                 false,
                 Some(FailureClass::WrongMessage),
             );
@@ -913,7 +913,7 @@ async fn follow_link(
             p.record(
                 Some(&claimed),
                 flow,
-                "digest_decoy",
+                action::DIGEST_DECOY,
                 false,
                 Some(FailureClass::WrongLink),
             );
@@ -1334,7 +1334,7 @@ async fn marketing_offer(
         p.record(
             Some(&claimed),
             flow,
-            "marketing_mangled",
+            action::MARKETING_MANGLED,
             false,
             Some(FailureClass::WrongLink),
         );
@@ -1352,7 +1352,7 @@ async fn marketing_offer(
         p.record(
             Some(&claimed),
             flow,
-            "marketing_mangled",
+            action::MARKETING_MANGLED,
             false,
             Some(FailureClass::WrongLink),
         );
@@ -1705,7 +1705,7 @@ mod tests {
             p.verify_otp("a@example.test", &old, now).status(),
             StatusCode::GONE
         );
-        assert_eq!(p.events.last().unwrap().action, "superseded_code");
+        assert_eq!(p.events.last().unwrap().action, action::SUPERSEDED_CODE);
         assert_eq!(
             p.verify_otp("a@example.test", &new, now).status(),
             StatusCode::OK

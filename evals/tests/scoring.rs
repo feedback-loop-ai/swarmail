@@ -393,7 +393,7 @@ fn malformed_or_mismatched_snapshots_refuse() {
     let cases: Vec<(Snapshot, &str)> = vec![
         (
             Snapshot {
-                schema_version: 2,
+                schema_version: 3,
                 ..good.clone()
             },
             "schema",
@@ -558,4 +558,305 @@ fn held_mail_and_a_retried_delivery_score_normally() {
         tasks::score(&slow, &held),
         Ok(Verdict::fail(FailureClass::WaitTimeout))
     );
+}
+
+fn recovered(task: &Task) -> Snapshot {
+    let (facts, actions) = match task.check {
+        Check::Confirmed => (confirmed(), vec![action::CONFIRM]),
+        Check::OtpLoggedIn => (
+            Facts {
+                otp_verified: true,
+                logged_in: true,
+                ..Default::default()
+            },
+            vec![action::OTP_VERIFY],
+        ),
+        Check::MagicLoggedIn => (
+            Facts {
+                magic_login: true,
+                logged_in: true,
+                ..Default::default()
+            },
+            vec![action::MAGIC_LOGIN],
+        ),
+        Check::MarketingCompleted => (
+            Facts {
+                marketing_completed: true,
+                ..Default::default()
+            },
+            vec![action::MARKETING],
+        ),
+        Check::DigestSelected => (
+            Facts {
+                digest_selected: true,
+                ..Default::default()
+            },
+            vec![action::DIGEST_SELECT],
+        ),
+        _ => unreachable!(),
+    };
+    snap(
+        &task.id,
+        vec![
+            identity("a", Role::Agent, facts),
+            identity("d", Role::Decoy, Facts::default()),
+        ],
+        vec![delivered(1, "a", task.scenario.flow())],
+        actions
+            .into_iter()
+            .enumerate()
+            .map(|(i, a)| event(10 + i as u64, "a", a, true, None))
+            .collect(),
+    )
+}
+
+fn trap_cases() -> Vec<(&'static str, &'static str, FailureClass)> {
+    vec![
+        (
+            "confirm-decoys",
+            action::DECOY_LINK,
+            FailureClass::WrongLink,
+        ),
+        (
+            "sibling-addresses",
+            action::FOREIGN_TOKEN,
+            FailureClass::WrongMessage,
+        ),
+        (
+            "i18n-subject",
+            action::DECOY_MESSAGE,
+            FailureClass::WrongMessage,
+        ),
+        (
+            "stale-otp",
+            action::SUPERSEDED_CODE,
+            FailureClass::StaleCode,
+        ),
+        ("magic-login", action::DECOY_LINK, FailureClass::WrongLink),
+        ("entity-url", action::DECOY_LINK, FailureClass::WrongLink),
+        (
+            "entity-url",
+            action::MARKETING_MANGLED,
+            FailureClass::WrongLink,
+        ),
+        (
+            "digest-forty",
+            action::DIGEST_DECOY,
+            FailureClass::WrongLink,
+        ),
+    ]
+}
+
+#[test]
+fn every_named_trap_precedes_goals_in_both_orders_and_unrelated_refusals() {
+    for (id, name, class) in trap_cases() {
+        let task = tasks::find(id).unwrap();
+        assert!(task.goal.contains("disqualifies the trial"), "{id}");
+        assert!(task.goal.contains("already completed it"), "{id}");
+        let clean = recovered(&task);
+        assert_eq!(tasks::score(&task, &clean), Ok(Verdict::pass()), "{id}");
+        for seq in [5, 20] {
+            let mut s = clean.clone();
+            let mut trap = event(seq, "a", name, false, Some(class));
+            trap.flow = Some(task.scenario.flow());
+            s.events.push(trap.clone());
+            s.events.sort_by_key(|e| e.seq);
+            assert_eq!(
+                tasks::score(&task, &s),
+                Ok(Verdict::fail(class)),
+                "{id}/{seq}"
+            );
+            // A prior generic refusal cannot mask a later named trap; repeated
+            // matching events are consumed in the validated sequence order.
+            s.events.insert(
+                0,
+                event(2, "a", "unrelated", false, Some(FailureClass::ToolMisuse)),
+            );
+            trap.seq = 30;
+            s.events.push(trap);
+            assert_eq!(tasks::score(&task, &s), Ok(Verdict::fail(class)), "{id}");
+            s.identities[0].facts = Facts::default();
+            s.events.retain(|e| !e.accepted);
+            assert_eq!(
+                tasks::score(&task, &s),
+                Ok(Verdict::fail(class)),
+                "trap only {id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn exact_match_dimensions_and_sibling_claimant_exception() {
+    for (id, name, class) in trap_cases() {
+        let task = tasks::find(id).unwrap();
+        let clean = recovered(&task);
+        let mut trap = event(20, "a", name, false, Some(class));
+        trap.flow = Some(task.scenario.flow());
+        let mut mismatches = Vec::new();
+        let mut e = trap.clone();
+        e.accepted = true;
+        mismatches.push(e);
+        let mut e = trap.clone();
+        e.action = "other".into();
+        mismatches.push(e);
+        let mut e = trap.clone();
+        e.category = None;
+        mismatches.push(e);
+        let mut e = trap.clone();
+        e.category = Some(FailureClass::ToolMisuse);
+        mismatches.push(e);
+        let mut e = trap.clone();
+        e.flow = None;
+        mismatches.push(e);
+        let mut e = trap.clone();
+        e.flow = Some(Flow::Support);
+        mismatches.push(e);
+        let mut e = trap.clone();
+        e.claimed = None;
+        mismatches.push(e);
+        let mut e = trap.clone();
+        e.claimed = Some("unknown".into());
+        mismatches.push(e);
+        if id != "sibling-addresses" {
+            let mut e = trap.clone();
+            e.claimed = Some("d".into());
+            mismatches.push(e);
+        }
+        for e in mismatches {
+            let mut s = clean.clone();
+            s.events.push(e);
+            assert_eq!(
+                tasks::score(&task, &s),
+                Ok(Verdict::pass()),
+                "{id}: {:?}",
+                s.events.last()
+            );
+        }
+        if id == "sibling-addresses" {
+            for flow in [None, Some(Flow::Signup), Some(Flow::Support)] {
+                let mut s = clean.clone();
+                let mut e = trap.clone();
+                e.claimed = Some("d".into());
+                e.flow = flow;
+                s.events.push(e.clone());
+                assert_eq!(
+                    tasks::score(&task, &s),
+                    Ok(Verdict::fail(class)),
+                    "{flow:?}"
+                );
+                for (accepted, category, action) in [
+                    (true, Some(class), name),
+                    (false, Some(FailureClass::ToolMisuse), name),
+                    (false, Some(class), "other"),
+                ] {
+                    let mut nonmatch = s.clone();
+                    let last = nonmatch.events.last_mut().unwrap();
+                    last.accepted = accepted;
+                    last.category = category;
+                    last.action = action.into();
+                    assert_eq!(tasks::score(&task, &nonmatch), Ok(Verdict::pass()));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn expiry_and_nontarget_recovery_remain_recoverable_and_isolation_keeps_its_fallback() {
+    let task = tasks::find("stale-otp").unwrap();
+    let mut s = recovered(&task);
+    let mut expired = event(2, "a", "expired_code", false, Some(FailureClass::StaleCode));
+    expired.flow = Some(Flow::Otp);
+    s.events.insert(0, expired);
+    assert_eq!(tasks::score(&task, &s), Ok(Verdict::pass()));
+    for id in ["signup", "otp"] {
+        let task = tasks::find(id).unwrap();
+        let mut s = recovered(&task);
+        let mut e = event(
+            2,
+            "a",
+            if id == "otp" {
+                action::SUPERSEDED_CODE
+            } else {
+                action::DECOY_LINK
+            },
+            false,
+            Some(FailureClass::StaleCode),
+        );
+        e.flow = Some(task.scenario.flow());
+        s.events.insert(0, e);
+        assert_eq!(tasks::score(&task, &s), Ok(Verdict::pass()));
+    }
+    let task = tasks::find("inbox-isolation").unwrap();
+    let mut s = recovered(&task);
+    for (i, name) in ["b", "c"].into_iter().enumerate() {
+        s.identities.push(identity(name, Role::Agent, confirmed()));
+        s.deliveries
+            .push(delivered(2 + i as u64, name, Flow::Signup));
+        s.events
+            .push(event(11 + i as u64, name, action::CONFIRM, true, None));
+    }
+    s.events.insert(
+        0,
+        event(5, "a", "unrelated", false, Some(FailureClass::ToolMisuse)),
+    );
+    s.events.push(event(
+        20,
+        "a",
+        action::FOREIGN_TOKEN,
+        false,
+        Some(FailureClass::WrongMessage),
+    ));
+    assert_eq!(
+        tasks::score(&task, &s),
+        Ok(Verdict::fail(FailureClass::ToolMisuse))
+    );
+}
+
+#[test]
+fn invalid_or_failed_trap_bearing_snapshots_still_refuse_before_scoring() {
+    let task = tasks::find("confirm-decoys").unwrap();
+    let mut good = recovered(&task);
+    let mut e = event(
+        20,
+        "a",
+        action::DECOY_LINK,
+        false,
+        Some(FailureClass::WrongLink),
+    );
+    e.flow = Some(Flow::Signup);
+    good.events.push(e);
+    for status in [DeliveryStatus::Failed, DeliveryStatus::Parked] {
+        let mut bad = good.clone();
+        bad.deliveries
+            .push(receipt(2, "d", status, &[("dot", 451)]));
+        assert!(
+            tasks::score(&task, &bad)
+                .unwrap_err()
+                .contains("fixture delivery")
+        );
+    }
+    for version in [1, 3] {
+        let mut bad = good.clone();
+        bad.schema_version = version;
+        assert!(tasks::score(&task, &bad).unwrap_err().contains("schema"));
+    }
+    let mut bad = good.clone();
+    bad.events.reverse();
+    assert!(
+        tasks::score(&task, &bad)
+            .unwrap_err()
+            .contains("increasing")
+    );
+    let mut bad = good.clone();
+    bad.events.retain(|e| !e.accepted);
+    assert!(
+        tasks::score(&task, &bad)
+            .unwrap_err()
+            .contains("no accepted event")
+    );
+    let mut bad = good;
+    bad.frozen = false;
+    assert!(tasks::score(&task, &bad).unwrap_err().contains("frozen"));
 }

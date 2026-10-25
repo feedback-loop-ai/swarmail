@@ -312,6 +312,7 @@ async fn helper(mode: &str) -> i32 {
     let env = AgentEnv::from_env().expect("the agent environment");
     let app = App::new(&env.app_url, &env.identity).unwrap();
     match mode {
+        mode if mode.starts_with("naive_") => naive_recovery(mode, &env, &app).await,
         "echo" => {
             let prompt = std::fs::read_to_string(&env.prompt_file).unwrap();
             let vars: Vec<(String, String)> = std::env::vars()
@@ -698,4 +699,130 @@ async fn helper(mode: &str) -> i32 {
 pub fn retained_state(dir: &Path, row: &TrialResult) -> Value {
     let path = dir.join(&row.trial_id).join("state.json");
     serde_json::from_slice(&std::fs::read(&path).expect("state.json retained")).unwrap()
+}
+
+/// Independent public strategies: deliberately try alternatives, then recover.
+/// No oracle, admin snapshot, private tokens or scorer input is consulted.
+async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
+    let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+    let want = if matches!(
+        env.task.as_str(),
+        "sibling-addresses" | "i18n-subject" | "stale-otp"
+    ) {
+        2
+    } else {
+        1
+    };
+    let mails = mcp.wait_emails(&env.inbox, None, want).await.unwrap();
+    let follow = |mail: &Value| {
+        labelled_url(mail["text"].as_str().unwrap(), "Confirm your account:").unwrap()
+    };
+    match env.task.as_str() {
+        "sibling-addresses" => {
+            let theirs = mails
+                .iter()
+                .find(|m| m["to"][0]["address"] != env.identity)
+                .unwrap();
+            let mine = mails
+                .iter()
+                .find(|m| m["to"][0]["address"] == env.identity)
+                .unwrap();
+            let claimant = if mode == "naive_sibling_decoy" {
+                App::new(&env.app_url, theirs["to"][0]["address"].as_str().unwrap()).unwrap()
+            } else {
+                App::new(&env.app_url, &env.identity).unwrap()
+            };
+            assert_eq!(claimant.get(&follow(theirs)).await.unwrap().0, 403);
+            assert_eq!(app.get(&follow(mine)).await.unwrap().0, 200);
+        }
+        "i18n-subject" => {
+            // Subscription first, then the requested account message.
+            for subject in [
+                swarmail_evals::tasks::I18N_DECOY_SUBJECT,
+                swarmail_evals::tasks::I18N_SUBJECT,
+            ] {
+                let mail = mails.iter().find(|m| m["subject"] == subject).unwrap();
+                assert_eq!(app.get(&follow(mail)).await.unwrap().0, 200);
+            }
+        }
+        "stale-otp" => {
+            for current in [false, true] {
+                let mail = mails
+                    .iter()
+                    .find(|m| {
+                        m["text"]
+                            .as_str()
+                            .unwrap()
+                            .contains("new verification code")
+                            == current
+                    })
+                    .unwrap();
+                let code = mail["codes"][0].as_str().unwrap();
+                assert_eq!(
+                    app.post("/otp/verify", json!({"code": code}))
+                        .await
+                        .unwrap()
+                        .0,
+                    if current { 200 } else { 410 }
+                );
+            }
+        }
+        "entity-url" if mode == "naive_entity_raw" => {
+            let html = mails[0]["html"].as_str().unwrap();
+            let raw = html
+                .split("href=\"")
+                .skip(1)
+                .map(|h| h.split('"').next().unwrap())
+                .find(|h| h.contains("/m/offer"))
+                .unwrap();
+            assert_eq!(app.get(raw).await.unwrap().0, 400);
+            // Decode the same emailed URL, without consulting a private target.
+            let decoded = raw.replace("&#61;", "=").replace("&amp;", "&");
+            assert_eq!(app.get(&decoded).await.unwrap().0, 200);
+        }
+        "confirm-decoys" | "magic-login" | "entity-url" | "digest-forty" => {
+            let mut links: Vec<&str> = mails[0]["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap())
+                .collect();
+            let distinct: std::collections::HashSet<_> = links.iter().copied().collect();
+            assert_eq!(distinct.len(), links.len());
+            assert_eq!(
+                links.len(),
+                match env.task.as_str() {
+                    "digest-forty" => 40,
+                    "magic-login" => 2,
+                    _ => 3,
+                }
+            );
+            if mode == "naive_reverse" {
+                links.reverse();
+            }
+            for link in links {
+                assert_eq!(app.get(link).await.unwrap().0, 200, "{link}");
+            }
+        }
+        other => panic!("no naive recovery for {other}"),
+    }
+    if mode.contains("parked") || mode.contains("failed") {
+        let code = if mode.contains("failed") {
+            "550 5.3.0 rejected"
+        } else {
+            "451 4.3.0 retry"
+        };
+        mcp.call(
+            "swarmail_set_chaos",
+            json!({"event": "data", "probability": 100, "error": code}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(app.post("/otp/resend", json!({})).await.unwrap().0, 200);
+        mcp.call("swarmail_clear_chaos", json!({})).await.unwrap();
+    }
+    if mode.contains("deadline") {
+        std::future::pending::<()>().await;
+    }
+    0
 }

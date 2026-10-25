@@ -31,7 +31,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Print the v1 task catalogue (schema version 1) as JSON.
+    /// Print the v2 task catalogue (schema version 2) as JSON.
     Tasks,
     /// Run the fixture app against a Swarmail SMTP address. Reads its admin
     /// secret from EVAL_FIXTURE_ADMIN_SECRET; prints
@@ -212,6 +212,13 @@ fn main() -> ExitCode {
                     ExitCode::from(if v.outcome == Outcome::Pass { 0 } else { 1 })
                 }
                 Err(e) => {
+                    // Only fixed contract metadata crosses the private diagnostic boundary.
+                    if e.starts_with("snapshot schema ") {
+                        eprintln!(
+                            "swarmail-evals: unsupported snapshot schema version; expected {}",
+                            state::SNAPSHOT_SCHEMA
+                        );
+                    }
                     print_line(&serde_json::json!({
                         "task": task.id,
                         "outcome": Outcome::HarnessError,
@@ -239,7 +246,17 @@ fn main() -> ExitCode {
                     print_line(&report::report(&rows));
                     ExitCode::SUCCESS
                 }
-                Err(e) => fail(e),
+                Err(e) => {
+                    if e.split_once(": ")
+                        .is_some_and(|(_, reason)| reason.starts_with("schema_version "))
+                    {
+                        eprintln!(
+                            "swarmail-evals: unsupported result schema version; expected {}",
+                            runner::RESULT_SCHEMA
+                        );
+                    }
+                    fail(e)
+                }
             }
         }
     }
@@ -1559,7 +1576,7 @@ interrupt() {
   trap '' TERM INT
   touch "$EVAL_TEST_MATRIX_CLEANUP_ENTERED"
   while [ ! -e "$EVAL_TEST_MATRIX_RELEASE" ]; do :; done
-  printf '{"schema_version":1,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"harness_error","failure_class":"harness_error","wall_time_ms":1,"agent_exit_status":null,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"
+  printf '{"schema_version":2,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"harness_error","failure_class":"harness_error","wall_time_ms":1,"agent_exit_status":null,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"
   exit 0
 }
 trap interrupt TERM INT
@@ -1571,7 +1588,7 @@ if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = holder ]; then
   exit 0
 fi
 if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = complete ]; then
-  printf '{"schema_version":1,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"pass","failure_class":null,"wall_time_ms":1,"agent_exit_status":0,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"
+  printf '{"schema_version":2,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"pass","failure_class":null,"wall_time_ms":1,"agent_exit_status":0,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"
   exit 0
 fi
 while :; do :; done
@@ -2289,7 +2306,19 @@ while :; do :; done
         eventually("matrix output acknowledgement wait", || {
             ack_pending.is_file()
         });
-        unsafe { libc::kill(probe.pid(), libc::SIGINT) };
+        // An acknowledgement can be pending on the first, writable row.
+        // Keep interrupting until the writer wait itself acknowledges one;
+        // a marker from an earlier row is not synchronization with backpressure.
+        eventually("the blocked writer acknowledges interruption", || {
+            if std::fs::read_to_string(dir.path().join("signals.log"))
+                .is_ok_and(|log| log.lines().any(|event| event == "write-int"))
+            {
+                true
+            } else {
+                unsafe { libc::kill(probe.pid(), libc::SIGINT) };
+                false
+            }
+        });
         let stderr = probe.child.as_mut().unwrap().stderr.take().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -2419,7 +2448,7 @@ while :; do :; done
         let mut wrong_agent = row.clone();
         wrong_agent.agent = Some("other".into());
         let mut bad_schema = serde_json::to_value(&row).unwrap();
-        bad_schema["schema_version"] = serde_json::json!(2);
+        bad_schema["schema_version"] = serde_json::json!(3);
         let bad_schema = serde_json::to_vec(&bad_schema).unwrap();
 
         for output in [
@@ -2545,7 +2574,7 @@ mod privacy_tests {
     async fn matrix_worker_requires_one_matching_schema_row_and_exit() {
         let owner = tempfile::tempdir().unwrap();
         let expected = TrialResult {
-            schema_version: 1,
+            schema_version: 2,
             trial_id: "synthetic-worker-row".into(),
             task: Some("signup".into()),
             agent: Some("oracle".into()),

@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The snapshot schema this build writes and the scorer accepts.
-pub const SNAPSHOT_SCHEMA: u32 = 1;
+pub const SNAPSHOT_SCHEMA: u32 = 2;
 
 /// The closed failure taxonomy (decision 0055 §2). An unknown spelling
 /// fails to deserialize, so a misspelled class in a catalogue or a result
@@ -201,5 +201,10 @@ pub mod action {
     pub const DIGEST_SELECT: &str = "digest_select";
     pub const MARKETING: &str = "marketing";
     pub const RELEASE: &str = "release";
+    pub const DECOY_LINK: &str = "decoy_link";
+    pub const DECOY_MESSAGE: &str = "decoy_message";
+    pub const SUPERSEDED_CODE: &str = "superseded_code";
+    pub const MARKETING_MANGLED: &str = "marketing_mangled";
+    pub const DIGEST_DECOY: &str = "digest_decoy";
     pub const FOREIGN_TOKEN: &str = "foreign_token";
 }

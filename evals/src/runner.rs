@@ -40,7 +40,7 @@ use tokio::process::Command;
 use tokio::sync::oneshot;
 
 /// The result row's schema.
-pub const RESULT_SCHEMA: u32 = 1;
+pub const RESULT_SCHEMA: u32 = 2;
 /// Every trial is unconfined until brokkr's MCP broker lands (0055 §7).
 pub const CONFINEMENT: &str = "unconfined";
 /// The env var naming the Swarmail binary under test.

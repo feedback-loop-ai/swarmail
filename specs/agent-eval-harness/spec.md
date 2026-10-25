@@ -3,7 +3,33 @@
 - Date: 2026-10-19; branch: `epic164-harness`.
 - Scope: epic #164, #148's runner seam, fixture #149, task suite #150.
 - Status: implemented under `evals/` (run A); the proof is `evals/tests/proof.rs`.
-- Decision: [0055 — agent eval harness](../../docs/decisions/0055-agent-eval-harness.md), **proposed**; acceptance belongs to the operator.
+- Decision: [0055 — agent eval harness](../../docs/decisions/0055-agent-eval-harness.md), **accepted** (operator, 2026-10-19); amended for named traps by accepted [0071](../../docs/decisions/0071-eval-trap-scoring.md).
+
+## Active amendment — 2026-10-25, accepted 0071
+
+Catalogue, snapshot and trial-result versions are now **2**, with identical
+field sets, task IDs/tiers and closed classes. `check` refuses v1 snapshots and
+`report` refuses v1/mixed rows before aggregation, diagnostically. Historical
+v1 replay requires the recorded old source/binary; never relabel, migrate or
+pool experiments. Dated earlier receipts remain historical.
+
+The exact policy in [eval-trap-scoring/spec.md](../eval-trap-scoring/spec.md)
+applies to confirm-decoys, sibling-addresses, i18n-subject, stale-otp,
+magic-login, entity-url and digest-forty. Rejected exact action/class/flow
+records require a provisioned Agent; sibling's known Decoy foreign-token
+refusal counts with any/null flow. Match the entire ordered frozen trial
+before the goal branch. Structurally valid mismatches remain nonmatches.
+The affected goals disclose disqualification even after successful recovery.
+Application facts/HTTP remain truthful. Expiry alone and non-target tasks
+retain recovery; required reset replay is positive evidence. Existing
+validation, infrastructure/deadline precedence and isolation fallback stay.
+Completed external try-all controls with zero raw exits, DATA 250, true goals
+and actual check replay supplement oracle/null/isolation proofs.
+
+This amendment changes scoring authority under accepted 0071 only. #194/#196
+cancellation/privacy assertions remain intact with current v2 rows. #201 owns
+macOS eval CI evidence, the operator owns live settings and sealing, and #221
+owns namespaces; no receipt for those is claimed here.
 
 ## Why and scope
 
@@ -97,9 +123,9 @@ wins over a timer that may fire before a delayed agent starts. The app-only
 score proves final completion, not that an arbitrary agent performed the
 first wait; this limitation is part of the task description.
 
-## Task format and v1 catalogue
+## Task format and current v2 catalogue
 
-A typed fixed catalogue, serialized by `tasks` as schema version 1, is the
+A typed fixed catalogue, serialized by `tasks` as schema version 2, is the
 task format. No arbitrary executable checks or task-loading language.
 Each entry contains `id`, `tier` (`straight|traps|multi_step`),
 `failure_class` (the targeted failure), `idle_class`, `goal`, `goal_template`,
@@ -156,16 +182,18 @@ Outcome precedence is normative:
    failure) produces `harness_error/harness_error`.
 2. An agent still alive at its deadline produces `fail/budget`, even if it
    previously reached the business goal. The runner terminates its group.
-3. Otherwise a satisfied app predicate produces pass, independent of the
+3. The earliest matching named trap anywhere in the frozen trial produces fail
+   with its existing class, whether before or after goal completion (0071).
+4. Otherwise a satisfied app predicate produces pass, independent of the
    child's exit code. Isolation additionally forbids any foreign presentation.
-4. On unsatisfied state, the first relevant rejected action by app event
+5. On unsatisfied state, the first relevant rejected action by app event
    sequence determines the class: another identity's valid token is
    `wrong_message`; a superseded/expired OTP is `stale_code`; a known decoy
    link or incorrect invite selection/time is `wrong_link`; malformed or
    unknown credentials, invalid flow arguments and reset misuse are
    `tool_misuse`. Expected replay refusal in `reset-reuse` is evidence for
    its predicate and excluded from failure events.
-5. If there is no such action, use the task's declared `idle_class`, either
+6. If there is no such action, use the task's declared `idle_class`, either
    `gave_up` or `wait_timeout`. These are declared idle outcomes, not inferred
    mental states or proof that a client called MCP wait.
 
@@ -217,7 +245,7 @@ and an unwritable result stream cannot promise a line. Commands must not
 daemonize or leave their process groups; unconfined cleanup is not a sandbox.
 
 Exactly one stdout JSON line per attempted trial, diagnostics on stderr:
-`schema_version:1`, `trial_id`, `task`, `agent`, `outcome`
+`schema_version:2`, `trial_id`, `task`, `agent`, `outcome`
 (`pass|fail|harness_error`), `failure_class` (null only on pass),
 `wall_time_ms` (monotonic, provisioning through cleanup, excluding binary
 build), `agent_exit_status` (integer or null), `agent_exits` (ordered records

@@ -233,3 +233,215 @@ fn two_concurrent_isolation_trials_both_pass() {
     );
     assert_eq!(std::fs::read_dir(barrier.path()).unwrap().count(), 6);
 }
+
+/// Completed try-all commands must lose even though the real app goal is true.
+#[test]
+fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
+    use swarmail_evals::state::{DeliveryStatus, Flow, Role, Snapshot, action};
+    let cases = [
+        (
+            "confirm-decoys",
+            "naive_forward",
+            action::CONFIRM,
+            "decoy_link",
+            Flow::Signup,
+            2,
+            FailureClass::WrongLink,
+        ),
+        (
+            "confirm-decoys",
+            "naive_reverse",
+            action::CONFIRM,
+            "decoy_link",
+            Flow::Signup,
+            2,
+            FailureClass::WrongLink,
+        ),
+        (
+            "sibling-addresses",
+            "naive_sibling_agent",
+            action::CONFIRM,
+            "foreign_token",
+            Flow::Signup,
+            1,
+            FailureClass::WrongMessage,
+        ),
+        (
+            "sibling-addresses",
+            "naive_sibling_decoy",
+            action::CONFIRM,
+            "foreign_token",
+            Flow::Signup,
+            1,
+            FailureClass::WrongMessage,
+        ),
+        (
+            "i18n-subject",
+            "naive_forward",
+            action::CONFIRM,
+            "decoy_message",
+            Flow::Signup,
+            1,
+            FailureClass::WrongMessage,
+        ),
+        (
+            "stale-otp",
+            "naive_forward",
+            action::OTP_VERIFY,
+            "superseded_code",
+            Flow::Otp,
+            1,
+            FailureClass::StaleCode,
+        ),
+        (
+            "magic-login",
+            "naive_forward",
+            action::MAGIC_LOGIN,
+            "decoy_link",
+            Flow::MagicLogin,
+            1,
+            FailureClass::WrongLink,
+        ),
+        (
+            "entity-url",
+            "naive_forward",
+            action::MARKETING,
+            "decoy_link",
+            Flow::Marketing,
+            2,
+            FailureClass::WrongLink,
+        ),
+        (
+            "entity-url",
+            "naive_entity_raw",
+            action::MARKETING,
+            "marketing_mangled",
+            Flow::Marketing,
+            1,
+            FailureClass::WrongLink,
+        ),
+        (
+            "digest-forty",
+            "naive_forward",
+            action::DIGEST_SELECT,
+            "digest_decoy",
+            Flow::Digest,
+            39,
+            FailureClass::WrongLink,
+        ),
+    ];
+    for (task, mode, goal_action, trap_action, flow, count, class) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let args = [
+            "--task",
+            task,
+            "--agent",
+            mode,
+            "--artifacts-dir",
+            dir.path().to_str().unwrap(),
+        ];
+        let (mut command, wrapper) = helper_command(mode, &args, &[]);
+        let argv = format!("{command:?}");
+        let script = std::fs::read_to_string(wrapper.path().join("agent-wrapper.sh")).unwrap();
+        let out = command.output().unwrap();
+        let row = one_row(&out);
+        let state = retained_state(dir.path(), &row);
+        let snap: Snapshot = serde_json::from_value(state.clone()).unwrap();
+        assert_eq!(
+            row.agent_exit_status,
+            Some(0),
+            "{task}/{mode}: {row:?} {}",
+            stderr(&out)
+        );
+        assert_eq!(row.agent_exits.len(), 1);
+        assert_eq!(row.agent_exits[0].code, Some(0));
+        assert!(!snap.deliveries.is_empty());
+        assert!(
+            snap.deliveries
+                .iter()
+                .all(|d| d.status == DeliveryStatus::Delivered
+                    && d.attempts
+                        .last()
+                        .is_some_and(|a| a.stage == "dot" && a.code == 250)),
+            "{snap:?}"
+        );
+        let traps: Vec<_> = snap
+            .events
+            .iter()
+            .filter(|e| e.action == trap_action)
+            .collect();
+        assert_eq!(traps.len(), count, "{snap:?}");
+        assert_eq!(snap.events.len(), count + 1, "exact completed actions");
+        let who = snap
+            .identities
+            .iter()
+            .find(|i| i.role == Role::Agent)
+            .unwrap();
+        for trap in &traps {
+            assert!(!trap.accepted);
+            assert_eq!(trap.category, Some(class));
+            if mode == "naive_sibling_decoy" {
+                assert_eq!(trap.flow, None);
+                assert_eq!(
+                    trap.claimed,
+                    snap.identities
+                        .iter()
+                        .find(|i| i.role == Role::Decoy)
+                        .map(|i| i.identity.clone())
+                );
+            } else {
+                assert_eq!(trap.flow, Some(flow));
+                assert_eq!(trap.claimed.as_deref(), Some(who.identity.as_str()));
+            }
+        }
+        assert_eq!(
+            snap.events
+                .iter()
+                .filter(|e| e.accepted && e.action == goal_action)
+                .count(),
+            1
+        );
+        let f = &who.facts;
+        assert!(
+            match task {
+                "stale-otp" => f.otp_verified && f.logged_in,
+                "magic-login" => f.magic_login && f.logged_in,
+                "entity-url" => f.marketing_completed,
+                "digest-forty" => f.digest_selected,
+                _ => f.confirmed,
+            },
+            "the real goal recovered: {snap:?}"
+        );
+        let check = cli()
+            .args(["check", "--task", task, "--state"])
+            .arg(dir.path().join(&row.trial_id).join("state.json"))
+            .output()
+            .unwrap();
+        let verdict: tasks::Verdict = serde_json::from_slice(&check.stdout).unwrap();
+        assert_eq!(
+            (verdict.outcome, verdict.failure_class),
+            (row.outcome, row.failure_class)
+        );
+        assert_eq!(check.status.code(), Some(row.exit_code()));
+        // Optional durable receipts for the exact same executable red/green probes.
+        if let Some(base) = std::env::var_os("EVAL_TRAP_RECEIPTS") {
+            let base = std::path::PathBuf::from(base).join(format!("{task}-{mode}"));
+            std::fs::create_dir_all(&base).unwrap();
+            std::fs::write(
+                base.join("state.json"),
+                serde_json::to_vec_pretty(&state).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(base.join("result.json"), &out.stdout).unwrap();
+            std::fs::write(base.join("check.json"), &check.stdout).unwrap();
+            std::fs::write(
+                base.join("command.txt"),
+                format!("{argv}\ncheck exit: {}\n", check.status),
+            )
+            .unwrap();
+            std::fs::write(base.join("agent-wrapper.sh"), script).unwrap();
+        }
+        assert_eq!(row.outcome, Outcome::Fail, "{task}/{mode}: {row:?}");
+        assert_eq!(row.failure_class, Some(class));
+    }
+}

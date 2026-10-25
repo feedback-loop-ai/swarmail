@@ -1,5 +1,14 @@
 # Ordered tasks — agent eval harness
 
+Active amendment, 2026-10-25: accepted [0071](../../docs/decisions/0071-eval-trap-scoring.md)
+advances catalogue/snapshot/result to v2 and gives seven named traps trial-wide
+precedence. Current implementation/proof tasks live in
+[eval-trap-scoring/tasks.md](../eval-trap-scoring/tasks.md). V1 replay uses the
+old source/binary; old/mixed artifacts refuse and scores are never migrated or
+pooled. Preserve #194/#196 assertions. Decision 0056 now requires unsigned
+seat commits followed by operator sealing; run A's T15 signature receipt below
+is historical and is not a current signing instruction.
+
 Implemented in run A. Every checkbox names the evidence that closes it,
 now under `evals/tests/` (`proof`, `fixture`, `runner`, `scoring`,
 `report`, `boundary`); [spec.md](spec.md) is the acceptance authority. The

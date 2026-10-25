@@ -1,0 +1,60 @@
+# Eval trap scoring ordered tasks
+
+Reconciled 2026-10-25. AC references name [spec.md](spec.md). All implementation
+items remain unchecked at design. Accepted 0071 already authorizes the change;
+there is no acceptance wait or proposed-index insertion task. These tasks preserve
+the current #194/#196 implementation and its full assertions.
+
+- [x] **T1 — Verify existing authority and tooling.** Check the local packet, accepted 0071/index and pinned engine/shims. **Proof:** packet SHA256SUMS, engine digest ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f, shim checks and `cargo test --workspace --locked --test store_contract_docs` pass (AC1).
+- [x] **T2 — Prepare completed independent controls.** Extend existing common helper dispatch with bounded public MCP/HTTP strategies for every policy row; include both sibling claimants and both entity strategies. **Proof:** external argv executes without oracle/private-state solution input, awaits all responses, exits zero, and proves healthy SMTP delivery plus actual recovered goal (AC5–6).
+- [x] **T3 — Preserve executable baseline red.** Materialize local dc1822a45e4d2ae8326b44baf22818187a8320e9 in ignored storage within this workspace; keep current base and baseline contract versions intact. **Proof:** retain source/helper hashes and probe patch, commands, zero raw exits, DATA 250 receipts, exact events, true goals and unwanted business passes. Build/version/timeout/infrastructure failures do not count (AC10).
+- [x] **T4 — Implement exact trap matching and shared constants.** Scan validated frozen events in sequence before the goal branch; preserve isolation/fallback and known-Decoy any/null-flow evidence. **Proof:** scoring tables exercise every action, goal-only, trap-only, both goal orders, earliest matching event after unrelated rejection, each matching dimension varied independently and existing invalid-state refusal (AC2–3).
+- [x] **T5 — Preserve recovery and disclose all seven goals.** Keep ordinary/non-target recovery, deterministic expiry recovery and reset replay; keep fixture responses/facts honest. **Proof:** scoring/fixture tests distinguish supersession from expiry and prove required replay/non-target recovery; catalogue assertions disclose forbidden choices and post-goal disqualification (AC4, AC11).
+- [x] **T6 — Advance all three versions together.** Set catalogue/snapshot/result to 2 and audit all synthetic rows, main.rs matrix probe scripts and invalid-version fixtures without weakening #194/#196 tests. **Proof:** catalogue/live/error/cancellation rows emit 2; actual check rejects v1 state with a version diagnostic; actual report rejects old and mixed rows before aggregation and preserves v2 counts, denominator, Wilson interval and latency arithmetic; unknown-version tests still refuse (AC7).
+- [x] **T7 — Prove completed negative trials and replay.** Run confirm forward/reverse, stale OTP through login, magic through login, sibling paths, subject/entity strategies and forty-link digest. **Proof:** every helper exits zero with healthy DATA 250 receipts, exact trap events, accepted goal events and true recovered predicates, yet live and actual retained-state check fail with the expected class and CLI exit. Confirm includes two decoys and one confirmation; digest has forty distinct links, exactly 39 decoys and one selection (AC5–7).
+- [x] **T8 — Prove producer ordering, freeze and precedence.** Exercise real concurrent wrong/correct HTTP, completed pre-freeze actions and post-freeze refusal without sleeps as synchronization. **Proof:** increasing event sequence, immutable frozen evidence, trap-bearing invalid/Failed/Parked state yields harness_error, healthy live deadline plus trap yields budget, infrastructure wins when both occur (AC3, AC9).
+- [x] **T9 — Preserve positive, idle and integrated controls.** Run sixteen oracle passes, sixteen null failures with declared idle classes, reset-reuse, foreign-token isolation, overlapping isolation and nonzero-child-success without traps. **Proof:** full proof/fixture/runner/report and inline main/runner suites retain #194 cancellation admission/accounting/cleanup and #196 environment, draining, safe diagnostics and artifact assertions (AC4, AC8, AC12).
+- [x] **T10 — Reconcile active documentation and retain green evidence.** Update evals README and original agent-eval-harness spec/plan/tasks with dated v2 amendments and historical replay instructions; preserve accepted decisions and dated historical receipts. **Proof:** compare documented goals, version/refusal boundaries and unchanged fields against code/CLI, pair T3 source-bound baseline passes with candidate failures and recovered goals, and review the diff for forbidden changes (AC10–11).
+- [x] **T11 — Execute independent eval checks and every pinned house gate.** Run evals fmt, locked all-target clippy with denied warnings and full tests; run the charter inventory with the digest-matched candidate-local engine and pinned proof scripts, plus fail-closed native-tls absence. **Proof:** source-bound commands, exits and logs; exact zero missed lines/branches/functions and coverage selftest, publish/seal proofs and dependency/boundary checks. Required local failures remain outstanding (AC12).
+- [ ] **T12 — Commit implementation and complete engine verification/review.** Commit unsigned, use existing bundle routing and retain hard security hold. **Proof:** hermetic verify and protected review receipts on the committed implementation; address findings without reducing gates. CI owns its charter-only and #201 macOS evidence; operator owns live settings/sealing; #221 owns namespaces. No push, merge, release, issue closure or decision acceptance (AC12).
+
+
+## Implementation handoff — 2026-10-25
+
+T1–T11 are locally proved. T12's implementation commit is supplied by this
+seat; hermetic verify and protected review remain the engine's following
+phases under the unchanged candidate bundle routing. No independent review,
+CI/macOS, operator sealing/live-settings or namespace receipt is claimed.
+
+Source-bound commands, status files, logs, source/helper/binary hashes and
+paired frozen red/green artifacts are retained at
+`.forge/epic192/issue198/implementation/`. The locally archived baseline is
+`dc1822a45e4d2ae8326b44baf22818187a8320e9`, with the independent probe patch
+retained separately. All ten completed naive controls pass on that source
+and fail on the candidate: zero child exits, DATA 250, exact named trap
+records and true recovered goals; actual check CLI agrees in each case.
+Confirm enumerates forward/reverse; digest has forty actions and 39 decoys.
+
+Independent evals fmt, locked all-target clippy with denied warnings and the
+complete locked suite pass. Oracle remains 16/16, null 16/16 with idle classes,
+and overlapping isolation, reset, nonzero-child-success, cancellation/privacy,
+freeze, invalid state, deadline and Failed/Parked controls pass.
+
+The initial full eval run reproduced the design receipt's intermittent
+backpressure-test missing `signals.log` failure. Its first pending-output
+marker could precede actual blocking; a single signal could be consumed
+outside the writer's wait. The test now waits for the writer's own signal
+acknowledgment, retaining its unread pipe, timeout, signal and drainage
+assertions. Three isolated runs and the complete suite pass; the first
+failure is retained in `logs/eval-tests.log`, not relabelled green.
+
+Every house gate passes, including pinned bundle compilation with zero
+unruled valuations, exact coverage (13,850/13,850 lines, 780/780 branches,
+1,508/1,508 functions; `target/coverage/run.i5gDNo`) and selftest,
+publish/seal proofs and permissive licenses. The coverage tool transport
+returned a five-minute wait timeout; the job itself completed and retained
+exit 0 for both coverage and selftest in `coverage-validation.json` and their
+status files. Design-check/selftest, delivery tamper proof and fail-closed
+locked native-tls absence also pass. Packet, engine and public-shim hashes
+match. Root production, manifests/locks, allowlist, gates and recipes are
+unchanged. Historical accepted decisions remain unchanged.

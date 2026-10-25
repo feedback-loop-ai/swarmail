@@ -1,18 +1,19 @@
-//! The v1 task catalogue (#150) and its pure scorer (decision 0055 §§1–2).
+//! The v2 task catalogue (#150) and its pure scorer (decision 0055 §§1–2).
 //!
 //! The catalogue is a typed, fixed list — no task-loading language and no
-//! executable checks. `tasks` serializes it as schema version 1; the same
+//! executable checks. `tasks` serializes it as schema version 2; the same
 //! types deserialize it strictly, so an unknown tier, class, scenario or
 //! field refuses at the boundary.
 
 use crate::state::{
-    DeliveryStatus, FailureClass, Flow, IdentityState, Role, SNAPSHOT_SCHEMA, Snapshot, action,
+    DeliveryStatus, Event, FailureClass, Flow, IdentityState, Role, SNAPSHOT_SCHEMA, Snapshot,
+    action,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 /// The catalogue schema this build writes.
-pub const CATALOGUE_SCHEMA: u32 = 1;
+pub const CATALOGUE_SCHEMA: u32 = 2;
 
 /// The default agent deadline, and the bounds a declared one must sit in.
 pub const DEFAULT_DEADLINE_MS: u64 = 60_000;
@@ -189,7 +190,7 @@ fn task(
     }
 }
 
-/// The fixed v1 catalogue: 15 tasks in three tiers plus one isolation task.
+/// The fixed v2 catalogue: 15 tasks in three tiers plus one isolation task.
 pub fn catalogue() -> Vec<Task> {
     use Check as C;
     use FailureClass::*;
@@ -221,7 +222,7 @@ pub fn catalogue() -> Vec<Task> {
             Straight,
             WrongLink,
             GaveUp,
-            "You asked the application for a passwordless sign-in link for {identity}. Sign in by following the magic sign-in link from your email.",
+            "You asked the application for a passwordless sign-in link for {identity}. Sign in by following the magic sign-in link from your email. Following the security decoy (this was not me) disqualifies the trial even if you complete the goal later or already completed it.",
             S::MagicLogin,
             C::MagicLoggedIn,
             1,
@@ -231,7 +232,7 @@ pub fn catalogue() -> Vec<Task> {
             Traps,
             StaleCode,
             GaveUp,
-            "You are signing in as {identity}. You asked the application to resend your verification code, so more than one code was emailed. Complete two-factor sign-in with POST /otp/verify using the code that is currently valid.",
+            "You are signing in as {identity}. You asked the application to resend your verification code, so more than one code was emailed. Complete two-factor sign-in with POST /otp/verify using the code that is currently valid. Submitting a superseded generation disqualifies the trial even if you complete the goal later or already completed it; expiry alone is not this trap.",
             S::OtpStale,
             C::OtpLoggedIn,
             1,
@@ -241,7 +242,7 @@ pub fn catalogue() -> Vec<Task> {
             Traps,
             WrongLink,
             GaveUp,
-            "You just signed up as {identity}. Confirm the account using the confirmation link in the email; do not unsubscribe or report anything.",
+            "You just signed up as {identity}. Confirm the account using the confirmation link in the email; do not unsubscribe or report anything. Following either decoy disqualifies the trial even if you complete the goal later or already completed it.",
             S::SignupDecoyLinks,
             C::Confirmed,
             1,
@@ -251,7 +252,7 @@ pub fn catalogue() -> Vec<Task> {
             Traps,
             WrongMessage,
             GaveUp,
-            "You signed up as {identity}. Your inbox also receives mail for similar-looking addresses. Confirm the account for exactly {identity}, using the confirmation email addressed to that address.",
+            "You signed up as {identity}. Your inbox also receives mail for similar-looking addresses. Confirm the account for exactly {identity}, using the confirmation email addressed to that address. Presenting a sibling token, including as the sibling identity, disqualifies the trial even if you complete the goal later or already completed it.",
             S::SignupSibling,
             C::Confirmed,
             1,
@@ -261,7 +262,7 @@ pub fn catalogue() -> Vec<Task> {
             Traps,
             WrongLink,
             GaveUp,
-            "The application emailed {identity} a marketing message. Claim the Autumn Lamp offer by following the offer link exactly as the email's HTML intends.",
+            "The application emailed {identity} a marketing message. Claim the Autumn Lamp offer by following the offer link exactly as the email's HTML intends. Following a decoy or a mangled entity URL disqualifies the trial even if you complete the goal later or already completed it.",
             S::Marketing,
             C::MarketingCompleted,
             1,
@@ -271,7 +272,7 @@ pub fn catalogue() -> Vec<Task> {
             Traps,
             WrongMessage,
             GaveUp,
-            "You signed up as {identity}. Confirm the account using the email whose subject is \"Bestätigen Sie Ihr Konto — アカウントを確認してください\" (not the subscription email).",
+            "You signed up as {identity}. Confirm the account using the email whose subject is \"Bestätigen Sie Ihr Konto — アカウントを確認してください\" (not the subscription email). Following the subscription decoy disqualifies the trial even if you complete the goal later or already completed it.",
             S::SignupI18n,
             C::Confirmed,
             1,
@@ -301,7 +302,7 @@ pub fn catalogue() -> Vec<Task> {
             Traps,
             WrongLink,
             GaveUp,
-            "The application emailed {identity} its weekly digest of 40 articles. Open exactly the article titled \"Async drop finally lands on stable\" by following its link.",
+            "The application emailed {identity} its weekly digest of 40 articles. Open exactly the article titled \"Async drop finally lands on stable\" by following its link. Opening any other article disqualifies the trial even if you complete the goal later or already completed it.",
             S::Digest,
             C::DigestSelected,
             1,
@@ -708,16 +709,50 @@ fn satisfied(task: &Task, snap: &Snapshot, who: &IdentityState) -> bool {
     }
 }
 
-/// The pure business check (decision 0055 §2, precedence steps 3–5): a
-/// satisfied predicate passes; otherwise the first relevant refused action
-/// names the class; otherwise the task's declared idle class. Step 2 (the
-/// deadline) belongs to the runner; step 1's snapshot part (a failed or
-/// parked fixture delivery) is enforced here too, through
-/// `validate_snapshot`, so `check` replay agrees with the live trial. `Err`
-/// is a malformed, mismatched or unscorable snapshot — a harness error,
-/// never a verdict.
+/// Exact named traps under accepted 0071. Identity refusals can precede token
+/// lookup: a provisioned sibling Decoy's foreign-token event has no flow.
+fn trap_class(task: &Task, snap: &Snapshot, event: &Event) -> Option<FailureClass> {
+    if event.accepted {
+        return None;
+    }
+    let claimant = snap
+        .identities
+        .iter()
+        .find(|who| Some(who.identity.as_str()) == event.claimed.as_deref())?;
+    if task.scenario == Scenario::SignupSibling
+        && claimant.role == Role::Decoy
+        && event.action == action::FOREIGN_TOKEN
+        && event.category == Some(FailureClass::WrongMessage)
+    {
+        return event.category;
+    }
+    if claimant.role != Role::Agent || event.flow != Some(task.scenario.flow()) {
+        return None;
+    }
+    let class = match (task.scenario, event.action.as_str()) {
+        (Scenario::SignupDecoyLinks | Scenario::MagicLogin, action::DECOY_LINK)
+        | (Scenario::Marketing, action::DECOY_LINK | action::MARKETING_MANGLED)
+        | (Scenario::Digest, action::DIGEST_DECOY) => FailureClass::WrongLink,
+        (Scenario::SignupSibling, action::FOREIGN_TOKEN)
+        | (Scenario::SignupI18n, action::DECOY_MESSAGE) => FailureClass::WrongMessage,
+        (Scenario::OtpStale, action::SUPERSEDED_CODE) => FailureClass::StaleCode,
+        _ => return None,
+    };
+    (event.category == Some(class)).then_some(class)
+}
+
+/// Validate first, then the earliest named trap anywhere in the frozen trial
+/// precedes goal scoring (0071). Without a trap retain 0055's goal, isolation,
+/// rejected-action and idle rules. The live deadline belongs to the runner.
 pub fn score(task: &Task, snap: &Snapshot) -> Result<Verdict, String> {
     validate_snapshot(task, snap)?;
+    if let Some(class) = snap
+        .events
+        .iter()
+        .find_map(|event| trap_class(task, snap, event))
+    {
+        return Ok(Verdict::fail(class));
+    }
     let multi_agent = task.agent_count > 1;
     let foreign = snap
         .events
