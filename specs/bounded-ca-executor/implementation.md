@@ -34,7 +34,9 @@ Proof owners:
   identity-keyed startup observation, actual startup failure and two live servers.
 - `tests/webhook.rs`: privacy, complete-root/later-root verified TLS and >32-root
   fan-out. Fixtures expecting uncontended CA admission share a scoped test guard;
-  other protocol suites remain concurrent. The >32-root fixture establishes each
+  other protocol suites remain concurrent. Abandoned-work fixtures observe the
+  actual zero-job state before releasing their shared guard: builder-finished
+  signals precede envelope disposal and cannot substitute for reclamation. The >32-root fixture establishes each
   cold root through SMTP/TLS before the concurrent fan-out. Arbitrary cold bursts
   cannot demand success under no-queue/no-fairness admission; explicit pressure
   tests prove that loss policy instead. No test retries an admission to hide it.

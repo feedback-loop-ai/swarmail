@@ -755,6 +755,7 @@ fn cancelled_delivery_build_counts_work_without_late_publication() {
             assert!(!cache.clients.contains_key(&pem));
             drop(cache);
             assert_cache_bijection();
+            wait_ca_idle().await;
         });
 }
 
@@ -874,6 +875,7 @@ fn shutdown_during_held_build_aborts_once_without_late_publish_or_send() {
             assert!(!watchdog_fired.load(Ordering::SeqCst));
             watchdog_done_tx.send(()).unwrap();
             watchdog.join().unwrap();
+            wait_ca_idle().await;
         });
 }
 
@@ -1225,6 +1227,7 @@ async fn cancelled_put_handler_cannot_install_after_preparation() {
     assert_eq!(cache_lru_keys(), lru);
     watchdog.assert_unused();
     Arc::try_unwrap(server).ok().unwrap().stop().await;
+    wait_ca_idle().await;
 }
 
 /// GET projection and PUT validation/projection are cache-neutral even at
@@ -1599,6 +1602,7 @@ fn projection_capacity_case(cancel_waiter: bool) {
                 reopened.count("projection-measured", &crate::store::Filter::default()),
                 1
             );
+            wait_ca_idle().await;
         });
 }
 async fn test_server_from_config(config: &crate::config::Config) -> crate::RunningServer {
