@@ -345,10 +345,18 @@ fn the_matrix_refuses_bad_inputs_before_running_anything() {
 }
 
 fn row(task: &str, outcome: &str, class: Option<&str>, ms: u64) -> String {
+    let task = if task == "t" { "signup" } else { task };
+    let req = swarmail_evals::runner::TrialRequest {
+        task: Some(task.into()),
+        agent: Some("a".into()),
+        argv: vec!["/bin/true".into()],
+        ..Default::default()
+    };
     json!({
-        "schema_version": 2, "trial_id": format!("t{ms}"), "task": task, "agent": "a",
+        "schema_version": 2, "trial_id": format!("{ms:032x}"), "task": task, "agent": "a",
         "outcome": outcome, "failure_class": class, "wall_time_ms": ms,
-        "agent_exit_status": 0, "agent_exits": [], "confinement": "unconfined"
+        "agent_exit_status": 0, "agent_exits": [], "confinement": "unconfined",
+        "provenance": swarmail_evals::runner::make_provenance(&req, None, None)
     })
     .to_string()
 }
@@ -1112,5 +1120,22 @@ fn v2_report_refuses_v1_and_mixed_rows_before_aggregation() {
         assert_eq!(out.status.code(), Some(2));
         assert!(out.stdout.is_empty(), "no partial aggregation");
         assert!(stderr(&out).contains("unsupported result schema version; expected 2"));
+    }
+}
+
+#[test]
+fn report_refuses_pre_provenance_v2_rows_without_partial_aggregation() {
+    let current = row("signup", "pass", None, 1);
+    let mut old: Value = serde_json::from_str(&current).unwrap();
+    old.as_object_mut().unwrap().remove("provenance");
+    for input in [
+        old.to_string(),
+        format!("{current}\n{old}"),
+        format!("{old}\n{current}"),
+    ] {
+        assert!(swarmail_evals::report::parse_rows(&input).is_err());
+        let (code, output) = report_of(&input);
+        assert_eq!(code, Some(2));
+        assert_eq!(output, Value::Null);
     }
 }

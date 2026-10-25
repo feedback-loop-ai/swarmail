@@ -112,6 +112,7 @@ struct Ticket {
 pub struct Private {
     trial_id: String,
     task: Task,
+    inputs: crate::provenance::FixtureInputs,
     app_url: String,
     accounts: Vec<Account>,
     tokens: HashMap<String, Token>,
@@ -126,16 +127,7 @@ pub struct Private {
     prepared: bool,
     frozen: bool,
     clock: Clock,
-}
-
-fn random_alnum(len: usize) -> String {
-    use rand::Rng;
-    use rand::distr::Alphanumeric;
-    rand::rng()
-        .sample_iter(&Alphanumeric)
-        .take(len)
-        .map(char::from)
-        .collect()
+    private_rng: rand::rngs::StdRng,
 }
 
 fn reply(status: StatusCode, ok: bool, message: impl Into<String>) -> Response {
@@ -159,7 +151,20 @@ fn reply_json(value: Value) -> Response {
 
 impl Private {
     pub fn new(trial_id: &str, task: Task, app_url: &str, clock: Clock) -> Private {
+        Self::with_inputs(trial_id, task, app_url, clock, Default::default())
+    }
+
+    pub fn with_inputs(
+        trial_id: &str,
+        task: Task,
+        app_url: &str,
+        clock: Clock,
+        inputs: crate::provenance::FixtureInputs,
+    ) -> Private {
+        use rand::SeedableRng;
         Private {
+            private_rng: rand::rngs::StdRng::from_os_rng(),
+            inputs,
             trial_id: trial_id.to_string(),
             task,
             app_url: app_url.to_string(),
@@ -179,6 +184,15 @@ impl Private {
         }
     }
 
+    fn random_alnum(&mut self, len: usize) -> String {
+        use rand::{Rng, distr::Alphanumeric};
+        (&mut self.private_rng)
+            .sample_iter(&Alphanumeric)
+            .take(len)
+            .map(char::from)
+            .collect()
+    }
+
     fn next_seq(&mut self) -> u64 {
         self.seq += 1;
         self.seq
@@ -195,7 +209,12 @@ impl Private {
         let seq = self.next_seq();
         self.events.push(Event {
             seq,
-            claimed: claimed.map(str::to_string),
+            claimed: claimed.and_then(|name| {
+                self.accounts
+                    .iter()
+                    .find(|a| a.identity == name)
+                    .map(|a| a.identity.clone())
+            }),
             flow,
             action: action.to_string(),
             accepted,
@@ -313,7 +332,7 @@ impl Private {
     }
 
     fn mint(&mut self, owner: &str, flow: Flow, role: TokenRole) -> String {
-        let token = random_alnum(24);
+        let token = self.random_alnum(24);
         let issued = (self.clock)();
         self.tokens.insert(
             token.clone(),
@@ -341,6 +360,23 @@ impl Private {
         kind: &str,
         msg: Message,
     ) -> u64 {
+        let slot = self
+            .accounts
+            .iter()
+            .position(|a| a.identity == account.identity)
+            .expect("provisioned account") as u64;
+        let generation = self
+            .deliveries
+            .iter()
+            .filter(|d| d.identity == account.identity && d.flow == flow)
+            .count() as u64;
+        let flow_name = serde_json::to_value(flow)
+            .expect("flow")
+            .as_str()
+            .expect("flow string")
+            .to_string();
+        let render =
+            mail::RenderContext::fixture(&self.inputs, &self.task.id, slot, &flow_name, generation);
         let seq = self.next_seq();
         self.deliveries.push(Delivery {
             seq,
@@ -355,7 +391,7 @@ impl Private {
             Outbound {
                 inbox: account.inbox.clone(),
                 to: to.to_string(),
-                data: mail::render(&msg),
+                data: mail::render_with(&msg, &render),
             },
         );
         seq
@@ -405,7 +441,7 @@ impl Private {
             .insert(account.identity.clone(), generation);
         let code = loop {
             use rand::Rng;
-            let n: u32 = rand::rng().random_range(100_000..1_000_000);
+            let n: u32 = self.private_rng.random_range(100_000..1_000_000);
             let code = n.to_string();
             if !self.tokens.contains_key(&code) {
                 break code;
@@ -551,8 +587,15 @@ impl Private {
                     send.push(self.enqueue(&acct, &to, Flow::Marketing, "marketing", msg));
                 }
                 Scenario::Digest => {
-                    use rand::Rng;
-                    let right = rand::rng().random_range(0..40);
+                    let slot = self
+                        .accounts
+                        .iter()
+                        .position(|a| a.identity == to)
+                        .expect("account") as u64;
+                    let right =
+                        self.inputs
+                            .select(&self.task.id, slot, "digest", 0, "target-position", 40)
+                            as usize;
                     let mut text = String::from("This week's 40 articles:\n\n");
                     let mut html = String::from("<h1>Weekly digest</h1>\n<ol>\n");
                     for i in 0..40 {
@@ -572,7 +615,7 @@ impl Private {
                     send.push(self.enqueue(&acct, &to, Flow::Digest, "digest", msg));
                 }
                 Scenario::Reset => {
-                    self.account_mut(&to).password = Some(random_alnum(16));
+                    self.account_mut(&to).password = Some(self.random_alnum(16));
                     let token = self.mint(&to, Flow::Reset, TokenRole::Reset);
                     let link = self.link(&token);
                     let msg = Self::message(
@@ -587,16 +630,34 @@ impl Private {
                 Scenario::Invite => {
                     let token = self.mint(&to, Flow::Invite, TokenRole::Invite);
                     let link = self.link(&token);
-                    use rand::Rng;
-                    let days = rand::rng().random_range(3..20);
-                    let hour = rand::rng().random_range(8..18);
-                    let start = (chrono::Utc::now().date_naive() + chrono::Days::new(days))
+                    let slot = self
+                        .accounts
+                        .iter()
+                        .position(|a| a.identity == to)
+                        .expect("account") as u64;
+                    let days =
+                        3 + self
+                            .inputs
+                            .select(&self.task.id, slot, "invite", 0, "start-days", 17);
+                    let hour =
+                        8 + self
+                            .inputs
+                            .select(&self.task.id, slot, "invite", 0, "start-hour", 10)
+                            as u32;
+                    let start = (self.inputs.time().date_naive() + chrono::Days::new(days))
                         .and_hms_opt(hour, 30, 0)
                         .expect("a valid time");
                     let end = start + chrono::Duration::hours(1);
                     let fmt = |t: chrono::NaiveDateTime| t.format("%Y%m%dT%H%M%SZ").to_string();
-                    let uid = format!("{}@fixture.eval", random_alnum(12));
-                    let ics = mail::ics(&uid, "Harness design review", &fmt(start), &fmt(end), &to);
+                    let uid = format!("{}@fixture.eval", self.random_alnum(12));
+                    let ics = mail::ics_with_time(
+                        &uid,
+                        "Harness design review",
+                        &fmt(start),
+                        &fmt(end),
+                        &to,
+                        self.inputs.time(),
+                    );
                     self.invites.insert(
                         token.clone(),
                         Invite {
@@ -624,12 +685,12 @@ impl Private {
                 }
                 Scenario::Support => {
                     use rand::Rng;
-                    let ticket = rand::rng().random_range(10_000..100_000).to_string();
+                    let ticket = self.private_rng.random_range(10_000..100_000).to_string();
                     let words = ["lantern", "harbor", "copper", "meadow", "falcon"];
                     let challenge = format!(
                         "{}-{}",
-                        words[rand::rng().random_range(0..words.len())],
-                        rand::rng().random_range(1000..10_000)
+                        words[self.private_rng.random_range(0..words.len())],
+                        self.private_rng.random_range(1000..10_000)
                     );
                     self.tickets.insert(
                         ticket.clone(),
@@ -1491,7 +1552,15 @@ async fn admin_snapshot(State(app): State<AppState>, headers: HeaderMap) -> Resp
     if !authorized(&app, &headers) {
         return unauthorized();
     }
-    reply_json(serde_json::to_value(app.lock().snapshot()).expect("a snapshot serializes"))
+    let snapshot = app.lock().snapshot();
+    if crate::state::validate_publication(&snapshot).is_err() {
+        return reply(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            false,
+            "snapshot publication failed",
+        );
+    }
+    reply_json(serde_json::to_value(snapshot).expect("a snapshot serializes"))
 }
 
 async fn admin_flow_state(
@@ -1522,6 +1591,7 @@ pub struct FixtureConfig {
     pub trial_id: String,
     pub admin_secret: String,
     pub clock: Clock,
+    pub inputs: crate::provenance::FixtureInputs,
 }
 
 /// A running fixture: its two planes and its stop switch.
@@ -1549,7 +1619,13 @@ pub async fn start(cfg: FixtureConfig) -> std::io::Result<Running> {
     let admin = admin_listener.local_addr()?;
     let app_url = format!("http://{public}");
     let shared = Arc::new(Shared {
-        private: Mutex::new(Private::new(&cfg.trial_id, cfg.task, &app_url, cfg.clock)),
+        private: Mutex::new(Private::with_inputs(
+            &cfg.trial_id,
+            cfg.task,
+            &app_url,
+            cfg.clock,
+            cfg.inputs,
+        )),
         smtp: cfg.smtp,
         admin_secret: cfg.admin_secret,
     });
@@ -1601,6 +1677,15 @@ pub async fn start(cfg: FixtureConfig) -> std::io::Result<Running> {
 /// The `fixture` subcommand: start, announce both addresses on one stdout
 /// line, serve until SIGTERM or SIGINT.
 pub async fn run_cli(smtp: SocketAddr, task_id: &str, trial_id: &str) -> Result<(), String> {
+    run_cli_with_inputs(smtp, task_id, trial_id, Default::default()).await
+}
+pub async fn run_cli_with_inputs(
+    smtp: SocketAddr,
+    task_id: &str,
+    trial_id: &str,
+    inputs: crate::provenance::FixtureInputs,
+) -> Result<(), String> {
+    inputs.validate()?;
     let task = tasks::find(task_id).ok_or_else(|| format!("unknown task {task_id}"))?;
     let admin_secret = std::env::var(ADMIN_SECRET_ENV)
         .ok()
@@ -1616,6 +1701,7 @@ pub async fn run_cli(smtp: SocketAddr, task_id: &str, trial_id: &str) -> Result<
         trial_id: trial_id.to_string(),
         admin_secret,
         clock: Arc::new(Instant::now),
+        inputs,
     })
     .await
     .map_err(|e| format!("bind failed: {e}"))?;
@@ -1716,5 +1802,196 @@ mod tests {
     fn invite_times_compare_in_basic_utc() {
         assert_eq!(basic_utc("2026-10-26T15:30:00Z"), "20261026T153000Z");
         assert_eq!(basic_utc(" 20261026t153000z "), "20261026T153000Z");
+    }
+}
+
+#[cfg(test)]
+mod entropy_proofs {
+    use super::*;
+    use rand::SeedableRng;
+    fn planned(task: Task, seed: &str) -> Private {
+        let inputs =
+            crate::provenance::FixtureInputs::resolve(Some(seed), Some("2026-10-24T12:00:00Z"))
+                .unwrap();
+        let mut p = Private::with_inputs(
+            "entropy-proof",
+            task.clone(),
+            "http://127.0.0.1:1",
+            Arc::new(Instant::now),
+            inputs,
+        );
+        // This seam is per-instance and only available inside the test unit.
+        p.private_rng = rand::rngs::StdRng::seed_from_u64(718491);
+        for i in 0..task.agent_count {
+            p.accounts.push(Account {
+                identity: format!("person-{i}@example.test"),
+                inbox: format!("inbox-{i}"),
+                role: Role::Agent,
+                facts: Facts::default(),
+                password: None,
+            });
+        }
+        p.plan();
+        p
+    }
+    fn private_projection(p: &Private) -> Value {
+        let mut tokens = p.tokens.keys().cloned().collect::<Vec<_>>();
+        tokens.sort();
+        let mut tickets = p
+            .tickets
+            .iter()
+            .map(|(k, t)| (k.clone(), t.challenge.clone()))
+            .collect::<Vec<_>>();
+        tickets.sort();
+        let mut uids = p
+            .invites
+            .values()
+            .map(|i| i.uid.clone())
+            .collect::<Vec<_>>();
+        uids.sort();
+        json!({"tokens_and_otp":tokens,"tickets_and_challenges":tickets,"uids":uids,"passwords":p.accounts.iter().map(|a|a.password.clone()).collect::<Vec<_>>()})
+    }
+    #[test]
+    fn every_fixture_private_class_uses_independent_entropy_not_public_seed() {
+        for task in tasks::catalogue() {
+            let a = planned(task.clone(), &"00".repeat(32));
+            let b = planned(task, &"ab".repeat(32));
+            assert_eq!(private_projection(&a), private_projection(&b));
+            let public = serde_json::to_string(&a.snapshot()).unwrap();
+            for secret in a.tokens.keys().chain(a.tickets.keys()) {
+                assert!(!public.contains(secret));
+            }
+            for password in a.accounts.iter().filter_map(|a| a.password.as_ref()) {
+                assert!(!public.contains(password));
+            }
+            for ticket in a.tickets.values() {
+                assert!(!public.contains(&ticket.challenge));
+            }
+            for invite in a.invites.values() {
+                assert!(!public.contains(&invite.uid));
+            }
+        }
+    }
+    #[test]
+    fn changing_secret_consumption_cannot_change_public_message_suffixes_or_schedule() {
+        let task = tasks::find("invite-time").unwrap();
+        let a = planned(task.clone(), &"00".repeat(32));
+        let mut b = Private::with_inputs(
+            "other",
+            task,
+            "http://127.0.0.1:1",
+            Arc::new(Instant::now),
+            a.inputs.clone(),
+        );
+        b.private_rng = rand::rngs::StdRng::seed_from_u64(98);
+        b.accounts = a.accounts.clone();
+        b.random_alnum(117);
+        b.plan();
+        let header = |p: &Private| {
+            String::from_utf8(p.outbound.values().next().unwrap().data.clone())
+                .unwrap()
+                .lines()
+                .filter(|l| {
+                    l.starts_with("Date:")
+                        || l.starts_with("Message-ID:")
+                        || l.starts_with("Content-Type: multipart/")
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(header(&a), header(&b));
+        assert_eq!(
+            a.invites.values().next().unwrap().start,
+            b.invites.values().next().unwrap().start
+        );
+    }
+}
+
+#[cfg(test)]
+mod publication_proofs {
+    use super::*;
+
+    #[test]
+    fn lossy_unknown_header_bytes_never_enter_events() {
+        let mut private = Private::new(
+            "header",
+            tasks::find("otp").unwrap(),
+            "http://127.0.0.1:1",
+            Arc::new(Instant::now),
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            IDENTITY_HEADER,
+            axum::http::HeaderValue::from_bytes(b"\xffprivate-header-canary").unwrap(),
+        );
+        assert!(
+            private
+                .claim(&headers, Some(Flow::Otp), action::OTP_VERIFY)
+                .is_err()
+        );
+        let event = private.events.last().unwrap();
+        assert!(event.claimed.is_none());
+        assert_eq!(event.category, Some(FailureClass::ToolMisuse));
+    }
+
+    #[tokio::test]
+    async fn admin_refuses_noncanonical_state_without_serializing_it() {
+        let mut private = Private::new(
+            "guard",
+            tasks::find("otp").unwrap(),
+            "http://127.0.0.1:1",
+            Arc::new(Instant::now),
+        );
+        // Per-instance test-only corruption seam; production can only record
+        // canonical registry values. Drive the real handler over HTTP.
+        private.events.push(Event {
+            seq: 1,
+            claimed: Some("private-admin-canary".into()),
+            flow: None,
+            action: "otp_verify".into(),
+            accepted: false,
+            category: Some(FailureClass::ToolMisuse),
+        });
+        let state = Arc::new(Shared {
+            private: Mutex::new(private),
+            smtp: "127.0.0.1:1".parse().unwrap(),
+            admin_secret: "test-bearer".into(),
+        });
+        let router = Router::new()
+            .route("/admin/snapshot", get(admin_snapshot))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/admin/snapshot");
+        let response = client
+            .get(&url)
+            .bearer_auth("test-bearer")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 500);
+        let body = response.text().await.unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&body).unwrap(),
+            json!({"ok":false,"message":"snapshot publication failed"})
+        );
+        assert!(!body.contains("private-admin-canary"));
+        assert_eq!(client.get(&url).send().await.unwrap().status(), 401);
+        state.lock().events[0].claimed = None;
+        let response = client
+            .get(&url)
+            .bearer_auth("test-bearer")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let snap: Snapshot = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert!(!snap.frozen);
+        server.abort();
+        let _ = server.await;
     }
 }

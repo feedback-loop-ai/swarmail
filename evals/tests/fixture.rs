@@ -84,6 +84,7 @@ impl Rig {
             trial_id: "wire".into(),
             admin_secret: SECRET.into(),
             clock: Arc::new(Instant::now),
+            inputs: Default::default(),
         })
         .await
         .unwrap();
@@ -317,6 +318,13 @@ async fn every_action_is_bound_to_its_identity() {
     assert_eq!(rig.app(0).get(&link).await.unwrap().0, 403);
     let snap = rig.snapshot().await;
     assert!(snap.identities.iter().all(|i| !i.facts.confirmed));
+    assert_eq!(
+        snap.events
+            .iter()
+            .map(|e| e.claimed.as_deref())
+            .collect::<Vec<_>>(),
+        vec![None, None, Some(rig.ids[0].0.as_str())]
+    );
     let actions: Vec<_> = snap
         .events
         .iter()
@@ -820,5 +828,139 @@ async fn concurrent_trap_and_goal_linearize_before_freeze_and_stay_frozen() {
         assert_eq!(app.get(link).await.unwrap().0, 409);
     }
     assert_eq!(rig.snapshot().await, frozen);
+    rig.stop().await;
+}
+
+#[tokio::test]
+async fn unknown_live_otp_and_private_claims_never_enter_admin_snapshots() {
+    let rig = Rig::new("otp", 1).await;
+    rig.prepare().await;
+    let mut mcp = rig.mcp().await;
+    let mails = mcp
+        .wait_emails(rig.inbox(0), Some("Your verification code"), 1)
+        .await
+        .unwrap();
+    let otp = mails[0]["codes"][0].as_str().unwrap();
+    let private = "private-claim-canary-nonnumeric";
+    for claim in [otp, private] {
+        let response = reqwest::Client::new()
+            .post(format!("{}/otp/verify", rig.app_url))
+            .header(IDENTITY_HEADER, claim)
+            .header("content-type", "application/json")
+            .body(json!({"code": otp}).to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+    }
+    let (status, body) = rig.admin_get("/admin/snapshot").await;
+    assert_eq!(status, 200);
+    assert!(!body.contains(otp), "live OTP excluded from admin state");
+    assert!(
+        !body.contains(private),
+        "private claimant excluded from admin state"
+    );
+    let snap: Snapshot = serde_json::from_str(&body).unwrap();
+    assert!(!snap.frozen, "writer check also supports unfrozen state");
+    assert!(snap.events.iter().all(|e| e.claimed.is_none()
+        && e.category == Some(swarmail_evals::state::FailureClass::ToolMisuse)));
+    rig.stop().await;
+}
+
+#[tokio::test]
+async fn all_claim_routes_preserve_refusals_and_canonical_roles() {
+    use swarmail_evals::state::{FailureClass, action};
+    let rig = Rig::new("sibling-addresses", 1).await;
+    rig.prepare().await;
+    let initial = rig.snapshot().await;
+    let decoy = initial
+        .identities
+        .iter()
+        .find(|i| i.role == swarmail_evals::state::Role::Decoy)
+        .unwrap()
+        .identity
+        .clone();
+    let client = reqwest::Client::new();
+    let routes = [
+        ("GET", "/a/unknown", "follow_link"),
+        ("POST", "/otp/verify", action::OTP_VERIFY),
+        ("POST", "/otp/resend", "otp_resend"),
+        ("POST", "/reset/complete", action::RESET),
+        ("POST", "/login", action::LOGIN),
+        ("GET", "/invite/unknown/event.ics", "ics_download"),
+        ("POST", "/invite/accept", action::INVITE_ACCEPT),
+        ("POST", "/support/reply", action::SUPPORT_REPLY),
+        ("POST", "/deliveries/release", action::RELEASE),
+        ("GET", "/m/offer", action::MARKETING),
+    ];
+    let mut expected = Vec::new();
+    for (method, path, attempted) in routes {
+        for claim in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("private-route-canary"),
+            Some(decoy.as_str()),
+        ] {
+            let mut req = client.request(method.parse().unwrap(), format!("{}{path}", rig.app_url));
+            if let Some(claim) = claim {
+                req = req.header(IDENTITY_HEADER, claim);
+            }
+            let response = req.body("{}").send().await.unwrap();
+            let is_decoy = claim == Some(decoy.as_str());
+            assert_eq!(
+                response.status().as_u16(),
+                if is_decoy { 403 } else { 400 },
+                "{path}"
+            );
+            let body = response.text().await.unwrap();
+            assert!(!body.contains("private-route-canary"));
+            expected.push((
+                if is_decoy { Some(decoy.clone()) } else { None },
+                if is_decoy {
+                    action::FOREIGN_TOKEN
+                } else {
+                    attempted
+                },
+                if is_decoy {
+                    FailureClass::WrongMessage
+                } else {
+                    FailureClass::ToolMisuse
+                },
+            ));
+        }
+    }
+    let snap = rig.snapshot().await;
+    assert_eq!(snap.events.len(), expected.len());
+    for (event, (claim, action, category)) in snap.events.iter().zip(expected) {
+        assert_eq!(event.claimed, claim);
+        assert_eq!(event.action, action);
+        assert_eq!(event.category, Some(category));
+        assert!(!event.accepted);
+    }
+    assert!(snap.events.windows(2).all(|w| w[0].seq < w[1].seq));
+    let mut mcp = rig.mcp().await;
+    let mails = mcp
+        .wait_emails(rig.inbox(0), Some("Confirm your account"), 2)
+        .await
+        .unwrap();
+    let own = mails
+        .iter()
+        .find(|m| m["to"][0]["address"] == rig.ids[0].0)
+        .unwrap();
+    let link = labelled_url(text(own), "Confirm your account:").unwrap();
+    let response = client
+        .get(link)
+        .header(IDENTITY_HEADER, format!("  {}  ", rig.ids[0].0))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let snap = rig.snapshot().await;
+    assert_eq!(
+        snap.events.last().unwrap().claimed.as_deref(),
+        Some(rig.ids[0].0.as_str())
+    );
+    assert!(snap.identities[0].facts.confirmed);
     rig.stop().await;
 }

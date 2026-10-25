@@ -160,9 +160,10 @@ pub struct Delivery {
     pub attempts: Vec<Attempt>,
 }
 
-/// One public-plane action, accepted or refused. `claimed` is the
-/// `X-Eval-Identity` the request named (absent when it named none);
-/// `category` is the failure class a refusal is evidence of.
+/// One public-plane action, accepted or refused. New writers copy a canonical
+/// provisioned identity into `claimed`, or null for missing/unknown claimants.
+/// Historical readers also accept omitted/null/arbitrary unknown claims without
+/// changing their business verdict. `category` identifies refusal evidence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Event {
@@ -185,6 +186,21 @@ pub struct Snapshot {
     pub identities: Vec<IdentityState>,
     pub deliveries: Vec<Delivery>,
     pub events: Vec<Event>,
+}
+
+/// A writer-only representation check, independent of freeze/scorer eligibility.
+/// Historical decoding and scoring deliberately do not call this: membership
+/// does not establish the privacy or authenticity of caller-authored history.
+pub(crate) fn validate_publication(snapshot: &Snapshot) -> Result<(), &'static str> {
+    if snapshot
+        .events
+        .iter()
+        .filter_map(|event| event.claimed.as_ref())
+        .any(|claim| !snapshot.identities.iter().any(|id| id.identity == *claim))
+    {
+        return Err("noncanonical snapshot claim");
+    }
+    Ok(())
 }
 
 /// Action names shared by the fixture (which records them) and the scorer

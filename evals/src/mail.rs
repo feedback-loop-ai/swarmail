@@ -290,20 +290,47 @@ fn text_part(content_type: &str, body: &str) -> String {
     }
 }
 
-fn boundary() -> String {
-    use rand::Rng;
-    let n: u64 = rand::rng().random();
-    format!("=_eval_{n:016x}")
+/// Explicit non-secret render inputs, independent of private RNG consumption.
+pub struct RenderContext {
+    pub date: chrono::DateTime<chrono::Utc>,
+    pub message_id: String,
+    pub boundary: String,
 }
-
+impl RenderContext {
+    pub fn fixture(
+        inputs: &crate::provenance::FixtureInputs,
+        task: &str,
+        slot: u64,
+        flow: &str,
+        generation: u64,
+    ) -> Self {
+        Self {
+            date: inputs.time(),
+            message_id: crate::provenance::hex(
+                &inputs.choice(task, slot, flow, generation, "message-id")[..16],
+            ),
+            boundary: format!(
+                "=_eval_{}",
+                crate::provenance::hex(
+                    &inputs.choice(task, slot, flow, generation, "mime-boundary")[..16]
+                )
+            ),
+        }
+    }
+}
 /// Render the message as RFC 5322 bytes (CRLF line endings, no dot
 /// stuffing — `send` applies that on the wire).
 pub fn render(msg: &Message) -> Vec<u8> {
-    use rand::Rng;
-    let id: u64 = rand::rng().random();
-    let date = chrono::Utc::now().to_rfc2822();
+    render_with(
+        msg,
+        &RenderContext::fixture(&Default::default(), "standalone-mail", 0, "mail", 0),
+    )
+}
+pub fn render_with(msg: &Message, context: &RenderContext) -> Vec<u8> {
+    let id = &context.message_id;
+    let date = context.date.to_rfc2822();
     let mut out = format!(
-        "From: Fixture App <{}>\r\nTo: <{}>\r\nSubject: {}\r\nDate: {date}\r\nMessage-ID: <{id:016x}@fixture.eval>\r\nMIME-Version: 1.0\r\n",
+        "From: Fixture App <{}>\r\nTo: <{}>\r\nSubject: {}\r\nDate: {date}\r\nMessage-ID: <{id}@fixture.eval>\r\nMIME-Version: 1.0\r\n",
         msg.from,
         msg.to,
         encode_subject(&msg.subject)
@@ -312,7 +339,7 @@ pub fn render(msg: &Message) -> Vec<u8> {
         Body::Text(text) => out.push_str(&text_part("text/plain", text)),
         Body::HtmlOnly(html) => out.push_str(&text_part("text/html", html)),
         Body::Alternative { text, html } => {
-            let b = boundary();
+            let b = &context.boundary;
             out.push_str(&format!(
                 "Content-Type: multipart/alternative; boundary=\"{b}\"\r\n\r\n--{b}\r\n{}--{b}\r\n{}--{b}--\r\n",
                 text_part("text/plain", text),
@@ -320,7 +347,7 @@ pub fn render(msg: &Message) -> Vec<u8> {
             ));
         }
         Body::Mixed { text, attachment } => {
-            let b = boundary();
+            let b = &context.boundary;
             out.push_str(&format!(
                 "Content-Type: multipart/mixed; boundary=\"{b}\"\r\n\r\n--{b}\r\n{}--{b}\r\nContent-Type: {}; name=\"{name}\"\r\nContent-Disposition: attachment; filename=\"{name}\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{}--{b}--\r\n",
                 text_part("text/plain", text),
@@ -336,7 +363,17 @@ pub fn render(msg: &Message) -> Vec<u8> {
 /// A one-event iCalendar invitation (RFC 5545), CRLF-terminated. Times are
 /// UTC basic format (`20261026T150000Z`).
 pub fn ics(uid: &str, summary: &str, start: &str, end: &str, attendee: &str) -> Vec<u8> {
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    ics_with_time(uid, summary, start, end, attendee, chrono::Utc::now())
+}
+pub fn ics_with_time(
+    uid: &str,
+    summary: &str,
+    start: &str,
+    end: &str,
+    attendee: &str,
+    time: chrono::DateTime<chrono::Utc>,
+) -> Vec<u8> {
+    let stamp = time.format("%Y%m%dT%H%M%SZ");
     [
         "BEGIN:VCALENDAR".to_string(),
         "VERSION:2.0".to_string(),

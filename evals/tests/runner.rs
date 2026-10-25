@@ -712,7 +712,11 @@ fn readiness_discards_an_oversized_preannouncement_flood() {
         .output()
         .unwrap();
     assert_eq!(one_row(&out).outcome, Outcome::Pass, "{}", stderr(&out));
-    assert!(out.stdout.len() < 2048);
+    let original = swarmail_evals::results::read(&out.stdout).unwrap();
+    let mut execution = serde_json::to_value(original).unwrap();
+    execution.as_object_mut().unwrap().remove("provenance");
+    assert!(serde_json::to_vec(&execution).unwrap().len() < 2048);
+    assert!(out.stdout.len() <= swarmail_evals::provenance::RESULT_LIMIT);
     assert!(out.stderr.len() < 2048);
 }
 
@@ -733,7 +737,11 @@ fn readiness_continues_draining_after_the_first_valid_announcement() {
         .output()
         .unwrap();
     assert_eq!(one_row(&out).outcome, Outcome::Pass, "{}", stderr(&out));
-    assert!(out.stdout.len() < 2048);
+    let original = swarmail_evals::results::read(&out.stdout).unwrap();
+    let mut execution = serde_json::to_value(original).unwrap();
+    execution.as_object_mut().unwrap().remove("provenance");
+    assert!(serde_json::to_vec(&execution).unwrap().len() < 2048);
+    assert!(out.stdout.len() <= swarmail_evals::provenance::RESULT_LIMIT);
     assert!(out.stderr.len() < 2048);
 }
 
@@ -1070,10 +1078,19 @@ exit "$status"
     let row = one_row(&out);
     assert_eq!(row.outcome, Outcome::HarnessError);
     assert!(stderr(&out).contains("swarmail_unavailable"));
-    assert!(
-        !artifacts.exists(),
-        "preparation refusal published no artifacts"
-    );
+    let leaf = artifacts.join(&row.trial_id);
+    let retained = swarmail_evals::artifacts::trial(&leaf).unwrap();
+    assert_eq!(retained.row, row);
+    assert!(retained.state.is_none());
+    for name in ["metadata.json", "result.json", "diagnostics.log"] {
+        let payload = std::fs::read(leaf.join(name)).unwrap();
+        assert!(
+            !payload
+                .windows(canary.len())
+                .any(|w| w == canary.as_bytes()),
+            "private preparation output excluded"
+        );
+    }
     assert!(
         !out.stdout
             .windows(canary.len())
@@ -1336,7 +1353,7 @@ fn artifact_write_failures_use_safe_categories() {
         "--artifacts-dir",
         not_directory.to_str().unwrap(),
     ]);
-    assert_eq!(row.outcome, Outcome::Pass);
+    assert_eq!(row.outcome, Outcome::HarnessError);
     assert!(stderr(&out).contains("artifact_write_failed"));
     assert!(!stderr(&out).contains(not_directory.to_str().unwrap()));
 }

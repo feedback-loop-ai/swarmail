@@ -860,3 +860,52 @@ fn invalid_or_failed_trap_bearing_snapshots_still_refuse_before_scoring() {
     bad.frozen = false;
     assert!(tasks::score(&task, &bad).unwrap_err().contains("frozen"));
 }
+
+#[test]
+fn legacy_unknown_null_and_omitted_claims_preserve_refusal_and_fact_semantics() {
+    let s = snap(
+        "signup",
+        vec![identity("a", Role::Agent, Facts::default())],
+        vec![delivered(1, "a", Flow::Signup)],
+        vec![event(
+            2,
+            "historical-unknown",
+            "follow_link",
+            false,
+            Some(FailureClass::ToolMisuse),
+        )],
+    );
+    let original = serde_json::to_value(&s).unwrap();
+    for claim in [
+        None,
+        Some(serde_json::Value::Null),
+        Some(json!("historical-unknown")),
+    ] {
+        let mut value = original.clone();
+        if let Some(claim) = claim {
+            value["events"][0]["claimed"] = claim;
+        } else {
+            value["events"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("claimed");
+        }
+        let s: Snapshot = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            tasks::score(&base(), &s).unwrap(),
+            Verdict::fail(FailureClass::ToolMisuse)
+        );
+    }
+    let mut s = snap(
+        "signup",
+        vec![identity("a", Role::Agent, confirmed())],
+        vec![delivered(1, "a", Flow::Signup)],
+        vec![event(2, "a", action::CONFIRM, true, None)],
+    );
+    assert_eq!(tasks::score(&base(), &s).unwrap(), Verdict::pass());
+    s.events[0].claimed = Some("historical-unknown".into());
+    assert!(
+        tasks::score(&base(), &s).is_err(),
+        "unknown claims cannot back accepted facts"
+    );
+}

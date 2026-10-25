@@ -2,7 +2,7 @@
 
 Epic #164, Phase 0 run A: the fixture app (#149), the v2 task suite with
 oracle solutions (#150) and the agent-agnostic trial runner that #148's
-brokkr recipe will wrap. The design and its rulings are accepted decision
+brokkr recipe will wrap. The original design is accepted decision
 [0055](../docs/decisions/0055-agent-eval-harness.md); the acceptance
 authority is the [spec](../specs/agent-eval-harness/spec.md).
 
@@ -169,7 +169,7 @@ One JSON line per trial: `schema_version` (2), `trial_id`, `task`, `agent`,
 `wall_time_ms` (provisioning through cleanup, excluding the binary build),
 `agent_exit_status` (the single agent's numeric code, else null — always
 null for the three-agent isolation task), `agent_exits` (identity, code,
-signal per agent) and `confinement: "unconfined"`. Exit statuses never decide
+signal per agent), `confinement: "unconfined"` and required typed `provenance`. Exit statuses never decide
 a goal: an agent that completes the task and then crashes passes with its
 real status when no named trap disqualifies it; `null` exits zero and fails.
 
@@ -285,3 +285,204 @@ custom-target, artifact, mutation and gate proof remains required by
 [the port contract](../specs/eval-privacy-port/spec.md#acceptance-criteria).
 This records ownership, not macOS execution or CI success; prior receipts
 remain historical.
+
+
+## Reproducible inputs and retained results (#200)
+
+Accepted [0071](../docs/decisions/0071-eval-trap-scoring.md) governs catalogue,
+snapshot and result business version 2 and trap-before-goal scoring.
+Proposed [0063](../docs/decisions/0063-eval-provenance.md) records the provenance
+port. New v2 rows require typed provenance. `report` refuses v1, mixed and
+pre-provenance v2 rows before aggregation; historical records need their
+matching historical binary. Wilson intervals, accounting and quantiles stay
+the same. All fields, including nullable fields, are required; duplicate,
+unknown, hybrid and unsupported shapes refuse. Bare-state `check` keeps
+current v2 scoring and refuses v1 snapshots. There is no archive converter.
+
+`trial` and `matrix` accept `--seed` (exactly 64 lowercase hex digits) and
+`--fixture-time` (whole-second UTC RFC3339 ending in `Z`, calendar dates from
+1970-01-01 through 9998-12-01 inclusive). Invalid inputs exit 2 before launch.
+Defaults resolve one fresh public seed and one UTC sample per invocation.
+Resolved values are printed on stderr and recorded in every v2 result. A
+matrix shares one time and derives each cell seed from the master seed,
+zero-based task occurrence, task ID, agent index/label and repetition index.
+Duplicate tasks remain separate ordered occurrences. Matrix coordinates
+intentionally differ between agents; use separate trials with identical
+seed/time for matched fixtures.
+
+`fixture-sha256-v1` frames each byte string with its eight-byte big-endian
+length. Integers are eight big-endian bytes before framing; text is literal
+UTF-8 without normalization. Cell SHA-256 inputs, in order, are domain
+`swarmail-eval-cell-v1`, master seed bytes, task index, task ID, agent index,
+agent label and repetition index. Choice inputs are domain
+`swarmail-eval-choice-v1`, effective seed bytes, task ID, logical identity
+slot, flow name, generation index and field name. A selection uses the first
+eight digest bytes as a big-endian integer modulo a fixed nonzero bound.
+
+| Semantic field key | Meaning |
+|---|---|
+| `target-position` | Digest's target among 40 items, flow `digest`, generation 0 |
+| `start-days` | Invite offset 3 + choice modulo 17, flow `invite`, generation 0 |
+| `start-hour` | Invite hour 8 + choice modulo 10, flow `invite`, generation 0 |
+| `message-id` | First 16 digest bytes, lowercase hex, for each slot/flow/generation |
+| `mime-boundary` | Same truncation with this separate key and `=_eval_` prefix |
+
+Slots follow provisioned logical account order, including subsequently
+appended decoys. Message generation is zero-based per account and flow,
+independent of cross-slot arrival order. Public algorithm/key changes need a
+new version. Vectors and typed compact `catalogue-json-v1` bytes/digests are
+pinned in `tests/provenance.rs` and `tests/data/`.
+
+Stable projection v1 includes scenario, ordered logical roles, message roles
+and generations, digest position, invite schedule, Date/DTSTAMP, MIME and
+non-capability suffixes, and business transitions for identical scripted
+actions. Actual identities/inboxes, URLs/ports, execution IDs, elapsed/event
+observations, cross-slot arrival order and capabilities are excluded.
+Tokens, OTPs, passwords, support tickets/challenges, invite UID and admin
+bearer use fresh private entropy independent of public choices. A seed does
+not reproduce raw mail, secrets, model actions, scheduling or outcomes.
+UTC injection affects fixture mail/calendar dates; expiry/deadlines stay
+monotonic and TLS keeps real time. Invite token, owner and UID checks remain.
+
+The required `provenance` object contains `fixture`, nullable `matrix`,
+`task`, `harness`, `target`, `agent` and `limits`. It records actual executable
+SHA-256 values, task/catalogue identity and `business-score-v2`, build-time
+harness revision/dirty facts, target source association, agent declarations,
+and effective bounds. Availability is explicit: `present` with typed value
+and field-specific source, `unavailable` with a bounded reason, or builtin
+model's `not_applicable`. Unknown values never become placeholder hashes.
+
+Harness Git facts are embedded by eval-only `build.rs`, with source, HEAD,
+index, ref, packed-ref and worktree invalidation. Runtime checkout HEAD is
+never used. Owned offline/locked target builds compare source revision,
+dirty state and a private source-content fingerprint before/after Cargo,
+and bind Cargo's selected artifact digest. Source changes refuse association
+with `build_context_changed`. An opaque `SWARMAIL_BIN` is measured while its
+source remains `external_source_unknown`; no speculative extra build or
+external receipt is used. Bytes are rechecked before launches. Cooperative
+checks prove content consistency, not authenticity or elimination of hostile
+check-to-exec races. A shell digest identifies the shell, not loaded scripts.
+
+External trials accept optional `--agent-model`, `--agent-config-id` and
+`--public-argv`. Agent-file entries have optional `model`, `config_id` and
+`public_argv` (default false). Old entries run with undeclared model/config
+and private command attribution. Builtin overrides refuse before admission;
+omitted values and `public_argv:false` remain valid. Models/config IDs are
+operator declarations, never inferred from labels or claimed as measured
+remote-service identities. Builtin model is not applicable.
+
+`--public-argv` declares the **entire literal argv public and credential-free**.
+Only then does `public-argv-sha256-v1` hash framed domain
+`swarmail-eval-public-argv-v1`, framed argc as eight big-endian bytes, then each
+exact UTF-8 argument including program. No normalization or PATH expansion is
+hashed; literals are never retained. Without this opt-in the command is
+`private_argv`, while executable bytes are still measured independently.
+No environment, prompts, raw mail or private configuration is archived or
+hashed. Public labels/model/config/opted-in argv are the caller's declaration;
+there is no credential sanitizer for deliberately public data.
+
+## Retention and offline replay
+
+`trial --artifacts-dir ROOT` exclusively creates `ROOT/<trial-id>/`.
+`matrix --artifacts-dir ROOT` exclusively creates `ROOT/<matrix-id>/` with
+`matrix-plan.json`, `trials/<trial-id>/` and `matrix.json`. Generated IDs have
+128 fresh random bits and never use labels as path components. Concurrent
+runs can share ROOT. Existing or partial destinations are never reused.
+
+Trial `metadata.json` schema 1 is published last and binds exact result,
+optional state and safe diagnostics bytes by fixed path/length/SHA-256.
+State absence is explicit. The prelaunch matrix plan assigns ordered cell
+IDs/inputs; the final index binds the plan and every metadata file. No marker
+is published for incomplete/conflicting evidence. Requested trial retention failure
+overrides business pass/fail with `harness_error`; a retained setup error can
+be complete evidence without a snapshot. Parent fallback is only after reap
+and only if no child directory exists. Full disk, abort, SIGKILL, parent death
+or unavailable stdout cannot guarantee rows. Rename proves detectable
+completeness, not fsync or power-loss durability. Public diagnostics contain
+controlled codes; raw child logs/panic data are not retained.
+
+Matrix accepts exactly one v2 child line, binds assigned identity/inputs and
+actual command exit, and checks retained equality after stdout commitment.
+If cancellation changes the committed row after the child has retained its
+result, immutable evidence stays unchanged and no matrix index is published.
+An index-write failure exits 2 without rewriting committed stdout rows. Stdout is drained with a
+64 KiB cap. The child envelope of agent deadline + 300 seconds requests
+cancellation once; it never forces a return or adds a competing parent kill
+timer. The existing cleanup owner retains its five-second TERM and five-second
+post-KILL observation budgets, direct waits and drain fence. Existing 30-second startup,
+10-second SMTP I/O and 5-second shutdown bounds remain.
+
+New check modes are exclusive:
+
+```bash
+$E check --artifacts-dir /tmp/evals/<standalone-trial-id>
+$E check --matrix /tmp/evals/<matrix-id>
+$E check --task otp --state /tmp/evals/<trial-id>/state.json  # bare v2 snapshot
+```
+
+New envelopes require v2 results; unversioned historical metadata and v1
+results inside new envelopes refuse. Bare v2 state remains checkable without
+gaining provenance; v1 state needs its historical binary. Offline check validates all
+evidence before any output, then reuses snapshot validation/scoring. It never
+launches saved commands, builds binaries, contacts services or reparses mail.
+Snapshots are processed one at a time; only bounded replay rows accumulate.
+Original executables need not exist. Paths, symlinks, non-regular files,
+versions, cardinality/order, identities, lengths/hashes and catalogue/scorer
+compatibility are checked. Hashes do not authenticate a local writer.
+
+Replay schema 1 keeps `original_result` unchanged beside `business_replay`,
+which is `scored` with a verdict or `unscorable` with a bounded reason.
+Original budget/infrastructure history never becomes historical pass. Replay
+exits 2 for any unscorable row, else 1 for any business failure, else 0.
+
+Retained limits: 4096 cells; plan/index 8 MiB each; metadata/result/diagnostics
+64 KiB each; state 16 MiB; agent input 1 MiB; public task/label/model/config
+strings 1024 bytes; JSON depth 64. New result rows have a 64 KiB limit including
+the newline in every mode. Readers check declared sizes before allocation and
+use fixed regular files; writers bound serialization. Legacy non-retained
+product limits and report statistics remain unchanged.
+
+
+## Snapshot publication and historical claims
+
+New snapshot events retain a canonical provisioned identity, including decoys
+and other agents, or `claimed: null` for missing/unknown identity headers.
+Unknown spelling is deliberately lost. HTTP refusals, event order/categories,
+accepted facts and business-score-v2 stay unchanged. Both admin serialization
+and retention check this writer invariant before publishing state/results.
+Admin invariant failure is a fixed HTTP 500 without state; retention failure
+is infrastructure/exit 2 after cleanup with no completion marker. The admin
+check also permits ordinary unfrozen snapshots.
+
+Historical bare-state snapshots continue accepting omitted, null and arbitrary
+unknown claims. Retained snapshots require every existing key, including
+nullable `claimed`, but otherwise valid historical unknown strings still score.
+Neither reader rewrites source bytes or execution outcomes. Public check and
+retained-library errors use fixed bounded diagnostics, without echoing JSON
+keys, claims, identities, paths or scorer details. Invalid bare state retains
+its harness-error row/exit 2; invalid retained evidence yields no replay rows,
+including when a later matrix cell is invalid.
+
+Reader success proves consistency and scoreability, never historical secrecy
+or permission to publish an old evidence tree. Old leaked bytes remain under
+operator control. Claim membership cannot authenticate caller-authored identity
+lists or certify arbitrary external data as private; public argv/model/config
+inputs retain their documented caller responsibility. No archive conversion,
+secret hashing, automatic cleanup or saved-command execution is performed.
+
+Public argv is hashed from the original UTF-8 declaration before native path
+resolution. Private OsString arguments remain literal; non-UTF-8 public opt-in
+refuses without echo. Worker context uses bounded strict internal CLI arguments
+before `--`, with public facts only. The complete closed worker environment
+is unchanged: no context environment variable or private source locator is added.
+Runtime Git helpers subscribe before launch, use closed private maps and join
+the current group/wait/drain cleanup owner. Build-time Git also clears its map
+and bounds capture. Neither source-comparison fingerprints nor caller HOME,
+PWD, environment, private paths or private argv hashes are evidence.
+
+Every trial/matrix leaf is exclusive 0700; every payload is written completely
+to a descriptor-private 0600 temporary before no-clobber final publication.
+Caller-owned parent modes and unowned names/bytes are preserved. Metadata is
+last. Namespace isolation remains #221; macOS eval proof is owned by #201.
+Current bundles and 0058 select delivery/review routing; this port accepts no
+proposed decision and imports no historical review routing.
