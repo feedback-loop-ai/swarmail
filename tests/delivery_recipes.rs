@@ -194,8 +194,22 @@ fn careful_work_keeps_the_directed_codex_efforts() {
     ] {
         let overlay = office(name);
         assert_eq!(overlay["models"], json!([model]), "{name}");
-        assert_eq!(overlay["efforts"][model], effort, "{name}");
+        assert_eq!(overlay["efforts"], json!({model: effort}), "{name}");
     }
+}
+
+#[test]
+fn standard_and_careful_keep_intake_without_triage() {
+    for (recipe, intake) in [
+        ("codex", "codex-intake"),
+        ("codex-careful", "codex-careful-intake"),
+    ] {
+        let bundle = read_json(&format!("bundles/{recipe}/bundle.json"));
+        assert_eq!(bundle["seats"]["intake"]["agent"], intake, "{recipe}");
+        assert!(bundle["seats"].get("triage").is_none(), "{recipe}");
+    }
+    let base = read_json("bundles/self/bundle.json");
+    assert!(base["seats"].get("triage").is_none());
 }
 
 fn standard_panel() -> Value {
@@ -294,8 +308,31 @@ fn fast_triage_routes_only_bounded_bugs_directly_to_implementation() {
     assert_eq!(policy["initial"], "triage");
     assert_eq!(recipe["seats"]["triage"]["agent"], "codex-triage");
     let triage = office("codex-triage");
-    assert_eq!(triage["models"], json!(["sol"]));
-    assert_eq!(triage["efforts"]["sol"], "medium");
+    assert_eq!(triage["extends"], "intake");
+    assert_eq!(triage["models"], json!(["opus"]));
+    assert_eq!(triage["efforts"], json!({"opus": "medium"}));
+    assert_eq!(triage["charter"], "charters/codex-triage.md");
+    assert!(triage.get("limits").is_none(), "inherit intake's budget");
+    assert_eq!(
+        office("intake")["limits"],
+        json!({"max_attempts": 3, "timeout_seconds": 3600})
+    );
+    assert_eq!(
+        triage["hands"],
+        json!({"kind": "workspace", "network": true, "binds": [
+            {"path": "~/.cargo", "mode": "overlay", "mask": ["credentials.toml", "credentials"]},
+            {"path": "~/.rustup", "mode": "ro"}
+        ]})
+    );
+    let claude = read_json("adapters/claude.json");
+    assert_eq!(claude["provider"], "claude");
+    assert_eq!(claude["models"]["opus"], "claude-opus-5-5");
+    assert!(
+        claude["efforts"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("medium"))
+    );
     let results = recipe["seats"]["triage"]["results"].as_array().unwrap();
     assert_eq!(results.len(), 5);
     let rules = policy["rules"].as_array().unwrap();

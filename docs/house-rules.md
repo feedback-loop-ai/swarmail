@@ -235,7 +235,8 @@ Codex recipes. Standard uses Fable 5.1 correctness, official DeepSeek Flash
 security and Sonnet 5.5 tests. Careful and the fast design/engine lanes require
 five separate results: Astra correctness, Flash security, Sonnet tests, Astra
 guarantees and independent Fable. `codex-fast` uses GPT-6 Luna at xhigh for
-implementation and triages first: isolated bugs get one combined Flash
+implementation and triages first on Claude Opus 5.5 (`opus`) at medium effort
+with no fallback: isolated bugs get one combined Flash
 reviewer; broader fixes get Qwen Max correctness and Flash security, with
 Sonnet allowed only after Qwen dispatch failure before a review result. Risky
 work keeps the five-role panel. DeepSeek Pro is forbidden; other reviewers
