@@ -124,6 +124,7 @@ mod cleanup_probe {
         entry: watch::Receiver<bool>,
         release: watch::Receiver<bool>,
         returned: watch::Receiver<bool>,
+        groups: Mutex<Vec<std::sync::Weak<OwnedGroup>>>,
     }
 
     impl Control {
@@ -165,6 +166,7 @@ mod cleanup_probe {
                 entry,
                 release,
                 returned,
+                groups: Mutex::new(Vec::new()),
             }
         }
 
@@ -195,6 +197,38 @@ mod cleanup_probe {
             let release = self.release.clone();
             self.event(format!("held {pid}"));
             Self::gate(release).await
+        }
+
+        pub(super) fn record_group(&self, group: &Arc<OwnedGroup>) {
+            self.groups.lock().unwrap().push(Arc::downgrade(group));
+        }
+
+        // The failed-cleanup probes observe only the background failure owner:
+        // no caller, reaper or ordinary output task may mask an early release.
+        pub(super) async fn failed_owners_only(&self) {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                let ready = self.groups.lock().unwrap().iter().all(|weak| {
+                    weak.upgrade().is_none_or(|group| {
+                        Arc::strong_count(&group) == 2
+                            && group.status().is_some_and(|status| status.is_ok())
+                            && group
+                                .drains
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .all(|drain| drain.is_finished())
+                    })
+                });
+                if ready {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "unrelated cleanup owners finished"
+                );
+                tokio::task::yield_now().await;
+            }
         }
 
         pub(super) async fn acknowledge_return(&self) {
@@ -783,6 +817,7 @@ pub fn resolve_swarmail_bin() -> Result<PathBuf, String> {
 pub struct Groups(
     Arc<Mutex<Vec<Arc<OwnedGroup>>>>,
     Option<Arc<crate::admission::Admission>>,
+    #[cfg(all(test, target_os = "linux"))] Option<Arc<DrainTestControl>>,
 );
 
 type ExitWatch = tokio::sync::watch::Receiver<Option<Result<ExitStatus, String>>>;
@@ -798,6 +833,31 @@ struct OwnedGroup {
     drains: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     _runtime: Option<Arc<tempfile::TempDir>>,
     _admission: Option<Arc<crate::admission::Admission>>,
+    #[cfg(all(test, target_os = "linux"))]
+    drain_probe: Option<Arc<DrainTestControl>>,
+}
+
+// Per-spawn holds for the actual specialized stdout consumers. These carry
+// no admission, runtime or process owner; tests retain only non-owning observers.
+#[cfg(all(test, target_os = "linux"))]
+#[derive(Default)]
+struct DrainHold {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[cfg(all(test, target_os = "linux"))]
+impl DrainHold {
+    async fn wait(&self) {
+        self.entered.notify_one();
+        self.release.notified().await;
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+struct DrainTestControl {
+    stdout: DrainHold,
+    progress: tokio::sync::mpsc::UnboundedSender<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1018,8 +1078,30 @@ impl OwnedGroup {
                 }
                 let drains =
                     std::mem::take(&mut *group.drains.lock().unwrap_or_else(|e| e.into_inner()));
-                for drain in drains {
-                    let _ = drain.await;
+                for mut drain in drains {
+                    #[cfg(all(test, target_os = "linux"))]
+                    if let Some(probe) = &group.drain_probe {
+                        let mut reported = false;
+                        let _ = std::future::poll_fn(|cx| {
+                            let result = std::pin::Pin::new(&mut drain).poll(cx);
+                            if result.is_pending() && !reported {
+                                let _ = probe.progress.send("drain-pending");
+                                reported = true;
+                            }
+                            result
+                        })
+                        .await;
+                        continue;
+                    }
+                    let _ = (&mut drain).await;
+                }
+            }
+            #[cfg(all(test, target_os = "linux"))]
+            {
+                let probe = group.drain_probe.clone();
+                drop(group);
+                if let Some(probe) = probe {
+                    let _ = probe.progress.send("owner-disposed");
                 }
             }
         });
@@ -1153,11 +1235,17 @@ impl OwnedGroup {
             return Err(format!("cannot reap process {}: {e}", self.pid));
         }
         let drains = std::mem::take(&mut *self.drains.lock().unwrap_or_else(|e| e.into_inner()));
-        for mut drain in drains {
+        let mut drains = drains.into_iter();
+        while let Some(mut drain) = drains.next() {
             if tokio::time::timeout_at(final_deadline, &mut drain)
                 .await
                 .is_err()
             {
+                // The failed-cleanup owner must join this handle and the
+                // unvisited suffix before releasing private state or admission.
+                let mut retained = self.drains.lock().unwrap_or_else(|e| e.into_inner());
+                retained.push(drain);
+                retained.extend(drains);
                 return Err(format!(
                     "output pipe did not close after process group {} stopped",
                     self.pgid
@@ -1501,7 +1589,13 @@ fn spawn_extended(
         drains: Mutex::new(Vec::new()),
         _runtime: runtime.clone(),
         _admission: groups.1.clone(),
+        #[cfg(all(test, target_os = "linux"))]
+        drain_probe: groups.2.clone(),
     });
+    #[cfg(all(test, target_os = "linux"))]
+    if let Some(control) = cleanup_probe::CURRENT.get() {
+        control.record_group(&group);
+    }
     groups.add(group.clone());
     let admission = groups.1.clone();
     tokio::spawn(async move {
@@ -1517,6 +1611,8 @@ fn spawn_extended(
     };
     let mut drains = group.drains.lock().unwrap_or_else(|e| e.into_inner());
     let mut captured = None;
+    #[cfg(all(test, target_os = "linux"))]
+    let stdout_probe = groups.2.clone();
     let cargo_records = if capture {
         let (tx, rx) = oneshot::channel();
         captured = Some(rx);
@@ -1543,6 +1639,10 @@ fn spawn_extended(
                     Err(_) => break Err("helper_output_failed".into()),
                 }
             };
+            #[cfg(all(test, target_os = "linux"))]
+            if let Some(probe) = stdout_probe {
+                probe.stdout.wait().await;
+            }
             let _ = tx.send(result);
         }));
         None
@@ -1559,6 +1659,10 @@ fn spawn_extended(
                     Err(_) => break Err("cargo_output_read_failed".into()),
                 }
             };
+            #[cfg(all(test, target_os = "linux"))]
+            if let Some(probe) = stdout_probe {
+                probe.stdout.wait().await;
+            }
             let _ = tx.send(result);
         }));
         Some(rx)
@@ -2481,7 +2585,12 @@ async fn execute_trial(
         }
     }
     let started = Arc::new(Mutex::new(None::<Instant>));
-    let groups = Groups(Default::default(), Some(admission));
+    let groups = Groups(
+        Default::default(),
+        Some(admission),
+        #[cfg(all(test, target_os = "linux"))]
+        None,
+    );
     let agents = Arc::new(Mutex::new(Vec::<(String, i32)>::new()));
     // Registered before any child starts, so an interrupt at any phase
     // takes the cleanup path and still yields the row.
@@ -3073,6 +3182,11 @@ mod test_probes {
             }
             let row = run_trial(req, Some(PathBuf::from(bin))).await;
             if let Some(control) = cleanup_probe::CURRENT.get() {
+                if std::env::var_os(CLEANUP_OBSERVE_ERROR_ENV).is_some()
+                    || std::env::var_os(CLEANUP_FORCE_EXPIRY_ENV).is_some()
+                {
+                    control.failed_owners_only().await;
+                }
                 // Publish actual return before retaining the runtime for the
                 // parent's live-work observation. This is not a cleanup fence.
                 control.acknowledge_return().await;
@@ -3081,6 +3195,136 @@ mod test_probes {
         });
         assert_eq!(row.outcome, Outcome::HarnessError);
         println!("{}", serde_json::to_string(&row).unwrap());
+    }
+
+    async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(25), future)
+            .await
+            .expect("cleanup regression hang watchdog")
+    }
+
+    async fn finished(handle: &tokio::task::AbortHandle) {
+        within(async {
+            while !handle.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    }
+
+    fn drain_timeout_retention(cargo: bool, suffix: bool) {
+        let _trial_scope = crate::test_support::trial_scope();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (progress, mut events) = tokio::sync::mpsc::unbounded_channel();
+                let probe = Arc::new(DrainTestControl {
+                    stdout: DrainHold::default(),
+                    progress,
+                });
+                let admission = Arc::new(crate::admission::Admission::acquire().unwrap());
+                let groups = Groups(Default::default(), Some(admission), Some(probe.clone()));
+                let private = Arc::new(private_tempdir("swarmail-eval-drain-").unwrap());
+                let private_path = private.path().to_path_buf();
+                let mut cmd = tokio::process::Command::new("/bin/sh");
+                cmd.args([
+                    "-c",
+                    if cargo {
+                        r#"printf '%s\n' '{"reason":"build-finished","success":true}'"#
+                    } else {
+                        "printf helper-output"
+                    },
+                ]);
+                let mut proc = if cargo {
+                    spawn_owned_cargo(cmd, &groups, private.clone()).unwrap()
+                } else {
+                    spawn_extended(cmd, &groups, None, Some(private.clone()), false, true).unwrap()
+                };
+                within(probe.stdout.entered.notified()).await;
+                assert!(within(proc.child.wait()).await.unwrap().success());
+                assert!(group_members(&proc.group).unwrap().is_empty());
+                let (stdout, stderr) = {
+                    let drains = proc.group.drains.lock().unwrap();
+                    (drains[0].abort_handle(), drains[1].abort_handle())
+                };
+                finished(&stderr).await;
+                assert!(!stdout.is_finished());
+                let later = Arc::new(DrainHold::default());
+                let later_task = if suffix {
+                    let hold = later.clone();
+                    let task = tokio::spawn(async move { hold.wait().await });
+                    let observer = task.abort_handle();
+                    proc.group.drains.lock().unwrap().push(task);
+                    within(later.entered.notified()).await;
+                    Some(observer)
+                } else {
+                    None
+                };
+                let weak = Arc::downgrade(&proc.group);
+                let mut verdict = proc.group.ensure_cleanup();
+                let error = within(async {
+                    loop {
+                        if let Some(result) = verdict.borrow_and_update().clone() {
+                            break result.unwrap_err();
+                        }
+                        verdict.changed().await.unwrap();
+                    }
+                })
+                .await;
+                assert!(error.starts_with("output pipe did not close after process group"));
+                // Neither observers nor the cached verdict own the process group.
+                // Wait for the failure owner to poll a retained drain or dispose
+                // itself: an unscheduled owner cannot make the baseline pass.
+                drop(proc);
+                drop(groups);
+                drop(private);
+                let transition = within(events.recv()).await.unwrap();
+                assert!(matches!(transition, "drain-pending" | "owner-disposed"));
+                assert!(
+                    matches!(crate::admission::Admission::acquire(), Err("concurrent_trials_refused")),
+                    "pending stdout must retain admission after the failed cleanup owner progresses ({transition})"
+                );
+                assert!(private_path.is_dir(), "pending stdout retains private state");
+                assert_eq!(weak.strong_count(), 1, "only the cleanup owner remains");
+
+                probe.stdout.release.notify_one();
+                finished(&stdout).await;
+                if let Some(later_task) = later_task {
+                    let transition = within(events.recv()).await.unwrap();
+                    assert!(matches!(transition, "drain-pending" | "owner-disposed"));
+                    assert!(!later_task.is_finished());
+                    assert!(
+                        matches!(crate::admission::Admission::acquire(), Err("concurrent_trials_refused")),
+                        "the unvisited suffix must retain admission after stdout finishes"
+                    );
+                    assert!(private_path.is_dir(), "the suffix retains private state");
+                    later.release.notify_one();
+                    finished(&later_task).await;
+                }
+                assert_eq!(within(events.recv()).await, Some("owner-disposed"));
+                assert_eq!(weak.strong_count(), 0);
+                assert!(!private_path.exists(), "private state disposed before admission release");
+                drop(crate::admission::Admission::acquire().unwrap());
+                assert_eq!(verdict.borrow().as_ref().unwrap(), &Err(error));
+                assert!(!verdict.has_changed().unwrap_or(false), "the failed verdict stays cached");
+            });
+    }
+
+    #[test]
+    fn cleanup_drain_timeout_retains_helper_stdout() {
+        drain_timeout_retention(false, false);
+    }
+
+    #[test]
+    fn cleanup_drain_timeout_retains_cargo_stdout() {
+        drain_timeout_retention(true, false);
+    }
+
+    #[test]
+    fn cleanup_drain_timeout_retains_unjoined_suffix() {
+        drain_timeout_retention(false, true);
     }
 
     #[test]
@@ -3762,6 +4006,11 @@ wait "$child"
             cmd.env("EVAL_TEST_RUNNER_AGENT_MODE", "leader_first");
         }
         let mut script_text = std::fs::read_to_string(&script).unwrap();
+        if matches!(fault, Some("observation_error" | "forced_expiry")) {
+            // The surviving descendant must not keep ordinary pipe drains (and
+            // their independent lifetime captures) alive in the retention proof.
+            script_text = script_text.replace("exec sleep 1000", "exec sleep 1000 >/dev/null 2>&1");
+        }
         let mut setup = format!(
             "#!/bin/sh\n/usr/bin/env -0 > '{}'\n",
             dir.join("runtime-env").display()
@@ -4219,25 +4468,25 @@ wait "$child"
             ("forced_expiry", "cleanup_expired"),
         ] {
             let dir = tempfile::tempdir().unwrap();
-            let mut probe =
-                launch_probe_with_controls(dir.path(), Some(fault), false, false, true, false);
+            let mut probe = launch_probe(
+                dir.path(),
+                Some(fault),
+                false,
+                false,
+                true,
+                false,
+                Some(false),
+            );
             probe.record_owned_from_tree();
             let direct_agent = probe.owned.first().unwrap().clone();
             std::fs::write(dir.path().join("fault-release"), b"release").unwrap();
             eventually("the actual cleanup join to become Pending", || {
                 probe.pending.is_file()
             });
-            let status = probe.wait_for(Duration::from_secs(12));
+            probe.await_return();
             assert!(
-                status.is_some_and(|status| status.success()),
-                "cleanup probe did not finish; stdout={}; stderr={}; owned={:?}",
-                std::fs::read_to_string(dir.path().join("probe.stdout")).unwrap_or_default(),
-                std::fs::read_to_string(dir.path().join("probe.stderr")).unwrap_or_default(),
-                probe
-                    .owned
-                    .iter()
-                    .map(|id| (id.pid, identity(id.pid)))
-                    .collect::<Vec<_>>()
+                probe.child.as_mut().unwrap().try_wait().unwrap().is_none(),
+                "the failure verdict is observed on a surviving runtime"
             );
             assert!(
                 identity(direct_agent.pid).is_none(),
@@ -4246,6 +4495,23 @@ wait "$child"
             assert!(
                 probe.owned.iter().any(alive),
                 "the test observed a real surviving owned process"
+            );
+            let bytes = std::fs::read(dir.path().join("runtime-env")).unwrap();
+            let home = bytes
+                .split(|byte| *byte == 0)
+                .find_map(|entry| entry.strip_prefix(b"HOME="))
+                .map(|value| PathBuf::from(OsStr::from_bytes(value)))
+                .unwrap();
+            assert!(
+                matches!(
+                    crate::admission::Admission::acquire(),
+                    Err("concurrent_trials_refused")
+                ),
+                "failed cleanup must retain admission with live owned work: {fault}"
+            );
+            assert!(
+                home.is_dir(),
+                "failed cleanup retains private state: {fault}"
             );
             assert!(
                 probe.finish().is_err(),
@@ -4258,6 +4524,17 @@ wait "$child"
                 "the test guard safely terminates the retained group"
             );
             assert!(probe.owned.iter().all(|identity| !alive(identity)));
+            eventually(
+                "failed owner to release admission after actual cleanup",
+                || crate::admission::Admission::acquire().is_ok(),
+            );
+            assert!(
+                !home.exists(),
+                "private state disposed before reuse: {fault}"
+            );
+            probe.acknowledge_return();
+            assert!(probe.wait().success());
+            assert!(probe.finish().is_ok());
         }
     }
 
