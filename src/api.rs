@@ -18,9 +18,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::Stream;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, DeserializeOwned, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::convert::Infallible;
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -1507,18 +1508,101 @@ async fn inbox_feed(
 /// the same answer MCP's seed gives (decision 0025 §2, 0044 §3; issue #91).
 /// The key set is closed (decision 0048 §2, issue #134): a typo such as
 /// `subjet` refuses by name instead of storing the default subject.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct SeedRequest {
-    #[serde(default, deserialize_with = "crate::model::present_string")]
     pub from: Option<String>,
     pub to: String,
-    #[serde(default, deserialize_with = "crate::model::present_string")]
     pub subject: Option<String>,
-    #[serde(default, deserialize_with = "crate::model::present_string")]
     pub text: Option<String>,
-    #[serde(default, deserialize_with = "crate::model::present_string")]
     pub html: Option<String>,
+}
+
+// Accepted 0070 requires object-only JSON admission while retaining legacy
+// diagnostics. Sequence staging below relies on serde_json's outer check;
+// no completed positional request may reach seed construction.
+#[derive(Deserialize)]
+#[serde(expecting = "struct SeedRequest with 5 elements", deny_unknown_fields)]
+struct SeedRequestFields {
+    #[serde(default, deserialize_with = "crate::model::present_string")]
+    from: Option<String>,
+    to: String,
+    #[serde(default, deserialize_with = "crate::model::present_string")]
+    subject: Option<String>,
+    #[serde(default, deserialize_with = "crate::model::present_string")]
+    text: Option<String>,
+    #[serde(default, deserialize_with = "crate::model::present_string")]
+    html: Option<String>,
+}
+
+impl From<SeedRequestFields> for SeedRequest {
+    fn from(fields: SeedRequestFields) -> Self {
+        Self {
+            from: fields.from,
+            to: fields.to,
+            subject: fields.subject,
+            text: fields.text,
+            html: fields.html,
+        }
+    }
+}
+
+struct SeedBorrowedSeq<'a, A>(&'a mut A);
+
+struct SeedSequenceProbe;
+
+impl<'de> serde::de::DeserializeSeed<'de> for SeedSequenceProbe {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, _: D) -> Result<Self::Value, D::Error> {
+        Ok(())
+    }
+}
+
+impl<'de, A: SeqAccess<'de>> SeqAccess<'de> for SeedBorrowedSeq<'_, A> {
+    type Error = A::Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: serde::de::DeserializeSeed<'de>,
+    {
+        self.0.next_element_seed(seed)
+    }
+}
+
+struct SeedRequestVisitor;
+
+impl<'de> Visitor<'de> for SeedRequestVisitor {
+    type Value = SeedRequest;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("struct SeedRequest")
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+        SeedRequestFields::deserialize(de::value::MapAccessDeserializer::new(map)).map(Into::into)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let fields = SeedRequestFields::deserialize(de::value::SeqAccessDeserializer::new(
+            SeedBorrowedSeq(&mut seq),
+        ))?;
+        // Leave an extra value unread so serde_json retains its original
+        // trailing-character syntax refusal before the request can escape.
+        if seq.next_element_seed(SeedSequenceProbe)?.is_some() {
+            return Ok(fields.into());
+        }
+        Err(de::Error::invalid_type(de::Unexpected::Seq, &self))
+    }
+}
+
+impl<'de> Deserialize<'de> for SeedRequest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_struct(
+            "SeedRequest",
+            &["from", "to", "subject", "text", "html"],
+            SeedRequestVisitor,
+        )
+    }
 }
 
 /// Inject a synthetic email without SMTP — full pipeline (parse, extract)
@@ -2553,11 +2637,13 @@ mod tests {
         let error = &chaos_rule["properties"]["error"];
         let error_description = error["description"].as_str().unwrap();
         for term in [
-            "three ASCII digits",
-            "4 or 5",
-            "ASCII space",
-            "CR or LF",
-            "UTF-8 octets",
+            "starts with three ASCII digits",
+            "first digit is 4 or 5",
+            "byte four is ASCII space",
+            "bare codes and a trailing space are legal",
+            "No CR or LF",
+            "510 UTF-8 octets",
+            "excluding the CRLF appended on the wire",
         ] {
             assert!(
                 error_description.contains(term),
@@ -2598,16 +2684,43 @@ mod tests {
                 .contains(crate::chaos::PROBABILITY_REFUSAL),
             "{put_400}"
         );
-        assert!(
-            put_400.as_str().unwrap().contains("101 through 255"),
-            "{put_400}"
-        );
+        let put_400_description = put_400.as_str().unwrap();
+        for term in [
+            "native JSON 400",
+            "101 through 255",
+            "invalid SMTP reply line",
+            "delay_ms above 300000",
+            "active rules remain unchanged",
+            "Malformed JSON is plain-text 400",
+            "unsupported media type is 415",
+            "oversized body is 413",
+        ] {
+            assert!(
+                put_400_description.contains(term),
+                "missing {term:?}: {put_400}"
+            );
+        }
         let put_422 = &doc["paths"]["/api/v1/chaos"]["put"]["responses"]["422"]["description"];
         assert!(
             put_422.as_str().unwrap().contains("extractor's plain-text"),
             "{put_422}"
         );
-        assert!(put_422.as_str().unwrap().contains("negative"), "{put_422}");
+        let put_422_description = put_422.as_str().unwrap();
+        for term in [
+            "plain-text data error",
+            "negative",
+            "omitted",
+            "null",
+            "wrong-typed",
+            "u8 range",
+            "unknown event or rule key",
+            "active rules are unchanged",
+        ] {
+            assert!(
+                put_422_description.contains(term),
+                "missing {term:?}: {put_422}"
+            );
+        }
 
         let parameters = &doc["paths"]["/api/v1/inboxes/{inbox}/await"]["get"]["parameters"];
         let timeout_ms = parameters

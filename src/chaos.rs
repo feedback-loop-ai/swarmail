@@ -1,7 +1,9 @@
 //! Chaos injection: deliberate SMTP failure/delay simulation.
 
 use rand::Rng;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt;
 use std::sync::RwLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,8 +31,7 @@ pub(crate) const MAX_REPLY_LINE_OCTETS: usize = 510;
 /// different plane; a chaos stall is a wire condition, not a wait.
 pub(crate) const MAX_DELAY_MS: u64 = 300_000;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ChaosRule {
     /// Percentage chance (0–100) the event fires.
     pub probability: u8,
@@ -125,8 +126,7 @@ impl ChaosRule {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ChaosConfig {
     #[serde(default)]
     pub connect: Option<ChaosRule>,
@@ -136,6 +136,153 @@ pub struct ChaosConfig {
     pub rcpt: Option<ChaosRule>,
     #[serde(default)]
     pub data: Option<ChaosRule>,
+}
+
+// Accepted 0070 permits object-only JSON admission with legacy diagnostics.
+// These private mirrors retain derived field decoding. Sequence staging may
+// return fields only while leaving excess input unread; serde_json must reject
+// it before complete extraction. These adapters are private to that boundary.
+#[derive(Deserialize)]
+#[serde(expecting = "struct ChaosRule with 3 elements", deny_unknown_fields)]
+struct ChaosRuleFields {
+    probability: u8,
+    #[serde(default, deserialize_with = "crate::model::present_string")]
+    error: Option<String>,
+    #[serde(default)]
+    delay_ms: u64,
+}
+
+impl From<ChaosRuleFields> for ChaosRule {
+    fn from(fields: ChaosRuleFields) -> Self {
+        Self {
+            probability: fields.probability,
+            error: fields.error,
+            delay_ms: fields.delay_ms,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(expecting = "struct ChaosConfig", deny_unknown_fields)]
+struct ChaosConfigFields {
+    #[serde(default)]
+    connect: Option<ChaosRule>,
+    #[serde(default)]
+    mail_from: Option<ChaosRule>,
+    #[serde(default)]
+    rcpt: Option<ChaosRule>,
+    #[serde(default)]
+    data: Option<ChaosRule>,
+}
+
+impl From<ChaosConfigFields> for ChaosConfig {
+    fn from(fields: ChaosConfigFields) -> Self {
+        Self {
+            connect: fields.connect,
+            mail_from: fields.mail_from,
+            rcpt: fields.rcpt,
+            data: fields.data,
+        }
+    }
+}
+
+// Borrow the original sequence so the reader can preserve serde_json's
+// trailing-element syntax refusal after decoding the known fields.
+struct BorrowedSeq<'a, A>(&'a mut A);
+
+struct SequenceProbe;
+
+impl<'de> serde::de::DeserializeSeed<'de> for SequenceProbe {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, _: D) -> Result<Self::Value, D::Error> {
+        Ok(())
+    }
+}
+
+impl<'de, A: SeqAccess<'de>> SeqAccess<'de> for BorrowedSeq<'_, A> {
+    type Error = A::Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+    where
+        T: serde::de::DeserializeSeed<'de>,
+    {
+        self.0.next_element_seed(seed)
+    }
+}
+
+struct ChaosRuleVisitor;
+
+impl<'de> Visitor<'de> for ChaosRuleVisitor {
+    type Value = ChaosRule;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("struct ChaosRule")
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+        ChaosRuleFields::deserialize(de::value::MapAccessDeserializer::new(map)).map(Into::into)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let fields = ChaosRuleFields::deserialize(de::value::SeqAccessDeserializer::new(
+            BorrowedSeq(&mut seq),
+        ))?;
+        // The probe does not read the next value. If one exists, returning
+        // the decoded fields leaves serde_json to report its original
+        // trailing-character syntax error before a value can escape.
+        if seq.next_element_seed(SequenceProbe)?.is_some() {
+            return Ok(fields.into());
+        }
+        Err(de::Error::invalid_type(de::Unexpected::Seq, &self))
+    }
+}
+
+impl<'de> Deserialize<'de> for ChaosRule {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_struct(
+            "ChaosRule",
+            &["probability", "error", "delay_ms"],
+            ChaosRuleVisitor,
+        )
+    }
+}
+
+struct ChaosConfigVisitor;
+
+impl<'de> Visitor<'de> for ChaosConfigVisitor {
+    type Value = ChaosConfig;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("struct ChaosConfig")
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+        ChaosConfigFields::deserialize(de::value::MapAccessDeserializer::new(map)).map(Into::into)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let fields = ChaosConfigFields::deserialize(de::value::SeqAccessDeserializer::new(
+            BorrowedSeq(&mut seq),
+        ))?;
+        // The probe does not read the next value. If one exists, returning
+        // the decoded fields leaves serde_json to report its original
+        // trailing-character syntax error before a value can escape.
+        if seq.next_element_seed(SequenceProbe)?.is_some() {
+            return Ok(fields.into());
+        }
+        Err(de::Error::invalid_type(de::Unexpected::Seq, &self))
+    }
+}
+
+impl<'de> Deserialize<'de> for ChaosConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_struct(
+            "ChaosConfig",
+            &["connect", "mail_from", "rcpt", "data"],
+            ChaosConfigVisitor,
+        )
+    }
 }
 
 impl ChaosConfig {
