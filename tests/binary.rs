@@ -1651,9 +1651,11 @@ async fn the_ca_pem_client_ignores_proxy_environment() {
 #[tokio::test]
 async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
     let (stalled, request) = one_request_sink(None).await;
-    // An established client's local endpoint refuses unrelated connects on
-    // Linux and macOS. Hold both ends through the final assertions so a
-    // parallel test cannot claim the target before the webhook dial.
+    // Hold both ends through the final assertions to retain the client
+    // endpoint and exclude reuse-disabled binders. On macOS, reuse-enabled
+    // listeners (including parallel Tokio listeners) can still claim it;
+    // this fixture does not fully close that reuse race. The exact refusal
+    // probe below observes setup only, not every later webhook attempt.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let reservation = tokio::net::TcpSocket::new_v4().unwrap();
     reservation.set_reuseaddr(false).unwrap();
@@ -1769,15 +1771,13 @@ async fn sigterm_with_a_delivery_in_flight_prints_the_final_counts() {
     for secret in ["hunter2", "hunter3", "marker-secret"] {
         assert!(!rest.contains(secret), "no {secret} on stdout: {rest}");
     }
-    // Even a reuse-enabled contender cannot take the held client endpoint.
-    for reuseaddr in [false, true] {
-        let contender = tokio::net::TcpSocket::new_v4().unwrap();
-        contender.set_reuseaddr(reuseaddr).unwrap();
-        let error = contender
-            .bind(refused)
-            .expect_err("the client endpoint must remain exclusively owned");
-        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
-    }
+    // Observe reuse-disabled exclusion before releasing the retained pair.
+    let contender = tokio::net::TcpSocket::new_v4().unwrap();
+    contender.set_reuseaddr(false).unwrap();
+    let error = contender
+        .bind(refused)
+        .expect_err("a reuse-disabled bind must not claim the held client endpoint");
+    assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
     drop((reservation, peer));
 }
 
