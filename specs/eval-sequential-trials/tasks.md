@@ -58,7 +58,7 @@ obligations, not historical completion receipts. Follow [plan.md](plan.md) and
   **Proof:** sequential_contracts_and_decision_links_are_honest rejects missing
   statements, broken links, active overlap requirements and wrong/duplicate 0076
   status/index; root documentation inventory remains green.
-- [ ] **T7 — Verify and commit the candidate (AC8).** Commit all authorized
+- [x] **T7 — Verify and commit the candidate (AC8).** Commit all authorized
   implementation unsigned before final verification. Run every house gate with
   verified candidate-local engine, exact coverage/selftest, publish/seal proofs,
   fail-closed native-tls absence, design/delivery proof selftests and standalone
@@ -103,9 +103,38 @@ assertion; explicitly unlocking early fails the current #225 cleanup control at
 test and exit 101. The original admission bytes are restored before final gates.
 These controls use an inert competing launch, not a cross-trial exploit client.
 
-Full candidate-bound house/eval gates and the committed handoff remain T7/T8;
-prior receipts are not imported as proof of this port. Routing, root production,
+Full candidate-bound house/eval gates and the committed handoff now satisfy
+T7/T8; no historical receipt is imported as proof of this port. Routing, root production,
 manifests/locks and dependency policy are unchanged. Proposed 0076 and 0063 remain
 proposed; accepted 0071 and existing 0077 are preserved. The engine owns verify
 and protected review, the operator owns decisions/sealing, #201 owns macOS eval
 proof, and #221 owns namespace isolation.
+
+## Final local receipts — implementation commit d925b1d
+
+All house commands pass, including exact coverage and its selftest, checked
+candidate-local brokkr compile, publish/seal proofs and licenses. Extra pinned
+design/delivery selftests, shim integrity and fail-closed native-tls absence
+also pass. Ignored target/issue199/gates-house.json binds all 13 zero-exit
+receipts to d925b1d and the required engine digest. Coverage evidence is
+`target/coverage/run.RyvfPL/coverage-summary.json`: 14,229/14,229 lines,
+808/808 branches and 1,556/1,556 functions; zero missed in every dimension.
+
+Standalone eval fmt, locked clippy and the full default-thread locked suite
+pass on the same implementation commit: 195 tests, zero failures. Receipts
+are in target/issue199/gates-eval.json and eval-test.log. This includes all
+new sequential controls, current #225 causal Pending/bypass handshakes,
+#194/#196 cleanup/privacy, accepted #198 traps and #200 provenance/replay.
+The earlier uncoordinated provenance failure is resolved by the two missing
+parent test scopes; the full fresh run supplies the final verdict.
+
+The documented oracle/null examples exit 0/1, the four-cell sequential
+signup/otp matrix exits 1 with two passes and two failures, and report exits 0.
+Their rows retain concurrency 1 and complete current provenance; example
+receipts live in target/issue199/examples.json. No model measurement is claimed.
+
+Implementation is committed unsigned, with no push. This evidence-only task
+update is committed separately; it changes no source, tests, contract or gate.
+Final format, decision-inventory and eval-boundary checks validate the handoff.
+The engine's subsequent verify/protected review and the operator's acceptance/
+sealing remain separate responsibilities, not claimed local receipts.
