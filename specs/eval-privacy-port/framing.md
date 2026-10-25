@@ -26,7 +26,7 @@ fresh verification or review verdicts.
 The candidate-local `.forge/bin/brokkr` SHA-256 matches
 `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
 The controlling platform direction is the 2026-10-24 row **macOS evidence for
-`evals/`** in [.forge/epic192/issue196/operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md):
+`evals/`** in [operator-rulings.md](../../docs/rulings/epic-192.md):
 `evals/` is not in CI until #201; macOS-only eval proof belongs to #201's CI
 gating. This supersedes this issue's stale requirement for local macOS receipts.
 It does not remove Linux proof or claim that any CI evidence exists.

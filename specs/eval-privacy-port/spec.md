@@ -34,7 +34,7 @@ sibling tree, GitHub or CI access is needed or authorized.
 ## Clarification — 2026-10-24 platform ownership
 
 The operator's dated row **macOS evidence for `evals/`** in
-[operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md) rules:
+[operator-rulings.md](../../docs/rulings/epic-192.md) rules:
 `evals/` is outside CI on every OS until #201; #201's CI gating owns macOS-only
 eval proof. AC13 and AC23 below supersede the former requirement to obtain
 macOS receipts in #196. This records ownership, not execution or portability.
@@ -264,7 +264,7 @@ generated PWD and the stricter matrix limit explicitly supersede stale wording.
 - **AC13 — Platforms:** retain every Linux preparation/toolchain/custom-target,
   standalone eval fmt/locked clippy/full tests and selected artifact-primitive
   proof required here. Under the 2026-10-24 operator ruling, row **macOS evidence
-  for `evals/`**, in [operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md),
+  for `evals/`**, in [operator-rulings.md](../../docs/rulings/epic-192.md),
   `evals/` is outside CI on every OS until #201. #201's CI gating owns macOS eval
   preparation/toolchain, clippy/tests and selected artifact-primitive execution;
   those macOS receipts are not a completion prerequisite for #196. Record that

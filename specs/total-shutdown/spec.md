@@ -6,9 +6,9 @@ and [#11](https://github.com/feedback-loop-ai/swarmail/issues/11) (webhook deliv
 bounded, lag-observable, best-effort with observable loss). This is the design sequence's
 second round on the same frame: the first-round spec (commit `613747d`) was parked in
 implement, the panel re-argued against the committed text
-([`.forge/design/positions/simplicity.md`](../../../.forge/design/positions/simplicity.md)
+(`.forge/design/positions/simplicity.md`
 and
-[`.forge/design/positions/robustness.md`](../../../.forge/design/positions/robustness.md),
+`.forge/design/positions/robustness.md`,
 both `pass`), and this spec is the reconciled ruling. It supersedes the first round's
 letter in exactly two places, named and costed below. Adjacent rulings referenced:
 [0021-watcher-channel-lifetime.md](../../docs/decisions/0021-watcher-channel-lifetime.md)

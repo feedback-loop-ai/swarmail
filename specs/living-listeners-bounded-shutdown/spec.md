@@ -4,8 +4,8 @@ Issues [#36](https://github.com/feedback-loop-ai/swarmail/issues/36) (the accept
 transient errors; sessions are unbounded) and
 [#37](https://github.com/feedback-loop-ai/swarmail/issues/37) (SIGTERM is unwired; the drain is
 unbounded), delivered as one batch at HEAD `cefe392`. The contrarian panel argued
-[`.forge/design/positions/simplicity.md`](../../.forge/design/positions/simplicity.md) and
-[`.forge/design/positions/robustness.md`](../../.forge/design/positions/robustness.md)
+`.forge/design/positions/simplicity.md` and
+`.forge/design/positions/robustness.md`
 (both `pass`); this spec is the reconciled ruling — it adopts, rejects and prices each side, and
 rules where they genuinely conflict. The batch is semantic: it amends 0022's unbounded plaintext
 idle posture and 0018 §2's no-abort-on-timer sentence, so it lands with

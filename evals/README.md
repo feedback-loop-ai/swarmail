@@ -310,7 +310,7 @@ agent JSON remains textual. Build homes are explicit nonempty locators or lazy
 original HOME/.cargo and HOME/.rustup defaults. Optional nonempty toolchain and
 target selectors apply only to preparation; there is no inheritance fallback.
 Under the 2026-10-24 operator ruling, row **macOS evidence for `evals/`**, in
-[operator-rulings.md](../.forge/epic192/issue199/operator-rulings.md), `evals/`
+[operator-rulings.md](../docs/rulings/epic-192.md), `evals/`
 is outside CI on every OS until #201. #201's CI gating owns macOS eval
 preparation/toolchain, clippy/tests and artifact-primitive execution; those
 receipts are not a completion prerequisite for #196. Every Linux preparation,
@@ -519,3 +519,17 @@ Caller-owned parent modes and unowned names/bytes are preserved. Metadata is
 last. Namespace isolation remains #221; macOS eval proof is owned by #201.
 Current bundles and 0058 select delivery/review routing; this port accepts no
 proposed decision and imports no historical review routing.
+
+## Tracked documentation boundary (#243)
+
+Run `cargo test --manifest-path evals/Cargo.toml --locked --test boundary`
+from a Git checkout. The boundary suite inventories every tracked Markdown file
+with Git and refuses local link destinations into the repository's `.forge/`,
+even when a delivery packet exists locally. Ordinary path mentions are allowed.
+The check covers inline links/images and reference definitions, angle destinations,
+optional titles, escaped delimiters and balanced parentheses; it excludes inline
+code and backtick/tilde fenced code. It resolves dot components and percent escapes
+lexically, without depending on target existence. Raw HTML and renderer extensions
+are outside this bounded Markdown check. Git discovery, inventory and document
+read failures refuse. Root tests do not run this separate eval workspace; #201 owns
+its CI integration.

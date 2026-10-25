@@ -5,10 +5,10 @@ Issue [feedback-loop-ai/swarmail#31](https://github.com/feedback-loop-ai/swarmai
 reassessment"*, reviewed commit `5b09843`). This run delivers **only** the
 storage-consistency slice; lifecycle, adapter offloading, the Helm chart, the
 contract-agreement and the CI findings are the second run. Intake framing:
-[`.forge/intake/issue31-p1-persistence-framing-efc41bdd.md`](../../../.forge/intake/issue31-p1-persistence-framing-efc41bdd.md).
+`.forge/intake/issue31-p1-persistence-framing-efc41bdd.md`.
 The panel's positions —
-[`.forge/design/positions/simplicity.md`](../../../.forge/design/positions/simplicity.md) and
-[`.forge/design/positions/robustness.md`](../../../.forge/design/positions/robustness.md)
+`.forge/design/positions/simplicity.md` and
+`.forge/design/positions/robustness.md`
 (both `pass`) — are run-local evidence, gitignored.
 
 Decision: **0015** —

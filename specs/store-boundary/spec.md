@@ -3,10 +3,10 @@
 Epic [feedback-loop-ai/swarmail#13](https://github.com/feedback-loop-ai/swarmail#13),
 contracts **#1 + #2** (`/tmp/epic13/feature-boundary.txt`, branch
 `feat/epic13-01-02-boundary`). Intake framing:
-[`.forge/intake/epic13-boundary-framing.md`](../../../.forge/intake/epic13-boundary-framing.md).
+`.forge/intake/epic13-boundary-framing.md`.
 The panel's positions —
-[`.forge/design/positions/simplicity.md`](../../../.forge/design/positions/simplicity.md) and
-[`.forge/design/positions/robustness.md`](../../../.forge/design/positions/robustness.md)
+`.forge/design/positions/simplicity.md` and
+`.forge/design/positions/robustness.md`
 (both `pass`) — are run-local evidence, gitignored.
 
 Decision: **0012** —
