@@ -285,6 +285,10 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
             "72d34b479a900da837f34a4c3c3066f5964d067050166f7ab4067ff076978566",
         ),
         (
+            "bundles/self/scripts/coverage-gate.sh",
+            "f96b60bef6582efbce6166a6a8da71ab73aad81e545908e2bf6238e5b36c1fbf",
+        ),
+        (
             "bundles/self/scripts/design-check.sh",
             "05285f7c0c0b1ee89e00daafefcf4d082c3057f07dcbe8b16c060f517e92134e",
         ),

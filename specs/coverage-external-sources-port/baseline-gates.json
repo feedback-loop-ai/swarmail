@@ -1,0 +1,187 @@
+{
+  "candidate": "633fc306758bff3912cbbe40702ccd04e0127350",
+  "results": [
+    {
+      "name": "engine",
+      "command": "printf '%s  %s\\n' ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f .forge/bin/brokkr | sha256sum --check --strict",
+      "exit": 0,
+      "seconds": 0.11
+    },
+    {
+      "name": "shims",
+      "command": "sha256sum --check --strict bundles/self/scripts/shims.sha256",
+      "exit": 0,
+      "seconds": 0.0
+    },
+    {
+      "name": "fmt",
+      "command": "cargo fmt --all -- --check",
+      "exit": 0,
+      "seconds": 0.76
+    },
+    {
+      "name": "clippy",
+      "command": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "exit": 0,
+      "seconds": 16.11
+    },
+    {
+      "name": "tests",
+      "command": "cargo test --workspace --locked",
+      "exit": 0,
+      "seconds": 146.54
+    },
+    {
+      "name": "compile",
+      "command": ".forge/bin/brokkr compile --bundle bundles/self",
+      "exit": 0,
+      "seconds": 0.02
+    },
+    {
+      "name": "coverage",
+      "command": "bash bundles/self/scripts/coverage-gate.sh",
+      "exit": 0,
+      "seconds": 228.2
+    },
+    {
+      "name": "coverage-selftest",
+      "command": "bash bundles/self/scripts/coverage-gate.sh selftest",
+      "exit": 0,
+      "seconds": 14.87
+    },
+    {
+      "name": "publish-guard",
+      "command": "bash bundles/self/scripts/publish-guard-test.sh",
+      "exit": 0,
+      "seconds": 6.22
+    },
+    {
+      "name": "seal-branch",
+      "command": "bash bundles/self/scripts/seal-branch-test.sh",
+      "exit": 0,
+      "seconds": 4.92
+    },
+    {
+      "name": "licenses",
+      "command": "cargo deny check licenses",
+      "exit": 0,
+      "seconds": 0.68
+    },
+    {
+      "name": "scanner",
+      "command": "cargo test --manifest-path bundles/self/scripts/coverage-fn-scan/Cargo.toml --locked --offline",
+      "exit": 0,
+      "seconds": 2.95
+    },
+    {
+      "name": "constitution",
+      "command": "cargo test --workspace --locked --test delivery_constitution",
+      "exit": 0,
+      "seconds": 0.67
+    },
+    {
+      "name": "design-selftest",
+      "command": "bash bundles/self/scripts/design-check.sh selftest",
+      "exit": 0,
+      "seconds": 4.73
+    },
+    {
+      "name": "delivery-proof",
+      "command": "bash bundles/self/scripts/delivery-proof-test.sh",
+      "exit": 0,
+      "seconds": 9.03
+    },
+    {
+      "name": "native-tls",
+      "command": "out=$(cargo tree -i native-tls 2>&1); code=$?; if [ \"$code\" -eq 0 ]; then printf '%s\\n' \"$out\" >&2; exit 1; elif printf '%s' \"$out\" | grep -q 'did not match any packages'; then exit 0; else printf '%s\\n' \"$out\" >&2; exit 1; fi",
+      "exit": 0,
+      "seconds": 0.17
+    }
+  ],
+  "active": null,
+  "done": true,
+  "scope": "Intake baseline only; no port implementation or downstream verification claim.",
+  "tree": "b7a675fb6baf1aa578ae5cecadaf7c454db20f87",
+  "engine_sha256": "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
+  "coverage_summary": {
+    "lines": {
+      "count": 14009,
+      "covered": 14009
+    },
+    "branches": {
+      "count": 788,
+      "covered": 788
+    },
+    "functions": {
+      "count": 1527,
+      "covered": 1527
+    }
+  },
+  "coverage_evidence": "target/coverage/run.fwDV0K",
+  "logs": [
+    {
+      "path": ".forge/evidence/issue219-port-intake/engine.log",
+      "sha256": "d59591f9d6f693cfccb0906c65ee27e7aa2a907ab4d85f90d8c8303abfee6c10"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/shims.log",
+      "sha256": "785e16dc6e9db3dcf3e2f94347f10c6c3508b97edc039d75e9676f3b0ea1b39c"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/clippy.log",
+      "sha256": "45b00a8bba2d7b7e105e51bbe57567bc190b808c180090a81858955c35aa7188"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/tests.log",
+      "sha256": "dfc9e489f368fea34a46af9018b79c2d6edca489e8c7ede058111a04b1da187b"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/compile.log",
+      "sha256": "f4fac8b6e5f878e6388cef697a757d5942c537b85ef66aae5fc1f5626046cff4"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/coverage.log",
+      "sha256": "3da0e7df589051dd25cfe870bd29df119347ac43ba4287ea39bc8d346b2d17c1"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/coverage-selftest.log",
+      "sha256": "11f1f9f1e0ee75e8d3ab769a8159fb87daf380a39a03269599ccced9e650a459"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/publish-guard.log",
+      "sha256": "939ac40398ee171a956e8423b96d4a9c62b4b1c30250a6fa6146b585ddf0647f"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/seal-branch.log",
+      "sha256": "e022b8e780d716cdbafdf4723515738c62bf480308724cfbb2051566d835b200"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/licenses.log",
+      "sha256": "71dadc8c8978da797b94dc581b666330c737551839c8fc820d7647130930c4b7"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/scanner.log",
+      "sha256": "c11fd6bb02b5e2241791526aaea3c856545e8460c100ea034cebfb41a8b60d7e"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/constitution.log",
+      "sha256": "40b73789b5e54f7c1f5ee15b956c1c64b201332f0b68c5ac6e41c7fba7c8f84c"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/design-selftest.log",
+      "sha256": "1d5eb6cef8be9f99e87fa8b1394ed2df9172cf2c4da06f6d74cc03c95245735e"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/delivery-proof.log",
+      "sha256": "2969d73ecccc45098e6907c604407b44967f3fe4669573a6cd4c5e8b82785d8c"
+    },
+    {
+      "path": ".forge/evidence/issue219-port-intake/native-tls.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

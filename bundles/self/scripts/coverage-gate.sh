@@ -1896,6 +1896,160 @@ after"
   fx_cmd "$PWD" coverage-fn-scan-tests.log 'coverage-fn-scan unit tests' "$root/coverage-fn-scan-tests.out" \
     cargo test --manifest-path "$helper_manifest" --offline --locked --target-dir "$helper_test_target"
 
+  # #219: default filename filters must never hide application source. Each
+  # build compiles the same file under an ordinary name AND an ignored alias;
+  # coverage of the ordinary spelling cannot account for the omitted instance.
+  # Use installed executables before substituting homes: these dependency-free
+  # crates neither mutate real toolchains/caches nor ask rustup to install one.
+  ignored_source_fixtures() {
+    local installed_cargo installed_rustc installed_rustdoc
+    installed_cargo="$(rustup which --toolchain "$coverage_toolchain" cargo)"
+    installed_rustc="$(rustup which --toolchain "$coverage_toolchain" rustc)"
+    installed_rustdoc="$(rustup which --toolchain "$coverage_toolchain" rustdoc)"
+    local kind base fixture alias build cargo_home rustup_home
+    local fixture_env=() scan_args=()
+    printf 'coverage gate: ignored-source tools: cargo=%s rustc=%s rustdoc=%s toolchain=%s\n' \
+      "$installed_cargo" "$installed_rustc" "$installed_rustdoc" "$coverage_toolchain"
+    ignored_source_harvest() {
+      local status=0
+      "$FN_SCAN_BIN" "${scan_args[@]}" > "$base/production.txt" 2> "$base/harvest.log" || status=$?
+      cat "$base/harvest.log" "$base/production.txt"
+      return "$status"
+    }
+    for kind in registry git rustup rustc green internal; do
+      base="$root/ignored-$kind"
+      cargo_home="$base/cargo-home" rustup_home="$base/rustup-home"
+      fixture="$base/pkg" build="$base/build"
+      case "$kind" in
+        registry|git) alias="$cargo_home/$kind/ordinary/x.rs" ;;
+        rustup) alias="$rustup_home/toolchains/ordinary/x.rs" ;;
+        # The installed exporter matches /rustc/<hash>/ within an owned path.
+        # Paired real exports below prove the match; the name alone proves none.
+        rustc) alias="$base/rustc/0123456789abcdef/ordinary/x.rs" ;;
+        green) alias="$fixture/src/alias.rs" ;;
+        internal)
+          fixture="$cargo_home/registry/ordinary/pkg"
+          alias="$fixture/src/alias.rs"
+          ;;
+      esac
+      mkdir -p "$fixture/src" "$(dirname "$alias")"
+      printf '[package]\nname = "fxignored"\nversion = "0.1.0"\nedition = "2021"\n[workspace]\n' > "$fixture/Cargo.toml"
+      cat > "$fixture/build.rs" <<'RS'
+fn main() {
+    let alias = std::env::var("IGNORED_SOURCE").unwrap();
+    let source = std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("src/real.rs");
+    std::os::unix::fs::symlink(source, &alias).unwrap();
+    println!("cargo:rustc-env=IGNORED_SOURCE={alias}");
+}
+RS
+      printf '%s\n' 'pub fn sign(x: i32) -> i32 { if x > 0 { 1 } else { -1 } }' > "$fixture/src/real.rs"
+      printf '%s\n' 'pub mod real;' 'pub mod ignored { include!(env!("IGNORED_SOURCE")); }' \
+        'pub fn visible(x: i32) -> i32 { real::sign(x) }' > "$fixture/src/lib.rs"
+      printf '%s\n' 'fn main() { for n in [-1, 1] { assert_eq!(fxignored::visible(n), n); assert_eq!(fxignored::ignored::sign(n), n); } }' > "$fixture/src/main.rs"
+      fixture_env=(env CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home"
+        RUSTC="$installed_rustc" RUSTDOC="$installed_rustdoc"
+        CARGO_LLVM_COV_TARGET_DIR="$build" IGNORED_SOURCE="$alias")
+      fx_cmd "$fixture" "ignored-$kind-lock.log" "$kind lockfile" "$base/lock.out" \
+        "${fixture_env[@]}" "$installed_cargo" generate-lockfile --offline
+      # `run` builds real production lib and bin units with instrumentation,
+      # unlike a lib-only test build. No later uninstrumented rebuild supplies
+      # the dep-info. Both exports read these SAME executables and profiles.
+      fx_cmd "$fixture" "ignored-$kind-build.log" "$kind instrumented production run" "$base/build.out" \
+        "${fixture_env[@]}" "$installed_cargo" llvm-cov run --branch --offline --locked --no-report
+      fx_cmd "$fixture" "ignored-$kind-default.log" "$kind default export" "$base/default.out" \
+        "${fixture_env[@]}" "$installed_cargo" llvm-cov report --lcov --offline --locked --output-path "$base/default.info"
+      fx_cmd "$fixture" "ignored-$kind-control.log" "$kind unfiltered export" "$base/control.out" \
+        "${fixture_env[@]}" "$installed_cargo" llvm-cov report --lcov --offline --locked \
+          --no-default-ignore-filename-regex --output-path "$base/control.info"
+      # Before an expected refusal, independently establish that the alias is
+      # in a selected production rlib rule, points to the ordinary workspace
+      # file, and has its own executed LCOV records. An env-dep comment or a
+      # build-script prerequisite alone cannot prove production ownership.
+      fx_cmd "$root" "ignored-$kind-evidence.log" "$kind production spelling evidence" "$base/evidence.out" \
+        python3 -I -S - "$build" "$fixture" "$alias" "$base" <<'PY'
+import json, pathlib, shutil, sys
+build, fixture, alias, base = map(pathlib.Path, sys.argv[1:])
+assert alias.samefile(fixture / "src/real.rs"), "alias must name the ordinary source"
+rules = []
+unit_depfiles = set()
+for dep in build.rglob("*.d"):
+    for line in dep.read_text().splitlines():
+        target, separator, prerequisites = line.partition(": ")
+        name = pathlib.Path(target).name
+        if separator and name.endswith(".rlib") and (name == "libfxignored.rlib" or name.startswith("libfxignored-")):
+            if str(alias) in prerequisites.split() and "src/lib.rs" in prerequisites.split():
+                rules.append(line)
+                unit_depfiles.add(dep)
+assert rules, f"no selected production rlib rule names {alias}"
+assert len(unit_depfiles) == 1, f"expected one rustc production unit, got {unit_depfiles}"
+# Keep the compiler's lib-unit dep-info byte for byte. Cargo's final artifact
+# summaries also contain build-script/transitive inputs and canonicalize aliases;
+# those are not this unit's source inventory. The binary is only its driver.
+(base / "production-dep-info").mkdir()
+shutil.copyfile(next(iter(unit_depfiles)), base / "production-dep-info/lib.d")
+control = (base / "control.info").read_text().split("end_of_record")
+for source in (alias, fixture / "src/real.rs"):
+    records = [r for r in control if f"SF:{source}" in r.splitlines()]
+    assert records, f"unfiltered control lacks source {source}"
+    def has_hits(prefix, field):
+        for record in records:
+            for line in record.splitlines():
+                if line.startswith(prefix):
+                    hits = line[len(prefix):].split(",")[field]
+                    if hits.isdecimal() and int(hits) > 0:
+                        return True
+        return False
+    for prefix, field in (("FNDA:", 0), ("DA:", 1), ("BRDA:", 3)):
+        assert has_hits(prefix, field), f"control lacks executed {prefix} for {source}"
+print(json.dumps({"source": str(alias), "ordinary_source": str(fixture / "src/real.rs"),
+                  "production_rule": rules[0], "unfiltered_both_executed": True,
+                  "default_alias_present": f"SF:{alias}" in (base / "default.info").read_text().splitlines()}))
+PY
+      cat "$base/evidence.out"
+      scan_args=(files --workspace "$fixture" --build-dir "$base/production-dep-info" --package fxignored)
+      case "$kind" in
+        registry|git|rustup|rustc)
+          expect_pass "$kind default report remains live" validate_report "$base/default.info"
+          expect_eq "$kind default export omits the compiled alias" \
+            "$(awk -v source="SF:$alias" '$0 == source { n++ } END { print n+0 }' "$base/default.info")" 0
+          expect_eq "$kind default export still measures the ordinary spelling" \
+            "$(awk -v source="SF:$fixture/src/real.rs" '$0 == source { n++ } END { print n+0 }' "$base/default.info")" 1
+          expect_refuse_naming_context "$kind ignored production alias refuses by name" \
+            'resolves outside the workspace' "$alias" ignored_source_harvest
+          cat "$base/harvest.log"
+          ;;
+        green|internal)
+          fx_cmd "$root" "ignored-$kind-harvest.log" "$kind production harvest" "$base/production.txt" \
+            "$FN_SCAN_BIN" "${scan_args[@]}" --capture "$base/dep-info"
+          if [ "$kind" = green ]; then
+            expect_pass 'ordinary alias control has a live report' validate_report "$base/default.info"
+            expect_pass 'ordinary alias control covers its production inventory' \
+              check_report_covers_production_files "$base/default.info" "$base/production.txt" "$fixture"
+            local counts lc lh bc bh fc fh
+            counts="$(count_dimensions "$base/default.info")"
+            read -r lc lh bc bh fc fh <<< "$counts"
+            expect_eq 'ordinary alias control has positive totals in every dimension' "$((lc > 0 && bc > 0 && fc > 0))" 1
+            expect_eq 'ordinary alias control has integer zero missed in every dimension' "$counts" "$lc $lc $bc $bc $fc $fc"
+          else
+            # Here the workspace itself is inside the active ignore root, so
+            # external-path refusal cannot help. A live report must name the
+            # missing source; total filtering must name this fixture's report.
+            if grep -q '^SF:' "$base/default.info"; then
+              expect_refuse_naming_context 'workspace under ignored root refuses the missing source' \
+                'production file(s) the build compiled are absent from the report' 'src/real.rs' \
+                check_report_covers_production_files "$base/default.info" "$base/production.txt" "$fixture"
+            else
+              expect_refuse_naming_context 'workspace under ignored root refuses its empty report' \
+                'missing, empty or carries no SF: records' "$base/default.info" validate_report "$base/default.info"
+            fi
+          fi
+          ;;
+      esac
+      printf 'coverage gate: ignored-source fixture %s built; production spelling and paired exports proved; accounting assertion checked\n' "$kind"
+    done
+  }
+  ignored_source_fixtures
+
   # The production clean boundary must refuse in normal and conditional
   # callers, preserve diagnostics, and prevent every later-stage marker.
   local clean_mode=fail
