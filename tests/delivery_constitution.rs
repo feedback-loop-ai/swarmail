@@ -278,7 +278,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         ),
         (
             "bundles/self/tooling.json",
-            "6e4d19c03dc40b59ed48c9a23156f9bd63bf3d29ecee68068a3f707a8fda507d",
+            "44b2933b17b700aab71078752f562b82ff1e6e231195f8e00e910f1b18376f89",
         ),
         (
             "bundles/self/scripts/shims.sha256",
@@ -290,7 +290,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         ),
         (
             "bundles/self/scripts/verify-seat.sh",
-            "b55fa4c0ae739b6d7da8c17ec0e622a1aa86bf90f16463562dc81b6c99aaf2ed",
+            "2935005daa160a86e12f08b1c2d1db490b1415237e6af1c3d2530f9b9d7b1008",
         ),
         (
             "bundles/self/scripts/delivery-proof-test.sh",
@@ -353,7 +353,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         "recorded_digests=",
         "grep -qx \"$launched_digest\"",
         "fail_now \"verify-seat: tooling.json records no binary_sha256",
-        "is not the recorded build of",
+        "does not match the recorded binary_sha256",
         "run \"delivery tamper-boundary proof\"",
         "\"bash $pin_q/delivery-proof-test.sh\"",
     ] {
@@ -606,6 +606,10 @@ exit 0
 
         let cargo_script = r#"#!/usr/bin/env bash
 printf 'cargo:%s\n' "$*" >> "$GATE_ORDER"
+if [ "$1" = tree ]; then
+  printf 'error: package ID specification native-tls did not match any packages\n' >&2
+  exit 101
+fi
 exit 0
 "#;
         let cargo = bin.join("cargo");
@@ -880,7 +884,7 @@ fn verify_seat_refuses_missing_or_mismatched_engine_identity_before_gates() {
         (None, "records no binary_sha256"),
         (
             Some("0000000000000000000000000000000000000000000000000000000000000000"),
-            "not the recorded build",
+            "does not match the recorded binary_sha256",
         ),
     ] {
         fixture.write_tooling(digest);
@@ -903,4 +907,496 @@ fn verify_seat_refuses_missing_or_mismatched_engine_identity_before_gates() {
         );
         fixture.write_tooling(Some(&fixture.engine_digest()));
     }
+
+    // A matched identity reaches an actual pass verdict, not just a different
+    // early failure. Only the fixture's controlled gates are made successful.
+    std::fs::write(
+        fixture.pin.join("coverage-gate.sh"),
+        "#!/usr/bin/env bash\nprintf '%s\\n' coverage-gate.sh >> \"$GATE_ORDER\"\n",
+    )
+    .unwrap();
+    let output = fixture.base_command().output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(fixture.read_result()["result"], "pass");
+    let order = std::fs::read_to_string(&fixture.gate_order).unwrap();
+    assert!(order.contains("brokkr\ncoverage-gate.sh\n"));
+    assert!(order.contains("cargo:tree -i native-tls"));
+
+    // The same oracle detects a disabled comparison in a scratch script:
+    // admitting the wrong digest then yields pass and runs the gates.
+    let script = fixture.pin.join("verify-seat.sh");
+    let original = std::fs::read_to_string(&script).unwrap();
+    let mutant = original.replace(
+        "printf '%s\\n' \"$recorded_digests\" | grep -qx \"$launched_digest\" ||",
+        "true ||",
+    );
+    assert_ne!(original, mutant);
+    std::fs::write(&script, mutant).unwrap();
+    fixture.write_tooling(Some(PUBLISHED_ENGINE_DIGEST));
+    std::fs::remove_file(&fixture.gate_order).unwrap();
+    let output = fixture.base_command().output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(fixture.read_result()["result"], "pass");
+    assert!(fixture.gate_order.exists());
+    std::fs::write(script, original).unwrap();
+}
+
+const PUBLISHED_ENGINE_URL: &str = "https://github.com/feedback-loop-ai/brokkr/releases/download/swarmail-engine-731189f-p3/brokkr-0.12.0-731189f-p3-x86_64-unknown-linux-gnu";
+const PUBLISHED_ENGINE_DIGEST: &str =
+    "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f";
+const READ_TOOLING_STEP: &str = "Read the pinned brokkr record (fail closed)";
+const ADMIT_ENGINE_STEP: &str = "Admit the published brokkr and compile every recipe";
+
+#[test]
+fn published_engine_record_matches_the_operator_release() {
+    let record = read_json("bundles/self/tooling.json");
+    let engine = &record["brokkr"];
+    assert_eq!(engine["sha"], "731189f9097308c01ae4f2b4c9caea5f41224844");
+    assert_eq!(engine["version"], "0.12.0");
+    assert_eq!(engine["binary_url"], PUBLISHED_ENGINE_URL);
+    assert_eq!(engine["binary_sha256"], PUBLISHED_ENGINE_DIGEST);
+    assert_eq!(
+        engine["patches"],
+        json!([
+            {"path": "tooling-patches/0001-preserve-review-residual-facts.patch", "sha256": "5d4da2217135c5a2ca14354ae9907623cf67ff0076b078277cb77a09ad3020b5"},
+            {"path": "tooling-patches/0002-preserve-review-scope-and-fixes.patch", "sha256": "361272eff344a5d5e05b832281407a99c3f1a77fc1fbc5216e19fb4ce7487173"},
+            {"path": "tooling-patches/0003-bind-verified-candidate.patch", "sha256": "4098228e7649d1bda8961bb491aa29d982b462c420470e265f8b9acf0a148d96"}
+        ])
+    );
+    for patch in engine["patches"].as_array().unwrap() {
+        assert_eq!(
+            sha256_file(&format!("bundles/self/{}", patch["path"].as_str().unwrap())),
+            patch["sha256"].as_str().unwrap()
+        );
+    }
+    let provenance = engine["binary_provenance"].as_str().unwrap();
+    assert!(provenance.contains("source base 731189f9097308c01ae4f2b4c9caea5f41224844 plus"));
+    assert!(provenance.contains("three checksum-pinned patches"));
+    assert!(provenance.contains(
+        "https://github.com/feedback-loop-ai/brokkr/releases/tag/swarmail-engine-731189f-p3"
+    ));
+    assert!(!provenance.contains(".forge/"));
+}
+
+// Execute the actual uniquely named literal workflow body. Missing or ambiguous
+// boundaries refuse instead of silently testing a copy of the algorithm.
+fn brokkr_ci_job() -> String {
+    let ci = read_text(".github/workflows/ci.yml");
+    let marker = "\n  brokkr-compile:\n";
+    assert_eq!(ci.matches(marker).count(), 1);
+    ci.split_once(marker)
+        .unwrap()
+        .1
+        .lines()
+        .take_while(|line| {
+            !(line.starts_with("  ")
+                && !line.starts_with("   ")
+                && !line.trim_start().starts_with('#')
+                && line.ends_with(':'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn brokkr_ci_step(name: &str) -> String {
+    let job = brokkr_ci_job();
+    let marker = format!("      - name: {name}\n");
+    assert_eq!(job.matches(&marker).count(), 1, "unique step {name}");
+    job.split_once(&marker)
+        .unwrap()
+        .1
+        .lines()
+        .take_while(|line| !line.starts_with("      - "))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn brokkr_ci_body(name: &str) -> String {
+    let step = brokkr_ci_step(name);
+    let marker = "        run: |\n";
+    assert_eq!(step.matches(marker).count(), 1, "literal body for {name}");
+    let body = step
+        .split_once(marker)
+        .unwrap()
+        .1
+        .lines()
+        .take_while(|line| line.is_empty() || line.starts_with("          "))
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!body.is_empty(), "empty workflow body for {name}");
+    assert!(!body.contains("${{"), "expression spliced into run body");
+    body
+}
+
+#[test]
+fn ci_transports_artifact_fields_through_env_and_retains_source_tests() {
+    let step = brokkr_ci_step(ADMIT_ENGINE_STEP);
+    for line in [
+        "          BINARY_URL: ${{ steps.tooling.outputs.binary_url }}",
+        "          BINARY_SHA256: ${{ steps.tooling.outputs.binary_sha256 }}",
+        "          RECORDED_VERSION: ${{ steps.tooling.outputs.version }}",
+    ] {
+        assert!(step.lines().any(|actual| actual == line), "{line}");
+    }
+    brokkr_ci_body(READ_TOOLING_STEP);
+    brokkr_ci_body(ADMIT_ENGINE_STEP);
+    let job = brokkr_ci_job();
+    for proof in [
+        "python3 scripts/apply-brokkr-patches.py brokkr-src",
+        "cargo test --locked -p brokkr-core policy::tests",
+        "cargo test --locked -p brokkr-runtime --lib aggregate",
+        "cargo test --locked -p brokkr-runtime --lib candidate_binding_tests",
+    ] {
+        assert!(job.contains(proof), "lost auxiliary source proof {proof}");
+    }
+    assert!(!job.contains("target/release/brokkr"));
+    assert!(!job.contains("cargo build --release"));
+}
+
+struct BrokkrCiFixture {
+    root: tempfile::TempDir,
+    bin: std::path::PathBuf,
+    marker: std::path::PathBuf,
+    github_output: std::path::PathBuf,
+    engine: std::path::PathBuf,
+    runner_temp: std::path::PathBuf,
+}
+
+impl BrokkrCiFixture {
+    fn new() -> Self {
+        let root = tempfile::Builder::new()
+            .prefix("brokkr CI ; [fixture] ")
+            .tempdir()
+            .unwrap();
+        let bin = root.path().join("transport commands");
+        let marker = root.path().join("engine execution.txt");
+        let github_output = root.path().join("github output.txt");
+        let engine = root.path().join("published bytes");
+        let runner_temp = root.path().join("runner temp");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&runner_temp).unwrap();
+        std::fs::create_dir_all(root.path().join("bundles/self")).unwrap();
+        let fixture = Self {
+            root,
+            bin,
+            marker,
+            github_output,
+            engine,
+            runner_temp,
+        };
+        fixture.write_record(&read_json("bundles/self/tooling.json"));
+        fixture.write_command(
+            &fixture.engine,
+            r#"#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ENGINE_MARKER"
+if [ "$*" = --version ]; then
+  printf 'brokkr %s\n' "${FIXTURE_VERSION:-0.12.0}"
+  exit 0
+fi
+[ "$1" = compile ] && [ "$2" = --bundle ] || exit 93
+case "$3" in bundles/self|bundles/codex|bundles/codex-careful|bundles/codex-fast) ;; *) exit 94 ;; esac
+if [ "$3" = "${FAIL_RECIPE:-bundles/codex-careful}" ]; then
+  case "${COMPILE_MODE:-clean}" in
+    stdout-warning) printf 'lets the run go on without reading fixture\n' ;;
+    stderr-warning) printf 'lets the run go on without reading fixture\n' >&2 ;;
+    failure) printf 'fixture compile failure\n' >&2; exit 23 ;;
+  esac
+fi
+printf 'compiled %s\n' "$3"
+"#,
+        );
+        fixture.write_command(
+            &fixture.bin.join("curl"),
+            r#"#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CURL_ARGS"
+[ "${TRANSPORT_FAIL:-0}" = 0 ] || exit 22
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then
+    shift
+    destination="$1"
+  fi
+  shift
+done
+cp "$FIXTURE_ASSET" "$destination"
+"#,
+        );
+        fixture
+    }
+
+    fn write_command(&self, path: &Path, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn write_record(&self, record: &Value) {
+        std::fs::write(
+            self.root.path().join("bundles/self/tooling.json"),
+            serde_json::to_vec(record).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn digest(&self) -> String {
+        sha256_file(self.engine.to_str().unwrap())
+    }
+
+    fn command(&self, body: &str) -> Command {
+        let mut command = Command::new("bash");
+        let current_path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            std::iter::once(self.bin.clone()).chain(std::env::split_paths(&current_path)),
+        )
+        .unwrap();
+        command
+            .args(["-c", body])
+            .current_dir(self.root.path())
+            .env("PATH", path)
+            .env("GITHUB_OUTPUT", &self.github_output)
+            .env("RUNNER_TEMP", &self.runner_temp)
+            .env("BINARY_URL", PUBLISHED_ENGINE_URL)
+            .env("BINARY_SHA256", self.digest())
+            .env("RECORDED_VERSION", "0.12.0")
+            .env("FIXTURE_ASSET", &self.engine)
+            .env("ENGINE_MARKER", &self.marker)
+            .env("CURL_ARGS", self.root.path().join("curl args.txt"))
+            .env_remove("TRANSPORT_FAIL")
+            .env_remove("COMPILE_MODE")
+            .env_remove("FIXTURE_VERSION")
+            .env_remove("FAIL_RECIPE");
+        command
+    }
+
+    fn assert_cleaned(&self) {
+        assert_eq!(std::fs::read_dir(&self.runner_temp).unwrap().count(), 0);
+    }
+}
+
+fn ci_diagnostics(output: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[test]
+fn ci_record_reader_refuses_bad_fields_before_exporting_any_output() {
+    let body = brokkr_ci_body(READ_TOOLING_STEP);
+    let fixture = BrokkrCiFixture::new();
+    let valid = read_json("bundles/self/tooling.json");
+    for (field, invalids) in [
+        ("sha", vec![json!("0".repeat(40) + "\n"), json!(7)]),
+        ("version", vec![json!("0.12.0\n"), json!("v0.12.0")]),
+        (
+            "binary_sha256",
+            vec![
+                Value::Null,
+                json!([]),
+                json!(7),
+                json!(""),
+                json!("a".repeat(63)),
+                json!("A".repeat(64)),
+                json!(format!("{PUBLISHED_ENGINE_DIGEST}\n")),
+                json!(format!("{PUBLISHED_ENGINE_DIGEST}\0")),
+            ],
+        ),
+        (
+            "binary_url",
+            vec![
+                Value::Null,
+                json!([]),
+                json!(7),
+                json!(""),
+                json!(PUBLISHED_ENGINE_URL.replace("https:", "http:")),
+                json!(PUBLISHED_ENGINE_URL.replace("github.com", "github.com.evil.invalid")),
+                json!(format!("{PUBLISHED_ENGINE_URL}\n")),
+                json!(format!("{PUBLISHED_ENGINE_URL}\r")),
+                json!(format!("{PUBLISHED_ENGINE_URL}\0")),
+            ],
+        ),
+    ] {
+        for invalid in std::iter::once(None).chain(invalids.into_iter().map(Some)) {
+            let mut record = valid.clone();
+            if let Some(value) = invalid {
+                record["brokkr"][field] = value;
+            } else {
+                record["brokkr"].as_object_mut().unwrap().remove(field);
+            }
+            fixture.write_record(&record);
+            let output = fixture.command(&body).output().unwrap();
+            assert!(!output.status.success(), "admitted bad {field}: {record}");
+            assert!(ci_diagnostics(&output).contains(&format!("brokkr.{field}")));
+            assert!(!fixture.github_output.exists(), "exported invalid metadata");
+        }
+    }
+    let record_path = fixture.root.path().join("bundles/self/tooling.json");
+    for malformed in ["{", "{}", "null", r#"{"brokkr":[]}"#] {
+        std::fs::write(&record_path, malformed).unwrap();
+        let output = fixture.command(&body).output().unwrap();
+        assert!(!output.status.success());
+        assert!(ci_diagnostics(&output).contains("REFUSAL:"));
+        assert!(!fixture.github_output.exists());
+    }
+    // jq normally accepts a stream of documents; a final valid document
+    // must not mask earlier malformed fields or create multiline outputs.
+    for concatenated in [format!("{{}}\n{valid}"), format!("{valid}\n{valid}")] {
+        std::fs::write(&record_path, concatenated).unwrap();
+        let output = fixture.command(&body).output().unwrap();
+        assert!(!output.status.success());
+        assert!(ci_diagnostics(&output).contains("REFUSAL:"));
+        assert!(!fixture.github_output.exists());
+    }
+    std::fs::remove_file(record_path).unwrap();
+    let output = fixture.command(&body).output().unwrap();
+    assert!(!output.status.success());
+    assert!(ci_diagnostics(&output).contains("tooling.json is absent"));
+    assert!(!fixture.github_output.exists());
+
+    fixture.write_record(&valid);
+    let output = fixture.command(&body).output().unwrap();
+    assert!(output.status.success(), "{}", ci_diagnostics(&output));
+    assert_eq!(
+        std::fs::read_to_string(&fixture.github_output).unwrap(),
+        format!(
+            "sha=731189f9097308c01ae4f2b4c9caea5f41224844\nversion=0.12.0\nbinary_sha256={PUBLISHED_ENGINE_DIGEST}\nbinary_url={PUBLISHED_ENGINE_URL}\n"
+        )
+    );
+    assert!(!fixture.marker.exists());
+}
+
+#[test]
+fn ci_admits_digest_before_executing_and_compiles_all_four_recipes() {
+    let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
+    let fixture = BrokkrCiFixture::new();
+    let mismatch = fixture
+        .command(&body)
+        .env("BINARY_SHA256", PUBLISHED_ENGINE_DIGEST)
+        .output()
+        .unwrap();
+    assert!(!mismatch.status.success());
+    let diagnostics = ci_diagnostics(&mismatch);
+    assert!(diagnostics.contains("REFUSAL: brokkr binary_sha256 mismatch"));
+    assert!(diagnostics.contains(&format!("expected {PUBLISHED_ENGINE_DIGEST}")));
+    assert!(diagnostics.contains(&format!("observed {}", fixture.digest())));
+    assert!(!fixture.marker.exists(), "mismatched engine executed");
+    fixture.assert_cleaned();
+
+    // Removing admission in a scratch body executes the wrong bytes: the
+    // no-execution oracle discriminates this broken control flow.
+    let mutant = body.replace(
+        "if [ \"$observed\" != \"$BINARY_SHA256\" ]; then",
+        "if false; then",
+    );
+    assert_ne!(body, mutant);
+    let output = fixture
+        .command(&mutant)
+        .env("BINARY_SHA256", PUBLISHED_ENGINE_DIGEST)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", ci_diagnostics(&output));
+    assert!(fixture.marker.exists(), "mutant did not expose execution");
+    std::fs::remove_file(&fixture.marker).unwrap();
+
+    let output = fixture.command(&body).output().unwrap();
+    assert!(output.status.success(), "{}", ci_diagnostics(&output));
+    assert_eq!(
+        std::fs::read_to_string(&fixture.marker).unwrap(),
+        "--version\ncompile --bundle bundles/self\ncompile --bundle bundles/codex\ncompile --bundle bundles/codex-careful\ncompile --bundle bundles/codex-fast\n"
+    );
+    let args = std::fs::read_to_string(fixture.root.path().join("curl args.txt")).unwrap();
+    for required in [
+        "--fail\n",
+        "--location\n",
+        "--proto\n=https\n",
+        "--proto-redir\n=https\n",
+        "--connect-timeout\n10\n",
+        "--max-time\n120\n",
+        PUBLISHED_ENGINE_URL,
+    ] {
+        assert!(args.contains(required), "curl omitted {required:?}: {args}");
+    }
+    fixture.assert_cleaned();
+}
+
+#[test]
+fn ci_refuses_failed_download_or_hash_before_execution() {
+    let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
+    for failure in ["download", "hash"] {
+        let fixture = BrokkrCiFixture::new();
+        let mut command = fixture.command(&body);
+        if failure == "download" {
+            command.env("TRANSPORT_FAIL", "1");
+        } else {
+            fixture.write_command(
+                &fixture.bin.join("sha256sum"),
+                "#!/usr/bin/env bash\nexit 19\n",
+            );
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        let expected = if failure == "download" {
+            "binary_url download failed"
+        } else {
+            "binary_sha256 could not be checked"
+        };
+        assert!(
+            ci_diagnostics(&output).contains(expected),
+            "{}",
+            ci_diagnostics(&output)
+        );
+        assert!(
+            !fixture.marker.exists(),
+            "engine executed after {failure} failure"
+        );
+        fixture.assert_cleaned();
+    }
+}
+
+#[test]
+fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
+    let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
+    for mode in ["stdout-warning", "stderr-warning", "failure"] {
+        let fixture = BrokkrCiFixture::new();
+        let output = fixture
+            .command(&body)
+            .env("COMPILE_MODE", mode)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if mode == "failure" { 23 } else { 1 })
+        );
+        let diagnostics = ci_diagnostics(&output);
+        assert!(
+            diagnostics.contains("bundles/codex-careful"),
+            "{diagnostics}"
+        );
+        let expected = if mode == "failure" {
+            "fixture compile failure"
+        } else {
+            "policy-sweep warning"
+        };
+        assert!(diagnostics.contains(expected), "{diagnostics}");
+        assert!(
+            !std::fs::read_to_string(&fixture.marker)
+                .unwrap()
+                .contains("bundles/codex-fast")
+        );
+        fixture.assert_cleaned();
+    }
+    let fixture = BrokkrCiFixture::new();
+    let output = fixture
+        .command(&body)
+        .env("FIXTURE_VERSION", "0.0.0")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(ci_diagnostics(&output).contains("admitted brokkr version"));
+    assert_eq!(
+        std::fs::read_to_string(&fixture.marker).unwrap(),
+        "--version\n"
+    );
+    fixture.assert_cleaned();
 }
