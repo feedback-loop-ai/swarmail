@@ -13,3 +13,8 @@ pub mod report;
 pub mod runner;
 pub mod state;
 pub mod tasks;
+
+pub mod artifacts;
+pub mod identity;
+pub mod provenance;
+pub mod results;

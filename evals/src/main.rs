@@ -14,7 +14,7 @@ use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 use swarmail_evals::runner::{self, TrialRequest, TrialResult};
 use swarmail_evals::tasks::{self, Catalogue, Outcome};
-use swarmail_evals::{fixture, oracle, report, state};
+use swarmail_evals::{artifacts, fixture, identity, oracle, provenance, report, state};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
@@ -43,6 +43,10 @@ enum Cmd {
         task: String,
         #[arg(long)]
         trial_id: String,
+        #[arg(long)]
+        seed: Option<String>,
+        #[arg(long)]
+        fixture_time: Option<String>,
     },
     /// Run a built-in agent (`oracle` or `null`) from the EVAL_* environment.
     Agent { name: String },
@@ -59,6 +63,18 @@ enum Cmd {
         /// Keep state.json, result.json, diagnostics and metadata here.
         #[arg(long)]
         artifacts_dir: Option<PathBuf>,
+        #[arg(long)]
+        seed: Option<String>,
+        #[arg(long)]
+        fixture_time: Option<String>,
+        #[arg(long)]
+        agent_model: Option<String>,
+        #[arg(long)]
+        agent_config_id: Option<String>,
+        #[arg(long)]
+        public_argv: bool,
+        #[arg(long, hide = true)]
+        worker_context: Option<String>,
         /// The external agent's program and literal arguments (no shell).
         #[arg(last = true)]
         argv: Vec<OsString>,
@@ -77,13 +93,23 @@ enum Cmd {
         trials: u32,
         #[arg(long)]
         deadline_ms: Option<u64>,
+        #[arg(long)]
+        artifacts_dir: Option<PathBuf>,
+        #[arg(long)]
+        seed: Option<String>,
+        #[arg(long)]
+        fixture_time: Option<String>,
     },
     /// Re-apply a task's check to a retained state.json.
     Check {
         #[arg(long)]
-        task: String,
+        task: Option<String>,
         #[arg(long)]
-        state: PathBuf,
+        state: Option<PathBuf>,
+        #[arg(long)]
+        artifacts_dir: Option<PathBuf>,
+        #[arg(long)]
+        matrix: Option<PathBuf>,
     },
     /// Aggregate JSONL result rows (`-` reads stdin).
     Report {
@@ -147,7 +173,17 @@ fn main() -> ExitCode {
             smtp,
             task,
             trial_id,
-        } => match rt.block_on(fixture::run_cli(smtp, &task, &trial_id)) {
+            seed,
+            fixture_time,
+        } => match rt.block_on(fixture::run_cli_with_inputs(
+            smtp,
+            &task,
+            &trial_id,
+            match provenance::FixtureInputs::resolve(seed.as_deref(), fixture_time.as_deref()) {
+                Ok(v) => v,
+                Err(e) => return fail(e),
+            },
+        )) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(e),
         },
@@ -174,14 +210,54 @@ fn main() -> ExitCode {
             deadline_ms,
             artifacts_dir,
             argv,
+            seed,
+            fixture_time,
+            agent_model,
+            agent_config_id,
+            public_argv,
+            worker_context,
         } => {
-            let req = TrialRequest {
+            let fixture = match provenance::FixtureInputs::resolve(
+                seed.as_deref(),
+                fixture_time.as_deref(),
+            ) {
+                Ok(v) => v,
+                Err(e) => return fail(e),
+            };
+            if public_argv && argv.iter().any(|v| v.to_str().is_none()) {
+                return fail("public_argv_requires_utf8");
+            }
+            if agent
+                .as_deref()
+                .is_some_and(|s| runner::BUILTINS.contains(&s))
+                && (agent_model.is_some() || agent_config_id.is_some() || public_argv)
+            {
+                return fail("builtin_declaration_invalid");
+            }
+            let mut req = TrialRequest {
                 task,
                 agent,
                 argv,
                 deadline_ms,
                 artifacts_dir,
+                fixture,
+                agent_model,
+                agent_config_id,
+                public_argv,
+                ..Default::default()
             };
+            if let Some(context) = worker_context {
+                if context.len() > artifacts::SMALL_LIMIT {
+                    return fail("worker_context_invalid");
+                }
+                let context: WorkerContext = match provenance::decode(context.as_bytes()) {
+                    Ok(c) => c,
+                    Err(_) => return fail("worker_context_invalid"),
+                };
+                if context.apply(&mut req).is_err() {
+                    return fail("worker_context_invalid");
+                }
+            }
             let row = rt.block_on(runner::run_trial(req, None));
             print_line(&row);
             ExitCode::from(row.exit_code() as u8)
@@ -191,8 +267,54 @@ fn main() -> ExitCode {
             agents,
             trials,
             deadline_ms,
-        } => rt.block_on(matrix(ids, agents, trials, deadline_ms)),
-        Cmd::Check { task, state } => {
+            artifacts_dir,
+            seed,
+            fixture_time,
+        } => {
+            let fixture = match provenance::FixtureInputs::resolve(
+                seed.as_deref(),
+                fixture_time.as_deref(),
+            ) {
+                Ok(v) => v,
+                Err(e) => return fail(e),
+            };
+            rt.block_on(matrix_with_options(
+                ids,
+                agents,
+                trials,
+                deadline_ms,
+                fixture,
+                artifacts_dir,
+            ))
+        }
+        Cmd::Check {
+            task,
+            state,
+            artifacts_dir,
+            matrix,
+        } => {
+            if task.is_none() && state.is_none() && artifacts_dir.is_some() != matrix.is_some() {
+                let replay = match (artifacts_dir, matrix) {
+                    (Some(root), None) => artifacts::trial(&root).map(|v| vec![v.replay()]),
+                    (None, Some(root)) => artifacts::matrix(&root),
+                    _ => unreachable!(),
+                };
+                return match replay {
+                    Ok(rows) => {
+                        for row in &rows {
+                            print_line(row);
+                        }
+                        ExitCode::from(artifacts::replay_exit(&rows) as u8)
+                    }
+                    Err(_) => fail("artifact_evidence_invalid"),
+                };
+            }
+            if artifacts_dir.is_some() || matrix.is_some() {
+                return fail("check_arguments_invalid");
+            }
+            let (Some(task), Some(state)) = (task, state) else {
+                return fail("check_arguments_invalid");
+            };
             let Some(task) = tasks::find(&task) else {
                 return fail(format!("unknown task {task}"));
             };
@@ -259,6 +381,31 @@ fn main() -> ExitCode {
                 }
             }
         }
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkerContext {
+    cell: artifacts::PlannedCell,
+    target: provenance::ExecutableIdentity,
+    agent: provenance::AgentIdentity,
+}
+impl WorkerContext {
+    fn apply(self, req: &mut TrialRequest) -> Result<(), String> {
+        req.matrix = Some(self.cell.coordinates.clone());
+        req.trial_id = Some(self.cell.trial_id.clone());
+        req.assigned_agent = Some(self.agent);
+        let path = runner::selected_swarmail_bin()?.ok_or("worker_target_missing")?;
+        let target = identity::TargetBuild {
+            path,
+            identity: self.target,
+        };
+        target.recheck()?;
+        req.target_build = Some(target);
+        let row = runner::refused_row(req, &self.cell.trial_id);
+        artifacts::matches_cell(&row, &self.cell)?;
+        Ok(())
     }
 }
 
@@ -449,15 +596,126 @@ fn matrix_slot<'a>(
     (&ids[task_index], &specs[agent_index])
 }
 
-fn matrix_refused(id: &str, spec: &report::AgentSpec) -> TrialResult {
-    runner::refused_row(
-        &TrialRequest {
-            task: Some(id.to_string()),
-            agent: Some(spec.label.clone()),
-            ..Default::default()
-        },
-        &runner::new_trial_id(),
-    )
+fn assigned_cell(
+    ids: &[String],
+    specs: &[report::AgentSpec],
+    trials: u32,
+    index: usize,
+    master: &provenance::FixtureInputs,
+    matrix_id: &str,
+    deadline_ms: Option<u64>,
+) -> artifacts::PlannedCell {
+    let (task, spec) = matrix_slot(ids, specs, trials, index);
+    let coordinates = provenance::MatrixCoordinates {
+        matrix_id: matrix_id.into(),
+        master_seed: master.seed.clone(),
+        task_index: (index / (specs.len() * trials as usize)) as u64,
+        agent_index: ((index / trials as usize) % specs.len()) as u64,
+        repetition_index: (index % trials as usize) as u64,
+    };
+    let mut fixture = master.clone();
+    fixture.seed = coordinates
+        .cell_seed(task, &spec.label)
+        .expect("validated master seed");
+    artifacts::PlannedCell {
+        trial_id: runner::new_trial_id(),
+        task: task.into(),
+        agent: spec.label.clone(),
+        fixture,
+        coordinates,
+        deadline_ms: deadline_ms
+            .unwrap_or_else(|| tasks::find(task).expect("validated task").deadline_ms),
+    }
+}
+fn cell_request(
+    cell: &artifacts::PlannedCell,
+    spec: &report::AgentSpec,
+    target: Option<&identity::TargetBuild>,
+) -> TrialRequest {
+    TrialRequest {
+        task: Some(cell.task.clone()),
+        agent: Some(cell.agent.clone()),
+        argv: spec.argv.iter().map(OsString::from).collect(),
+        deadline_ms: Some(cell.deadline_ms),
+        fixture: cell.fixture.clone(),
+        matrix: Some(cell.coordinates.clone()),
+        trial_id: Some(cell.trial_id.clone()),
+        agent_model: spec.model.clone(),
+        agent_config_id: spec.config_id.clone(),
+        public_argv: spec.public_argv,
+        target_build: target.cloned(),
+        ..Default::default()
+    }
+}
+struct MatrixEvidence {
+    root: PathBuf,
+    plan: artifacts::Binding,
+    metadata: Vec<artifacts::Binding>,
+    failed: bool,
+}
+impl MatrixEvidence {
+    fn start(root: &std::path::Path, plan: &artifacts::MatrixPlan) -> Result<Self, String> {
+        artifacts::validate_plan(plan)?;
+        artifacts::ensure_root(root)?;
+        let root = artifacts::create_private_dir(root, &plan.matrix_id)?;
+        artifacts::create_private_dir(&root, "trials")?;
+        let binding = artifacts::publish(
+            &root,
+            "matrix-plan.json",
+            &artifacts::encode(plan, artifacts::PLAN_LIMIT)?,
+        )?;
+        Ok(Self {
+            root,
+            plan: binding,
+            metadata: Vec::new(),
+            failed: false,
+        })
+    }
+    fn committed(&mut self, req: &TrialRequest, row: &TrialResult) {
+        if self.failed {
+            return;
+        }
+        let trials = self.root.join("trials");
+        let leaf = trials.join(&row.trial_id);
+        let result = (|| {
+            match std::fs::symlink_metadata(&leaf) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    artifacts::retain_trial(&trials, row, None)?;
+                }
+                Err(_) => return Err("artifact_unavailable".into()),
+                Ok(_) => {}
+            }
+            let retained = artifacts::trial(&leaf)?;
+            if retained.row != *row || req.trial_id.as_deref() != Some(row.trial_id.as_str()) {
+                return Err("artifact_commit_conflict".into());
+            }
+            artifacts::metadata_binding(&self.root, &row.trial_id)
+        })();
+        match result {
+            Ok(binding) => self.metadata.push(binding),
+            Err(_) => {
+                self.failed = true;
+                eprintln!("swarmail-evals: artifact_publication_failed");
+            }
+        }
+    }
+    fn finish(self, matrix_id: &str, total: usize) -> Result<(), String> {
+        if self.failed || self.metadata.len() != total {
+            return Err("matrix_incomplete".into());
+        }
+        let index = artifacts::MatrixIndex {
+            schema_version: 1,
+            matrix_id: matrix_id.into(),
+            plan: self.plan,
+            metadata: self.metadata,
+        };
+        artifacts::publish(
+            &self.root,
+            "matrix.json",
+            &artifacts::encode(&index, artifacts::PLAN_LIMIT)?,
+        )?;
+        Ok(())
+    }
 }
 
 struct OutputMessage {
@@ -493,6 +751,23 @@ fn start_output_writer() -> OutputWriter {
     OutputWriter { tx, wake }
 }
 
+#[cfg(test)]
+fn stdout_would_block(_payload: usize) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // Pipe pages can be exhausted before the nominal byte capacity. Poll
+        // observes that pressure without changing descriptor flags or draining.
+        let mut fd = libc::pollfd {
+            fd: libc::STDOUT_FILENO,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        (unsafe { libc::poll(&mut fd, 1, 0) }) == 0
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
+}
+
 /// `Some(signal)` means the row is not queued yet and the caller must first
 /// apply cancellation to that uncommitted slot. A queued row is immutable.
 async fn write_row(
@@ -508,6 +783,8 @@ async fn write_row(
     let mut bytes = serde_json::to_vec(row).expect("trial result serializes");
     bytes.push(b'\n');
     #[cfg(test)]
+    let queued_len = bytes.len();
+    #[cfg(test)]
     let (ack_tx, mut ack_rx) = tokio::sync::oneshot::channel();
     #[cfg(not(test))]
     let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
@@ -516,12 +793,18 @@ async fn write_row(
     #[cfg(test)]
     let ack_pending = std::future::poll_fn(|cx| {
         let result = std::pin::Pin::new(&mut ack_rx).poll(cx);
-        if result.is_pending() && !ack_pending_recorded {
+        if result.is_pending() && !ack_pending_recorded && stdout_would_block(queued_len) {
             matrix_test_event(
                 MATRIX_OUTPUT_ACK_PENDING_ENV,
                 "writer acknowledgement is pending",
             );
             ack_pending_recorded = true;
+        } else if result.is_pending() && !ack_pending_recorded {
+            let waker = cx.waker().clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                waker.wake();
+            });
         }
         result
     });
@@ -629,6 +912,18 @@ async fn capture_stdout<R: tokio::io::AsyncRead + Unpin>(
     Ok(CapturedOutput { bytes, overflow })
 }
 
+async fn matrix_envelope(at: tokio::time::Instant) {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("EVAL_TEST_MATRIX_ENVELOPE_RELEASE") {
+        let path = PathBuf::from(path);
+        while !path.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        return;
+    }
+    tokio::time::sleep_until(at).await;
+}
+
 fn signal_trial(pid: u32) -> Result<(), String> {
     if unsafe { libc::kill(pid as i32, libc::SIGTERM) } == 0 {
         return Ok(());
@@ -642,13 +937,15 @@ fn signal_trial(pid: u32) -> Result<(), String> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_child(
+async fn run_child_assigned(
     exe: &std::path::Path,
     bin: &std::path::Path,
     id: &str,
     spec: &report::AgentSpec,
     argv: &[OsString],
     deadline_ms: Option<u64>,
+    context: Option<&WorkerContext>,
+    retention: Option<&std::path::Path>,
     term: &mut tokio::signal::unix::Signal,
     int: &mut tokio::signal::unix::Signal,
 ) -> ChildRun {
@@ -688,6 +985,63 @@ async fn run_child(
         .kill_on_drop(!bypass_wait);
     if let Some(ms) = deadline_ms {
         cmd.args(["--deadline-ms", &ms.to_string()]);
+    }
+    if let Some(context) = context {
+        cmd.args([
+            "--seed",
+            &context.cell.fixture.seed,
+            "--fixture-time",
+            &context.cell.fixture.fixture_time,
+        ]);
+        let bytes = match artifacts::encode(context, artifacts::SMALL_LIMIT) {
+            Ok(b) => b,
+            Err(_) => {
+                return ChildRun {
+                    row: None,
+                    interrupted: false,
+                    failure: Some("worker_context_invalid".into()),
+                    stop_admission: false,
+                    elapsed_ms: 0,
+                };
+            }
+        };
+        cmd.arg("--worker-context")
+            .arg(String::from_utf8(bytes).expect("JSON UTF-8"));
+        if let Some(root) = retention {
+            cmd.arg("--artifacts-dir").arg(root);
+        }
+    }
+    #[cfg(test)]
+    if std::env::var_os("EVAL_TEST_MATRIX_SYNTHETIC_ROW").is_some()
+        && let Some(context) = context
+    {
+        let req = TrialRequest {
+            task: Some(id.into()),
+            agent: Some(spec.label.clone()),
+            fixture: context.cell.fixture.clone(),
+            matrix: Some(context.cell.coordinates.clone()),
+            deadline_ms: Some(context.cell.deadline_ms),
+            trial_id: Some(context.cell.trial_id.clone()),
+            assigned_agent: Some(context.agent.clone()),
+            target_build: Some(identity::TargetBuild {
+                path: bin.into(),
+                identity: context.target.clone(),
+            }),
+            ..Default::default()
+        };
+        let mut error = runner::refused_row(&req, &context.cell.trial_id);
+        error.wall_time_ms = 1;
+        let mut pass = error.clone();
+        pass.outcome = Outcome::Pass;
+        pass.failure_class = None;
+        pass.agent_exit_status = Some(0);
+        pass.wall_time_ms = 1;
+        cmd.args([
+            "--test-error-row",
+            &serde_json::to_string(&error).unwrap(),
+            "--test-pass-row",
+            &serde_json::to_string(&pass).unwrap(),
+        ]);
     }
     if !argv.is_empty() {
         cmd.arg("--").args(argv);
@@ -740,6 +1094,13 @@ async fn run_child(
     let mut interrupted = false;
     let mut forwarded = false;
     let mut failure = None;
+    let envelope = deadline_ms
+        .unwrap_or_else(|| tasks::find(id).expect("validated task").deadline_ms)
+        .saturating_add(300000);
+    let envelope_at = tokio::time::Instant::now() + Duration::from_millis(envelope);
+    let mut envelope_requested = false;
+    let expiry = matrix_envelope(envelope_at);
+    tokio::pin!(expiry);
     let status = loop {
         tokio::select! {
             biased;
@@ -773,6 +1134,15 @@ async fn run_child(
                     break None;
                 }
             }
+            _ = &mut expiry, if !envelope_requested => {
+                envelope_requested = true;
+                failure = Some("trial_envelope_expired".into());
+                if !forwarded { forwarded = true; let _ = signal_trial(pid); }
+                #[cfg(test)] {
+                    matrix_test_event("EVAL_TEST_MATRIX_ENVELOPE_REQUESTED", "requested");
+                    if bypass_wait { break None; }
+                }
+            },
             result = &mut wait => match result {
                 Ok(status) => break Some(status),
                 Err(_) => { failure = Some("trial_wait_failed".into()); break None; }
@@ -812,7 +1182,20 @@ async fn run_child(
     let row = match (captured, status) {
         (Some(captured), Some(status)) => {
             match matching_trial_row(captured, status, id, spec, interrupted) {
-                Ok(row) => Some(row),
+                Ok(row) => {
+                    if context.is_some_and(|c| {
+                        artifacts::matches_cell(&row, &c.cell).is_err()
+                            || row.provenance.agent != c.agent
+                            || row.provenance.target.executable_sha256 != c.target.executable_sha256
+                            || row.provenance.target.build_commit != c.target.build_commit
+                            || row.provenance.target.source_dirty != c.target.source_dirty
+                    }) {
+                        failure.get_or_insert("trial_context_mismatch".into());
+                        None
+                    } else {
+                        Some(row)
+                    }
+                }
                 Err(e) => {
                     failure.get_or_insert(e);
                     None
@@ -829,6 +1212,21 @@ async fn run_child(
         stop_admission,
         elapsed_ms: started.elapsed().as_millis() as u64,
     }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+async fn run_child(
+    exe: &std::path::Path,
+    bin: &std::path::Path,
+    id: &str,
+    spec: &report::AgentSpec,
+    argv: &[OsString],
+    deadline_ms: Option<u64>,
+    term: &mut tokio::signal::unix::Signal,
+    int: &mut tokio::signal::unix::Signal,
+) -> ChildRun {
+    run_child_assigned(exe, bin, id, spec, argv, deadline_ms, None, None, term, int).await
 }
 
 async fn cleanup_cargo(
@@ -864,15 +1262,59 @@ enum CargoEvent {
     OutputTimedOut,
 }
 
+async fn matrix_source(
+    term: &mut tokio::signal::unix::Signal,
+    int: &mut tokio::signal::unix::Signal,
+    interrupted: &mut bool,
+) -> Result<Option<identity::SourceContext>, String> {
+    let groups = runner::Groups::default();
+    let owned = groups.clone();
+    let mut body =
+        tokio::spawn(
+            async move { runner::owned_source_context(runner::source_root(), &owned).await },
+        );
+    let result = tokio::select! {
+        biased;
+        _ = term.recv() => { *interrupted = true; None },
+        _ = int.recv() => { *interrupted = true; None },
+        result = &mut body => Some(result.unwrap_or_else(|_| Err("source_context_failed".into()))),
+    };
+    if result.is_none() {
+        body.abort();
+        let _ = body.await;
+    }
+    #[cfg(test)]
+    matrix_test_hold(
+        "EVAL_TEST_MATRIX_SOURCE_COMMIT_HOLD",
+        term,
+        int,
+        interrupted,
+    )
+    .await;
+    let cleanup = groups.cleanup_all();
+    tokio::pin!(cleanup);
+    loop {
+        tokio::select! { biased; result = &mut cleanup => { result?; break; }, _ = term.recv() => *interrupted = true, _ = int.recv() => *interrupted = true, }
+    }
+    if *interrupted {
+        Ok(None)
+    } else {
+        result.transpose()
+    }
+}
+
 async fn resolve_matrix_bin(
     term: &mut tokio::signal::unix::Signal,
     int: &mut tokio::signal::unix::Signal,
     interrupted: &mut bool,
-) -> Result<Option<(PathBuf, PathBuf)>, String> {
+) -> Result<Option<(PathBuf, identity::TargetBuild)>, String> {
     let exe = std::env::current_exe().map_err(|_| "program_missing")?;
     if let Some(path) = runner::selected_swarmail_bin()? {
-        return Ok(Some((exe, path)));
+        return Ok(Some((exe, identity::TargetBuild::external(path))));
     }
+    let Some(before) = matrix_source(term, int, interrupted).await? else {
+        return Ok(None);
+    };
     let (cmd, runtime) = runner::prepare_swarmail_build()?;
     let groups = runner::Groups::default();
     let mut cargo =
@@ -949,14 +1391,34 @@ async fn resolve_matrix_bin(
         return Err(error);
     }
     let binary = binary.ok_or_else(|| "cargo reported no swarmail executable".to_string())?;
-    Ok(Some((exe, binary)))
+    let Some(after) = matrix_source(term, int, interrupted).await? else {
+        return Ok(None);
+    };
+    if before != after {
+        return Err("build_context_changed".into());
+    }
+    let target = before.associate(binary);
+    target.recheck()?;
+    Ok(Some((exe, target)))
 }
 
+#[cfg(test)]
 async fn matrix(
     ids: Vec<String>,
     agents: PathBuf,
     trials: u32,
     deadline_ms: Option<u64>,
+) -> ExitCode {
+    matrix_with_options(ids, agents, trials, deadline_ms, Default::default(), None).await
+}
+
+async fn matrix_with_options(
+    ids: Vec<String>,
+    agents: PathBuf,
+    trials: u32,
+    deadline_ms: Option<u64>,
+    master: provenance::FixtureInputs,
+    retention: Option<PathBuf>,
 ) -> ExitCode {
     if trials == 0 {
         return fail("--trials must be positive");
@@ -964,10 +1426,23 @@ async fn matrix(
     if let Some(id) = ids.iter().find(|id| tasks::find(id).is_none()) {
         return fail(format!("unknown task {id}"));
     }
-    let specs = match std::fs::read_to_string(&agents)
-        .map_err(|_| "agents_file_unreadable".to_string())
-        .and_then(|t| report::parse_agents(&t))
-    {
+    let agent_text = if retention.is_some() {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(&agents)
+            .and_then(|f| f.take(1024 * 1024 + 1).read_to_end(&mut bytes))
+            .map_err(|_| "agents_file_unreadable".to_string())
+            .and_then(|_| {
+                if bytes.len() > 1024 * 1024 {
+                    Err("agents_file_too_large".into())
+                } else {
+                    String::from_utf8(bytes).map_err(|_| "agents_file_invalid".into())
+                }
+            })
+    } else {
+        std::fs::read_to_string(&agents).map_err(|_| "agents_file_unreadable".to_string())
+    };
+    let specs = match agent_text.and_then(|t| report::parse_agents(&t)) {
         Ok(s) => s,
         Err(e) => return fail(e),
     };
@@ -979,13 +1454,77 @@ async fn matrix(
         Some(count) => count,
         None => return fail("matrix product cardinality exceeds the addressable range"),
     };
+    if deadline_ms.is_some_and(|ms| ms == 0 || ms > tasks::MAX_DEADLINE_MS) {
+        return fail("deadline_invalid");
+    }
+    if retention.is_some() && total_slots > 4096 {
+        return fail("retained_matrix_too_large");
+    }
+    eprintln!(
+        "swarmail-evals: seed={} fixture_time={}",
+        master.seed, master.fixture_time
+    );
+    let matrix_id = runner::new_trial_id();
+    let planned = retention.as_ref().map(|_| artifacts::MatrixPlan {
+        schema_version: 1,
+        matrix_id: matrix_id.clone(),
+        master: master.clone(),
+        tasks: ids.clone(),
+        agents: specs.iter().map(|s| s.label.clone()).collect(),
+        repetitions: trials,
+        cells: (0..total_slots)
+            .map(|i| assigned_cell(&ids, &specs, trials, i, &master, &matrix_id, deadline_ms))
+            .collect(),
+    });
+    let mut evidence_failed = false;
+    let mut evidence = match retention.as_ref().zip(planned.as_ref()) {
+        Some((root, plan)) => match MatrixEvidence::start(root, plan) {
+            Ok(e) => Some(e),
+            Err(_) => {
+                evidence_failed = true;
+                eprintln!("swarmail-evals: artifact_publication_failed");
+                None
+            }
+        },
+        None => None,
+    };
+    let harness_identity = identity::harness();
+    let agent_identities: Vec<_> = specs
+        .iter()
+        .map(|spec| {
+            let cell = assigned_cell(&ids, &specs, trials, 0, &master, &matrix_id, deadline_ms);
+            let mut req = cell_request(&cell, spec, None);
+            req.agent = Some(spec.label.clone());
+            runner::make_provenance(&req, None, None).agent
+        })
+        .collect();
+    let cell_at = |i: usize| {
+        planned
+            .as_ref()
+            .map(|p| p.cells[i].clone())
+            .unwrap_or_else(|| {
+                assigned_cell(&ids, &specs, trials, i, &master, &matrix_id, deadline_ms)
+            })
+    };
     let (mut term, mut int) = match install_matrix_signals() {
         Ok(signals) => signals,
         Err(_) => {
             eprintln!("swarmail-evals: matrix_signal_setup_failed");
             for index in 0..total_slots {
-                let (id, spec) = matrix_slot(&ids, &specs, trials, index);
-                print_line(&matrix_refused(id, spec));
+                let (_, spec) = matrix_slot(&ids, &specs, trials, index);
+                let cell = cell_at(index);
+                let mut req = cell_request(&cell, spec, None);
+                req.harness_identity = Some(harness_identity.clone());
+                req.assigned_agent =
+                    Some(agent_identities[(index / trials as usize) % specs.len()].clone());
+                let row = runner::refused_row(&req, &cell.trial_id);
+                print_line(&row);
+                if let Some(e) = &mut evidence {
+                    e.committed(&req, &row);
+                }
+            }
+            if let Some(e) = evidence {
+                let _ = e.finish(&matrix_id, total_slots);
             }
             return ExitCode::from(2);
         }
@@ -1002,7 +1541,7 @@ async fn matrix(
     .await;
     interrupted |= pending_matrix_signal(&mut term, &mut int).await.is_some();
     let mut resolution_error = None;
-    let resolved = if interrupted {
+    let resolved = if interrupted || evidence_failed {
         None
     } else {
         match resolve_matrix_bin(&mut term, &mut int, &mut interrupted).await {
@@ -1020,7 +1559,8 @@ async fn matrix(
         }
     };
     if let Some(error) = resolution_error.as_deref() {
-        eprintln!("swarmail-evals: harness error for every trial: {error}");
+        let _ = error;
+        eprintln!("swarmail-evals: harness error for every trial: target_unavailable");
     }
     let resolved_agents: Vec<Option<Vec<OsString>>> = specs
         .iter()
@@ -1042,10 +1582,38 @@ async fn matrix(
             break;
         }
         let (id, spec) = matrix_slot(&ids, &specs, trials, next_slot);
+        let cell = cell_at(next_slot);
+        let mut req = cell_request(&cell, spec, resolved.as_ref().map(|(_, t)| t));
+        if resolution_error.as_deref() == Some("build_context_changed") {
+            req.target_source_failure = Some(provenance::Reason::BuildContextChanged);
+        }
+        req.harness_identity = Some(harness_identity.clone());
+        let expected_agent = agent_identities[(next_slot / trials as usize) % specs.len()].clone();
+        req.assigned_agent = Some(expected_agent.clone());
         let mut row = if let Some((exe, bin)) = &resolved {
             let agent_index = (next_slot / trials as usize) % specs.len();
             let child = if let Some(argv) = &resolved_agents[agent_index] {
-                run_child(exe, bin, id, spec, argv, deadline_ms, &mut term, &mut int).await
+                {
+                    let context = WorkerContext {
+                        cell: cell.clone(),
+                        target: bin.identity.clone(),
+                        agent: expected_agent,
+                    };
+                    let trials_root = evidence.as_ref().map(|e| e.root.join("trials"));
+                    run_child_assigned(
+                        exe,
+                        &bin.path,
+                        id,
+                        spec,
+                        argv,
+                        deadline_ms,
+                        Some(&context),
+                        trials_root.as_deref(),
+                        &mut term,
+                        &mut int,
+                    )
+                    .await
+                }
             } else {
                 ChildRun {
                     row: None,
@@ -1059,12 +1627,16 @@ async fn matrix(
             let child_failed = child.failure.is_some();
             let child_stop = child.stop_admission;
             let mut row = child.row.unwrap_or_else(|| {
-                let mut refused = matrix_refused(id, spec);
+                let mut refused = runner::refused_row(&req, &cell.trial_id);
                 refused.wall_time_ms = child.elapsed_ms;
                 refused
             });
             if let Some(error) = child.failure.as_deref() {
                 eprintln!("swarmail-evals: matrix trial error: {error}");
+            }
+            if child_failed {
+                row.outcome = Outcome::HarnessError;
+                row.failure_class = Some(state::FailureClass::HarnessError);
             }
             if child_interrupted {
                 interrupted = true;
@@ -1075,7 +1647,7 @@ async fn matrix(
             stop_admission |= child_stop;
             row
         } else {
-            matrix_refused(id, spec)
+            runner::refused_row(&req, &cell.trial_id)
         };
         #[cfg(test)]
         matrix_test_hold(
@@ -1112,6 +1684,9 @@ async fn matrix(
         if output_failed {
             break;
         }
+        if let Some(e) = &mut evidence {
+            e.committed(&req, &row);
+        }
         next_slot += 1;
         if interrupted || stop_admission {
             break;
@@ -1123,8 +1698,13 @@ async fn matrix(
             eprintln!("swarmail-evals: matrix interrupted; refused {unstarted} unstarted slot(s)");
         }
         while next_slot < total_slots {
-            let (id, spec) = matrix_slot(&ids, &specs, trials, next_slot);
-            let row = matrix_refused(id, spec);
+            let (_, spec) = matrix_slot(&ids, &specs, trials, next_slot);
+            let cell = cell_at(next_slot);
+            let mut req = cell_request(&cell, spec, resolved.as_ref().map(|(_, t)| t));
+            req.harness_identity = Some(harness_identity.clone());
+            req.assigned_agent =
+                Some(agent_identities[(next_slot / trials as usize) % specs.len()].clone());
+            let row = runner::refused_row(&req, &cell.trial_id);
             loop {
                 match write_row(&row, &writer, &mut term, &mut int, &mut interrupted).await {
                     Ok(Some(_)) => interrupted = true,
@@ -1140,6 +1720,9 @@ async fn matrix(
             if output_failed {
                 break;
             }
+            if let Some(e) = &mut evidence {
+                e.committed(&req, &row);
+            }
             next_slot += 1;
         }
     } else if next_slot == total_slots {
@@ -1150,7 +1733,13 @@ async fn matrix(
             eprintln!("swarmail-evals: matrix interrupted; refused 0 unstarted slot(s)");
         }
     }
-    if output_failed || interrupted || any_error {
+    if let Some(e) = evidence
+        && e.finish(&matrix_id, total_slots).is_err()
+    {
+        evidence_failed = true;
+        eprintln!("swarmail-evals: artifact_publication_failed");
+    }
+    if output_failed || interrupted || any_error || evidence_failed {
         ExitCode::from(2)
     } else if any_fail {
         ExitCode::from(1)
@@ -1168,6 +1757,7 @@ mod tests {
         report::AgentSpec {
             label: "oracle".into(),
             argv: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -1178,7 +1768,7 @@ mod tests {
                 agent: Some("oracle".into()),
                 ..Default::default()
             },
-            "trial-id",
+            &"0".repeat(32),
         )
     }
 
@@ -1199,7 +1789,9 @@ mod tests {
         if std::env::var_os(MATRIX_PROBE_ENV).is_none() {
             return;
         }
-        if std::env::var_os(runner::SWARMAIL_BIN_ENV).is_none() {
+        if std::env::var_os(runner::SWARMAIL_BIN_ENV).is_none()
+            && std::env::var_os("EVAL_TEST_MATRIX_SOURCE_COMMIT_HOLD").is_none()
+        {
             let bin = runner::resolve_swarmail_bin().expect("the Swarmail binary resolves");
             // SAFETY: the re-entered probe is a dedicated child test process.
             unsafe { std::env::set_var(runner::SWARMAIL_BIN_ENV, bin) };
@@ -1218,7 +1810,18 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let exit = runtime.block_on(matrix(ids, agents, trials, None));
+        let exit = if let Some(root) = std::env::var_os("EVAL_TEST_MATRIX_ARTIFACTS") {
+            runtime.block_on(matrix_with_options(
+                ids,
+                agents,
+                trials,
+                None,
+                Default::default(),
+                Some(root.into()),
+            ))
+        } else {
+            runtime.block_on(matrix(ids, agents, trials, None))
+        };
         assert_eq!(exit, ExitCode::from(2));
     }
 
@@ -1513,6 +2116,9 @@ mod tests {
         missing_trial_executable: bool,
         pipe_stdout: bool,
         pipe_stderr: bool,
+        real_worker: bool,
+        envelope: bool,
+        source_hold: bool,
     }
 
     fn matrix_probe_with_pre_trap(
@@ -1558,6 +2164,8 @@ task= agent=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --task) task=$2; shift 2 ;;
+    --test-error-row) error_row=$2; shift 2 ;;
+    --test-pass-row) pass_row=$2; shift 2 ;;
     --agent) agent=$2; shift 2 ;;
     *) shift ;;
   esac
@@ -1576,7 +2184,7 @@ interrupt() {
   trap '' TERM INT
   touch "$EVAL_TEST_MATRIX_CLEANUP_ENTERED"
   while [ ! -e "$EVAL_TEST_MATRIX_RELEASE" ]; do :; done
-  printf '{"schema_version":2,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"harness_error","failure_class":"harness_error","wall_time_ms":1,"agent_exit_status":null,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"
+  printf '%s\n' "$error_row"
   exit 0
 }
 trap interrupt TERM INT
@@ -1588,7 +2196,7 @@ if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = holder ]; then
   exit 0
 fi
 if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = complete ]; then
-  printf '{"schema_version":2,"trial_id":"matrix-probe","task":"%s","agent":"%s","outcome":"pass","failure_class":null,"wall_time_ms":1,"agent_exit_status":0,"agent_exits":[],"confinement":"unconfined"}\n' "$task" "$agent"
+  printf '%s\n' "$pass_row"
   exit 0
 fi
 while :; do :; done
@@ -1618,6 +2226,7 @@ while :; do :; done
             "--test-threads=1",
         ])
         .env(MATRIX_PROBE_ENV, "1")
+        .env("EVAL_TEST_MATRIX_SYNTHETIC_ROW", "1")
         .env("EVAL_TEST_MATRIX_AGENTS", &agents)
         .env("EVAL_TEST_MATRIX_TASKS", tasks)
         .env("EVAL_TEST_MATRIX_TRIAL_MODE", trial_mode)
@@ -1680,6 +2289,45 @@ while :; do :; done
                 other => panic!("unknown matrix hold stage {other}"),
             };
             cmd.env(name, hold);
+        }
+        if controls.source_hold {
+            let cargo = dir.join("forbidden-cargo.sh");
+            std::fs::write(
+                &cargo,
+                format!(
+                    "#!/bin/sh\ntouch '{}'/cargo-started\nexit 1\n",
+                    dir.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700)).unwrap();
+            cmd.env_remove(runner::SWARMAIL_BIN_ENV)
+                .env("CARGO", cargo)
+                .env("EVAL_TEST_MATRIX_SOURCE_COMMIT_HOLD", dir.join("source"));
+        }
+        if controls.real_worker {
+            let worker = std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("swarmail-evals");
+            cmd.env(MATRIX_TRIAL_EXE_ENV, &worker)
+                .env(
+                    runner::SWARMAIL_BIN_ENV,
+                    runner::resolve_swarmail_bin().unwrap(),
+                )
+                .env_remove("EVAL_TEST_MATRIX_SYNTHETIC_ROW")
+                .env("EVAL_TEST_MATRIX_ARTIFACTS", dir.join("evidence"));
+            std::fs::write(&agents, serde_json::to_vec(&serde_json::json!([{ "label": "real-oracle", "argv": [worker, "agent", "oracle"] }])).unwrap()).unwrap();
+        }
+        if controls.envelope {
+            cmd.env("EVAL_TEST_MATRIX_ENVELOPE_RELEASE", dir.join("expire"))
+                .env(
+                    "EVAL_TEST_MATRIX_ENVELOPE_REQUESTED",
+                    dir.join("envelope-requested"),
+                );
         }
         let mut script_text = std::fs::read_to_string(&script).unwrap();
         let mut setup = String::from("#!/bin/sh\n");
@@ -2430,6 +3078,181 @@ while :; do :; done
     }
 
     #[test]
+    fn source_observation_cancellation_stays_latched_before_cargo_admission() {
+        for signal in [libc::SIGTERM, libc::SIGINT] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut probe = matrix_probe_config(
+                dir.path(),
+                false,
+                false,
+                None,
+                "complete",
+                "signup,otp",
+                MatrixProbeControls {
+                    source_hold: true,
+                    ..Default::default()
+                },
+            );
+            let hold = dir.path().join("source");
+            eventually("source observation before cleanup/admission", || {
+                hold.join("entered").exists()
+            });
+            unsafe {
+                libc::kill(probe.pid(), signal);
+            }
+            eventually("source cancellation acknowledged", || {
+                hold.join(if signal == libc::SIGTERM {
+                    "signal-term"
+                } else {
+                    "signal-int"
+                })
+                .exists()
+            });
+            std::fs::write(hold.join("release"), b"release observed source cleanup").unwrap();
+            assert!(probe.wait().success());
+            assert!(!dir.path().join("cargo-started").exists());
+            assert!(!dir.path().join("trial.pid").exists());
+            let rows = matrix_probe_rows(dir.path());
+            assert_eq!(rows.len(), 2);
+            assert!(
+                rows.iter()
+                    .all(|r| r.outcome == Outcome::HarnessError && r.wall_time_ms == 0)
+            );
+        }
+    }
+
+    #[test]
+    fn retained_child_conflicts_with_cancellation_winning_commit_without_mutation() {
+        for signal in [libc::SIGTERM, libc::SIGINT] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut probe = matrix_probe_config(
+                dir.path(),
+                false,
+                false,
+                Some("commit"),
+                "complete",
+                "signup,otp",
+                MatrixProbeControls {
+                    real_worker: true,
+                    ..Default::default()
+                },
+            );
+            let hold = dir.path().join("commit");
+            eventually("retained child before commitment", || {
+                hold.join("entered").is_file()
+            });
+            let root = std::fs::read_dir(dir.path().join("evidence"))
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            let plan: artifacts::MatrixPlan =
+                serde_json::from_slice(&std::fs::read(root.join("matrix-plan.json")).unwrap())
+                    .unwrap();
+            let leaf = root.join("trials").join(&plan.cells[0].trial_id);
+            let original = artifacts::trial(&leaf).unwrap();
+            assert_eq!(original.row.outcome, Outcome::Pass);
+            let bytes: Vec<_> = [
+                "result.json",
+                "state.json",
+                "metadata.json",
+                "diagnostics.log",
+            ]
+            .into_iter()
+            .map(|name| (name, std::fs::read(leaf.join(name)).unwrap()))
+            .collect();
+            unsafe {
+                libc::kill(probe.pid(), signal);
+            }
+            eventually("signal wins before row commitment", || {
+                hold.join(if signal == libc::SIGTERM {
+                    "signal-term"
+                } else {
+                    "signal-int"
+                })
+                .exists()
+            });
+            probe.release();
+            assert!(probe.wait().success(), "probe asserts the matrix exit is 2");
+            let rows = matrix_probe_rows(dir.path());
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].trial_id, original.row.trial_id);
+            assert_eq!(rows[0].outcome, Outcome::HarnessError);
+            assert_eq!(rows[0].agent_exit_status, Some(0));
+            assert_eq!(rows[1].wall_time_ms, 0);
+            assert_eq!(rows[1].outcome, Outcome::HarnessError);
+            for (name, before) in bytes {
+                assert_eq!(std::fs::read(leaf.join(name)).unwrap(), before);
+            }
+            assert!(!root.join("matrix.json").exists());
+            assert!(artifacts::matrix(&root).is_err());
+        }
+    }
+
+    #[test]
+    fn envelope_stop_observes_the_same_pending_cleanup_and_bypass_negative_control() {
+        for bypass in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut probe = matrix_probe_config(
+                dir.path(),
+                bypass,
+                false,
+                None,
+                "held",
+                "signup,otp",
+                MatrixProbeControls {
+                    envelope: true,
+                    ..Default::default()
+                },
+            );
+            let ready = dir.path().join("trial.pid");
+            eventually("envelope trial ready", || ready.is_file());
+            probe.record_ready_identity(&ready);
+            let active = probe.owned.last().unwrap().clone();
+            std::fs::write(dir.path().join("expire"), b"expire after readiness").unwrap();
+            eventually("envelope requested cancellation", || {
+                dir.path().join("envelope-requested").exists()
+            });
+            eventually("cleanup entered", || {
+                dir.path().join("cleanup-entered").exists()
+            });
+            if bypass {
+                assert!(probe.wait().success());
+                assert!(
+                    matrix_identity_alive(&active),
+                    "negative control returns with owned work alive"
+                );
+            } else {
+                eventually("envelope child wait acknowledged Pending", || {
+                    dir.path().join("wait-pending").exists()
+                });
+                assert!(probe.try_wait().is_none());
+                assert!(matrix_identity_alive(&active));
+                unsafe {
+                    libc::kill(probe.pid(), libc::SIGINT);
+                }
+                eventually("signal after envelope is a repeat", || {
+                    std::fs::read_to_string(dir.path().join("signals.log"))
+                        .is_ok_and(|s| s.contains("int-repeat"))
+                });
+                assert!(probe.try_wait().is_none());
+            }
+            probe.release();
+            if !bypass {
+                assert!(probe.wait().success());
+            }
+            eventually("owned envelope child stopped", || {
+                !matrix_identity_alive(&active)
+            });
+            let rows = matrix_probe_rows(dir.path());
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].outcome, Outcome::HarnessError);
+            assert_eq!(rows[1].wall_time_ms, 0);
+        }
+    }
+
+    #[test]
     fn matching_trial_row_requires_one_bounded_valid_matching_row_and_exit_pair() {
         let spec = matching_spec();
         let row = matching_row();
@@ -2448,7 +3271,7 @@ while :; do :; done
         let mut wrong_agent = row.clone();
         wrong_agent.agent = Some("other".into());
         let mut bad_schema = serde_json::to_value(&row).unwrap();
-        bad_schema["schema_version"] = serde_json::json!(3);
+        bad_schema["schema_version"] = serde_json::json!(1);
         let bad_schema = serde_json::to_vec(&bad_schema).unwrap();
 
         for output in [
@@ -2575,7 +3398,7 @@ mod privacy_tests {
         let owner = tempfile::tempdir().unwrap();
         let expected = TrialResult {
             schema_version: 2,
-            trial_id: "synthetic-worker-row".into(),
+            trial_id: "0".repeat(32),
             task: Some("signup".into()),
             agent: Some("oracle".into()),
             outcome: Outcome::Fail,
@@ -2588,10 +3411,20 @@ mod privacy_tests {
                 signal: None,
             }],
             confinement: "unconfined".into(),
+            provenance: swarmail_evals::runner::make_provenance(
+                &swarmail_evals::runner::TrialRequest {
+                    task: Some("signup".into()),
+                    agent: Some("oracle".into()),
+                    ..Default::default()
+                },
+                None,
+                None,
+            ),
         };
         let spec = AgentSpec {
             label: "oracle".into(),
             argv: Vec::new(),
+            ..Default::default()
         };
         let valid = worker_program(
             owner.path(),

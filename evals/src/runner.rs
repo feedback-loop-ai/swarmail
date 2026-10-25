@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
 #[cfg(test)]
 use std::future::Future;
-use std::io::{self, Write};
+use std::io;
 use std::net::SocketAddr;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -225,7 +225,9 @@ const CLEANUP_POLL: Duration = Duration::from_millis(100);
 #[serde(deny_unknown_fields)]
 pub struct AgentExit {
     pub identity: String,
+    #[serde(deserialize_with = "crate::provenance::nullable")]
     pub code: Option<i32>,
+    #[serde(deserialize_with = "crate::provenance::nullable")]
     pub signal: Option<i32>,
 }
 
@@ -235,19 +237,88 @@ pub struct AgentExit {
 pub struct TrialResult {
     pub schema_version: u32,
     pub trial_id: String,
+    #[serde(deserialize_with = "crate::provenance::nullable")]
     pub task: Option<String>,
+    #[serde(deserialize_with = "crate::provenance::nullable")]
     pub agent: Option<String>,
     pub outcome: Outcome,
+    #[serde(deserialize_with = "crate::provenance::nullable")]
     pub failure_class: Option<FailureClass>,
     pub wall_time_ms: u64,
+    #[serde(deserialize_with = "crate::provenance::nullable")]
     pub agent_exit_status: Option<i32>,
     pub agent_exits: Vec<AgentExit>,
     pub confinement: String,
+    pub provenance: crate::provenance::Provenance,
 }
 
 impl TrialResult {
     /// Whether the row obeys its own schema's invariants.
     pub fn validate(&self) -> Result<(), String> {
+        self.provenance.validate()?;
+        use crate::provenance::{AgentKind, Availability, Reason, Source};
+        match self.provenance.agent.kind {
+            AgentKind::Invalid => {
+                if self.outcome != Outcome::HarnessError
+                    || self.provenance.matrix.is_some()
+                    || self.provenance.task.definition_sha256
+                        != Availability::unavailable(Reason::RequestInvalid)
+                    || self.provenance.limits.agent_deadline_ms
+                        != Availability::unavailable(Reason::RequestInvalid)
+                {
+                    return Err("invalid request shape".into());
+                }
+            }
+            kind => {
+                let (Some(_), Some(agent)) = (&self.task, &self.agent) else {
+                    return Err("valid request lacks labels".into());
+                };
+                if (kind == AgentKind::Builtin) != BUILTINS.contains(&agent.as_str()) {
+                    return Err("agent kind/label mismatch".into());
+                }
+                if kind == AgentKind::Builtin
+                    && self.provenance.agent.config_id
+                        != Availability::present(agent.clone(), Source::Builtin)
+                {
+                    return Err("builtin config mismatch".into());
+                }
+                if !matches!(
+                    self.provenance.task.definition_sha256,
+                    Availability::Present { .. }
+                ) || !matches!(
+                    self.provenance.limits.agent_deadline_ms,
+                    Availability::Present { .. }
+                ) {
+                    return Err("valid request lacks task/deadline".into());
+                }
+            }
+        }
+
+        if !crate::artifacts::generated_id(&self.trial_id)
+            || self.task.as_ref().is_some_and(|s| s.len() > 1024)
+            || self
+                .agent
+                .as_ref()
+                .is_some_and(|s| s.is_empty() || s.len() > 1024)
+        {
+            return Err("invalid row identity".into());
+        }
+        if let Some(m) = &self.provenance.matrix {
+            let (Some(task), Some(agent)) = (&self.task, &self.agent) else {
+                return Err("matrix labels absent".into());
+            };
+            if !crate::artifacts::generated_id(&m.matrix_id)
+                || m.cell_seed(task, agent)? != self.provenance.fixture.seed
+            {
+                return Err("matrix seed/identity mismatch".into());
+            }
+        }
+        if self.provenance.agent.kind == crate::provenance::AgentKind::Invalid
+            && self.outcome != Outcome::HarnessError
+        {
+            return Err("invalid request must be harness_error".into());
+        }
+
         if self.schema_version != RESULT_SCHEMA {
             return Err(format!(
                 "schema_version {} is not {RESULT_SCHEMA}",
@@ -286,12 +357,21 @@ pub struct TrialRequest {
     pub argv: Vec<OsString>,
     pub deadline_ms: Option<u64>,
     pub artifacts_dir: Option<PathBuf>,
+    pub fixture: crate::provenance::FixtureInputs,
+    pub matrix: Option<crate::provenance::MatrixCoordinates>,
+    pub trial_id: Option<String>,
+    pub agent_model: Option<String>,
+    pub agent_config_id: Option<String>,
+    pub public_argv: bool,
+    pub target_build: Option<crate::identity::TargetBuild>,
+    pub assigned_agent: Option<crate::provenance::AgentIdentity>,
+    pub harness_identity: Option<crate::provenance::HarnessIdentity>,
+    pub target_source_failure: Option<crate::provenance::Reason>,
 }
 
 pub fn new_trial_id() -> String {
     use rand::Rng;
-    let n: u32 = rand::rng().random();
-    format!("{}-{n:08x}", chrono::Utc::now().format("%Y%m%dT%H%M%S"))
+    crate::provenance::hex(&rand::rng().random::<[u8; 16]>())
 }
 
 /// The caller's path context is captured before the harness clears a child.
@@ -1125,6 +1205,20 @@ impl Groups {
                         pending_recorded = true;
                     }
                     if std::env::var_os(CLEANUP_WAIT_BYPASS_ENV).is_some() {
+                        // Pending can mean the waiter has not been scheduled.
+                        // The negative control must bypass an acknowledged live
+                        // cleanup owner, not abort its waiter before startup.
+                        if let Some(hold) = std::env::var_os(CLEANUP_HOLD_ENV).map(PathBuf::from)
+                            && hold.join("arm").exists()
+                        {
+                            while !std::fs::read_dir(&hold).is_ok_and(|entries| {
+                                entries.flatten().any(|e| {
+                                    e.file_name().to_string_lossy().starts_with("entered-")
+                                })
+                            }) {
+                                tokio::time::sleep(Duration::from_millis(5)).await;
+                            }
+                        }
                         if let Some(dir) = std::env::var_os(CLEANUP_WAIT_BYPASS_HOLD_ENV) {
                             let dir = PathBuf::from(dir);
                             std::fs::create_dir_all(&dir)
@@ -1282,6 +1376,7 @@ pub struct Proc {
     group: Arc<OwnedGroup>,
     announcement: Option<oneshot::Receiver<Announcement>>,
     pub cargo_records: Option<oneshot::Receiver<Result<PathBuf, String>>>,
+    captured: Option<oneshot::Receiver<Result<Vec<u8>, String>>>,
 }
 
 pub struct ProcessWait {
@@ -1332,11 +1427,22 @@ pub fn spawn_owned_cargo(
 }
 
 fn spawn(
+    cmd: Command,
+    groups: &Groups,
+    role: Option<ServerRole>,
+    runtime: Option<Arc<tempfile::TempDir>>,
+    cargo: bool,
+) -> std::io::Result<Proc> {
+    spawn_extended(cmd, groups, role, runtime, cargo, false)
+}
+
+fn spawn_extended(
     mut cmd: Command,
     groups: &Groups,
     role: Option<ServerRole>,
     runtime: Option<Arc<tempfile::TempDir>>,
     cargo: bool,
+    capture: bool,
 ) -> std::io::Result<Proc> {
     cmd.process_group(0)
         .stdin(Stdio::null())
@@ -1374,7 +1480,37 @@ fn spawn(
         (None, None)
     };
     let mut drains = group.drains.lock().unwrap_or_else(|e| e.into_inner());
-    let cargo_records = if cargo {
+    let mut captured = None;
+    let cargo_records = if capture {
+        let (tx, rx) = oneshot::channel();
+        captured = Some(rx);
+        drains.push(tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut reader = stdout;
+            let mut bytes = Vec::new();
+            let mut chunk = [0u8; 8192];
+            let mut overflow = false;
+            let result = loop {
+                match reader.read(&mut chunk).await {
+                    Ok(0) => {
+                        break if overflow {
+                            Err("helper_output_invalid".into())
+                        } else {
+                            Ok(bytes)
+                        };
+                    }
+                    Ok(n) => {
+                        let keep = n.min((1024 * 1024usize).saturating_sub(bytes.len()));
+                        bytes.extend_from_slice(&chunk[..keep]);
+                        overflow |= keep != n;
+                    }
+                    Err(_) => break Err("helper_output_failed".into()),
+                }
+            };
+            let _ = tx.send(result);
+        }));
+        None
+    } else if cargo {
         let (tx, rx) = oneshot::channel();
         drains.push(tokio::spawn(async move {
             let mut reader = stdout;
@@ -1405,6 +1541,118 @@ fn spawn(
         group,
         announcement,
         cargo_records,
+        captured,
+    })
+}
+
+pub fn source_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("evals parent")
+}
+
+pub async fn owned_source_context(
+    root: &Path,
+    groups: &Groups,
+) -> Result<crate::identity::SourceContext, String> {
+    let caller = CallerEnv::capture()?;
+    let git = resolve_program(OsStr::new("git"), &caller).ok();
+    let mut facts = Vec::new();
+    for args in [
+        vec!["rev-parse", "--verify", "HEAD"],
+        vec!["status", "--porcelain", "--untracked-files=all"],
+    ] {
+        let value = if let Some(git) = &git {
+            let runtime = Arc::new(private_tempdir("swarmail-eval-git-")?);
+            let dirs = RuntimeDirs::create(runtime.path(), "git")?;
+            let mut cmd = Command::new(git);
+            dirs.apply(&mut cmd);
+            cmd.current_dir(root)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .args([
+                    "-c",
+                    "core.fsmonitor=false",
+                    "-c",
+                    "core.untrackedCache=false",
+                ])
+                .args(args);
+            let mut proc = spawn_extended(cmd, groups, None, Some(runtime), false, true)
+                .map_err(|_| "helper_spawn")?;
+            let rx = proc.captured.take().ok_or("helper_output")?;
+            let result = tokio::time::timeout(Duration::from_secs(10), async {
+                let status = proc.child.wait().await.map_err(|_| "helper_wait")?;
+                let bytes = rx.await.map_err(|_| "helper_output")??;
+                Ok::<_, String>(status.success().then_some(bytes))
+            })
+            .await;
+            proc.cleanup().await?;
+            result.map_err(|_| "helper_timeout")??
+        } else {
+            None
+        };
+        facts.push(value);
+    }
+    crate::identity::SourceContext::with_git(root, facts[0].as_deref(), facts[1].as_deref())
+}
+
+pub async fn build_owned_target(
+    root: &Path,
+    groups: &Groups,
+) -> Result<crate::identity::TargetBuild, String> {
+    let before = owned_source_context(root, groups).await?;
+    let (mut cmd, runtime) = prepare_swarmail_build().map_err(|_| "build_failed")?;
+    cmd.current_dir(root);
+    let mut cargo = spawn_owned_cargo(cmd, groups, runtime).map_err(|_| "cargo_spawn")?;
+    let records = cargo.cargo_records.take().ok_or("cargo_output_missing")?;
+    let result = async {
+        let status = cargo.child.wait().await.map_err(|_| "cargo_wait")?;
+        let path = tokio::time::timeout(Duration::from_secs(5), records)
+            .await
+            .map_err(|_| "cargo_output_timeout")?
+            .map_err(|_| "cargo_output_failed")??;
+        if !status.success() {
+            return Err("build_failed".into());
+        }
+        if before != owned_source_context(root, groups).await? {
+            return Err("build_context_changed".into());
+        }
+        let target = before.associate(path);
+        target.recheck()?;
+        Ok(target)
+    }
+    .await;
+    cargo.cleanup().await?;
+    result
+}
+
+// Synchronous inspection/build conveniences also subscribe before any helper.
+pub fn inspect_source(root: &Path) -> Result<crate::identity::SourceContext, String> {
+    let root = root.to_path_buf();
+    tokio::runtime::Runtime::new().map_err(|_| "runtime")?.block_on(async {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|_| "signal_setup")?;
+        let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|_| "signal_setup")?;
+        let groups = Groups::default(); let owned = groups.clone();
+        let mut body = tokio::spawn(async move { owned_source_context(&root, &owned).await });
+        let result = tokio::select! { biased; _ = term.recv() => None, _ = int.recv() => None, result = &mut body => Some(result.map_err(|_| "source_context_failed")), };
+        if result.is_none() { body.abort(); let _ = body.await; }
+        let cleanup = groups.cleanup_all(); tokio::pin!(cleanup);
+        loop { tokio::select! { biased; result = &mut cleanup => { result?; break; }, _ = term.recv() => {}, _ = int.recv() => {}, } }
+        result.ok_or("preparation_interrupted")??
+    })
+}
+pub fn resolve_owned_target(root: &Path) -> Result<crate::identity::TargetBuild, String> {
+    let root = root.to_path_buf();
+    tokio::runtime::Runtime::new().map_err(|_| "runtime")?.block_on(async {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).map_err(|_| "signal_setup")?;
+        let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).map_err(|_| "signal_setup")?;
+        let groups = Groups::default(); let owned = groups.clone();
+        let mut body = tokio::spawn(async move { build_owned_target(&root, &owned).await });
+        let result = tokio::select! { biased; _ = term.recv() => None, _ = int.recv() => None, result = &mut body => Some(result.map_err(|_| "build_failed")), };
+        if result.is_none() { body.abort(); let _ = body.await; }
+        let cleanup = groups.cleanup_all(); tokio::pin!(cleanup);
+        loop { tokio::select! { biased; result = &mut cleanup => { result?; break; }, _ = term.recv() => {}, _ = int.recv() => {}, } }
+        result.ok_or("preparation_interrupted")??
     })
 }
 
@@ -1585,7 +1833,7 @@ fn agent_argv(label: &str, argv: &[OsString], caller: &CallerEnv) -> Result<Vec<
             OsString::from(label),
         ])
     } else {
-        let program = resolve_program(&argv[0], caller)?;
+        let program = resolve_program(argv.first().ok_or("program_missing")?, caller)?;
         let mut resolved = Vec::with_capacity(argv.len());
         resolved.push(program.into_os_string());
         resolved.extend(argv[1..].iter().cloned());
@@ -1618,6 +1866,28 @@ pub fn validate_request(req: &TrialRequest) -> Result<(Task, String), String> {
         }
         task.deadline_ms = ms;
     }
+    req.fixture.validate()?;
+    if label.len() > 1024
+        || task_id.len() > 1024
+        || req
+            .agent_model
+            .as_ref()
+            .is_some_and(|s| s.is_empty() || s.len() > 1024)
+        || req
+            .agent_config_id
+            .as_ref()
+            .is_some_and(|s| s.is_empty() || s.len() > 1024)
+    {
+        return Err("public declaration exceeds bounds".into());
+    }
+    if BUILTINS.contains(&label)
+        && (req.agent_model.is_some() || req.agent_config_id.is_some() || req.public_argv)
+    {
+        return Err("builtin declarations cannot be overridden".into());
+    }
+    if req.public_argv && req.argv.iter().any(|v| v.to_str().is_none()) {
+        return Err("public_argv_requires_utf8".into());
+    }
     tasks::validate_task(&task)?;
     Ok((task, label.to_string()))
 }
@@ -1627,14 +1897,21 @@ pub fn refused_row(req: &TrialRequest, trial_id: &str) -> TrialResult {
     TrialResult {
         schema_version: RESULT_SCHEMA,
         trial_id: trial_id.to_string(),
-        task: req.task.clone(),
-        agent: req.agent.clone(),
+        task: req
+            .task
+            .clone()
+            .filter(|s| !s.is_empty() && s.len() <= 1024),
+        agent: req
+            .agent
+            .clone()
+            .filter(|s| !s.is_empty() && s.len() <= 1024),
         outcome: Outcome::HarnessError,
         failure_class: Some(FailureClass::HarnessError),
         wall_time_ms: 0,
         agent_exit_status: None,
         agent_exits: Vec::new(),
         confinement: CONFINEMENT.to_string(),
+        provenance: make_provenance(req, req.target_build.as_ref(), None),
     }
 }
 
@@ -1647,7 +1924,9 @@ async fn run_body(
     label: &str,
     argv: &[OsString],
     trial_id: &str,
-    swarmail_bin: &Path,
+    target: &crate::identity::TargetBuild,
+    inputs: &crate::provenance::FixtureInputs,
+    provenance: &crate::provenance::Provenance,
     scratch: &Path,
     trial: &mut Trial,
     exits: &mut Vec<AgentExit>,
@@ -1655,7 +1934,8 @@ async fn run_body(
 ) -> Result<bool, String> {
     // Every role gets a closed runtime map and a private owner under /tmp.
     let swarmail_dirs = RuntimeDirs::create(scratch, "swarmail")?;
-    let mut cmd = Command::new(swarmail_bin);
+    target.recheck()?;
+    let mut cmd = Command::new(&target.path);
     cmd.args([
         "serve",
         "--smtp-listen",
@@ -1709,6 +1989,7 @@ async fn run_body(
             .collect()
     };
     let exe = evals_executable()?;
+    recheck_digest(&exe, &provenance.harness.executable_sha256)?;
     let fixture_dirs = RuntimeDirs::create(scratch, "fixture")?;
     let mut cmd = Command::new(&exe);
     cmd.args([
@@ -1719,6 +2000,10 @@ async fn run_body(
         &task.id,
         "--trial-id",
         trial_id,
+        "--seed",
+        &inputs.seed,
+        "--fixture-time",
+        &inputs.fixture_time,
     ]);
     fixture_dirs.apply(&mut cmd);
     cmd.env(ADMIN_SECRET_ENV, &secret)
@@ -1823,6 +2108,7 @@ async fn run_body(
             .map_err(|_| "private_directory")?;
         let prompt_file = workdir.join("prompt.md");
         std::fs::write(&prompt_file, &prompt).map_err(|_| "private_file")?;
+        recheck_digest(Path::new(&argv[0]), &provenance.agent.executable_sha256)?;
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..]).current_dir(&workdir);
         dirs.apply(&mut cmd);
@@ -1932,7 +2218,7 @@ const ARTIFACT_FILE_MODE: u32 = 0o600;
 
 /// Make an exclusively owned trial directory under the caller-selected root.
 /// Existing roots and ancestors are caller-owned and keep their permissions.
-fn create_private_artifact_dir(root: &Path, trial_id: &str) -> Result<PathBuf, String> {
+pub(crate) fn create_private_artifact_dir(root: &Path, trial_id: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(root).map_err(|_| "artifact_write")?;
     let out = root.join(trial_id);
     let mut builder = std::fs::DirBuilder::new();
@@ -1969,7 +2255,7 @@ fn create_private_artifact_temp(out: &Path) -> io::Result<tempfile::NamedTempFil
     create_private_artifact_temp_with(out, &tempfile::Builder::new())
 }
 
-fn write_artifact_with(
+pub(crate) fn write_artifact_with(
     out: &Path,
     name: &str,
     bytes: &[u8],
@@ -1987,45 +2273,6 @@ fn write_artifact_with(
         "artifact_write".to_string()
     })?;
     Ok(())
-}
-
-fn write_artifacts(
-    dir: &Path,
-    row: &TrialResult,
-    snap: Option<&Snapshot>,
-    diagnostics: &[String],
-) -> Result<(), String> {
-    let out = create_private_artifact_dir(dir, &row.trial_id)?;
-    let write = |name: &str, bytes: &[u8]| -> Result<(), String> {
-        write_artifact_with(&out, name, bytes, |file, payload| file.write_all(payload))
-    };
-    if let Some(snap) = snap {
-        write(
-            "state.json",
-            &serde_json::to_vec_pretty(snap).expect("serializes"),
-        )?;
-    }
-    write(
-        "result.json",
-        &serde_json::to_vec_pretty(row).expect("serializes"),
-    )?;
-    let safe_diagnostics = diagnostics.join("\n");
-    let safe_diagnostics = if safe_diagnostics.len() > 64 * 1024 {
-        "diagnostics truncated\n"
-    } else {
-        &safe_diagnostics
-    };
-    write("diagnostics.log", safe_diagnostics.as_bytes())?;
-    let meta = json!({
-        "harness": env!("CARGO_PKG_NAME"),
-        "harness_version": env!("CARGO_PKG_VERSION"),
-        "swarmail_bin": Value::Null,
-        "confinement": CONFINEMENT,
-    });
-    write(
-        "metadata.json",
-        &serde_json::to_vec_pretty(&meta).expect("serializes"),
-    )
 }
 
 pub fn safe_cleanup_category(error: &str) -> &'static str {
@@ -2061,6 +2308,16 @@ fn safe_trial_category(error: &str) -> &'static str {
         "fixture_spawn" => "fixture_spawn_failed",
         "fixture_index" => "fixture_health_failed",
         "program_missing" => "program_unavailable",
+        "cargo_output_invalid"
+        | "cargo_output_failed"
+        | "cargo_output_timeout"
+        | "cargo_output_missing"
+        | "cargo_spawn"
+        | "cargo_wait"
+        | "build_failed"
+        | "cargo_artifact_missing"
+        | "cargo_artifact_invalid"
+        | "build_context_changed" => "swarmail_unavailable",
         "agent_spawn" => "agent_spawn_failed",
         "server_died" => "service_exited_during_trial",
         "snapshot_invalid" => "snapshot_invalid",
@@ -2074,31 +2331,58 @@ fn safe_trial_category(error: &str) -> &'static str {
 }
 
 /// Run one trial to its one result row. Diagnostics go to stderr.
-pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> TrialResult {
-    let trial_id = new_trial_id();
-    let (task, label) = match validate_request(&req) {
+pub async fn run_trial(mut req: TrialRequest, swarmail_bin: Option<PathBuf>) -> TrialResult {
+    let id = req.trial_id.clone().unwrap_or_else(new_trial_id);
+    eprintln!(
+        "swarmail-evals: seed={} fixture_time={}",
+        req.fixture.seed, req.fixture.fixture_time
+    );
+    let (mut row, snap) = execute_trial(&mut req, swarmail_bin, id).await;
+    if req
+        .target_build
+        .as_ref()
+        .is_some_and(|t| t.recheck().is_err())
+    {
+        row.outcome = Outcome::HarnessError;
+        row.failure_class = Some(FailureClass::HarnessError);
+    }
+    finalize(&req, row, snap.as_ref())
+}
+
+pub fn finalize(req: &TrialRequest, mut row: TrialResult, snap: Option<&Snapshot>) -> TrialResult {
+    if row.validate().is_err()
+        || crate::artifacts::encode(&row, crate::provenance::RESULT_LIMIT - 1).is_err()
+    {
+        row.outcome = Outcome::HarnessError;
+        row.failure_class = Some(FailureClass::HarnessError);
+    }
+    if let Some(root) = &req.artifacts_dir
+        && crate::artifacts::retain_trial(root, &row, snap).is_err()
+    {
+        row.outcome = Outcome::HarnessError;
+        row.failure_class = Some(FailureClass::HarnessError);
+        eprintln!("swarmail-evals: harness error: artifact_write_failed");
+    }
+    row
+}
+
+async fn execute_trial(
+    req: &mut TrialRequest,
+    swarmail_bin: Option<PathBuf>,
+    trial_id: String,
+) -> (TrialResult, Option<Snapshot>) {
+    let (task, label) = match validate_request(req) {
         Ok(v) => v,
         Err(_) => {
             eprintln!("swarmail-evals: harness error: request_invalid");
-            return refused_row(&req, &trial_id);
+            return (refused_row(req, &trial_id), None);
         }
     };
     let caller = match CallerEnv::capture() {
         Ok(caller) => caller,
         Err(_) => {
             eprintln!("swarmail-evals: harness error: caller_context_unavailable");
-            return refused_row(&req, &trial_id);
-        }
-    };
-    let bin = match swarmail_bin {
-        Some(path) => resolve_program(path.as_os_str(), &caller),
-        None => resolve_swarmail_bin(),
-    };
-    let bin = match bin {
-        Ok(b) => b,
-        Err(_) => {
-            eprintln!("swarmail-evals: harness error: swarmail_unavailable");
-            return refused_row(&req, &trial_id);
+            return (refused_row(req, &trial_id), None);
         }
     };
     #[cfg(test)]
@@ -2112,7 +2396,7 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             }
         }
     }
-    let started = Instant::now();
+    let started = Arc::new(Mutex::new(None::<Instant>));
     let groups = Groups::default();
     let agents = Arc::new(Mutex::new(Vec::<(String, i32)>::new()));
     // Registered before any child starts, so an interrupt at any phase
@@ -2125,23 +2409,30 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
         (Ok(t), Ok(i)) => (t, i),
         _ => {
             eprintln!("swarmail-evals: harness error: signal_handlers_unavailable");
-            return refused_row(&req, &trial_id);
+            return (refused_row(req, &trial_id), None);
         }
     };
     let scratch = match private_tempdir("swarmail-eval-") {
         Ok(d) => Arc::new(d),
         Err(_) => {
             eprintln!("swarmail-evals: harness error: private_directory_unavailable");
-            return refused_row(&req, &trial_id);
+            return (refused_row(req, &trial_id), None);
         }
     };
+    let captured = make_provenance(req, req.target_build.as_ref(), None);
+    req.assigned_agent = Some(captured.agent.clone());
+    req.harness_identity = Some(captured.harness.clone());
+    let target_capture = Arc::new(Mutex::new(req.target_build.clone()));
     let mut body = {
-        let (task, label, argv, trial_id, bin, scratch_owner, groups, agents) = (
+        let req_body = req.clone();
+        let started = started.clone();
+        let target_capture = target_capture.clone();
+        let provenance = captured.clone();
+        let (task, label, argv, trial_id, scratch_owner, groups, agents) = (
             task.clone(),
             label.clone(),
             req.argv.clone(),
             trial_id.clone(),
-            bin.clone(),
             scratch.clone(),
             groups.clone(),
             agents.clone(),
@@ -2156,18 +2447,40 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             };
             let mut exits = Vec::new();
             let mut snap = None;
-            let outcome = run_body(
-                &task,
-                &label,
-                &argv,
-                &trial_id,
-                &bin,
-                scratch_owner.path(),
-                &mut trial,
-                &mut exits,
-                &mut snap,
-            )
-            .await;
+            let target = match req_body.target_build.clone() {
+                Some(target) => Ok(target),
+                None => match swarmail_bin
+                    .map(|p| resolve_program(p.as_os_str(), &caller).map(Some))
+                    .unwrap_or_else(selected_swarmail_bin)
+                {
+                    Ok(Some(path)) => Ok(crate::identity::TargetBuild::external(path)),
+                    Ok(None) => build_owned_target(source_root(), &trial.groups).await,
+                    Err(e) => Err(e),
+                },
+            };
+            if let Ok(target) = &target {
+                *target_capture.lock().unwrap_or_else(|e| e.into_inner()) = Some(target.clone());
+            }
+            let outcome = match target {
+                Ok(target) => {
+                    *started.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+                    run_body(
+                        &task,
+                        &label,
+                        &argv,
+                        &trial_id,
+                        &target,
+                        &req_body.fixture,
+                        &provenance,
+                        scratch_owner.path(),
+                        &mut trial,
+                        &mut exits,
+                        &mut snap,
+                    )
+                    .await
+                }
+                Err(e) => Err(e),
+            };
             let outcome = match trial.stop_servers().await {
                 Ok(()) => outcome,
                 Err(e) => Err(e),
@@ -2227,25 +2540,43 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
             })
             .collect();
         eprintln!("swarmail-evals: harness error: the trial was interrupted");
-        return TrialResult {
-            schema_version: RESULT_SCHEMA,
-            trial_id,
-            task: req.task.clone(),
-            agent: req.agent.clone(),
-            outcome: Outcome::HarnessError,
-            failure_class: Some(FailureClass::HarnessError),
-            wall_time_ms: started.elapsed().as_millis() as u64,
-            agent_exit_status: if task.agent_count == 1 {
-                agent_exits.first().and_then(|e| e.code)
-            } else {
-                None
+        req.target_build = target_capture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        return (
+            TrialResult {
+                schema_version: RESULT_SCHEMA,
+                trial_id,
+                task: req.task.clone(),
+                agent: req.agent.clone(),
+                outcome: Outcome::HarnessError,
+                failure_class: Some(FailureClass::HarnessError),
+                wall_time_ms: started
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .map(|at| at.elapsed().as_millis() as u64)
+                    .unwrap_or(0),
+                agent_exit_status: if task.agent_count == 1 {
+                    agent_exits.first().and_then(|e| e.code)
+                } else {
+                    None
+                },
+                agent_exits,
+                confinement: CONFINEMENT.to_string(),
+                provenance: make_provenance(req, req.target_build.as_ref(), None),
             },
-            agent_exits,
-            confinement: CONFINEMENT.to_string(),
-        };
+            None,
+        );
     };
     let (mut verdict, exits, snap, mut diagnostics) = match joined {
         Ok((outcome, exits, snap, mut diagnostics)) => {
+            if outcome
+                .as_ref()
+                .is_err_and(|e| e == "build_context_changed")
+            {
+                req.target_source_failure = Some(crate::provenance::Reason::BuildContextChanged);
+            }
             // Precedence (0055 §2): infrastructure — a process error, or a
             // snapshot that is absent or unscorable (a failed or parked
             // fixture delivery included) — then the deadline, then the
@@ -2332,6 +2663,10 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
     } else {
         None
     };
+    req.target_build = target_capture
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let row = TrialResult {
         schema_version: RESULT_SCHEMA,
         trial_id: trial_id.clone(),
@@ -2339,24 +2674,225 @@ pub async fn run_trial(req: TrialRequest, swarmail_bin: Option<PathBuf>) -> Tria
         agent: Some(label),
         outcome: verdict.outcome,
         failure_class: verdict.failure_class,
-        wall_time_ms: started.elapsed().as_millis() as u64,
+        wall_time_ms: started
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|at| at.elapsed().as_millis() as u64)
+            .unwrap_or(0),
         agent_exit_status,
         agent_exits: exits,
         confinement: CONFINEMENT.to_string(),
+        provenance: make_provenance(req, req.target_build.as_ref(), snap.as_ref()),
     };
-    if let Some(dir) = &req.artifacts_dir
-        && write_artifacts(dir, &row, snap.as_ref(), &diagnostics).is_err()
-    {
-        diagnostics.push("stage=artifact category=write_failed".into());
-        eprintln!("swarmail-evals: harness error: artifact_write_failed");
-    }
     if row.outcome == Outcome::HarnessError {
         for d in &diagnostics {
             eprintln!("swarmail-evals: {d}");
         }
     }
     drop(scratch);
-    row
+    (row, snap)
+}
+
+/// Resolve facts from actual inputs; absence is never a guessed identity.
+pub fn make_provenance(
+    req: &TrialRequest,
+    target: Option<&crate::identity::TargetBuild>,
+    snap: Option<&Snapshot>,
+) -> crate::provenance::Provenance {
+    use crate::provenance::*;
+    let valid = validate_request(req).ok();
+    let builtin = req.agent.as_deref().is_some_and(|s| BUILTINS.contains(&s));
+    let argv = req.agent.as_deref().and_then(|label| {
+        CallerEnv::capture()
+            .ok()
+            .and_then(|c| agent_argv(label, &req.argv, &c).ok())
+    });
+    let executable = argv
+        .as_ref()
+        .filter(|_| req.assigned_agent.is_none())
+        .and_then(|a| a.first())
+        .map(PathBuf::from);
+    fn unavailable<T>() -> Availability<T> {
+        Availability::unavailable(Reason::NotResolved)
+    }
+    let target_identity = target
+        .map(|t| t.identity.clone())
+        .unwrap_or(ExecutableIdentity {
+            executable_sha256: Availability::unavailable(
+                req.target_source_failure.unwrap_or(Reason::NotResolved),
+            ),
+            build_commit: Availability::unavailable(
+                req.target_source_failure.unwrap_or(Reason::NotResolved),
+            ),
+            source_dirty: Availability::unavailable(
+                req.target_source_failure.unwrap_or(Reason::NotResolved),
+            ),
+        });
+    let command = if builtin {
+        argv.as_ref()
+            .map(|_| {
+                Availability::present(
+                    CommandIdentity {
+                        algorithm: "public-argv-sha256-v1".into(),
+                        sha256: public_argv(&[req.agent.clone().unwrap_or_default()]),
+                    },
+                    Source::Builtin,
+                )
+            })
+            .unwrap_or_else(unavailable)
+    } else if req.public_argv && valid.is_some() {
+        Availability::present(
+            CommandIdentity {
+                algorithm: "public-argv-sha256-v1".into(),
+                sha256: public_argv(
+                    &req.argv
+                        .iter()
+                        .map(|v| v.to_str().expect("validated public UTF-8").to_string())
+                        .collect::<Vec<_>>(),
+                ),
+            },
+            Source::DeclaredPublicArgv,
+        )
+    } else {
+        Availability::unavailable(Reason::PrivateArgv)
+    };
+    let chaos = snap
+        .map(|s| {
+            let probability = if valid.as_ref().is_some_and(|(t, _)| t.scenario.uses_chaos()) {
+                100
+            } else {
+                0
+            };
+            let refusal_observed = s
+                .deliveries
+                .iter()
+                .any(|d| d.attempts.iter().any(|a| a.code == 451));
+            let retry_accepted = s
+                .deliveries
+                .iter()
+                .any(|d| d.attempts.len() > 1 && d.status == DeliveryStatus::Delivered);
+            Availability::present(
+                ChaosObservation {
+                    probability,
+                    refusal_observed,
+                    cleared: probability == 100 && retry_accepted,
+                    retry_accepted,
+                },
+                Source::ObservedFixture,
+            )
+        })
+        .unwrap_or_else(unavailable);
+    let mut provenance = Provenance {
+        fixture: req.fixture.clone(),
+        matrix: req.matrix.clone(),
+        task: TaskIdentity {
+            catalogue_schema: 2,
+            catalogue_sha256: catalogue_hash(),
+            definition_sha256: valid
+                .as_ref()
+                .and_then(|(t, _)| task_hash(&t.id))
+                .map(|v| Availability::present(v, Source::CatalogueDefinition))
+                .unwrap_or_else(|| Availability::unavailable(Reason::RequestInvalid)),
+            scorer_id: "business-score-v2".into(),
+        },
+        harness: req.harness_identity.clone().unwrap_or_else(|| {
+            let mut h = crate::identity::harness();
+            h.executable_sha256 = evals_executable()
+                .map(|p| crate::identity::measured(&p))
+                .unwrap_or_else(|_| Availability::unavailable(Reason::NotReadable));
+            h
+        }),
+        target: TargetIdentity {
+            executable_sha256: target_identity.executable_sha256,
+            build_commit: target_identity.build_commit,
+            source_dirty: target_identity.source_dirty,
+            settings: if snap.is_some() {
+                Availability::present(
+                    ServerSettings {
+                        max_per_inbox: 100000,
+                        in_memory: true,
+                        loopback: true,
+                        port_zero: true,
+                        inherited_settings_removed: true,
+                    },
+                    Source::ResolvedInput,
+                )
+            } else {
+                Availability::unavailable(Reason::NotResolved)
+            },
+            chaos,
+        },
+        agent: AgentIdentity {
+            kind: if valid.is_none() {
+                AgentKind::Invalid
+            } else if builtin {
+                AgentKind::Builtin
+            } else {
+                AgentKind::External
+            },
+            executable_sha256: executable
+                .map(|p| crate::identity::measured(&p))
+                .unwrap_or_else(|| Availability::unavailable(Reason::NotReadable)),
+            command,
+            model: if valid.is_none() {
+                Availability::unavailable(Reason::RequestInvalid)
+            } else if builtin {
+                Availability::NotApplicable {
+                    reason: Reason::Builtin,
+                }
+            } else {
+                req.agent_model
+                    .clone()
+                    .map(|v| Availability::present(v, Source::OperatorDeclared))
+                    .unwrap_or_else(|| Availability::unavailable(Reason::NotDeclared))
+            },
+            config_id: if builtin {
+                req.agent
+                    .clone()
+                    .map(|v| Availability::present(v, Source::Builtin))
+                    .unwrap_or_else(unavailable)
+            } else {
+                req.agent_config_id
+                    .clone()
+                    .map(|v| Availability::present(v, Source::OperatorDeclared))
+                    .unwrap_or_else(|| Availability::unavailable(Reason::NotDeclared))
+            },
+        },
+        limits: Limits {
+            agent_deadline_ms: valid
+                .as_ref()
+                .map(|(t, _)| Availability::present(t.deadline_ms, Source::ResolvedInput))
+                .unwrap_or_else(|| Availability::unavailable(Reason::RequestInvalid)),
+            startup_ms: 30000,
+            io_ms: 10000,
+            shutdown_ms: 5000,
+            matrix_child_envelope_ms: req
+                .matrix
+                .as_ref()
+                .and_then(|_| valid.as_ref().map(|(t, _)| t.deadline_ms + 300000)),
+        },
+    };
+    if valid.is_none() {
+        provenance.agent.executable_sha256 = Availability::unavailable(Reason::RequestInvalid);
+        provenance.agent.command = Availability::unavailable(Reason::RequestInvalid);
+        provenance.agent.config_id = Availability::unavailable(Reason::RequestInvalid);
+    }
+    if let Some(agent) = &req.assigned_agent {
+        provenance.agent = agent.clone();
+    }
+    provenance
+}
+
+fn recheck_digest(
+    path: &Path,
+    expected: &crate::provenance::Availability<String>,
+) -> Result<(), String> {
+    if let crate::provenance::Availability::Present { value, .. } = expected
+        && crate::identity::file_hash(path)? == *value
+    {
+        return Ok(());
+    }
+    Err("executable_changed_or_unreadable".into())
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -2431,6 +2967,7 @@ mod test_probes {
             argv: vec!["/bin/sh".into(), script.clone()],
             deadline_ms: Some(60_000),
             artifacts_dir: None,
+            ..Default::default()
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()

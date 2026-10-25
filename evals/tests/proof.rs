@@ -423,6 +423,29 @@ fn completed_naive_controls_recover_the_goal_but_lose_the_trial() {
             (row.outcome, row.failure_class)
         );
         assert_eq!(check.status.code(), Some(row.exit_code()));
+        let replay = cli()
+            .args(["check", "--artifacts-dir"])
+            .arg(dir.path().join(&row.trial_id))
+            .env("SWARMAIL_BIN", "/absent-during-offline-replay")
+            .output()
+            .unwrap();
+        assert_eq!(
+            replay.status.code(),
+            Some(row.exit_code()),
+            "{}",
+            stderr(&replay)
+        );
+        let replay: Value = serde_json::from_slice(&replay.stdout).unwrap();
+        assert_eq!(
+            replay["original_result"],
+            serde_json::to_value(&row).unwrap()
+        );
+        assert_eq!(replay["business_replay"]["status"], "scored");
+        assert_eq!(
+            replay["business_replay"]["verdict"],
+            serde_json::to_value(verdict).unwrap()
+        );
+
         // Optional durable receipts for the exact same executable red/green probes.
         if let Some(base) = std::env::var_os("EVAL_TRAP_RECEIPTS") {
             let base = std::path::PathBuf::from(base).join(format!("{task}-{mode}"));

@@ -158,3 +158,21 @@ with a final DATA `250` and read back over MCP as sent.
 This proposed decision records the new eval task/result contracts and the
 operator's scoped proof exception. It changes no accepted frozen guarantee
 and does not self-accept a decision, implement a feature or claim a gate ran.
+
+## Historical operator amendment — result compatibility (2026-10-24; superseded)
+
+The operator's issue #200 recovery direction for run
+`epic-192-issue-200-recovery-from-89b3d04a` permitted result schema 2 with
+a schema-1 reader. This scoped direction did not accept proposed
+[0063](0063-eval-provenance.md).
+
+## Current integration — accepted 0071 governs (2026-10-25)
+
+Accepted [0071](0071-eval-trap-scoring.md) supersedes that historical reader
+and the original §§1, 2, 9 business versions/precedence: catalogue, snapshot
+and result are version 2, with named traps preceding recovered goals.
+Current readers refuse v1/mixed records and pre-provenance v2 results;
+historical evidence needs its matching historical binary. The #200 port
+adds required typed provenance and retained replay without changing the
+accepted v2 scorer or accepting any proposal. Original text/status above
+remains historical evidence. Proposed 0073/0075 remain proposed.

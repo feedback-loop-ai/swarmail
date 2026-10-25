@@ -67,6 +67,7 @@ them. What may land while a decision is still proposed is stated in
 | [0058](0058-codex-review-routing.md) | Exact operator-directed Codex review routing and fast-feature dispatch fallback (amends 0057) | accepted (operator, 2026-10-24) | (operator directive, 2026-10-24) |
 | [0061](0061-compat-webhook-proof.md) | Compat refusal recognition and extraction repair boundaries | proposed — awaiting the operator | (#170/#190, lane D) |
 | [0062](0062-rpc-edge-contracts.md) | RPC edge contracts and the supplied ID ruling | proposed — awaiting the operator | (Epic #192, issue #180) |
+| [0063](0063-eval-provenance.md) | Reproduce public fixture choices and bind eval evidence | proposed — awaiting the operator | (Epic #192, issue #200) |
 | [0064](0064-coverage-reservation-tooling.md) | Direct exclusive coverage reservation with checked tooling | proposed — awaiting the operator | (Epic #192 issue #174) |
 | [0065](0065-decoded-inbox-metrics.md) | Decoded inbox identity for HTTP request metrics (amends 0043 §6 narrowly) | accepted (operator, 2026-10-24) | (Epic #192, issue #202) |
 | [0067](0067-webhook-ca-safety.md) | Public webhook certificates and off-worker CA construction | accepted (operator, 2026-10-24) | (Epic #192, issue #195; supplied operator ruling and patch 10) |

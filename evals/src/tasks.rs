@@ -615,7 +615,8 @@ fn validate_facts(snap: &Snapshot, who: &IdentityState) -> Result<(), String> {
 /// 1). `Err` is unscorable state — a harness error, never a verdict. A
 /// `held` delivery, or one delivered after a transient refusal, is not an
 /// infrastructure failure.
-pub fn validate_snapshot(task: &Task, snap: &Snapshot) -> Result<(), String> {
+/// Structural and business consistency, independent of delivery eligibility.
+pub fn validate_snapshot_structure(task: &Task, snap: &Snapshot) -> Result<(), String> {
     if snap.schema_version != SNAPSHOT_SCHEMA {
         return Err(format!(
             "snapshot schema {} is not {SNAPSHOT_SCHEMA}",
@@ -655,6 +656,11 @@ pub fn validate_snapshot(task: &Task, snap: &Snapshot) -> Result<(), String> {
     if !snap.deliveries.windows(2).all(|w| w[0].seq < w[1].seq) {
         return Err("delivery sequence numbers are not increasing".to_string());
     }
+    Ok(())
+}
+
+pub fn validate_snapshot(task: &Task, snap: &Snapshot) -> Result<(), String> {
+    validate_snapshot_structure(task, snap)?;
     if let Some(d) = snap
         .deliveries
         .iter()

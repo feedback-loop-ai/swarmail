@@ -16,11 +16,17 @@ use std::collections::{BTreeMap, HashSet};
 pub const Z95: f64 = 1.959963984540054;
 
 /// One matrix agent: a label and its literal argv (empty for built-ins).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSpec {
     pub label: String,
     pub argv: Vec<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub config_id: Option<String>,
+    #[serde(default)]
+    pub public_argv: bool,
 }
 
 /// Parse and validate a matrix agent file.
@@ -39,6 +45,19 @@ pub fn parse_agents(text: &str) -> Result<Vec<AgentSpec>, String> {
             return Err(format!("duplicate agent label {}", a.label));
         }
         let builtin = BUILTINS.contains(&a.label.as_str());
+        if a.label.len() > 1024
+            || a.model
+                .as_ref()
+                .is_some_and(|s| s.is_empty() || s.len() > 1024)
+            || a.config_id
+                .as_ref()
+                .is_some_and(|s| s.is_empty() || s.len() > 1024)
+        {
+            return Err("public agent declaration exceeds bounds".into());
+        }
+        if builtin && (a.model.is_some() || a.config_id.is_some() || a.public_argv) {
+            return Err("builtin declarations cannot be overridden".into());
+        }
         if builtin && !a.argv.is_empty() {
             return Err(format!("built-in agent {} takes an empty argv", a.label));
         }
@@ -79,8 +98,8 @@ pub fn parse_rows(text: &str) -> Result<Vec<TrialResult>, String> {
         .enumerate()
         .filter(|(_, l)| !l.trim().is_empty())
         .map(|(i, l)| {
-            let row: TrialResult =
-                serde_json::from_str(l).map_err(|e| format!("line {}: {e}", i + 1))?;
+            let row =
+                crate::results::read(l.as_bytes()).map_err(|e| format!("line {}: {e}", i + 1))?;
             row.validate().map_err(|e| format!("line {}: {e}", i + 1))?;
             Ok(row)
         })

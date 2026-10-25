@@ -635,6 +635,54 @@ async fn helper(mode: &str) -> i32 {
             app.get(&link).await.unwrap();
             0
         }
+        "private_claims"
+        | "private_claims_then_oracle"
+        | "private_claims_budget"
+        | "private_claims_retention_failure" => {
+            let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+            let mails = mcp
+                .wait_emails(&env.inbox, Some("Your verification code"), 1)
+                .await
+                .unwrap();
+            let otp = mails[0]["codes"][0].as_str().unwrap();
+            let private = "private-external-claim-canary";
+            for claim in [otp, private] {
+                let response = reqwest::Client::new()
+                    .post(format!("{}/otp/verify", env.app_url))
+                    .header("x-eval-identity", claim)
+                    .header("content-type", "application/json")
+                    .body(json!({"code":otp}).to_string())
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), 400);
+                let body = response.text().await.unwrap();
+                assert!(
+                    !body.contains(otp) && !body.contains(private),
+                    "response excludes private claims"
+                );
+            }
+            // A private test control outside the published evidence tree; never
+            // echo its values in assertions, stdout or the implementation receipt.
+            let dir = marker().unwrap();
+            std::fs::write(dir.join(&env.identity), json!([otp, private]).to_string()).unwrap();
+            if mode == "private_claims_then_oracle" {
+                oracle::run_oracle(&env).await.unwrap();
+            }
+            if mode == "private_claims_budget" {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                }
+            }
+            if mode == "private_claims_retention_failure" {
+                std::fs::write(
+                    std::env::var_os("EVAL_TEST_RETENTION_PATH").unwrap(),
+                    b"occupied",
+                )
+                .unwrap();
+            }
+            0
+        }
         "tool_misuse" => {
             app.post(
                 "/reset/complete",
