@@ -112,6 +112,27 @@ command passes. No secret values appear in this receipt, and no mutation is
 committed. This detects public-seed-derived constructor entropy; it does not
 certify OS entropy quality or independent variation of every individual field.
 
-The post-commit pinned root gate run remains outstanding at this checkpoint.
-Its run-local verdict belongs in `.forge/epic192/issue234/implement-gates.json`;
-that result must be `pass` before T7 or this implementation is complete.
+The post-commit pinned root runner passed against implementation commit
+`aa13f35`, using the unchanged candidate bundle and digest-checked engine:
+
+```bash
+CARGO_NET_OFFLINE=true bash bundles/self/scripts/verify-seat.sh \
+  .forge/epic192/issue234/implement-verify-prompt.md "$PWD/.forge/bin/brokkr"
+```
+
+The prompt names the run-local verdict
+`.forge/epic192/issue234/implement-gates.json`, whose result is `pass`.
+The workspace transport stopped waiting after 300 seconds; the runner continued,
+and a subsequent workspace call read the completed verdict. No gate was skipped
+or restarted. All house commands passed, together with shim integrity,
+design-check selftest, delivery tamper-boundary proof and fail-closed native-tls
+absence. The exact coverage summary at
+`target/coverage/run.ndkpPb/coverage-summary.json` reports **14,229/14,229 lines,
+808/808 branches and 1,556/1,556 functions**; its required selftest also passed.
+This final receipt changes only this plan and the task checkboxes, leaving the
+verified implementation and every gate input under src/, tests/, manifests,
+locks and bundles unchanged.
+
+CI retains macOS eval evidence through #201 and all charter-owned CI proofs;
+the operator retains live settings and branch sealing. No remote evidence,
+namespace isolation, decision acceptance, push or publication is claimed.
