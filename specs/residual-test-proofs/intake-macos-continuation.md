@@ -149,3 +149,25 @@ No missing workspace input blocks framing. This phase changes no Rust or
 owning design implementation. Any gate executions below exercise the existing
 Linux fixture with the known macOS spec defect, and cannot certify the future
 repair or claim a macOS pass. Final implementation must rerun all proofs.
+
+### Intake gate execution — 2026-10-25
+
+At committed framing `2fb6c64524df7e9f692910cb005341ba06a8e3c4`
+(tree `a34f3708d10397082c509e1cab9bd8118c978f9d`), Linux x86_64
+receipts record exit zero for every command above: focused test (exactly
+one pass), full binary suite (40 passes, two existing ignores), fmt, locked
+clippy/workspace tests, digest-matched candidate-local engine compile
+(76 valuations, zero unruled and no sweep warning), exact coverage,
+coverage selftest, publish/seal proofs, licenses, shim integrity,
+design selftest, delivery tamper proof and strict native-tls absence.
+Coverage finished with exact 100/100/100 and exit zero; its evidence is
+`target/coverage/run.SqS7nX`. No tests were newly ignored.
+
+Raw per-command logs, commands, timestamps, candidate identity and zero exits
+are saved in `.forge/epic192/issue191/intake-continuation-gates/receipt.json`
+and adjacent logs. The workspace RPC timed out after 300 seconds, but the
+completed persisted receipts and final `done` marker establish all exits;
+the RPC timeout itself is not counted as a pass. The tracked worktree was
+clean after gate completion. This receipt-only addition changes no tested
+code. These are intake results for the pre-repair Linux fixture, not final
+implementation verification or macOS evidence.
