@@ -9,7 +9,10 @@ use crate::smtp;
 use crate::store::{Filter, Store, WaitOutcome};
 use crate::threads;
 use crate::ui;
-use crate::webhook::{WebhookTarget, WebhookTargets, Webhooks, ca_cache_stats};
+use crate::webhook::{
+    TargetPreparationError, WebhookTarget, WebhookTargets, Webhooks, ca_cache_stats,
+    prepare_targets, redacted_targets,
+};
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -749,6 +752,8 @@ pub async fn serve(
 }
 
 pub fn router(state: AppState) -> Router {
+    #[cfg(test)]
+    use webhook_handler_tests::cancellable_set_webhooks as set_webhooks;
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
@@ -1697,61 +1702,46 @@ fn json_body<T>(body: Result<Json<T>, JsonRejection>, what: &str) -> Result<T, B
 
 // ---------- webhooks ----------
 
-/// GET returns the configured targets **redacted** (decision 0029 §5, as
-/// amended by 0041 §3): the secret is withheld and the URL loses its
-/// userinfo — an echoed credential is the one irreversible leak in the
-/// batch. A certificate is public material and `ca_pem` stays, it is the
-/// diagnostic. The round-trip loss is deliberate: PUT is the only writer,
-/// and the operator retains their own payload.
+/// GET snapshots configuration synchronously, releases its guard, then
+/// prepares the public certificate projection on a blocking worker. The
+/// diagnostic response withholds secrets/userinfo and emits only canonical,
+/// whole-bundle-loadable public certificates (accepted 0067); operators
+/// retain their original input for round trips.
 async fn get_webhooks(
     State(state): State<AppState>,
     raw: RawQuery,
 ) -> ApiResult<Json<Vec<WebhookTarget>>> {
     let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "GET /api/v1/webhooks")?;
-    Ok(Json(
-        state
-            .webhooks
-            .current()
-            .iter()
-            .map(WebhookTarget::redacted)
-            .collect(),
-    ))
+    let snapshot = state.webhooks.current();
+    let shown = redacted_targets(snapshot).await.map_err(|_| {
+        ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "webhook response preparation failed".to_string(),
+        )
+    })?;
+    Ok(Json(shown))
 }
 
-/// PUT validates every supplied value before any effect (decision 0029 §5):
-/// the URL must parse with an `http`/`https` scheme and a host, the
-/// `ca_pem` must load through the delivery TLS stack itself, and the
-/// `secret` must be an HTTP header value of at most 4096 octets with no
-/// leading or trailing space or tab (decision 0041 §1). A target that
-/// cannot be delivered is a 400 naming the defect — never a
-/// misconfiguration discovered at delivery time — and nothing is applied.
+/// PUT keeps the closed JSON/extractor contract, then validates the whole
+/// owned list and prepares its safe echo off-worker. Only after preparation
+/// succeeds does this async owner perform one synchronous swap. A
+/// cancellation before that point cannot install a detached result.
 async fn set_webhooks(
     State(state): State<AppState>,
     body: Result<Json<WebhookTargets>, JsonRejection>,
 ) -> Result<Json<Vec<WebhookTarget>>, BodyError> {
-    // The closed shape first (decision 0048 §2): an unknown key, a `null`
-    // or a wrong kind refuses 400 by path and kind — never by value, so no
-    // credential is echoed — before any target is looked at.
     let WebhookTargets(targets) = json_body(body, "webhooks")?;
-    // Every target validates — its CA roots built into a throwaway client
-    // (0048 §1) — before the one swap below: a refused list replaces
-    // nothing, however many valid targets precede the bad one.
-    for (i, target) in targets.iter().enumerate() {
-        target
-            .validate()
-            .map_err(|e| bad_request(format!("webhook target {i}: {e}")))?;
-    }
-    state.webhooks.set(targets);
-    // The echoed configuration is redacted the same way as GET: the caller
-    // wrote the credentials, but a response body is still a log.
-    Ok(Json(
-        state
-            .webhooks
-            .current()
-            .iter()
-            .map(WebhookTarget::redacted)
-            .collect(),
-    ))
+    let (installed, echo) = prepare_targets(targets)
+        .await
+        .map_err(|error| match error {
+            TargetPreparationError::Invalid(message) => bad_request(message),
+            TargetPreparationError::Worker => ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "webhook configuration preparation failed".to_string(),
+            ),
+        })?;
+    state.webhooks.set(installed);
+    Ok(Json(echo))
 }
 
 async fn clear_webhooks(
@@ -3097,3 +3087,8 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod webhook_handler_tests;
+#[cfg(test)]
+pub(crate) use webhook_handler_tests::cancel_put_for;

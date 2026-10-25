@@ -167,7 +167,7 @@ same sentence on both the REST and MCP planes (decision 0025/0029).
 `PUT /api/v1/webhooks` with `[{"url": "http://127.0.0.1:9999/hooks", "secret":
 "s3cret"}]` (omit `inbox` for every inbox) — every accepted email is POSTed as
 `{"event":"received","email":{...}}` with the secret in `X-Swarmail-Secret`;
-queued, retried 4x (100ms → 1.6s), never blocking SMTP. Delivered via
+queued, retried 4x (100ms → 1.6s), never awaited by SMTP acceptance. Delivered via
 reqwest + rustls: `http://` targets stay plain, `https://` targets are TLS
 with certificate verification on — for a self-signed test server, pass its
 CA in the target's optional `ca_pem` (PEM of a root to trust on top of the
@@ -178,8 +178,17 @@ must parse with an http/https scheme and a host; every certificate in
 later roots included — which proves loadability, not that a handshake will
 succeed; the `secret` must be a single-line header value ≤4096 octets) and
 a refused list leaves the previous one in place. `GET /api/v1/webhooks`
-redacts the secret and shows absent values as `null` — a diagnostic, not a
-body to PUT back. Delivery is bounded
+redacts the secret, strips URL userinfo and returns `ca_pem` as canonical
+validated certificate blocks only (unrelated PEM sections and prose are
+omitted; certificate DER, order and duplicates are retained). A supplied
+bundle that cannot be fully projected is an empty string; absent values stay
+`null`. Mixed PEM admission remains unchanged. The echo is diagnostic, not a
+body to PUT back. CA client builds happen on awaited blocking jobs outside the
+cache mutex. `builds_total` counts successful delivery constructions,
+including duplicate race losers and completed work after waiter cancellation;
+API validation/projection and hits do not count. Queue/build time is outside
+the 22.1-second attempt/backoff sum, and shared blocking-pool exhaustion can
+delay SMTP parsing/commits (the bounded-executor follow-up is #220). Delivery is bounded
 per target — 32 in flight per normalized URL (`WEBHOOK_DELIVERY_CAP`), so
 a stalled sink cannot starve a healthy one; the bound is per URL, so many
 distinct targets multiply the ceiling (a target-count cap is not implied),

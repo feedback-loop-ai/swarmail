@@ -769,7 +769,7 @@ pub async fn http_send_text_with_headers(
 /// route answering an accidental wrong path — into an empty object, and an
 /// assertion against the empty object passes vacuously (issue #50). A
 /// caller that expects JSON gets JSON or a red test that names the method,
-/// the path, the status and the body; a caller that expects anything else
+/// the path and the status, without response or parser text; a caller that expects anything else
 /// has `http_send_text`. A genuinely empty body on a no-content status
 /// (204/304) stays absence — garbage and absence are different failures
 /// and only the first is dishonest (decision in the framing, R7).
@@ -785,8 +785,8 @@ pub async fn http_json(
         Err(_) if body.is_empty() && (status == 204 || status == 304) => {
             (status, serde_json::Value::Null)
         }
-        Err(err) => {
-            panic!("http_json {method} {path}: status {status} body is not JSON ({err}): {body:?}")
+        Err(_) => {
+            panic!("http_json {method} {path}: status {status} body is not JSON")
         }
     }
 }

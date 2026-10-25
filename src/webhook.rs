@@ -1,4 +1,4 @@
-//! Outbound webhooks: queued, retried, never blocking the SMTP path.
+//! Outbound webhooks: queued, retried, never awaited by SMTP acceptance.
 //!
 //! Delivery speaks real HTTP through reqwest with rustls: `http://` targets
 //! stay plain TCP, `https://` targets are TLS with certificate verification
@@ -52,9 +52,11 @@ pub const CA_CLIENT_CAP: usize = 32;
 /// `try`-shaped: a fan-out that cannot fit is dropped and counted in the
 /// `dropped` ledger row, never waited for — the accept path is downstream of
 /// the commit and must never be delayed by the delivery side. A stalled
-/// target holds its slot for at most the retry budget (four 5 s attempt
-/// timeouts plus the 100/400/1600 ms backoff — 22.1 s expected worst case)
-/// before the budget is named `exhausted`. Surfaced on `/metrics`.
+/// target holds its slot for four 5 s network-attempt timeouts plus the
+/// 100/400/1600 ms backoff — 22.1 s total after client construction. Cold
+/// build/queue time is outside that sum, and shared blocking-pool exhaustion
+/// can delay SMTP parsing and commits (availability residual tracked by #220).
+/// Surfaced on `/metrics`.
 pub const WEBHOOK_DELIVERY_CAP: usize = 32;
 
 /// The bounded per-PEM client cache: clients keyed by their root PEM, plus
@@ -89,8 +91,10 @@ static CA_CACHE_EVICTIONS: AtomicU64 = AtomicU64::new(0);
 pub struct CaCacheStats {
     /// Distinct root PEMs currently cached — never above `CA_CLIENT_CAP`.
     pub entries: usize,
-    /// Client builds since process start: cold roots and rebuilds after an
-    /// eviction. A cache hit never increments this.
+    /// Successful delivery-side client constructions since process start,
+    /// including duplicate builds whose result loses a publication race or
+    /// whose awaiting delivery is cancelled. API validation/projection,
+    /// failures and cache hits do not increment this.
     pub builds: u64,
     /// Least-recently-used evictions since process start.
     pub evictions: u64,
@@ -122,13 +126,17 @@ fn touch_lru(lru: &mut VecDeque<String>, pem: &str) {
 
 /// Evict the least-recently-used build. Called only to make room past
 /// [`CA_CLIENT_CAP`], so the deque holds at least one cached key.
-fn evict_lru(cache: &mut CaCache) {
+fn evict_lru(cache: &mut CaCache) -> reqwest::Client {
     let oldest = cache
         .lru
         .pop_front()
         .expect("evict runs over the cap, so a cached key exists");
-    cache.clients.remove(&oldest);
+    let removed = cache
+        .clients
+        .remove(&oldest)
+        .expect("the LRU key is present in the client map");
     CA_CACHE_EVICTIONS.fetch_add(1, Ordering::Relaxed);
+    removed
 }
 
 /// A webhook target as PUT supplies it and GET echoes it. The request shape
@@ -324,18 +332,99 @@ impl WebhookTarget {
         Ok(())
     }
 
-    /// The outward copy of a target (decision 0041 §3): what GET and the PUT
-    /// echo return. The secret is withheld, the URL loses its userinfo, and
-    /// everything else — `inbox`, the public `ca_pem` — is kept. The
-    /// installed target is untouched: delivery still sends its credentials.
+    /// The outward copy of a target (decisions 0041 §3 and accepted 0067):
+    /// the secret is withheld, the URL loses userinfo and CA material is
+    /// reconstructed from complete, delivery-stack-loadable certificates.
+    /// The installed target remains untouched for delivery. This synchronous
+    /// form stays available to embedders; HTTP handlers use the same
+    /// projection on a blocking worker.
     pub fn redacted(&self) -> WebhookTarget {
         WebhookTarget {
             url: display_url(&self.url),
             inbox: self.inbox.clone(),
             secret: None,
-            ca_pem: self.ca_pem.clone(),
+            ca_pem: self.ca_pem.as_deref().map(public_ca_pem),
         }
     }
+}
+
+/// Fail-closed public CA projection. Keep only certificate DER yielded by
+/// the same complete PEM parser as admission, encode it canonically and
+/// validate the entire reconstructed bundle through the delivery builder.
+/// Any parse/load failure discards all roots rather than returning partial
+/// material or the original input. This protects direct `Webhooks::set`
+/// callers as well as the HTTP boundary; it does not alter installed bytes.
+fn public_ca_pem(pem: &str) -> String {
+    use base64::Engine as _;
+
+    let mut certs = Vec::new();
+    for cert in rustls_pemfile::certs(&mut pem.as_bytes()) {
+        match cert {
+            Ok(cert) => certs.push(cert),
+            Err(_) => return String::new(),
+        }
+    }
+    if certs.is_empty() {
+        return String::new();
+    }
+
+    let mut projected = String::new();
+    for cert in certs {
+        projected.push_str("-----BEGIN CERTIFICATE-----\n");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
+        for line in encoded.as_bytes().chunks(64) {
+            // STANDARD emits ASCII, so these chunks are always valid UTF-8.
+            projected.push_str(std::str::from_utf8(line).expect("base64 is ASCII"));
+            projected.push('\n');
+        }
+        projected.push_str("-----END CERTIFICATE-----\n");
+    }
+    match build_ca_client(&projected) {
+        Ok(_) => projected,
+        Err(_) => String::new(),
+    }
+}
+
+/// API-only preparation failure: validation is a client error; a worker
+/// join failure is an internal server error with no panic/task details.
+pub(crate) enum TargetPreparationError {
+    Invalid(String),
+    Worker,
+}
+
+/// Project a snapshot off-worker after its configuration lock has been
+/// released. The synchronous projection remains available via redacted().
+pub(crate) async fn redacted_targets(
+    targets: Vec<WebhookTarget>,
+) -> Result<Vec<WebhookTarget>, TargetPreparationError> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        panic_api_preparation_for_test(&targets);
+        targets.iter().map(WebhookTarget::redacted).collect()
+    })
+    .await
+    .map_err(|_| TargetPreparationError::Worker)
+}
+
+/// Validate an owned PUT list and prepare the exact safe response before
+/// the async owner installs it. A cancelled waiter drops this result; the
+/// blocking job has no reference to Webhooks and therefore cannot install.
+pub(crate) async fn prepare_targets(
+    targets: Vec<WebhookTarget>,
+) -> Result<(Vec<WebhookTarget>, Vec<WebhookTarget>), TargetPreparationError> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        panic_api_preparation_for_test(&targets);
+        for (index, target) in targets.iter().enumerate() {
+            target.validate().map_err(|error| {
+                TargetPreparationError::Invalid(format!("webhook target {index}: {error}"))
+            })?;
+        }
+        let echo = targets.iter().map(WebhookTarget::redacted).collect();
+        Ok((targets, echo))
+    })
+    .await
+    .map_err(|_| TargetPreparationError::Worker)?
 }
 
 /// The header the secret rides in.
@@ -425,6 +514,8 @@ pub struct Webhooks {
     lagged: AtomicU64,
     exhausted: AtomicU64,
     aborted: AtomicU64,
+    #[cfg(test)]
+    installations: AtomicU64,
     /// Test-only observation (decision 0020 rule 4): every payload the
     /// dispatcher built, kept alive so a test can compare a request body's
     /// backing allocation against it without address reuse faking identity.
@@ -434,6 +525,8 @@ pub struct Webhooks {
 
 impl Webhooks {
     pub fn set(&self, targets: Vec<WebhookTarget>) {
+        #[cfg(test)]
+        self.installations.fetch_add(1, Ordering::SeqCst);
         *self.targets.write().unwrap() = targets;
     }
 
@@ -901,6 +994,137 @@ pub(crate) fn with_causes(error: &dyn std::error::Error) -> String {
     text
 }
 
+#[cfg(test)]
+static CACHE_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+// One-shot injection belongs to one generated raw PEM, so unrelated API
+// requests cannot consume it. The guard clears only its own still-armed key.
+#[cfg(test)]
+static API_PREPARATION_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(test)]
+struct ApiPreparationPanic {
+    pem: String,
+}
+
+#[cfg(test)]
+impl Drop for ApiPreparationPanic {
+    fn drop(&mut self) {
+        let mut armed = API_PREPARATION_PANIC.lock().unwrap();
+        if armed.as_deref() == Some(self.pem.as_str()) {
+            *armed = None;
+        }
+    }
+}
+
+#[cfg(test)]
+fn panic_next_api_preparation_for_test(pem: &str) -> ApiPreparationPanic {
+    let mut armed = API_PREPARATION_PANIC.lock().unwrap();
+    assert!(armed.is_none(), "one API preparation panic at a time");
+    *armed = Some(pem.to_owned());
+    ApiPreparationPanic {
+        pem: pem.to_owned(),
+    }
+}
+
+#[cfg(test)]
+fn panic_api_preparation_for_test(targets: &[WebhookTarget]) {
+    let should_panic = {
+        let mut armed = API_PREPARATION_PANIC.lock().unwrap();
+        if armed.as_ref().is_some_and(|pem| {
+            targets
+                .iter()
+                .any(|target| target.ca_pem.as_ref() == Some(pem))
+        }) {
+            *armed = None;
+            true
+        } else {
+            false
+        }
+    };
+    if should_panic {
+        panic!("injected webhook API preparation panic");
+    }
+}
+
+#[cfg(test)]
+struct CaBuildPause {
+    pem: String,
+    entered: tokio::sync::oneshot::Sender<std::thread::ThreadId>,
+    release: std::sync::mpsc::Receiver<()>,
+    finished: tokio::sync::oneshot::Sender<()>,
+}
+
+#[cfg(test)]
+static CA_BUILD_PAUSE: Mutex<VecDeque<CaBuildPause>> = Mutex::new(VecDeque::new());
+
+#[cfg(test)]
+static CA_BUILD_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(test)]
+fn panic_ca_build_for_test(pem: &str) {
+    let should_panic = {
+        let mut panic = CA_BUILD_PANIC.lock().unwrap();
+        if panic.as_deref() == Some(pem) {
+            *panic = None;
+            true
+        } else {
+            false
+        }
+    };
+    if should_panic {
+        panic!("injected webhook CA construction panic");
+    }
+}
+
+#[cfg(test)]
+fn install_ca_build_panic(pem: &str) {
+    let mut panic = CA_BUILD_PANIC.lock().unwrap();
+    assert!(panic.is_none(), "only one CA build panic may be installed");
+    *panic = Some(pem.to_string());
+}
+
+#[cfg(test)]
+fn pause_ca_build_for_test(pem: &str) -> Option<tokio::sync::oneshot::Sender<()>> {
+    let pause = {
+        let mut hook = CA_BUILD_PAUSE.lock().unwrap();
+        hook.iter()
+            .position(|pause| pause.pem == pem)
+            .and_then(|position| hook.remove(position))
+    };
+    if let Some(pause) = pause {
+        let _ = pause.entered.send(std::thread::current().id());
+        pause
+            .release
+            .recv()
+            .expect("the owner test releases the held CA construction");
+        Some(pause.finished)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+fn install_ca_build_pause(
+    pem: &str,
+) -> (
+    tokio::sync::oneshot::Receiver<std::thread::ThreadId>,
+    std::sync::mpsc::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+    let mut hook = CA_BUILD_PAUSE.lock().unwrap();
+    hook.push_back(CaBuildPause {
+        pem: pem.to_string(),
+        entered: entered_tx,
+        release: release_rx,
+        finished: finished_tx,
+    });
+    (entered_rx, release_tx, finished_rx)
+}
+
 /// One owner for the PEM rule (decisions 0029 §5, 0048 §1): the PUT
 /// validator and the delivery cache miss both build through here, so a PEM
 /// the validator accepted is exactly a PEM delivery can build — the two
@@ -913,6 +1137,17 @@ pub(crate) fn with_causes(error: &dyn std::error::Error) -> String {
 /// PEM sections are skipped by the parser, as before. Uncached and offline:
 /// the caller owns the cache.
 pub(crate) fn build_ca_client(pem: &str) -> Result<reqwest::Client, String> {
+    #[cfg(test)]
+    let finished = pause_ca_build_for_test(pem);
+    let result = build_ca_client_inner(pem);
+    #[cfg(test)]
+    if let Some(finished) = finished {
+        let _ = finished.send(());
+    }
+    result
+}
+
+fn build_ca_client_inner(pem: &str) -> Result<reqwest::Client, String> {
     let mut builder = client_builder();
     let mut roots = 0usize;
     for der in rustls_pemfile::certs(&mut pem.as_bytes()) {
@@ -957,23 +1192,54 @@ pub(crate) fn parse_target_url(url: &str) -> Result<reqwest::Url, String> {
     Ok(parsed)
 }
 
-fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
+async fn build_delivery_client(pem: String) -> Result<reqwest::Client, String> {
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        panic_ca_build_for_test(&pem);
+        let client = build_ca_client(&pem)?;
+        // Count completed delivery-side construction, even when this waiter
+        // is cancelled or loses the later publication race.
+        CA_CACHE_BUILDS.fetch_add(1, Ordering::Relaxed);
+        Ok(client)
+    })
+    .await
+    .map_err(|_| "webhook CA client construction task failed".to_string())?
+}
+
+async fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
     let Some(pem) = ca_pem else {
         return Ok(shared_client());
     };
-    let mut cache = ca_clients().lock().unwrap();
-    if let Some(client) = cache.clients.get(pem).cloned() {
-        touch_lru(&mut cache.lru, pem);
-        return Ok(client);
+    {
+        let mut cache = ca_clients().lock().unwrap();
+        if let Some(client) = cache.clients.get(pem).cloned() {
+            touch_lru(&mut cache.lru, pem);
+            return Ok(client);
+        }
     }
-    let client = build_ca_client(pem)?;
-    if cache.clients.len() >= CA_CLIENT_CAP {
-        evict_lru(&mut cache); // make room: the least-recently-used build goes
-    }
-    cache.clients.insert(pem.to_string(), client.clone());
-    cache.lru.push_back(pem.to_string());
-    CA_CACHE_BUILDS.fetch_add(1, Ordering::Relaxed);
-    Ok(client)
+
+    // The miss owns its key and builds without holding the process-global
+    // mutex. Concurrent misses may duplicate work; publication rechecks.
+    let key = pem.to_string();
+    let client = build_delivery_client(key.clone()).await?;
+    let mut displaced = None;
+    let published = {
+        let mut cache = ca_clients().lock().unwrap();
+        if let Some(winner) = cache.clients.get(&key).cloned() {
+            touch_lru(&mut cache.lru, &key);
+            winner
+        } else {
+            if cache.clients.len() >= CA_CLIENT_CAP {
+                // Keep the removed Client alive until after the mutex drops.
+                displaced = Some(evict_lru(&mut cache));
+            }
+            cache.clients.insert(key.clone(), client.clone());
+            cache.lru.push_back(key);
+            client
+        }
+    };
+    drop(displaced);
+    Ok(published)
 }
 
 /// One attempt's request, built and returned rather than sent, so the body
@@ -1022,7 +1288,7 @@ async fn post_json(
     ca_pem: Option<&str>,
 ) -> Result<u16, String> {
     let url = parse_target_url(url)?;
-    let client = client_for(ca_pem)?;
+    let client = client_for(ca_pem).await?;
     let request = build_request(&client, url, body, secret)?;
     #[cfg(test)]
     POSTED.with(|posted| {
@@ -1712,20 +1978,15 @@ mod delivery_tests {
         params.self_signed(&key).unwrap().pem()
     }
 
-    /// The per-PEM cache is process-global, so cache-touching tests
-    /// serialize on this: one test's eviction flood must not pull another
-    /// test's PEM out from under a precise counter assertion.
-    static CACHE_TESTS: Mutex<()> = Mutex::new(());
-
     /// The shared client for `ca_pem: None` stays outside the cache; a cold
     /// PEM builds once; the same PEM again is a hit that rebuilds nothing.
-    #[test]
-    fn clients_are_cached_per_ca() {
-        let _g = CACHE_TESTS.lock().unwrap();
+    #[tokio::test]
+    async fn clients_are_cached_per_ca() {
+        let _g = CACHE_TESTS.lock().await;
         let pem = ca_pem();
         let before = ca_cache_stats();
 
-        client_for(Some(&pem)).unwrap();
+        client_for(Some(&pem)).await.unwrap();
         let built = ca_cache_stats();
         assert_eq!(built.builds, before.builds + 1, "a cold PEM builds once");
         assert_eq!(
@@ -1734,7 +1995,7 @@ mod delivery_tests {
             "the PEM is cached, within the bound (an insert at the cap evicts, not grows)"
         );
 
-        client_for(Some(&pem)).unwrap();
+        client_for(Some(&pem)).await.unwrap();
         let hit = ca_cache_stats();
         assert_eq!(
             hit.builds, built.builds,
@@ -1745,7 +2006,7 @@ mod delivery_tests {
             "a hit does not change the cache size"
         );
 
-        client_for(None).unwrap();
+        client_for(None).await.unwrap();
         let shared = ca_cache_stats();
         assert_eq!(
             shared.builds, hit.builds,
@@ -1761,14 +2022,14 @@ mod delivery_tests {
     /// each cold root beyond the cap evicts the least-recently-used build.
     /// Observable through the production stats hook (`/metrics` surfaces
     /// the same counters) — no test-only introspection.
-    #[test]
-    fn cache_stays_within_the_cap_and_counts_evictions() {
-        let _g = CACHE_TESTS.lock().unwrap();
+    #[tokio::test]
+    async fn cache_stays_within_the_cap_and_counts_evictions() {
+        let _g = CACHE_TESTS.lock().await;
         let before = ca_cache_stats();
 
         // More distinct cold roots than the cache can hold, all built once.
         for _ in 0..CA_CLIENT_CAP + 8 {
-            client_for(Some(&ca_pem())).unwrap();
+            client_for(Some(&ca_pem())).await.unwrap();
         }
 
         let after = ca_cache_stats();
@@ -1799,36 +2060,36 @@ mod delivery_tests {
     /// being used survives a wave of cold roots that retires its untouched
     /// older neighbor — and the retired neighbor's next delivery still
     /// works, by rebuilding.
-    #[test]
-    fn eviction_is_least_recently_used_and_the_evicted_pem_rebuilds() {
-        let _g = CACHE_TESTS.lock().unwrap();
+    #[tokio::test]
+    async fn eviction_is_least_recently_used_and_the_evicted_pem_rebuilds() {
+        let _g = CACHE_TESTS.lock().await;
 
         // Fill the cache exactly, on top of whatever earlier tests left:
         // cap fresh roots always end at the cap, whoever came before.
         for _ in 0..CA_CLIENT_CAP {
-            client_for(Some(&ca_pem())).unwrap();
+            client_for(Some(&ca_pem())).await.unwrap();
         }
 
         let touched = ca_pem();
         let older = ca_pem();
-        client_for(Some(&touched)).unwrap();
-        client_for(Some(&older)).unwrap();
-        client_for(Some(&touched)).unwrap(); // touched is now MRU; older is not
+        client_for(Some(&touched)).await.unwrap();
+        client_for(Some(&older)).await.unwrap();
+        client_for(Some(&touched)).await.unwrap(); // touched is now MRU; older is not
 
         // cap-1 further cold builds: each retires the current LRU, working
         // forward to `older`. `touched`, being more recent, is still cached.
         for _ in 0..CA_CLIENT_CAP - 1 {
-            client_for(Some(&ca_pem())).unwrap();
+            client_for(Some(&ca_pem())).await.unwrap();
         }
 
         let builds = ca_cache_stats().builds;
-        client_for(Some(&touched)).unwrap();
+        client_for(Some(&touched)).await.unwrap();
         assert_eq!(
             ca_cache_stats().builds,
             builds,
             "the recently-used root must survive the wave: a hit, no rebuild"
         );
-        client_for(Some(&older)).unwrap();
+        client_for(Some(&older)).await.unwrap();
         assert_eq!(
             ca_cache_stats().builds,
             builds + 1,
@@ -2054,7 +2315,9 @@ mod delivery_tests {
     /// A ca_pem that is not a PEM certificate fails before connecting.
     #[tokio::test]
     async fn bad_ca_pem_is_an_error() {
-        let err = client_for(Some("-----BEGIN CERTIFICATE-----\nnope")).unwrap_err();
+        let err = client_for(Some("-----BEGIN CERTIFICATE-----\nnope"))
+            .await
+            .unwrap_err();
         assert!(err.contains("ca_pem"), "{err}");
     }
 
@@ -2120,13 +2383,13 @@ mod delivery_tests {
     /// validating its least-recently-used PEM leaves that PEM the LRU — the
     /// next cold root evicts it, and its next delivery rebuilds — and a
     /// flood of validations beyond the cap changes no stat at all.
-    #[test]
-    fn validation_never_touches_the_client_cache() {
-        let _g = CACHE_TESTS.lock().unwrap();
+    #[tokio::test]
+    async fn validation_never_touches_the_client_cache() {
+        let _g = CACHE_TESTS.lock().await;
         let oldest = ca_pem();
-        client_for(Some(&oldest)).unwrap();
+        client_for(Some(&oldest)).await.unwrap();
         for _ in 0..CA_CLIENT_CAP - 1 {
-            client_for(Some(&ca_pem())).unwrap();
+            client_for(Some(&ca_pem())).await.unwrap();
         }
         let before = ca_cache_stats();
         let target = |pem: &str| WebhookTarget {
@@ -2141,9 +2404,9 @@ mod delivery_tests {
         }
         assert_eq!(ca_cache_stats(), before, "validation moved no stat");
 
-        client_for(Some(&ca_pem())).unwrap(); // one cold root: evicts the LRU
+        client_for(Some(&ca_pem())).await.unwrap(); // one cold root: evicts the LRU
         let builds = ca_cache_stats().builds;
-        client_for(Some(&oldest)).unwrap();
+        client_for(Some(&oldest)).await.unwrap();
         assert_eq!(
             ca_cache_stats().builds,
             builds + 1,
@@ -2493,23 +2756,95 @@ mod validation_tests {
         assert_eq!(display_url("not a url hunter2"), UNPARSEABLE_URL);
     }
 
-    /// The outward copy withholds the secret and the userinfo and keeps
-    /// the rest; the installed target keeps everything.
+    /// The outward copy withholds credentials and reconstructs only
+    /// complete, loadable public certificate blocks. Installed bytes stay
+    /// intact for delivery and operator round trips.
     #[test]
-    fn a_redacted_target_keeps_inbox_and_ca_pem() {
+    fn a_redacted_target_keeps_only_validated_public_ca_certificates() {
+        let cert = rcgen::generate_simple_self_signed(vec!["ca.test".into()])
+            .unwrap()
+            .cert
+            .pem();
+        let key = rcgen::KeyPair::generate().unwrap().serialize_pem();
+        let key_body = key
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect::<String>();
+        let ca_input = format!("operator note\n{key}{cert}{cert}");
         let installed = WebhookTarget {
             url: "http://user:hunter2@127.0.0.1:9/hook".into(),
             inbox: Some("only".into()),
             secret: Some("s3cret".into()),
-            ca_pem: Some("PEM".into()),
+            ca_pem: Some(ca_input.clone()),
         };
         let shown = installed.redacted();
-        assert_eq!(shown.url, "http://127.0.0.1:9/hook");
+        assert!(
+            shown.url == "http://127.0.0.1:9/hook",
+            "public URL strips credentials"
+        );
         assert_eq!(shown.inbox.as_deref(), Some("only"));
-        assert_eq!(shown.secret, None);
-        assert_eq!(shown.ca_pem.as_deref(), Some("PEM"));
-        assert_eq!(installed.url, "http://user:hunter2@127.0.0.1:9/hook");
-        assert_eq!(installed.secret.as_deref(), Some("s3cret"));
+        assert!(shown.secret.is_none(), "secret withheld");
+        assert!(
+            shown.ca_pem.as_deref() == Some(format!("{cert}{cert}").as_str()),
+            "canonical public projection"
+        );
+        let public = shown.ca_pem.unwrap();
+        assert!(!public.contains("PRIVATE KEY"));
+        assert!(
+            !public.contains(
+                key_body
+                    .get(64..96)
+                    .expect("generated private-body sentinel")
+            )
+        );
+        assert!(!public.contains("operator note"));
+        assert!(
+            installed.ca_pem.as_deref() == Some(ca_input.as_str()),
+            "raw configuration preserved"
+        );
+        assert!(
+            installed.url == "http://user:hunter2@127.0.0.1:9/hook",
+            "raw URL preserved"
+        );
+        assert!(
+            installed.secret.as_deref() == Some("s3cret"),
+            "raw secret preserved"
+        );
+
+        for invalid in [
+            "no certificate here",
+            "-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n",
+            "-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n",
+        ] {
+            assert_eq!(public_ca_pem(invalid), "");
+        }
+        assert!(
+            public_ca_pem(&format!(
+                "{cert}-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n"
+            ))
+            .is_empty()
+        );
+        assert!(public_ca_pem("-----BEGIN CERTIFICATE-----\n!!!").is_empty());
+
+        let private_der = rcgen::KeyPair::generate().unwrap().serialize_der();
+        use base64::Engine as _;
+        let private_body = base64::engine::general_purpose::STANDARD.encode(private_der);
+        let mislabeled_key =
+            format!("-----BEGIN CERTIFICATE-----\n{private_body}\n-----END CERTIFICATE-----\n");
+        assert!(
+            public_ca_pem(&mislabeled_key).is_empty(),
+            "relabeled key withheld"
+        );
+        let directly_installed_key = WebhookTarget {
+            url: "http://127.0.0.1:9/key-as-certificate".into(),
+            inbox: None,
+            secret: None,
+            ca_pem: Some(mislabeled_key),
+        };
+        assert!(
+            directly_installed_key.redacted().ca_pem.as_deref() == Some(""),
+            "direct relabeled key withheld"
+        );
     }
 
     /// The drop-warning window on supplied instants (decision 0041 §7): the
@@ -2882,3 +3217,6 @@ mod validation_tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+mod ca_construction_tests;
