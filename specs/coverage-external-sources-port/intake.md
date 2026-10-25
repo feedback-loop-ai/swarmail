@@ -74,3 +74,9 @@ Run the isolated mutant/restored full-selftest pair described in criterion 3, ad
 ## Intake outcome
 
 Resolved: sufficient verified local evidence exists to frame this compatible port. This phase records and commits framing only; no shipped patch is applied and no implementation or feature-completion claim is made. The explicit task-wide gate request also requires an intake baseline gate attempt, recorded separately below; downstream verification must rerun against the implementation candidate. The engine determines phase progression.
+
+## Intake baseline verification
+
+All 16 commands in [baseline-gates.json](baseline-gates.json) exited zero on committed intake baseline `633fc306758bff3912cbbe40702ccd04e0127350` (tree `b7a675fb6baf1aa578ae5cecadaf7c454db20f87`), with offline Cargo and the verified candidate-local engine. This includes every house gate, shim integrity, standalone scanner and constitution tests, design/delivery proofs and fail-closed native-tls absence. Bundle compile reported 76 valuations over 14 groups, zero unruled. Coverage was exact: 14,009/14,009 lines, 788/788 branches and 1,527/1,527 functions; the complete selftest passed. Full logs remain under `.forge/evidence/issue219-port-intake/`; LCOV and summary are under `target/coverage/run.fwDV0K/`. The receipt records their identities and command exits.
+
+The workspace tool's client wait timed out before the runner returned; the persisted completion receipt and logs establish that every command finished successfully. This final documentation/receipt commit does not change tested implementation or gate bytes. No new #219 fixture or mutant was run during intake: those require the actual port and remain downstream obligations.
