@@ -953,101 +953,137 @@ fn metric(text: &str, name: &str) -> u64 {
     panic!("metrics missing {name}:\n{text}");
 }
 
-/// The per-PEM client cache is bounded: one more distinct root than the cap
-/// forces evictions, and every delivery still succeeds — an evicted root's
-/// client is rebuilt on its next delivery, never a failed delivery. 33 real
-/// TLS servers, each with its own freshly minted CA, are fanned out in two
-/// waves (the delivery bound is 32 in flight, and a wave that fit under it
-/// would not prove the point), so the dispatcher must cycle the whole cache
-/// and rebuild on the way. On the old unbounded cache this is red:
-/// `/metrics` carried no ca_cache counters, and nothing kept `entries` at
-/// the cap.
-#[tokio::test]
-async fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
-    let srv = start().await;
-    // Cap + 1 distinct roots: eviction is unavoidable, correctness is not
-    // optional.
-    let count = swarmail::webhook::CA_CLIENT_CAP + 1;
+/// The per-PEM cache stays bounded while real concurrent SMTP sessions fan
+/// out through more distinct TLS roots than the cache can retain. Every
+/// DATA 250 is followed by an immediate real API count query for that fresh
+/// inbox; every configured distinct sink completes verified TLS delivery.
+#[test]
+fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
+    // Explicit finite capacity: one async worker, 64 blocking slots, 33
+    // distinct roots and eight SMTP sessions. No arbitrary-load bound.
+    tokio::runtime::Builder::new_current_thread()
+        .max_blocking_threads(64)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let srv = start().await;
+            let count = swarmail::webhook::CA_CLIENT_CAP + 1;
+            let concurrent_smtp = 8usize;
+            let (status, before) = http_get_text(srv.http_addr, "/metrics").await;
+            assert_eq!(status, 200);
+            let builds_before = metric(&before, "swarmail_webhook_ca_cache_builds_total");
+            let evictions_before = metric(&before, "swarmail_webhook_ca_cache_evictions_total");
+            let delivered_before = metric(&before, "swarmail_webhook_delivered_total");
 
-    // A real TLS server per root: its own CA, a leaf for 127.0.0.1, one
-    // 204 per connection. Bound them all before registering any target.
-    let mut sinks = Vec::new();
-    for _ in 0..count {
-        let (ca_pem, leaf, leaf_key) = mint_cert();
-        let (addr, rx, _hits) = tls_sink(
-            b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
-            leaf,
-            leaf_key,
-            SINK_LIFETIME,
-        )
-        .await;
-        sinks.push((ca_pem, addr, rx));
-    }
+            // A real TLS server per root: its own CA, a leaf for 127.0.0.1, one
+            // 204 per connection. Bound them all before registering any target.
+            let mut sinks = Vec::new();
+            for _ in 0..count {
+                let (ca_pem, leaf, leaf_key) = mint_cert();
+                let (addr, rx, hits) = tls_sink(
+                    b"HTTP/1.1 204 No Content\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                    leaf,
+                    leaf_key,
+                    SINK_LIFETIME,
+                )
+                .await;
+                sinks.push((ca_pem, addr, rx, hits));
+            }
 
-    // The fan-out is bounded at WEBHOOK_DELIVERY_CAP deliveries in flight,
-    // so the 33 targets go in two waves, each under the bound: one accepted
-    // mail per wave, every target of the wave served by that pass.
-    let wave_size = swarmail::webhook::WEBHOOK_DELIVERY_CAP / 2 + 1;
-    for (w, wave) in sinks.chunks_mut(wave_size).enumerate() {
-        let targets: Vec<serde_json::Value> = wave
-            .iter()
-            .map(|(ca_pem, addr, _)| {
-                serde_json::json!({
-                    "url": format!("https://127.0.0.1:{}/hook", addr.port()),
-                    "ca_pem": ca_pem,
+            // Each target has its own normalized-URL budget, so all 33 roots can
+            // build concurrently. Eight SMTP sessions provide a real distinct-PEM
+            // fan-out while remaining below every per-target delivery cap.
+            let targets: Vec<serde_json::Value> = sinks
+                .iter()
+                .map(|(ca_pem, addr, _, _)| {
+                    serde_json::json!({
+                        "url": format!("https://127.0.0.1:{}/hook", addr.port()),
+                        "ca_pem": ca_pem,
+                    })
                 })
-            })
-            .collect();
-        let body = serde_json::to_string(&targets).unwrap();
-        let (st, _) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
-        assert_eq!(st, 200);
+                .collect();
+            let body = serde_json::to_string(&targets).unwrap();
+            let (st, echo) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+            assert_eq!(st, 200, "{echo}");
 
-        smtp_send(srv.smtp_addr, None, "f@x.io", "r@x.io", "cachebound", "x")
-            .await
-            .unwrap();
+            let mut sessions = tokio::task::JoinSet::new();
+            for i in 0..concurrent_smtp {
+                let inbox = format!("ca-fanout-{i}");
+                let smtp_addr = srv.smtp_addr;
+                let http_addr = srv.http_addr;
+                sessions.spawn(async move {
+                    let accepted = smtp_send(
+                        smtp_addr,
+                        Some(&inbox),
+                        "from@example.test",
+                        "to@example.test",
+                        "ca fanout",
+                        "body",
+                    )
+                    .await
+                    .unwrap();
+                    assert!(accepted.starts_with("250"), "{accepted}");
+                    let (status, count) = http_json(
+                        http_addr,
+                        "GET",
+                        &format!("/api/v1/inboxes/{inbox}/count"),
+                        None,
+                    )
+                    .await;
+                    assert_eq!(status, 200, "immediate query after DATA 250: {count}");
+                    assert_eq!(count["count"], 1, "DATA 250 means queryable: {count}");
+                });
+            }
+            while let Some(done) = sessions.join_next().await {
+                done.unwrap();
+            }
 
-        // Every one of this wave's deliveries must have happened over real
-        // TLS: an empty `tls` capture would mean its handshake was rejected.
-        // The bound is generous — the dispatcher's whole 4-attempt budget
-        // plus slack — but a generous bound alone is not the fix: the sinks
-        // above now stay bound through that same budget, so a transient
-        // attempt failure (an EMFILE accept under a starved sandbox, a
-        // handshake that dies mid-flight) is retried against a live
-        // listener instead of being lost with its sink.
-        for (i, (_, _, rx)) in wave.iter_mut().enumerate() {
-            let captured = tokio::time::timeout(Duration::from_secs(30), rx)
-                .await
-                .unwrap_or_else(|_| panic!("delivery {i} of wave {w} timed out"))
-                .unwrap();
-            assert!(
-                captured.tls.contains("TLSv1"),
-                "delivery {i} of wave {w} was not over TLS: {captured:?}"
+            let expected_deliveries = (count * concurrent_smtp) as u64;
+            wait_for_metric_from(
+                srv.http_addr,
+                "swarmail_webhook_delivered_total",
+                delivered_before,
+                expected_deliveries,
+            )
+            .await;
+            for (i, (_, _, rx, sink_hits)) in sinks.iter_mut().enumerate() {
+                let captured = tokio::time::timeout(Duration::from_secs(30), rx)
+                    .await
+                    .unwrap_or_else(|_| panic!("delivery {i} of {count} roots timed out"))
+                    .unwrap();
+                assert!(
+                    captured.tls.contains("TLSv1"),
+                    "delivery {i} was not over verified TLS: {captured:?}"
+                );
+                assert!(
+                    captured.head.contains("\"event\":\"received\""),
+                    "delivery {i} carried no payload: {captured:?}"
+                );
+                assert_eq!(
+                    sink_hits.load(Ordering::Relaxed),
+                    concurrent_smtp,
+                    "sink {i} receives each mail"
+                );
+            }
+
+            let (st, metrics) = http_get_text(srv.http_addr, "/metrics").await;
+            assert_eq!(st, 200);
+            assert_eq!(
+                metric(&metrics, "swarmail_webhook_ca_cache_entries"),
+                swarmail::webhook::CA_CLIENT_CAP as u64,
+                "the cache remains exactly at its {count}-root cap"
             );
             assert!(
-                captured.head.contains("\"event\":\"received\""),
-                "delivery {i} of wave {w} carried no payload: {captured:?}"
+                metric(&metrics, "swarmail_webhook_ca_cache_evictions_total") > evictions_before,
+                "distinct roots beyond the cap evict entries:\n{metrics}"
             );
-        }
-    }
-
-    // The production-honest introspection: the bound held and eviction
-    // happened, observable from outside the process like any operator would.
-    let (st, metrics) = http_get_text(srv.http_addr, "/metrics").await;
-    assert_eq!(st, 200);
-    let entries = metric(&metrics, "swarmail_webhook_ca_cache_entries");
-    assert_eq!(
-        entries,
-        swarmail::webhook::CA_CLIENT_CAP as u64,
-        "the cache must sit exactly at its cap after {count} distinct roots"
-    );
-    assert!(
-        metric(&metrics, "swarmail_webhook_ca_cache_evictions_total") >= 1,
-        "distinct roots beyond the cap must have evicted:\n{metrics}"
-    );
-    assert!(
-        metric(&metrics, "swarmail_webhook_ca_cache_builds_total") >= count as u64,
-        "every distinct root must have built its client:\n{metrics}"
-    );
+            assert!(
+                metric(&metrics, "swarmail_webhook_ca_cache_builds_total")
+                    >= builds_before + count as u64,
+                "every distinct root has a successful delivery-side build:\n{metrics}"
+            );
+        });
 }
 
 /// The sink must survive a failed first attempt. The 2026-10-09 hermetic red
@@ -1887,6 +1923,254 @@ async fn url_credentials_reach_the_sink_and_never_the_echo() {
     assert!(head.starts_with("POST /hook?k=v HTTP/1.1"), "{head}");
 }
 
+/// Privacy proofs must never render a response, parser error or equality
+/// operand: negative controls deliberately put real generated key bytes on
+/// this wire. Transport/JSON failures use fixed diagnostics too.
+async fn private_webhook_json(
+    addr: std::net::SocketAddr,
+    method: reqwest::Method,
+    body: Option<&str>,
+) -> (u16, serde_json::Value) {
+    let client = reqwest::Client::new();
+    let mut request = client.request(method, format!("http://{addr}/api/v1/webhooks"));
+    if let Some(body) = body {
+        request = request
+            .header("content-type", "application/json")
+            .body(body.to_owned());
+    }
+    let response = request
+        .send()
+        .await
+        .unwrap_or_else(|_| panic!("privacy transport failed"));
+    let status = response.status().as_u16();
+    let bytes = response
+        .bytes()
+        .await
+        .unwrap_or_else(|_| panic!("privacy response read failed"));
+    let value = private_response_json(&bytes);
+    (status, value)
+}
+
+fn private_body_sentinel(body: &str) -> &str {
+    body.get(64..96).expect("generated private-body sentinel")
+}
+
+fn private_response_json(bytes: &[u8]) -> serde_json::Value {
+    serde_json::from_slice(bytes).unwrap_or_else(|_| panic!("privacy response is not JSON"))
+}
+
+// One assertion owner for the refusal wire proof and its diagnostic controls.
+// No response, parser text or installed-state operand reaches a panic message.
+fn assert_private_ca_refusal(
+    status: u16,
+    response: &serde_json::Value,
+    index: usize,
+    sentinel: &str,
+    preserved: bool,
+) {
+    assert!(status == 400, "private CA refusal status");
+    assert!(
+        response["error"].as_str().is_some_and(|error| {
+            error.starts_with(&format!(
+        "webhook target {index}: webhook ca_pem could not be loaded into the rustls client: "
+    ))
+        }),
+        "private CA refusal prefix"
+    );
+    assert!(
+        !response.to_string().contains(sentinel),
+        "private DER escaped in validation error"
+    );
+    assert!(preserved, "private CA refusal changed installed state");
+}
+
+/// Noncanonical CRLF and 37-column wrapping must not survive projection.
+fn rewrap_certificate(pem: &str) -> String {
+    let body = pem
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect::<String>();
+    let lines = body
+        .as_bytes()
+        .chunks(37)
+        .map(|line| std::str::from_utf8(line).unwrap())
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    format!("-----BEGIN CERTIFICATE-----\r\n{lines}\r\n-----END CERTIFICATE-----\r\n")
+}
+
+/// Unauthenticated GET/PUT project canonical DER in order, including
+/// duplicates, without disclosing any other input. Boolean comparisons keep
+/// the failure path private even with a deliberately broken projection.
+#[tokio::test]
+async fn private_keys_in_ca_pem_never_appear_in_get_or_put_responses() {
+    let srv = start().await;
+    let first = unrelated_ca_pem();
+    let second = unrelated_ca_pem();
+    let key = rcgen::KeyPair::generate().unwrap().serialize_pem();
+    let key_body = key
+        .lines()
+        .filter(|line| !line.starts_with("-----"))
+        .collect::<String>();
+    // Pin generated private bytes rather than the common PKCS#8 header.
+    let sentinel = private_body_sentinel(&key_body);
+    let rsa =
+        format!("-----BEGIN RSA PRIVATE KEY-----\n{key_body}\n-----END RSA PRIVATE KEY-----\n");
+    let ec = format!("-----BEGIN EC PRIVATE KEY-----\n{key_body}\n-----END EC PRIVATE KEY-----\n");
+    let encrypted = format!(
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----\n{key_body}\n-----END ENCRYPTED PRIVATE KEY-----\n"
+    );
+    let unrelated = "-----BEGIN OPERATOR DATA-----\ncHJpdmF0ZS11bnJlbGF0ZWQtc2VudGluZWw=\n-----END OPERATOR DATA-----\n";
+    let mixed = format!(
+        "operator-before\n{key}{}{rsa}operator-between\n{second}{unrelated}{}{encrypted}{ec}operator-after\n",
+        rewrap_certificate(&first),
+        rewrap_certificate(&first)
+    );
+    let canonical = format!("{first}{second}{first}");
+    let targets = serde_json::json!([
+        {"url": "http://user:password-sentinel@127.0.0.1:9/hook", "inbox": "private-key-echo", "secret": "secret-sentinel", "ca_pem": mixed},
+        {"url": "http://127.0.0.1:9/absent"}
+    ]).to_string();
+    let (status, put) =
+        private_webhook_json(srv.http_addr, reqwest::Method::PUT, Some(&targets)).await;
+    assert_eq!(status, 200, "private mixed PEM admission");
+    let (status, get) = private_webhook_json(srv.http_addr, reqwest::Method::GET, None).await;
+    assert_eq!(status, 200, "private mixed PEM GET");
+    for response in [&put, &get] {
+        assert!(
+            response.as_array().is_some_and(|list| list.len() == 2),
+            "response list shape"
+        );
+        let text = response.to_string();
+        for forbidden in [
+            "PRIVATE KEY",
+            sentinel,
+            "OPERATOR DATA",
+            "cHJpdmF0ZS11bnJlbGF0ZWQtc2VudGluZWw=",
+            "operator-before",
+            "operator-between",
+            "operator-after",
+            "password-sentinel",
+            "secret-sentinel",
+        ] {
+            assert!(
+                !text.contains(forbidden),
+                "private or unrelated input disclosed"
+            );
+        }
+        for target in response.as_array().unwrap() {
+            assert!(
+                target.as_object().is_some_and(|object| object.len() == 4
+                    && ["url", "inbox", "secret", "ca_pem"]
+                        .iter()
+                        .all(|key| object.contains_key(*key))),
+                "four response fields"
+            );
+            assert!(target["secret"].is_null(), "secret withheld");
+        }
+        assert!(
+            response[0]["url"] == "http://127.0.0.1:9/hook",
+            "userinfo removed"
+        );
+        assert!(
+            response[0]["inbox"] == "private-key-echo",
+            "inbox preserved"
+        );
+        assert!(
+            response[0]["ca_pem"] == canonical,
+            "canonical order and duplicates"
+        );
+        let shown = response[0]["ca_pem"].as_str().expect("public string");
+        let decoded = rustls_pemfile::certs(&mut shown.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("public certificates decode");
+        let expected = rustls_pemfile::certs(&mut canonical.as_bytes())
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(decoded == expected, "DER order and duplicates preserved");
+        assert!(
+            response[1]["ca_pem"].is_null() && response[1]["inbox"].is_null(),
+            "absent options stay null"
+        );
+    }
+    let raw = srv.webhooks.current();
+    assert!(
+        raw[0].ca_pem.as_deref() == Some(mixed.as_str()),
+        "installed PEM unchanged"
+    );
+    assert!(
+        raw[0].secret.as_deref() == Some("secret-sentinel"),
+        "installed secret unchanged"
+    );
+    assert!(
+        raw[0].url == "http://user:password-sentinel@127.0.0.1:9/hook",
+        "installed URL unchanged"
+    );
+
+    srv.webhooks.set(vec![swarmail::webhook::WebhookTarget {
+        url: "http://127.0.0.1:9/direct".into(),
+        inbox: None,
+        secret: None,
+        ca_pem: Some(format!("{key}{first}")),
+    }]);
+    let (status, direct) = private_webhook_json(srv.http_addr, reqwest::Method::GET, None).await;
+    assert_eq!(status, 200);
+    assert!(
+        !direct.to_string().contains("PRIVATE KEY"),
+        "direct key label withheld"
+    );
+    assert!(
+        !direct.to_string().contains(sentinel),
+        "direct key body withheld"
+    );
+    assert!(direct[0]["ca_pem"] == first, "direct public certificate");
+}
+
+/// Direct installation bypasses admission; any parse/load failure empties
+/// the whole projection, including a valid prefix and relabeled private DER.
+#[tokio::test]
+async fn direct_webhook_install_projects_unloadable_ca_as_empty_on_get() {
+    let srv = start().await;
+    let good = unrelated_ca_pem();
+    let key = rcgen::KeyPair::generate().unwrap();
+    let invalid = [
+        "".to_string(),
+        "operator note without a certificate".to_string(),
+        "-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n".to_string(),
+        "-----BEGIN CERTIFICATE-----\n!!!".to_string(),
+        format!("{good}{}", framed_pem(b"invalid DER")),
+        format!("{good}-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n"),
+        framed_pem(&key.serialize_der()),
+        format!("{good}{}", framed_pem(&key.serialize_der())),
+    ];
+    for (index, ca_pem) in invalid.into_iter().enumerate() {
+        let target = swarmail::webhook::WebhookTarget {
+            url: "http://127.0.0.1:9/direct-invalid".into(),
+            inbox: Some(format!("direct-invalid-{index}")),
+            secret: None,
+            ca_pem: Some(ca_pem.clone()),
+        };
+        assert!(
+            target.redacted().ca_pem.as_deref() == Some(""),
+            "synchronous fail-closed case {index}"
+        );
+        srv.webhooks.set(vec![target]);
+        let (status, response) =
+            private_webhook_json(srv.http_addr, reqwest::Method::GET, None).await;
+        assert_eq!(status, 200, "unprojectable GET case {index}");
+        assert!(response[0]["ca_pem"] == "", "empty projection case {index}");
+        assert!(
+            response[0]["inbox"] == format!("direct-invalid-{index}"),
+            "inbox case {index}"
+        );
+        assert!(response[0]["secret"].is_null(), "secret null case {index}");
+        assert!(
+            srv.webhooks.current()[0].ca_pem.as_deref() == Some(ca_pem.as_str()),
+            "raw input preserved case {index}"
+        );
+    }
+}
+
 // ---------- decision 0048: complete CA validation and the closed target ----------
 
 /// A well-framed PEM certificate block whose base64 carries `bytes`.
@@ -1931,8 +2215,8 @@ async fn install_prior(srv: &swarmail::RunningServer, inbox: &str) -> Receiver<S
         "secret": "kept-secret",
     }])
     .to_string();
-    let (st, resp) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&prior)).await;
-    assert_eq!(st, 200, "{resp}");
+    let (st, _) = private_webhook_json(srv.http_addr, reqwest::Method::PUT, Some(&prior)).await;
+    assert!(st == 200, "prior webhook installation");
     rx
 }
 
@@ -1970,12 +2254,21 @@ async fn webhook_ca_put_rejects_every_invalid_certificate() {
     let rx = install_prior(&srv, "ca122").await;
     let before = installed(&srv);
     let good = unrelated_ca_pem();
+    let private_der = rcgen::KeyPair::generate().unwrap().serialize_der();
+    use base64::Engine as _;
+    let private_body = base64::engine::general_purpose::STANDARD.encode(&private_der);
+    let private_sentinel = private_body_sentinel(&private_body);
+    let mislabeled_private_key = framed_pem(&private_der);
     let malformed = "-----BEGIN CERTIFICATE-----\n!!!not base64!!!\n-----END CERTIFICATE-----\n";
-    for (case, pem) in [
+    for (_case, pem) in [
         ("no certificate section", "not a pem".to_string()),
         ("empty certificate", framed_pem(b"")),
         ("malformed base64", malformed.to_string()),
         ("invalid DER", framed_pem(b"not a DER certificate")),
+        (
+            "private key DER relabeled as certificate",
+            mislabeled_private_key,
+        ),
         (
             "valid then invalid DER",
             format!("{good}{}", framed_pem(b"junk")),
@@ -1988,16 +2281,14 @@ async fn webhook_ca_put_rejects_every_invalid_certificate() {
             for (index, list) in [(0, vec![bad.clone()]), (1, vec![fine, bad])] {
                 let body = serde_json::Value::Array(list).to_string();
                 let (st, resp) =
-                    http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
-                assert_eq!(st, 400, "{case} {url} at {index}: {resp}");
-                let error = resp["error"].as_str().unwrap();
-                assert!(
-                    error.starts_with(&format!(
-                        "webhook target {index}: webhook ca_pem could not be loaded into the rustls client: "
-                    )),
-                    "{case} {url} at {index}: {resp}"
+                    private_webhook_json(srv.http_addr, reqwest::Method::PUT, Some(&body)).await;
+                assert_private_ca_refusal(
+                    st,
+                    &resp,
+                    index,
+                    private_sentinel,
+                    installed(&srv) == before,
                 );
-                assert_eq!(installed(&srv), before, "{case} {url} at {index}");
             }
         }
     }
@@ -2387,4 +2678,143 @@ async fn the_final_sweep_survives_a_lagged_ring_and_accounts_the_backlog() {
         "every retained notification is accounted: {:?}",
         ledger
     );
+}
+
+// Capture every deliberately failing diagnostic in a child process. Only
+// boolean verdicts leave the parent; captured private bytes are never logged
+// or written to receipts, even when the diagnostic regression is detected.
+async fn private_diagnostic_control(mode: &str, expected: &str) {
+    use base64::Engine as _;
+    let key = base64::engine::general_purpose::STANDARD
+        .encode(rcgen::KeyPair::generate().unwrap().serialize_der());
+    let output = tokio::time::timeout(
+        common::HELPER_DEADLINE,
+        tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "private_failure_diagnostic_probe",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("SWARMAIL_PRIVATE_DIAGNOSTIC_MODE", mode)
+            .env("SWARMAIL_PRIVATE_DIAGNOSTIC_BODY", &key)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .expect("private diagnostic child deadline")
+    .expect("private diagnostic child launch");
+    let text = [output.stdout, output.stderr].concat();
+    let text = String::from_utf8_lossy(&text);
+    assert!(
+        output.status.code() == Some(101),
+        "diagnostic control must fail"
+    );
+    assert!(
+        text.contains(expected),
+        "diagnostic control failed for another reason"
+    );
+    for forbidden in [
+        &key,
+        &key[64..96],
+        "PRIVATE KEY",
+        "invalid type",
+        "expected value at line",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "private diagnostic output was not value-free"
+        );
+    }
+}
+
+#[tokio::test]
+async fn webhook_private_failure_diagnostics_are_value_free() {
+    for (mode, expected) in [
+        ("status", "private CA refusal status"),
+        ("prefix", "private CA refusal prefix"),
+        ("private", "private DER escaped in validation error"),
+        ("state", "private CA refusal changed installed state"),
+        ("private-json", "privacy response is not JSON"),
+    ] {
+        private_diagnostic_control(mode, expected).await;
+    }
+}
+
+async fn private_diagnostic_peer(status: u16, body: String) -> std::net::SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut peer, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(peer.read_u8().await.unwrap());
+        }
+        let response = format!(
+            "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        peer.write_all(response.as_bytes()).await.unwrap();
+        peer.shutdown().await.unwrap();
+    });
+    addr
+}
+
+#[tokio::test]
+async fn http_json_rejects_non_json_without_body_diagnostics() {
+    private_diagnostic_control("common-json", "status 200 body is not JSON").await;
+    for status in [204, 304] {
+        let addr = private_diagnostic_peer(status, String::new()).await;
+        let (observed, body) = http_json(addr, "GET", "/api/v1/webhooks", None).await;
+        assert_eq!(observed, status);
+        assert!(body.is_null(), "empty no-content is absence");
+    }
+    private_diagnostic_control("empty-json", "status 200 body is not JSON").await;
+}
+
+#[tokio::test]
+#[ignore = "private diagnostic child, invoked only with in-memory output capture"]
+async fn private_failure_diagnostic_probe() {
+    let mode = std::env::var("SWARMAIL_PRIVATE_DIAGNOSTIC_MODE").unwrap();
+    let key = std::env::var("SWARMAIL_PRIVATE_DIAGNOSTIC_BODY").unwrap();
+    let sentinel = private_body_sentinel(&key);
+    let private_body = format!("-----BEGIN PRIVATE KEY-----\n{key}\n-----END PRIVATE KEY-----");
+    match mode.as_str() {
+        "common-json" | "empty-json" => {
+            let body = if mode == "empty-json" {
+                String::new()
+            } else {
+                private_body
+            };
+            let addr = private_diagnostic_peer(200, body).await;
+            http_json(addr, "GET", "/api/v1/webhooks", None).await;
+        }
+        "private-json" => {
+            private_response_json(private_body.as_bytes());
+        }
+        _ => {
+            let prefix =
+                "webhook target 0: webhook ca_pem could not be loaded into the rustls client: ";
+            let error = if mode == "prefix" {
+                private_body
+            } else if mode == "private" {
+                // A body-only leak discriminates a private-body sentinel
+                // from the shared PKCS#8 header, even without a PEM label.
+                format!("{prefix}{}", &key[64..96])
+            } else if mode == "status" {
+                format!("{prefix}{private_body}")
+            } else {
+                prefix.to_owned()
+            };
+            let response = serde_json::json!({"error": error});
+            assert_private_ca_refusal(
+                if mode == "status" { 200 } else { 400 },
+                &response,
+                0,
+                sentinel,
+                mode != "state",
+            );
+        }
+    }
+    panic!("diagnostic probe did not fail");
 }

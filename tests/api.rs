@@ -5371,3 +5371,41 @@ async fn zero_timeout_finishes_on_the_first_router_poll() {
         }
     }
 }
+
+/// GET has its own awaited response-preparation failure contract, alongside
+/// the live join-failure proof in webhook::ca_construction_tests.
+#[tokio::test]
+async fn openapi_webhook_get_documents_awaited_preparation_failure() {
+    let srv = start().await;
+    let doc = served_openapi(srv.http_addr).await;
+    for status in [200, 400, 403, 500] {
+        assert!(
+            documents(&doc, "/api/v1/webhooks", "GET", status),
+            "GET webhook response contract must document {status}"
+        );
+    }
+    let get = &doc["paths"]["/api/v1/webhooks"]["get"];
+    let description = get["description"].as_str().unwrap();
+    assert!(description.contains("awaited off-worker response preparation"));
+    let failure = get["responses"]["500"]["description"].as_str().unwrap();
+    assert!(failure.contains("webhook response preparation failed"));
+    assert!(
+        !failure.contains("replacement"),
+        "GET does not replace configuration"
+    );
+    srv.stop().await;
+}
+
+#[test]
+fn webhook_docs_state_shared_pool_limits() {
+    let readme = include_str!("../README.md");
+    let module = include_str!("../src/webhook.rs");
+    let llms = include_str!("../src/static/llms.txt");
+    for doc in [readme, module, llms] {
+        assert!(doc.contains("never awaited by SMTP acceptance"));
+        assert!(!doc.contains("never blocking the SMTP path"));
+        assert!(doc.contains("#220"), "shared-pool residual owner");
+    }
+    assert!(readme.contains("delay SMTP parsing and commits"));
+    assert!(llms.contains("delay SMTP parsing/commits"));
+}

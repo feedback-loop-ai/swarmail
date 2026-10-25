@@ -894,13 +894,16 @@ $ curl -X PUT localhost:8025/api/v1/webhooks -H 'content-type: application/json'
 
 Every accepted email is POSTed as `{"event":"received","email":{…}}` with
 the secret in `X-Swarmail-Secret` — queued, retried (100 ms → 1.6 s, four
-attempts), inbox-filtered, and never blocking the SMTP path. `http://`
+attempts), inbox-filtered, and never awaited by SMTP acceptance. `http://`
 targets stay plain; `https://` targets are TLS with verification on — hand
 a self-signed sink its own CA through the target's optional `ca_pem`.
 Clients pinned to a `ca_pem` are cached per PEM under a fixed bound of 32
 (`swarmail::webhook::CA_CLIENT_CAP`); the LRU build is evicted and the next
 delivery rebuilds it. `swarmail_webhook_ca_cache_{entries,builds_total,
-evictions_total}` on `/metrics` lets you watch the bound hold.
+evictions_total}` on `/metrics` lets you watch the bound hold. `builds_total`
+counts successful delivery-side constructions, including duplicate builds
+that lose a publication race or finish after a waiter is cancelled; API
+validation/projection and cache hits do not count.
 
 A target is validated when it is PUT, not at delivery. Its keys are
 exactly `url`, `inbox`, `secret` and `ca_pem` — an unknown key such as
@@ -920,12 +923,16 @@ value: a body-shape error names the path and the JSON kind) and applies
 nothing: a list
 with one bad target leaves the previous list in place. `GET
 /api/v1/webhooks` and the PUT echo redact the secret and strip URL
-userinfo (`http://user:pw@host/x` is shown as `http://host/x`; the
-delivery still sends the credentials as Basic authorization), and every
-log line shows the URL the same way. Query strings and fragments are shown
-as configured — keep credentials out of them. PUT is the only writer; an
-operator retains their own payload — the echo shows absent values as
-`null`, so it is a diagnostic, not a body to PUT back.
+userinfo (`http://user:pw@host/x` is shown as `http://host/x`; delivery
+still sends the credentials as Basic authorization). `ca_pem` is projected
+to canonical, validated certificate blocks only: unrelated PEM sections
+and prose are omitted, while certificate DER, order and duplicates are
+preserved. A supplied bundle that cannot be fully projected is shown as an
+empty string; an absent value stays `null`. Installed input and admission
+are unchanged, including ignored unrelated sections. Query strings and
+fragments are shown as configured — keep credentials out of them. PUT is the
+only writer; an operator retains their own payload — the echo is diagnostic,
+not a body to PUT back.
 
 Delivery is best-effort with the loss made observable — there is no durable
 outbox: a mail whose fan-out cannot fire is never re-fired after a restart.
@@ -940,11 +947,15 @@ counted without a line. A mail's payload is serialized once and shared by
 every target and retry, so extra targets cost references, not copies of
 the mail. A target that accepts
 and never answers wedges its delivery for the dispatcher's whole budget —
-about 22.1 s (four attempts under the 5 s POST timeout plus the backoff) —
-so a stalled slot holds the bound for that long, then the delivery is
+about 22.1 s for network attempts and backoff (the cold-client build and
+blocking-pool queue time are outside that budget) — so a stalled slot holds
+the bound for at least that portion, then the delivery is
 counted in `swarmail_webhook_exhausted_total`, and its final refusal is
 logged at the default level: one `warn` naming the target URL and the last
-delivery error (no per-attempt spam). The five ledger counters —
+delivery error (no per-attempt spam). CA construction uses Tokio's shared
+blocking pool; exhausted pool capacity can delay SMTP parsing and commits
+(the low availability residual is tracked by #220),
+while spare capacity keeps SMTP progress independent of a held CA build. The five ledger counters —
 `swarmail_webhook_{delivered,dropped,lagged,exhausted,aborted}_total` — are
 cumulative since process start (they reset on restart, they are not
 persisted), and a shutdown counts its backlog of undelivered notifications

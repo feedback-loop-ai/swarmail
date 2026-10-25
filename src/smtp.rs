@@ -205,6 +205,32 @@ thread_local! {
         const { core::cell::Cell::new(0) };
 }
 
+// Test-only observation immediately before the DATA parser submits its
+// blocking job. On the owner test's current-thread runtime, the session
+// continues through `spawn_blocking` until its await yields, so the observer
+// resumes only after the job has entered Tokio's queue.
+#[cfg(test)]
+thread_local! {
+    static DATA_PARSE_SUBMITTED_FOR_TEST: std::cell::RefCell<Option<tokio::sync::oneshot::Sender<()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn observe_next_data_parse_submission_for_test() -> tokio::sync::oneshot::Receiver<()> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    DATA_PARSE_SUBMITTED_FOR_TEST.with(|slot| *slot.borrow_mut() = Some(sender));
+    receiver
+}
+
+#[cfg(test)]
+fn signal_data_parse_submission_for_test() {
+    DATA_PARSE_SUBMITTED_FOR_TEST.with(|slot| {
+        if let Some(sender) = slot.borrow_mut().take() {
+            let _ = sender.send(());
+        }
+    });
+}
+
 /// Restores the prior thread-local error count when its scope ends.
 #[cfg(test)]
 #[must_use = "accept-error injections must be scoped"]
@@ -1449,6 +1475,8 @@ async fn session(
                 // aborted), distinct from chaos's fixed `451 4.3.0 chaos`,
                 // internals to the log and never to the peer — where the old
                 // tree acknowledged the lie.
+                #[cfg(test)]
+                signal_data_parse_submission_for_test();
                 let email = Store::offload({
                     let inbox = inbox.to_string();
                     move || build_email(&raw, &inbox, &rcpts, from)
