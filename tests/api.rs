@@ -5413,11 +5413,27 @@ fn webhook_docs_state_bounded_ca_limits() {
     }
 }
 
+fn ca_error_schema<'a>(doc: &'a serde_json::Value, method: &str) -> Option<&'a serde_json::Value> {
+    let schema = &doc["paths"]["/api/v1/webhooks"][method]["responses"]["503"]["content"]["application/json"]
+        ["schema"];
+    if let Some(reference) = schema["$ref"].as_str() {
+        doc.pointer(reference.strip_prefix('#')?)
+    } else {
+        Some(schema)
+    }
+}
 fn ca_statuses_documented(doc: &serde_json::Value) -> bool {
     ["get", "put"].into_iter().all(|method| {
         doc["paths"]["/api/v1/webhooks"][method]["responses"]["503"]["description"]
             .as_str()
             .is_some_and(|s| s.contains("webhook CA preparation unavailable"))
+            && ca_error_schema(doc, method).is_some_and(|schema| {
+                schema["type"] == "object"
+                    && schema["properties"]["error"]["type"] == "string"
+                    && schema["required"]
+                        .as_array()
+                        .is_some_and(|fields| fields.iter().any(|f| f == "error"))
+            })
     }) && doc["paths"]["/api/v1/webhooks"]["get"]["responses"]["500"].is_object()
 }
 #[tokio::test]
@@ -5434,6 +5450,15 @@ async fn openapi_webhook_ca_admission_statuses() {
         assert!(
             !ca_statuses_documented(&missing),
             "missing {method} {status}"
+        );
+    }
+    for method in ["get", "put"] {
+        let mut dangling = doc.clone();
+        dangling["paths"]["/api/v1/webhooks"][method]["responses"]["503"]["content"]["application/json"]
+            ["schema"] = serde_json::json!({"$ref": "#/components/schemas/MissingCaError"});
+        assert!(
+            !ca_statuses_documented(&dangling),
+            "unresolved {method} 503 schema"
         );
     }
     srv.stop().await;
