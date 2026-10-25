@@ -23,7 +23,7 @@ from the causal regression and negative-control evidence.
   assert exact refusal/private-state retention while work lives, then safely clean
   up and prove release. A temporary early-release control fails that refusal
   assertion in each mode; restore it before final verification (AC4).
-- [ ] T5 — Prove compatibility and resolve the same-path INFO. Test: matched
+- [x] T5 — Prove compatibility and resolve the same-path INFO. Test: matched
   `runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults`,
   `cleanup_handshake_`, `sequential_admission_library_and_cleanup_lifetime` and
   `unproved_worker_cleanup_stops_matrix_with_full_refusal_suffix` pass, preserving
@@ -33,12 +33,12 @@ from the causal regression and negative-control evidence.
   implementation/tests unsigned. Test: diff audit shows only the scoped ownership
   repair/regression support and design progress, no temporary bypasses, altered
   decisions (especially proposed 0076), dependencies, gates or routing (AC6).
-- [ ] T7 — Verify the committed implementation candidate with every local house
+- [x] T7 — Verify the committed implementation candidate with every local house
   gate, exact coverage/selftest, publish/seal proofs, pinned engine compile and
   script integrity, design/delivery proofs and fail-closed native-tls absence.
   Test: fresh command exits and literal zero missed lines/branches/functions bind
   to the candidate HEAD/tree; failures are recorded, not relabeled green (AC6).
-- [ ] T8 — Run standalone eval fmt, locked all-target clippy and full workspace
+- [x] T8 — Run standalone eval fmt, locked all-target clippy and full workspace
   locked tests with default threading, including the new focused tests and all
   real-protocol controls. Test: complete suite and matched focused filters pass;
   preserve privacy/provenance/trap/sequential results. Record candidate identity
@@ -113,5 +113,59 @@ All commands below use `cargo test --manifest-path evals/Cargo.toml --locked`.
   checked: runner SHA-256
   `b9ebb820dec6242e5d4525a98fff12f5676014cc529260621033ab2d10514cb1`.
 - Standalone locked all-target clippy passes after restoration
-  (`eval-clippy-initial.log`). Fresh committed-candidate full gates and eval
-  suite remain T5/T7/T8; historical port receipts are not substituted.
+  (`eval-clippy-initial.log`). The committed-candidate verification below
+  completes T5/T7/T8; historical port receipts are not substituted.
+
+## Committed-candidate verification — 2026-10-25
+
+Verified implementation commit: `7959073a3b414c717ee9aebb2929ba39b97ea8d1`.
+Tree: `1dc397c91969a855dc50349078f1acd389b4ba0e`.
+The subsequent receipt commit changes only this task evidence; all executable
+sources, tests, decisions and bundles remain byte-identical to this candidate.
+The tracked checkout was clean throughout verification. Every gate has a `.log`
+and `.candidate` under the receipt directory above; `gate-status.tsv` and
+`verified-candidate.json` bind all sixteen zero exits to that HEAD/tree.
+
+| Check | Result |
+| --- | --- |
+| Engine digest and pinned shim inventory | All checksums match, including brokkr `ab935558…a885f`. |
+| Root fmt and locked all-target clippy | Both exit 0. |
+| `cargo test --workspace --locked` | Exit 0; 871 passed, 0 failed, 5 existing ignored tests. |
+| `.forge/bin/brokkr compile --bundle bundles/self` | Exit 0; 76 policy valuations over 14 groups, 0 unruled. |
+| Exact coverage | Exit 0; **14229/14229 lines, 808/808 branches, 1556/1556 functions**, zero missed. Full evidence: `target/coverage/run.2KFdGb`. |
+| Coverage selftest | Exit 0; every refusal/pass arm and reservation/denominator proof passes. Evidence: `target/coverage/selftest.rXzUnO`. |
+| Publish-guard proof | Exit 0; 51 workflow mutation red/restored-green receipts and real HTTP proof. |
+| Seal-branch keyless proof | Exit 0; 7 cases and 10 mutants. |
+| `cargo deny check licenses` | Exit 0, licenses ok. |
+| Pinned design selftest and delivery proof | Both exit 0; shim substitutions refuse and uncovered production cannot be hidden. |
+| Fail-closed `native-tls` absence | Exit 0; explicit package-not-found diagnostic, not an unexpected cargo-tree error. |
+| Standalone eval fmt and locked all-target clippy | Both exit 0. |
+| `cargo test --manifest-path evals/Cargo.toml --workspace --locked` | Exit 0, default threading; **198 passed, 0 failed, 0 ignored**. |
+
+Pinned copies under `bundles/self/scripts/` were executed after verifying the
+public dispatch shims. This is the house inventory's coverage/selftest,
+publish-guard and seal proof, with no gate or recipe edit. The full eval tool
+call exceeded the workspace client's 300-second wait; the command continued,
+finished, and recorded exit 0. Its complete log, final status and candidate stamp
+were read back before accepting that result. No timeout is relabeled as a test
+verdict and no test command was shortened or split to avoid a failure.
+
+The full eval log explicitly contains successful matches for all three
+`cleanup_drain_timeout_retains_*` tests, both fault modes in
+`cleanup_observation_error_and_forced_expiry_fail_with_live_owned_processes`,
+`runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults`,
+all three `cleanup_handshake_*` tests,
+`sequential_admission_library_and_cleanup_lifetime`, and
+`unproved_worker_cleanup_stops_matrix_with_full_refusal_suffix`. Thus T5's
+same-path INFO is resolved by the unchanged real worker harness-error,
+stop-admission and complete-suffix control, not a reporting-code rewrite.
+The full suite also passes the real protocol proof, runner, report, provenance,
+privacy and trap cases. No no-match filter or old review receipt substitutes
+for these results.
+
+Decision 0076 remains proposed and unchanged. Namespace work stays with #221;
+macOS eval evidence stays with #201. The charter's platform/network/privileged
+CI checks and operator-owned live settings, sealing, hard-death recovery and
+decision acceptance are not claimed as local evidence. The unrelated review
+findings remain outside this repair. No push, merge, tag, publication, issue
+closure or decision acceptance occurred.
