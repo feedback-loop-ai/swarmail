@@ -1,0 +1,355 @@
+{
+  "implementation_commit": "5e49874c8d86931fc328f86a38bfbf5a868c573a",
+  "baseline_runner_commit": "f873523",
+  "runner_sha256": "c8ae9a195ff6d06b10a6e913aafe212e5d5df3adf5149f8b96323ba4ae048a92",
+  "offline": true,
+  "engine_sha256": "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
+  "gate_runs": {
+    "evals": {
+      "candidate": "5e49874c8d86931fc328f86a38bfbf5a868c573a",
+      "offline": true,
+      "checks": [
+        {
+          "name": "evals-fmt",
+          "command": "cargo fmt --manifest-path evals/Cargo.toml --all -- --check",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 0.25,
+          "log": "target/issue225/evals-fmt.log",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "evals-clippy-final",
+          "command": "cargo clippy --manifest-path evals/Cargo.toml --workspace --all-targets --locked -- -D warnings",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 6.82,
+          "log": "target/issue225/evals-clippy-final.log",
+          "log_sha256": "52e809801268d1713396d551519b7ffe52510b0a987390cec3945b4e49d09a32"
+        },
+        {
+          "name": "evals-test",
+          "command": "cargo test --manifest-path evals/Cargo.toml --workspace --locked",
+          "exit": 101,
+          "policy_sweep_warning": false,
+          "seconds": 35.01,
+          "log": "target/issue225/evals-test.log",
+          "log_sha256": "16a2241c1a32f13ddf1260f18f66a91be1c6d261f72e086c8a9dd5301e8973cf"
+        },
+        {
+          "name": "final-filter",
+          "command": "cargo test --manifest-path evals/Cargo.toml --locked --lib runner::test_probes::runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults -- --exact --nocapture",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 4.42,
+          "log": "target/issue225/final-filter.log",
+          "log_sha256": "d282c939669f9108721dc6df156408a1dcb91ad468dd0327eae8c13409c110d6"
+        },
+        {
+          "name": "expansion-final",
+          "command": "RUSTC_BOOTSTRAP=1 cargo rustc --manifest-path evals/Cargo.toml --lib --locked -- -Zunpretty=expanded > target/issue225/candidate-final-expanded.rs 2> target/issue225/candidate-final-expanded.log && cmp target/issue225/baseline-expanded.rs target/issue225/candidate-final-expanded.rs && sha256sum target/issue225/candidate-final-expanded.rs",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 9.82,
+          "log": "target/issue225/expansion-final.log",
+          "log_sha256": "71fcca764eed6d34b0d9531083e459ae98fb96e74131940742fbe92e2de2c224"
+        }
+      ]
+    },
+    "root": {
+      "candidate": "5e49874c8d86931fc328f86a38bfbf5a868c573a",
+      "offline": true,
+      "checks": [
+        {
+          "name": "engine",
+          "command": "printf '%s  %s\\n' ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f .forge/bin/brokkr | sha256sum -c -",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 0.11,
+          "log": "target/issue225/engine.log",
+          "log_sha256": "d59591f9d6f693cfccb0906c65ee27e7aa2a907ab4d85f90d8c8303abfee6c10"
+        },
+        {
+          "name": "shims",
+          "command": "sha256sum --check --strict bundles/self/scripts/shims.sha256",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 0.0,
+          "log": "target/issue225/shims.log",
+          "log_sha256": "785e16dc6e9db3dcf3e2f94347f10c6c3508b97edc039d75e9676f3b0ea1b39c"
+        },
+        {
+          "name": "root-fmt",
+          "command": "cargo fmt --all -- --check",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 0.71,
+          "log": "target/issue225/root-fmt.log",
+          "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "root-clippy",
+          "command": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 0.27,
+          "log": "target/issue225/root-clippy.log",
+          "log_sha256": "732186322402325172940531d8d6d7cfac85dc902585b2bef6715ad6839dacfd"
+        },
+        {
+          "name": "root-test",
+          "command": "cargo test --workspace --locked",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 122.97,
+          "log": "target/issue225/root-test.log",
+          "log_sha256": "e1b1902be6c0e240cb3568bf880e9eaa24a5babb4daae95531c507e54eecea8a"
+        },
+        {
+          "name": "bundle",
+          "command": ".forge/bin/brokkr compile --bundle bundles/self",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 0.02,
+          "log": "target/issue225/bundle.log",
+          "log_sha256": "d83e55c6a693661f4a78a095d0faed1ef9908c0bb3f6149a3fbf5c4800914a7a"
+        }
+      ]
+    },
+    "coverage": {
+      "candidate": "5e49874c8d86931fc328f86a38bfbf5a868c573a",
+      "offline": true,
+      "checks": [
+        {
+          "name": "coverage",
+          "command": "bash scripts/coverage-gate.sh",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 223.54,
+          "log": "target/issue225/coverage.log",
+          "log_sha256": "d225a4e1cdcc95493381e2ea4f2e38d8b9b6e8f187dbfc144036587d1e8110ef"
+        }
+      ]
+    },
+    "proofs": {
+      "candidate": "5e49874c8d86931fc328f86a38bfbf5a868c573a",
+      "offline": true,
+      "checks": [
+        {
+          "name": "coverage-selftest",
+          "command": "bash scripts/coverage-gate.sh selftest",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 12.33,
+          "log": "target/issue225/coverage-selftest.log",
+          "log_sha256": "11f1f9f1e0ee75e8d3ab769a8159fb87daf380a39a03269599ccced9e650a459"
+        },
+        {
+          "name": "design-selftest",
+          "command": "bash bundles/self/scripts/design-check.sh selftest",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 4.68,
+          "log": "target/issue225/design-selftest.log",
+          "log_sha256": "1d5eb6cef8be9f99e87fa8b1394ed2df9172cf2c4da06f6d74cc03c95245735e"
+        },
+        {
+          "name": "delivery-proof",
+          "command": "bash bundles/self/scripts/delivery-proof-test.sh",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 8.73,
+          "log": "target/issue225/delivery-proof.log",
+          "log_sha256": "2969d73ecccc45098e6907c604407b44967f3fe4669573a6cd4c5e8b82785d8c"
+        },
+        {
+          "name": "publish-proof",
+          "command": "bash scripts/publish-guard-test.sh",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 5.88,
+          "log": "target/issue225/publish-proof.log",
+          "log_sha256": "3684a27ecd134feda14d0d390530df81b131c0cb53eea67613438a18ab22a7e4"
+        },
+        {
+          "name": "seal-proof",
+          "command": "bash scripts/seal-branch-test.sh",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 4.95,
+          "log": "target/issue225/seal-proof.log",
+          "log_sha256": "e022b8e780d716cdbafdf4723515738c62bf480308724cfbb2051566d835b200"
+        },
+        {
+          "name": "licenses",
+          "command": "cargo deny check licenses",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 0.67,
+          "log": "target/issue225/licenses.log",
+          "log_sha256": "71dadc8c8978da797b94dc581b666330c737551839c8fc820d7647130930c4b7"
+        },
+        {
+          "name": "native-tls",
+          "command": "out=$(cargo tree -i native-tls 2>&1); code=$?\nif [ \"$code\" -eq 0 ]; then\n  printf '%s\\n' \"$out\"; exit 1\nelif printf '%s' \"$out\" | grep -q 'did not match any packages'; then\n  printf '%s\\n' \"$out\"; exit 0\nelse\n  printf '%s\\n' \"$out\"; exit 1\nfi",
+          "exit": 0,
+          "policy_sweep_warning": false,
+          "seconds": 0.18,
+          "log": "target/issue225/native-tls.log",
+          "log_sha256": "c20322ba4adf68e75b4b544969d1187b0abaf3b0585b10cd47b0ce97c167025f"
+        }
+      ]
+    }
+  },
+  "full_evals_retry": {
+    "command": "CARGO_NET_OFFLINE=true cargo test --manifest-path evals/Cargo.toml --workspace --locked --no-fail-fast",
+    "exit": 0,
+    "log": "target/issue225/evals-test-retry.log",
+    "log_sha256": "adc7407456b8beb1031e401fef760c624e23a42f4f476761711c91abc26b1ba3",
+    "note": "Initial default full suite hit the intake-recorded matrix stdout backpressure NotFound at main.rs:2312; complete retry passes all targets. No repair of that pre-existing intermittent test is claimed.",
+    "passed_by_target": [
+      37,
+      13,
+      2,
+      14,
+      5,
+      14,
+      32,
+      13,
+      0
+    ]
+  },
+  "causal_matrix": [
+    {
+      "case": "positive delayed=false fault=None signal=Some(15)",
+      "events": [
+        "held(1429); sample-pending; await-pending=true"
+      ]
+    },
+    {
+      "case": "positive delayed=false fault=None signal=Some(2)",
+      "events": [
+        "held(1828); sample-pending; await-pending=true"
+      ]
+    },
+    {
+      "case": "positive delayed=false fault=Some(\"panic\") signal=None",
+      "events": [
+        "held(2227); sample-pending; await-pending=true"
+      ]
+    },
+    {
+      "case": "positive delayed=false fault=Some(\"server_death\") signal=None",
+      "events": [
+        "held(2626); sample-pending; await-pending=true"
+      ]
+    },
+    {
+      "case": "bypass delayed=false signal=15",
+      "events": [
+        "held(3025); sample-pending; await-pending=false"
+      ]
+    },
+    {
+      "case": "bypass delayed=false signal=2",
+      "events": [
+        "held(3424); sample-pending; await-pending=false"
+      ]
+    },
+    {
+      "case": "positive delayed=true fault=None signal=Some(15)",
+      "events": [
+        "pre-entry(3564); permit-entry",
+        "pre-entry(3693); permit-entry",
+        "pre-entry(3823); permit-entry",
+        "held(3823); sample-pending; await-pending=true"
+      ]
+    },
+    {
+      "case": "positive delayed=true fault=None signal=Some(2)",
+      "events": [
+        "pre-entry(3963); permit-entry",
+        "pre-entry(4092); permit-entry",
+        "pre-entry(4222); permit-entry",
+        "held(4222); sample-pending; await-pending=true"
+      ]
+    },
+    {
+      "case": "positive delayed=true fault=Some(\"panic\") signal=None",
+      "events": [
+        "pre-entry(4362); permit-entry",
+        "pre-entry(4621); permit-entry",
+        "pre-entry(4491); permit-entry",
+        "held(4621); sample-pending; await-pending=true"
+      ]
+    },
+    {
+      "case": "positive delayed=true fault=Some(\"server_death\") signal=None",
+      "events": [
+        "pre-entry(5020); permit-entry",
+        "held(5020); sample-pending; await-pending=true"
+      ]
+    },
+    {
+      "case": "bypass delayed=true signal=15",
+      "events": [
+        "pre-entry(5160); permit-entry",
+        "pre-entry(5289); permit-entry",
+        "pre-entry(5419); permit-entry",
+        "held(5419); sample-pending; await-pending=false"
+      ]
+    },
+    {
+      "case": "bypass delayed=true signal=2",
+      "events": [
+        "pre-entry(5559); permit-entry",
+        "pre-entry(5688); permit-entry",
+        "pre-entry(5818); permit-entry",
+        "held(5818); sample-pending; await-pending=false"
+      ]
+    }
+  ],
+  "mutant": {
+    "candidate": "5e49874c8d86931fc328f86a38bfbf5a868c573a",
+    "patch": "--- candidate\n+++ mutant\n@@ -1137,6 +1137,10 @@\n                         }\n                         return Ok(());\n                     }\n+                    #[cfg(target_os = \"linux\")]\n+                    if cleanup_probe::CURRENT.get().is_some() {\n+                        return Ok(());\n+                    }\n                     let mut recorded = false;\n                     std::future::poll_fn(|cx| {\n                         let polled = next.as_mut().poll(cx);\n",
+    "command": "CARGO_NET_OFFLINE=true cargo test --manifest-path evals/Cargo.toml --locked --lib runner::test_probes::runner_cleanup_await_pending_and_bypass_controls_cover_signals_and_faults -- --exact --nocapture",
+    "exit": 101,
+    "executed_tests": 1,
+    "assertion": "runner returned before the awaited cleanup fence: live owned work",
+    "log": "target/issue225/mutant-filter.log",
+    "log_sha256": "0b47049f7d9f2d7db1700c942e3c229af9b3e93764d7793ad2b649cd2ff05078",
+    "restored_exit": 0,
+    "restored_executed_tests": 1,
+    "restored_log": "target/issue225/restored-filter.log",
+    "restored_log_sha256": "d95c46b89b024a98b717bbfa1265e19357debca598bbfa673901707e6ea74399",
+    "restored_source_byte_identical_to_commit": true
+  },
+  "production_equivalence": {
+    "command": "CARGO_NET_OFFLINE=true RUSTC_BOOTSTRAP=1 cargo rustc --manifest-path evals/Cargo.toml --lib --locked -- -Zunpretty=expanded",
+    "compiler": "rustc 1.98.0 (88d9e12ae 2026-08-18)\nbinary: rustc\ncommit-hash: 88d9e12ae178fab0fb5cc050a94da85685d449ea\ncommit-date: 2026-08-18\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.0\nLLVM version: 22.1.8\n",
+    "compared": "Whole canonical non-test library expansion, no stripping or normalization",
+    "equal": true,
+    "baseline_sha256": "615d358b04d7398aae8d01311874e0600f6669d55eb82f71627b76d87a04c4fe",
+    "candidate_sha256": "615d358b04d7398aae8d01311874e0600f6669d55eb82f71627b76d87a04c4fe"
+  },
+  "exact_coverage": {
+    "summary": {
+      "lines": {
+        "count": 13878,
+        "covered": 13878
+      },
+      "branches": {
+        "count": 782,
+        "covered": 782
+      },
+      "functions": {
+        "count": 1508,
+        "covered": 1508
+      }
+    },
+    "summary_path": "target/coverage/run.W6xtfk/coverage-summary.json",
+    "summary_sha256": "afdcc6a637ee7bb3d673d6462818b7964a65bcc8cbcceb3411103df7159f8aa3",
+    "lcov_path": "target/coverage/run.W6xtfk/lcov.info",
+    "lcov_sha256": "e5a0dadf40ef9556ff0126f5c250ab2559f4d57303c3b7986029a3b1602c7e06"
+  }
+}
