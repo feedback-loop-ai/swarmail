@@ -135,8 +135,11 @@ r = subprocess.run(
     text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
 )
 print(r.stdout, end='')
-expected = "error: package ID specification 'native-tls' did not match any packages"
-if r.returncode == 0 or expected not in r.stdout.splitlines():
+expected = {
+    "error: package ID specification 'native-tls' did not match any packages",
+    "error: package ID specification `native-tls` did not match any packages",
+}
+if r.returncode == 0 or not expected.intersection(r.stdout.splitlines()):
     raise SystemExit('native-tls absence was not proven')
 CHECK_NATIVE_TLS
 ```
@@ -145,3 +148,27 @@ Use this candidate's bundles and recipe routing unchanged. No benchmark is
 required for this test-only repair. Intake changes no implementation and claims
 no repaired-candidate or macOS pass; any intake gate receipts exercise the
 existing Linux fixture and must not substitute for final verification.
+
+
+## Intake execution receipt
+
+On Linux at committed framing `929f750a789773912e8f06cb6d7a1834e1899638`,
+all house gates exited zero: fmt, locked clippy and workspace tests, the
+pinned local engine compile (zero unruled valuations), exact coverage
+(100/100/100; `target/coverage/run.zKYlYX`), coverage selftest, publish guard,
+seal proof and licenses. Shim integrity, design selftest and delivery tamper
+proof also passed. The focused binary test selected exactly one passing test;
+the complete binary suite had 40 passes and two existing ignored tests.
+No test was newly ignored.
+
+The initial dependency probe rejected only Cargo's backtick diagnostic quoting.
+The corrected strict matcher above was executed and passed on Cargo's explicit
+no-matching-package refusal. The original failed matcher receipt is retained.
+Only this documentation command needed correction; no Rust code changed.
+The tool RPC response timed out, but the command continued and its saved
+per-command receipts establish completed gate exits, including coverage.
+
+Raw logs and `receipt.json` are in the ignored workspace directory
+`.forge/epic192/issue191/intake-macos-gates/`. These are intake Linux receipts
+for the existing fixture, not proof of a repaired implementation or macOS.
+The final implement/verify phases must run their gates on the repair.
