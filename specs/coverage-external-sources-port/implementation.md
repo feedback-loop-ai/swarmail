@@ -41,8 +41,25 @@ The merged canonical gate SHA-256 is
 explicitly bound by the constitution test. Fixed public shims and their manifest
 are unchanged and pass strict checksum validation. The operator packet and
 candidate-local engine digest passed verification. All five standalone scanner
-tests pass. The full local gate inventory will run after this implementation
-commit and its fresh receipts will be recorded here before the seat returns.
+tests pass. All nine house-gate commands and the additional scanner,
+constitution, design/delivery proof and fail-closed native-tls checks passed on
+committed implementation `e3186a74ca0642c70ac16ad14e2b29110ebc4aa1` (tree
+`888ee4074994ea3df1a0d028f09e5452dcd905f3`). Commands, exits, log hashes and tested
+proof identities are committed in [implementation-gates.json](implementation-gates.json).
+The subsequent receipt commit changes documentation only.
+
+The exact coverage report at `target/coverage/run.btbroT` records
+14,009/14,009 lines, 788/788 branches and 1,527/1,527 functions: positive totals
+and integer zero missed in every dimension. Full selftest confirms all six new
+fixtures and main's existing proofs. The fresh self-bundle digest is
+`42eca49ef622af176e12ef8d966c27a27e8f4c3d44993da3ed5af96c018ec9e3`, and its manifest
+binds the merged gate and unchanged scanner identities. The local gate runner
+continued to completion after a 300-second tool-transport timeout; the finished
+receipt and per-command logs, rather than that timeout, establish these verdicts.
+
+This discharges the local implementation proofs for T1–T6 and hands off T7's
+committed candidate. Fresh pinned recipe verification and protected review are
+subsequent seats' obligations; no feature-level SHIP-COMPLETE claim is made here.
 
 The implementation seat does not replace subsequent committed-candidate verify
 or protected review. Those must use freshly pinned changed proof resources and

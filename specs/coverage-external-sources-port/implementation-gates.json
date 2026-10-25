@@ -1,0 +1,182 @@
+{
+  "phase": "committed implementation local gates",
+  "commit": "e3186a74ca0642c70ac16ad14e2b29110ebc4aa1",
+  "tree": "888ee4074994ea3df1a0d028f09e5452dcd905f3",
+  "engine_sha256": "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
+  "results": [
+    {
+      "name": "engine",
+      "command": "printf '%s  %s\\n' ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f .forge/bin/brokkr | sha256sum --check --strict",
+      "exit": 0,
+      "seconds": 0.11,
+      "log_sha256": "d59591f9d6f693cfccb0906c65ee27e7aa2a907ab4d85f90d8c8303abfee6c10"
+    },
+    {
+      "name": "shims",
+      "command": "sha256sum --check --strict bundles/self/scripts/shims.sha256",
+      "exit": 0,
+      "seconds": 0.01,
+      "log_sha256": "785e16dc6e9db3dcf3e2f94347f10c6c3508b97edc039d75e9676f3b0ea1b39c"
+    },
+    {
+      "name": "fmt",
+      "command": "cargo fmt --all -- --check",
+      "exit": 0,
+      "seconds": 0.66,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "clippy",
+      "command": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "exit": 0,
+      "seconds": 0.48,
+      "log_sha256": "f07de0a311599ffbd2f5273c8f96a04b640d70ef24258be608bdd1a7648f4b8d"
+    },
+    {
+      "name": "tests",
+      "command": "cargo test --workspace --locked",
+      "exit": 0,
+      "seconds": 123.59,
+      "log_sha256": "714762e2635bce2b3e43328873c5bae4c8125c3caf2020286b9066a866939603"
+    },
+    {
+      "name": "compile",
+      "command": ".forge/bin/brokkr compile --bundle bundles/self",
+      "exit": 0,
+      "seconds": 0.02,
+      "log_sha256": "ad83b8df41a4b44f1d748cf6c6ef17dd8a7db503246c50e2ff0dab8e04b895ff"
+    },
+    {
+      "name": "coverage",
+      "command": "bash bundles/self/scripts/coverage-gate.sh",
+      "exit": 0,
+      "seconds": 226.36,
+      "log_sha256": "45368039d2243009cd1db82e9204747eb7f62344434c8bea5d680214852d9d4c"
+    },
+    {
+      "name": "coverage-selftest",
+      "command": "bash bundles/self/scripts/coverage-gate.sh selftest",
+      "exit": 0,
+      "seconds": 19.42,
+      "log_sha256": "06e67c1b765e8b0aac5cbab6eb8be4e2571d2ca7e10ee0046e0368764d222906"
+    },
+    {
+      "name": "publish-guard",
+      "command": "bash bundles/self/scripts/publish-guard-test.sh",
+      "exit": 0,
+      "seconds": 6.18,
+      "log_sha256": "939ac40398ee171a956e8423b96d4a9c62b4b1c30250a6fa6146b585ddf0647f"
+    },
+    {
+      "name": "seal-branch",
+      "command": "bash bundles/self/scripts/seal-branch-test.sh",
+      "exit": 0,
+      "seconds": 4.91,
+      "log_sha256": "e022b8e780d716cdbafdf4723515738c62bf480308724cfbb2051566d835b200"
+    },
+    {
+      "name": "licenses",
+      "command": "cargo deny check licenses",
+      "exit": 0,
+      "seconds": 0.67,
+      "log_sha256": "71dadc8c8978da797b94dc581b666330c737551839c8fc820d7647130930c4b7"
+    },
+    {
+      "name": "scanner",
+      "command": "cargo test --manifest-path bundles/self/scripts/coverage-fn-scan/Cargo.toml --locked --offline --target-dir target/coverage/issue219-port-scanner-tests",
+      "exit": 0,
+      "seconds": 2.92,
+      "log_sha256": "b634cb9cf9ce578f4c93d60f4d16c053f3f38fb7c39b049e1d4e1dee8efb2b3b"
+    },
+    {
+      "name": "constitution",
+      "command": "cargo test --workspace --locked --test delivery_constitution",
+      "exit": 0,
+      "seconds": 0.67,
+      "log_sha256": "7fa68ba2918ac06d60e0fc291fba3383ad1282d11cc0421c5e18c8fba4b5222c"
+    },
+    {
+      "name": "design-selftest",
+      "command": "bash bundles/self/scripts/design-check.sh selftest",
+      "exit": 0,
+      "seconds": 4.74,
+      "log_sha256": "1d5eb6cef8be9f99e87fa8b1394ed2df9172cf2c4da06f6d74cc03c95245735e"
+    },
+    {
+      "name": "delivery-proof",
+      "command": "bash bundles/self/scripts/delivery-proof-test.sh",
+      "exit": 0,
+      "seconds": 9.22,
+      "log_sha256": "2969d73ecccc45098e6907c604407b44967f3fe4669573a6cd4c5e8b82785d8c"
+    },
+    {
+      "name": "native-tls",
+      "command": "out=$(cargo tree -i native-tls 2>&1); code=$?\nprintf '%s\n' \"$out\"\nif [ \"$code\" -eq 0 ]; then exit 1; elif printf '%s' \"$out\" | grep -q 'did not match any packages'; then exit 0; else exit 1; fi",
+      "exit": 0,
+      "seconds": 0.16,
+      "log_sha256": "c20322ba4adf68e75b4b544969d1187b0abaf3b0585b10cd47b0ce97c167025f"
+    }
+  ],
+  "proof_hashes": {
+    "bundles/self/scripts/coverage-gate.sh": "f96b60bef6582efbce6166a6a8da71ab73aad81e545908e2bf6238e5b36c1fbf",
+    "bundles/self/scripts/coverage-fn-scan/src/main.rs": "6c0f9b7df225e515b978cd6aec26c00a5a44b43b65984132064945d2f60bbe3b",
+    "bundles/self/scripts/shims.sha256": "72d34b479a900da837f34a4c3c3066f5964d067050166f7ab4067ff076978566",
+    "bundles/self/tooling.json": "44b2933b17b700aab71078752f562b82ff1e6e231195f8e00e910f1b18376f89",
+    "tests/delivery_constitution.rs": "58b10b4928131bd2d3e12330aaf069215f62184c2e8a4d469f82f6f86a81f279"
+  },
+  "running": null,
+  "all_passed": true,
+  "scope": "Implementation local proof on the committed code and proof bytes. The following receipt commit changes only documentation; fresh recipe verification and protected review remain downstream.",
+  "coverage_evidence": "target/coverage/run.btbroT",
+  "coverage_summary": {
+    "lines": {
+      "count": 14009,
+      "covered": 14009
+    },
+    "branches": {
+      "count": 788,
+      "covered": 788
+    },
+    "functions": {
+      "count": 1527,
+      "covered": 1527
+    }
+  },
+  "compiled_bundle_digest": "42eca49ef622af176e12ef8d966c27a27e8f4c3d44993da3ed5af96c018ec9e3",
+  "mutation": {
+    "mutation": "silently omit external absolute production prerequisites before normalization",
+    "results": [
+      {
+        "name": "mutant",
+        "command": [
+          "bash",
+          "/home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-219-port/target/coverage/issue219-port-mutant/coverage-gate.sh",
+          "selftest"
+        ],
+        "exit": 1
+      },
+      {
+        "name": "restored",
+        "command": [
+          "bash",
+          "/home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-219-port/bundles/self/scripts/coverage-gate.sh",
+          "selftest"
+        ],
+        "exit": 0
+      }
+    ],
+    "assertion": "all four named external-source refusal assertions fail because scanner succeeds; restored full selftest passes",
+    "canonical_gate_sha256": "f96b60bef6582efbce6166a6a8da71ab73aad81e545908e2bf6238e5b36c1fbf",
+    "artifact_isolation": "copied mutant gate uses its own helper target directory; canonical gate/scanner bytes are untouched",
+    "canonical_scanner_sha256": "6c0f9b7df225e515b978cd6aec26c00a5a44b43b65984132064945d2f60bbe3b",
+    "mutant_gate_sha256": "367ced68942c2992cfa625840da93bc94f1e6edd8b669d43e6af121f0c6400ac",
+    "mutant_scanner_sha256": "a1b83fdd90520e2b4b94b003953f55ea32164ab6c7ce03dd6bf4888cb8389253",
+    "evidence_hashes": {
+      "mutant.patch": "dbd8857612cd8329f35b9eba3f6e7001e2d333b3052c11fcc9ccf00cdf9a126c",
+      "mutant-selftest.log": "beaf2be0ef76682b26ce2c88daf0872a94b9181108d2dbaa7f054435155f345a",
+      "restored-selftest.log": "2defd08cae77efe32748d1ada777b6daea2a5ed9745244d2b1aed7056f3d3ba1",
+      "mutate.py": "bf0020e466afc140f77743ef1d56f9628a09356c97a39dc07e7a7875be449c46"
+    }
+  },
+  "logs_directory": ".forge/evidence/issue219-port-implementation"
+}
