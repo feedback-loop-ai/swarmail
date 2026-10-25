@@ -1,180 +1,163 @@
-# Plan: residual test proofs
+# Plan: portable SIGTERM delivery proof
 
 ## Technical context
 
-One Rust 2024 crate; `src/api.rs` aliases Registry to a real std mutex over a
-BTreeMap. `cumulative_rows` holds one guard while summing and calling
-`render_rows`. Its inline test already seeds the required cap/overflow fixture,
-but uses a source literal as its discriminator. Code baseline is `68b4ef8`;
-design-entry `9db0ecc` adds intake only. Linux is local, macOS is CI-owned.
-No new dependency, feature, schema, public API or non-test behavior is needed.
+One Rust 2024 crate, existing Tokio networking and a real child-process binary
+suite. The active code baseline is `90eb2a0333a751576c94d82474e4410040d68d43`;
+`fb4c6ea` is design entry after intake. Linux execution is local; macOS is
+CI-owned. The defect is a fixture TCP state assumption, not dispatcher code.
+No new dependency, schema, public API, configuration or production behavior.
 
-No plan template exists in this candidate. This plan supplies technical context,
-constitution check, structure, research, data model, contracts, quickstart and
-risks directly; separate research/model/contract files would add no useful scope.
+No plan template exists under this candidate's `.specify/`; this plan supplies
+the required technical context, constitution check, structure, research, data
+model, contracts, quickstart and risks directly. No separate research, model
+or contract file is needed for this single test fixture.
 
 ## Constitution check
 
-Preserve 0001–0005 and 0047 §2 unchanged. The test remains inline and measured
-under 0020 rules 1 and 4; all support outside it is `#[cfg(test)]` on its owner,
-with an installer test and coverage of both installed and absent paths. No
-cold-path harness migration, exclusions, coverage denominator manipulation,
-feature seams, allowlist changes or test mocks. Use pinned executed proofs
-(0050), unsigned commits (0056), and unchanged 0057/0058 review routing and
-security hold. This is stronger evidence for an accepted invariant, not a
-semantic amendment; no ADR is drafted or accepted.
+Preserve frozen 0001–0003, ingest extraction 0005 and real protocol isolation.
+Keep the wire test in `tests/binary.rs` under 0020; use observed events and
+bounded waits under 0018. Preserve 0041/0048 ledger arithmetic, warning causes,
+redaction, shutdown order, retry count and budgets. No cfg seam, coverage
+exclusion, harness relocation or denominator change. Use pinned proofs (0050),
+unsigned commits (0056) and unchanged candidate recipe routing (0057/0058).
+No semantic amendment or decision acceptance is part of this work.
 
 ## Project structure and files
 
 | Path | Role and permitted change |
-|---|---|
-| `specs/residual-test-proofs/{spec,plan,tasks}.md` | Chief's only three committed design files; reconcile active framing and preserve dated history. |
-| `specs/residual-test-proofs/intake-23.5.md` | Read-only resolved intake authority for this phase. |
-| `src/api.rs` | Implementation changes only the named inline snapshot test and private test-only acquisition support beside its owner. |
-| `Dockerfile`, `tests/common/mod.rs`, `tests/binary.rs`, `tests/webhook.rs` | Preserve bytes against `68b4ef8`; reviewed 23.1–23.4 and distinct webhook proof. |
-| `.forge/epic192/issue191/` | Ignored receipts, exact mutation backup/diff and command logs; never stage. |
+| --- | --- |
+| `specs/residual-test-proofs/{spec,plan,tasks}.md` | Exactly the chief's three design-commit files; reconcile current scope and retain dated provenance. |
+| `specs/residual-test-proofs/intake-macos.md` | Read-only current framing and historical intake receipts. |
+| `tests/binary.rs` | Implementation edits only the named SIGTERM test's fixture, ownership checks, comments and final drop. |
+| `Dockerfile`, `tests/common/mod.rs`, `tests/webhook.rs`, `src/api.rs` | Preserve reviewed #191 work byte-for-byte against `90eb2a0`. |
+| `.forge/epic192/issue191/` | Ignored evidence and new gate receipts, never staged. |
+| `.brokkr/state/design/positions/` | Ignored panel evidence, never staged. |
 
-Other source, decisions, Cargo, dependencies, gates, tooling and routing are
-preservation context. No new source files or shared registry refactor.
+All other code, Cargo files, decisions, gates, tooling and routing remain
+preserved. No new source file or shared socket abstraction.
 
 ## Research and resolved choices
 
-Both panel positions and the local review identify the same defect: idle output
-plus source comparison cannot prove one executed snapshot. The requested intake
-directory and operator-rulings file are absent; committed intake and current
-operator framing resolve the necessary seam permission. The old binary-gap
-narrative is obsolete on `68b4ef8`; AC1–AC5 remain unchanged.
+Checksum-verified local evidence identifies repeatable macOS timeout for the
+bound/unconnected target. Both panel positions recommend a held established
+connection and report supporting Linux socket experiments. Neither establishes
+Rust regression success or macOS portability. The proposed state is an
+exclusively bound client connected to one peer: an unrelated incoming SYN has
+no matching established four-tuple and no listener at that local endpoint.
+The existing exact refusal test makes this assumption executable on each OS.
 
-Choose simplicity's scrape-local forwarding facade with next-call thread-local
-installation, adopting robustness's real-guard, isolation and negative-control
-requirements. Reject replacing Registry globally and converting constructors.
-That would observe more consumers but widen the diff without strengthening the
-required current split-lock proof. The narrower observer must own every access
-within the scrape, including any callee: future bypasses require repairing the
-proof, not claiming the count still covers them. No source pin or entry-only
-notification can substitute for acquisition observation. No writer or scheduler
-coordination is required because the count distinguishes the mutant even on an
-idle registry. See the spec's explicit rulings and accepted limits.
+Adopt robustness's checks with competing address reuse both disabled and enabled;
+prefer simplicity's inline setup, no background keeper and early release of the
+setup listener. The two streams own the endpoint through the test. The spec
+records each ruling and its cost. Accepting timeouts risks consuming the stalled
+delivery's own retry lifetime; accept/close changes failure stage; bind/drop
+restores the original race. None is a fallback if CI rejects this fixture.
 
 ## Implementation approach
 
-1. Record actual HEAD, code baseline, platform and clean status. Confirm AC1–AC5
-   preservation and read the `/metrics` call, `cumulative_rows` and `render_rows`.
-   Save a baseline for shipping source comparison. Leave fixture and helper
-   implementation untouched. Do not reuse old mutation/gate receipts.
-2. Add private `#[cfg(test)]` support in `src/api.rs`: a borrowed-registry facade
-   holding that real registry and an optional local acquisition counter. Its
-   `lock()` delegates directly to the same std mutex and returns its actual
-   `LockResult<MutexGuard<...>>`; it adds only observation, preserving poison
-   errors and guard lifetime. Expose no Deref/unobserved lock route. Keep the
-   alias, constructors and current non-test lock/sum/render statements unchanged.
-   At `cumulative_rows` entry, a cfg(test)-only binding shadows the registry with
-   this facade. Helpers used by a scrape must retain the observed access path.
-3. Use a next-call thread-local slot, consistent with the owner module's existing
-   seam ownership pattern. The installer stores a local `Rc<Cell<usize>>` counter;
-   scrape entry takes the slot, transferring observer ownership to that invocation.
-   The synchronous call does not await, so no cross-thread coordination is needed.
-   Consume installation before any assertion, avoiding leftover hooks after
-   failure. Setup uses its own private registry and precedes installation.
-   Keep the implementation small; helper names are not a contract.
-4. Remove the test's `include_str!`, extraction anchors, copied implementation and
-   source assertion. Retain its six real registrations and exact expected bytes.
-   Exercise an unobserved call and an observed call; each renders the fixture
-   exactly. The observed call asserts count equals one, with a single-snapshot
-   diagnostic (zero also fails). A subsequent unobserved call may verify slot
-   consumption without adding failure-only seam branches. Cover presence and
-   absence through normal passing execution. Do not assert/panic on the second
-   lock inside the facade: count normally and let the test supply the diagnostic.
-5. Run the exact named test below, requiring one selected test and green exit.
-   Save the repaired `src/api.rs` bytes and hash, plus candidate identity and
-   scoped diff. Install cleanup before any mutation. Temporarily change only
-   the shared scrape statements to sum within a scoped first guard, release it,
-   reacquire through the unchanged observed binding, and render with saved total.
-   Keep test and seam unchanged. Use the identical command: it must compile,
-   select one test and fail at the count assertion with observed two/expected
-   one. Preserve exact output assertions; idle output is not the discriminator.
-   Save mutant diff, output and exit. A build error, timeout, source mismatch,
-   zero tests or unrelated panic refuses the experiment.
-6. Restore exact saved bytes on success and failure, verify equality, then rerun
-   the same named test green. Never stage the mutant. A failed proof stays open;
-   restoration alone does not make the negative control pass. Inspect the final
-   diff against `68b4ef8`: only the inline test and cfg(test)-only support change
-   source. Inspect non-test expansion to confirm the seam is absent and shipping
-   statements unchanged; this is not a claim of reproducible executable hashes.
-7. Execute the existing real-protocol tests and full local house inventory on the
-   restored candidate. Save candidate-bound commands, platform, exit and relevant
-   diagnostics in ignored evidence. Require successful zero-missed coverage and
-   coverage selftest, without moving code or lowering any threshold. Keep
-   implementation tasks open until their evidence exists; hand off independently
-   to verify/review with unsigned scoped commits, never publication or acceptance.
+1. Verify the evidence checksums and engine identity; record HEAD, platform and
+   initial clean status. Compare scope to `90eb2a0`. Preserve all earlier fixes.
+2. In the named test, create a Tokio IPv4 loopback listener on port zero. Create
+   `TcpSocket::new_v4()`, call `set_reuseaddr(false)` and explicitly bind to
+   `127.0.0.1:0`. Connect this socket to the listener under `HELPER_DEADLINE`,
+   then accept the peer under the same deadline discipline. Connect can finish
+   into the listener backlog before accept is polled; no spawned task is needed.
+3. Read the connected client's `local_addr()` into `refused`. Retain the client
+   stream and accepted peer as ordinary owned locals. Drop the setup listener
+   after accept; it has a different address. No read/write/shutdown/half-close
+   or drop/rebind of the pair is allowed before all final assertions.
+4. Preserve the existing deadline-bounded `TcpStream::connect(refused)` probe
+   and exact `ConnectionRefused` assertion; update only its fixture wording.
+   Keep webhook URL, SMTP delivery, stalled-request synchronization, metric
+   observation, SIGTERM, child cleanup, final totals and redaction checks.
+5. After existing final assertions, loop over `[false, true]`: create a fresh
+   IPv4 TCP socket, set its reuse flag to that value and require bind to
+   `refused` to fail with `AddrInUse`. Never listen on a contender. Let each
+   contender drop, then explicitly drop the retained stream pair last.
+   RAII releases every local resource on panic; no detached task or leak.
+6. Run the exact focused test, checking that one test ran, then the full binary
+   suite. Review the diff and protected-file equality. Preserve all assertions
+   and deadlines; a setup/bind/refusal failure requires repair, not retry loops.
+7. Run every local house gate on final code, save fresh receipts and commit the
+   scoped implementation unsigned. Hand off to independent verify/review and
+   CI's macOS test. Design-baseline receipts do not close implementation tasks.
 
 ## Data model and contracts
 
-No application data model, metric names, encoding or persistence changes.
-Test-only state consists of a next-call optional counter, a facade borrowing one
-registry, and the local test-owned counter handle. Lifecycle: seed private map →
-install observer → take slot on synchronous scrape entry → observe each real
-lock → sum/render under actual guard → return/drop facade → assert output/count.
-The cleared slot cannot affect the next scrape or another test thread.
+No application model or wire-contract change. Test state is one ephemeral setup
+listener, one explicitly bound outgoing connection, its accepted peer and the
+client's local SocketAddr. Lifecycle: bind → connect → accept → release setup
+listener → probe refusal → configure real webhook → SMTP → observe request and
+exhaustion → SIGTERM → EOF/reap → assert ledger/redaction → assert exclusive
+bind → release pair. All setup awaits are bounded. Socket ownership is local,
+not global mutable state, port-number guessing or TIME_WAIT dependence.
 
-The fixture stays total 6, LF overflow 2, a 2, b 1, c 1. Test-only observation
-measures lock acquisitions in this path, not every conceivable copied snapshot
-or cross-family atomicity. `render_rows` still uses the actual held map. The
-negative control releases the first guard before reacquiring; trying to lock
-twice while holding the first would deadlock and supply no valid proof.
-
-Preserve independent webhook delivery and stored-mail truth; no new ordering
-between SMTP receipt and observed retry exhaustion is claimed. Frozen storage,
-waiter and pruning guarantees, ingest extraction, hostile DATA handling and TLS
-verification remain unchanged and are not newly proved by this local seam.
+The final ledger remains delivered=0, dropped=0, lagged=0, exhausted=1,
+aborted=1. The default-level stop event appears once, with exactly one exhaustion
+warning containing a cause and no test credentials. SMTP acceptance remains
+independent of webhook success. This proves orderly shutdown accounting, not
+crash delivery durability or a response after forced process termination.
 
 ## Quickstart and verification
 
 ```bash
-# Use exactly this command on repaired, mutant and restored source:
-cargo test --locked --lib api::tests::cumulative_scrape_uses_one_registry_snapshot -- --exact
-# Preserve the already-reviewed real-server proofs:
+(cd .forge/epic192/issue191 && sha256sum --check --strict SHA256SUMS)
+printf '%s  %s\n' ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f .forge/bin/brokkr | sha256sum --check --strict
+sha256sum --check --strict bundles/self/scripts/shims.sha256
 cargo test --locked --test binary sigterm_with_a_delivery_in_flight_prints_the_final_counts -- --exact
-cargo test --locked --test webhook refused_connection_never_blocks_the_smtp_path -- --exact
-cargo test --locked --test api --test lifecycle --test binary --test webhook --test mcp --test smtp_edges
+cargo test --locked --test binary
 ```
 
-Each focused command selects exactly one test. Execute the complete
-[sole house gate inventory](../../docs/house-rules.md#gates--part-of-every-change),
-including fmt, locked clippy/test, bundle compile, coverage,
-coverage selftest, publish-guard proof, seal-branch proof and licenses. Use
-`.forge/bin/brokkr compile --bundle bundles/self` only after its SHA-256 equals
-`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`
-and `bundles/self/tooling.json`'s binary identity. Check shims against
-`bundles/self/scripts/shims.sha256`; independent verify executes pinned copies.
-Exact coverage requires zero missed lines, branches and functions plus exit zero.
+Require exactly one selected passing test in the focused invocation. Record the
+candidate, Linux platform, commands and exits. Compare the engine digest above
+with `bundles/self/tooling.json` before running it. Run the entire
+[house gate inventory](../../docs/house-rules.md#gates--part-of-every-change):
 
-Run fail-closed native-tls absence with
-`cargo tree --workspace --locked --offline --invert native-tls`: success means
-refusal; a nonzero exit proves absence only if its output contains the exact
-line ``error: package ID specification `native-tls` did not match any packages``.
-Other errors cannot prove absence. Cargo here quotes the package with backticks;
-this supersedes the intake example's apostrophe-only diagnostic matcher without
-changing the absence requirement. The charter remains the inventory authority.
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+.forge/bin/brokkr compile --bundle bundles/self
+bash scripts/coverage-gate.sh
+bash scripts/coverage-gate.sh selftest
+bash scripts/publish-guard-test.sh
+bash scripts/seal-branch-test.sh
+cargo deny check licenses
+```
 
-CI owns macOS, chart contract/history/selftest, Docker smoke, RustSec, tag-only
-release-rate and real port-80 proof exactly as the house inventory specifies.
-No benchmark or new spelling test is needed. Chief-phase baseline gates describe
-the unrepaired source and cannot discharge the behavioural experiment or final
-verification. The chief validates committed design structure and leaves its
-three-file commit last; the deterministic sequence check owns advancement.
+The charter remains the inventory authority. Verify checks public shims and
+executes the corresponding pinned `bundles/self/scripts/` copies offline,
+installing nothing. Require zero missed lines, branches and functions and a
+successful coverage exit; a printed summary followed by timeout is insufficient.
+Also run pinned `design-check.sh selftest` and `delivery-proof-test.sh` as in
+the current verify seat. Bundle compile must have no policy-sweep warning.
+
+Run `cargo tree --workspace --locked --offline --invert native-tls`, requiring a
+nonzero exit and an exact diagnostic line that package ID specification
+`native-tls` did not match any packages (Cargo's backtick or single-quote
+spelling, as recorded in intake). Success means the forbidden package is
+present; any different error fails proof. Do not equate arbitrary Cargo failure
+with absence. Store logs in ignored evidence with completed exits.
+
+After the chief's unsigned three-file commit, run
+`bash bundles/self/scripts/design-check.sh check .` and verify HEAD touches only
+those three paths in one spec directory with a clean worktree. The sequence's
+final check still owns its result; no further commit follows the chief commit.
+Baseline gates exercise existing Linux code only. The later repair must repeat
+its required proofs. CI owns actual macOS, chart/history, Docker smoke, RustSec,
+privileged port-80 and release-only checks; the operator owns live settings,
+sealing and publication authority. None is claimed locally.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
-|---|---|
-| Instrumentation counts an entry notification instead of acquisitions. | Attach observation to real delegated lock operations; unchanged seam/test must detect the compiling split-lock mutant as two. |
-| A callee or alias bypasses the local facade. | No Deref escape; audit all scrape accesses and require the mutant uses the same path. Future paths must preserve observation. Broader registry tracing is deliberately not claimed. |
-| Test-only forwarding changes locking semantics. | Return actual LockResult/guard; preserve the shared non-test statements and renderer; inspect expansion and scoped diff. |
-| Installation leaks between tests or counts fixture setup. | Private map, seed before install, thread-local next-call slot consumed at entry, local counter ownership and explicit absent path. |
-| Deadlock or chance masquerades as a red proof. | Sequential sum/drop/relock mutation; no writer, sleep, timeout-as-success or retry loop. Require the specific two-versus-one assertion. |
-| Coverage punishes unused observation branches. | Keep deterministic test inline; exercise both installed/absent paths, no special failure branch, exclusions or harness relocation. Require gate exit zero and exact counts. |
-| Mutant survives failure. | Save bytes and install unconditional cleanup before edit; verify restoration and restored green before staging. |
-| Prior repairs or production behavior drift. | Byte-compare protected files to `68b4ef8`; restrict non-test changes to none and inspect cfg(test) expansion. |
-| Historical green receipts hide unfinished work. | Record new candidate-bound evidence; distinguish design baseline, repaired green, mutation red, restoration green and final gates. |
-| Local tests are mistaken for platform or durability proof. | Keep CI ownership and explicit contract limits; no new crash/outbox/TLS claim. |
+| --- | --- |
+| Established-client behavior differs on macOS. | Keep exact real refusal and ownership assertions; CI must execute them. Local experiments are feasibility only. A CI failure requires a fixture repair. |
+| A parallel listener can claim the target. | Explicit reuse-disabled bind, uninterrupted retained pair, final contender binds with reuse off/on; inspect lifetime and never drop/rebind. |
+| Wrong endpoint accidentally selects a listener. | Derive target only from client's local address; exact refusal probe fails if connect succeeds. |
+| Added waits turn aborted=1 into exhausted=2. | Prompt refusal, existing deadlines/budgets and unchanged event ordering; do not accept connect timeouts or add sleeps. Existing extreme scheduling sensitivity is not a new latency guarantee. |
+| A keeper or half-close loses ownership. | Two local RAII streams, no keeper task or shutdown; explicit release after all checks. |
+| Extra resources or setup fail. | Two retained descriptors and a temporary listener, ephemeral loopback ports and bounded setup. Resource exhaustion fails visibly; no retries or allocator framework. |
+| Design reopens reviewed fixes. | Compare protected files and unchanged binary regions to `90eb2a0`; preserve earlier snapshot proof and separate webhook test. |
+| Historical receipts conceal unfinished repair. | Fresh candidate-bound logs, unchecked new tasks, distinction between baseline gates and repaired-code proof; macOS remains CI-owned. |
