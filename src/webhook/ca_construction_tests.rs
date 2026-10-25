@@ -751,9 +751,10 @@ fn cancelled_delivery_build_counts_work_without_late_publication() {
             .await
             .expect("completed successful CPU work is counted");
             assert_eq!(ca_cache_stats().builds, before.builds + 1);
-            let cache = ca_clients().lock().unwrap();
-            assert!(!cache.clients.contains_key(&pem));
-            drop(cache);
+            {
+                let cache = ca_clients().lock().unwrap();
+                assert!(!cache.clients.contains_key(&pem));
+            }
             assert_cache_bijection();
             wait_ca_idle().await;
         });
@@ -856,9 +857,10 @@ fn shutdown_during_held_build_aborts_once_without_late_publish_or_send() {
             .expect("successful detached CA construction is counted");
             assert_eq!(ca_cache_stats().builds, before.builds + 1);
             assert_eq!(ca_cache_stats().entries, before.entries);
-            let cache = ca_clients().lock().unwrap();
-            assert!(!cache.clients.contains_key(&pem));
-            drop(cache);
+            {
+                let cache = ca_clients().lock().unwrap();
+                assert!(!cache.clients.contains_key(&pem));
+            }
             let after = webhooks.snapshot();
             assert_eq!(after.delivered, stopped.delivered);
             assert_eq!(after.aborted, stopped.aborted);
