@@ -142,3 +142,27 @@ Evidence checksums and candidate-local engine digest match. The initial
 worktree was clean. Gate results for this documentation-only intake will be
 recorded below; they exercise the existing Linux implementation and cannot
 certify the future repair or macOS. Final implementation must rerun them.
+
+### Intake baseline gate receipt — 2026-10-25
+
+All 17 recorded commands exited zero on Linux x86_64 at committed framing
+`039ef063a2ec12304afe3726ab5156b652b02457`, tree
+`e462045fdea0244fa9e38d01daf6d5beaad4fabe`: engine/shim integrity,
+focused webhook (exactly one pass), full webhook (27 passes), full binary
+(40 passes, two existing ignores), fmt, locked clippy and workspace tests,
+pinned local engine compile (76 valuations, zero unruled, no sweep warning),
+exact coverage, coverage selftest, publish/seal proofs, licenses, design
+selftest, delivery tamper proof and strict native-tls absence. No new ignores.
+Coverage completed with 14030/14030 lines, 790/790 branches and 1531/1531
+functions; gate exit zero and evidence `target/coverage/run.jYgUMJ`.
+
+The workspace RPC timed out at 300 seconds; the process completed in 405.58
+seconds. A subsequent workspace read confirmed every saved exit and the
+final `all_passed: true` receipt and `done` marker. The RPC timeout is not
+counted as success. Commands, candidate identity, platform, timestamps and
+per-command output are retained under
+`.forge/epic192/issue191/intake-webhook-macos-gates/receipt.json` and adjacent
+logs. The initial detached runner produced no receipt; the foreground run
+owns these results. The worktree was clean after the gates. This addition
+records results only, changing no tested code. These Linux baseline receipts
+do not certify the future fixture change or the CI-owned macOS proof.
