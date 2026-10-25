@@ -1809,7 +1809,7 @@ mod tests {
 mod entropy_proofs {
     use super::*;
     use rand::SeedableRng;
-    fn planned(task: Task, seed: &str) -> Private {
+    fn unplanned(task: Task, seed: &str) -> Private {
         let inputs =
             crate::provenance::FixtureInputs::resolve(Some(seed), Some("2026-10-24T12:00:00Z"))
                 .unwrap();
@@ -1820,8 +1820,6 @@ mod entropy_proofs {
             Arc::new(Instant::now),
             inputs,
         );
-        // This seam is per-instance and only available inside the test unit.
-        p.private_rng = rand::rngs::StdRng::seed_from_u64(718491);
         for i in 0..task.agent_count {
             p.accounts.push(Account {
                 identity: format!("person-{i}@example.test"),
@@ -1831,6 +1829,12 @@ mod entropy_proofs {
                 password: None,
             });
         }
+        p
+    }
+    fn planned(task: Task, seed: &str) -> Private {
+        let mut p = unplanned(task, seed);
+        // This seam is per-instance and only available inside the test unit.
+        p.private_rng = rand::rngs::StdRng::seed_from_u64(718491);
         p.plan();
         p
     }
@@ -1850,6 +1854,68 @@ mod entropy_proofs {
             .collect::<Vec<_>>();
         uids.sort();
         json!({"tokens_and_otp":tokens,"tickets_and_challenges":tickets,"uids":uids,"passwords":p.accounts.iter().map(|a|a.password.clone()).collect::<Vec<_>>()})
+    }
+    #[test]
+    fn production_construction_keeps_secrets_independent_of_public_seed() {
+        let seed = "00".repeat(32);
+        for task in tasks::catalogue() {
+            let mut left = Vec::new();
+            let mut right = Vec::new();
+            // Compare four pairs per task: a single six-digit OTP can collide.
+            for _ in 0..4 {
+                let mut a = unplanned(task.clone(), &seed);
+                let mut b = unplanned(task.clone(), &seed);
+                for p in [&mut a, &mut b] {
+                    p.plan();
+                    assert!(
+                        p.tokens
+                            .keys()
+                            .chain(p.tickets.keys())
+                            .any(|s| !s.is_empty()),
+                        "{} must generate secret material",
+                        task.id
+                    );
+                    match task.scenario {
+                        Scenario::Otp | Scenario::OtpStale => {
+                            assert!(
+                                p.tokens
+                                    .values()
+                                    .any(|t| matches!(t.role, TokenRole::Otp { .. }))
+                            );
+                        }
+                        Scenario::Reset => {
+                            assert!(p.tokens.values().any(|t| t.role == TokenRole::Reset));
+                            assert!(p.accounts.iter().all(|a| {
+                                a.password
+                                    .as_ref()
+                                    .is_some_and(|password| !password.is_empty())
+                            }));
+                        }
+                        Scenario::Support => {
+                            assert!(!p.tickets.is_empty());
+                            assert!(
+                                p.tickets
+                                    .iter()
+                                    .all(|(id, t)| { !id.is_empty() && !t.challenge.is_empty() })
+                            );
+                        }
+                        Scenario::Invite => {
+                            assert!(p.tokens.values().any(|t| t.role == TokenRole::Invite));
+                            assert!(!p.invites.is_empty());
+                            assert!(p.invites.values().all(|i| !i.uid.is_empty()));
+                        }
+                        _ => {}
+                    }
+                }
+                left.push(private_projection(&a));
+                right.push(private_projection(&b));
+            }
+            assert!(
+                left != right,
+                "{}: private projections repeat across independent constructors",
+                task.id
+            );
+        }
     }
     #[test]
     fn every_fixture_private_class_uses_independent_entropy_not_public_seed() {
