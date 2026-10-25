@@ -38,6 +38,7 @@ pub struct RunningServer {
     pub store: Arc<store::Store>,
     pub chaos: Arc<chaos::Chaos>,
     pub webhooks: Arc<webhook::Webhooks>,
+    ca_owner: webhook::ca_executor::Owner,
     shutdown: tokio::sync::watch::Sender<bool>,
     /// The drain one-shot (decision 0029 §5): sent only after the serve
     /// tasks have resolved, releasing the dispatcher to
@@ -58,6 +59,7 @@ impl RunningServer {
     /// A late detached commit can miss the dispatcher's ledger; runtime/process
     /// teardown owns the remaining sockets (0024 §6, 0027 §7, 0041 §6).
     pub async fn stop(self) {
+        self.ca_owner.close();
         let _ = self.shutdown.send(true);
         let mut tasks = self.tasks;
         while tasks.join_next().await.is_some() {}
@@ -80,7 +82,11 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         None => Arc::new(store::Store::new(cfg.max_per_inbox)),
     };
     let chaos = Arc::new(chaos::Chaos::default());
+    webhook::ca_executor::initialize();
     let webhooks = Arc::new(webhook::Webhooks::default());
+    let ca_owner = webhook::ca_executor::Owner(webhooks.scope.clone());
+    #[cfg(test)]
+    lifecycle_tests::observe_ca_scope_startup(cfg, &webhooks.scope);
     // The shutdown watch is born where the store is, and the dispatcher
     // spawns immediately after it — subscribing to the firehose before TLS
     // is parsed and before any listener binds (decision 0002, one layer
@@ -241,6 +247,7 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         store,
         chaos,
         webhooks,
+        ca_owner,
         shutdown,
         drained,
         tasks,

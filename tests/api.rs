@@ -5397,15 +5397,44 @@ async fn openapi_webhook_get_documents_awaited_preparation_failure() {
 }
 
 #[test]
-fn webhook_docs_state_shared_pool_limits() {
+fn webhook_docs_state_bounded_ca_limits() {
     let readme = include_str!("../README.md");
     let module = include_str!("../src/webhook.rs");
     let llms = include_str!("../src/static/llms.txt");
     for doc in [readme, module, llms] {
         assert!(doc.contains("never awaited by SMTP acceptance"));
         assert!(!doc.contains("never blocking the SMTP path"));
-        assert!(doc.contains("#220"), "shared-pool residual owner");
+        assert!(doc.contains("#220"), "bounded CA work issue");
     }
-    assert!(readme.contains("delay SMTP parsing and commits"));
-    assert!(llms.contains("delay SMTP parsing/commits"));
+    for doc in [readme, llms] {
+        assert!(doc.contains("64 MiB"));
+        assert!(doc.contains("webhook CA preparation unavailable"));
+        assert!(doc.contains("process exit"));
+    }
+}
+
+fn ca_statuses_documented(doc: &serde_json::Value) -> bool {
+    ["get", "put"].into_iter().all(|method| {
+        doc["paths"]["/api/v1/webhooks"][method]["responses"]["503"]["description"]
+            .as_str()
+            .is_some_and(|s| s.contains("webhook CA preparation unavailable"))
+    }) && doc["paths"]["/api/v1/webhooks"]["get"]["responses"]["500"].is_object()
+}
+#[tokio::test]
+async fn openapi_webhook_ca_admission_statuses() {
+    let srv = start().await;
+    let doc = served_openapi(srv.http_addr).await;
+    assert!(ca_statuses_documented(&doc));
+    for (method, status) in [("get", "503"), ("put", "503"), ("get", "500")] {
+        let mut missing = doc.clone();
+        missing["paths"]["/api/v1/webhooks"][method]["responses"]
+            .as_object_mut()
+            .unwrap()
+            .remove(status);
+        assert!(
+            !ca_statuses_documented(&missing),
+            "missing {method} {status}"
+        );
+    }
+    srv.stop().await;
 }

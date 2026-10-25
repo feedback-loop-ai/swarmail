@@ -183,14 +183,26 @@ validated certificate blocks only (unrelated PEM sections and prose are
 omitted; certificate DER, order and duplicates are retained). A supplied
 bundle that cannot be fully projected is an empty string; absent values stay
 `null`. Mixed PEM admission remains unchanged. The echo is diagnostic, not a
-body to PUT back. CA client builds happen on awaited blocking jobs outside the
-cache mutex. `builds_total` counts successful delivery constructions,
-including duplicate race losers and completed work after waiter cancellation;
-API validation/projection and hits do not count. Queue/build time is outside
-the 22.1-second attempt/backoff sum, and shared blocking-pool exhaustion can
-delay SMTP parsing/commits (the bounded-executor follow-up is #220). Delivery is bounded
+body to PUT back. Server CA work (#220) uses two process-wide dedicated native
+workers, no pending queue, and a 64 MiB logical charged-job budget. GET, PUT and
+custom-CA delivery misses share immediate admission without fairness. GET/PUT
+503 is `webhook CA preparation unavailable`; valid oversized inputs can refuse,
+including permanent GET refusal for oversized directly installed state until
+replaced/cleared. Admitted failures retain GET 500 `webhook response preparation
+failed`, PUT 500 `webhook configuration preparation failed`, and invalid PUT 400.
+Failed/refused/cancelled PUT preserves installed state. Delivery refusal spends
+one of four ordinary attempts. Jobs/results remain charged after cancellation
+until disposed; worker threads live until process exit and stop does not drain
+them. Finite work reclaims across Tokio runtime replacement. CA jobs cannot
+consume SMTP/Store blocking slots; OS scheduling/latency/fairness are not promised.
+The logical tariff is not an allocator/RSS ceiling: HTTP extraction, installed
+state, existing dispatcher snapshots/payload, transferred responses/cache,
+transport, stacks and synchronous embedder helpers are excluded. Builds remain
+outside the cache mutex; builds_total counts actual successful delivery builds,
+including losers/cancelled owners, never API builds/hits. Admission/build time
+is outside the 22.1-second network/backoff sum. Delivery is bounded
 per target — 32 in flight per normalized URL (`WEBHOOK_DELIVERY_CAP`), so
-a stalled sink cannot starve a healthy one; the bound is per URL, so many
+a stalled sink cannot consume another sink's delivery slots; the bound is per URL, so many
 distinct targets multiply the ceiling (a target-count cap is not implied),
 a refused fan-out is counted
 in `swarmail_webhook_dropped_total` (its `warn` names the refused target),

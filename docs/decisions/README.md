@@ -81,6 +81,8 @@ them. What may land while a decision is still proposed is stated in
 | [0075](0075-eval-privacy.md) | Closed eval environments and safe diagnostics (renumbered from 0062) | proposed — awaiting the operator | (Epic #192, issue #196 on #194) |
 | [0077](0077-webhook-ca-port.md) | Compatible webhook CA port and LOW repairs | proposed — awaiting the operator | (Epic #192, issue #195) |
 
+| [0078](0078-ca-executor-ownership.md) | Bounded CA ownership, logical accounting and admission | proposed — awaiting the operator | (Epic #192, issue #220; compatible choices under accepted 0069) |
+
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
 [`docs/house-rules.md`](../house-rules.md) for how they are enforced.

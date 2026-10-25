@@ -42,6 +42,11 @@ use tokio::sync::watch;
 /// ~+8.5 s) — and then never wait on it: the test ends long before the
 /// lifetime does, and the budget itself is observed by signal (issue
 /// #102), not by the sink's clock.
+// Contract fixtures below require uncontended process-wide CA admission.
+// Contention itself is exercised with keyed holds in ca_construction_tests;
+// unrelated protocol suites and non-admitting fixtures remain concurrent.
+static CA_CONTRACTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const SINK_LIFETIME: Duration = Duration::from_secs(25);
 
 /// Pause before re-arming a failed accept. EMFILE is transient — on Linux
@@ -442,6 +447,7 @@ fn mint_cert() -> (String, Vec<u8>, Vec<u8>) {
 
 #[tokio::test]
 async fn delivered_to_a_pathless_target_with_secret() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (addr, rx, _hits) = http_sink(204, SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}", "secret": "topsecret"}}]"#);
@@ -472,6 +478,7 @@ async fn delivered_to_a_pathless_target_with_secret() {
 /// 2a325c9: all 70 rode the payload.
 #[tokio::test]
 async fn the_webhook_payload_carries_the_capped_codes() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (addr, rx, _hits) = http_sink(204, SINK_LIFETIME).await;
     let targets = format!(r#"[{{"url": "http://{addr}/hook"}}]"#);
@@ -507,6 +514,7 @@ async fn the_webhook_payload_carries_the_capped_codes() {
 
 #[tokio::test]
 async fn failing_target_is_retried_four_times_not_more() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     // The sink refuses everything: the dispatcher must try exactly the
     // four-attempt budget (deliver's 0..4) and then drop with a warning.
@@ -569,6 +577,7 @@ async fn failing_target_is_retried_four_times_not_more() {
 
 #[tokio::test]
 async fn https_target_is_delivered_over_tls() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
     let (addr, rx, _hits) = tls_sink(
@@ -653,6 +662,7 @@ async fn https_target_is_delivered_over_tls() {
 
 #[tokio::test]
 async fn untrusted_certificate_fails_the_handshake_and_is_retried() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     // The sink serves a self-signed cert the target does not trust: every
     // attempt dies in the handshake, and the dispatcher must make exactly
@@ -698,6 +708,7 @@ async fn untrusted_certificate_fails_the_handshake_and_is_retried() {
 
 #[tokio::test]
 async fn non_2xx_over_tls_is_retried_four_times_not_more() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
     // Every handshake succeeds and the sink answers 500 to each request: a
@@ -746,6 +757,7 @@ async fn non_2xx_over_tls_is_retried_four_times_not_more() {
 
 #[tokio::test]
 async fn refused_connection_never_blocks_the_smtp_path() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     // A port with nothing behind it: every attempt is refused on connect.
     let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -794,6 +806,7 @@ async fn refused_connection_never_blocks_the_smtp_path() {
 /// body included — and the 302 costs exactly the ordinary retry budget.
 #[tokio::test]
 async fn redirect_302_never_leaks_the_secret_to_the_destination() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     // The destination is bound FIRST so its port is known and no leak can
     // ever race past the listener that would catch it.
@@ -873,6 +886,7 @@ async fn redirect_302_never_leaks_the_secret_to_the_destination() {
 /// the full POST, the budget is unchanged.
 #[tokio::test]
 async fn redirect_307_never_leaks_the_secret_or_body_to_the_destination() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (tx_stop, rx_stop) = watch::channel(false);
     let (dest, rx_leaked) = destination_sink(rx_stop).await;
@@ -967,6 +981,7 @@ fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
         .build()
         .unwrap()
         .block_on(async {
+            let _ca_contract = CA_CONTRACTS.lock().await;
             let srv = start().await;
             let count = swarmail::webhook::CA_CLIENT_CAP + 1;
             let concurrent_smtp = 8usize;
@@ -991,8 +1006,8 @@ fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
                 sinks.push((ca_pem, addr, rx, hits));
             }
 
-            // Each target has its own normalized-URL budget, so all 33 roots can
-            // build concurrently. Eight SMTP sessions provide a real distinct-PEM
+            // Each target has its own normalized-URL delivery budget; the two
+            // CA workers admit builds across all 33 roots. Eight SMTP sessions provide a real distinct-PEM
             // fan-out while remaining below every per-target delivery cap.
             let targets: Vec<serde_json::Value> = sinks
                 .iter()
@@ -1003,6 +1018,36 @@ fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
                     })
                 })
                 .collect();
+            // Establish every cold root through real SMTP/TLS without global
+            // admission pressure. The subsequent >32-root fan-out still churns
+            // the 32-entry cache. Cold simultaneous overload has separate
+            // refusal/accounting proofs; no fairness is promised under it.
+            for (index, target) in targets.iter().enumerate() {
+                let body = serde_json::to_string(&vec![target]).unwrap();
+                let (status, _) =
+                    http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
+                assert_eq!(status, 200);
+                assert!(
+                    smtp_send(
+                        srv.smtp_addr,
+                        Some("warm-ca-fanout"),
+                        "from@example.test",
+                        "to@example.test",
+                        "warm root",
+                        "body"
+                    )
+                    .await
+                    .unwrap()
+                    .starts_with("250")
+                );
+                wait_for_metric_from(
+                    srv.http_addr,
+                    "swarmail_webhook_delivered_total",
+                    delivered_before,
+                    (index + 1) as u64,
+                )
+                .await;
+            }
             let body = serde_json::to_string(&targets).unwrap();
             let (st, echo) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(&body)).await;
             assert_eq!(st, 200, "{echo}");
@@ -1039,7 +1084,7 @@ fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
                 done.unwrap();
             }
 
-            let expected_deliveries = (count * concurrent_smtp) as u64;
+            let expected_deliveries = (count * (concurrent_smtp + 1)) as u64;
             wait_for_metric_from(
                 srv.http_addr,
                 "swarmail_webhook_delivered_total",
@@ -1062,8 +1107,8 @@ fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
                 );
                 assert_eq!(
                     sink_hits.load(Ordering::Relaxed),
-                    concurrent_smtp,
-                    "sink {i} receives each mail"
+                    concurrent_smtp + 1,
+                    "sink {i} receives its warm-up and each fan-out mail"
                 );
             }
 
@@ -1096,6 +1141,7 @@ fn deliveries_through_more_pems_than_the_cache_cap_all_succeed() {
 /// fails, the 100ms-backoff retry succeeds).
 #[tokio::test]
 async fn a_dropped_first_attempt_is_retried_and_still_delivered_over_tls() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
     let (addr, rx, _hits) = tls_sink_cfg(
@@ -1141,6 +1187,7 @@ async fn a_dropped_first_attempt_is_retried_and_still_delivered_over_tls() {
 /// the second build must reuse the cached client and still land.
 #[tokio::test]
 async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (ca_pem, leaf, leaf_key) = mint_cert();
     // The window outlives everything the two passes could spend; the count
@@ -1200,6 +1247,7 @@ async fn repeated_deliveries_through_one_pem_reuse_the_cache() {
 /// and nothing is applied.
 #[tokio::test]
 async fn garbage_ca_pem_is_refused_at_put_and_nothing_is_applied() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     // The sink exists only to prove the refused target never dialed: the
     // GET below is the structural proof that nothing was applied, so no
@@ -1462,6 +1510,7 @@ fn payload_of(request: &str) -> &str {
 /// bound, and nothing else — one refused row per refused mail.
 #[tokio::test]
 async fn the_delivery_bound_holds_exactly_and_the_excess_is_counted() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     // The hold outlives the whole observation: no attempt ever gets a
     // reply, so a delivery leaves the bound only through its own budget
@@ -1521,6 +1570,7 @@ async fn the_delivery_bound_holds_exactly_and_the_excess_is_counted() {
 /// the excess, one row per refused mail.
 #[tokio::test]
 async fn a_storm_against_a_stalled_target_never_pushes_back_on_the_accept_path() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (addr, hits) = stalled_sink().await;
     let body = serde_json::json!([{ "url": format!("http://{addr}/hook") }]).to_string();
@@ -1574,6 +1624,7 @@ async fn a_storm_against_a_stalled_target_never_pushes_back_on_the_accept_path()
 /// never re-reads the store.
 #[tokio::test]
 async fn a_delivery_outliving_its_mail_replays_its_own_bytes() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start_with(|mut c| {
         c.max_per_inbox = 2;
         c
@@ -1674,6 +1725,7 @@ async fn a_delivery_outliving_its_mail_replays_its_own_bytes() {
 /// target's own refusals — neither row is the other's.
 #[tokio::test]
 async fn a_stalled_target_cannot_starve_a_healthy_one() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     // The stalled hold outlives the test: its wedges are still holding
     // their slots when the assertions run, which is what makes the
@@ -1746,6 +1798,7 @@ async fn a_stalled_target_cannot_starve_a_healthy_one() {
 /// applied — the config the GET returns stays empty.
 #[tokio::test]
 async fn a_target_that_cannot_be_delivered_is_refused_at_put_and_applies_nothing() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     for url in [
         "localhost:9000/hook", // scheme-forgotten: no host to dial
@@ -1809,6 +1862,7 @@ async fn a_target_that_cannot_be_delivered_is_refused_at_put_and_applies_nothing
 /// admitted inbox could ever match.
 #[tokio::test]
 async fn a_webhook_inbox_filter_answers_to_the_inbox_rule() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let installed = r#"[{"url": "http://127.0.0.1:9/hook", "inbox": " pad "},
                         {"url": "http://127.0.0.1:9/all"}]"#;
@@ -1853,6 +1907,7 @@ async fn a_webhook_inbox_filter_answers_to_the_inbox_rule() {
 /// prior list.
 #[tokio::test]
 async fn a_list_with_one_unheaderable_secret_leaves_the_prior_config_whole() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let prior = r#"[{"url": "http://127.0.0.1:9/prior", "inbox": "kept", "secret": "s"}]"#;
     let (st, before) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(prior)).await;
@@ -1886,6 +1941,7 @@ async fn a_list_with_one_unheaderable_secret_leaves_the_prior_config_whole() {
 /// bytes (internal tab, UTF-8) in its header (issue #75).
 #[tokio::test]
 async fn url_credentials_reach_the_sink_and_never_the_echo() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (addr, rx, _hits) = http_sink(204, SINK_LIFETIME).await;
     let body = serde_json::json!([{
@@ -2004,6 +2060,7 @@ fn rewrap_certificate(pem: &str) -> String {
 /// the failure path private even with a deliberately broken projection.
 #[tokio::test]
 async fn private_keys_in_ca_pem_never_appear_in_get_or_put_responses() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let first = unrelated_ca_pem();
     let second = unrelated_ca_pem();
@@ -2130,6 +2187,7 @@ async fn private_keys_in_ca_pem_never_appear_in_get_or_put_responses() {
 /// the whole projection, including a valid prefix and relabeled private DER.
 #[tokio::test]
 async fn direct_webhook_install_projects_unloadable_ca_as_empty_on_get() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let good = unrelated_ca_pem();
     let key = rcgen::KeyPair::generate().unwrap();
@@ -2250,6 +2308,7 @@ async fn assert_prior_delivers(srv: &swarmail::RunningServer, inbox: &str, rx: R
 /// and all — is untouched, and the prior target still delivers with them.
 #[tokio::test]
 async fn webhook_ca_put_rejects_every_invalid_certificate() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let rx = install_prior(&srv, "ca122").await;
     let before = installed(&srv);
@@ -2304,6 +2363,7 @@ async fn webhook_ca_put_rejects_every_invalid_certificate() {
 /// installs.
 #[tokio::test]
 async fn webhook_unknown_and_null_fields_preserve_configuration() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let rx = install_prior(&srv, "keys135").await;
     let before = installed(&srv);
@@ -2511,6 +2571,7 @@ async fn webhook_unknown_and_null_fields_preserve_configuration() {
 /// the handshake failed on every attempt and nothing arrived.
 #[tokio::test]
 async fn webhook_second_ca_root_delivers_over_verified_https() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (second, leaf, leaf_key) = mint_cert();
     let (addr, rx, _hits) = tls_sink(
@@ -2548,6 +2609,7 @@ async fn webhook_second_ca_root_delivers_over_verified_https() {
 /// positive control, a matching mail, does reach the same listener.
 #[tokio::test]
 async fn webhook_validation_does_not_dial() {
+    let _ca_contract = CA_CONTRACTS.lock().await;
     let srv = start().await;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
