@@ -3,35 +3,48 @@
 Status: Drafted design; implementation and delivery acceptance remain separate.
 Date: 2026-10-25.
 Feature slug: `residual-test-proofs` (retain the existing owning design).
-Scope: Epic #192 issue #191, macOS repair of finding 23.4 only.
-Pre-intake code baseline: `90eb2a0333a751576c94d82474e4410040d68d43`.
-Design-entry HEAD: `fb4c6ead0d3ddb28d0cd2b58f43c4c1aa4171b6e`.
+Scope: Epic #192 issue #191, continuation correcting the contender assertion and its claims only.
+Continuation code baseline: `94b8ae15f0b3515d5860266f0988a2a4b75f15b0`.
+Design-entry HEAD: `f6a83e6` (continuation intake and gate receipts).
 
 ## Feature and rationale
 
-Repair the failed-connect fixture in
+Correct the Linux-only contender assertion in
 `tests/binary.rs::sigterm_with_a_delivery_in_flight_prints_the_final_counts`.
-The held, bound but unconnected socket introduced for #191 times out on macOS,
-where Linux refuses the dial. Releasing the port would restore the parallel-test
-reuse race. A held established connection's exclusively bound client endpoint
-provides the proposed non-listening target while retaining ownership. A real
-connect probe must still demonstrate prompt refusal before configuring the
-shipped dispatcher against that exact address.
+The earlier connected-client repair retains a sound exact refusal probe, but
+requires a reuse-enabled contender bind to fail. The supplied independent
+review explains why BSD/XNU allows that bind against an established endpoint:
+the assertion would fail macOS CI even though the connect probe is sound.
+Remove that unnecessary contender path, keep the reuse-disabled bind check,
+and correct the fixture's overstated exclusion claim.
 
-The test must continue proving one exhausted delivery and one in-flight delivery
-aborted by SIGTERM, with a successful exit, exact final totals and credential-safe
-transport diagnostics. It remains a real binary/SMTP/HTTP test. The feature
-changes only its socket fixture, not webhook behavior or retry policy.
+Retaining both streams preserves the established endpoint's lifetime. The final
+bind check demonstrates exclusion of a reuse-disabled contender at that instant.
+It does **not** establish exclusion of reuse-enabled binders or listeners on
+macOS, including parallel Tokio listeners. The macOS port-reuse race is not
+proved fully closed. The exact pre-delivery refusal probe observes setup-time
+behavior; it cannot prevent a later reuse-enabled listener from claiming the
+address. Existing ledger/cause assertions do not prove every retry fails at
+connect or detect every such interference.
+
+The test continues proving one exhausted delivery and one in-flight delivery
+aborted by SIGTERM, with successful exit, exact final totals and credential-safe
+transport diagnostics. Retain its connected-client target, exact bounded refusal
+probe and real binary/SMTP/HTTP experiment. Only the final contender assertion
+and directly related comments change in code.
 
 ## Evidence and authority
 
-The issue README, operator-rulings.md and macos-ci-failure.md in
+The issue README, operator-rulings.md, macos-ci-failure.md and full
+review-78a81fc6.md in
 `.forge/epic192/issue191/` were verified against that directory's SHA256SUMS.
 The operator's 2026-10-25 ruling authorizes the portability repair and assigns
 macOS proof to CI. Both current run-local panel positions were read under
 `.brokkr/state/design/positions/`. The requested `.brokkr/state/tasks/` is absent;
-the committed [macOS intake](intake-macos.md) and current task provide the
-framing. Earlier intake and proof receipts are history, not repaired-code proof.
+the committed [continuation intake](intake-macos-continuation.md) and current
+task provide the framing. The prior review's independent findings 1 and 2
+identify the incorrect bind contract and remaining macOS reuse risk. Earlier
+intake and proof receipts are history, not repaired-code proof.
 No GitHub, CI, journal, sibling worktree or external source was consulted.
 
 Preserve accepted 0001–0005: synchronous accept/store, subscribe-before-check,
@@ -50,43 +63,41 @@ changes; no semantic ADR is needed and this seat accepts no decision.
 
 ## Panel synthesis and rulings
 
-1. **Adopt both positions' established-connection fixture.** Explicitly bind a
-   reuse-disabled IPv4 client on loopback port zero, connect it to a temporary
-   loopback listener, accept its peer and retain both streams through the last
-   assertion. The failed target is the client's local address, never its peer
-   or listener address. Cost: two idle descriptors plus a short-lived listener
-   and bounded setup replace one unconnected descriptor.
-2. **Rule for robustness on ownership checks.** A competing IPv4 socket must
-   fail to bind the target with `AddrInUse` for both `SO_REUSEADDR=false` and
-   `true`, after final ledger assertions and before releasing the pair. This
-   rejects simplicity's narrower reuse-disabled-only check: ordinary listeners
-   may enable reuse. Cost: two short bind probes and a small inline loop. No
-   listen is attempted if a bind unexpectedly succeeds. Lexical retention,
-   source review and explicit final drop establish uninterrupted lifetime;
-   endpoint checks alone cannot observe every intermediate instant.
-3. **Rule for simplicity on fixture structure and lifetime.** Keep setup and
-   assertions inline at this single call site; drop the temporary listener
-   after accept. Reject a reusable abstraction, shared allocator, keeper task
-   or production seam. Robustness permits retaining the listener, but it owns
-   a different address and adds no protection to the failed target. Cost of
-   declining that option: reviewers must distinguish the setup listener from
-   the two retained streams; the comments and local-address selection do so.
-   Do not repeat ownership probes at multiple phases without a new reason.
-4. **Adopt both positions' exact connect-refusal oracle.** Retain the bounded
-   real `TcpStream::connect` probe and exact `ConnectionRefused` assertion.
-   Reject merely accepting `TimedOut`, enlarging deadlines or changing retry
-   budgets: four five-second attempts plus backoff can exhaust the stalled
-   delivery before SIGTERM and change the ledger experiment. Reject bind/drop,
-   accept/close, TLS rejection, backlog saturation, fixed or remote ports,
-   firewall/namespace changes, OS bypasses and probabilistic retries. Their
-   smaller code or apparent flexibility sacrifices ownership, failure stage
-   or independence from host configuration.
-5. **Reconcile scope and proof limits.** Preserve all reviewed helper, comment,
-   snapshot and distinct webhook changes. Reuse this spec directory and replace
-   the obsolete AC4 and 23.5-only edit prohibition. Preserve dated provenance
-   below. Panel Linux socket experiments support feasibility but are not Rust
-   acceptance receipts. The actual macOS behavior remains a CI obligation;
-   failure there requires another fixture repair, never weakened assertions.
+1. **Adopt both current positions: remove the reuse-enabled path.** Replace
+   the `[false, true]` loop with one inline IPv4 contender, explicitly set
+   `SO_REUSEADDR=false`, and require `bind(refused)` to fail with exactly
+   `AddrInUse`. Never listen on it. Preserve explicit final pair release.
+   This supersedes the earlier synthesis's ruling for two failed binds; that
+   robustness argument extrapolated Linux behavior to macOS and loses.
+   Cost of rejecting it: no reuse-enabled exclusion claim, including on Linux;
+   the remaining macOS reuse-enabled collision risk is disclosed, not solved.
+2. **Reconcile the ownership contract with the evidence.** Both current
+   positions agree on the limited claim: uninterrupted lexical retention and
+   explicit final drop establish lifetime; the final check observes one
+   reuse-disabled bind rejection. No universal port exclusivity or complete
+   macOS race closure is promised. The earlier ruling 2 demanding both failed
+   binds is replaced by this limit and ruling 1's single check. Update AC4,
+   plan step 5, T3 and directly conflicting active prose/comments together.
+   A passing macOS CI run proves that execution, not every concurrent schedule.
+3. **Rule for deletion over platform-specific expectations.** The intake
+   permits Linux failure/macOS success for a reuse-enabled bind. Reject that
+   alternative: it adds conditional kernel-policy checks without protecting
+   the shutdown experiment. Cost: the test no longer demonstrates platform
+   reuse differences. The current positions have no substantive conflict on
+   the chosen repair; no compromise assertion is needed.
+4. **Adopt simplicity's inline scope and robustness's proof limits.** Keep
+   the reuse-disabled connected client, accepted peer, dropped setup listener,
+   existing bounded setup and exact `ConnectionRefused` probe unchanged. Reject
+   allocators, shared locks, keeper tasks, namespaces, dependencies, production
+   seams or serialization: they widen the authorized repair. Cost: the known
+   macOS reuse-enabled interference risk remains for separately scoped work
+   if CI exposes it. Keep exact totals, causes and redaction; do not accept
+   timeout, relax errors, extend budgets, add retries, sleeps or ignores.
+5. **Preserve history without certifying the repair.** Retain this feature
+   slug, earlier dated clarifications and Linux receipts as historical. Reset
+   current implementation/proof tasks. This design corrects a test-spec defect,
+   not an accepted runtime ruling, and creates no ADR. CI owns actual macOS
+   execution; local receipts cannot discharge that handoff.
 
 ## Acceptance Criteria
 
@@ -94,7 +105,7 @@ These are local implementation criteria. This design commit defines them; it
 cannot mark the future repair proved. AC numbers retain the owning design's
 mapping to the already reviewed #191 findings.
 
-- **AC1 — preserve 23.1.** Dockerfile remains byte-identical to the pre-intake
+- **AC1 — preserve 23.1.** Dockerfile remains byte-identical to the continuation
   baseline, retaining AC52.2 attribution and its reviewed digest.
 - **AC2 — preserve 23.2.** `tests/common/mod.rs` remains byte-identical: helper
   prose stays on its owner and `send_with_host` retains its one required,
@@ -111,8 +122,16 @@ mapping to the already reviewed #191 findings.
   probe use the existing `HELPER_DEADLINE`. The probe to the client's local
   address must return exactly `ConnectionRefused`; success, expiry or another
   error fails. The same address is used in the unchanged plain HTTP webhook
-  URL. Before releasing the pair, fresh sockets with reuse disabled and enabled
-  each fail to bind that address with exactly `AddrInUse`.
+  URL. Before releasing the pair, one fresh IPv4 socket explicitly using
+  `SO_REUSEADDR=false` fails to bind that address with exactly `AddrInUse`;
+  it never listens. Remove the reuse-enabled contender path entirely, without
+  a singleton loop or new platform conditional.
+
+  The active spec, plan, tasks and related source comments must state the
+  macOS reuse-enabled listener limitation above. A source/text comparison
+  must find no active requirement that both bind modes fail or that this
+  fixture fully closes the macOS reuse race. Historical dual-bind receipts
+  are explicitly superseded and do not prove the corrected candidate.
 
   Preserve the stalled sink's completed-request observation before SIGTERM,
   the fresh-child exhaustion baseline zero and observed exhaustion one, clean
@@ -124,18 +143,20 @@ mapping to the already reviewed #191 findings.
   The focused Linux test selects exactly one passing test. No sleeps as
   synchronization, new ignore, broad error match or timeout-as-success.
 - **AC5 — preserve the distinct webhook regression.** `tests/webhook.rs`
-  remains byte-identical to the pre-intake baseline. Its held target and stored
+  remains byte-identical to the continuation baseline. Its held target and stored
   mail/exhaustion observations are existing proof, not a substitute for AC4.
-- **AC6 — preserve 23.5.** `src/api.rs` remains byte-identical to the pre-intake
+- **AC6 — preserve 23.5.** `src/api.rs` remains byte-identical to the continuation
   baseline, retaining the measured runtime acquisition observer and snapshot
   discriminator. The workspace suite executes it. No new mutation experiment
   or snapshot refactor is authorized by this portability repair.
 - **AC7 — scope.** Implementation changes are confined to the named function's
-  socket setup, ownership checks, explanatory comments and final release in
+  contender check and directly related explanatory comments relative to
+  `94b8ae1`. Setup, bounded refusal probe and final pair release are preserved in
   `tests/binary.rs`. Other code in that file and all shipping code, Cargo files,
   dependencies, allowlist, decisions, gates and bundle routing stay unchanged
-  from the pre-intake baseline. Only the three owning design artifacts are
-  reconciled. Inspect the exact diff; no new support module or production seam.
+  from the continuation baseline. The chief reconciles only these three owning
+  design artifacts; the committed continuation intake remains framing, not a
+  new edit. Inspect the exact diff; no new support module or production seam.
 - **AC8 — completed local proofs and honest handoff.** The focused test, full
   binary suite and every local gate in the
   [sole house inventory](../../docs/house-rules.md#gates--part-of-every-change)
@@ -199,6 +220,17 @@ The current three artifacts govern this repair; earlier mutation tasks and
 receipts neither reopen 23.5 nor certify the new fixture. The operator-rulings
 file is now present and checksum-verified. The historical tasks directory
 remains absent; current committed intake supplies the framing.
+
+## Dated clarification — 2026-10-25, reuse-enabled bind correction
+
+All preceding dated entries and the prior implementation receipt in tasks.md
+are historical. The active continuation baseline is `94b8ae1`; design entry is
+`f6a83e6`. The full supplied review supersedes the earlier synthesis's ruling 2,
+AC4's dual-bind clause, plan step 5 and T3. Their Linux success did not establish
+macOS exclusion. Keep the connected-client target and exact refusal probe;
+remove the reuse-enabled contender and explicitly retain the macOS race limit.
+All current implementation tasks require fresh proof after the correction.
+This design commit does not change the test or claim macOS execution.
 
 ## Design handoff
 

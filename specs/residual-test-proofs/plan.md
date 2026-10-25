@@ -3,9 +3,9 @@
 ## Technical context
 
 One Rust 2024 crate, existing Tokio networking and a real child-process binary
-suite. The active code baseline is `90eb2a0333a751576c94d82474e4410040d68d43`;
-`fb4c6ea` is design entry after intake. Linux execution is local; macOS is
-CI-owned. The defect is a fixture TCP state assumption, not dispatcher code.
+suite. The active code baseline is `94b8ae15f0b3515d5860266f0988a2a4b75f15b0`;
+`f6a83e6` is design entry after continuation intake. Linux execution is local;
+macOS is CI-owned. The defect is the reuse-enabled bind expectation and its exclusion claim.
 No new dependency, schema, public API, configuration or production behavior.
 
 No plan template exists under this candidate's `.specify/`; this plan supplies
@@ -28,9 +28,9 @@ No semantic amendment or decision acceptance is part of this work.
 | Path | Role and permitted change |
 | --- | --- |
 | `specs/residual-test-proofs/{spec,plan,tasks}.md` | Exactly the chief's three design-commit files; reconcile current scope and retain dated provenance. |
-| `specs/residual-test-proofs/intake-macos.md` | Read-only current framing and historical intake receipts. |
-| `tests/binary.rs` | Implementation edits only the named SIGTERM test's fixture, ownership checks, comments and final drop. |
-| `Dockerfile`, `tests/common/mod.rs`, `tests/webhook.rs`, `src/api.rs` | Preserve reviewed #191 work byte-for-byte against `90eb2a0`. |
+| `specs/residual-test-proofs/intake-macos-continuation.md` | Read-only current framing and historical intake receipts. |
+| `tests/binary.rs` | Implementation edits only the named SIGTERM test's contender check and directly related comments; setup, refusal probe and final drop stay unchanged. |
+| `Dockerfile`, `tests/common/mod.rs`, `tests/webhook.rs`, `src/api.rs` | Preserve reviewed #191 work byte-for-byte against `94b8ae1`. |
 | `.forge/epic192/issue191/` | Ignored evidence and new gate receipts, never staged. |
 | `.brokkr/state/design/positions/` | Ignored panel evidence, never staged. |
 
@@ -39,49 +39,49 @@ preserved. No new source file or shared socket abstraction.
 
 ## Research and resolved choices
 
-Checksum-verified local evidence identifies repeatable macOS timeout for the
-bound/unconnected target. Both panel positions recommend a held established
-connection and report supporting Linux socket experiments. Neither establishes
-Rust regression success or macOS portability. The proposed state is an
-exclusively bound client connected to one peer: an unrelated incoming SYN has
-no matching established four-tuple and no listener at that local endpoint.
-The existing exact refusal test makes this assumption executable on each OS.
+Checksum-verified `review-78a81fc6.md` identifies an unconditional
+reuse-enabled `AddrInUse` assertion that is valid on Linux but fails on BSD/XNU
+against this established endpoint. Its independent finding 2 limits macOS
+exclusion against parallel reuse-enabled listeners. The connected-client target
+and exact refusal probe remain sound by the supplied reasoning; actual macOS
+execution belongs to CI. No new platform experiment is needed for design.
 
-Adopt robustness's checks with competing address reuse both disabled and enabled;
-prefer simplicity's inline setup, no background keeper and early release of the
-setup listener. The two streams own the endpoint through the test. The spec
-records each ruling and its cost. Accepting timeouts risks consuming the stalled
-delivery's own retry lifetime; accept/close changes failure stage; bind/drop
-restores the original race. None is a fallback if CI rejects this fixture.
+Both current positions recommend removing the reuse-enabled path and keeping
+one reuse-disabled contender. Adopt that choice. Reject platform-specific bind
+success/failure expectations, which demonstrate kernel policy without improving
+the shutdown proof. The spec records the loss of the stronger exclusion claim
+and the remaining interference risk. Keep the inline fixture and every existing
+observation; no helper, allocator or production seam is justified.
 
 ## Implementation approach
 
-1. Verify the evidence checksums and engine identity; record HEAD, platform and
-   initial clean status. Compare scope to `90eb2a0`. Preserve all earlier fixes.
-2. In the named test, create a Tokio IPv4 loopback listener on port zero. Create
-   `TcpSocket::new_v4()`, call `set_reuseaddr(false)` and explicitly bind to
-   `127.0.0.1:0`. Connect this socket to the listener under `HELPER_DEADLINE`,
-   then accept the peer under the same deadline discipline. Connect can finish
-   into the listener backlog before accept is polled; no spawned task is needed.
-3. Read the connected client's `local_addr()` into `refused`. Retain the client
-   stream and accepted peer as ordinary owned locals. Drop the setup listener
-   after accept; it has a different address. No read/write/shutdown/half-close
-   or drop/rebind of the pair is allowed before all final assertions.
-4. Preserve the existing deadline-bounded `TcpStream::connect(refused)` probe
-   and exact `ConnectionRefused` assertion; update only its fixture wording.
-   Keep webhook URL, SMTP delivery, stalled-request synchronization, metric
-   observation, SIGTERM, child cleanup, final totals and redaction checks.
-5. After existing final assertions, loop over `[false, true]`: create a fresh
-   IPv4 TCP socket, set its reuse flag to that value and require bind to
-   `refused` to fail with `AddrInUse`. Never listen on a contender. Let each
-   contender drop, then explicitly drop the retained stream pair last.
-   RAII releases every local resource on panic; no detached task or leak.
-6. Run the exact focused test, checking that one test ran, then the full binary
-   suite. Review the diff and protected-file equality. Preserve all assertions
-   and deadlines; a setup/bind/refusal failure requires repair, not retry loops.
-7. Run every local house gate on final code, save fresh receipts and commit the
-   scoped implementation unsigned. Hand off to independent verify/review and
-   CI's macOS test. Design-baseline receipts do not close implementation tasks.
+1. Verify packet checksums and engine identity; record HEAD, platform and clean
+   status. Compare implementation scope to `94b8ae1`; preserve earlier fixes.
+2. Preserve the existing temporary loopback listener, explicitly bound
+   reuse-disabled IPv4 client, bounded connect/accept and accepted peer. These
+   are already implemented; no fixture reconstruction is authorized.
+3. Preserve the client's `local_addr()` as `refused`, dropped setup listener
+   and both retained stream locals through all assertions. Correct the opening
+   comment: lifetime excludes reuse-disabled binders, but not necessarily
+   reuse-enabled macOS listeners, including parallel Tokio listeners. Do not
+   read, write, half-close, shut down or release the pair early.
+4. Preserve the exact bounded `TcpStream::connect(refused)` refusal probe,
+   webhook address, SMTP, stalled-request and exhaustion observations, SIGTERM,
+   EOF/reap, clean exit, message formatting, exact ledger and redaction checks.
+5. Replace the final `[false, true]` loop with one fresh IPv4 `TcpSocket`.
+   Explicitly set reuse false, require `bind(refused)` to fail with exactly
+   `AddrInUse`, and never listen. Correct its comment/diagnostic to describe
+   only reuse-disabled exclusion. Keep `drop((reservation, peer))` last.
+   No singleton loop, platform conditional or replacement reuse-enabled check.
+6. Run the exact focused test (one selected pass) and full binary suite. Inspect
+   the diff for only the contender/comment changes and compare protected files.
+   Cross-check active spec/plan/tasks and comments for honest macOS limits.
+   Setup refusal is a point observation; final exclusion does not establish
+   every retry's failure stage or continuous protection from all listeners.
+7. Run all local gates on the repaired code, retain fresh candidate-bound
+   receipts and commit scoped implementation unsigned. Independent verify/review
+   and CI's macOS execution remain required. Design-baseline receipts do not
+   close any implementation task.
 
 ## Data model and contracts
 
@@ -89,9 +89,13 @@ No application model or wire-contract change. Test state is one ephemeral setup
 listener, one explicitly bound outgoing connection, its accepted peer and the
 client's local SocketAddr. Lifecycle: bind → connect → accept → release setup
 listener → probe refusal → configure real webhook → SMTP → observe request and
-exhaustion → SIGTERM → EOF/reap → assert ledger/redaction → assert exclusive
-bind → release pair. All setup awaits are bounded. Socket ownership is local,
-not global mutable state, port-number guessing or TIME_WAIT dependence.
+exhaustion → SIGTERM → EOF/reap → assert ledger/redaction → assert reuse-disabled
+bind rejection → release pair. All setup awaits are bounded. Ownership is local,
+not global mutable state, port-number guessing or TIME_WAIT dependence. Retained
+streams establish lifetime and the final bind check observes reuse-disabled
+exclusion only. They do not establish exclusion of reuse-enabled binders or
+listeners on macOS, including parallel Tokio listeners, or fully close that
+reuse race.
 
 The final ledger remains delivered=0, dropped=0, lagged=0, exhausted=1,
 aborted=1. The default-level stop event appears once, with exactly one exhaustion
@@ -119,10 +123,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 .forge/bin/brokkr compile --bundle bundles/self
-bash scripts/coverage-gate.sh
-bash scripts/coverage-gate.sh selftest
-bash scripts/publish-guard-test.sh
-bash scripts/seal-branch-test.sh
+bash bundles/self/scripts/coverage-gate.sh
+bash bundles/self/scripts/coverage-gate.sh selftest
+bash bundles/self/scripts/publish-guard-test.sh
+bash bundles/self/scripts/seal-branch-test.sh
 cargo deny check licenses
 ```
 
@@ -153,11 +157,11 @@ sealing and publication authority. None is claimed locally.
 
 | Risk | Mitigation and accepted cost |
 | --- | --- |
-| Established-client behavior differs on macOS. | Keep exact real refusal and ownership assertions; CI must execute them. Local experiments are feasibility only. A CI failure requires a fixture repair. |
-| A parallel listener can claim the target. | Explicit reuse-disabled bind, uninterrupted retained pair, final contender binds with reuse off/on; inspect lifetime and never drop/rebind. |
+| Platform behavior is overclaimed again. | Keep the exact refusal and reuse-disabled bind check; CI owns macOS execution. No local pass certifies macOS or all concurrent schedules. |
+| A reuse-enabled macOS listener can overlap the target. | Retain the pair and reuse-disabled bind check, but explicitly accept the limited proof: neither this check nor setup refusal excludes reuse-enabled binders/listeners, including parallel Tokio listeners. Existing assertions do not detect every interference or prove every retry fails at connect. Full race closure is outside this task; separately scope any CI-observed collision. |
 | Wrong endpoint accidentally selects a listener. | Derive target only from client's local address; exact refusal probe fails if connect succeeds. |
 | Added waits turn aborted=1 into exhausted=2. | Prompt refusal, existing deadlines/budgets and unchanged event ordering; do not accept connect timeouts or add sleeps. Existing extreme scheduling sensitivity is not a new latency guarantee. |
 | A keeper or half-close loses ownership. | Two local RAII streams, no keeper task or shutdown; explicit release after all checks. |
 | Extra resources or setup fail. | Two retained descriptors and a temporary listener, ephemeral loopback ports and bounded setup. Resource exhaustion fails visibly; no retries or allocator framework. |
-| Design reopens reviewed fixes. | Compare protected files and unchanged binary regions to `90eb2a0`; preserve earlier snapshot proof and separate webhook test. |
+| Design reopens reviewed fixes. | Compare protected files and unchanged binary regions to `94b8ae1`; preserve earlier snapshot proof and separate webhook test. |
 | Historical receipts conceal unfinished repair. | Fresh candidate-bound logs, unchecked new tasks, distinction between baseline gates and repaired-code proof; macOS remains CI-owned. |
