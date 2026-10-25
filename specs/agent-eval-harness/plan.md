@@ -85,7 +85,7 @@ Only 0055 is available to this run; 0049–0054 are reserved for #120.
 | `evals/src/mcp.rs`, `evals/src/oracle.rs` | Current MCP protocol and public per-task scripted solutions. |
 | `evals/src/runner.rs` | Binary resolution, owned trial processes, environment, snapshots, cleanup and results. |
 | `evals/src/report.rs` | Matrix validation/aggregation and report math. |
-| `evals/tests/proof.rs` | Every oracle/null task and two concurrent isolation trials through the executable. |
+| `evals/tests/proof.rs` | Every oracle/null task, within-trial inboxes and sequential admission through the executable. |
 | `evals/tests/fixture.rs`, `evals/tests/runner.rs`, `evals/tests/report.rs` | Wire refusal controls, external-command lifecycle and deterministic report proofs. |
 | `evals/README.md` | Runnable examples, public fixture routes, agent contract, taxonomy, limits and interim gates. |
 
@@ -154,8 +154,8 @@ revision for later reproduction; it is not model telemetry.
 6. Implement scenario provisioning with SMTP receipts and barriers. Runner
    controls 100% chaos then clear/retry before launch. Agent controls the
    documented slow-mail release after its initial wait. Multi-agent setup
-   completes before a common launch barrier; the proof uses observable
-   readiness to keep both isolation trials active concurrently.
+   completes before agent launch. The sequential proof holds an idle victim,
+   refuses a competitor before launch, then releases and scores the victim.
 7. Implement oracle/null as child subcommands using only exported public
    inputs. Oracle initializes MCP, waits/searches within its inbox, unwraps
    current text JSON and takes normal HTTP actions. It chooses by goal,
@@ -228,7 +228,7 @@ status and relative links; it cannot prove the future implementation.
 | MCP attachment/reply gaps make oracle proof impossible. | Explicit fixture ICS download and HTTP challenge reply; no claim to measure #159/#160 and no silent transport fallback. |
 | Timer scheduling changes trap presence. | Superseded OTP, controlled slow-mail release, pre-agent observed chaos refusal/retry; do not infer waits from state. |
 | Taxonomy invents agent reasoning. | Target versus idle declaration, app provenance events, fixed precedence and focused negative controls; unknown external MCP misuse remains unobservable. |
-| Port/build races or cross-trial state. | Port-zero binds, fresh processes/temp dirs, once-per-proof binary resolution and two concurrently active isolation trials. |
+| Port/build races or cross-trial state. | Port-zero binds, fresh processes/temp dirs, once-per-proof binary resolution and nonblocking sequential admission. |
 | Child output or descendants hang shutdown. | Continuous bounded-retention drains, group ownership, grace/kill/reap and failure-path process tests; no guarantee for daemonized or hostile children. |
 | Agent crashes after achieving goal. | Preserve raw exit status; state success wins unless infrastructure fails, deadline expires or a named trap disqualifies the trial, with tests for all precedences. |
 | Scoring state changes during capture. | Freeze mutations and delivery timers, take one consistent snapshot, then stop services. |
@@ -269,3 +269,12 @@ is outside CI on every OS until #201. #201's CI gating owns macOS eval
 preparation/toolchain, clippy/tests and selected artifact-primitive execution;
 those receipts do not block #196 (port spec AC13/AC23). This records ownership,
 not macOS execution or existing CI proof.
+
+## 2026-10-25 — sequential baseline update
+
+Issue #199 replaces cross-trial overlap with nonblocking sequential admission.
+The current [spec](spec.md) and [local #151 plan](../../evals/run-plan.md) name
+the same-uid/shared-TMPDIR idle-victim false pass. Fresh per-agent HOME remains
+from #196. Every schema-2 row records concurrency 1, including refusals.
+Historical overlapping oracle receipts do not prove isolation. Namespace work
+belongs to #221 and macOS eval proof to #201; no new confinement claim follows.

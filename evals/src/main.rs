@@ -60,6 +60,9 @@ enum Cmd {
         agent: Option<String>,
         #[arg(long)]
         deadline_ms: Option<u64>,
+        /// Supported trial concurrency; values other than 1 refuse.
+        #[arg(long, default_value_t = 1)]
+        concurrency: u32,
         /// Keep state.json, result.json, diagnostics and metadata here.
         #[arg(long)]
         artifacts_dir: Option<PathBuf>,
@@ -93,6 +96,9 @@ enum Cmd {
         trials: u32,
         #[arg(long)]
         deadline_ms: Option<u64>,
+        /// Supported trial concurrency; values other than 1 refuse.
+        #[arg(long, default_value_t = 1)]
+        concurrency: u32,
         #[arg(long)]
         artifacts_dir: Option<PathBuf>,
         #[arg(long)]
@@ -208,6 +214,7 @@ fn main() -> ExitCode {
             task,
             agent,
             deadline_ms,
+            concurrency,
             artifacts_dir,
             argv,
             seed,
@@ -239,6 +246,7 @@ fn main() -> ExitCode {
                 agent,
                 argv,
                 deadline_ms,
+                concurrency: Some(concurrency),
                 artifacts_dir,
                 fixture,
                 agent_model,
@@ -267,10 +275,15 @@ fn main() -> ExitCode {
             agents,
             trials,
             deadline_ms,
+            concurrency,
             artifacts_dir,
             seed,
             fixture_time,
         } => {
+            if concurrency != 1 {
+                eprintln!("swarmail-evals: harness error: concurrency_unsupported");
+                return ExitCode::from(2);
+            }
             let fixture = match provenance::FixtureInputs::resolve(
                 seed.as_deref(),
                 fixture_time.as_deref(),
@@ -924,6 +937,46 @@ async fn matrix_envelope(at: tokio::time::Instant) {
     tokio::time::sleep_until(at).await;
 }
 
+// Only these complete harness-authored categories cross the worker boundary.
+// All other stderr bytes are drained and discarded (#196), including long lines.
+async fn capture_worker_category<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+) -> std::io::Result<Option<&'static str>> {
+    let mut chunk = [0u8; 8192];
+    let mut line = Vec::with_capacity(128);
+    let mut oversized = false;
+    let mut category = None;
+    loop {
+        let n = reader.read(&mut chunk).await?;
+        if n == 0 {
+            return Ok(category);
+        }
+        for &byte in &chunk[..n] {
+            if byte == b'\n' {
+                if !oversized {
+                    for name in [
+                        "concurrent_trials_refused",
+                        "trial_admission_unavailable",
+                        "trial_cleanup_unproved",
+                    ] {
+                        if line == format!("swarmail-evals: harness error: {name}").as_bytes()
+                            && (category.is_none() || name == "trial_cleanup_unproved")
+                        {
+                            category = Some(name);
+                        }
+                    }
+                }
+                line.clear();
+                oversized = false;
+            } else if line.len() < 128 && !oversized {
+                line.push(byte);
+            } else {
+                oversized = true;
+            }
+        }
+    }
+}
+
 fn signal_trial(pid: u32) -> Result<(), String> {
     if unsafe { libc::kill(pid as i32, libc::SIGTERM) } == 0 {
         return Ok(());
@@ -981,7 +1034,7 @@ async fn run_child_assigned(
         .env(runner::SWARMAIL_BIN_ENV, bin)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(!bypass_wait);
     if let Some(ms) = deadline_ms {
         cmd.args(["--deadline-ms", &ms.to_string()]);
@@ -1062,7 +1115,12 @@ async fn run_child_assigned(
     matrix_spawn_test_hold().await;
     let pid = child.id().expect("spawned trial has a PID");
     let stdout = child.stdout.take().expect("stdout is piped");
-    let mut reader = tokio::spawn(capture_stdout(stdout));
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let mut reader = tokio::spawn(async move {
+        let (output, category) =
+            tokio::join!(capture_stdout(stdout), capture_worker_category(stderr));
+        Ok::<_, std::io::Error>((output?, category?))
+    });
     #[cfg(test)]
     let mut wait = {
         let mut child_wait = Box::pin(child.wait());
@@ -1153,6 +1211,7 @@ async fn run_child_assigned(
     if status.is_some() {
         matrix_test_event(MATRIX_CHILD_REAPED_ENV, "trial process wait completed");
     }
+    let mut worker_category = None;
     let captured = if status.is_some() {
         let deadline = tokio::time::Instant::now() + MATRIX_OUTPUT_EOF_BOUND;
         loop {
@@ -1161,7 +1220,7 @@ async fn run_child_assigned(
                 _ = term.recv() => interrupted = true,
                 _ = int.recv() => interrupted = true,
                 result = &mut reader => break match result {
-                    Ok(Ok(output)) => Some(output),
+                    Ok(Ok((output, category))) => { worker_category = category; Some(output) },
                     Ok(Err(_)) => { failure = Some("trial_stdout_read_failed".into()); None }
                     Err(_) => { failure = Some("trial_stdout_reader_failed".into()); None }
                 },
@@ -1204,6 +1263,9 @@ async fn run_child_assigned(
         }
         _ => None,
     };
+    if let Some(category) = worker_category {
+        failure.get_or_insert_with(|| category.to_string());
+    }
     let stop_admission = status.is_none() || !output_available || failure.is_some();
     ChildRun {
         row,
@@ -2195,6 +2257,11 @@ if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = holder ]; then
   printf '%s\n' "$!" > "$EVAL_TEST_MATRIX_HOLDER_PID"
   exit 0
 fi
+if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = cleanup-unproved ]; then
+  printf '%s\n' 'swarmail-evals: harness error: trial_cleanup_unproved' >&2
+  printf '%s\n' "$error_row"
+  exit 2
+fi
 if [ "$EVAL_TEST_MATRIX_TRIAL_MODE" = complete ]; then
   printf '%s\n' "$pass_row"
   exit 0
@@ -2511,6 +2578,7 @@ while :; do :; done
 
     #[test]
     fn matrix_completion_fence_is_observed_and_its_negative_control_exits_early() {
+        let _trial_scope = crate::test_support::trial_scope();
         for signal in [libc::SIGTERM, libc::SIGINT] {
             matrix_wait_fence_case(false, signal);
             matrix_wait_fence_case(true, signal);
@@ -2519,6 +2587,7 @@ while :; do :; done
 
     #[test]
     fn matrix_probe_readiness_unwind_releases_and_reaps_owned_processes() {
+        let _trial_scope = crate::test_support::trial_scope();
         let dir = tempfile::tempdir().unwrap();
         let ready = dir.path().join("trial.pid");
         let mut owned = Vec::new();
@@ -2576,6 +2645,7 @@ while :; do :; done
 
     #[test]
     fn matrix_owner_test_controls_cover_setup_admission_commit_and_final_row() {
+        let _trial_scope = crate::test_support::trial_scope();
         let setup = tempfile::tempdir().unwrap();
         let mut probe = matrix_probe(setup.path(), false, true, None, "complete", "signup,otp");
         assert!(probe.wait().success());
@@ -2670,6 +2740,7 @@ while :; do :; done
 
     #[test]
     fn pending_matrix_decisions_observe_queued_signals_and_retain_spawned_children() {
+        let _trial_scope = crate::test_support::trial_scope();
         let before_spawn = tempfile::tempdir().unwrap();
         let mut probe = matrix_probe_config(
             before_spawn.path(),
@@ -2832,6 +2903,7 @@ while :; do :; done
 
     #[test]
     fn mixed_signals_during_matrix_cleanup_do_not_bypass_the_retained_wait() {
+        let _trial_scope = crate::test_support::trial_scope();
         let dir = tempfile::tempdir().unwrap();
         let mut probe = matrix_probe(dir.path(), false, false, None, "held", "signup,otp");
         let active_file = dir.path().join("trial.pid");
@@ -2891,6 +2963,7 @@ while :; do :; done
 
     #[test]
     fn matrix_spawn_failure_keeps_all_rows_and_unknown_agent_statuses() {
+        let _trial_scope = crate::test_support::trial_scope();
         let dir = tempfile::tempdir().unwrap();
         let mut probe = matrix_probe_config(
             dir.path(),
@@ -2925,6 +2998,7 @@ while :; do :; done
 
     #[test]
     fn matrix_stdout_backpressure_is_bounded_and_still_observes_signals() {
+        let _trial_scope = crate::test_support::trial_scope();
         use std::io::BufRead;
         let dir = tempfile::tempdir().unwrap();
         let mut probe = matrix_probe_config(
@@ -3000,6 +3074,7 @@ while :; do :; done
 
     #[test]
     fn matrix_post_exit_inherited_pipe_is_bounded_and_holder_is_reaped_by_the_test() {
+        let _trial_scope = crate::test_support::trial_scope();
         use std::io::Read;
         let dir = tempfile::tempdir().unwrap();
         let mut probe = matrix_probe_config(
@@ -3254,6 +3329,7 @@ while :; do :; done
 
     #[test]
     fn matching_trial_row_requires_one_bounded_valid_matching_row_and_exit_pair() {
+        let _trial_scope = crate::test_support::trial_scope();
         let spec = matching_spec();
         let row = matching_row();
         let bytes = serde_json::to_vec(&row).unwrap();
@@ -3331,8 +3407,76 @@ while :; do :; done
         );
     }
 
+    #[tokio::test]
+    async fn worker_categories_are_bounded_and_finite() {
+        use std::io::Cursor;
+        let prefix = "swarmail-evals: harness error: ";
+        for bytes in [
+            b"synthetic-private-canary\n".to_vec(),
+            format!("{prefix}unknown\n").into_bytes(),
+            format!("{prefix}concurrent_trials_refused").into_bytes(),
+            [
+                vec![b'x'; 256],
+                format!("{prefix}concurrent_trials_refused\n").into_bytes(),
+            ]
+            .concat(),
+        ] {
+            assert_eq!(
+                capture_worker_category(Cursor::new(bytes)).await.unwrap(),
+                None
+            );
+        }
+        for category in [
+            "concurrent_trials_refused",
+            "trial_admission_unavailable",
+            "trial_cleanup_unproved",
+        ] {
+            let input = format!("{prefix}{category}\n");
+            assert_eq!(
+                capture_worker_category(Cursor::new(input)).await.unwrap(),
+                Some(category)
+            );
+        }
+    }
+
+    #[test]
+    fn unproved_worker_cleanup_stops_matrix_with_full_refusal_suffix() {
+        let _trial_scope = crate::test_support::trial_scope();
+        let dir = tempfile::tempdir().unwrap();
+        let mut probe = matrix_probe_config(
+            dir.path(),
+            false,
+            false,
+            None,
+            "cleanup-unproved",
+            "signup,otp",
+            MatrixProbeControls {
+                pipe_stderr: true,
+                ..MatrixProbeControls::default()
+            },
+        );
+        assert!(probe.wait().success());
+        let rows = matrix_probe_rows(dir.path());
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .all(|row| row.outcome == Outcome::HarnessError && row.concurrency == 1)
+        );
+        assert_eq!(rows[1].wall_time_ms, 0);
+        let launches = std::fs::read_to_string(dir.path().join("launches.log")).unwrap();
+        assert_eq!(launches.lines().count(), 1);
+        let mut stderr = String::new();
+        std::io::Read::read_to_string(
+            &mut probe.child.as_mut().unwrap().stderr.take().unwrap(),
+            &mut stderr,
+        )
+        .unwrap();
+        assert!(stderr.contains("trial_cleanup_unproved"));
+    }
+
     #[test]
     fn capture_stdout_drains_beyond_its_retention_limit() {
+        let _trial_scope = crate::test_support::trial_scope();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -3395,9 +3539,11 @@ mod privacy_tests {
 
     #[tokio::test]
     async fn matrix_worker_requires_one_matching_schema_row_and_exit() {
+        let _trial_scope = crate::test_support::trial_scope();
         let owner = tempfile::tempdir().unwrap();
         let expected = TrialResult {
             schema_version: 2,
+            concurrency: 1,
             trial_id: "0".repeat(32),
             task: Some("signup".into()),
             agent: Some("oracle".into()),
@@ -3435,6 +3581,33 @@ mod privacy_tests {
             run_child(&valid, Path::new("/bin/true"), "signup", &spec, &[], None,).await,
             Some(expected.clone())
         );
+
+        let valid_json = serde_json::to_value(&expected).unwrap();
+        let mut invalid = Vec::new();
+        let mut missing = valid_json.clone();
+        missing.as_object_mut().unwrap().remove("concurrency");
+        invalid.push(missing);
+        for value in [
+            serde_json::json!(0),
+            serde_json::json!(2),
+            serde_json::json!("1"),
+            serde_json::Value::Null,
+        ] {
+            let mut bad = valid_json.clone();
+            bad["concurrency"] = value;
+            invalid.push(bad);
+        }
+        let mut old = valid_json;
+        old["schema_version"] = serde_json::json!(1);
+        invalid.push(old);
+        for bad in invalid {
+            let program = worker_program(owner.path(), "invalid-concurrency", &bad.to_string());
+            assert!(
+                run_child(&program, Path::new("/bin/true"), "signup", &spec, &[], None)
+                    .await
+                    .is_none()
+            );
+        }
 
         let extra = worker_program(
             owner.path(),
@@ -3554,6 +3727,7 @@ mod privacy_tests {
 
     #[tokio::test]
     async fn matrix_row_reader_caps_storage_and_drains_overflow() {
+        let _trial_scope = crate::test_support::trial_scope();
         let accepted = vec![b'x'; super::MATRIX_OUTPUT_LIMIT];
         assert_eq!(
             bounded_stdout(Cursor::new(accepted.clone())).await,
@@ -3563,3 +3737,7 @@ mod privacy_tests {
         assert_eq!(bounded_stdout(Cursor::new(oversized)).await, None);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/common/coordination.rs"]
+mod test_support;

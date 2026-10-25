@@ -4,6 +4,11 @@
 //! adding helper-only configuration, then use the ordinary agent spawn path.
 #![allow(dead_code)]
 
+pub mod coordination;
+pub fn trial_scope() -> std::fs::File {
+    coordination::trial_scope()
+}
+
 use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
@@ -313,7 +318,21 @@ async fn helper(mode: &str) -> i32 {
     let app = App::new(&env.app_url, &env.identity).unwrap();
     match mode {
         mode if mode.starts_with("naive_") => naive_recovery(mode, &env, &app).await,
+        "held_idle" => {
+            let marker = marker().unwrap();
+            std::fs::write(&marker, b"ready").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !marker.with_extension("release").exists() {
+                assert!(Instant::now() < deadline, "idle release deadline");
+                tokio::task::yield_now().await;
+            }
+            0
+        }
         "echo" => {
+            let home = std::env::var("HOME").unwrap();
+            let sentinel = Path::new(&home).join("sequential-home-sentinel");
+            let sentinel_was_present = sentinel.exists();
+            std::fs::write(&sentinel, b"written by real agent").unwrap();
             let prompt = std::fs::read_to_string(&env.prompt_file).unwrap();
             let vars: Vec<(String, String)> = std::env::vars()
                 .filter(|(k, _)| {
@@ -331,6 +350,9 @@ async fn helper(mode: &str) -> i32 {
                 })
                 .collect();
             let report = json!({
+                "home": home,
+                "home_sentinel_was_present": sentinel_was_present,
+                "home_sentinel_written": sentinel.is_file(),
                 "argv": std::env::args().collect::<Vec<_>>(),
                 "cwd": std::env::current_dir().unwrap(),
                 "prompt": prompt,

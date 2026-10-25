@@ -178,6 +178,7 @@ fn historical_rows_refuse_and_current_rows_keep_report_accounting() {
                 ..Default::default()
             };
             value["schema_version"] = json!(2);
+            value["concurrency"] = json!(1);
             value["trial_id"] = json!(runner::new_trial_id());
             value["provenance"] =
                 serde_json::to_value(runner::make_provenance(&req, None, None)).unwrap();
@@ -277,6 +278,7 @@ fn strict_version_dispatch_required_nullable_fields_duplicates_and_hybrids() {
 }
 #[test]
 fn trial_retention_replay_preserves_original_and_refuses_tampered_bytes_and_symlinks() {
+    let _trial_scope = trial_scope();
     let (dir, row) = retained("signup", "oracle");
     let root = dir.path().join(&row.trial_id);
     let replay = check(&root);
@@ -289,6 +291,29 @@ fn trial_retention_replay_preserves_original_and_refuses_tampered_bytes_and_syml
     assert_eq!(value["business_replay"]["verdict"]["outcome"], "pass");
     let result = root.join("result.json");
     let original = std::fs::read(&result).unwrap();
+    let original_meta = std::fs::read(root.join("metadata.json")).unwrap();
+    for concurrency in [
+        None,
+        Some(json!(0)),
+        Some(json!(2)),
+        Some(json!(1.0)),
+        Some(json!("1")),
+        Some(Value::Null),
+    ] {
+        let mut invalid: Value = serde_json::from_slice(&original).unwrap();
+        match concurrency {
+            None => {
+                invalid.as_object_mut().unwrap().remove("concurrency");
+            }
+            Some(value) => invalid["concurrency"] = value,
+        }
+        save(&result, &invalid);
+        rebind(&root, "result.json");
+        let refused = check(&root);
+        assert_eq!(refused.status.code(), Some(2));
+        assert!(refused.stdout.is_empty());
+    }
+    std::fs::write(root.join("metadata.json"), original_meta).unwrap();
     std::fs::write(&result, b"{}").unwrap();
     let refused = check(&root);
     assert_eq!(refused.status.code(), Some(2));
@@ -313,6 +338,7 @@ fn trial_retention_replay_preserves_original_and_refuses_tampered_bytes_and_syml
 }
 #[test]
 fn snapshot_semantics_and_historical_version_cannot_be_laundered_by_new_hashes() {
+    let _trial_scope = trial_scope();
     let (dir, row) = retained("signup", "oracle");
     let root = dir.path().join(&row.trial_id);
     let state = root.join("state.json");
@@ -339,6 +365,7 @@ fn snapshot_semantics_and_historical_version_cannot_be_laundered_by_new_hashes()
 }
 #[test]
 fn early_errors_and_impossible_retention_are_truthful_without_private_diagnostics() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let out = cli()
         .env("SWARMAIL_BIN", "/missing-target")
@@ -404,6 +431,7 @@ fn early_errors_and_impossible_retention_are_truthful_without_private_diagnostic
 }
 #[test]
 fn a_real_eight_cell_retained_matrix_replays_offline_in_order_and_checks_all_before_output() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.json");
     save(
@@ -460,6 +488,7 @@ fn a_real_eight_cell_retained_matrix_replays_offline_in_order_and_checks_all_bef
 }
 #[test]
 fn supplied_invalid_seeds_times_and_builtin_declarations_launch_nothing() {
+    let _trial_scope = trial_scope();
     for args in [
         vec!["--seed", "bad"],
         vec!["--fixture-time", "tomorrow"],
@@ -629,6 +658,7 @@ fn helper_agent() {
 }
 #[test]
 fn fresh_fixture_processes_repeat_only_the_declared_projection() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     for task in ["invite-time", "digest-forty", "stale-otp"] {
         let mut projections = vec![];
@@ -693,6 +723,7 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
 
 #[test]
 fn declared_model_public_command_and_legacy_private_configuration_stay_distinct() {
+    let _trial_scope = trial_scope();
     let out = cli()
         .args([
             "trial",
@@ -752,7 +783,8 @@ fn declared_model_public_command_and_legacy_private_configuration_stay_distinct(
     );
 }
 #[test]
-fn concurrent_retained_matrices_preserve_duplicate_occurrences_and_exclusive_ownership() {
+fn sequential_retained_matrices_preserve_duplicate_occurrences_and_exclusive_ownership() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.json");
     save(&agents, &json!([{"label":"null","argv":[]}]));
@@ -775,10 +807,10 @@ fn concurrent_retained_matrices_preserve_duplicate_occurrences_and_exclusive_own
             .spawn()
             .unwrap()
     };
-    let first = start();
-    let second = start();
-    for child in [first, second] {
-        let out = child.wait_with_output().unwrap();
+    // #199 admits sequential trials; retain both matrices' full provenance
+    // and exclusive artifact ownership assertions on that supported path.
+    for _ in 0..2 {
+        let out = start().wait_with_output().unwrap();
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
         let text = String::from_utf8(out.stdout).unwrap();
         let rows = text
@@ -807,6 +839,7 @@ fn concurrent_retained_matrices_preserve_duplicate_occurrences_and_exclusive_own
 }
 #[test]
 fn business_replay_never_rewrites_budget_or_infrastructure_history() {
+    let _trial_scope = trial_scope();
     let (dir, row) = retained("signup", "oracle");
     let root = dir.path().join(&row.trial_id);
     let result = root.join("result.json");
@@ -835,6 +868,7 @@ fn business_replay_never_rewrites_budget_or_infrastructure_history() {
 
 #[test]
 fn retained_reader_enforces_fixed_paths_declared_lengths_and_all_size_boundaries() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("bound.json");
     for (limit, kind) in [
@@ -893,6 +927,7 @@ fn retained_reader_enforces_fixed_paths_declared_lengths_and_all_size_boundaries
 
 #[test]
 fn matrix_publication_failures_and_conflicting_child_evidence_never_overwrite_or_complete() {
+    let _trial_scope = trial_scope();
     for mode in ["index_failure", "partial_evidence", "published_conflict"] {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("runs");
@@ -950,6 +985,7 @@ fn matrix_publication_failures_and_conflicting_child_evidence_never_overwrite_or
 }
 #[test]
 fn invalid_requests_and_missing_targets_retain_explicit_unscorable_error_evidence() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     for args in [
         vec!["--agent", "oracle"],
@@ -1007,6 +1043,7 @@ fn invalid_requests_and_missing_targets_retain_explicit_unscorable_error_evidenc
 
 #[test]
 fn replacing_a_measured_target_fails_affected_cells_without_relaunch_or_invented_source() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("swarmail");
     std::fs::copy(swarmail_bin(), &target).unwrap();
@@ -1054,6 +1091,7 @@ fn replacing_a_measured_target_fails_affected_cells_without_relaunch_or_invented
 
 #[test]
 fn a_retained_snapshot_requires_nullable_keys_without_changing_legacy_bare_state() {
+    let _trial_scope = trial_scope();
     let (dir, row) = retained("signup", "oracle");
     let root = dir.path().join(&row.trial_id);
     let path = root.join("state.json");
@@ -1110,6 +1148,7 @@ fn canaries(root: &Path) -> Vec<String> {
 }
 #[test]
 fn external_private_claims_are_absent_from_trial_matrix_replay_and_failure_publication() {
+    let _trial_scope = trial_scope();
     use swarmail_evals::state::FailureClass;
     for mode in [
         "private_claims",
@@ -1230,6 +1269,7 @@ fn external_private_claims_are_absent_from_trial_matrix_replay_and_failure_publi
 
 #[test]
 fn publication_guard_refuses_supplied_state_before_any_result_or_state_bytes() {
+    let _trial_scope = trial_scope();
     let (dir, row) = retained("signup", "oracle");
     let mut snap: swarmail_evals::state::Snapshot =
         serde_json::from_value(load(&dir.path().join(&row.trial_id).join("state.json"))).unwrap();
@@ -1286,6 +1326,7 @@ fn bare(task: &str, path: &Path) -> std::process::Output {
 }
 #[test]
 fn historical_unknown_claims_score_without_mutation_and_reader_errors_do_not_reflect_input() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let private = tempfile::tempdir().unwrap();
     let (row, _) = helper_trial(
@@ -1422,6 +1463,7 @@ fn historical_unknown_claims_score_without_mutation_and_reader_errors_do_not_ref
 
 #[test]
 fn retained_matrix_historical_claims_remain_scoreable_and_a_bad_later_cell_emits_no_rows() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.json");
     save(&agents, &json!([{"label":"null","argv":[]}]));
@@ -1520,6 +1562,7 @@ fn retained_matrix_historical_claims_remain_scoreable_and_a_bad_later_cell_emits
 
 #[test]
 fn retained_plan_coordinates_versions_and_cross_cell_results_refuse_even_with_new_bindings() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.json");
     save(&agents, &json!([{"label":"null","argv":[]}]));
@@ -1632,6 +1675,7 @@ fn retained_plan_coordinates_versions_and_cross_cell_results_refuse_even_with_ne
 
 #[test]
 fn public_native_argv_hashes_the_original_declaration_and_non_utf8_opt_in_refuses() {
+    let _trial_scope = trial_scope();
     use std::{
         ffi::OsString,
         os::unix::{ffi::OsStringExt, fs::PermissionsExt},
@@ -1700,6 +1744,7 @@ fn public_native_argv_hashes_the_original_declaration_and_non_utf8_opt_in_refuse
 
 #[test]
 fn retained_agent_input_accepts_the_exact_bound_and_refuses_one_extra_byte_before_admission() {
+    let _trial_scope = trial_scope();
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.json");
     let mut bytes = br#"[{"label":"null","argv":[]}]"#.to_vec();
