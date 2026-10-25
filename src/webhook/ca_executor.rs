@@ -203,13 +203,18 @@ fn execute_envelope(envelope: Envelope) {
         reply,
         reservation,
     } = envelope;
-    if reply.is_closed() || scope.live().is_none() {
+    if reply.is_closed() {
         drop(job);
         drop(reservation);
         return;
     }
-    let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run()))
-        .unwrap_or(Err(super::TargetPreparationError::Worker));
+    let value = if scope.live().is_none() {
+        drop(job);
+        Err(super::TargetPreparationError::Unavailable)
+    } else {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job.run()))
+            .unwrap_or(Err(super::TargetPreparationError::Worker))
+    };
     let _ = reply.send(Charged { value, reservation });
 }
 

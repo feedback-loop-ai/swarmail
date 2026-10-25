@@ -17,7 +17,8 @@
 mod common;
 
 use common::{
-    http_get_text, http_json, metric_now, smtp_send, start, start_with, wait_for_metric_from,
+    CA_CONTRACTS, http_get_text, http_json, metric_now, smtp_send, start, start_with,
+    wait_for_metric_from,
 };
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
@@ -42,11 +43,6 @@ use tokio::sync::watch;
 /// ~+8.5 s) — and then never wait on it: the test ends long before the
 /// lifetime does, and the budget itself is observed by signal (issue
 /// #102), not by the sink's clock.
-// Contract fixtures below require uncontended process-wide CA admission.
-// Contention itself is exercised with keyed holds in ca_construction_tests;
-// unrelated protocol suites and non-admitting fixtures remain concurrent.
-static CA_CONTRACTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 const SINK_LIFETIME: Duration = Duration::from_secs(25);
 
 /// Pause before re-arming a failed accept. EMFILE is transient — on Linux

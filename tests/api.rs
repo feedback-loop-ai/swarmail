@@ -348,6 +348,7 @@ async fn unknown_query_deletes_preserve_exact_mail() {
 
 #[tokio::test]
 async fn query_free_native_operations_refuse_by_name() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start().await;
     let addr = srv.http_addr;
     let mail = seed(addr, "matrix", "matrix@example.com").await;
@@ -606,6 +607,7 @@ fn generated_ca_pem() -> String {
 
 #[tokio::test]
 async fn unknown_query_config_deletes_preserve_complete_configuration() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start().await;
     let addr = srv.http_addr;
     let ca_pem = generated_ca_pem();
@@ -1147,6 +1149,7 @@ async fn invalid_query_strings_are_bad_requests() {
 
 #[tokio::test]
 async fn webhook_targets_get_set_and_cleared() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (st, _) = http_json(
         srv.http_addr,
@@ -4209,6 +4212,7 @@ async fn seed_unknown_key_refuses_without_storing() {
 /// chaos keeps its 422.
 #[tokio::test]
 async fn seed_and_webhook_data_errors_are_local_400s() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start().await;
     let prior = r#"[{"url": "http://127.0.0.1:9/prior", "secret": "s"}]"#;
     let (st, installed) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(prior)).await;

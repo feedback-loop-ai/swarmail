@@ -2190,8 +2190,11 @@ async fn closed_scope_discards_put_and_cache_results_and_refuses_sends() {
     cache_release.send(()).unwrap();
     cache_done.await.unwrap();
     assert_eq!(
-        put.await.unwrap().0,
-        reqwest::StatusCode::SERVICE_UNAVAILABLE
+        put.await.unwrap(),
+        (
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({"error": ca_executor::UNAVAILABLE}),
+        )
     );
     assert_eq!(client.await.unwrap().unwrap_err(), ca_executor::UNAVAILABLE);
     assert_eq!(server.webhooks.current()[0].ca_pem, prior.ca_pem);
@@ -2201,8 +2204,11 @@ async fn closed_scope_discards_put_and_cache_results_and_refuses_sends() {
         .unwrap_err();
     assert_eq!(error, ca_executor::UNAVAILABLE);
     assert_eq!(
-        api_json(&server, reqwest::Method::GET, None).await.0,
-        reqwest::StatusCode::SERVICE_UNAVAILABLE
+        api_json(&server, reqwest::Method::GET, None).await,
+        (
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({"error": ca_executor::UNAVAILABLE}),
+        )
     );
     watchdog.assert_unused();
     Arc::try_unwrap(server).ok().unwrap().stop().await;
