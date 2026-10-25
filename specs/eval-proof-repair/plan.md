@@ -76,3 +76,42 @@ Also run the pinned verify-seat fail-closed native-tls proof: `cargo tree -i nat
 - **Mutation escape:** restore the initializer exactly and inspect production hunks before commit; only the test changes may remain.
 - **Prerequisite scope creep:** only the Linux test-local Write import is admitted. Preserve lifecycle tests and production runner code; report any newly discovered blocker precisely.
 - **Misstated verification:** baseline intake evidence is context, not evidence for implementation. Standalone evals must pass independently; exact coverage and selftest cannot be waived. CI/operator-owned evidence stays with its named owner and is not claimed locally.
+
+## Implementation proof — 2026-10-25
+
+Both packet files passed packet-relative `sha256sum -c SHA256SUMS`; the
+candidate-local engine matches the recorded `ab935558…c6a885f` digest.
+The single test-only Linux Write import restored standalone compilation.
+Source comparison confirms the production prefixes and both existing entropy
+tests are byte-identical; the constructor mutation below was fully restored.
+
+The new test plans four fresh pairs for each of the 16 catalogue tasks using
+identical public inputs and the untouched constructor, checks actual secret
+collections, then compares the two canonical private-projection vectors within
+each task. The publication test now uses `SNAPSHOT_SCHEMA`, witnesses all four
+injected stages and requires the exact injected error, preserving its original
+assertions and real non-target publication.
+
+Standalone commands passed with `CARGO_NET_OFFLINE=true`:
+
+- `cargo test --manifest-path evals/Cargo.toml --workspace --locked --no-run`
+- `cargo fmt --manifest-path evals/Cargo.toml --all -- --check`
+- `cargo clippy --manifest-path evals/Cargo.toml --workspace --all-targets --locked -- -D warnings`
+- `cargo test --manifest-path evals/Cargo.toml --locked --lib production_construction_keeps_secrets_independent_of_public_seed`
+- `cargo test --manifest-path evals/Cargo.toml --locked entropy_proofs` (all three controls)
+- `cargo test --manifest-path evals/Cargo.toml --locked every_publication_stage_refuses_without_a_completion_marker`
+- `cargo test --manifest-path evals/Cargo.toml --workspace --locked` (185 passed, zero failed or ignored)
+
+For the causal negative control, temporarily replace only the constructor's
+`StdRng::from_os_rng()` initializer with
+`StdRng::from_seed(crate::provenance::seed_bytes(&inputs.seed).unwrap())`.
+The same focused `--lib` command fails with exit 101 at the intended assertion:
+`signup: private projections repeat across independent constructors` (zero
+passed, one failed). Restoring the exact original file bytes and rerunning the
+command passes. No secret values appear in this receipt, and no mutation is
+committed. This detects public-seed-derived constructor entropy; it does not
+certify OS entropy quality or independent variation of every individual field.
+
+The post-commit pinned root gate run remains outstanding at this checkpoint.
+Its run-local verdict belongs in `.forge/epic192/issue234/implement-gates.json`;
+that result must be `pass` before T7 or this implementation is complete.

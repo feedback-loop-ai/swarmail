@@ -499,7 +499,7 @@ mod tests {
         };
         let row = crate::runner::refused_row(&req, &"0".repeat(32));
         let snap = Snapshot {
-            schema_version: 1,
+            schema_version: crate::state::SNAPSHOT_SCHEMA,
             trial_id: row.trial_id.clone(),
             task: "signup".into(),
             frozen: true,
@@ -519,13 +519,17 @@ mod tests {
             "metadata.json",
         ] {
             let root = tempfile::tempdir().unwrap();
+            let mut injected = false;
             let r = retain_with(root.path(), &row, Some(&snap), |root, name, bytes| {
                 if name == stage {
+                    injected = true;
                     return Err("injected write failure".into());
                 }
                 publish(root, name, bytes)
             });
             assert!(r.is_err());
+            assert!(injected, "{stage} injection was not reached");
+            assert_eq!(r.unwrap_err(), "injected write failure");
             assert!(
                 !root
                     .path()
