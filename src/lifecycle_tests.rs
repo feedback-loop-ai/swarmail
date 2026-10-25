@@ -124,3 +124,59 @@ async fn graceful_http_completion_emits_no_deadline() {
         "graceful serve selected the deadline arm"
     );
 }
+
+// Identity-keyed startup observation; a different server cannot consume it.
+static CA_STARTUP: std::sync::Mutex<
+    Option<(
+        String,
+        tokio::sync::oneshot::Sender<crate::webhook::ca_executor::Scope>,
+    )>,
+> = std::sync::Mutex::new(None);
+pub(super) fn observe_ca_scope_startup(
+    cfg: &crate::config::Config,
+    scope: &crate::webhook::ca_executor::Scope,
+) {
+    let mut hook = CA_STARTUP.lock().unwrap();
+    if hook
+        .as_ref()
+        .is_some_and(|(key, _)| key == &cfg.smtp_listen)
+    {
+        let (_, send) = hook.take().unwrap();
+        let _ = send.send(scope.clone());
+    }
+}
+
+#[tokio::test]
+async fn ca_server_drop_and_startup_failure_close_only_their_scopes() {
+    let mut config = crate::config::Config {
+        smtp_listen: "127.0.0.1:0".into(),
+        http_listen: "127.0.0.1:0".into(),
+        pop3_listen: "127.0.0.1:0".into(),
+        max_per_inbox: 0,
+        data_file: None,
+        tls_cert: None,
+        tls_key: None,
+        smtp: Default::default(),
+        pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
+    };
+    let (send, scope) = tokio::sync::oneshot::channel();
+    *CA_STARTUP.lock().unwrap() = Some(("ca-startup-failure-probe".into(), send));
+    let first = crate::run_on(&config).await.unwrap();
+    let second = crate::run_on(&config).await.unwrap();
+    let first_hooks = first.webhooks.clone();
+    let second_hooks = second.webhooks.clone();
+    drop(first);
+    assert!(first_hooks.scope.live().is_none());
+    assert!(second_hooks.scope.live().is_some());
+    config.smtp_listen = "ca-startup-failure-probe".into();
+    config.tls_key = Some("unread-pair-half".into());
+    assert!(crate::run_on(&config).await.is_err());
+    let startup_scope = scope.await.unwrap();
+    assert!(
+        startup_scope.live().is_none(),
+        "startup error drops the owner token"
+    );
+    assert!(second_hooks.scope.live().is_some());
+    second.stop().await;
+    assert!(second_hooks.scope.live().is_none());
+}

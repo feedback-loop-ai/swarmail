@@ -939,7 +939,7 @@ outbox: a mail whose fan-out cannot fire is never re-fired after a restart.
 At most 32 deliveries are in flight **per target**
 (`swarmail::webhook::WEBHOOK_DELIVERY_CAP`, keyed by the target's
 normalized URL): a stalled sink holds only its own target's slots, so it
-cannot cause drops for a healthy one. A mail whose target's slots are all
+cannot consume another target's delivery slots. CA admission is shared across targets. A mail whose target's slots are all
 taken has that fan-out refused at the bound, counted once in
 `swarmail_webhook_dropped_total`, and never retried; the first refusal
 per target warns, and further refusals within 60 s of that warning are
@@ -948,14 +948,35 @@ every target and retry, so extra targets cost references, not copies of
 the mail. A target that accepts
 and never answers wedges its delivery for the dispatcher's whole budget —
 about 22.1 s for network attempts and backoff (the cold-client build and
-blocking-pool queue time are outside that budget) — so a stalled slot holds
+CA admission/build time are outside that budget) — so a stalled slot holds
 the bound for at least that portion, then the delivery is
 counted in `swarmail_webhook_exhausted_total`, and its final refusal is
 logged at the default level: one `warn` naming the target URL and the last
-delivery error (no per-attempt spam). CA construction uses Tokio's shared
-blocking pool; exhausted pool capacity can delay SMTP parsing and commits
-(the low availability residual is tracked by #220),
-while spare capacity keeps SMTP progress independent of a held CA build. The five ledger counters —
+delivery error (no per-attempt spam). Server-managed CA work uses two process-wide dedicated native workers with
+no pending queue and a 64 MiB logical charged-job budget (#220). GET projection,
+PUT complete validation/projection and custom-CA delivery cache misses share
+nonblocking admission. Held CA jobs cannot consume the Tokio blocking slots used
+by SMTP parsing and Store commits. This provides no OS scheduling or latency
+guarantee. The two threads stay resident until process exit, across server stops
+and runtime replacement; stop does not drain builders. Cancelled running jobs and
+retained results stay charged until disposal. Two stuck jobs require a restart.
+
+GET and PUT return native-envelope 503 `webhook CA preparation unavailable` on
+capacity/byte exhaustion, contention, closed scope or failed worker startup.
+Admitted worker failure retains GET 500 `webhook response preparation failed` and
+PUT 500 `webhook configuration preparation failed`; invalid PUT remains 400.
+Refused/failed/cancelled PUT keeps the old list. First successful reservation wins:
+there are no class quotas or fairness guarantee. A refused delivery miss spends
+an ordinary attempt and may exhaust all four attempts under GET pressure.
+Oversized valid input can refuse, and an oversized directly installed snapshot
+can keep returning GET 503 until replaced/cleared. The HTTP body limit is unchanged.
+
+The logical tariff charges job-owned input/output/copies, parser/root/client
+representations and metadata with explicit weights (decision 0078). It is not an
+allocator or RSS ceiling. HTTP extraction, installed configuration, pre-existing
+dispatcher snapshots/shared payloads, transferred responses/cache, transport,
+thread stacks and synchronous embedder validate/redacted calls are outside it.
+The five ledger counters —
 `swarmail_webhook_{delivered,dropped,lagged,exhausted,aborted}_total` — are
 cumulative since process start (they reset on restart, they are not
 persisted), and a shutdown counts its backlog of undelivered notifications

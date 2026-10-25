@@ -895,6 +895,7 @@ async fn poll_metric(addr: std::net::SocketAddr, name: &str, want: &str) {
 /// database's own.
 #[tokio::test]
 async fn a_refused_insert_is_never_exposed_as_accepted_mail() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let (_dir, db) = data_file("refuse-insert");
 
     let srv = common::start_with(|mut c| {

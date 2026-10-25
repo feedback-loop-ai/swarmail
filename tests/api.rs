@@ -348,6 +348,7 @@ async fn unknown_query_deletes_preserve_exact_mail() {
 
 #[tokio::test]
 async fn query_free_native_operations_refuse_by_name() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start().await;
     let addr = srv.http_addr;
     let mail = seed(addr, "matrix", "matrix@example.com").await;
@@ -606,6 +607,7 @@ fn generated_ca_pem() -> String {
 
 #[tokio::test]
 async fn unknown_query_config_deletes_preserve_complete_configuration() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start().await;
     let addr = srv.http_addr;
     let ca_pem = generated_ca_pem();
@@ -1147,6 +1149,7 @@ async fn invalid_query_strings_are_bad_requests() {
 
 #[tokio::test]
 async fn webhook_targets_get_set_and_cleared() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (st, _) = http_json(
         srv.http_addr,
@@ -4209,6 +4212,7 @@ async fn seed_unknown_key_refuses_without_storing() {
 /// chaos keeps its 422.
 #[tokio::test]
 async fn seed_and_webhook_data_errors_are_local_400s() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start().await;
     let prior = r#"[{"url": "http://127.0.0.1:9/prior", "secret": "s"}]"#;
     let (st, installed) = http_json(srv.http_addr, "PUT", "/api/v1/webhooks", Some(prior)).await;
@@ -5397,15 +5401,69 @@ async fn openapi_webhook_get_documents_awaited_preparation_failure() {
 }
 
 #[test]
-fn webhook_docs_state_shared_pool_limits() {
+fn webhook_docs_state_bounded_ca_limits() {
     let readme = include_str!("../README.md");
     let module = include_str!("../src/webhook.rs");
     let llms = include_str!("../src/static/llms.txt");
     for doc in [readme, module, llms] {
         assert!(doc.contains("never awaited by SMTP acceptance"));
         assert!(!doc.contains("never blocking the SMTP path"));
-        assert!(doc.contains("#220"), "shared-pool residual owner");
+        assert!(doc.contains("#220"), "bounded CA work issue");
     }
-    assert!(readme.contains("delay SMTP parsing and commits"));
-    assert!(llms.contains("delay SMTP parsing/commits"));
+    for doc in [readme, llms] {
+        assert!(doc.contains("64 MiB"));
+        assert!(doc.contains("webhook CA preparation unavailable"));
+        assert!(doc.contains("process exit"));
+    }
+}
+
+fn ca_error_schema<'a>(doc: &'a serde_json::Value, method: &str) -> Option<&'a serde_json::Value> {
+    let schema = &doc["paths"]["/api/v1/webhooks"][method]["responses"]["503"]["content"]["application/json"]
+        ["schema"];
+    if let Some(reference) = schema["$ref"].as_str() {
+        doc.pointer(reference.strip_prefix('#')?)
+    } else {
+        Some(schema)
+    }
+}
+fn ca_statuses_documented(doc: &serde_json::Value) -> bool {
+    ["get", "put"].into_iter().all(|method| {
+        doc["paths"]["/api/v1/webhooks"][method]["responses"]["503"]["description"]
+            .as_str()
+            .is_some_and(|s| s.contains("webhook CA preparation unavailable"))
+            && ca_error_schema(doc, method).is_some_and(|schema| {
+                schema["type"] == "object"
+                    && schema["properties"]["error"]["type"] == "string"
+                    && schema["required"]
+                        .as_array()
+                        .is_some_and(|fields| fields.iter().any(|f| f == "error"))
+            })
+    }) && doc["paths"]["/api/v1/webhooks"]["get"]["responses"]["500"].is_object()
+}
+#[tokio::test]
+async fn openapi_webhook_ca_admission_statuses() {
+    let srv = start().await;
+    let doc = served_openapi(srv.http_addr).await;
+    assert!(ca_statuses_documented(&doc));
+    for (method, status) in [("get", "503"), ("put", "503"), ("get", "500")] {
+        let mut missing = doc.clone();
+        missing["paths"]["/api/v1/webhooks"][method]["responses"]
+            .as_object_mut()
+            .unwrap()
+            .remove(status);
+        assert!(
+            !ca_statuses_documented(&missing),
+            "missing {method} {status}"
+        );
+    }
+    for method in ["get", "put"] {
+        let mut dangling = doc.clone();
+        dangling["paths"]["/api/v1/webhooks"][method]["responses"]["503"]["content"]["application/json"]
+            ["schema"] = serde_json::json!({"$ref": "#/components/schemas/MissingCaError"});
+        assert!(
+            !ca_statuses_documented(&dangling),
+            "unresolved {method} 503 schema"
+        );
+    }
+    srv.stop().await;
 }

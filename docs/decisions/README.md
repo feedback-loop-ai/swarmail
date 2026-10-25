@@ -72,7 +72,7 @@ them. What may land while a decision is still proposed is stated in
 | [0065](0065-decoded-inbox-metrics.md) | Decoded inbox identity for HTTP request metrics (amends 0043 §6 narrowly) | accepted (operator, 2026-10-24) | (Epic #192, issue #202) |
 | [0067](0067-webhook-ca-safety.md) | Public webhook certificates and off-worker CA construction | accepted (operator, 2026-10-24) | (Epic #192, issue #195; supplied operator ruling and patch 10) |
 | [0068](0068-webhook-get-failure.md) | Document webhook GET preparation failure | accepted (operator, 2026-10-24) | (Epic #192, issue #195; supplied operator ruling and patch 10) |
-| [0069](0069-bounded-ca-execution.md) | Bounded webhook CA execution | proposed — historical supplied record | (Later accepted for #220 on 2026-10-25 per authenticated `.forge/epic192/issue195/operator-rulings.md`; implementation belongs to #220) |
+| [0069](0069-bounded-ca-execution.md) | Bounded webhook CA execution | accepted (operator, 2026-10-25) | (Epic #192; split from #195, implemented by #220) |
 | [0070](0070-object-only-chaos-and-seed.md) | Object-only REST seed and chaos admission; narrow proposed exception to 0029’s custom-deserializer prohibition | accepted (operator, 2026-10-24) | (Epic #192, issue #181; real positional-array mutation probes) |
 | [0071](0071-eval-trap-scoring.md) | Named eval traps invalidate a trial | accepted (operator, 2026-10-24) | (#192/#198) |
 | [0072](0072-delivery-proof-residuals.md) | Distinguish delivery proof completion from documented limits | proposed — awaiting the operator | (NEXT-171, epic #192) |
@@ -80,6 +80,7 @@ them. What may land while a decision is still proposed is stated in
 | [0074](0074-strict-native-queries.md) | Refuse unsupported queries before native operations | proposed — awaiting the operator | (Epic #192, issue #197) |
 | [0075](0075-eval-privacy.md) | Closed eval environments and safe diagnostics (renumbered from 0062) | proposed — awaiting the operator | (Epic #192, issue #196 on #194) |
 | [0077](0077-webhook-ca-port.md) | Compatible webhook CA port and LOW repairs | proposed — awaiting the operator | (Epic #192, issue #195) |
+| [0078](0078-ca-executor-ownership.md) | Bounded CA ownership, logical accounting and admission | proposed — awaiting the operator | (Epic #192, issue #220; compatible choices under accepted 0069) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

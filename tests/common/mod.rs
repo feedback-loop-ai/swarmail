@@ -11,6 +11,11 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
 use tokio_rustls::{TlsConnector, rustls};
 
+// Each integration binary has its own process-global CA executor and fixture.
+// Hold this guard for success-dependent admission, owned replies and cleanup;
+// dedicated contention tests keep their competing operations inside one fixture.
+pub static CA_CONTRACTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 mod metrics;
 #[allow(unused_imports)]
 pub use metrics::parse_prometheus;

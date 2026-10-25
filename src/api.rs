@@ -753,7 +753,9 @@ pub async fn serve(
 
 pub fn router(state: AppState) -> Router {
     #[cfg(test)]
-    use webhook_handler_tests::cancellable_set_webhooks as set_webhooks;
+    use webhook_handler_tests::{
+        cancellable_get_webhooks as get_webhooks, cancellable_set_webhooks as set_webhooks,
+    };
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
@@ -1712,14 +1714,18 @@ async fn get_webhooks(
     raw: RawQuery,
 ) -> ApiResult<Json<Vec<WebhookTarget>>> {
     let ViewQuery {} = parse_query(raw.0.as_deref().unwrap_or(""), "GET /api/v1/webhooks")?;
-    let snapshot = state.webhooks.current();
-    let shown = redacted_targets(snapshot).await.map_err(|_| {
-        ApiError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "webhook response preparation failed".to_string(),
-        )
-    })?;
-    Ok(Json(shown))
+    let charged = redacted_targets(&state.webhooks)
+        .await
+        .map_err(get_ca_error)?;
+    let _live = state.webhooks.scope.live().ok_or_else(ca_unavailable)?;
+    let crate::webhook::ca_executor::Charged {
+        value,
+        reservation: _reservation,
+    } = charged;
+    match value {
+        Ok(crate::webhook::ca_executor::Output::Get(shown)) => Ok(Json(shown)),
+        _ => Err(get_ca_error(TargetPreparationError::Worker)),
+    }
 }
 
 /// PUT keeps the closed JSON/extractor contract, then validates the whole
@@ -1731,17 +1737,48 @@ async fn set_webhooks(
     body: Result<Json<WebhookTargets>, JsonRejection>,
 ) -> Result<Json<Vec<WebhookTarget>>, BodyError> {
     let WebhookTargets(targets) = json_body(body, "webhooks")?;
-    let (installed, echo) = prepare_targets(targets)
+    let charged = prepare_targets(&state.webhooks, targets)
         .await
-        .map_err(|error| match error {
-            TargetPreparationError::Invalid(message) => bad_request(message),
-            TargetPreparationError::Worker => ApiError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "webhook configuration preparation failed".to_string(),
-            ),
-        })?;
-    state.webhooks.set(installed);
-    Ok(Json(echo))
+        .map_err(put_ca_error)?;
+    let _live = state.webhooks.scope.live().ok_or_else(ca_unavailable)?;
+    let crate::webhook::ca_executor::Charged {
+        value,
+        reservation: _reservation,
+    } = charged;
+    match value {
+        Ok(crate::webhook::ca_executor::Output::Put(installed, echo)) => {
+            state.webhooks.set(installed);
+            Ok(Json(echo))
+        }
+        value => Err(put_ca_error(value.err().unwrap_or(TargetPreparationError::Worker)).into()),
+    }
+}
+
+fn get_ca_error(error: TargetPreparationError) -> ApiError {
+    if matches!(error, TargetPreparationError::Unavailable) {
+        return ca_unavailable();
+    }
+    ApiError(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "webhook response preparation failed".into(),
+    )
+}
+fn put_ca_error(error: TargetPreparationError) -> ApiError {
+    match error {
+        TargetPreparationError::Invalid(message) => bad_request(message),
+        TargetPreparationError::Unavailable => ca_unavailable(),
+        TargetPreparationError::Worker => ApiError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "webhook configuration preparation failed".into(),
+        ),
+    }
+}
+
+fn ca_unavailable() -> ApiError {
+    ApiError(
+        StatusCode::SERVICE_UNAVAILABLE,
+        crate::webhook::ca_executor::UNAVAILABLE.into(),
+    )
 }
 
 async fn clear_webhooks(
@@ -3091,4 +3128,4 @@ mod tests {
 #[cfg(test)]
 mod webhook_handler_tests;
 #[cfg(test)]
-pub(crate) use webhook_handler_tests::cancel_put_for;
+pub(crate) use webhook_handler_tests::{cancel_get_for, cancel_put_for};

@@ -86,6 +86,7 @@ async fn seed_endpoint_extracts_and_stores() {
 
 #[tokio::test]
 async fn webhooks_fire_with_secret_and_retry_targets() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start_with(|c| c).await;
 
     // A minimal HTTP receiver.

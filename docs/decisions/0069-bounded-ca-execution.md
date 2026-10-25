@@ -1,6 +1,6 @@
 # 0069 — Propose bounded CA execution and stop before admission changes
 
-- **Status:** proposed — tracked by #220; split from #195 by the operator on 2026-10-24, so #195 ships without it.
+- **Status:** accepted (operator, 2026-10-25); implemented by #220. Split from #195 by the operator on 2026-10-24, so #195 shipped without it.
 - **Date:** 2026-10-24
 - **Scope:** Epic #192 issue #195 continuation; availability and resource ownership.
 - **Specification:** [webhook pool review](../../specs/webhook-pool-review/spec.md).

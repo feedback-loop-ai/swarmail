@@ -140,6 +140,7 @@ async fn an_open_feed_does_not_hold_stop_hostage() {
 /// ledger after the count; here the HTTP listener is already gone.
 #[tokio::test]
 async fn a_stalled_sink_cannot_hold_stop_hostage() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let srv = start().await;
     let (addr, hits, ended) = stalled_sink().await;
     let body = serde_json::json!([{ "url": format!("http://{addr}/hook") }]).to_string();
@@ -547,6 +548,7 @@ async fn queued_seeds_refuse_once_the_stop_has_fired() {
 /// matching count) — so no scheduling order can flake the row.
 #[tokio::test]
 async fn a_fanout_in_flight_at_the_drain_is_counted_and_never_delivered() {
+    let _ca = common::CA_CONTRACTS.lock().await;
     let dir = tempfile::TempDir::with_prefix("swarmail-drain-count-").unwrap();
     let path = dir.path().join("counted.db");
     let srv = start_with(|mut c| {

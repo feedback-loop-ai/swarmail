@@ -751,10 +751,12 @@ fn cancelled_delivery_build_counts_work_without_late_publication() {
             .await
             .expect("completed successful CPU work is counted");
             assert_eq!(ca_cache_stats().builds, before.builds + 1);
-            let cache = ca_clients().lock().unwrap();
-            assert!(!cache.clients.contains_key(&pem));
-            drop(cache);
+            {
+                let cache = ca_clients().lock().unwrap();
+                assert!(!cache.clients.contains_key(&pem));
+            }
             assert_cache_bijection();
+            wait_ca_idle().await;
         });
 }
 
@@ -825,6 +827,12 @@ fn shutdown_during_held_build_aborts_once_without_late_publish_or_send() {
             tokio::time::timeout(Duration::from_secs(5), server.stop())
                 .await
                 .expect("stop joins the dispatcher while its delivery is held");
+            assert!(webhooks.scope.live().is_none(), "stop revoked CA authority");
+            assert_eq!(
+                ca_executor::jobs_for_test(),
+                1,
+                "aborted builder remains charged after stop"
+            );
             let stopped = webhooks.snapshot();
             assert_eq!(stopped.delivered, 0);
             assert_eq!(
@@ -849,9 +857,10 @@ fn shutdown_during_held_build_aborts_once_without_late_publish_or_send() {
             .expect("successful detached CA construction is counted");
             assert_eq!(ca_cache_stats().builds, before.builds + 1);
             assert_eq!(ca_cache_stats().entries, before.entries);
-            let cache = ca_clients().lock().unwrap();
-            assert!(!cache.clients.contains_key(&pem));
-            drop(cache);
+            {
+                let cache = ca_clients().lock().unwrap();
+                assert!(!cache.clients.contains_key(&pem));
+            }
             let after = webhooks.snapshot();
             assert_eq!(after.delivered, stopped.delivered);
             assert_eq!(after.aborted, stopped.aborted);
@@ -868,6 +877,7 @@ fn shutdown_during_held_build_aborts_once_without_late_publish_or_send() {
             assert!(!watchdog_fired.load(Ordering::SeqCst));
             watchdog_done_tx.send(()).unwrap();
             watchdog.join().unwrap();
+            wait_ca_idle().await;
         });
 }
 
@@ -1219,6 +1229,7 @@ async fn cancelled_put_handler_cannot_install_after_preparation() {
     assert_eq!(cache_lru_keys(), lru);
     watchdog.assert_unused();
     Arc::try_unwrap(server).ok().unwrap().stop().await;
+    wait_ca_idle().await;
 }
 
 /// GET projection and PUT validation/projection are cache-neutral even at
@@ -1278,7 +1289,7 @@ async fn api_preparation_preserves_lru_order_and_next_eviction() {
 /// returns 250 after controlled release. This records the shared-pool
 /// saturation residual separately from the spare-capacity progress proof.
 #[test]
-fn exhausted_blocking_pool_queues_smtp_parse_until_delivery_build_releases() {
+fn held_delivery_leaves_the_single_smtp_blocking_slot_free() {
     use tokio::io::AsyncWriteExt;
     tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
@@ -1347,28 +1358,18 @@ fn exhausted_blocking_pool_queues_smtp_parse_until_delivery_build_releases() {
                 .expect("SMTP DATA parse is submitted while the only blocking slot is held")
                 .expect("the queued-work observation remains connected");
             let client = reqwest::Client::new();
-            assert_eq!(
-                inbox_count(&client, server.http_addr, "pool-waiter").await,
-                0,
-                "the queued parse cannot be queryable before pool capacity returns"
-            );
-
-            release.send(()).unwrap();
-            tokio::time::timeout(Duration::from_secs(5), finished)
-                .await
-                .expect("the held builder completes")
-                .unwrap();
             let accepted =
-                tokio::time::timeout(Duration::from_secs(5), smtp_read_reply(&mut reader))
+                tokio::time::timeout(Duration::from_secs(3), smtp_read_reply(&mut reader))
                     .await
-                    .expect("the queued parse and insert recover after release")
-                    .remove(0);
-            assert!(accepted.starts_with("250"), "{accepted}");
+                    .expect("SMTP progresses before CA release");
+            assert!(accepted[0].starts_with("250"));
             assert_eq!(
                 inbox_count(&client, server.http_addr, "pool-waiter").await,
-                1,
-                "the recovered DATA 250 is immediately queryable"
+                1
             );
+            assert!(!watchdog_fired.load(Ordering::SeqCst));
+            release.send(()).unwrap();
+            finished.await.unwrap();
             writer.write_all(b"QUIT\r\n").await.unwrap();
             let delivered = tokio::time::timeout(Duration::from_secs(5), sink)
                 .await
@@ -1456,283 +1457,166 @@ fn cold_client_construction_leaves_the_async_worker_and_cache_mutex_free() {
 
 /// Failure cleanup must release even if the async test panics: Tokio cannot
 /// cancel a running blocking closure when its runtime is dropped.
-struct ProjectionWatchdog {
-    releases: Vec<std::sync::mpsc::Sender<()>>,
-    done: Option<std::sync::mpsc::Sender<()>>,
-    thread: Option<std::thread::JoinHandle<()>>,
-    fired: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl ProjectionWatchdog {
-    fn new(releases: Vec<std::sync::mpsc::Sender<()>>) -> Self {
-        let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = fired.clone();
-        let fallback = releases.clone();
-        let thread = std::thread::spawn(move || {
-            if done_rx.recv_timeout(Duration::from_secs(15)).is_err() {
-                flag.store(true, Ordering::SeqCst);
-                for release in fallback {
-                    let _ = release.send(());
-                }
-            }
-        });
-        Self {
-            releases,
-            done: Some(done_tx),
-            thread: Some(thread),
-            fired,
-        }
-    }
-
-    fn finish(mut self) {
-        self.join();
-        assert!(
-            !self.fired.load(Ordering::SeqCst),
-            "watchdog invalidates proof"
-        );
-    }
-
-    fn join(&mut self) {
-        for release in &self.releases {
-            let _ = release.send(());
-        }
-        let _ = self.done.take().unwrap().send(());
-        self.thread.take().unwrap().join().unwrap();
-    }
-}
-
-impl Drop for ProjectionWatchdog {
-    fn drop(&mut self) {
-        if self.thread.is_some() {
-            self.join();
-        }
-    }
-}
-
-/// One poll of the real buffered reader, at the controlled pre-release
-/// observation. Any bytes (including a partial reply), EOF or error fail.
-async fn assert_data_reply_pending(
-    reader: &mut tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
-) {
-    use std::{pin::Pin, task::Poll};
-    use tokio::io::AsyncBufRead;
-    std::future::poll_fn(|cx| {
-        assert!(
-            Pin::new(&mut *reader).poll_fill_buf(cx).is_pending(),
-            "no DATA reply bytes may be observable while the parse is queued"
-        );
-        Poll::Ready(())
-    })
-    .await;
-}
-
-/// Finite, controlled resource experiment: real unauthenticated HTTP GETs
-/// occupy actual builders, or an explicitly cancelled projection keeps its
-/// running builder. It measures coupling, not an attack/latency threshold.
-fn projection_capacity_case(blocking_slots: usize, get_count: usize, cancel_waiter: bool) {
+/// Both actual GET workers remain held until persistent DATA and its exact
+/// HTTP representation have completed. One Tokio blocking slot is sufficient.
+fn projection_capacity_case(cancel_waiter: bool) {
     use tokio::io::AsyncWriteExt;
     tokio::runtime::Builder::new_current_thread()
-        .max_blocking_threads(blocking_slots)
+        .max_blocking_threads(1)
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
             let _serial = CACHE_TESTS.lock().await;
+            let scratch = tempfile::tempdir().unwrap();
+            let path = scratch.path().join("smtp.db");
             let config = crate::config::Config {
                 smtp_listen: "127.0.0.1:0".into(),
                 http_listen: "127.0.0.1:0".into(),
                 pop3_listen: "127.0.0.1:0".into(),
                 max_per_inbox: 0,
-                data_file: None,
+                data_file: Some(path.clone()),
                 tls_cert: None,
                 tls_key: None,
                 smtp: Default::default(),
                 pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
             };
-            let server = crate::run_on(&config).await.unwrap();
+            let server = test_server_from_config(&config).await;
             let pem = ca_pem();
-            assert_eq!(public_ca_pem(&pem), pem, "canonical one-root fixture");
-            let original = WebhookTarget {
+            server.webhooks.set(vec![WebhookTarget {
                 url: "http://user:password@127.0.0.1:9/unused".into(),
                 inbox: Some("not-the-measured-inbox".into()),
                 secret: Some("withheld".into()),
                 ca_pem: Some(pem.clone()),
-            };
-            server.webhooks.set(vec![original.clone()]);
+            }]);
             let installed = serde_json::to_value(server.webhooks.current()).unwrap();
-            let cache_before = ca_cache_stats();
-            let lru_before = cache_lru_keys();
-            let runtime_thread = std::thread::current().id();
+            let cache = ca_cache_stats();
             let client = reqwest::Client::new();
-            let mut entries = Vec::new();
             let mut releases = Vec::new();
             let mut finishes = Vec::new();
-            for _ in 0..get_count {
+            let mut gets = Vec::new();
+            for index in 0..2 {
+                let cancellation = (cancel_waiter && index == 0)
+                    .then(|| crate::api::cancel_get_for(server.webhooks.clone()));
                 let (entered, release, finished) = install_ca_build_pause(&pem);
-                entries.push(entered);
                 releases.push(release);
                 finishes.push(finished);
-            }
-            let watchdog = ProjectionWatchdog::new(releases.clone());
-            eprintln!(
-                "projection case: async_threads=1 blocking_slots={blocking_slots} jobs={get_count} targets_per_job=1 roots_per_target=1 pem_bytes={} cancelled_waiter={cancel_waiter}",
-                pem.len()
-            );
-            let mut gets = Vec::new();
-            let cancelled = if cancel_waiter {
-                assert_eq!(get_count, 1);
-                Some(tokio::spawn(redacted_targets(vec![original])))
-            } else {
-                for _ in 0..get_count {
-                    let http = client.clone();
-                    let addr = server.http_addr;
-                    gets.push(tokio::spawn(async move {
-                        let response = http
-                            .get(format!("http://{addr}/api/v1/webhooks"))
-                            .send()
-                            .await
-                            .unwrap();
-                        assert_eq!(response.status(), reqwest::StatusCode::OK);
-                        serde_json::from_str::<serde_json::Value>(
-                            &response.text().await.unwrap(),
-                        )
+                let http = client.clone();
+                let addr = server.http_addr;
+                let get = tokio::spawn(async move {
+                    http.get(format!("http://{addr}/api/v1/webhooks"))
+                        .send()
+                        .await
                         .unwrap()
-                    }));
-                }
-                None
-            };
-            for (index, entered) in entries.into_iter().enumerate() {
-                let thread = tokio::time::timeout(Duration::from_secs(5), entered)
+                });
+                tokio::time::timeout(Duration::from_secs(5), entered)
                     .await
-                    .expect("actual projection builder entered")
+                    .expect("actual GET builder entered")
                     .unwrap();
-                assert_ne!(thread, runtime_thread);
-                eprintln!("builder {index}: submitted and entered off-worker, held");
+                if let Some((abort, dropped)) = cancellation {
+                    abort.abort();
+                    dropped.await.unwrap();
+                    assert_eq!(
+                        get.await.unwrap().status(),
+                        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+                    );
+                } else {
+                    gets.push(get);
+                }
             }
-            if let Some(waiter) = cancelled {
-                waiter.abort();
-                assert!(matches!(waiter.await, Err(error) if error.is_cancelled()));
-                eprintln!("specific projection waiter: aborted and joined as cancelled");
+            let watchdog = BuildWatchdog::new(releases.clone());
+            for method in [reqwest::Method::GET, reqwest::Method::PUT] {
+                let mut request = client.request(
+                    method.clone(),
+                    format!("http://{}/api/v1/webhooks", server.http_addr),
+                );
+                if method == reqwest::Method::PUT {
+                    request = request
+                        .header("content-type", "application/json")
+                        .body("[]");
+                }
+                let response = request.send().await.unwrap();
+                assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(
+                    response.text().await.unwrap(),
+                    r#"{"error":"webhook CA preparation unavailable"}"#
+                );
             }
+            let queued = crate::smtp::observe_next_data_parse_submission_for_test();
+            let (mut reader, mut writer) =
+                smtp_send_data_waiting(server.smtp_addr, "projection-measured").await;
+            queued.await.unwrap();
+            let accepted =
+                tokio::time::timeout(Duration::from_secs(3), smtp_read_reply(&mut reader))
+                    .await
+                    .expect(
+                        "isolated CA execution leaves SMTP parse and persistent commit progressing",
+                    );
+            assert!(accepted[0].starts_with("250"));
+            let messages: serde_json::Value = serde_json::from_str(
+                &client
+                    .get(format!(
+                        "http://{}/api/v1/inboxes/projection-measured/messages",
+                        server.http_addr
+                    ))
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(messages["emails"].as_array().unwrap().len(), 1);
+            assert_eq!(messages["emails"][0]["subject"], "saturated");
+            let id = messages["emails"][0]["id"].as_str().unwrap();
+            let raw = client.get(format!("http://{}/api/v1/messages/{id}/raw", server.http_addr))
+                .send().await.unwrap().bytes().await.unwrap();
+            assert_eq!(raw.as_ref(), b"From: from@example.test\r\nTo: to@example.test\r\nSubject: saturated\r\n\r\nbody\r\n");
+            assert_eq!(
+                inbox_count(&client, server.http_addr, "projection-measured").await,
+                1
+            );
             for finished in &mut finishes {
                 assert!(matches!(
                     finished.try_recv(),
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty)
                 ));
             }
-            let queued = crate::smtp::observe_next_data_parse_submission_for_test();
-            let (mut reader, mut writer) = tokio::time::timeout(
-                Duration::from_secs(5),
-                smtp_send_data_waiting(server.smtp_addr, "projection-measured"),
-            )
-            .await
-            .expect("real SMTP reaches DATA terminator while GET builders held");
-            tokio::time::timeout(Duration::from_secs(5), queued)
-                .await
-                .expect("SMTP parser submitted, not merely a created task")
-                .unwrap();
-            eprintln!("SMTP: parse submitted after all builders entered");
-            // This real request also proves the sole async thread progresses.
-            let count = tokio::time::timeout(
-                Duration::from_secs(5),
-                inbox_count(&client, server.http_addr, "projection-measured"),
-            )
-            .await
-            .expect("cheap HTTP progresses while builders held");
-            let spare_slot = blocking_slots > get_count;
-            if spare_slot {
-                let accepted = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    smtp_read_reply(&mut reader),
-                )
-                .await
-                .expect("spare blocking slot permits parse/insert before GET release")
-                .remove(0);
-                assert!(accepted.starts_with("250"), "{accepted}");
-                assert_eq!(
-                    inbox_count(&client, server.http_addr, "projection-measured").await,
-                    1
-                );
-                eprintln!("SMTP before release: DATA 250, immediate count=1");
-            } else {
-                assert_eq!(count, 0, "saturated parse remains unqueryable");
-                assert_data_reply_pending(&mut reader).await;
-                eprintln!("SMTP before release: DATA reader Pending, count=0; cheap HTTP completed");
-            }
-            for finished in &mut finishes {
-                assert!(matches!(
-                    finished.try_recv(),
-                    Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-                ), "running jobs have not finished or reclaimed their slots");
-            }
-            assert_eq!(serde_json::to_value(server.webhooks.current()).unwrap(), installed);
-            assert_eq!(ca_cache_stats(), cache_before);
-            assert_eq!(cache_lru_keys(), lru_before);
-            for (index, (release, finished)) in releases.into_iter().zip(finishes).enumerate() {
+            watchdog.assert_unused();
+            assert_eq!(
+                serde_json::to_value(server.webhooks.current()).unwrap(),
+                installed
+            );
+            for (release, finished) in releases.into_iter().zip(finishes) {
                 release.send(()).unwrap();
-                eprintln!("builder {index}: explicit release");
-                tokio::time::timeout(Duration::from_secs(5), finished)
-                    .await
-                    .expect("actual builder finished after release")
-                    .unwrap();
-                eprintln!("builder {index}: finished");
+                finished.await.unwrap();
             }
             for get in gets {
-                let body = tokio::time::timeout(Duration::from_secs(5), get)
-                    .await
-                    .expect("safe GET response completes")
-                    .unwrap();
-                assert_eq!(body, serde_json::json!([{
-                    "url": "http://127.0.0.1:9/unused",
-                    "inbox": "not-the-measured-inbox",
-                    "secret": null,
-                    "ca_pem": pem,
-                }]));
-            }
-            if !spare_slot {
-                let accepted = tokio::time::timeout(
-                    Duration::from_secs(5),
-                    smtp_read_reply(&mut reader),
-                )
-                .await
-                .expect("SMTP parse/insert recovers after builder release")
-                .remove(0);
-                assert!(accepted.starts_with("250"), "{accepted}");
-                assert_eq!(
-                    inbox_count(&client, server.http_addr, "projection-measured").await,
-                    1,
-                    "DATA 250 is immediately queryable"
-                );
-                eprintln!("SMTP after release: DATA 250, immediate count=1");
+                assert_eq!(get.await.unwrap().status(), reqwest::StatusCode::OK);
             }
             writer.write_all(b"QUIT\r\n").await.unwrap();
             assert!(smtp_read_reply(&mut reader).await[0].starts_with("221"));
-            assert_eq!(serde_json::to_value(server.webhooks.current()).unwrap(), installed);
-            assert_eq!(ca_cache_stats(), cache_before);
-            assert_eq!(cache_lru_keys(), lru_before);
-            tokio::time::timeout(Duration::from_secs(5), server.stop())
-                .await
-                .expect("server joins after all observed blocking work completes");
-            watchdog.finish();
-            eprintln!("cleanup: configuration/cache/LRU unchanged, server stopped, watchdog=false");
+            assert_eq!(ca_cache_stats(), cache);
+            server.stop().await;
+            let reopened = crate::store::Store::open(0, &path).unwrap();
+            assert_eq!(
+                reopened.count("projection-measured", &crate::store::Filter::default()),
+                1
+            );
+            wait_ca_idle().await;
         });
 }
-
-#[test]
-fn get_projection_exhausts_blocking_pool_until_release() {
-    projection_capacity_case(1, 1, false);
+async fn test_server_from_config(config: &crate::config::Config) -> crate::RunningServer {
+    crate::run_on(config).await.unwrap()
 }
-
 #[test]
-fn concurrent_get_projection_capacity_controls_smtp_progress() {
-    projection_capacity_case(2, 2, false);
-    projection_capacity_case(3, 2, false);
+fn all_ca_workers_held_smtp_persists_before_release() {
+    projection_capacity_case(false);
 }
-
 #[test]
-fn cancelled_get_preparation_keeps_its_blocking_slot_until_finish() {
-    projection_capacity_case(1, 1, true);
+fn cancelled_get_retains_charge_without_blocking_smtp() {
+    projection_capacity_case(true);
 }
 
 /// Read the actual public metric names, after deliveries quiesce. This is
@@ -1958,4 +1842,374 @@ fn protocol_ca_cache_publication_and_accounting() {
             watchdog.assert_unused();
             server.stop().await;
         });
+}
+
+/// GET and PUT share both worker and byte admission with delivery. Held
+/// validation must finish even after its actual handler is cancelled.
+#[tokio::test]
+async fn mixed_ca_admission_obeys_job_and_byte_bounds() {
+    let _serial = CACHE_TESTS.lock().await;
+    let server = Arc::new(test_server().await);
+    let pem = ca_pem();
+    let replacement = ca_pem();
+    server
+        .webhooks
+        .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
+    let raw = serde_json::to_value(server.webhooks.current()).unwrap();
+    let (entered, release, done) = install_ca_build_pause(&pem);
+    let request_server = server.clone();
+    let get =
+        tokio::spawn(async move { api_json(&request_server, reqwest::Method::GET, None).await });
+    entered.await.unwrap();
+    let (entered_put, release_put, done_put) = install_ca_build_pause(&replacement);
+    let request_server = server.clone();
+    let put = tokio::spawn(async move {
+        api_json(
+            &request_server,
+            reqwest::Method::PUT,
+            Some(&[protocol_target(
+                &replacement,
+                "127.0.0.1:9".parse().unwrap(),
+            )]),
+        )
+        .await
+    });
+    let watchdog = BuildWatchdog::new(vec![release.clone(), release_put.clone()]);
+    entered_put.await.unwrap();
+    let before = ca_cache_stats();
+    assert_eq!(
+        client_for(Some(&ca_pem())).await.unwrap_err(),
+        ca_executor::UNAVAILABLE
+    );
+    assert!(client_for(None).await.is_ok());
+    assert_eq!(ca_cache_stats(), before);
+    assert_eq!(
+        serde_json::to_value(server.webhooks.current()).unwrap(),
+        raw
+    );
+    // Borrowed oversized state refuses before cloning/validating the input.
+    let mut huge = protocol_target(&pem, "127.0.0.1:9".parse().unwrap());
+    huge.url.reserve(ca_executor::BYTE_CAP / 8);
+    server.webhooks.set(vec![huge]);
+    assert_eq!(
+        api_json(&server, reqwest::Method::GET, None).await.0,
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    );
+    release.send(()).unwrap();
+    done.await.unwrap();
+    get.await.unwrap();
+    release_put.send(()).unwrap();
+    done_put.await.unwrap();
+    assert_eq!(put.await.unwrap().0, reqwest::StatusCode::OK);
+    watchdog.assert_unused();
+    Arc::try_unwrap(server).ok().unwrap().stop().await;
+}
+
+#[tokio::test]
+async fn webhook_ca_overload_preserves_native_contract() {
+    let _serial = CACHE_TESTS.lock().await;
+    let server = test_server().await;
+    let first = ca_executor::reserve(&server.webhooks.scope, Some(Size::default())).unwrap();
+    let second = ca_executor::reserve(&server.webhooks.scope, Some(Size::default())).unwrap();
+    let clones = server.webhooks.snapshot_clones.load(Ordering::SeqCst);
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/api/v1/webhooks", server.http_addr);
+    for (method, suffix, body, media, expected) in [
+        ("GET", "?bad=1", "", "application/json", 400),
+        ("PUT", "", "[", "application/json", 400),
+        ("PUT", "", r#"[{"url":42}]"#, "application/json", 400),
+        ("PUT", "", "[]", "text/plain", 415),
+        ("PUT", "", "[]", "application/json", 503),
+        ("GET", "", "", "application/json", 503),
+    ] {
+        let response = client
+            .request(method.parse().unwrap(), format!("{url}{suffix}"))
+            .header("content-type", media)
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), expected);
+    }
+    let response = client
+        .put(&url)
+        .header("content-type", "application/json")
+        .body(" ".repeat(2_097_153))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+    let response = client
+        .get(&url)
+        .header("host", "untrusted.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(
+        server.webhooks.snapshot_clones.load(Ordering::SeqCst),
+        clones,
+        "refusal clones no snapshot"
+    );
+    drop((first, second));
+    let raw = server.webhooks.current();
+    let mut big = protocol_target("", "127.0.0.1:9".parse().unwrap());
+    big.url.reserve(ca_executor::BYTE_CAP / 8);
+    server.webhooks.set(vec![big]);
+    assert_eq!(
+        api_json(&server, reqwest::Method::GET, None).await.0,
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert!(server.webhooks.current()[0].url.starts_with("https://"));
+    server.webhooks.set(raw);
+    server.stop().await;
+}
+
+#[test]
+fn ca_workers_survive_runtime_replacement() {
+    let _serial = CACHE_TESTS.blocking_lock();
+    let pem = ca_pem();
+    let (entry_a, release_a, done_a) = install_ca_build_pause(&pem);
+    let (entry_b, release_b, done_b) = install_ca_build_pause(&pem);
+    let watchdog = BuildWatchdog::new(vec![release_a.clone(), release_b.clone()]);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let (old_webhooks, threads) = runtime.block_on(async {
+        let server = test_server().await;
+        server
+            .webhooks
+            .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
+        let hooks = server.webhooks.clone();
+        let a = hooks.clone();
+        let b = hooks.clone();
+        let first = tokio::spawn(async move { redacted_targets(&a).await });
+        let second = tokio::spawn(async move { redacted_targets(&b).await });
+        let threads = [entry_a.await.unwrap(), entry_b.await.unwrap()];
+        first.abort();
+        second.abort();
+        assert!(matches!(first.await, Err(e) if e.is_cancelled()));
+        assert!(matches!(second.await, Err(e) if e.is_cancelled()));
+        server.stop().await;
+        (hooks, threads)
+    });
+    drop(runtime);
+    assert_ne!(threads[0], threads[1]);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let server = test_server().await;
+        assert_eq!(
+            api_json(&server, reqwest::Method::GET, None).await.0,
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(old_webhooks.scope.live().is_none());
+        release_a.send(()).unwrap();
+        release_b.send(()).unwrap();
+        done_a.await.unwrap();
+        done_b.await.unwrap();
+        // Observe actual reclamation; never retry an admission to mask refusal.
+        wait_ca_idle().await;
+        server
+            .webhooks
+            .set(vec![protocol_target(&pem, "127.0.0.1:9".parse().unwrap())]);
+        let mut entries = Vec::new();
+        let mut releases = Vec::new();
+        let mut finishes = Vec::new();
+        let mut jobs = Vec::new();
+        for _ in 0..2 {
+            let (entry, release, done) = install_ca_build_pause(&pem);
+            let hooks = server.webhooks.clone();
+            jobs.push(tokio::spawn(async move { redacted_targets(&hooks).await }));
+            entries.push(entry);
+            releases.push(release);
+            finishes.push(done);
+        }
+        let cleanup = BuildWatchdog::new(releases.clone());
+        let mut reused = Vec::new();
+        for entry in entries {
+            reused.push(entry.await.unwrap());
+        }
+        assert_ne!(reused[0], reused[1]);
+        assert!(
+            reused.iter().all(|thread| threads.contains(thread)),
+            "the original worker pair survives"
+        );
+        for (release, done) in releases.into_iter().zip(finishes) {
+            release.send(()).unwrap();
+            done.await.unwrap();
+        }
+        for job in jobs {
+            drop(job.await.unwrap().unwrap());
+        }
+        cleanup.assert_unused();
+        server.stop().await;
+    });
+    watchdog.assert_unused();
+}
+async fn wait_ca_idle() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while ca_executor::jobs_for_test() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("finite abandoned CA work refunds");
+}
+
+static REFUSALS: Mutex<Option<(String, tokio::sync::mpsc::Sender<()>)>> = Mutex::new(None);
+pub(super) fn observe_ca_refusal(pem: &str) {
+    let hook = REFUSALS.lock().unwrap();
+    if let Some((key, sender)) = &*hook
+        && key == pem
+    {
+        sender.try_send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn ca_pressure_delivery_recovers_or_exhausts_once() {
+    let _serial = CACHE_TESTS.lock().await;
+    for recover in [false, true] {
+        let server = Arc::new(test_server().await);
+        let pem = ca_pem();
+        let mut target = protocol_target(&pem, "127.0.0.1:9".parse().unwrap());
+        target.inbox = Some("never-matches-pressure".into());
+        server.webhooks.set(vec![target]);
+        let mut gets = Vec::new();
+        let mut releases = Vec::new();
+        let mut finishes = Vec::new();
+        for _ in 0..2 {
+            let (entered, release, finished) = install_ca_build_pause(&pem);
+            let request_server = server.clone();
+            gets.push(tokio::spawn(async move {
+                api_json(&request_server, reqwest::Method::GET, None).await
+            }));
+            entered.await.unwrap();
+            releases.push(release);
+            finishes.push(finished);
+        }
+        let watchdog = BuildWatchdog::new(releases.clone());
+        let (delivery_pem, addr, sink) = tls_sink_once().await;
+        let (observed, mut refused) = tokio::sync::mpsc::channel(4);
+        *REFUSALS.lock().unwrap() = Some((delivery_pem.clone(), observed));
+        let mut delivery_target = protocol_target(&delivery_pem, addr);
+        delivery_target.inbox = Some("pressure".into());
+        server.webhooks.set(vec![delivery_target]);
+        let before = ca_cache_stats();
+        assert!(
+            smtp_send_for_inbox(server.smtp_addr, "pressure")
+                .await
+                .starts_with("250")
+        );
+        assert_eq!(
+            inbox_count(&reqwest::Client::new(), server.http_addr, "pressure").await,
+            1
+        );
+        let attempts = if recover { 1 } else { 4 };
+        for _ in 0..attempts {
+            tokio::time::timeout(Duration::from_secs(5), refused.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        if recover {
+            releases.remove(0).send(()).unwrap();
+            finishes.remove(0).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), sink)
+                .await
+                .unwrap()
+                .unwrap();
+        } else {
+            sink.abort();
+            assert!(sink.await.unwrap_err().is_cancelled());
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while server.webhooks.snapshot().delivered + server.webhooks.snapshot().exhausted != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let final_ledger = server.webhooks.snapshot();
+        assert_eq!(final_ledger.delivered, u64::from(recover));
+        assert_eq!(final_ledger.exhausted, u64::from(!recover));
+        assert_eq!(final_ledger.aborted, 0);
+        assert!(refused.try_recv().is_err(), "exact refusal attempt count");
+        *REFUSALS.lock().unwrap() = None;
+        for (release, finished) in releases.into_iter().zip(finishes) {
+            release.send(()).unwrap();
+            finished.await.unwrap();
+        }
+        for get in gets {
+            assert_eq!(get.await.unwrap().0, reqwest::StatusCode::OK);
+        }
+        assert_eq!(ca_cache_stats().builds, before.builds + u64::from(recover));
+        watchdog.assert_unused();
+        let hooks = server.webhooks.clone();
+        Arc::try_unwrap(server).ok().unwrap().stop().await;
+        assert_eq!(hooks.snapshot(), final_ledger);
+    }
+}
+
+#[tokio::test]
+async fn closed_scope_discards_put_and_cache_results_and_refuses_sends() {
+    let _serial = CACHE_TESTS.lock().await;
+    let server = Arc::new(test_server().await);
+    let prior = protocol_target(&ca_pem(), "127.0.0.1:9".parse().unwrap());
+    server.webhooks.set(vec![prior.clone()]);
+    let replacement = ca_pem();
+    let (entered, release, done) = install_ca_build_pause(&replacement);
+    let request_server = server.clone();
+    let put = tokio::spawn(async move {
+        api_json(
+            &request_server,
+            reqwest::Method::PUT,
+            Some(&[protocol_target(
+                &replacement,
+                "127.0.0.1:9".parse().unwrap(),
+            )]),
+        )
+        .await
+    });
+    let pem = ca_pem();
+    let job_key = pem.clone();
+    let (cache_entered, cache_release, cache_done) = install_ca_build_pause(&pem);
+    let scope = server.webhooks.scope.clone();
+    let job_scope = scope.clone();
+    let client = tokio::spawn(async move { client_for_scope(&job_scope, Some(&job_key)).await });
+    let watchdog = BuildWatchdog::new(vec![release.clone(), cache_release.clone()]);
+    entered.await.unwrap();
+    cache_entered.await.unwrap();
+    ca_executor::Owner(scope.clone()).close();
+    release.send(()).unwrap();
+    done.await.unwrap();
+    cache_release.send(()).unwrap();
+    cache_done.await.unwrap();
+    assert_eq!(
+        put.await.unwrap(),
+        (
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({"error": ca_executor::UNAVAILABLE}),
+        )
+    );
+    assert_eq!(client.await.unwrap().unwrap_err(), ca_executor::UNAVAILABLE);
+    assert_eq!(server.webhooks.current()[0].ca_pem, prior.ca_pem);
+    assert!(!ca_clients().lock().unwrap().clients.contains_key(&pem));
+    let error = post_json_scoped(&scope, "http://127.0.0.1:9/", &Bytes::new(), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(error, ca_executor::UNAVAILABLE);
+    assert_eq!(
+        api_json(&server, reqwest::Method::GET, None).await,
+        (
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({"error": ca_executor::UNAVAILABLE}),
+        )
+    );
+    watchdog.assert_unused();
+    Arc::try_unwrap(server).ok().unwrap().stop().await;
 }

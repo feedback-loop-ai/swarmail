@@ -23,8 +23,10 @@
 //! mail's payload is serialized once into shared bytes every target and
 //! every retry reuses.
 
+pub(crate) mod ca_executor;
 use crate::store::Store;
 use axum::body::Bytes;
+use ca_executor::{Charged, Job, Output, Scope, Size};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,8 +56,9 @@ pub const CA_CLIENT_CAP: usize = 32;
 /// the commit and must never be delayed by the delivery side. A stalled
 /// target holds its slot for four 5 s network-attempt timeouts plus the
 /// 100/400/1600 ms backoff — 22.1 s total after client construction. Cold
-/// build/queue time is outside that sum, and shared blocking-pool exhaustion
-/// can delay SMTP parsing and commits (availability residual tracked by #220).
+/// admission/build time is outside that sum. Two dedicated CA workers (#220)
+/// cannot consume SMTP/Store blocking slots; global CA admission can refuse
+/// healthy targets and makes no fairness or OS scheduling promise.
 /// Surfaced on `/metrics`.
 pub const WEBHOOK_DELIVERY_CAP: usize = 32;
 
@@ -337,7 +340,7 @@ impl WebhookTarget {
     /// reconstructed from complete, delivery-stack-loadable certificates.
     /// The installed target remains untouched for delivery. This synchronous
     /// form stays available to embedders; HTTP handlers use the same
-    /// projection on a blocking worker.
+    /// projection on a dedicated CA worker.
     pub fn redacted(&self) -> WebhookTarget {
         WebhookTarget {
             url: display_url(&self.url),
@@ -387,44 +390,35 @@ fn public_ca_pem(pem: &str) -> String {
 
 /// API-only preparation failure: validation is a client error; a worker
 /// join failure is an internal server error with no panic/task details.
+#[derive(Debug)]
 pub(crate) enum TargetPreparationError {
     Invalid(String),
     Worker,
+    Unavailable,
 }
 
-/// Project a snapshot off-worker after its configuration lock has been
-/// released. The synchronous projection remains available via redacted().
+/// Inspect borrowed installed state and reserve before allocating its snapshot.
 pub(crate) async fn redacted_targets(
-    targets: Vec<WebhookTarget>,
-) -> Result<Vec<WebhookTarget>, TargetPreparationError> {
-    tokio::task::spawn_blocking(move || {
+    webhooks: &Webhooks,
+) -> Result<Charged, TargetPreparationError> {
+    let (reservation, snapshot) = {
+        let targets = webhooks.targets.read().unwrap();
+        let reservation =
+            ca_executor::reserve(&webhooks.scope, Size::targets(&targets, targets.len()))?;
         #[cfg(test)]
-        panic_api_preparation_for_test(&targets);
-        targets.iter().map(WebhookTarget::redacted).collect()
-    })
-    .await
-    .map_err(|_| TargetPreparationError::Worker)
+        webhooks.snapshot_clones.fetch_add(1, Ordering::SeqCst);
+        (reservation, targets.clone())
+    };
+    reservation.run(&webhooks.scope, Job::Get(snapshot)).await
 }
 
-/// Validate an owned PUT list and prepare the exact safe response before
-/// the async owner installs it. A cancelled waiter drops this result; the
-/// blocking job has no reference to Webhooks and therefore cannot install.
 pub(crate) async fn prepare_targets(
+    webhooks: &Webhooks,
     targets: Vec<WebhookTarget>,
-) -> Result<(Vec<WebhookTarget>, Vec<WebhookTarget>), TargetPreparationError> {
-    tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        panic_api_preparation_for_test(&targets);
-        for (index, target) in targets.iter().enumerate() {
-            target.validate().map_err(|error| {
-                TargetPreparationError::Invalid(format!("webhook target {index}: {error}"))
-            })?;
-        }
-        let echo = targets.iter().map(WebhookTarget::redacted).collect();
-        Ok((targets, echo))
-    })
-    .await
-    .map_err(|_| TargetPreparationError::Worker)?
+) -> Result<Charged, TargetPreparationError> {
+    let reservation =
+        ca_executor::reserve(&webhooks.scope, Size::targets(&targets, targets.capacity()))?;
+    reservation.run(&webhooks.scope, Job::Put(targets)).await
 }
 
 /// The header the secret rides in.
@@ -508,6 +502,7 @@ pub struct WebhookLedger {
 /// server in one process counts independently of the first.
 #[derive(Default)]
 pub struct Webhooks {
+    pub(crate) scope: Scope,
     targets: RwLock<Vec<WebhookTarget>>,
     delivered: AtomicU64,
     dropped: AtomicU64,
@@ -516,6 +511,8 @@ pub struct Webhooks {
     aborted: AtomicU64,
     #[cfg(test)]
     installations: AtomicU64,
+    #[cfg(test)]
+    snapshot_clones: AtomicU64,
     /// Test-only observation (decision 0020 rule 4): every payload the
     /// dispatcher built, kept alive so a test can compare a request body's
     /// backing allocation against it without address reuse faking identity.
@@ -903,7 +900,15 @@ async fn deliver(
         if attempt > 0 {
             tokio::time::sleep(Duration::from_millis(100 * 4u64.pow(attempt - 1))).await;
         }
-        match post_json(&url, &body, secret.as_deref(), ca_pem.as_deref()).await {
+        match post_json_scoped(
+            &webhooks.scope,
+            &url,
+            &body,
+            secret.as_deref(),
+            ca_pem.as_deref(),
+        )
+        .await
+        {
             Ok(status) if (200..300).contains(&status) => {
                 webhooks.delivered.fetch_add(1, Ordering::Relaxed);
                 return;
@@ -962,7 +967,7 @@ fn shared_client() -> reqwest::Client {
 /// the target's own root CA, cached by PEM so retries reuse it. The cache is
 /// bounded at [`CA_CLIENT_CAP`] with least-recently-used eviction: a cold
 /// PEM beyond the cap retires the oldest build, and an evicted PEM's next
-/// delivery simply rebuilds its client — never a failed delivery. The
+/// delivery rebuilds under the ordinary CA admission/retry policy. The
 /// built-in-roots client stays outside the cache and is built once.
 /// One owner for the ca_pem failure: parse and build surface the same
 /// text, so whichever stage refuses the PEM, the delivery error is alike.
@@ -1192,21 +1197,12 @@ pub(crate) fn parse_target_url(url: &str) -> Result<reqwest::Url, String> {
     Ok(parsed)
 }
 
-async fn build_delivery_client(pem: String) -> Result<reqwest::Client, String> {
-    tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        panic_ca_build_for_test(&pem);
-        let client = build_ca_client(&pem)?;
-        // Count completed delivery-side construction, even when this waiter
-        // is cancelled or loses the later publication race.
-        CA_CACHE_BUILDS.fetch_add(1, Ordering::Relaxed);
-        Ok(client)
-    })
-    .await
-    .map_err(|_| "webhook CA client construction task failed".to_string())?
+#[cfg(test)]
+async fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
+    client_for_scope(&Scope::default(), ca_pem).await
 }
 
-async fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
+async fn client_for_scope(scope: &Scope, ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
     let Some(pem) = ca_pem else {
         return Ok(shared_client());
     };
@@ -1217,29 +1213,55 @@ async fn client_for(ca_pem: Option<&str>) -> Result<reqwest::Client, String> {
             return Ok(client);
         }
     }
-
-    // The miss owns its key and builds without holding the process-global
-    // mutex. Concurrent misses may duplicate work; publication rechecks.
-    let key = pem.to_string();
-    let client = build_delivery_client(key.clone()).await?;
+    let reservation = ca_executor::reserve(scope, Some(Size::delivery(pem))).map_err(|error| {
+        #[cfg(test)]
+        ca_construction_tests::observe_ca_refusal(pem);
+        delivery_ca_error(error)
+    })?;
+    let charged = reservation
+        .run(scope, Job::Delivery(pem.to_string()))
+        .await
+        .map_err(delivery_ca_error)?;
+    let Charged { value, reservation } = charged;
+    let (key, client) = match value {
+        Ok(Output::Delivery(key, client)) => (key, client),
+        value => {
+            return Err(delivery_ca_error(
+                value.err().unwrap_or(TargetPreparationError::Worker),
+            ));
+        }
+    };
     let mut displaced = None;
     let published = {
+        let _live = scope
+            .live()
+            .ok_or_else(|| ca_executor::UNAVAILABLE.to_string())?;
         let mut cache = ca_clients().lock().unwrap();
         if let Some(winner) = cache.clients.get(&key).cloned() {
             touch_lru(&mut cache.lru, &key);
             winner
         } else {
             if cache.clients.len() >= CA_CLIENT_CAP {
-                // Keep the removed Client alive until after the mutex drops.
                 displaced = Some(evict_lru(&mut cache));
             }
             cache.clients.insert(key.clone(), client.clone());
-            cache.lru.push_back(key);
-            client
+            cache.lru.push_back(key.clone());
+            client.clone()
         }
     };
     drop(displaced);
+    drop(client);
+    drop(key);
+    drop(reservation);
     Ok(published)
+}
+
+fn delivery_ca_error(error: TargetPreparationError) -> String {
+    match error {
+        TargetPreparationError::Invalid(error) => error,
+        TargetPreparationError::Unavailable => ca_executor::UNAVAILABLE.to_string(),
+        TargetPreparationError::Worker => "webhook CA client construction task failed".to_string(),
+    }
 }
 
 /// One attempt's request, built and returned rather than sent, so the body
@@ -1281,14 +1303,25 @@ thread_local! {
         const { core::cell::RefCell::new(Vec::new()) };
 }
 
+#[cfg(test)]
 async fn post_json(
     url: &str,
     body: &Bytes,
     secret: Option<&str>,
     ca_pem: Option<&str>,
 ) -> Result<u16, String> {
+    post_json_scoped(&Scope::default(), url, body, secret, ca_pem).await
+}
+
+async fn post_json_scoped(
+    scope: &Scope,
+    url: &str,
+    body: &Bytes,
+    secret: Option<&str>,
+    ca_pem: Option<&str>,
+) -> Result<u16, String> {
     let url = parse_target_url(url)?;
-    let client = client_for(ca_pem).await?;
+    let client = client_for_scope(scope, ca_pem).await?;
     let request = build_request(&client, url, body, secret)?;
     #[cfg(test)]
     POSTED.with(|posted| {
@@ -1296,7 +1329,22 @@ async fn post_json(
             .borrow_mut()
             .push(request.try_clone().expect("a bytes body always clones"))
     });
-    execute_request(&client, request).await
+    // Authorize and poll the next send under the live publication guard.
+    let mut send = std::pin::pin!(execute_request(&client, request));
+    let first = std::future::poll_fn(|cx| {
+        use std::future::Future;
+        let Some(_live) = scope.live() else {
+            return std::task::Poll::Ready(std::task::Poll::Ready(Err(
+                ca_executor::UNAVAILABLE.to_string()
+            )));
+        };
+        std::task::Poll::Ready(send.as_mut().poll(cx))
+    })
+    .await;
+    match first {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => send.await,
+    }
 }
 
 /// Execute and format through one credential-redacting boundary, including
@@ -2315,6 +2363,7 @@ mod delivery_tests {
     /// A ca_pem that is not a PEM certificate fails before connecting.
     #[tokio::test]
     async fn bad_ca_pem_is_an_error() {
+        let _serial = CACHE_TESTS.lock().await;
         let err = client_for(Some("-----BEGIN CERTIFICATE-----\nnope"))
             .await
             .unwrap_err();
