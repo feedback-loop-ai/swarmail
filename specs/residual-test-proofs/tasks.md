@@ -1,18 +1,22 @@
-# Ordered tasks: macOS SIGTERM contender correction
+# Ordered tasks: portable webhook refusal fixture
 
-These continuation implementation tasks are complete with the fresh local
-proof recorded below. Earlier completed work and Linux receipts remain
-historical; their reuse-enabled assertion is superseded. Only the current
-continuation receipt certifies this correction locally; no macOS execution is
-claimed. Gate logs and panel positions stay ignored; CI owns the macOS run.
+All current tasks are implementation/verification work and remain unchecked.
+The chief changes design artifacts only. Historical receipts below describe
+prior candidates; they cannot close these tasks or certify macOS execution.
 
-- [x] T1 — Confirm authority and scope (AC1–AC3, AC5–AC7). Proof: verify packet SHA256SUMS and engine digest; record HEAD/platform/status; compare the candidate to `94b8ae1`. Protect earlier Dockerfile/helper/webhook/snapshot work and all code outside the named test. The T6 workspace suite executes existing regressions.
-- [x] T2 — Preserve the connected fixture and exact refusal (AC4/AC7). Proof: source diff shows unchanged setup, bounded connect/accept, same client address and bounded exact `ConnectionRefused` probe. The focused command in plan.md selects exactly one passing test. Both streams remain local through all assertions with unchanged final drop.
-- [x] T3 — Remove the reuse-enabled contender path and correct its claims (AC4). Proof: the focused real-server test requires one explicitly reuse-disabled IPv4 contender bind to fail with exactly `AddrInUse`, never listening, before final pair release. Source/text comparison confirms no dual-bind loop, singleton loop, new platform conditional or universal exclusion claim. Spec ruling 2/AC4, plan step 5 and source comments agree: retained lifetime and reuse-disabled rejection do not exclude reuse-enabled macOS binders/listeners (including parallel Tokio listeners), do not fully close that reuse race, and the setup refusal probe is only a point observation.
-- [x] T4 — Preserve shutdown and diagnostic observations (AC4). Proof: the same focused test observes the stalled request and exhaustion before SIGTERM, successful EOF/reap and exit, one final message with 0/0/0/1/1 totals, one substantive cause warning and absence of all three fixture secrets. Source diff confirms unchanged formatting assertions, URLs, budgets, deadlines and no new ignore, sleep, retry or relaxed error.
-- [x] T5 — Exercise the full binary suite and audit scope (AC1–AC7). Proof: `cargo test --locked --test binary` exits zero and the focused run selected exactly one pass; diff from `94b8ae1` limits code edits to the contender check and directly related comments. Protected files and all other binary regions remain byte-identical. Historical prose is explicitly distinguished from active requirements.
-- [x] T6 — Execute every local house proof on the corrected candidate (AC8). Proof: all charter gates exit zero, digest-verified candidate-local engine compile has no sweep warning, exact coverage reports zero missed lines/branches/functions with completed exit, and its selftest plus publish/seal proofs and licenses pass. Verify shims, pinned design selftest/delivery proof and strict native-tls absence per plan.md. Save command/platform/candidate/output/exit receipts; design or earlier Linux runs cannot close this task.
-- [x] T7 — Commit and hand off the scoped repair (AC7/AC8). Proof: unsigned implementation commit, clean intended worktree and current receipts for T1–T6; final verify binds to that committed candidate. Preserve recipe routing, independent review and security hold. Record CI's macOS and external proof ownership without claiming a pass. No push, merge, tag, publication, issue closure or decision acceptance.
+- [ ] T1 — Confirm authority and baseline (AC4–AC6). Proof: packet SHA256SUMS and pinned engine digest pass; record HEAD/platform/status and compare to ac160ff. Inspect current functions plus available db0b517/35afa14 history; record the bounded reservation inventory and unavailable 98b54e51 historical object without external lookup.
+- [ ] T2 — Replace the webhook fixture with the retained connected pair (AC1). Proof: source/diff inspection shows an ephemeral listener, explicitly bound reuse-disabled IPv4 client, bounded connect/accept, dropped listener and client local address shared by probe/URL. Both streams remain untouched until explicit final pair release. The focused real-server test in plan.md selects exactly one passing test.
+- [ ] T3 — Preserve the refusal oracle and correct fixture claims (AC2). Proof: the same focused test requires exact ConnectionRefused under the existing deadline. Source inspection finds connected-endpoint diagnostics, the macOS reuse-enabled listener/setup-only limitation, no new contender assertion, broader errors, sleeps, ignores, retries or platform branches.
+- [ ] T4 — Preserve SMTP/storage/retry behavior (AC3). Proof: the focused test retains PUT success, the baseline before SMTP, SMTP success, HTTP/count one before observation, unchanged delta-one wait and HTTP/count one afterward. Diff confirms HTTPS scheme, budgets, deadlines and observations are unchanged; do not reinterpret the helper's >= predicate as exact exhaustion equality.
+- [ ] T5 — Audit complete suites and scope (AC3–AC5). Proof: locked full webhook and binary suites exit zero with existing ignore policy. Inspect baseline diff and functions: only the named webhook fixture/lifetime/comments/diagnostics change; binary, common helpers, API and Dockerfile are byte-identical. Record zero remaining unconnected refused reservations in #191's changed test surface, distinguishing the SIGTERM bind contender and unrelated fixed-port test.
+- [ ] T6 — Commit and execute all local proofs (AC5–AC6). Proof: scoped unsigned implementation commit followed by every house gate in plan.md with completed zero exits, exact zero-missed coverage and selftest, publish/seal proofs, licenses, engine/shim integrity, design selftest, delivery proof and strict native-tls absence. Save commands/platform/commit/tree/output/exits; reject policy-sweep warnings and partial timeout summaries.
+- [ ] T7 — Hand off the committed candidate (AC5–AC6). Proof: clean intended worktree and fresh receipts for T1–T6 bind to the committed code; any later code change reruns affected proof. Preserve recipe routing, independent review and security hold. Record CI-owned macOS/external gates and operator-owned settings/sealing/publication without claiming those executions. No push, merge, tag, publication, issue closure or decision acceptance.
+
+## Historical task receipts
+
+Everything below until the new webhook clarification is preserved provenance.
+References to current tasks or completion apply only to those earlier phases;
+T1–T7 above exclusively govern this repair.
 
 ## Dated clarification — 2026-10-25, earlier 23.5 proof (historical)
 
@@ -111,3 +115,11 @@ execution and the other charter-owned external proofs remain with CI;
 live settings, sealing and publication remain with the operator. No macOS
 pass, push, merge, tag, publication, issue closure or decision acceptance is
 claimed. Production, dependencies, gates and recipe routing remain unchanged.
+
+## Dated clarification — 2026-10-25, webhook repair reset
+
+PR #238 macOS evidence supersedes the webhook-preservation obligation from
+the binary continuation. The new tasks repair only the separate webhook
+fixture and preserve the corrected SIGTERM test. Prior green Linux gates and
+binary receipts do not certify the new implementation. The chief's design
+commit leaves every current implementation task unchecked.

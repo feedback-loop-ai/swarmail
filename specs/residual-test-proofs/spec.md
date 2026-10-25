@@ -1,182 +1,167 @@
-# Issue #191: portable SIGTERM delivery proof
+# Issue #191: portable webhook refusal fixture
 
-Status: Drafted design; implementation and delivery acceptance remain separate.
+Status: Drafted design; implementation and verification remain outstanding.
 Date: 2026-10-25.
-Feature slug: `residual-test-proofs` (retain the existing owning design).
-Scope: Epic #192 issue #191, continuation correcting the contender assertion and its claims only.
-Continuation code baseline: `94b8ae15f0b3515d5860266f0988a2a4b75f15b0`.
-Design-entry HEAD: `f6a83e6` (continuation intake and gate receipts).
+Feature slug: `residual-test-proofs` (retain the owning design).
+Run: `epic-192-issue-191-give-the-webh-4ea45493`.
+Code scope baseline: `ac160ff4a74a975226d58dd447f5f107327694f6`.
+Design-entry HEAD: `b7196b8`.
 
 ## Feature and rationale
 
-Correct the Linux-only contender assertion in
+Repair `tests/webhook.rs::refused_connection_never_blocks_the_smtp_path`
+using the connected-client fixture already present in
 `tests/binary.rs::sigterm_with_a_delivery_in_flight_prints_the_final_counts`.
-The earlier connected-client repair retains a sound exact refusal probe, but
-requires a reuse-enabled contender bind to fail. The supplied independent
-review explains why BSD/XNU allows that bind against an established endpoint:
-the assertion would fail macOS CI even though the connect probe is sound.
-Remove that unnecessary contender path, keep the reuse-disabled bind check,
-and correct the fixture's overstated exclusion claim.
+The supplied PR #238 macOS evidence records that SIGTERM passes, while the
+webhook test's bound, unconnected target produces TimedOut instead of the
+required ConnectionRefused. A connected client endpoint preserves a held
+address while supplying the evidenced portable setup.
 
-Retaining both streams preserves the established endpoint's lifetime. The final
-bind check demonstrates exclusion of a reuse-disabled contender at that instant.
-It does **not** establish exclusion of reuse-enabled binders or listeners on
-macOS, including parallel Tokio listeners. The macOS port-reuse race is not
-proved fully closed. The exact pre-delivery refusal probe observes setup-time
-behavior; it cannot prevent a later reuse-enabled listener from claiming the
-address. Existing ledger/cause assertions do not prove every retry fails at
-connect or detect every such interference.
-
-The test continues proving one exhausted delivery and one in-flight delivery
-aborted by SIGTERM, with successful exit, exact final totals and credential-safe
-transport diagnostics. Retain its connected-client target, exact bounded refusal
-probe and real binary/SMTP/HTTP experiment. Only the final contender assertion
-and directly related comments change in code.
+The webhook test must continue proving that successful SMTP delivery is
+queryable despite webhook failure and remains stored after observed retry
+exhaustion. The repair changes only fixture construction, retention and
+related comments/diagnostics. Preserve the HTTPS URL and all existing
+PUT, SMTP, storage and retry observations. The passing binary test stays
+byte-identical. Completed #191 helper, Dockerfile and snapshot fixes remain
+preservation obligations, not new work.
 
 ## Evidence and authority
 
-The issue README, operator-rulings.md, macos-ci-failure.md and full
-review-78a81fc6.md in
-`.forge/epic192/issue191/` were verified against that directory's SHA256SUMS.
-The operator's 2026-10-25 ruling authorizes the portability repair and assigns
-macOS proof to CI. Both current run-local panel positions were read under
-`.brokkr/state/design/positions/`. The requested `.brokkr/state/tasks/` is absent;
-the committed [continuation intake](intake-macos-continuation.md) and current
-task provide the framing. The prior review's independent findings 1 and 2
-identify the incorrect bind contract and remaining macOS reuse risk. Earlier
-intake and proof receipts are history, not repaired-code proof.
-No GitHub, CI, journal, sibling worktree or external source was consulted.
+All five files in `.forge/epic192/issue191/SHA256SUMS`, including README.md,
+operator-rulings.md and macos-ci-238.md, were verified from that directory.
+An initial root-relative checksum invocation used the wrong directory;
+the successful directory-local check establishes integrity. The operator's
+2026-10-25 #191 ruling directs portability repair and assigns macOS proof to CI.
+Both current `.brokkr/state/design/positions/{simplicity,robustness}.md` were
+read. `.brokkr/state/tasks/` is absent; the committed
+[current intake](intake-webhook-macos.md) and explicit task supply the framing.
+No framing input remains unresolved. No external service, journal or sibling
+worktree was consulted.
 
-Preserve accepted 0001–0005: synchronous accept/store, subscribe-before-check,
-oldest-only pruning, real isolated protocols and ingest extraction.
-[0018](../../docs/decisions/0018-shutdown-observed-waits-and-explicit-bounds.md)
-and [0020](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md)
-own observed events, bounded waits and real-protocol test placement.
-[0041 §§5–6](../../docs/decisions/0041-webhook-boundary.md) and
-[0048 §6](../../docs/decisions/0048-rest-webhook-validation.md) own the unchanged
-shutdown ledger, causes and redaction. Follow
-[0050](../../docs/decisions/0050-delivery-gates.md) for pinned executed proofs and
+Preserve accepted synchronous accept/store (0001), subscribe-before-check
+(0002), oldest-only pruning (0003), real isolated protocols (0004) and ingest
+extraction (0005). Relevant authority:
+[0020](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md)
+for real-protocol test placement and observed synchronization,
+[0041](../../docs/decisions/0041-webhook-boundary.md) for the unchanged
+best-effort webhook boundary,
+[0050](../../docs/decisions/0050-delivery-gates.md) for pinned proofs and
 [0056](../../docs/decisions/0056-signing-policy.md) for unsigned commits.
-Preserve current 0057/0058 bundle routing, independent review and security hold.
-These are authority references. No frozen guarantee, public contract or ruling
-changes; no semantic ADR is needed and this seat accepts no decision.
+No frozen guarantee, public contract or ruling changes; no new ADR is needed.
+This seat accepts no decision and preserves candidate bundle routing.
 
 ## Panel synthesis and rulings
 
-1. **Adopt both current positions: remove the reuse-enabled path.** Replace
-   the `[false, true]` loop with one inline IPv4 contender, explicitly set
-   `SO_REUSEADDR=false`, and require `bind(refused)` to fail with exactly
-   `AddrInUse`. Never listen on it. Preserve explicit final pair release.
-   This supersedes the earlier synthesis's ruling for two failed binds; that
-   robustness argument extrapolated Linux behavior to macOS and loses.
-   Cost of rejecting it: no reuse-enabled exclusion claim, including on Linux;
-   the remaining macOS reuse-enabled collision risk is disclosed, not solved.
-2. **Reconcile the ownership contract with the evidence.** Both current
-   positions agree on the limited claim: uninterrupted lexical retention and
-   explicit final drop establish lifetime; the final check observes one
-   reuse-disabled bind rejection. No universal port exclusivity or complete
-   macOS race closure is promised. The earlier ruling 2 demanding both failed
-   binds is replaced by this limit and ruling 1's single check. Update AC4,
-   plan step 5, T3 and directly conflicting active prose/comments together.
-   A passing macOS CI run proves that execution, not every concurrent schedule.
-3. **Rule for deletion over platform-specific expectations.** The intake
-   permits Linux failure/macOS success for a reuse-enabled bind. Reject that
-   alternative: it adds conditional kernel-policy checks without protecting
-   the shutdown experiment. Cost: the test no longer demonstrates platform
-   reuse differences. The current positions have no substantive conflict on
-   the chosen repair; no compromise assertion is needed.
-4. **Adopt simplicity's inline scope and robustness's proof limits.** Keep
-   the reuse-disabled connected client, accepted peer, dropped setup listener,
-   existing bounded setup and exact `ConnectionRefused` probe unchanged. Reject
-   allocators, shared locks, keeper tasks, namespaces, dependencies, production
-   seams or serialization: they widen the authorized repair. Cost: the known
-   macOS reuse-enabled interference risk remains for separately scoped work
-   if CI exposes it. Keep exact totals, causes and redaction; do not accept
-   timeout, relax errors, extend budgets, add retries, sleeps or ignores.
-5. **Preserve history without certifying the repair.** Retain this feature
-   slug, earlier dated clarifications and Linux receipts as historical. Reset
-   current implementation/proof tasks. This design corrects a test-spec defect,
-   not an accepted runtime ruling, and creates no ADR. CI owns actual macOS
-   execution; local receipts cannot discharge that handoff.
+1. **Adopt both positions' connected pair.** Explicitly bind a reuse-disabled
+   IPv4 client, connect it to a temporary loopback listener, accept its peer,
+   drop the listener and target the client's local address. Retain both
+   streams through the final storage assertion. Cost: a temporary listener,
+   two retained descriptors and several duplicated setup lines.
+2. **Adopt simplicity's local scope and robustness's lifetime discipline.**
+   Keep ownership inline, with explicit final pair release and RAII on unwind.
+   Reject shared helpers, keeper tasks, allocators, global locks,
+   serialization, namespaces, dependencies and production seams. Cost of
+   rejecting abstraction: the two short fixtures can drift and must be
+   compared when maintained. Full port isolation remains outside this repair.
+3. **Adopt robustness's exact oracle and both positions' macOS limitation.**
+   Preserve bounded real connect and exact ConnectionRefused equality.
+   Reject accepting arbitrary errors, longer deadlines, retry-until-pass,
+   platform skips, sinks that accept connections, sleeps and new ignores.
+   Cost: resource/setup/interference failures remain visible test failures.
+   Holding both ends excludes reuse-disabled binders, but macOS reuse-enabled
+   listeners, including parallel Tokio listeners, can still claim the endpoint.
+   The probe observes setup only; it neither closes that race nor proves the
+   failure stage of every subsequent webhook attempt.
+4. **Reject any new contender assertion.** Both positions agree that the
+   binary test's existing reuse-disabled check must remain there unchanged
+   and must not be copied into this webhook test. A reuse-enabled exclusion
+   assertion contradicts the supplied macOS limit. Cost: this test does not
+   separately measure kernel bind policy; it retains the requested real
+   refusal oracle and lifetime proof.
+5. **Reconcile robustness's proof wording with the existing observation.**
+   Preserve `wait_for_metric_from(..., exhausted_base, 1)` unchanged: its
+   predicate is `value >= baseline + delta`. One delivered mail and one target
+   motivate the expected exhaustion, but that call is not an exact-equality
+   assertion. Do not add an assertion to satisfy a stronger reading of
+   "exactly one new exhaustion." Preserve exact storage counts of one.
+   Cost: no stronger counter or scheduling proof is claimed. Reject expanding
+   robustness's crash, chaos, hostile-DATA and TLS analysis into new tasks;
+   those existing contracts remain intact and outside this fixture's proof.
+6. **Keep history and reset current tasks.** The positions have no substantive
+   conflict on the implementation. Their shared recommendation wins over
+   broader hardening; no averaged alternative is needed. This revision
+   supersedes the previous active binary-only scope and webhook-byte-identity
+   requirement. Dated history below remains evidence about earlier candidates,
+   never proof of this repair. CI owns macOS execution.
 
 ## Acceptance Criteria
 
-These are local implementation criteria. This design commit defines them; it
-cannot mark the future repair proved. AC numbers retain the owning design's
-mapping to the already reviewed #191 findings.
+All criteria below are locally checkable on the implementation candidate.
+This design establishes requirements, not their completed implementation.
 
-- **AC1 — preserve 23.1.** Dockerfile remains byte-identical to the continuation
-  baseline, retaining AC52.2 attribution and its reviewed digest.
-- **AC2 — preserve 23.2.** `tests/common/mod.rs` remains byte-identical: helper
-  prose stays on its owner and `send_with_host` retains its one required,
-  verbatim Host description and implementation.
-- **AC3 — preserve 23.3.** The removed `wait_for_metric` wrapper is not restored;
-  the existing live metric helpers and consumers remain unchanged. Baseline
-  comparison and the workspace suite prove preservation, without new cleanup.
-- **AC4 — portable fixture and unchanged ledger.** The named binary test owns
-  a reuse-disabled, explicitly bound IPv4 client connected to an accepted
-  loopback peer. Both streams remain open from setup through webhook
-  configuration, SMTP, retry exhaustion, SIGTERM, EOF/reap and all assertions,
-  with an explicit final drop and RAII on unwind. Neither stream is read,
-  written, shut down or half-closed. Setup connect/accept and the real refusal
-  probe use the existing `HELPER_DEADLINE`. The probe to the client's local
-  address must return exactly `ConnectionRefused`; success, expiry or another
-  error fails. The same address is used in the unchanged plain HTTP webhook
-  URL. Before releasing the pair, one fresh IPv4 socket explicitly using
-  `SO_REUSEADDR=false` fails to bind that address with exactly `AddrInUse`;
-  it never listens. Remove the reuse-enabled contender path entirely, without
-  a singleton loop or new platform conditional.
-
-  The active spec, plan, tasks and related source comments must state the
-  macOS reuse-enabled listener limitation above. A source/text comparison
-  must find no active requirement that both bind modes fail or that this
-  fixture fully closes the macOS reuse race. Historical dual-bind receipts
-  are explicitly superseded and do not prove the corrected candidate.
-
-  Preserve the stalled sink's completed-request observation before SIGTERM,
-  the fresh-child exhaustion baseline zero and observed exhaustion one, clean
-  process exit and exactly one final `webhook dispatcher stopped` message.
-  Its delivered/dropped/lagged totals remain zero, exhausted one and aborted
-  one. Exactly one exhaustion warning has a substantive transport cause beyond
-  its display prefix, and stdout contains none of `hunter2`, `hunter3` or
-  `marker-secret`. Preserve existing message-position/format assertions.
-  The focused Linux test selects exactly one passing test. No sleeps as
-  synchronization, new ignore, broad error match or timeout-as-success.
-- **AC5 — preserve the distinct webhook regression.** `tests/webhook.rs`
-  remains byte-identical to the continuation baseline. Its held target and stored
-  mail/exhaustion observations are existing proof, not a substitute for AC4.
-- **AC6 — preserve 23.5.** `src/api.rs` remains byte-identical to the continuation
-  baseline, retaining the measured runtime acquisition observer and snapshot
-  discriminator. The workspace suite executes it. No new mutation experiment
-  or snapshot refactor is authorized by this portability repair.
-- **AC7 — scope.** Implementation changes are confined to the named function's
-  contender check and directly related explanatory comments relative to
-  `94b8ae1`. Setup, bounded refusal probe and final pair release are preserved in
-  `tests/binary.rs`. Other code in that file and all shipping code, Cargo files,
-  dependencies, allowlist, decisions, gates and bundle routing stay unchanged
-  from the continuation baseline. The chief reconciles only these three owning
-  design artifacts; the committed continuation intake remains framing, not a
-  new edit. Inspect the exact diff; no new support module or production seam.
-- **AC8 — completed local proofs and honest handoff.** The focused test, full
-  binary suite and every local gate in the
-  [sole house inventory](../../docs/house-rules.md#gates--part-of-every-change)
-  pass on the repair, using digest-verified `.forge/bin/brokkr`, locked builds,
-  exact zero-missed coverage with exit zero, its selftest, publish/seal proofs,
-  licenses and fail-closed native-tls absence. Record candidate identity,
-  commands, platform, exits and selected-test count. Commit scoped work unsigned
-  before verify/review; historical and design-baseline receipts cannot close
-  implementation tasks. No push, merge, tag, publication, issue closure or
-  decision acceptance.
+- **AC1 — connected target and lifetime.** The named webhook test creates an
+  ephemeral IPv4 loopback listener and an explicitly bound IPv4 TcpSocket
+  with reuse disabled. Connect and accept each use `common::HELPER_DEADLINE`.
+  Drop the setup listener, derive the target from the connected CLIENT's local
+  address, and use that identical address in the refusal probe and HTTPS URL.
+  Both connected streams remain untouched through the final storage assertion,
+  then `drop((reservation, peer))`; neither is closed, half-closed or released
+  early. Prove by source/diff inspection and the focused real-server test.
+- **AC2 — honest refusal oracle.** Keep the bounded TcpStream connect probe
+  and exact `std::io::ErrorKind::ConnectionRefused` equality. Connection
+  success, expiry or any other error fails. Diagnostics describe a connected
+  client endpoint. Add no contender assertion, sleep, probabilistic retry,
+  platform branch, ignore, deadline extension or broader error acceptance.
+  The fixture comment states the macOS reuse-enabled listener limit and
+  setup-only proof boundary from ruling 3. Inspect the source and run the
+  focused test with exactly one selected passing test.
+- **AC3 — preserved observations.** Preserve real PUT success, the exhaustion
+  baseline before SMTP, successful SMTP delivery, HTTP success and count
+  exactly one before observing exhaustion, the existing delta-one wait, and
+  HTTP success/count exactly one afterward. Preserve URL scheme, budgets,
+  deadlines and existing ignore policy. The entire webhook and binary suites
+  pass locally; the SIGTERM function and all of tests/binary.rs stay
+  byte-identical to the scope baseline. No strict latency or each-retry
+  failure-stage guarantee is introduced.
+- **AC4 — bounded inventory.** Inspect #191's changed tests using current
+  functions and available local history, including db0b517 and 35afa14:
+  tests/webhook.rs, tests/binary.rs, tests/common/mod.rs and src/api.rs tests.
+  Record no remaining unconnected reservation used as a refused target in
+  that changed surface after repair. The SIGTERM contender is a bind probe,
+  not a target; the older fixed 127.0.0.1:1 target is outside this correction.
+  A text search alone is insufficient. Historical commit 98b54e51 is absent
+  locally; do not claim its unavailable diff was reconstructed.
+- **AC5 — scope and preservation.** Relative to ac160ff, implementation edits
+  only the named webhook function's fixture, lifetime and directly related
+  comments/diagnostics. Preserve Dockerfile, tests/common/mod.rs, src/api.rs,
+  tests/binary.rs and all other code byte-for-byte. The owning three design
+  artifacts may reconcile this scope; intake/verification records may be added
+  as authorized. No dependency, lockfile, allowlist, accepted-decision, gate,
+  bundle or recipe-routing change. Inspect the baseline diff and commit all
+  scoped work unsigned before final verification.
+- **AC6 — completed local proof.** Every local house gate exits zero on the
+  committed repair, using the digest-verified candidate-local engine and
+  pinned proof scripts. Exact coverage has zero missed lines, branches and
+  functions AND a completed successful exit and passing selftest. Preserve
+  command, platform, commit/tree, exit and output receipts; verify shims,
+  design selftest, delivery proof and fail-closed native-tls absence as in
+  plan.md. Design/intake receipts cannot certify the later code change.
 
 ## External proof ownership
 
-CI owns the existing macOS binary test execution, which must exercise the repair
-without adding an ignore. A Linux pass is not a macOS pass. The operator retains
-live hosting/settings and sealing authority; CI retains chart/history, Docker,
-RustSec, privileged port-80 and release-only proofs named in the house inventory.
-These are explicit handoffs, not unprovable local acceptance criteria. No durable
-outbox, crash recovery, exactly-once webhook, host-privilege isolation or
-unbounded-load latency guarantee is introduced.
+CI owns execution of the repaired test on macOS. Historical SIGTERM success
+supports the fixture choice but does not certify the future webhook repair.
+CI also owns the charter's chart/history, Docker smoke, network RustSec,
+privileged port-80 and release-only proofs. The operator owns live settings,
+sealing and publication. No macOS, live GitHub, namespace or external-network
+proof is added to this seat's acceptance criteria. No push, merge, tag,
+publication, issue closure or decision acceptance is authorized.
+
+## Historical clarifications
+
+Every entry in this section describes a superseded phase and baseline.
+References there to "active" or "current" apply only to that dated phase;
+the requirements above and current plan/tasks exclusively govern this run.
 
 ## Dated clarification — 2026-10-24, earlier synthesis (historical)
 
@@ -232,9 +217,18 @@ remove the reuse-enabled contender and explicitly retain the macOS race limit.
 All current implementation tasks require fresh proof after the correction.
 This design commit does not change the test or claim macOS execution.
 
+## Dated clarification — 2026-10-25, webhook macOS repair
+
+The current baseline is ac160ff and design entry b7196b8. PR #238 evidence
+shows the corrected SIGTERM fixture passing and the separate webhook fixture
+failing. Replace the prior binary-only scope and webhook preservation clause
+with AC1–AC6 above. Preserve the binary test byte-for-byte; add no contender
+assertion to webhook. Earlier checked tasks and receipts stay historical.
+Implementation and fresh candidate-bound proof remain outstanding.
+
 ## Design handoff
 
-Commit exactly this spec, [plan](plan.md) and [tasks](tasks.md), leaving the
-design commit last. Positions, result JSON and gate logs remain ignored.
-The sequence's pinned deterministic check owns advancement. The chief reports
-only `drafted`; design-baseline gates do not establish repair completion.
+Commit exactly this spec, [plan](plan.md) and [tasks](tasks.md), leaving that
+commit last. Positions, result JSON and gate logs remain ignored. The pinned
+sequence check owns advancement. The chief reports only `drafted` and runs
+baseline gates without claiming repair completion.
