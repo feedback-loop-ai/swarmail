@@ -91,3 +91,11 @@ PYPROOF
 Only disposable controlled proof journals may be created by the existing test; never read the canonical journal. CI owns macOS, privileged port-80, Helm/chart history, Docker smoke, network-backed RustSec and tag-only release proofs in the house inventory. The operator owns live Spark availability (reported working from the host), credentials, live settings and sealing. Do not contact Spark, GitHub, CI or sibling worktrees; no namespaces/network acceptance criterion is added.
 
 This framing is the intake deliverable; implementation and final feature verification remain outstanding. Record run-local mirrors for inherited design discovery, commit framing unsigned, and let the engine choose the next phase.
+
+## Intake baseline verification receipt
+
+Executed on committed framing `6ab2f6d7b3c27569d6766a85b7e4a0ff84e2f65d` through the workspace tool, offline with the digest-matched candidate-local engine. All house gates passed: fmt, locked workspace clippy/tests, self compile, exact 100/100/100 coverage, coverage selftest, publish guard, keyless seal proof and licenses. Shim integrity, design selftest, delivery tamper-boundary proof and fail-closed native-tls absence also passed. All four current bundles compiled with zero unruled policy valuations and no policy-sweep warnings. These are baseline proofs on unchanged routing, not proof that GLM tests routing is implemented.
+
+The independent focused `resolved_matrix` proof passed on existing routes. The full Python routing proof exited 1 at `1-cross-attempt`: `AssertionError: ('1-cross-attempt', 'completed')` (`main` line 294, `check` line 276). This matches the previously recorded engine correlation failure; subsequent cases did not execute. The control remains unchanged. No engine repair, pin change or green dispatcher claim is made.
+
+Complete per-gate logs and status are retained in the run-local `.forge/proofs/glm-tests-intake-4add6118/` directory, with disposable full/focused proof evidence. The workspace transport timed out after 300 seconds while the batch continued; the final status file records every exit code and `done: true`. This receipt adds documentation only. Feature implementation, revised design/0081, final routing verification and protected review remain outstanding.
