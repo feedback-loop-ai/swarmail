@@ -77,7 +77,7 @@ fn dedup(values: Vec<String>) -> Vec<String> {
 /// decodes to six — but never past `5 * output <= 6 * input`: numerics
 /// and literal copies never grow, and the table's own test pins every
 /// mapping inside that ratio.
-fn decode_refs(input: &str) -> String {
+pub(crate) fn decode_refs(input: &str) -> String {
     let mut stats = RefScanStats::default();
     decode_refs_scanned(input, &mut stats)
 }

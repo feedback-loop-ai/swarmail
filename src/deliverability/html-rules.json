@@ -1,0 +1,154 @@
+{
+  "rule_set_id": "swarmail-html/1",
+  "provenance": "Swarmail-authored heuristics; no downloaded dataset or current empirical client measurements supplied. Reference guidance was not fetched or freshly verified. New Outlook is not classic Outlook; unlisted behavior is unassessed.",
+  "rules": [
+    {
+      "id": "html.css.position.v1",
+      "severity": "warning",
+      "selector": {
+        "kind": "css",
+        "property": "position",
+        "values": []
+      },
+      "fix_hint": "Positioned content may render poorly in classic Outlook for Windows; use a table-based fallback.",
+      "clients": [
+        "classic Outlook for Windows (Word renderer)"
+      ],
+      "source": {
+        "title": "Can I email, CSS position",
+        "url": "https://www.caniemail.com/features/css-position/",
+        "summary": "Positioning has client-dependent support; prefer a table fallback.",
+        "basis_type": "authored_heuristic",
+        "basis_date": "2026-10-26"
+      }
+    },
+    {
+      "id": "html.css.display-flex.v1",
+      "severity": "warning",
+      "selector": {
+        "kind": "css",
+        "property": "display",
+        "values": [
+          "flex",
+          "inline-flex"
+        ]
+      },
+      "fix_hint": "Flex layouts may render poorly in classic Outlook for Windows; use a table-based fallback.",
+      "clients": [
+        "classic Outlook for Windows (Word renderer)"
+      ],
+      "source": {
+        "title": "Can I email, CSS display:flex",
+        "url": "https://www.caniemail.com/features/css-display-flex/",
+        "summary": "Flex layout has client-dependent support; prefer a table fallback.",
+        "basis_type": "authored_heuristic",
+        "basis_date": "2026-10-26"
+      }
+    },
+    {
+      "id": "html.element.video.v1",
+      "severity": "warning",
+      "selector": {
+        "kind": "element",
+        "name": "video"
+      },
+      "fix_hint": "Video may be removed in Gmail and classic Outlook for Windows; provide a linked image and text fallback.",
+      "clients": [
+        "Gmail web/mobile",
+        "classic Outlook for Windows (Word renderer)"
+      ],
+      "source": {
+        "title": "Can I email, HTML video",
+        "url": "https://www.caniemail.com/features/html-video/",
+        "summary": "Embedded video can be removed or unavailable; provide linked content.",
+        "basis_type": "authored_heuristic",
+        "basis_date": "2026-10-26"
+      }
+    },
+    {
+      "id": "html.img.alt-missing.v1",
+      "severity": "warning",
+      "selector": {
+        "kind": "missing_attribute",
+        "element": "img",
+        "attribute": "alt"
+      },
+      "fix_hint": "Add descriptive alt text to informative images, or an empty alt attribute to decorative images.",
+      "clients": [
+        "Gmail web/mobile",
+        "classic Outlook for Windows (Word renderer)",
+        "Apple Mail macOS/iOS"
+      ],
+      "source": {
+        "title": "WHATWG HTML, alternative text",
+        "url": "https://html.spec.whatwg.org/multipage/images.html#alt",
+        "summary": "An absent alt attribute lacks an explicit informative/decorative choice.",
+        "basis_type": "authored_heuristic",
+        "basis_date": "2026-10-26"
+      }
+    },
+    {
+      "id": "html.image-only.v1",
+      "severity": "warning",
+      "selector": {
+        "kind": "image_only"
+      },
+      "fix_hint": "Add meaningful HTML body text so the message remains useful when images are unavailable.",
+      "clients": [
+        "Gmail web/mobile",
+        "classic Outlook for Windows (Word renderer)",
+        "Apple Mail macOS/iOS"
+      ],
+      "source": {
+        "title": "Swarmail heuristic; Mailchimp Outlook guidance",
+        "url": "https://mailchimp.com/help/my-email-looks-different-in-outlook/",
+        "summary": "Images without lexical HTML body text may leave no useful content when images are unavailable.",
+        "basis_type": "authored_heuristic",
+        "basis_date": "2026-10-26"
+      }
+    },
+    {
+      "id": "html.gmail-clipping.v1",
+      "severity": "warning",
+      "selector": {
+        "kind": "decoded_bytes",
+        "greater_than": 104448
+      },
+      "fix_hint": "HTML exceeds the 102 KiB clipping-risk heuristic; shorten the HTML and test the result in Gmail.",
+      "clients": [
+        "Gmail web/mobile",
+        "classic Outlook for Windows (Word renderer)",
+        "Apple Mail macOS/iOS"
+      ],
+      "source": {
+        "title": "Mailchimp, Gmail is clipping my email",
+        "url": "https://mailchimp.com/help/gmail-is-clipping-my-email/",
+        "summary": "Swarmail interprets approximate 102 KB guidance as strictly more than 102 KiB decoded UTF-8 HTML bytes per part.",
+        "basis_type": "authored_heuristic",
+        "basis_date": "2026-10-26"
+      }
+    },
+    {
+      "id": "html.tracking-pixel.v1",
+      "severity": "info",
+      "selector": {
+        "kind": "remote_small_image",
+        "min_dimension": 0,
+        "max_dimension": 1
+      },
+      "fix_hint": "A small remote image may be a tracking pixel; remove it or disclose tracking to recipients.",
+      "clients": [
+        "Gmail web/mobile",
+        "classic Outlook for Windows (Word renderer)",
+        "Apple Mail macOS/iOS"
+      ],
+      "source": {
+        "title": "Swarmail heuristic; MDN Tracking pixel",
+        "url": "https://developer.mozilla.org/en-US/docs/Glossary/Tracking_pixel",
+        "summary": "Explicit 0/1 HTML dimensions on HTTP(S) images suggest potential tracking, not intent.",
+        "basis_type": "authored_heuristic",
+        "basis_date": "2026-10-26"
+      }
+    }
+  ]
+}
