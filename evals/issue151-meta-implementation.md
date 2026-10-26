@@ -58,8 +58,8 @@ and 19 executable tests passed: boundary::sequential_contracts_and_decision_link
 still required decisions 0063/0076 to be proposed. The verified operator rulings
 and both tracked records already say accepted (operator, 2026-10-26). Updated
 only those stale test assertions to require the recorded acceptance and date,
-without editing or accepting either decision. Full-suite and committed-candidate
-house proof remains pending; no failed or interrupted command is counted green.
+without editing or accepting either decision. The boundary target then passed
+all 15 tests. No failed or interrupted command is counted green.
 
 After the boundary repair the complete standalone eval command passed all 236
 tests (including the five real stdio tests), with saved exit 0. The transport
@@ -71,17 +71,56 @@ admitted a third positional call element, previously refused. Kept the explicit
 ignored field and constrained positional calls to their former two-slot arity.
 A positive legacy positional control and negative third-slot control prove that
 only the named metadata slot is newly admitted. No new params or argument shape
-is otherwise accepted or tightened. The full suite is rerun after this repair.
+is otherwise accepted or tightened. The final full suite was rerun after this repair on committed candidate
+7169583df0dcf7ddf9dbfa5d034b7518b8598635 and passed all 236 tests (saved exit 0),
+including all 19 wrappers tests and doc-test completion. Its transport timeout
+was likewise superseded by the recovered command exit and complete log.
 
-## Known delivery prerequisite
+## Final commands and exits
 
-The baseline root decision-inventory test fails with
-`0084-fixture-http-meta.md: no index row` (exit 101). The preceding design added
-0084 without its required docs/decisions/README.md row. The design explicitly
-assigns that integration to the operator/documentation owner; this task permits
-changes only under evals/. No index change, gate weakening or green-delivery
-claim is authorized here. Root tests and coverage must still be run and their
-actual exits recorded. Decision 0084 remains proposed.
+All checks used CARGO_NET_OFFLINE=true. Code and test proof is bound to committed
+candidate 7169583df0dcf7ddf9dbfa5d034b7518b8598635; the following receipt commit
+changes this document only. Complete command arrays, candidate hashes, raw and
+interpreted exits, timings and logs are retained under ignored
+.forge/implement151-meta. Public shim hashes passed; gate scripts were executed
+from their pinned bundle owners, as required by the charter.
+
+| Command | Exit |
+|---|---:|
+| `cargo fmt --manifest-path evals/Cargo.toml --all -- --check` | 0 |
+| `cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings` | 0 |
+| `cargo test --manifest-path evals/Cargo.toml --locked --test wrappers` | 0 (19 tests; final full suite also reruns all 19 after the positional repair) |
+| `cargo test --manifest-path evals/Cargo.toml --locked` | 0 (236 tests on the final code candidate) |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 101 |
+| `.forge/bin/brokkr compile --bundle bundles/self` | 0 (76 valuations, 0 unruled, no warning) |
+| `bash bundles/self/scripts/coverage-gate.sh` | 1 |
+| `bash bundles/self/scripts/coverage-gate.sh selftest` | 0 |
+| `bash bundles/self/scripts/publish-guard-test.sh` | 0 |
+| `bash bundles/self/scripts/seal-branch-test.sh` | 0 |
+| `cargo deny check licenses` | 0 |
+| `bash bundles/self/scripts/design-check.sh selftest` | 0 |
+| `bash bundles/self/scripts/delivery-proof-test.sh` | 0 |
+| Fail-closed `cargo tree -i native-tls` absence proof | 0 (raw exit 101, specifically package not found) |
+
+## Outstanding delivery prerequisite
+
+Result is **broken**, not complete: root tests and the exact coverage command
+fail because `0084-fixture-http-meta.md` has no decision-index row. Both
+`every_decision_file_has_exactly_one_resolving_index_row` and the inventory's
+negative-fixture comparison report that same missing row. Coverage stops at the
+instrumented test failure, preserving target/coverage/run.Oz5Co4/run.log; no
+exact-100% report or successful coverage verdict is claimed. The coverage
+selftest and delivery tamper proof both pass without any gate changes.
+
+The preceding design explicitly assigns index integration to the
+operator/documentation owner, while this task permits changes only under evals/.
+That owner must add the proposed 0084 row to docs/decisions/README.md before the
+required root gates can be green. No index edit, decision acceptance, test
+weakening, exclusion or denominator/floor reduction was made here. All tracked
+implementation changes stay under evals/ and are committed unsigned; no push,
+merge, tag, publication or issue closure was performed.
 
 CI owns the charter's macOS/chart/Docker/network/privileged-port evidence; #201
 owns eval macOS gating. The operator owns live Claude/client smoke, paid trials
