@@ -379,3 +379,29 @@ scope finding or a frozen-guarantee refusal. T14/T15 and R4.2/R4.3/R4.4
 remain open exactly as above; no whole-story, review/ship, CI-only, operator
 acceptance or publication claim is added. Existing compatible code and all
 accepted contracts remain unchanged.
+
+
+## Operator-ruling continuation — 2026-10-26
+
+Current authority and scope come from the operator's supplied Decision rulings
+of 2026-10-26 and the current implement task, as framed in
+[intake-2026-10-26.md](intake-2026-10-26.md). They supersede this plan's earlier
+pending-authority and ownership limits for AC10–AC12. Earlier evidence,
+failures and unresolved-at-that-time statements above remain historical.
+
+Use src/compat.rs for refusal-only normalization and src/extract.rs for
+source-aware conditional-comment attributes. Keep src/smtp.rs unchanged
+after the temporary source-order negative proof. Use tests/compat.rs for
+all four named wire/reopen regressions and measured extractor unit controls
+for lexical boundaries/decode-once. Change only 0061's current status/index
+row and append 0061/0049 acceptance/ruling provenance; accept nothing else.
+Update the current spec and task disposition and commit the evidence ledger.
+
+The current recipe routing, dependency tree, gate/shim bytes, extraction
+call sites, synchronous insert, watcher order and pruning remain unchanged.
+House and configured supplemental gates run on the final candidate with
+the checked local .forge/bin/brokkr; exact coverage and its selftest remain
+mandatory. The [proof ledger](proof-2026-10-26.md) records commands, results
+and immutable source identities. Protected phases are still engine-owned;
+CI/operator-owned evidence is listed in the current spec without new local
+acceptance criteria.

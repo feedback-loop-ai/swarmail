@@ -1,13 +1,14 @@
 # Compat, webhook and extraction proofs
 
 - **Date:** 2026-10-23
-- **Status:** D3 compatible implementation proved locally; operator amendments and engine-owned protected verify/review/ship outstanding.
+- **Status:** 2026-10-26 operator rulings implemented; AC10–AC12 proved locally. Engine-owned protected verify/review/ship remain outstanding.
+- **Current authority:** the 2026-10-26 addendum supersedes earlier D3 pending-authority and ownership language; historical outcomes below retain their dates.
 - **Branch:** `epic192/lane-d-attempt3`; D3 starting HEAD `874b4a464dd3ffb59e4e431b5e82947c70bc93dd`, following inherited `6adb026e0f3080895fb0b1963e824f2883367e88`.
 - **Stories:** [#170](https://github.com/feedback-loop-ai/swarmail/issues/170) and [#190](https://github.com/feedback-loop-ai/swarmail/issues/190), including [all five comment findings](https://github.com/feedback-loop-ai/swarmail/issues/190#issuecomment-6284803433).
 - **Run:** `epic192-first-wave-lane-d-compat-39ce98ea`; triage result `engine`, full council and four independent review lenses.
 - **Scope:** one candidate and one implementation stream, not epic completion.
 
-Decision: 0061 — [Refusal recognition and extraction repair boundaries](../../docs/decisions/0061-compat-webhook-proof.md), **proposed**.
+Decision: 0061 — [Refusal recognition and extraction repair boundaries](../../docs/decisions/0061-compat-webhook-proof.md), **accepted (operator, 2026-10-26)**.
 
 ## Feature and rationale
 
@@ -97,19 +98,37 @@ Fresh SMTP ingest followed by REST readback stores exactly the ordered clean URL
 | `<span title="Visit 'https://x.io/t' now">` | `["https://x.io/t"]` |
 | `<td background="https://x.io/hero.jpg" style="background:url('https://x.io/hero.jpg')">` | `["https://x.io/hero.jpg"]` |
 
-### AC10 — #190 / R4.2: quote-first refusals (pending authority)
+### AC10 — #190 / R4.2: quote-first refusals (operator accepted 2026-10-26)
 
-After explicit acceptance of 0061 §1, both containing searches refuse `"-to:x"`, `"!from:alice"`, `"-subject:a b"`, `to":x` and `"to":x` with HTTP 400 and the named unsupported prefix (to/from/subject as applicable). Remove every double quote from each whitespace token only for refusal recognition, then the existing single parenthesis and exclusion-marker steps. Keep accepted execution input unchanged, URL exceptions, ordinary literal controls and each dialect's supported explicit kinds. Restoring ordered-only wrappers must fail these wire tests. Before acceptance, preserve current implementation and retain this AC open; do not check it off using a proposal or expected-failure fixture.
+Both containing searches refuse `"-to:x"`, `"!from:alice"`, `"-subject:a b"`,
+`to":x` and `"to":x` with JSON HTTP 400 naming to/from/subject as applicable.
+Remove every double quote from each whitespace token only for refusal
+recognition, then one leading parenthesis, then one exclusion marker.
+Keep the ASCII field rule, :// exception, original execution input, literal
+controls and each dialect's supported explicit kinds/error precedence.
+The old ordered-wrapper implementation must fail the same wire evaluator.
 
-### AC11 — #190 / R4.3: independent-part link order (pending authority)
+### AC11 — #190 / R4.3: keep text-first independent-part links (operator, 2026-10-26)
 
-The operator must rule on independent-part links. Preserve accepted text-first now. Retain fixture `multipart/mixed[multipart/alternative[text/html "code 121212 <a href=https://app.test/verify?t=abc>"], text/plain "footer 2026 https://lists.test/unsub?u=9"]`. Current links are unsubscribe then verify; codes are `["121212","2026"]`. If source-order is accepted, pass the same transient BodyOrder to extract_links and require verify then unsubscribe through fresh SMTP/REST, with direct-alternative preference, code order, raw/body truth and historical restore unchanged. The old text-first mutant must fail the authorized fixture. Neither scope repair nor this proposal accepts the amendment.
+Fresh SMTP/REST for
+`multipart/mixed[multipart/alternative[text/html "code 121212 <a href=https://app.test/verify?t=abc>"], text/plain "footer 2026 https://lists.test/unsub?u=9"]`
+stores links exactly `["https://lists.test/unsub?u=9","https://app.test/verify?t=abc"]`
+and codes `["121212","2026"]`. Keep direct-alternative preference and exact
+raw/body truth. No production ordering change is needed. A temporary
+source-order link mutant must fail; exact restoration passes.
 
-### AC12 — #190 / R4.4: conditional-comment URLs (pending authority)
+### AC12 — #190 / R4.4: source-aware conditional-comment URLs (operator, 2026-10-26)
 
-Preserve ordinary-comment behavior now. The unresolved fixture is:
-`<!--[if mso]><v:roundrect href="https://x.io/verify?name=O&#39;Brien&amp;t=abc"></v:roundrect><![endif]--><a href="https://x.io/verify?name=O&#39;Brien&amp;t=abc">Verify</a>`.
-Current links are `["https://x.io/verify?name=O","https://x.io/verify?name=O'Brien&t=abc"]`. The operator must authorize quoted-attribute treatment inside conditional comments (then real SMTP/REST stores only the whole URL and old-comment handling fails the regression), or explicitly accept a decision naming this truncation as retained. Neither option is currently accepted. General ordinary comments, code suppression and browser recovery are not implicitly changed.
+Fresh SMTP/REST for
+`<!--[if mso]><v:roundrect href="https://x.io/verify?name=O&#39;Brien&amp;t=abc"></v:roundrect><![endif]--><a href="https://x.io/verify?name=O&#39;Brien&amp;t=abc">Verify</a>`
+stores links exactly `["https://x.io/verify?name=O'Brien&t=abc"]`.
+Source attribute boundaries precede one decode inside conditional comments;
+the truncated prefix is absent. Ordinary comments and suppressed codes
+retain their contracts, as do encoded quotes, nested attributes, source-only
+links, deduplication and linear-work counters. Old comment treatment must
+fail the real-protocol evaluator. Historical arrays remain verbatim live and
+after reopening, beside a corrected fresh delivery: no re-extraction,
+migration, query fallback or write-back.
 
 ### AC13 — #190 / R4.5: curly closing punctuation
 
@@ -143,3 +162,27 @@ was weakened to advance this attempt.
 ## D3 disposition — 2026-10-23
 
 The preceding disposition records the earlier attempt, not current index state. Parent repaired the row in `874b4a4`; historical workspace exit 101 and coverage exit 1 are not erased or turned green. This chief preserves compatible source and renews the committed design identity. AC1–AC9/AC13 have inherited targeted receipts requiring identity audit and final-tree verification. AC10–AC12 stay OPEN without three exact operator rulings. AC14 stays OPEN until actual required gates, independent review and deterministic verify/ship; no runtime success is claimed by this design. Chief result is only `drafted`; only the sequence's deterministic check can advance design.
+
+
+## Operator-ruling implementation — 2026-10-26
+
+The supplied evidence packet's README and operator-rulings both passed its
+directory-local SHA256SUMS. The operator accepts 0061 §1, keeps R4.3 text-first
+and chooses source-aware R4.4; 0061 and 0049 carry dated provenance addenda
+and only 0061's record/index status changes. These current rulings supersede
+the earlier D3 pending authority and file-ownership restrictions.
+
+AC10 is proved by quote_normalized_prefixes_refuse_without_rewriting_literals;
+AC11 by independent_mime_links_remain_text_first; AC12 by
+outlook_conditional_attributes_store_only_complete_urls, with
+historical_outlook_arrays_survive_reads_and_reopen proving 0005 preservation.
+All run against real SMTP/HTTP servers in tests/compat.rs. The exact commands,
+source identities, behavioral red/restored-green receipts and house-gate
+results are in [the dated proof ledger](proof-2026-10-26.md).
+
+The implementation-phase result concerns this framed task. It is not whole
+epic completion or a substitute for actual protected verify/review/ship.
+CI/operator retain macOS, Helm/chart history, Docker smoke, network RustSec,
+privileged port-80 exchange, live settings, releases, sealing and landing.
+No new external acceptance criterion, decision acceptance or recipe change
+is inferred.

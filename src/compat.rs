@@ -166,18 +166,15 @@ fn field_prefix(token: &str) -> Option<&str> {
     (rest.starts_with(':') && !rest.starts_with("://")).then_some(&token[..end])
 }
 
-/// The field a token names once Mailpit's own wrappers are looked past
-/// (decision 0049 §6, issue #138): at most one leading `(`, then one
-/// exclusion marker (`-` or `!`), then one `"`, in that order. Upstream
-/// reads `-to:x` as "not to x" and strips the quotes from `"to:x"`, so
-/// these forms must refuse by name like the bare one — matching nothing,
-/// they made a ported exclusion assertion pass against any mailbox. This
-/// is recognition for the refusal only: an accepted query is never
-/// stripped, grouped or negated.
-fn wrapped_field_prefix(token: &str) -> Option<&str> {
-    let token = token.strip_prefix('(').unwrap_or(token);
+/// The field a token names under decision 0061 §1 (operator, 2026-10-26):
+/// remove every double quote, then at most one leading parenthesis and
+/// one exclusion marker. This copy is only for refusal recognition;
+/// accepted queries execute with their original quotes and markers.
+fn wrapped_field_prefix(token: &str) -> Option<String> {
+    let token = token.replace('"', "");
+    let token = token.strip_prefix('(').unwrap_or(&token);
     let token = token.strip_prefix(['-', '!']).unwrap_or(token);
-    field_prefix(token.strip_prefix('"').unwrap_or(token))
+    field_prefix(token).map(str::to_owned)
 }
 
 /// Field syntax in a generic containing search refuses by name (decision
@@ -1600,7 +1597,7 @@ mod tests {
             )
         );
         assert_eq!(refused(Some("containing"), "see https://x.io/a:b"), None);
-        // Mailpit's wrappers are looked past, once each, in order (0049 §6).
+        // Quotes normalize before the single wrappers, for refusal only (0061 §1).
         for (token, field) in [
             ("-to:x", Some("to")),
             ("!from:x", Some("from")),
@@ -1611,9 +1608,9 @@ mod tests {
             ("-https://x.io", None),
             ("-word", None),
             ("--to:x", None),
-            ("\"(to:x)", None),
+            ("\"(to:x)", Some("to")),
         ] {
-            assert_eq!(wrapped_field_prefix(token), field, "{token}");
+            assert_eq!(wrapped_field_prefix(token).as_deref(), field, "{token}");
         }
         // An explicit kind takes its value literally.
         assert_eq!(refused(Some("to"), "to:x"), None);
