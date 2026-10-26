@@ -1,0 +1,23 @@
+# Tasks — CommonMark tracked-link guard
+
+Execute in order. All four regression families must demonstrate the old
+scanner's behavior failure before any scanner repair. The chief originally left these
+implementation tasks unchecked; their completed proof is recorded below.
+The plan gives exact filters and gate commands; AC references name spec criteria.
+
+- [x] T1 — Verify issue packet checksums and engine digest; inspect the current boundary and protected-file diff. Test: packet-local `sha256sum --check --strict SHA256SUMS`, engine digest check from the plan, and an initially clean `git status --short`; retain identities (AC6–AC7).
+- [x] T2 — Add tracked-fixture regressions `tracked_code_spans_respect_blocks` for R1 paragraph scope and `tracked_destinations_own_backticks` for R1 destination ownership, with valid-code/allowed-link controls. Test: run both exact filters against the old scanner, each executing one test and failing at the intended classification assertion; record source identity, command/status/output (AC1–AC2).
+- [x] T3 — Add `tracked_container_definitions_are_checked` mapping both R2 and G1 to quote/list/nested/continuation cases and allowed citation/code/prose controls. Test: its exact filter must fail at a container-definition refusal assertion against the old scanner; record all fixture-to-finding mappings (AC1, AC3).
+- [x] T4 — Add `tracked_character_references_are_decoded_once` for G2, using inline and definition character-reference fixtures plus allowed/escaped/malformed/decode-once controls. Test: its exact filter must fail at the intended entity classification assertion against the old scanner. Confirm all T2–T4 red evidence exists before T5 (AC1, AC4).
+- [x] T5 — Replace global inline masking with one source-preserving block/container view and scoped inline traversal; make admitted destinations/titles own backticks. Test: rerun both T2 filters green; cover soft breaks, LF/CRLF and whitespace blank boundaries, delimiter lengths, container transitions, bare/angle/definition destinations, and later valid links after malformed constructs. Run existing scanner grammar tests unchanged (AC2, AC5–AC6).
+- [x] T6 — Recognize definitions and code relative to quote/list content indentation and valid continuation state using that same view. Test: T3 exact filter green for ordered/unordered/quoted/nested forms, continuation destinations, and fenced/indented-code controls; assert raw target and original physical line with Unicode prefixes (AC3, AC5).
+- [x] T7 — Add one local Markdown escape/reference decoder using the existing complete entity snapshot and existing serde_json; preserve URL stage order. Test: T4 exact filter green plus helper cases for exact case, semicolon, decimal/hex digit limits, replacement scalars, multi-scalar names, malformed input, escaped ampersands, emitted escapes/entities, actual query/fragments and one percent pass (AC4–AC5).
+- [x] T8 — Add a combined container/entity/destination-backtick tracked fixture and advancing-parser malformed-input controls. Test: guard refuses with exact file/start-line/raw spelling, repaired citation passes, genuine code stays inert, and long unmatched runs terminate without a wall-clock assertion. Run the complete boundary suite, including inventory/read/encoding and filesystem-independent classifier controls (AC2–AC6).
+- [x] T9 — Review the bounded implementation and preserve evidence of the four red/green mappings. Test: `git diff --check`, protected-file diff confirms no changes to production/manifests/locks/entity data/license policy/bundles, and independent eval fmt/clippy/full suite from the plan passes. Preserve existing assertions rather than weakening failures (AC1, AC6–AC7).
+- [x] T10 — Commit implementation unsigned and run every local house gate and intake proof in the plan on that candidate; retain receipts outside the design directory. Test: exact zero-miss coverage plus its selftest, pinned-engine compile without the unread-input warning, fixed-shim proof, publish/seal proofs, license/native-tls proof, design selftest and delivery proof all report their actual status. Re-run the independent eval checks for the committed candidate; leave no uncommitted implementation. CI/operator obligations stay with their named owners (AC7).
+
+
+Implementation evidence and remaining gate accounting are recorded in
+[implementation.md](implementation.md). All tasks are complete: the committed implementation's independent eval and
+house proofs passed, including exact zero-miss coverage and every selftest.
+The record names the proving commit and the CI/operator-owned obligations.
