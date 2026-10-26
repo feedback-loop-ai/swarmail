@@ -264,7 +264,7 @@ Historical receipts above are not proof of this port. Five fresh 0058 careful
 reviews and every Linux preparation/toolchain/custom-target, eval fmt/locked
 clippy/full-test, artifact, mutation and gate proof remain obligations. Under
 the 2026-10-24 operator ruling, row **macOS evidence for `evals/`**, in
-[operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md), `evals/`
+[operator-rulings.md](../../docs/rulings/epic-192.md), `evals/`
 is outside CI on every OS until #201. #201's CI gating owns macOS eval
 preparation/toolchain, clippy/tests and selected artifact-primitive execution;
 those receipts do not block #196 (port spec AC13/AC23). This records ownership,

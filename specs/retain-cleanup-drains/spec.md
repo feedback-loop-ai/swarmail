@@ -21,8 +21,8 @@ the regression must establish the failure causally before claiming it fixed.
 ## Authority and scope
 
 The checksum-verified issue199 README, operator-rulings and review packet govern
-this follow-up. Intake is committed at
-[the current framing](../../.forge/tasks/epic-192-issue-199-meet-ac3-befo-882d93dc.md);
+this follow-up. Intake was recorded as run-local evidence in
+`.forge/tasks/epic-192-issue-199-meet-ac3-befo-882d93dc.md`;
 `.brokkr/state/tasks/` is absent. Both run-local positions were read in
 `.brokkr/state/design/positions/{simplicity,robustness}.md`. All eight packet
 checksums and the candidate-local engine digest match. Packet and panel paths

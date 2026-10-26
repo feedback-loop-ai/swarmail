@@ -3,9 +3,9 @@
 Companion to [`spec.md`](spec.md) (WHAT/WHY). How the feature lands: the exact mechanism
 per file, the files it touches, the coverage driver map that keeps the exact 100/100/100
 gate honest, and the risks with mitigations. The panel positions are
-[`.forge/design/positions/simplicity.md`](../../../.forge/design/positions/simplicity.md)
+`.forge/design/positions/simplicity.md`
 and
-[`.forge/design/positions/robustness.md`](../../../.forge/design/positions/robustness.md);
+`.forge/design/positions/robustness.md`;
 the ruling lives in the spec.
 
 ## Technical context

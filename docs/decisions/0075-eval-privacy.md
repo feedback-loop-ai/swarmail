@@ -110,7 +110,7 @@ chain, independent eval checks and every Linux preparation/toolchain/custom-targ
 and selected artifact-primitive proof remain mandatory.
 
 Clarification, 2026-10-24: the operator's row **macOS evidence for `evals/`** in
-[operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md) places
+[operator-rulings.md](../rulings/epic-192.md) places
 `evals/` outside CI on every OS until #201. #201's CI gating owns macOS eval
 preparation/toolchain, clippy/tests and selected artifact-primitive execution;
 those macOS receipts are not a #196 completion prerequisite. This records

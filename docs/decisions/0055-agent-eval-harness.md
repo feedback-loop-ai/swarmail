@@ -181,7 +181,7 @@ remains historical evidence. Proposed 0073/0075 remain proposed.
 ## Dated addendum — 2026-10-25, operator-directed sequential baseline (#199)
 
 The operator's 2026-10-24 ruling, reproduced in the checksum-verified
-[operator packet](../../.forge/epic192/issue199/operator-rulings.md), directs
+[operator packet](../rulings/epic-192.md), directs
 sequential refusal. [0076](0076-sequential-eval-trials.md) records the bounded
 amendment and remains proposed; this addendum accepts no decision. The
 original §6/§9 and overlapping-trial proof above record the historical contract;

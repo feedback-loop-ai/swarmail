@@ -8,8 +8,8 @@ settles the ground they stand on, before they exist.
 Decision: 0020 —
 [docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md](../../docs/decisions/0020-concurrency-tests-and-the-coverage-gate.md)
 (status `proposed` — acceptance is the operator's). The panel's positions:
-[`.forge/design/positions/simplicity.md`](../../../.forge/design/positions/simplicity.md) and
-[`.forge/design/positions/robustness.md`](../../../.forge/design/positions/robustness.md)
+`.forge/design/positions/simplicity.md` and
+`.forge/design/positions/robustness.md`
 (both `pass`; run-local evidence, gitignored).
 
 ## The problem — two instruments the realm refuses to bend, on a collision course

@@ -16,7 +16,7 @@ shims and accepted decisions are unchanged from the handoff.
 
 All eleven entries in `.forge/epic192/issue196/SHA256SUMS` passed from that
 packet directory. The operator's 2026-10-24 row **macOS evidence for `evals/`**
-in [operator-rulings.md](../../.forge/epic192/issue196/operator-rulings.md)
+in [operator-rulings.md](../../docs/rulings/epic-192.md)
 places evals outside CI on every OS until #201 and assigns macOS-only eval
 execution to #201's CI gating. Every Linux obligation remains. No macOS or CI
 execution is claimed, and the previous blocked receipt remains historical.
