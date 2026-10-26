@@ -143,3 +143,20 @@ bundle scripts instead of unchecked candidate wrappers. Run offline, install
 nothing. Exact coverage and its selftest are separate mandatory proofs. The
 fresh intake baseline receipt will identify the committed framing tree; it is
 not proof of the future implementation. Verify reruns all gates after code lands.
+
+
+## Fresh intake baseline evidence
+
+All 14 commands in the [receipt](../../docs/delivery/issue252-current-main-intake-gates.json)
+exited zero on framing commit `6bf4bd628f41aba517df7ab129ad737555aa57ca`, tree
+`e7bb41c3d2338d9c128a971ec608defc84b3615d`. All log SHA-256 hashes were checked.
+Exact coverage is **14,677/14,677 lines, 822/822 branches and 1,597/1,597
+functions**; the full coverage selftest passed. Evidence is under
+`target/coverage/run.WDpZr7` and `.forge/evidence/issue252-current-main-intake/`.
+The workspace client timed out after 300 seconds; the continued runner's final
+receipt/logs prove the results. Cargo was offline and nothing was installed.
+
+The final receipt commit changes only documentation/evidence, with tested
+source, gate and bundle bytes unchanged. This is a resolved framing, not a
+completed feature: implementation and fresh implementation verification remain
+required. The previous #152/#153 block is withdrawn, not an outstanding input.
