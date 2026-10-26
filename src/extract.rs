@@ -525,6 +525,16 @@ fn markup_at<'a>(
         } else {
             body.windows(3).position(|w| w == b"-->")? + 3
         };
+        // Outlook conditional comments keep codes suppressed, but their
+        // source attributes own encoded quotes just like ordinary tags
+        // (0061 R4.4). Ordinary comments retain their decoded delimiters.
+        if body
+            .get(..3)
+            .is_some_and(|open| open.eq_ignore_ascii_case(b"[if"))
+            && body.get(3).is_some_and(u8::is_ascii_whitespace)
+        {
+            conditional_values(&bytes[..lt + 4 + len - 3], lt + 4, regions);
+        }
         return Some((lt + 4 + len, Kind::Other));
     }
     match rest[1] {
@@ -534,6 +544,26 @@ fn markup_at<'a>(
         }
         b'/' => tag(bytes, lt + 2, regions).map(|(name, end)| (end, Kind::End(name))),
         _ => tag(bytes, lt + 1, regions).map(|(name, end)| (end, Kind::Start(name))),
+    }
+}
+
+/// Visit source tags after the conditional opener, bounded by its comment
+/// close. Reuse the attribute scanner without exposing comment text as code
+/// runs or interpreting decoded markup. Each tag advances the cursor,
+/// including quoted angle brackets; an unfinished tag ends this bounded walk.
+fn conditional_values(bytes: &[u8], start: usize, regions: &mut dyn Regions) {
+    let Some(header) = bytes[start..].windows(2).position(|w| w == b"]>") else {
+        return;
+    };
+    let mut search = start + header + 2;
+    while let Some(offset) = bytes[search..].iter().position(|&byte| byte == b'<') {
+        search += offset + 1;
+        if bytes.get(search).is_some_and(u8::is_ascii_alphabetic) {
+            let Some((_, end)) = tag(bytes, search, regions) else {
+                return;
+            };
+            search = end;
+        }
     }
 }
 
@@ -996,6 +1026,56 @@ mod tests {
     }
 
     // ---- issue #136: source boundaries before decoding ----
+
+    #[test]
+    fn conditional_comment_attributes_are_source_bounded() {
+        for (html, want) in [
+            (
+                r#"<!--[if mso]><v:roundrect href="https://x.io/O&#39;B"></v:roundrect><![endif]-->"#,
+                vec!["https://x.io/O'B"],
+            ),
+            (
+                r#"<!--[IF mso]><a href="https://x.io/?q=&quot;x&quot;&amp;amp;">1111</a><![endif]-->2222"#,
+                vec![r#"https://x.io/?q="x"&amp"#],
+            ),
+            (
+                "<!--[if\tmso]><a href='https://x.io/a'>x</a><![endif]-->",
+                vec!["https://x.io/a"],
+            ),
+            (
+                r#"<!--[iffy]><a href="https://x.io/O&#39;B">x</a>-->"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!--[if mso <a href="https://x.io/O&#39;B">x</a>-->"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!--[if mso]>< 1234 <a href="https://x.io/a<b>c&#39;d">x</a><![endif]-->"#,
+                vec!["https://x.io/a"],
+            ),
+            (
+                r#"<!--[if mso]><a href="https://x.io/O&#39;B">x<a title--><a href="https://x.io/tail">t</a>"#,
+                vec!["https://x.io/O'B", "https://x.io/tail"],
+            ),
+            (
+                r#"<!--[if mso]><a href="https://x.io/O&#39;B-->"#,
+                vec!["https://x.io/O"],
+            ),
+            ("<!--[if mso]>no tags<![endif]-->", vec![]),
+        ] {
+            let (links, stats) = links_with_stats(None, Some(html));
+            assert_eq!(links, want, "{html}");
+            assert_eq!(stats.ordinary_bytes + stats.quoted_bytes, html.len() as u64);
+        }
+        assert_eq!(
+            alt_codes(
+                None,
+                Some("<!--[if mso]><a title='3333'>1111</a><![endif]-->2222")
+            ),
+            vec!["2222"]
+        );
+    }
 
     // A quoted attribute value ends at its own source quote, then decodes:
     // the encoded apostrophes MarkupSafe (`&#39;`) and Django (`&#x27;`)

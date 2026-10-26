@@ -38,3 +38,26 @@ D3 starts after parent 874b4a4 repaired that row. The historical request is fulf
 ## D3 implementation proof — 2026-10-23
 
 D01–D14 local work is backed by the plan's D3 handoff and `.forge/epic192/compat-webhook-proof/implement-d3/final-evidence.json`. The first coverage refusal is retained; final corrected source has zero missed lines/branches/functions and all local gates exit0. D15 remains an actual protected engine-phase obligation. D16–D19 remain open; no operator amendment, whole-story or epic completion is claimed. Earlier historical checkbox/reset descriptions retain their dated scope.
+
+
+## Operator-ruling continuation — 2026-10-26
+
+These current tasks supersede D16–D18's pending-authority alternatives.
+Earlier unchecked tasks retain their historical scope; D15's protected
+phases are still engine-owned.
+
+- [x] O01 — Verify the supplied packet checksums and local pinned engine digest; read the operator's exact three rulings. Record acceptance only for 0061 in its record/index and dated 0049 amendment.
+- [x] O02 / AC10 — Add quote_normalized_prefixes_refuse_without_rewriting_literals; observe old wrappers' behavioral HTTP 200 red, then normalize only the refusal copy. Prove all five forms on both shims, original quoted-literal execution, URL/regex literals and supported explicit kinds with dialect error precedence.
+- [x] O03 / AC11 — Add independent_mime_links_remain_text_first, prove baseline green, temporary source-order behavioral red and exact-restoration green. Pin mixed/direct-alternative links/codes and raw/body bytes. Leave SMTP ordering unchanged.
+- [x] O04 / AC12 — Add outlook_conditional_attributes_store_only_complete_urls; observe old truncated-prefix behavioral red, then reuse source tag boundaries inside conditional comments. Prove ordinary-comment/code and measured lexical/decode-once controls.
+- [x] O05 / 0005 — Add historical_outlook_arrays_survive_reads_and_reopen with old arrays beside corrected fresh ingest; preserve raw/HTML and both arrays live and after reopening.
+- [x] O06 — Finish every house/supplemental gate with exact zero-missed coverage and selftest, record candidate-bound proof identities, then commit all work unsigned. Actual verify/review/ship and CI/operator evidence remain their owners' work.
+
+
+O01–O06 local implementation obligations are now proved; exact coverage is
+14742/14742 lines, 834/834 branches and 1602/1602 functions, with its selftest
+passing. The [dated proof ledger](proof-2026-10-26.md) records commands,
+red/green assertions, source/input/log identities and all local gate results.
+This implementation is committed unsigned. The engine still owns actual
+protected phase verdicts; historical D15/D19 do not become fabricated
+review/ship results.

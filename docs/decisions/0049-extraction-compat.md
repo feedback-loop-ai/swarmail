@@ -129,3 +129,35 @@ acceptance. R4.3 independent-part link order and R4.4 conditional-comment
 treatment remain separate unanswered questions. This addendum accepts none
 of them: current ordered prefix recognition, text-first links and ordinary
 comments stay. No new acceptance, waiver or supersede is inferred.
+
+
+## §6 amendment and conditional-source ruling — 2026-10-26
+
+The operator's supplied “Decision rulings of 2026-10-26” accept
+[0061](0061-compat-webhook-proof.md) §1 and decide its two open questions.
+The original accepted body and 2026-10-23 clarification above stay historical.
+
+**§6 is amended by accepted 0061 §1:** for generic containing searches on
+both shims, trim and split as before; remove every double quote from each
+token for refusal recognition only, then at most one leading parenthesis,
+then at most one leading -/!, then the existing ASCII identifier-colon rule.
+Keep the :// exception, named field errors and unchanged query execution.
+This replaces the ordered single-double-quote step, including quote-first
+and interior-quote forms. Ordinary literals, URLs and supported explicit
+kinds retain their dialect contracts.
+
+**R4.3 keeps §1's text-before-HTML link order across independent MIME parts.**
+The mixed fixture's links remain unsubscribe then verify; source-order codes
+and direct-alternative code preference do not change.
+
+**R4.4 extends §1's source-aware quoted attributes to Outlook conditional
+comments.** The specified O'Brien verification URL is extracted complete,
+once; its truncated prefix is removed. Ordinary-comment delimiters and
+comment-code suppression remain. Source boundaries precede one decode;
+encoded quotes, nested URLs, source-only links and linear work are preserved.
+There is no general HTML recovery or comment rendering change.
+
+All extraction changes apply only at fresh ingest (0005). Historical stored
+links/codes, raw and bodies remain verbatim through reads and reopening;
+no re-extraction or migration is authorized. This records only the operator's
+stated 0061 acceptance and choices, and accepts nothing further.

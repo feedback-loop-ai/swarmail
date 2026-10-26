@@ -822,14 +822,17 @@ routes, and the `to:`-style query prefixes: in a containing search, every
 whitespace-separated word that opens with a field name and a colon
 (`to:`, ` from:alice`, `plan subject:x`, an unknown `foo:`) answers a named
 `400` — the prefix grammar is not implemented; swarmail takes `kind=`.
-Mailpit's own wrappers are looked past for that refusal — one leading `(`,
-then one exclusion `-` or `!`, then one `"` — so `-to:x`, `!from:alice`,
-`"to:x"`, `-"subject:x"` and `(to:x)` refuse by the field's name instead of
+Both shims remove every double quote from each word for refusal recognition
+only, then look past one leading `(` and one exclusion `-` or `!`
+(decision 0061, accepted 2026-10-26). Thus `-to:x`, `!from:alice`,
+`"to:x"`, `-"subject:x"`, `(to:x)`, `"-to:x"`, `"!from:alice"`,
+`"-subject:a b"`, `to":x` and `"to":x` refuse by the field's name instead of
 silently matching nothing. A URL's `://` is exempt, so `https://host/path`
 (and `-https://host/path`) stays a literal search, as do `-word` and
-`"a phrase"`, but other colon words (`mailto:x`, `"note:x"`) refuse too;
-there is no quoting, grouping or negation — an accepted query is searched
-as the literal it is.
+`"a phrase"`, but other colon words (`mailto:x`, `"note:x"`) refuse too.
+Accepted queries execute with their original quotes and markers; no quoting,
+grouping or negation grammar is implemented. Supported explicit-kind values
+stay literal (Mailpit's `subject` extension remains outside MailHog's kinds).
 swarmail's own single-message route is
 `/api/v1/messages/{id}`; the Mailpit-style singular `/api/v1/message/{id}`
 is the shim.

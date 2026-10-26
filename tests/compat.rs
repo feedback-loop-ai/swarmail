@@ -2180,3 +2180,247 @@ async fn nested_attribute_urls_and_curly_suffixes_survive_fresh_ingest() {
     assert_eq!(email["links"], json!(["https://x.io/q", "https://x.io/r"]));
     srv.stop().await;
 }
+
+// ---------- operator rulings on 0061, 2026-10-26 ----------
+
+/// Quote removal belongs only to refusal recognition on both dialects.
+/// The decoy distinguishes literal execution from executing a stripped copy.
+#[tokio::test]
+async fn quote_normalized_prefixes_refuse_without_rewriting_literals() {
+    let srv = start().await;
+    for subject in [
+        r#""-subject:a b" "quoted phrase" -word a.b https://x.io/a"#,
+        "-subject:a b quoted phrase -word aXb",
+    ] {
+        send_raw(
+            srv.smtp_addr,
+            "quotes0061",
+            &format!("To: reader@x.io\r\nSubject: {subject}\r\n\r\nbody"),
+        )
+        .await;
+    }
+    let mut refusals = Vec::new();
+    for (query, field) in [
+        (r#""-to:x""#, "to"),
+        (r#""!from:alice""#, "from"),
+        (r#""-subject:a b""#, "subject"),
+        (r#"to":x"#, "to"),
+        (r#""to":x"#, "to"),
+        (r#"plain ("!Fr"om:x)"#, "From"),
+    ] {
+        let encoded = serde_urlencoded::to_string([("query", query)]).unwrap();
+        for route in ["v1", "v2"] {
+            let path = format!("/api/{route}/search?inbox=quotes0061&kind=containing&{encoded}");
+            let (status, body) = http_json(srv.http_addr, "GET", &path, None).await;
+            refusals.push((path, field, status, body));
+        }
+    }
+    assert_eq!(
+        refusals
+            .iter()
+            .map(|(_, _, status, _)| *status)
+            .collect::<Vec<_>>(),
+        vec![400; refusals.len()],
+        "every form on both real shims must refuse: {refusals:?}"
+    );
+    for (path, field, _, body) in refusals {
+        assert_eq!(
+            body["error"],
+            format!(
+                "unsupported search prefix \"{field}:\" — Mailpit's prefix grammar is not implemented; use ?kind=to|from|subject"
+            ),
+            "{path}"
+        );
+    }
+    for (kind, query, hits) in [
+        ("containing", r#""quoted phrase""#, 1),
+        ("containing", "quoted phrase", 2),
+        ("containing", "-word", 2),
+        ("containing", "a.b", 1),
+        ("containing", "https://x.io/a", 1),
+        ("containing", r#""https://x.io/a""#, 0),
+        ("containing", "missing", 0),
+        ("to", "reader@x.io", 2),
+        ("to", r#"to":x"#, 0),
+        ("from", "sender@x.io", 2),
+        ("from", r#""!from:alice""#, 0),
+        ("subject", r#""-subject:a b""#, 1),
+    ] {
+        let encoded = serde_urlencoded::to_string([("query", query)]).unwrap();
+        for (route, count_key) in [("v1", "messages_count"), ("v2", "total")] {
+            let path = format!("/api/{route}/search?inbox=quotes0061&kind={kind}&{encoded}");
+            // Subject is a Mailpit extension; MailHog retains its bare 400.
+            if route == "v2" && kind == "subject" {
+                let (status, _, body) = http_raw(srv.http_addr, "GET", &path, None).await;
+                assert_eq!(status, 400);
+                assert!(body.is_empty());
+                continue;
+            }
+            let (status, body) = http_json(srv.http_addr, "GET", &path, None).await;
+            assert_eq!(
+                (status, &body[count_key]),
+                (200, &json!(hits)),
+                "{path}: {body}"
+            );
+        }
+    }
+    srv.stop().await;
+}
+
+/// R4.3 keeps text-first links even when HTML precedes an independent footer.
+/// Direct alternatives still prefer text codes, and bodies/raw stay honest.
+#[tokio::test]
+async fn independent_mime_links_remain_text_first() {
+    let srv = start().await;
+    let html = r#"code 121212 <a href="https://app.test/verify?t=abc">Verify</a>"#;
+    let text = "footer 2026 https://lists.test/unsub?u=9";
+    for (inbox, parts, codes) in [
+        (
+            "mixed0061",
+            format!(
+                "--b\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n\
+                 --a\r\nContent-Type: text/html\r\n\r\n{html}\r\n--a--\r\n\
+                 --b\r\nContent-Type: text/plain\r\n\r\n{text}\r\n"
+            ),
+            json!(["121212", "2026"]),
+        ),
+        (
+            "alt0061",
+            format!(
+                "--b\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n\
+                 --a\r\nContent-Type: text/html\r\n\r\n{html}\r\n\
+                 --a\r\nContent-Type: text/plain\r\n\r\n{text}\r\n--a--\r\n"
+            ),
+            json!(["2026"]),
+        ),
+    ] {
+        let data = format!(
+            "MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n{parts}--b--"
+        );
+        let id = send_raw(srv.smtp_addr, inbox, &data).await;
+        let (status, email) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/messages/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            email["links"],
+            json!([
+                "https://lists.test/unsub?u=9",
+                "https://app.test/verify?t=abc"
+            ])
+        );
+        assert_eq!(email["codes"], codes);
+        assert_eq!(email["text"], text);
+        assert_eq!(email["html"], html);
+        let (status, _, raw) = http_raw(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/messages/{id}/raw"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(raw, format!("{data}\r\n").as_bytes());
+    }
+    srv.stop().await;
+}
+
+const OUTLOOK_0061: &str = r#"<!--[if mso]><v:roundrect href="https://x.io/verify?name=O&#39;Brien&amp;t=abc"></v:roundrect><![endif]--><a href="https://x.io/verify?name=O&#39;Brien&amp;t=abc">Verify</a>"#;
+
+/// R4.4 recognizes source quotes inside Outlook conditional comments;
+/// ordinary comments and hidden codes retain their existing contracts.
+#[tokio::test]
+async fn outlook_conditional_attributes_store_only_complete_urls() {
+    let srv = start().await;
+    for (html, links, codes) in [
+        (OUTLOOK_0061.to_string(), json!(["https://x.io/verify?name=O'Brien&t=abc"]), json!([])),
+        (
+            r#"<!--[IF !mso]><v:roundrect href="https://x.io/verify?name=O&#39;Brien&amp;t=abc">111111</v:roundrect><![endif]-->222222"#.into(),
+            json!(["https://x.io/verify?name=O'Brien&t=abc"]), json!(["222222"]),
+        ),
+        (
+            r#"<!-- <a href="https://x.io/ordinary?name=O&#39;Brien">333333</a> -->444444"#.into(),
+            json!(["https://x.io/ordinary?name=O"]), json!(["444444"]),
+        ),
+    ] {
+        let id = send_raw(srv.smtp_addr, "outlook0061", &format!(
+            "Content-Type: text/html; charset=utf-8\r\n\r\n{html}"
+        )).await;
+        let (status, email) = http_json(
+            srv.http_addr, "GET", &format!("/api/v1/messages/{id}"), None,
+        ).await;
+        assert_eq!(status, 200);
+        assert_eq!(email["links"], links, "{html}");
+        assert_eq!(email.get("codes").cloned().unwrap_or(json!([])), codes);
+        assert_eq!(email["html"], format!("{html}\r\n"));
+    }
+    srv.stop().await;
+}
+
+/// Old arrays remain data under 0005: reads and reopen never re-extract.
+/// A fresh delivery beside the old row gets the newly corrected links.
+#[tokio::test]
+async fn historical_outlook_arrays_survive_reads_and_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("historical0061.db");
+    let mut srv = common::start_with(|mut cfg| {
+        cfg.data_file = Some(db.clone());
+        cfg
+    })
+    .await;
+    let data = format!("Content-Type: text/html; charset=utf-8\r\n\r\n{OUTLOOK_0061}");
+    let id = send_raw(srv.smtp_addr, "historical0061", &data).await;
+    let mut old = (*srv.store.get(&id).unwrap()).clone();
+    old.links = vec![
+        "https://x.io/verify?name=O".into(),
+        "https://x.io/verify?name=O'Brien&t=abc".into(),
+    ];
+    old.codes = vec!["989898".into()];
+    srv.store.delete(&id).unwrap();
+    srv.store.insert(old.clone()).unwrap();
+    let fresh = send_raw(srv.smtp_addr, "historical0061", &data).await;
+    for reopen in [false, true] {
+        if reopen {
+            srv.stop().await;
+            srv = common::start_with(|mut cfg| {
+                cfg.data_file = Some(db.clone());
+                cfg
+            })
+            .await;
+        }
+        for (mail_id, links, codes) in [
+            (&id, json!(old.links), json!(old.codes)),
+            (
+                &fresh,
+                json!(["https://x.io/verify?name=O'Brien&t=abc"]),
+                json!([]),
+            ),
+        ] {
+            let (status, email) = http_json(
+                srv.http_addr,
+                "GET",
+                &format!("/api/v1/messages/{mail_id}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, 200);
+            assert_eq!(email["links"], links);
+            assert_eq!(email.get("codes").cloned().unwrap_or(json!([])), codes);
+            assert_eq!(email["html"], old.html.as_ref().unwrap().as_str());
+            let (status, _, raw) = http_raw(
+                srv.http_addr,
+                "GET",
+                &format!("/api/v1/messages/{mail_id}/raw"),
+                None,
+            )
+            .await;
+            assert_eq!(status, 200);
+            assert_eq!(raw, old.raw);
+        }
+    }
+    srv.stop().await;
+}
