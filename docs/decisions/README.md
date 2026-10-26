@@ -84,6 +84,7 @@ them. What may land while a decision is still proposed is stated in
 | [0078](0078-ca-executor-ownership.md) | Bounded CA ownership, logical accounting and admission | accepted (operator, 2026-10-26) | (Epic #192, issue #220; compatible choices under accepted 0069) |
 | [0081](0081-glm-flash-seats.md) | GLM Flash tests review only; intake keeps its workspace hands and models | proposed — awaiting the operator | (Revised operator ruling, 2026-10-26: “GLM-5.3-Flash seats (revised)”) |
 | [0083](0083-cli-wrapper-launch.md) | Evidence-based CLI launches and declared tool surfaces | proposed — awaiting the operator | (Epic #164, issue #151 part 1; operator allocation 2026-10-26) |
+| [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
