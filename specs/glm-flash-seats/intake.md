@@ -31,7 +31,7 @@ No runtime application code or dependency change is needed. Frozen guarantees 00
 5. The complete resolved routing matrix preserves every other office and effort: Standard Fable correctness, official DeepSeek Flash security; Careful/fast full panels Astra correctness, Astra guarantees and independent Fable; fast feature Qwen Max with the sole authorized pre-result Sonnet dispatch fallback and Flash security; fast chore combined Flash; Sol high/xhigh and Luna xhigh implementers, shared design, self routes and Opus triage. No fallback is added elsewhere, DeepSeek Pro remains forbidden, and fast selectors, no-default refusal, bounded scope returns and all protected shell drivers/hands/boundaries remain unchanged.
 6. Routing proofs pin these exact new identities/effort semantics and preserve the existing unchanged-role assertions. Update both named test files and every other executable pin of superseded intake/tests assignments. Include negative controls that make the same resolved-route assertions fail for an old paid model, wrong provider/concrete route, extra fallback or explicit Spark effort. Preserve existing role-count, triage, fallback, safety-fact, candidate fence and dispatcher/evaluator controls; do not weaken their expected failures or change the engine pin to manufacture green.
 7. Add docs/decisions/0081-<descriptive-name>.md with Status proposed and an index row, naming/quoting the operator's 2026-10-26 “GLM-5.3-Flash seats” ruling and its two seat types (three office files). Describe the narrow amendment to accepted 0058 and superseded intake routing in 0057 without rewriting either accepted historical body or accepting 0081. Current routing documentation and bundle descriptions must agree with the implemented matrix, Spark effort not applicable, and preserved Opus triage/Codex implementers. No unrelated ruling is amended or accepted.
-8. All four candidate bundles compile cleanly under the digest-matched candidate-local engine, and focused routing proofs plus every local house/pinned gate below pass on committed work. Treat any pre-existing proof failure as an exact recorded prerequisite, not a waived acceptance criterion or an authorization to broaden implementation. No live Spark/provider availability claim is needed or permitted from these offline proofs.
+8. All four candidate bundles compile cleanly under the digest-matched candidate-local engine, and focused resolved-route proofs plus every local house/pinned gate below pass on committed work. Run the full Python dispatcher proof as well and report its outcome separately; compare any failure with the intake baseline below and preserve its assertion. A pre-existing unrelated engine failure does not authorize an engine repair/re-pin in this routing task and cannot be reported as green. No live Spark/provider availability claim is needed or permitted from these offline proofs.
 
 ## Verify commands and ownership
 
@@ -78,3 +78,25 @@ fi
 CI owns macOS and privileged real port-80 tests, chart/bump/history checks, Docker smoke, network-backed RustSec audit and tag-only release-rate-5k/publication proofs as assigned by the house inventory. The operator owns Spark host availability, credentials, live settings and eventual branch sealing. Do not reach the Spark host, GitHub, CI or sibling worktrees. These ownership notes are not extra local acceptance conditions. No namespaces, network service or live provider proof is added.
 
 Record this framing in specs/glm-flash-seats/intake.md and identical run-local mirrors at .forge/tasks/route-the-codex-recipes-intake-a-2001065d.md and .brokkr/state/tasks/route-the-codex-recipes-intake-a-2001065d.md so inherited design charters can find it. Commit framing unsigned before returning; later seats commit their work before final verification. No push, merge, tag, publication, issue closure or decision acceptance. The engine alone selects the next phase.
+
+
+## Intake baseline execution receipt
+
+On committed framing candidate 68aeab9e57136f3da530384f6c6d5e833f1cd55d, all house gates passed: fmt, locked workspace clippy and tests, self compilation, exact 100/100/100 coverage and its selftest, publish-guard proof, keyless seal-branch proof and license check. Public shim digests, design-check selftest, delivery tamper-boundary proof and fail-closed native-tls absence also passed. All four recipe compilations exited 0 without policy-sweep warnings. Evidence is .forge/epic192/issue0/intake-gates/status.json and the per-gate logs there. These logs were generated through the workspace tool with CARGO_NET_OFFLINE=true and the admitted candidate-local engine. The transport timed out after 300 seconds while the batch continued; the subsequent complete status file, not the timeout, establishes these outcomes. The receipt-only follow-up changes no routing, application, test or gate code.
+
+The supplemental full tests/codex_review_routing.py exited 1. Its resolved_matrix comparisons and negative controls passed on the existing routes, as did preceding Qwen fallback/safety cases. It then failed at main's 1-cross-attempt assertion (line 294, through check at line 276): the pinned engine returned completed where the existing control requires refusal. Later controls did not execute. This is a pre-existing baseline engine correlation defect, already identified in the earlier fast-triage delivery's evidence; it is not a GLM route regression, live provider observation or green dispatcher proof. The supplied operator ruling assigns the attempt_id correlation repair to a separate careful engine delivery before any re-pin. Retain the control and surface this exact failure in final evidence; do not repair the engine, change its pin, hide the red or broaden this task. House-gate green and resolved-route green do not establish dispatcher-wide green.
+
+To prove the route-specific acceptance claims independently of that pre-existing dispatcher stop, run the existing resolved_matrix function directly on final committed routing, in addition to running/reporting the full script. This invokes the same whole-matrix assertions and negative controls, without editing or bypassing any assertion in the full proof:
+
+```bash
+python3 - <<'PYPROOF'
+from pathlib import Path
+import runpy
+proof = runpy.run_path('tests/codex_review_routing.py')
+out = Path('.forge/proofs/glm-flash-seats-resolved-final')
+out.mkdir(parents=True, exist_ok=False)
+proof['resolved_matrix'](Path('.forge/bin/brokkr').resolve(), out.resolve())
+PYPROOF
+```
+
+Use a fresh output directory per execution and retain the complete full-script failure evidence alongside this focused result. No feature implementation was performed by intake, and final GLM route acceptance remains for later seats.
