@@ -38,10 +38,12 @@ Proof mapping:
   and stored-field identity. `bulk_analysis_budget_boundaries_and_incomplete_mime`
   proves every inclusive limit and one-over case through SMTP/report/raw reads.
   Measured `bulk_mime_metadata_grammar` covers malformed classification.
-- T7: owner-local `bulk_auth_wire_pairs_and_positive_predicates` injects facts,
+- T7: measured inline `bulk_auth_wire_pairs_and_positive_predicates` injects facts,
   never Findings, into a real server and proves all three auth pass/fail/unknown
   cases with complete source hints. Public `bulk_untrusted_auth_headers_stay_unknown`
   pins exact reports despite spoofed headers and absent/duplicate From fields.
+  Branch-stable auth fixtures stay measured inline under 0020; private seam
+  access alone does not move their assertions into a cold-path harness.
 - T8: existing REST/MCP and stdio parity tests now exercise the bulk report.
   Public thresholds exclude unknowns at info/warning/error; exact zero and
   minimum-one waits retain their meanings. Trusted owner fixtures exercise
