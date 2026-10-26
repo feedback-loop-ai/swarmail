@@ -65,7 +65,7 @@ All limitations must remain visible in documentation and negative fixtures.
 and [paired tasks](../../specs/html-client-compatibility/tasks.md) require every
 rule's pass/fail fixture, exact work/size boundaries, failure-not-clean,
 real-protocol parity, preserved frozen guarantees and all local house gates.
-CI/operator-only proofs retain their owners. Add the proposed index row during
-implementation; the chief commit is restricted to this decision and the three
-design files. Only the operator may accept this proposal. Compatible work under
+CI/operator-only proofs retain their owners. The proposed index row is supplied
+by a separate prerequisite commit because the inventory gate requires it now.
+The final chief commit is restricted to this decision and the three design files. Only the operator may accept this proposal. Compatible work under
 the supplied #251 direction and 0045 §8 can proceed; frozen weakening cannot.
