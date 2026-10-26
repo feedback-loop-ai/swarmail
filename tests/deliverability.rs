@@ -43,12 +43,13 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
+    assert_eq!(first["rule_set_id"], "swarmail-bulk/1");
+    assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
-        first,
-        json!({"rule_set_id":"swarmail-demo/1","findings":[{
-        "rule_id":"demo.marker.v1","severity":"warning","location":{
-            "kind":"header","name":"x-swarmail-demo","occurrence":0},
-        "fix_hint":"Remove the X-Swarmail-Demo header."}]})
+        first["findings"][6],
+        json!({"rule_id":"demo.marker.v1","severity":"warning",
+        "location":{"kind":"header","name":"x-swarmail-demo","occurrence":0},
+        "fix_hint":"Remove the X-Swarmail-Demo header."})
     );
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     assert_eq!(
@@ -80,7 +81,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-demo/1",
+        "swarmail-bulk/1",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -168,7 +169,7 @@ async fn report_mcp_text_contract() {
 async fn report_threshold_exact_count_and_min_one() {
     let srv = start().await;
     let severities = ["info", "warning", "error"];
-    for (rank, severity) in severities.iter().enumerate() {
+    for severity in severities {
         let inbox = format!("threshold-{severity}");
         smtp_raw(
             srv.smtp_addr,
@@ -176,8 +177,8 @@ async fn report_threshold_exact_count_and_min_one() {
             format!("X-Swarmail-Demo: {severity}\r\n\r\nbody\r\n").as_bytes(),
         )
         .await;
-        for (threshold_rank, threshold) in severities.iter().enumerate() {
-            let qualifying = usize::from(rank < threshold_rank);
+        for threshold in severities {
+            let qualifying = 0;
             let path = format!(
                 "/api/v1/inboxes/{inbox}/assert?count={qualifying}&no_findings_at_or_above={threshold}&limit=999"
             );
@@ -211,8 +212,8 @@ async fn report_threshold_exact_count_and_min_one() {
         }
     }
     for (body, expected) in [
-        ("Subject: clean older\r\n\r\nbody\r\n", true),
-        ("Subject: clean newer\r\n\r\nbody\r\n", true),
+        ("Subject: clean older\r\n\r\nbody\r\n", false),
+        ("Subject: clean newer\r\n\r\nbody\r\n", false),
         (
             "Subject: dirty newest\r\nX-Swarmail-Demo: error\r\n\r\nbody\r\n",
             false,
@@ -230,11 +231,9 @@ async fn report_threshold_exact_count_and_min_one() {
     let path =
         "/api/v1/inboxes/mix/await?count=2&limit=1&timeout_ms=0&no_findings_at_or_above=warning";
     let (status, value) = http_json(srv.http_addr, "GET", path, None).await;
-    assert_eq!(status, 200);
-    assert_eq!(value["matched"], 2);
+    assert_eq!(status, 408);
+    assert_eq!(value["matched"], 0);
     assert_eq!(value["total"], 3);
-    assert_eq!(value["emails"].as_array().unwrap().len(), 1);
-    assert_eq!(value["emails"][0]["subject"], "clean newer");
     let (status, value) = http_json(
         srv.http_addr,
         "GET",
@@ -243,7 +242,7 @@ async fn report_threshold_exact_count_and_min_one() {
     )
     .await;
     assert_eq!(status, 409);
-    assert_eq!(value["matched"], 2);
+    assert_eq!(value["matched"], 0);
     assert_eq!(
         http_json(
             srv.http_addr,
@@ -255,7 +254,7 @@ async fn report_threshold_exact_count_and_min_one() {
         .0,
         200
     );
-    assert_eq!(http_json(srv.http_addr, "GET", "/api/v1/inboxes/mix/await?count=0&timeout_ms=0&subject=clean&no_findings_at_or_above=info", None).await.0, 200);
+    assert_eq!(http_json(srv.http_addr, "GET", "/api/v1/inboxes/mix/await?count=0&timeout_ms=0&subject=clean&no_findings_at_or_above=info", None).await.0, 408);
     for op in ["assert", "await", "messages", "count"] {
         for invalid in ["", "Warning", "bogus", "null"] {
             let path = format!("/api/v1/inboxes/invalid/{op}?no_findings_at_or_above={invalid}");
@@ -359,7 +358,7 @@ async fn report_failure_is_never_clean_and_ui_keeps_message() {
     let clean = list["emails"][0]["id"].as_str().unwrap();
     let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{clean}")).await;
     assert_eq!(status, 200);
-    assert!(page.contains("No findings from this rule set."));
+    assert!(page.contains("bulk.from_alignment.not_evaluated.v1"));
     srv.stop().await;
 }
 
@@ -424,11 +423,12 @@ async fn report_lookup_cannot_resurrect_pruned_or_cleared_mail() {
     assert_eq!(report(srv.http_addr, &first).await.0, 200);
     let next = smtp_raw(srv.smtp_addr, "cap", b"\r\nbody\r\n").await;
     assert_eq!(report(srv.http_addr, &first).await.0, 404);
-    assert!(
+    assert_eq!(
         report(srv.http_addr, &next).await.1["findings"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .len(),
+        6
     );
     http_json(
         srv.http_addr,

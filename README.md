@@ -1229,6 +1229,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/smtp_edges.rs` | every protocol verb, refusal, AUTH form, DATA limit, dot-unstuffing, group addresses, chaos on connect/MAIL FROM/RCPT/DATA; the 0034 boundaries — mixed terminators, path and parameter matrices, greeting resets, validation before chaos, strict PLAIN and one AUTH per session |
 | `tests/rate.rs` | the 5k losslessness guarantee + burst |
 | `tests/burst.rs` | 1000 mails / 50 conns exact-count, per-inbox isolation, cap eviction, chaos rejection + recovery |
+| `tests/bulk_sender.rs` | Source-citing bulk rules, original header grammar, genuine text bodies, untrusted auth unknowns and inclusive analysis limits (proposed 0089) |
 | `tests/deliverability.rs` | Lazy typed report, REST/MCP parity, threshold assertions/waits, UI states, persistence, pruning and served contract documentation (proposed 0085) |
 | `tests/api.rs` | every REST route, happy + error branches |
 | `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
@@ -1339,10 +1340,38 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-Only synthetic demo.marker.v1 ships in swarmail-demo/1: the first root
-X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error.
-It emits the fixed hint "Remove the X-Swarmail-Demo header." No marker means
-no findings. Empty findings do not imply deliverability or authentication success.
+swarmail-bulk/1 adds seven source-citing bulk-sender checklist rules:
+one_click, message_id and date are errors; plain_text is warning-level presence
+advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
+are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
+say "Not evaluated:" until trusted observations exist. Sender-written
+Authentication-Results and DKIM-Signature never supply evidence. #255 owns that
+verification and strict/relaxed alignment; #253/#255 own expiry and refresh.
+Production therefore excludes every message at every report predicate threshold;
+exact zero assertions still work, while waits still require a qualifying message.
+
+Headers use original bytes and complete singleton values, with root lowercase
+names and occurrence null/0/1 for absent/invalid/duplicate. Message-ID and Date
+support current RFC 5322 syntax and surrounding comments/folding; obsolete-only
+forms are unsupported by this checklist, not universally invalid Internet mail.
+Date validates calendar and weekday, numeric zones and optional seconds (including
+60), without a clock/freshness check. Message-ID checks syntax, not uniqueness.
+One-click requires a complete URI list containing HTTPS and the exact case-sensitive
+List-Unsubscribe-Post: List-Unsubscribe=One-Click value. This structural check
+proves neither signed-header DKIM coverage nor endpoint operation; no URI is fetched.
+Text advice checks genuine outer sender text/plain, including empty/default/encoded
+bodies and nested inline multiparts, excluding attachments/ancestry and embedded
+message bodies (including multipart/digest defaults). It proves neither content
+equivalence nor an unconditional provider mandate. HTML is never converted here.
+Hints cite https://support.google.com/mail/answer/81126 and
+https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 2046
+or 7489 sections. These are fixed published references, not live verification or
+provider certification. The proposed rule record is decision 0089.
+
+The synthetic demo.marker.v1 remains: the first root X-Swarmail-Demo field,
+unfolded and space/tab trimmed, selects info|warning|error and emits the fixed
+hint "Remove the X-Swarmail-Demo header." Disabling the demo leaves bulk rules
+active. Empty findings do not imply deliverability or authentication success.
 Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
 
@@ -1365,12 +1394,18 @@ The option is refused on list/count; absent means existing behavior.
 
 Cache: 128 Weak-identity slots per Store, exact immutable inputs and rule version,
 four admitted blocking jobs retained through cancellation. Up to 256 findings and
-65536 compact JSON bytes per cached report. Root headers above 65536 source bytes
-(including terminating blank line) fail, never truncate; body size does not enter
-the demo. REST: 404 missing, 503 "deliverability analysis unavailable" (capacity
+65536 compact JSON bytes per cached report. Inclusive metadata limits are
+8388608 raw bytes, 65536 per header block (including separator), 262144 aggregate
+header bytes, 256 outer entities including root, and depth 32 (root zero).
+Complete bounded MIME inspection includes closing boundaries and attached
+containers; missing separators, ambiguous/unsupported metadata, encoded multipart,
+truncation or exhausted budgets fail without partial success. Embedded messages
+stay opaque. No body transfer decoding, SMTP admission change or stored-field
+rewrite follows. REST: 404 missing, 503 "deliverability analysis unavailable" (capacity
 or deadline) / "deliverability analysis failed" (analysis/size), native JSON error.
 Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
 Cache loss at restart costs recomputation. These are cache/job bounds, not total
 memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
-no DNS, substantive authentication or spam checks, external scorer or new dependency
-ships here. Future inputs must become part of the complete immutable cache key.
+no DNS/authentication verification, spam scorer, external service or new dependency
+ships here. The cache key includes every effective authentication fact and the
+immutable policy/observation identity, alongside selected Weak mail identity.

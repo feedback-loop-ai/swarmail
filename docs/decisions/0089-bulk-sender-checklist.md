@@ -86,3 +86,10 @@ AC1–AC10 and the [plan](../../specs/bulk-sender-checklist/plan.md) govern hand
 and complete local gates. The existing index row stays proposed. CI/operator
 proofs remain theirs. This is a design proposal, not feature completion,
 decision acceptance or publication authorization.
+
+## Compatible implementation note — 2026-10-26
+
+The [implementation record](../../specs/bulk-sender-checklist/implementation.md)
+names the evaluator, immutable evidence seam and real-protocol proofs. Production
+authentication observations remain Unknown. Implementation preserves the proposed
+0085 report shape and accepted 0001–0005; neither proposal is accepted here.

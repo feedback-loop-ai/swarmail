@@ -51,8 +51,29 @@ impl Drop for Held {
         self.open();
     }
 }
+pub(super) const GOOD: &[u8] = b"From: sender@example.test\r\nMessage-ID: <bulk@example.test>\r\nDate: Mon, 26 Oct 2026 12:00:00 +0000\r\nList-Unsubscribe: <https://example.test/unsubscribe>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n\r\nbody\r\n";
+pub(super) fn email(id: &str, inbox: &str, to: &str) -> Email {
+    let mut mail = crate::store::email(id, inbox, to);
+    mail.raw = GOOD.to_vec();
+    mail
+}
+pub(super) fn trusted(service: &Service) {
+    service.auth.set(passing()).unwrap();
+}
+pub(super) fn passing() -> AuthEvidence {
+    AuthEvidence {
+        policy_id: "fixture:p=none".into(),
+        observation_id: "fixture:verified".into(),
+        policy_present: Fact::True,
+        valid_from: Fact::True,
+        dkim_pass: Fact::True,
+        dkim_aligned: Fact::True,
+        spf_pass: Fact::False,
+        spf_aligned: Fact::False,
+    }
+}
 pub(super) fn mail(id: &str) -> Arc<Email> {
-    Arc::new(crate::store::email(id, "box", "a"))
+    Arc::new(email(id, "box", "a"))
 }
 
 #[tokio::test]
@@ -146,6 +167,7 @@ async fn report_capacity_refuses_and_recovers() {
 #[tokio::test]
 async fn report_wait_deadline_and_zero_timeout() {
     let store = Arc::new(Store::new(0));
+    trusted(&store.reports);
     let f = Filter::default();
     let threshold = Some(Severity::Warning);
     assert!(matches!(
@@ -154,9 +176,7 @@ async fn report_wait_deadline_and_zero_timeout() {
             .await,
         Ok(WaitOutcome::Timeout { matched: 0 })
     ));
-    let email = store
-        .insert(crate::store::email("one", "box", "a"))
-        .unwrap();
+    let email = store.insert(self::email("one", "box", "a")).unwrap();
     assert!(matches!(
         store
             .wait_for_report("box", &f, 1, Duration::ZERO, threshold)
@@ -182,7 +202,16 @@ async fn report_wait_deadline_and_zero_timeout() {
             .await,
         Ok(WaitOutcome::Timeout { matched: 1 })
     ));
-    let slot = store.reports.pin(&email, &Inputs::default()).unwrap();
+    let slot = store
+        .reports
+        .pin(
+            &email,
+            &Inputs {
+                auth: passing(),
+                ..Inputs::default()
+            },
+        )
+        .unwrap();
     let guard = slot.report.lock().await;
     assert!(matches!(
         store
@@ -197,11 +226,9 @@ async fn report_wait_deadline_and_zero_timeout() {
         Err(AnalysisError::Unavailable)
     ));
     drop(guard);
-    store
-        .insert(crate::store::email("two", "box", "a"))
-        .unwrap();
+    store.insert(self::email("two", "box", "a")).unwrap();
     let newest = store
-        .insert(crate::store::email("warm-newest", "box", "a"))
+        .insert(self::email("warm-newest", "box", "a"))
         .unwrap();
     store.report(newest).await.unwrap();
     let mut held = Held::new(&store.reports);
@@ -228,6 +255,7 @@ async fn report_wait_deadline_and_zero_timeout() {
 #[tokio::test]
 async fn report_wait_subscribes_before_analysis_and_resubscribes_after_clear() {
     let store = Arc::new(Store::new(0));
+    trusted(&store.reports);
     let fires = Arc::new(AtomicUsize::new(0));
     let s = store.clone();
     let n = fires.clone();
@@ -235,8 +263,7 @@ async fn report_wait_subscribes_before_analysis_and_resubscribes_after_clear() {
         if n.fetch_add(1, Ordering::SeqCst) == 0 {
             s.clear("box").unwrap();
         } else {
-            s.insert(crate::store::email("after-closed", "box", "a"))
-                .unwrap();
+            s.insert(email("after-closed", "box", "a")).unwrap();
         }
     })));
     let outcome = store
@@ -260,8 +287,9 @@ async fn report_wait_subscribes_before_analysis_and_resubscribes_after_clear() {
 #[tokio::test]
 async fn report_wait_observes_delivery_during_analysis_and_recovers_lag() {
     let store = Arc::new(Store::new(0));
-    let mut dirty = crate::store::email("dirty", "box", "a");
-    dirty.raw = b"X-Swarmail-Demo: error\n".to_vec();
+    trusted(&store.reports);
+    let mut dirty = email("dirty", "box", "a");
+    dirty.raw = b"X-Swarmail-Demo: error\n\n".to_vec();
     store.insert(dirty).unwrap();
     let mut held = Held::new(&store.reports);
     let s = store.clone();
@@ -284,7 +312,7 @@ async fn report_wait_observes_delivery_during_analysis_and_recovers_lag() {
     // Overflow the existing wake ring while the original snapshot is analyzed.
     for n in 0..32 {
         store
-            .insert(crate::store::email(&format!("new{n}"), "box", "a"))
+            .insert(self::email(&format!("new{n}"), "box", "a"))
             .unwrap();
     }
     held.open();
@@ -361,13 +389,15 @@ pub(super) async fn smtp(srv: &crate::RunningServer) -> String {
 
 #[tokio::test]
 async fn report_workers_do_not_hold_store_guards() {
-    let srv = crate::run_on(&config(None)).await.unwrap();
+    let mut cfg = config(None);
+    cfg.max_per_inbox = 1;
+    let srv = crate::run_on(&cfg).await.unwrap();
     let mut held = Held::new(&srv.store.reports);
     let mut tasks = Vec::new();
     for n in 0..JOBS {
         let email = srv
             .store
-            .insert(crate::store::email(&n.to_string(), "held", "a"))
+            .insert(email(&n.to_string(), "held", "a"))
             .unwrap();
         let store = srv.store.clone();
         tasks.push(tokio::spawn(async move { store.report(email).await }));
@@ -384,6 +414,14 @@ async fn report_workers_do_not_hold_store_guards() {
         reply["result"]["content"][0]["text"],
         AnalysisError::Unavailable.message()
     );
+    let next = smtp(&srv).await;
+    assert!(
+        srv.store.get(&id).is_none(),
+        "SMTP pruning evicts the oldest while analysis is held"
+    );
+    assert!(srv.store.get(&next).is_some());
+    srv.store.delete(&next).unwrap();
+    srv.store.clear("held").unwrap();
     held.open();
     for task in tasks {
         task.await.unwrap().unwrap();
@@ -394,9 +432,7 @@ async fn report_workers_do_not_hold_store_guards() {
 #[tokio::test]
 async fn report_wait_shutdown_interrupts_worker_and_slot_waits() {
     let srv = crate::run_on(&config(None)).await.unwrap();
-    srv.store
-        .insert(crate::store::email("one", "box", "a"))
-        .unwrap();
+    srv.store.insert(self::email("one", "box", "a")).unwrap();
     let mut held = Held::new(&srv.store.reports);
     let url = format!(
         "http://{}/api/v1/inboxes/box/await?no_findings_at_or_above=error&timeout_ms=60000",
@@ -443,9 +479,8 @@ async fn report_wait_shutdown_interrupts_worker_and_slot_waits() {
 #[tokio::test]
 async fn report_complete_scan_timeout_does_not_reanalyze_after_eviction() {
     let store = Store::new(0);
-    let email = store
-        .insert(crate::store::email("warm", "box", "a"))
-        .unwrap();
+    trusted(&store.reports);
+    let email = store.insert(self::email("warm", "box", "a")).unwrap();
     store.report(email).await.unwrap();
     let filter = Filter::default();
     let wait = store.wait_for_report(
@@ -476,5 +511,156 @@ async fn report_complete_scan_timeout_does_not_reanalyze_after_eviction() {
     match wait.await.unwrap() {
         WaitOutcome::Timeout { matched } => assert_eq!(matched, 1),
         _ => panic!("insufficient completed scan changed into success"),
+    }
+}
+
+async fn smtp_bytes(srv: &crate::RunningServer, raw: &[u8]) -> String {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let stream = tokio::net::TcpStream::connect(srv.smtp_addr).await.unwrap();
+    let (read, mut write) = stream.into_split();
+    let mut read = tokio::io::BufReader::new(read);
+    let mut line = String::new();
+    read.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("220"));
+    for (command, code) in [
+        ("HELO bulk\r\n", "250"),
+        ("MAIL FROM:<s@x.io>\r\n", "250"),
+        ("RCPT TO:<r@x.io>\r\n", "250"),
+        ("DATA\r\n", "354"),
+    ] {
+        write.write_all(command.as_bytes()).await.unwrap();
+        line.clear();
+        read.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with(code), "{line}");
+    }
+    write.write_all(raw).await.unwrap();
+    write.write_all(b".\r\n").await.unwrap();
+    line.clear();
+    read.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("250"), "{line}");
+    line.split_whitespace().last().unwrap().into()
+}
+
+#[tokio::test]
+async fn bulk_auth_wire_pairs_and_positive_predicates() {
+    use Fact::{False as F, True as T, Unknown as U};
+    // Each tuple is independently supplied trusted evidence, not report rows.
+    for (facts, expected) in [
+        ([T, T, T, T, F, F], [T, T, T]), // valid p=none policy, aligned DKIM wins
+        ([F, T, F, F, F, F], [F, F, F]),
+        ([U, U, U, U, U, U], [U, U, U]),
+        ([T, F, T, T, T, T], [T, F, F]), // invalid From forbids success
+        ([F, T, T, T, U, U], [F, T, T]), // policy presence is independent
+        ([T, T, F, T, F, F], [T, T, F]), // alignment alone is not authentication
+        ([T, T, T, F, U, U], [T, U, U]), // unaligned pass cannot beat unknown SPF
+        ([T, T, U, U, T, T], [T, T, T]), // aligned SPF wins over unknown DKIM
+    ] {
+        let srv = crate::run_on(&config(None)).await.unwrap();
+        let [
+            policy_present,
+            valid_from,
+            dkim_pass,
+            dkim_aligned,
+            spf_pass,
+            spf_aligned,
+        ] = facts;
+        srv.store
+            .reports
+            .auth
+            .set(AuthEvidence {
+                policy_id: "p=none".into(),
+                observation_id: "fixture-verifier".into(),
+                policy_present,
+                valid_from,
+                dkim_pass,
+                dkim_aligned,
+                spf_pass,
+                spf_aligned,
+            })
+            .unwrap();
+        let id = smtp_bytes(&srv, GOOD).await;
+        let path = format!("/api/v1/messages/{id}/deliverability");
+        let (status, body) = get(&srv, &path).await;
+        assert_eq!(status, 200);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        for (i, rule) in ["dmarc_presence", "from_alignment", "authenticated_sender"]
+            .iter()
+            .enumerate()
+        {
+            let found = value["findings"].as_array().unwrap().iter().find(|v| {
+                v["rule_id"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&format!("bulk.{rule}."))
+            });
+            if expected[i] == T {
+                assert!(found.is_none(), "{value}");
+                continue;
+            }
+            let found = found.unwrap();
+            let (hint, rfc) = match (i, expected[i]) {
+                (0, F) => (
+                    "Publish a valid applicable DMARC policy; p=none satisfies this presence check.",
+                    "https://www.rfc-editor.org/rfc/rfc7489#section-6.1",
+                ),
+                (0, _) => (
+                    "Not evaluated: trusted applicable DMARC policy evidence is unavailable.",
+                    "https://www.rfc-editor.org/rfc/rfc7489#section-6.1",
+                ),
+                (1, F) => (
+                    "Align a DKIM d= or SPF MAIL FROM identity with an unambiguous RFC5322.From domain under the applicable DMARC policy.",
+                    "https://www.rfc-editor.org/rfc/rfc7489#section-3.1",
+                ),
+                (1, _) => (
+                    "Not evaluated: trusted From identity or DKIM/SPF alignment evidence is incomplete.",
+                    "https://www.rfc-editor.org/rfc/rfc7489#section-3.1",
+                ),
+                (_, F) => (
+                    "Supply a passing DKIM or SPF result aligned with RFC5322.From. This scoped check does not certify every provider authentication requirement.",
+                    "https://www.rfc-editor.org/rfc/rfc7489#section-3.1",
+                ),
+                _ => (
+                    "Not evaluated: trusted From identity or passing-and-aligned DKIM/SPF evidence is incomplete.",
+                    "https://www.rfc-editor.org/rfc/rfc7489#section-3.1",
+                ),
+            };
+            assert_eq!(
+                *found,
+                serde_json::json!({"rule_id":format!("bulk.{rule}.{}v1",if expected[i] == U { "not_evaluated." } else { "" }),"severity":"error","location":{"kind":"header","name":"from","occurrence":0},"fix_hint":format!("{hint} Sources: {rfc} https://support.google.com/mail/answer/81126 https://senders.yahooinc.com/best-practices/")})
+            );
+        }
+        assert_eq!(get(&srv, &path).await, (status, body));
+        let clean = expected == [T, T, T];
+        let (status, page) = get(&srv, &format!("/ui/message/{id}")).await;
+        assert_eq!(status, 200);
+        assert_eq!(page.contains("No findings from this rule set."), clean);
+        assert_eq!(page.contains("Sources:"), !clean);
+
+        for threshold in ["info", "warning", "error"] {
+            let (status, body) = get(
+                &srv,
+                &format!(
+                    "/api/v1/inboxes/default/assert?count={}&no_findings_at_or_above={threshold}",
+                    usize::from(clean)
+                ),
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+            assert_eq!(get(&srv,&format!("/api/v1/inboxes/default/await?timeout_ms=0&no_findings_at_or_above={threshold}")).await.0,if clean {200} else {408});
+        }
+        if clean {
+            let newest = smtp_bytes(&srv, GOOD).await;
+            let (status, body) = get(
+                &srv,
+                "/api/v1/inboxes/default/await?count=2&limit=1&no_findings_at_or_above=warning",
+            )
+            .await;
+            assert_eq!(status, 200);
+            let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(value["matched"], 2);
+            assert_eq!(value["emails"].as_array().unwrap().len(), 1);
+            assert_eq!(value["emails"][0]["id"], newest);
+        }
+        srv.stop().await;
     }
 }
