@@ -18,6 +18,9 @@ pub const RESPONSE_LIMIT: usize = 1024 * 1024;
 struct Call {
     name: String,
     arguments: Arguments,
+    // MCP request context is inert and never enters the HTTP arguments.
+    #[serde(default)]
+    _meta: serde::de::IgnoredAny,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -100,10 +103,11 @@ impl Helper {
         }
         let arguments: Arguments =
             serde_json::from_value(arguments).map_err(|_| "http_arguments_invalid")?;
-        if !["GET", "POST"].contains(&arguments.method.as_str())
-            || (arguments.method == "GET" && arguments.body.is_some())
-        {
+        if !["GET", "POST"].contains(&arguments.method.as_str()) {
             return Err("http_method_invalid".into());
+        }
+        if arguments.method == "GET" && arguments.body.is_some() {
+            return Err("http_get_body_not_supported".into());
         }
         let url = request_url(&self.inputs.app, &arguments.path)?;
         let remaining = self
@@ -193,9 +197,13 @@ impl Helper {
                         Ok(value) => Ok(
                             json!({"content":[{"type":"text","text":value.to_string()}],"isError":false}),
                         ),
-                        Err(_) => Ok(
-                            json!({"content":[{"type":"text","text":"fixture_request_refused"}],"isError":true}),
-                        ),
+                        Err(error) => {
+                            let message = match error.as_str() {
+                                "http_get_body_not_supported" => "http_get_body_not_supported",
+                                _ => "fixture_request_refused",
+                            };
+                            Ok(json!({"content":[{"type":"text","text":message}],"isError":true}))
+                        }
                     }
                 }
                 _ => Err((-32602, "tool_arguments_invalid")),
