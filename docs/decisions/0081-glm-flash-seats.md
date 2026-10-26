@@ -1,94 +1,105 @@
-# 0081 — GLM Flash intake and tests-review seats
+# 0081 — GLM Flash tests-review seat
 
 - **Status:** proposed — acceptance is the operator's.
-- **Date:** 2026-10-26
-- **Amends:** [0058](0058-codex-review-routing.md), only the tests-review model/effort assignment and its preservation of earlier intake routing; correspondingly supersedes [0057](0057-codex-delivery-recipes.md) §1's two intake model/effort assignments. All other roles and clauses remain.
-- **Source:** operator's 2026-10-26 “GLM-5.3-Flash seats” ruling, supplied with this delivery's issue-0 evidence packet and verified against its SHA256SUMS. The ruling text is quoted below; no seat accepts this record.
+- **Date:** 2026-10-26; revised 2026-10-26 after the intake-hands refusal.
+- **Amends:** [0058](0058-codex-review-routing.md), only its tests-review model/effort assignment. [0057](0057-codex-delivery-recipes.md)'s intake assignments and every other route remain.
+- **Source:** operator's 2026-10-26 “GLM-5.3-Flash seats (revised)” direction, supplied in the issue-0 authority packet and verified against its SHA256SUMS. This record accepts no decision.
 - **Design:** [spec](../../specs/glm-flash-seats/spec.md), [plan](../../specs/glm-flash-seats/plan.md), [tasks](../../specs/glm-flash-seats/tasks.md).
 
-## Operator direction and rationale
+## Revised operator direction and rationale
 
-> The operator authorizes GLM-5.3-Flash on Spark (`glm-flash` = `spark-glm/GLM-5.3-Flash-EXL3`, local, no token cost) as a delivery seat in place of paid models: the intake seat and the tests review member of the Codex recipes (codex, codex-careful, codex-fast) move to `glm-flash`. The other 0058 panel roles keep their models. Recorded as a proposed decision amending 0058.
+> The pinned engine refuses dsh for workspace-writing seats, so intake stays on its current models. Only the tests review member (`codex-review-tests`, read-only) of the codex, codex-careful and codex-fast recipes moves to `glm-flash`. Every other seat keeps its model.
 
-The supplied ruling document's SHA256 is
-`1e4d9a5c04e20aee87fabfb5c87edf2911cf694ed32ac9058e360c3099fb6159`;
+The revised ruling document's SHA256 is
+`b68560f6782247377e75e90698f95f33feef390cdbdb71ddd8c9a3cc0fbdfd9e`;
 the companion README's is
 `4dff0b60b60a41c282518f3440032f2900c6a447471d1379341f1a5bf389e44a`.
-Both matched the supplied checksums. The current directive names 0081 and
-controls the older numbering ledger. This is a narrow routing direction to
-reduce paid-token use, not evidence of equivalent review quality or live
-Spark availability. No credentials or tracked links to ignored evidence
-are included here.
+Both match the supplied checksums. The README retains the earlier scope
+and contains no prior-run entries; the later revised ruling controls.
+The original same-day ruling identified `glm-flash` as
+`spark-glm/GLM-5.3-Flash-EXL3` on local Spark with no token cost. Reducing
+paid tests-review use is the rationale, not a model-quality equivalence claim.
+No credentials or tracked links into ignored evidence are included here.
+
+## Earlier refusal and dated scope clarification — 2026-10-26
+
+The initial request moved two intake offices and the tests reviewer. The
+previous chief and implementer independently tested those edits with the
+candidate-local pinned engine, digest
+`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
+Both intake offices resolved blocked, although `agents show` exited zero:
+
+> the provider declares hands unsupported, so the agent's hands cannot be put in the box and the agent would run with the harness's own tools
+
+Standard and Careful compilation consequently failed. The read-only tests
+office resolved ok with empty effort; fast compiled with null Spark effort
+because it has no intake. The previous attempt stopped at IMPL-BLOCKED.
+These findings remain evidence of the capability boundary, not a demand
+to change it. The revised ruling resolves the former prerequisite by leaving
+intake on Sol and moving only tests review. It supersedes this proposal's
+previous intake assignments and its statement that tests-only delivery is
+incomplete. No adapter relaxation, hands removal or engine repair is needed
+or authorized. The old implementation report is historical under the revised
+spec and will receive a dated supersession notice during implementation.
 
 ## Proposed ruling
 
-1. Retain `codex-intake`, `codex-careful-intake` and `codex-review-tests` as
-   existing overlays of their current charters. Each selects only
-   `glm-flash`, resolved through dsh to `spark-glm/GLM-5.3-Flash-EXL3`, route
-   class local. No fallback is added. Use explicit empty effort maps and
-   record effort **not applicable**, per the adapter's effortless Spark rule;
-   no `none` effort value and no selected inherited effort are permitted.
-2. Keep every non-routing office field, inherited charter, limit and tool
-   permission. Both intake offices keep boxed workspace hands, network
-   declaration, credential masks and read-only rustup bind. Tests review
-   remains gate-class/read-only with separate result identity and no added
-   write capability. dsh's declared unsupported native tool permissions/MCP
-   are not equivalent to a native sandbox; do not claim otherwise.
-3. Standard keeps Fable correctness, official DeepSeek Flash security and GLM
-   tests. Careful and fast design/engine keep five distinct results: Astra
-   correctness, Flash security, GLM tests, Astra guarantees and independent
-   Fable. Fast has no intake: Opus medium triage remains unchanged. Fast
-   chore keeps one combined Flash reviewer; fast feature keeps Qwen/Flash
-   and its sole authorized pre-result Qwen-to-Sonnet dispatch fallback.
-4. Every implementer, shared design office, legacy self route, remaining
-   effort, selector, bounded return, protected gate, security hold and
-   candidate-binding requirement stays. DeepSeek Pro remains forbidden.
-   Preserve frozen application guarantees and extraction-at-ingest. No new
-   dependency, engine patch/re-pin, provider wrapper, fallback, runtime
-   hardening or live probe belongs to this amendment.
-
-## Compatibility finding and implementation boundary
-
-The chief tested the exact three routing edits in a disposable copy with
-candidate realm/dialect and the pinned engine digest
-`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
-Explicit empty maps resolve correctly, and fast compiles with tests-review
-Spark effort null. Both intake offices instead resolve `blocked` and their
-recipes fail compile because dsh declares hands unsupported. `agents show`
-can exit zero while recording that blocked status.
-
-The routing target, preserved intake hands and pinned-engine compilation
-cannot all be satisfied by the three-file substitution on this candidate.
-Preserve the hands and refusal. This proposal does not authorize deleting
-hands, asserting unsupported adapter capabilities, or changing the engine
-pin. Admitted dsh workspace-hands support, or an explicit operator revision
-of these constraints, is the missing prerequisite. Record and reproduce it;
-do not claim implementation-ready routing, weaken acceptance criteria or
-call tests-review-only success completion. The model ruling itself remains
-settled. Any separately authorized compatibility change needs fresh design
-reconciliation and proof; no such change is assumed here.
+1. Keep the existing `codex-review-tests` overlay of `review-tests`; select
+   only `glm-flash` via dsh to `spark-glm/GLM-5.3-Flash-EXL3`, local, with
+   explicit `efforts: {}`. Effective office effort is empty and compiled
+   selected effort absent (omitted or null). Record **not applicable**, never an effort named
+   `none`. Do not inherit the parent's Fable/GLM fallback chain.
+2. Use that office in Standard, Careful and fast design/engine tests review.
+   Standard retains three required results (Fable correctness, official
+   Flash security, GLM tests). Careful and both fast full panels retain five
+   (Astra correctness, Flash security, GLM tests, Astra guarantees and
+   independent Fable). Preserve distinct charters, invocations and results.
+3. Preserve Standard Sol/medium and Careful Sol/high intake with all existing
+   workspace hands, permissions and limits. Fast has no intake and keeps
+   Opus/medium triage without fallback. Every implementer, shared design,
+   legacy self route, other model/effort and selector stays. Fast chore
+   keeps one combined Flash reviewer; fast feature keeps Qwen/Flash and
+   the sole authorized Qwen-to-Sonnet fallback on pre-result dispatch failure.
+   DeepSeek Pro remains forbidden. No tests member is added to those lanes.
+4. Tests review retains gate/read-only classification, inherited charter,
+   limits, permissions, separate result and candidate-change refusal. No
+   hands/tools are added. Keep dsh's unsupported native permissions/MCP
+   declarations truthful; do not claim equivalent native sandbox enforcement.
+   Protected review, hard security hold, bounded returns and all deterministic
+   gates remain. Frozen application guarantees and extraction-at-ingest
+   remain untouched.
+5. No application source, dependency/license policy, engine pin, adapter
+   capability, fallback framework, retry policy, benchmark, live endpoint
+   probe or credential change belongs to this amendment. A Spark outage
+   can stop review; it does not authorize a paid substitution.
 
 ## Proof and consequences
 
-Use existing Rust source proofs and Python pinned-engine resolved proofs,
-including negative controls for model/provider/route/status/effort/fallback
-errors. Preserve exact panel identities, charters and non-routing fields.
-Compile all four bundles, run all local house gates and exact coverage with
-its selftest on committed implementation, and retain separate full dispatcher
-and focused resolution evidence. The recorded baseline cross-attempt control
-fails; preserve it and its actual outcome, with subsequent unexecuted cases
-explicit. No engine repair or gate waiver follows from this proposal.
+Extend the existing Rust source and Python effective-route proofs. Require
+exact identity, concrete/local route, singleton chain, successful status,
+empty office efforts and null compiled effort; feed negative mutations
+through the same comparator. Preserve complete recipe membership and compare
+non-target source/resolved fields to baseline d55a89d. Compile all four
+bundles using the digest-matched local engine without policy-sweep warnings,
+and run every local house gate including exact coverage and selftest on
+committed work. Synthetic negative controls are proof of assertion sensitivity,
+not live provider dispatch.
 
-The design chooses explicit small assertions and unchanged office topology
-over a new abstraction. Costs are additional per-office proof, an immediate
-intake compatibility prerequisite and possible provider-outage stoppage.
-No paid fallback can conceal those costs. The operator owns Spark availability
-and model selection; CI owns its existing platform/network proofs. No new
-live test, namespace or model-quality acceptance requirement is imposed.
+Keep full dispatcher and focused resolution results separate. The baseline
+full script fails at `1-cross-attempt` because the engine completes instead
+of refusing; subsequent cases do not execute. Preserve that assertion and
+report the actual outcome. No engine repair, re-pin, gate waiver or claim
+of dispatcher-wide safety follows from focused routing success.
 
-Implementation adds the proposed index row and any dated pointers to 0057
-and 0058 without rewriting their accepted historical bodies. The chief's
-four-file design commit deliberately defers that index change and cannot
-claim the intermediate inventory/workspace/coverage gates are green.
-No decision acceptance, push, merge, tag, publication or issue closure is
-authorized by this record or by a passing structural design check.
+This design adopts one shared office and stronger local comparisons instead
+of another routing abstraction. Costs are additional exact assertions, paid
+intake retained, no new provider-quality evidence and possible Spark-outage
+stoppage. CI owns the existing platform/network/release checks; the operator
+owns live Spark availability, credentials, model choice and sealing. Do not
+probe the endpoint from a seat or add network/namespaces acceptance criteria.
+
+Implementation updates the existing index row and current route summaries,
+and labels superseded evidence. Accepted 0057/0058 bodies remain historical;
+any pointer is a dated addendum. This explicit operator direction authorizes
+only the narrow tests substitution while 0081 remains proposed; no unrelated
+acceptance, push, merge, tag, publication or issue closure is authorized.

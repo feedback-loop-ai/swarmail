@@ -1,172 +1,151 @@
-# GLM Flash intake and tests-review seats
+# GLM Flash tests review
 
-Created: 2026-10-26. Status: draft; implementation has a measured compatibility blocker.
+Created: 2026-10-26. Revised: 2026-10-26. Status: draft; tests-only implementation remains outstanding.
 
 Decision: 0081
 
-Proposed amendment: [0081 — GLM Flash seats](../../docs/decisions/0081-glm-flash-seats.md).
-Authorities: accepted [0058](../../docs/decisions/0058-codex-review-routing.md),
-[0057](../../docs/decisions/0057-codex-delivery-recipes.md), and the operator's
-2026-10-26 “GLM-5.3-Flash seats” ruling quoted in 0081. Only the operator
-accepts decisions. The current directive authorizes these two seat types;
-it grants no unrelated amendment or permission relaxation.
+Proposed amendment: [0081 — GLM Flash tests review](../../docs/decisions/0081-glm-flash-seats.md).
+Authorities: accepted [0057](../../docs/decisions/0057-codex-delivery-recipes.md),
+[0058](../../docs/decisions/0058-codex-review-routing.md), and the operator's
+2026-10-26 “GLM-5.3-Flash seats (revised)” ruling quoted in 0081.
+This directive authorizes the narrow routing change; 0081 remains proposed
+and no further acceptance is inferred.
 
 ## Feature and rationale
 
-Use the existing local, no-token-cost `glm-flash` route for the two Codex
-intake offices and the shared tests reviewer. Preserve their identities,
-charters, permissions, limits and required results. This reduces paid model
-use at the operator's direction while retaining independent review lenses
-and deterministic delivery gates. Offline checks establish configuration
-and engine behavior, not equal reviewer judgment or Spark availability.
+Route only the existing read-only `codex-review-tests` office to the local,
+no-token-cost `glm-flash` model in Standard, Careful and fast design/engine
+review. Retain every other seat's model, effort, charter and permissions.
+The operator chose this substitution to reduce paid review use; configuration
+proofs do not claim equal model judgment or live Spark availability.
 
-| Office | Current route | Required route | Required effort |
-| --- | --- | --- | --- |
-| `codex-intake` | Sol / medium | `glm-flash` only | not applicable |
-| `codex-careful-intake` | Sol / high | `glm-flash` only | not applicable |
-| `codex-review-tests` | Sonnet / high | `glm-flash` only | not applicable |
+The selected route is exactly provider `dsh`, alias `glm-flash`, concrete
+model `spark-glm/GLM-5.3-Flash-EXL3`, route class `local`, without fallback.
+Its office explicitly sets `efforts: {}` and its effective route effort is
+absent (an omitted or null serialized effort field). Prose records **not applicable**;
+there is no effort value named `none`.
 
-Each required route means provider `dsh`, concrete model
-`spark-glm/GLM-5.3-Flash-EXL3`, adapter route class `local`, and an empty
-resolved effort map. Encode `efforts: {}`, never an effort called `none`.
-There is no paid fallback. Keep the adapter's actual capability declarations.
+## Dated clarification — revised scope, 2026-10-26
 
-## Composition that must remain
+The first design attempted both intake offices and tests review. Its local
+probe, independently reproduced by the previous implementation attempt,
+found both dsh intake resolutions blocked and Standard/Careful compilation
+refused because the provider cannot supply boxed workspace hands. `agents
+show` exited zero even for blocked resolution. Fast, which has no intake,
+could compile the read-only tests route. These remain historical findings.
 
-| Recipe/lane | Intake or triage | Required review members |
+The operator subsequently ruled that intake stays on its current models.
+This revision replaces the old intake migration acceptance criteria and
+compatibility prerequisite; it does not require fixing the adapter or engine.
+The older [implementation report](implementation.md) describes the superseded
+attempt, including its statement that tests-only delivery was insufficient.
+That statement no longer governs. The current intake framing already records
+the revised scope. Implementation will label the old report accordingly.
+
+## Composition to preserve
+
+| Recipe/lane | Intake or triage | Required review composition |
 | --- | --- | --- |
-| Standard `codex` | existing `codex-intake` | Fable correctness, official Flash security, GLM tests (3) |
-| `codex-careful` | existing `codex-careful-intake` | Astra correctness, official Flash security, GLM tests, Astra guarantees, independent Fable (5) |
-| Fast design/engine | Opus medium triage; no intake | same five distinct roles as Careful |
-| Fast chore | Opus medium triage; no intake | one combined official Flash reviewer |
-| Fast feature | Opus medium triage; no intake | Qwen Max correctness, official Flash security (2) |
+| Standard `codex` | Sol / medium intake, existing hands | Fable correctness, official Flash security, GLM tests (3) |
+| `codex-careful` | Sol / high intake, existing hands | Astra correctness, official Flash security, GLM tests, Astra guarantees, independent Fable (5) |
+| Fast design and engine | Opus / medium triage, no intake | Same five distinct roles as Careful |
+| Fast chore | Opus / medium triage, no intake | One combined official Flash reviewer |
+| Fast feature | Opus / medium triage, no intake | Qwen Max correctness and official Flash security (2) |
 
-Fast feature alone retains Qwen-to-Sonnet fallback on authorized dispatch
-failure before a valid review result. No other role or effort changes:
-Standard implementer Sol/high, Careful Sol/xhigh, fast Luna/xhigh, the shared
-Sol/Astra design sequence and legacy self routes remain. Astra correctness
-and guarantees retain separate offices/results; independent Fable remains
-required. DeepSeek Pro stays forbidden. Size triage, selectors, bounded
-returns, protected review, security hold and candidate binding remain.
+Fast feature alone retains Qwen-to-Sonnet fallback for the authorized dispatch
+failure before a valid review result. Standard Sol/high, Careful Sol/xhigh
+and fast Luna/xhigh implementers, shared Sol/Astra design, and legacy self
+routes remain. Astra correctness and guarantees keep separate offices and
+results; independent Fable remains required. DeepSeek Pro remains forbidden.
 
-## Panel synthesis and ruling
+## Panel synthesis and rulings
 
-Adopt simplicity's three-overlay design, existing proof files, inherited
-charters and rejection of new route registries, wrappers, recipes, fallback
-frameworks, dependencies and application changes. The cost of that choice is
-explicit per-office assertions and repeated resolved comparisons rather
-than a reusable routing abstraction. No abstraction is justified by three
-existing offices.
+Both current positions agree on tests-only scope; there is no conflicting
+model recommendation to average. Adopt simplicity's one-overlay change,
+existing adapter, inherited charter and two existing proof files. Reject
+new offices, copied charters, route registries, wrappers, dependencies and
+engine repairs. Retaining paid intake costs the original intake savings;
+the revised operator ruling settles that tradeoff.
 
-Adopt robustness's exact provider/concrete/local/effort checks, negative
-controls and unchanged-role comparisons. Reject a string-only substitution
-or a broad “GLM is allowed” test: each would miss inherited effort or an
-unauthorized route change. The small additional assertion cost is warranted.
-Resolve the effort ambiguity in robustness's favor: use explicit empty
-maps in all three overlays. A disposable probe of the pinned engine shows
-that `{}` replaces the base tests reviewer's Fable/high metadata; omission
-is unnecessary ambiguity. Preserve the base office and adapter unchanged.
+Adopt robustness's stronger effective-route proof over the smallest
+string-replacement test. A source alias alone cannot detect a blocked route,
+inherited effort, wrong concrete provider route or added fallback. Require
+exact comparisons and focused mutations through the same comparator. The
+losing minimal-test alternative saves assertions but leaves those errors
+undetected; we accept the extra assertions. Simplicity's suggested local
+comparison wins over a persistent snapshot framework: baseline comparison
+is run-local evidence and adds no new tracked routing owner.
 
-Reject both positions' assumption that these three changes suffice to
-compile the two intake recipes while retaining workspace hands. Chief
-research found a concrete conflict, described below. Preserve the hands
-and the engine's refusal; do not delete permissions, claim unsupported
-capabilities, or re-pin the engine to make a green result. The losing
-assumption costs immediate implementation readiness and delays both intake
-moves until a separately authorized compatibility resolution exists.
-
-Adopt robustness's application-failure discussion as preserved reviewer
-responsibility, not new scope: synchronous stored acceptance, watcher
-subscription ordering, oldest-only pruning, extraction at ingest, bounded
-webhook behavior and real-protocol deterministic tests keep their existing
-contracts. Reject new runtime hardening, performance benchmarks and provider
-probes. The accepted cost is no new availability or model-quality evidence.
-
-## Measured compatibility prerequisite
-
-The supplied evidence README and operator rulings both passed their recorded
-SHA256 checks. The admitted candidate-local engine is
-`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
-On 2026-10-26, the chief copied the candidate's agents, adapters, bundles,
-realm map, dialect and docs into a disposable local fixture, changed only
-these three offices to singleton GLM and empty effort maps, and used that
-engine without provider I/O. Both intake offices resolved with status
-`blocked`; both Standard and Careful compilations exited 1:
-
-> the provider declares hands unsupported, so the agent's hands cannot be put in the box and the agent would run with the harness's own tools
-
-Fast compiled with the GLM tests reviewer and `effort: null`, consistent
-with its absence of intake. The tests office resolved `ok` with `{}` effort.
-An `agents show` process exit of zero is not successful resolution: its
-per-candidate status must be checked. The fixture's initial missing-dialect
-setup error was corrected by copying the candidate realm/dialect; the
-reported hands refusal is from the fully configured fixture.
-
-The missing prerequisite is admitted dsh workspace-hands support compatible
-with this pinned engine, or an explicit operator revision of the conflicting
-constraints. Neither exists in the supplied workspace. This design does not
-authorize either change. Under current constraints there is no proven
-implementable all-three-office patch. Implementers must preserve this
-blocker and must not claim final acceptance from tests-review-only success.
-The operator's model selection is settled; the compatibility conflict does
-not reopen that selection or justify a paid fallback.
+Reconcile both positions by retaining explicit empty efforts only on the
+shared tests overlay, preserving the base's unrelated Fable/GLM chain and
+all other effort assertions. Keep complete panel/unchanged-route checks.
+Adopt robustness's runtime failure discussion as preserved tests-review
+responsibility, not new application work. Synchronous stored acceptance,
+subscribe-before-check, oldest-only pruning and extraction at ingest remain;
+webhook, chaos, certificate and protocol contracts retain their existing
+proofs. No new runtime hardening, provider benchmark or live health probe
+belongs here. The cost is no new quality or availability evidence, and a
+Spark outage can stop review without a paid fallback.
 
 ## Acceptance Criteria
 
-These are final implementation criteria, not claims made by this design commit.
+These criteria apply to final implementation, not to this design-only commit.
 
-1. **AC1 — Exact intake resolution.** Source and pinned-engine resolution for
-   both named intake offices use exactly `[glm-flash]`, dsh, the concrete
-   Spark model and local classification. Every selected candidate resolves
-   `ok`; Standard/Careful retain their existing office names. Both compile
-   with their original hands. The measured prerequisite above currently
-   prevents satisfying this criterion; blocked resolution never passes.
-2. **AC2 — Exact tests resolution.** The tests office has that same singleton
-   route in Standard, Careful and fast design/engine. Fast chore/feature have
-   no added tests member. Role counts and separate member/result identities
-   remain exactly 3, 5, 5, 1 and 2 as listed above.
-3. **AC3 — No Spark effort.** All three source overlays contain empty effort
-   maps, their resolved maps are empty and compiled selected Spark candidates
-   have no effective effort (`null` in the manifest). Reject explicit or
-   inherited selected Spark effort. Documentation records “not applicable.”
-4. **AC4 — Unchanged boundaries.** Compare to baseline `a037dc9`: all three
-   offices' non-routing fields and inherited charters/limits are identical.
-   Intake keeps workspace hands, network declaration, Cargo credential masks
-   and read-only rustup bind. Review remains gate-class/read-only with no
-   added hands/tools and `fixes_applied: false`. Keep dsh's unsupported native
-   tool-permission/MCP declarations and the candidate-change refusal; do not
-   claim equivalent native sandbox enforcement.
-5. **AC5 — Preserved matrix and contracts.** Every other resolved office,
-   chain, effort, role, selector and protected driver/hands/boundary remains
-   as in the composition above and baseline. Retain the sole Qwen dispatch
-   fallback, Opus medium triage without fallback, no fast intake, independent
-   result identities, safety-fact refusals and all legacy self routes.
-6. **AC6 — Exact regression proofs.** Update the existing Rust and Python
-   routing proofs and any other executable old-route pins. Do not allow GLM
-   generically. The same comparator accepting actual resolved routes must
-   reject an old paid alias, wrong provider, wrong concrete model, non-local
-   route, non-ok resolution, extra fallback and explicit Spark effort.
-   Preserve current triage, role-count, fallback, safety-fact, candidate-fence
-   and evaluator controls. Source-only assertions cannot satisfy AC1–AC3.
-7. **AC7 — Decision and documentation.** Index proposed 0081 with matching
-   status, quote the dated operator ruling, and make current route summaries
-   agree with AC1–AC5, including effort not applicable. Keep accepted bodies
-   intact; any pointer to 0081 is a dated addendum. No tracked link points
-   into ignored evidence. Keep legitimate Sonnet fallback references.
-8. **AC8 — Local proof and truthful limits.** On committed implementation,
-   all four bundles compile with the admitted engine and no policy-sweep
-   warnings; focused resolution, Rust routing tests and all local house gates
-   pass, including exact coverage and its selftest. Run the full dispatcher
-   proof separately and retain its actual outcome and unexecuted controls.
-   Intake reported a baseline `1-cross-attempt` failure (completed instead
-   of refusal); reproduce/compare it without weakening the assertion,
-   repairing the engine or calling the full proof green. Independently run
-   its existing `resolved_matrix` function. A known baseline failure is not
-   a gate waiver or dispatcher-wide safety proof.
+1. **AC1 — Exact admitted route.** `codex-review-tests` retains
+   `extends: "review-tests"`, selects exactly `["glm-flash"]`, and resolves
+   `ok` through dsh to `spark-glm/GLM-5.3-Flash-EXL3`, local, with no fallback.
+   Check source, effective office and compiled manifest; CLI exit zero alone
+   is insufficient. Source/resolved office efforts equal `{}` and effective
+   selected effort is absent (omitted or null), with no explicit or inherited Spark effort.
+2. **AC2 — Exact membership.** The same office is the tests member of
+   Standard, Careful and both fast design/engine panels. Preserve counts
+   3/5/5/5, separate results and all other identities. Fast chore/feature
+   retain one/two results and gain no tests member.
+3. **AC3 — Preserved routes and boundaries.** Compare full source/resolved
+   routing with baseline `d55a89de70f4a4e6cc598d3726eb2fa55bc2df76`: only the
+   tests office model/effort route changes. Every other model, chain, effort,
+   charter, permission, limit, selector and protected driver/hands/boundary
+   remains identical. Both intake offices retain Sol medium/high and their
+   boxed workspace hands. Preserve gate/read-only tests classification,
+   no added hands/tools, candidate-change refusal, distinct result identity,
+   protected review, security hold and bounded returns. Keep dsh's truthful
+   unsupported native tool-permission/MCP declarations; claim no native
+   sandbox equivalence. Preserve the complete composition above.
+4. **AC4 — Sensitive regression proofs.** Extend `tests/delivery_recipes.rs`
+   and `tests/codex_review_routing.py` in place. Source assertions pin models,
+   inheritance, exact empty efforts and existing Spark mapping/local/effortless
+   metadata; effective-route assertions prove AC1–AC3. The same comparator
+   accepting actual resolution rejects old Sonnet, wrong provider, wrong
+   concrete model, non-local route, blocked status, extra fallback, explicit
+   Spark effort and missing/replaced tests member. Keep unrelated-role effort,
+   triage, panel, fallback, safety-fact, candidate-fence and dispatcher controls.
+5. **AC5 — Pinned compatibility.** Verify engine SHA256
+   `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f` at
+   `.forge/bin/brokkr`. It compiles self, codex, codex-careful and codex-fast
+   with no policy-sweep warnings; effective evidence shows dsh tests routing
+   in all four affected panel placements. No engine/pin/adapter capability
+   change or intake substitution is used to obtain success.
+6. **AC6 — Coherent documentation.** Revised 0081 stays proposed, quotes
+   and dates the revised ruling, amends only 0058's tests assignment and
+   records the prior intake refusal and reason. Update its existing index
+   row, current routing summaries and stale bundle descriptions. Label the
+   earlier implementation report superseded without discarding its evidence.
+   Preserve accepted decision bodies, legitimate Sonnet fallback references
+   and dated provenance; any amendment pointer is a dated addendum. Record
+   effort not applicable and create no tracked link into ignored evidence.
+7. **AC7 — Verification and honest limits.** Commit implementation unsigned
+   and run all local [house gates](../../docs/house-rules.md#gates--part-of-every-change),
+   including locked checks, exact zero-missed lines/branches/functions and
+   coverage selftest. Run shim integrity, fail-closed native-tls absence,
+   design selftest and delivery proof. Focused routing and required local
+   house gates must pass. Separately run the full Python dispatcher proof,
+   preserving its actual result and any unexecuted later cases. The known
+   baseline `1-cross-attempt` failure (completed instead of refusal) remains
+   visible, never converted to green or suppressed. It is not a routing
+   regression, a gate waiver or authority to repair/re-pin the engine here.
 
 CI owns macOS, privileged port-80, chart/history, Docker, network RustSec
-and tag-only proofs per the house inventory. The operator owns Spark host
-availability, credentials, live settings, any compatibility authorization
-and branch sealing. These are ownership notes, not new local acceptance
-criteria. No host/network probe, namespace proof, publication or acceptance
-of any decision is authorized.
+and tag-only proofs in the house inventory. The operator owns Spark host
+availability, credentials, live settings and branch sealing. These are
+ownership notes, not additional seat-local acceptance criteria. No live
+Spark/provider probe, namespace proof, publication or decision acceptance.

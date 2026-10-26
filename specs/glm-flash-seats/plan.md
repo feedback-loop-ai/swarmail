@@ -1,189 +1,187 @@
-# Plan: GLM Flash seats
+# Plan: GLM Flash tests review
 
 ## Technical context
 
-Configuration and delivery-contract change in one Rust crate. JSON office
-overlays and existing dsh alias resolution express the routing. Rust tests
-pin definitions; Python exercises the real pinned CLI and controlled
-proof participants. No application source, dependency, storage migration,
-new provider, credential or public mail contract changes are needed.
-
-Use `.forge/bin/brokkr` with SHA256
-`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
-Do not substitute a same-version engine, patch it, or alter its pin. The
-repository has a spec template but no plan template; this document supplies
-the technical context, constitution, structure, research, data model,
-contracts, quickstart and risks required by the spec-kit dialect.
+One Rust crate; this change uses existing JSON office inheritance and dsh
+routing, Rust source assertions and Python resolution through the pinned
+CLI. No application source, dependency, data migration or new API is needed.
+The repository has a spec template but no plan template; this document
+provides the dialect's technical context, constitution check, project
+structure, research, data model, contracts, quickstart and risks.
 
 ## Constitution check
 
-0081 is proposed and narrowly records the explicit 2026-10-26 instruction;
-no seat accepts it. Accepted 0057/0058 otherwise govern, with 0045 §8 and
-0050's proof ownership intact. Frozen 0001–0003 and extraction-at-ingest
-0005, real-protocol tests, exact 100/100/100 coverage, dependency policy,
-protected review and security hold remain. Review tool permissions must not
-be enlarged merely because the provider changes. Commit unsigned, never push.
+The operator's revised 2026-10-26 direction authorizes only the tests routing
+amendment. 0081 remains proposed; do not infer any further acceptance.
+Accepted 0057/0058 govern everything else. Preserve frozen 0001–0003,
+extraction-at-ingest 0005, deterministic real-protocol tests under 0004/0020,
+exact coverage, dependency policy, protected review, security hold and
+candidate binding. Preserve adapter capability truth and workspace hands.
+Use pinned proofs per 0050; unsigned commits per 0056, never push.
 
-This chief commit contains exactly spec.md, plan.md, tasks.md and proposed
-0081. Indexing 0081 and any dated pointers belong to implementation. The
-existing decision-inventory test therefore rejects this intermediate
-unindexed proposal, and workspace tests/coverage cannot be represented as
-all green. Run every requested gate and record its actual result anyway;
-never edit the test, add an extra committed file or conceal the expected
-failure to satisfy two incompatible phase obligations. The final design
-validator assesses the four committed artifacts; it cannot certify routing
-implementation or discharge the compatibility prerequisite.
+The chief commit touches exactly the existing spec.md, plan.md, tasks.md and
+proposed 0081. The decision already has an index row, so no new numbering or
+inventory entry is needed. Its old row description and current route prose
+are implementation updates; until then route prose describes unchanged
+routing. The old implementation report is historical under this spec's dated
+clarification. Final implementation must remove those stale current claims.
 
-## Research and decisions
+## Research and design choices
 
-Both panel positions and the intake framing were read. The supplied evidence
-checksums matched; README contains no prior run entries. Local intake records
-baseline `a037dc9`, passing house gates before this proposal, and the separate
-full dispatcher cross-attempt failure. These are baseline observations,
-not final-route evidence. The decision index contains no 0081; the current
-dated numbering instruction controls the older ledger.
+Both current panel positions and both task framings were read. Required
+README and revised rulings checksums match; the README has no prior-run
+entries and still describes the superseded request. The revised ruling
+controls. Engine digest matches the required value. Baseline for preserved
+routing is `d55a89de70f4a4e6cc598d3726eb2fa55bc2df76`; intake subsequently
+committed the revised framing and verification receipt without routing edits.
 
-The chief's disposable probe established that explicit `efforts: {}` gives
-empty resolved maps, and fast compilation selects GLM tests with null effort.
-It also established that both boxed intake offices are blocked under dsh and
-Standard/Careful cannot compile with preserved hands. Evidence remains in
-ignored run-local output, named `glm-flash-chief-inheritance`, including
-resolved office JSON and final compile stderr. No live provider was invoked.
+`agents/codex-review-tests.json` currently selects Sonnet/high and extends
+`review-tests`. Its parent carries Fable/GLM with Fable effort. Explicit
+`efforts: {}` avoids inherited metadata; preserve the overlay rather than
+selecting the parent's fallback chain. The existing dsh adapter already maps
+Spark, marks it local and effortless, and needs no change. All four panel
+placements already name this office, so topology needs no edit. The prior
+blocked intake fixture is historical evidence, not a prerequisite to
+reproduce or repair for this revised task. Both panels support this cut.
 
-This supersedes both panel positions' assumption of an immediately viable
-three-office patch. The design fixes the required target and refuses a
-permissions shortcut. First reproduce this prerequisite with the candidate's
-full realm/dialect setup. If it persists, record the exact unavailable
-capability and stop dependent implementation; do not make speculative
-production edits or claim partial routing as accepted. A separately authorized
-compatibility change would require a revised plan and fresh proof, not an
-implicit exception in this task. In particular, do not set unsupported
-adapter capabilities to supported or delete intake hands to silence compile.
+Choose robustness's exact effective-route assertions and negative controls
+inside simplicity's two existing proof files. Source-only replacement is
+insufficient; a new generic routing framework is unnecessary. Keep baseline
+comparison as fresh run-local evidence. A chief disposable fixture with only the tests overlay changed compiled all
+four recipes without policy warnings and resolved this office ok on dsh with
+empty efforts. The manifest omits effort: treat omission and JSON null as
+absence, rejecting every explicit value. This validates design feasibility,
+not committed implementation or provider dispatch. The known full dispatcher failure
+must remain distinct from focused route success and from house-gate results.
 
 ## Project structure and touched files
 
-| Path | Planned change / proof responsibility |
+| Path | Implementation responsibility |
 | --- | --- |
-| `agents/codex-intake.json`, `agents/codex-careful-intake.json`, `agents/codex-review-tests.json` | Only models and effort maps: singleton GLM and `{}`; preserve all other fields. Conditional on resolving the prerequisite without violating scope. |
-| `tests/delivery_recipes.rs` | Exact office-specific models/efforts, dsh mapping and effortless/local metadata; retain charter/hands checks on intake and exact lane topology. |
-| `tests/codex_review_routing.py` | Extend existing resolved matrix with exact three-office comparison and mutations; assert successful status and compiled effective effort. Preserve dispatcher controls. |
-| Other existing proof files discovered by scoped search | Update only executable pins of the superseded intake/tests assignments; no new framework or blanket allowlist. |
-| `agents/README.md`, `bundles/README.md`, `docs/house-rules.md` | Correct current route descriptions, careful intake effort and provider limitations without changing the gate inventory. |
-| `bundles/codex/bundle.json`, `bundles/codex-careful/bundle.json`, `bundles/codex-fast/bundle.json` | Description text only where stale; composition/seat metadata stays identical. |
-| `docs/decisions/0081-glm-flash-seats.md` | This chief's proposed record; preserve its status. |
-| `docs/decisions/README.md` | Add proposed 0081 row during implementation. |
-| `docs/decisions/0057-codex-delivery-recipes.md`, `docs/decisions/0058-codex-review-routing.md` | Dated pointer to proposed amendment if needed; accepted bodies remain byte-preserved. |
+| `agents/codex-review-tests.json` | Only executable routing edit: singleton glm-flash and explicit empty efforts; preserve extends and all other fields. |
+| `tests/delivery_recipes.rs` | Exact office-specific model/effort assertions, Spark mapping/local/effortless metadata; unchanged charters, hands and panels. |
+| `tests/codex_review_routing.py` | Extend resolved_matrix for the actual tests office in all four placements, exact status/provider/concrete/local/effort tuple and mutation controls. Preserve full dispatcher assertions. |
+| `agents/README.md`, `bundles/README.md`, `docs/house-rules.md` | Reconcile current tests-review descriptions and effort; keep intake and gate inventory intact. |
+| `bundles/codex/bundle.json`, `bundles/codex-careful/bundle.json`, `bundles/codex-fast/bundle.json` | Stale description text only; preserve composition, selectors and policy. |
+| `docs/decisions/0081-glm-flash-seats.md` | Chief's revised tests-only proposed record; never accept. |
+| `docs/decisions/README.md` | Update existing 0081 row's scope/citation, preserving proposed status. |
+| `specs/glm-flash-seats/implementation.md` | Add dated supersession notice for the old blocked attempt, preserving findings and provenance. |
+| `docs/decisions/0057-codex-delivery-recipes.md`, `docs/decisions/0058-codex-review-routing.md` | Only dated amendment pointers if needed; preserve accepted bodies. |
 
-Preservation inputs: base offices/charters, `adapters/dsh.json`, all other
-offices, bundle policies, `bundles/self`, engine/tooling, gate scripts/shims,
-Cargo files and application `src/`. No extra design artifact or index edit
-belongs in the chief's four-file commit. Existing `intake.md` remains intact.
+Other executable old tests-route pins found by scoped search may be updated
+in place; do not globally replace Sonnet. Preservation inputs include both
+intake offices, every other office/base/charter, dsh adapter, bundle policies,
+self, tooling/engine, gate scripts/shims, Cargo files and all `src/`.
 
 ## Implementation approach
 
-1. Verify evidence/engine digests and clean starting revision. Resolve baseline
-   manifests/offices and capture non-routing JSON plus inherited charter hashes
-   against `a037dc9`. Search current docs and executable tests for old pins;
-   distinguish historical decisions and valid Sonnet fallback references.
-2. Reproduce the measured GLM/hands conflict in an isolated fixture with the
-   same agents/adapters/bundles/realm/dialect. Require per-candidate `ok`, not
-   merely command exit zero. If unresolved, report the exact prerequisite;
-   continue only independent documentation/proof preparation, not a false
-   successful route patch. Do not amend engine or permissions within this work.
-3. Once an authorized compatible basis exists and this design is reconciled,
-   edit the three overlays in place. Empty effort maps replace inherited
-   metadata; retain office identity and every other field. Resolve and compile
-   again before trusting source edits.
-4. Extend existing Rust checks with exact GLM expectations only for these
-   offices. Preserve the full hands/charter loop for intake. Extend Python
-   using one local comparator for actual and mutated records: office name,
-   provider, chain, concrete route, local classification, empty effort,
-   resolution status and compiled candidate effort. Reject each AC6 mutation
-   through that same comparator. Keep unrelated model/effort assertions exact.
-5. Compare full panels, fast selectors, protected script origins/hands/boundaries,
-   non-routing office fields and inherited charter identity to baseline.
-   Keep existing dispatcher, fallback, aggregation and candidate-fence controls.
-   A test of mutant records proves the comparator, not live driver support.
-6. Index the decision, add only dated historical pointers, and correct current
-   summaries. Quote operator provenance in tracked prose rather than linking
-   ignored evidence. Do not globally replace Sonnet or claim Codex intake still
-   has higher Careful effort.
-7. Commit the implementation before final verification. Run the focused and
-   full proofs separately, all compilations and every house gate. Record
-   actual exit codes, candidate hash, engine digest and fresh evidence paths;
-   retain full errors. No failed or unexecuted check becomes a success claim.
+1. Verify authority and engine digests; record starting revision. Capture
+   full source/resolved routing and charter hashes against baseline. Use a
+   disposable export of tracked baseline files if needed, never a sibling
+   worktree or canonical journal. Search for current old-route pins.
+2. Change the one overlay. Resolve its effective office and all recipes,
+   assert `ok`, singleton dsh/Spark/local route, empty office effort and null
+   compiled effort. Compile all four bundles before trusting the substitution.
+3. Adapt the Rust reviewer loop to expect an exact empty map only for tests;
+   retain exact high-effort maps elsewhere. Pin the existing dsh metadata.
+   Extend Python with one local route comparator for selected manifest and
+   effective office values, retaining exact full-matrix membership checks.
+4. Feed copied mutated observations through that same comparator, one fault
+   at a time: old Sonnet, provider, concrete model, local class, blocked
+   status, fallback, effort, missing/replaced member. Every mutant must fail.
+   This proves assertion sensitivity, not live provider execution.
+5. Compare all non-target routes/fields and protected boundaries against
+   baseline. Preserve distinct results, triage selectors, official Flash,
+   independent Fable and sole pre-result Qwen-to-Sonnet fallback. No health
+   probe, retry change or Spark fallback is introduced.
+6. Reconcile current docs/index and label prior blocked evidence superseded.
+   Commit implementation before final proof. No tracked provenance links
+   into ignored evidence; the revised ruling is quoted in 0081.
+7. Run focused resolution and the full dispatcher separately, all compile
+   checks and local gates; record candidate/engine identities, exits and
+   fresh output paths. Report red and unexecuted controls explicitly. No
+   baseline failure authorizes weakening a control or changing the engine.
 
 ## Data model and contracts
 
-No new schema. Existing office name, base charter, model array, efforts map,
-provider resolution and compiled candidate tuple remain the entities. An
-empty effort map is configuration, while manifest `effort: null` is the
-observable absence of selected effort; prose says “not applicable.” The
-adapter's local classification is metadata, not evidence of live availability.
-
-Review remains gate-class, read-only, with separate required results and
-unchanged result vocabulary/input keys. Preserve `result`, `inputs`, `notes`
-and explicit safety/scope/fixes facts. Missing or invalid results refuse;
-no silent paid substitution or skipped tests reviewer is allowed. Existing
-attempt/deadline limits apply. The baseline dispatcher correlation defect
-means those declarations alone cannot establish dispatcher-wide enforcement.
+No schema change. The entities remain office identity, inherited charter,
+model chain, efforts map, adapter route and compiled candidate tuple.
+Empty office effort is `{}`; compiled absence is an omitted or null effort
+field, normalized to null by the comparison; human wording is
+“not applicable.” Route class local is metadata, not measured reachability.
+Tests review remains gate-class/read-only with separate required result,
+existing limits and candidate-change refusal. Existing result/inputs/notes
+and safety/scope/fixes facts keep their vocabulary and validation. Preserve
+missing/invalid-result refusal and bounded failure behavior. The recorded
+cross-attempt proof gap prevents a claim of dispatcher-wide enforcement.
 
 ## Quickstart and verification
 
-Work offline, install nothing, and set `CARGO_NET_OFFLINE=true` and prepend
-`$PWD/.forge/bin` to PATH. Verify the engine digest above and strict public
-shim digests in `bundles/self/scripts/shims.sha256`. Run the pinned scripts
-against the candidate as required by 0050; the public shims name those gates.
-
-For implementation, first run:
+Use only `.forge/bin/brokkr`, whose SHA256 must be
+`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
+Work offline, install nothing; set `CARGO_NET_OFFLINE=true` and prepend
+`$PWD/.forge/bin` to PATH. Verify `bundles/self/scripts/shims.sha256` with
+`sha256sum --check --strict` before executing pinned equivalents of the
+house gates. Use candidate bundles as they stand.
 
 ```bash
 cargo test --locked --test delivery_recipes --test delivery_constitution --test store_contract_docs
+.forge/bin/brokkr agents show codex-review-tests
+.forge/bin/brokkr compile --bundle bundles/self
+.forge/bin/brokkr compile --bundle bundles/codex
+.forge/bin/brokkr compile --bundle bundles/codex-careful
+.forge/bin/brokkr compile --bundle bundles/codex-fast
+python3 tests/codex_review_routing.py --engine .forge/bin/brokkr --out .forge/proofs/glm-tests-full-UNIQUE
 ```
 
-Compile `self`, `codex`, `codex-careful` and `codex-fast` using
-`.forge/bin/brokkr compile --bundle bundles/<name>` and reject policy-sweep
-warnings. Then run the existing full dispatcher proof with a fresh output
-directory and independently invoke `resolved_matrix`:
+Independently invoke the existing focused proof; replace UNIQUE with a fresh
+suffix on every execution and retain full-script outcomes alongside it:
 
 ```bash
-python3 tests/codex_review_routing.py --engine .forge/bin/brokkr --out .forge/proofs/glm-flash-full-UNIQUE
 python3 - <<'PROOF'
 from pathlib import Path
 import runpy
 proof = runpy.run_path('tests/codex_review_routing.py')
-out = Path('.forge/proofs/glm-flash-resolved-UNIQUE')
+out = Path('.forge/proofs/glm-tests-resolved-UNIQUE')
 out.mkdir(parents=True, exist_ok=False)
 proof['resolved_matrix'](Path('.forge/bin/brokkr').resolve(), out.resolve())
 PROOF
 ```
 
-Replace UNIQUE once per execution; do not overwrite evidence. Run the entire
-canonical [house inventory](../../docs/house-rules.md#gates--part-of-every-change),
-including fmt, locked clippy/workspace tests, exact coverage,
-coverage selftest, publish guard, keyless seal proof and licenses. Also run
-pinned design-check selftest, delivery-proof-test and the verify seat's
-fail-closed native-tls absence proof. The intake framing gives exact commands;
-no network-backed CI ownership becomes a local criterion. Retain a separate
-full-dispatcher outcome: the known `1-cross-attempt` assertion expects refusal
-but baseline completes, and subsequent controls are unexecuted after that stop.
+Run the entire canonical [house inventory](../../docs/house-rules.md#gates--part-of-every-change):
+fmt, locked clippy/workspace tests, self compilation, exact coverage and its
+selftest, publish guard, keyless seal proof and licenses. Use pinned scripts
+under `bundles/self/scripts/` after shim verification. Also run design-check
+selftest and delivery-proof-test. For native-tls absence, run `cargo tree -i
+native-tls` and accept only nonzero exit with “did not match any packages”;
+success or any other error refuses. Retain compile warnings as failures.
 
-For this design's final HEAD use
-`bash bundles/self/scripts/design-check.sh check .`. Keep the four-file design
-commit last. Record design gate outcomes in ignored run evidence and the
-required result receipt, so gate reporting does not add another commit.
+The baseline full Python script stops at `1-cross-attempt`, engine completed
+instead of refusal; later cases do not run. Reproduce/report this separately
+without calling the script green. The operator assigned correlation repair
+to separate engine work before any re-pin. House/focused green is narrower
+than full dispatcher green. Disposable controlled proof journals are allowed;
+canonical journal, GitHub, CI, host endpoint and sibling worktrees are not.
+
+For the chief's final HEAD run `bash bundles/self/scripts/design-check.sh
+check .`; keep the four-file design commit last and clean. Run every requested
+local gate on that design commit too, recording outcomes only in ignored
+run evidence and the result receipt. These gates exercise unchanged routing;
+implementation and final route acceptance remain later-phase obligations.
+CI/operator ownership is as stated in the spec, with no new local conditions.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 | --- | --- |
-| Pinned engine refuses dsh intake hands | Measured prerequisite; retain hands and refusal. No in-scope compatible implementation is known; operator-directed compatibility work is required before claiming AC1/AC8. |
-| Effort inherited from base or stale Sol/Sonnet map | Explicit `{}`; assert resolved empty map and manifest null effort. No base-office or adapter change. |
-| Alias looks right but provider/route/status is wrong | Exact route tuple and negative controls; command exit zero alone never passes. |
-| Broader allowlist hides moved implementer or lost role | Per-office source assertions, full resolved matrix and unchanged-role comparison. |
-| dsh lacks native permissions/MCP enforcement | Retain capability truth, charters, gate class and candidate-change refusal; never claim equivalent confinement or add powers. |
-| Free route unavailable or poor review | Existing attempts/deadlines and missing-result refusal; no paid fallback. Availability and model choice remain operator-owned. |
-| Known engine correlation failure obscured by route green | Preserve failing control and separately report full vs focused proof, including later unexecuted cases. No engine re-pin in this feature. |
-| New ADR omitted from index during design | Required four-file commit defers index; report failing inventory/workspace/coverage checks honestly, then implementation adds row before final gates. |
-| Proposed text mistaken for acceptance | One proposed status; explicit dated source, no historical rewrites or unrelated approvals. |
-| Concurrent proof outputs collide | Fresh ignored directories and captured candidate/engine identity for every run. |
+| Old intake blocker accidentally persists as a requirement | Explicit dated scope replacement in spec/0081; preserve paid Sol intake and its hands, label old report during implementation. |
+| Inherited effort or parent's fallback leaks into Spark | Keep overlay, set explicit empty map, assert effective office and compiled candidate, reject effort/fallback mutants. |
+| Alias or CLI exit hides wrong/blocked route | Compare exact provider/concrete/local/status tuple and exercise negative controls. |
+| Shared edit silently affects other seats or panel shape | Full source/resolved baseline comparison, exact memberships and unchanged charters/permissions/efforts. |
+| Extra proof machinery creates another routing owner | Extend two existing suites, use one local comparator and run-local baseline evidence only. |
+| dsh read-only charter mistaken for native confinement | Preserve unsupported adapter declarations and candidate fence; no enforcement-equivalence claim or added tools. |
+| Spark outage or review-quality variation | Existing limits, independent roles and shell proofs remain; no paid fallback, quality-equivalence claim or seat network probe. |
+| Baseline correlation defect hidden by focused green | Preserve failing assertion, record full/focused exits separately and list unexecuted cases; no engine repair in this task. |
+| Four-file design restriction leaves stale summary prose | Spec declares phase boundary; ordered implementation documentation task updates index, summaries and old report before final acceptance. |
+| Proposed amendment mistaken for broad acceptance | Quote precise revised operator direction; retain proposed status and historical accepted bodies. |
+| Evidence collisions | Fresh output directories with candidate and engine identities; never overwrite prior receipts. |
