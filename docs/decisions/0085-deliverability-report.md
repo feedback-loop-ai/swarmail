@@ -52,8 +52,10 @@ semantics and error text, is [the specification](../../specs/deliverability-repo
    `swarmail_get_deliverability_report` tool; the existing message page gains
    an escaped report section. All consume one typed result. Missing messages
    keep not-found behavior; unavailable/failed analysis yields fixed sanitized
-   errors, never empty success. Legacy MCP uses text; newer output/schema/error
-   formatting must use #153 once its local artifacts are supplied.
+   errors, never empty success. MCP uses main's current 2025-03-26 contract:
+   report JSON in a text block through the existing result helper. Add report
+   structuredContent/outputSchema when #153 lands as a later, small follow-up,
+   using its shared owner; it is not a prerequisite for this issue.
 7. `no_findings_at_or_above` qualifies ordinary-filter matches for REST
    assert/await and MCP wait. Empty reports qualify, failed reports do not.
    Assert remains exact including zero; wait remains minimum-one. Qualify
@@ -89,11 +91,14 @@ are explicit rather than claimed away by a successful report.
 
 ## Dependency, proof and disposition
 
-The exact local #152/#153 implementations/tests and accepted 0079/0080/0082
-records are missing. The verified packet says those decisions were accepted;
-this proposal cannot fabricate their content or replace their shared owners.
-AC7 in the spec remains required before feature completion. No claim of newer
-MCP compatibility follows from this draft.
+The operator's current brief (2026-10-26, run
+`epic-251-issue-252-implement-the-22ac6e57`) withdraws the earlier instruction to
+follow #153 now. This issue runs on current main in parallel with epic #164.
+There is no design or completion dependency on 0079/0080/0082 or #152/#153
+artifacts. Spec AC7 proves the current 2025-03-26 text-block contract; report
+structuredContent/outputSchema is a later, small follow-up when #153 lands.
+No newer MCP conformance, decision acceptance or protocol change is implied.
+0085 remains proposed. The previous IMPL-BLOCKED record stays historical.
 
 Spec AC1–AC10 and [paired tasks](../../specs/deliverability-report-contract/tasks.md)
 require typed fixtures, identity/cancellation/deadline interleavings, real SMTP /

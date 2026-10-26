@@ -1,6 +1,12 @@
 # Issue #252 implementation prerequisite
 
-2026-10-26. Implementation is blocked; the feature is not implemented.
+Historical outcome of the earlier implementation attempt, 2026-10-26. The
+operator has withdrawn this prerequisite. See the [current-main intake](../../specs/deliverability-report-contract/intake-current-main.md)
+and revised proposed 0085: this report proceeds on main's 2025-03-26 MCP text
+contract independently of epic #164. The feature still needs implementation;
+this earlier block is not an active dependency. The original record follows.
+
+2026-10-26. Implementation was blocked under the earlier brief.
 
 The verified issue packet requires compatibility with #153 on MCP 2025-06-18
 and 2025-11-25. This candidate only implements MCP 2025-03-26:

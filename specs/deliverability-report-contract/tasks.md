@@ -5,13 +5,12 @@ behavior. Test names are required witnesses to add/extend in the listed owner;
 existing preservation suites are named where no new test is needed. Keep
 inline tests measured unless 0020's concrete cold-path rule requires a harness.
 
-- [ ] **T1 — Record the integration prerequisite (AC7).** Receive locally the
-  #152 negotiation implementation/tests and accepted 0079/0080 plus #153 shared
-  output/schema implementation/tests and accepted 0082. Compare their declared
-  behavior before integrating; do not fetch or invent it. **Proof:** the supplied
-  negotiation/result regression suites pass locally, and
-  `report_mcp_revision_matrix` later pins each revision. T2–T9 may proceed while
-  this is unresolved; T10 and feature completion may not.
+- [ ] **T1 — Pin the current-main MCP contract (AC7).** Use main's existing
+  2025-03-26 text_result/error_result and input admission owners. No dependency
+  on 0079/0080/0082 or #152/#153 artifacts. **Proof:** T10's HTTP/stdio witnesses
+  pin the current report shape and unchanged initialization. Record report
+  structuredContent/outputSchema as a later, small follow-up when #153 lands,
+  not as an unchecked requirement of this delivery.
 - [ ] **T2 — Implement typed contract and canonicalizer (AC1/AC2).** Add
   src/deliverability.rs and its module declaration; exact severity/location
   shapes, complete ordering/deduplication and size limits. **Proof:** inline
@@ -80,13 +79,14 @@ inline tests measured unless 0020's concrete cold-path rule requires a harness.
   complete-scan timeout and incomplete-scan unavailable. Real REST/MCP shutdown
   tests pin existing error shapes. `report_failed_scan_is_not_exact_or_clean`
   proves an assert never reports a partial successful count.
-- [ ] **T10 — Integrate newer MCP through #153 (AC7; requires T1).** Register the
-  report with the supplied shared schema/result owner, keep legacy text and
-  current negotiation/deviation policy. **Proof:** `report_mcp_revision_matrix`
-  in tests/mcp.rs and `report_stdio_revision_matrix` in tests/stdio.rs cover
-  negotiated 2025-03-26/2025-06-18/2025-11-25, tools/list schema versus actual
-  result, empty and nonempty findings, malformed inputs and operational errors.
-  Existing #152/#153 regression suites must remain green; no new negotiator.
+- [ ] **T10 — Prove current-main MCP report results (AC7).** Use the existing
+  2025-03-26 result helpers and tool descriptor. **Proof:**
+  `report_mcp_text_contract` in tests/mcp.rs and `report_stdio_text_contract` in
+  tests/stdio.rs prove REST parity for empty/nonempty findings, one JSON text
+  block, isError=false on success, existing operational errors, -32602 invalid
+  inputs, closed required-id admission and unchanged initialization behavior.
+  Assert the report has no structuredContent and its descriptor no outputSchema.
+  Document the small follow-up when #153 lands; no negotiator is added here.
 - [ ] **T11 — Render the message report (AC8).** Existing server-rendered page,
   same evaluator, escaped textual locations/hints, explicit empty/failure state;
   no inbox-list warming. **Proof:** tests/ui.rs `report_ui_states_and_escaping`

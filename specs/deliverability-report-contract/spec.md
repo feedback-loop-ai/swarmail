@@ -1,6 +1,10 @@
 # Deliverability report contract
 
-Date: 2026-10-26. Status: design draft. Epic #251, issue #252.
+Date: 2026-10-26. Status: design draft, current-main scope corrected at re-intake. Epic #251, issue #252.
+
+Current framing: [current-main intake](intake-current-main.md). The operator
+explicitly withdrew the earlier #153 prerequisite; this active draft is revised
+under that instruction, without rewriting earlier runs or accepting 0085.
 
 Decision: 0085 — [Lazy deliverability reports](../../docs/decisions/0085-deliverability-report.md), proposed; acceptance belongs to the operator.
 
@@ -38,14 +42,15 @@ worktree was consulted. The tracked [rulings](../../docs/rulings/epic-192.md)
 copy predates the supplied #251 ruling; the dated authority above is transcribed
 from the verified packet, not inferred from that older copy.
 
-**Required local integration input:** #152's negotiation implementation/tests and
-accepted decisions 0079/0080, plus #153's shared result/schema implementation/tests
-and accepted 0082, are absent. This candidate advertises only MCP 2025-03-26.
-The implementation owner must receive these artifacts locally from the operator
-before completing AC7. Their absence does not authorize substitute negotiation,
-invented accepted text or dropping AC7. Independent work may proceed; feature
-completion remains blocked on this specific dependency. Design structural
-validation does not prove newer MCP compatibility.
+**Current-main scope, operator correction of 2026-10-26:** implement independently
+of epic #164. MCP uses main's existing 2025-03-26 tools contract: report JSON in
+a text content block. There is no design or completion dependency on decisions
+0079/0080/0082 or on #152/#153 implementation artifacts. Add the report's
+`structuredContent`/`outputSchema` through the shared owner when #153 lands,
+as a later, small follow-up; that follow-up is outside this issue's completion
+criteria. No protocol negotiation or newer-revision conformance is claimed here.
+The earlier IMPL-BLOCKED outcome records the withdrawn brief, not a current
+missing input. All required inputs for this framing are present locally.
 
 ## Contract
 
@@ -139,9 +144,10 @@ mail or parser diagnostics. Failure is never an empty report or a clean match.
 - MCP `swarmail_get_deliverability_report`: required string `id`, no other keys.
   On 2025-03-26 use the existing plain text result containing report JSON and
   existing `isError` operational failures; malformed arguments use `-32602`.
-  On negotiated 2025-06-18/2025-11-25 register the same report with #153's
-  shared outputSchema/structuredContent owner, including its exact error policy.
-  Do not add a resource or a second formatter/negotiator.
+  Return report JSON through the existing text_result helper; do not add
+  structuredContent/outputSchema or revision negotiation in this issue.
+  Add structuredContent/outputSchema when #153 lands in a later, small follow-up
+  through its shared result/schema owner. No resource or second formatter.
 - Existing message UI page: server-rendered report section with rule-set id,
   severity, rule id, locator and hint; explicit empty and unavailable/failed
   states. Escape all strings and render link locators as text. No list warming,
@@ -199,13 +205,14 @@ No ambient network/time reads are permitted inside this issue's evaluator.
 | Separate pending UI/wait/provider machinery | Adopt simplicity's server rendering, one wait loop and static collector. Reject loading/polling jobs, persistent reports and generic provider frameworks. First view pays analysis latency; future heavy rules must justify their own design. |
 
 Both positions' typed output, full input identity, truthful failures, strict
-admission, no SMTP analysis, no dependency widening and explicit newer-MCP
-prerequisite are adopted without compromise.
+admission, no SMTP analysis and no dependency widening are retained. The
+operator's later correction removes the newer-MCP prerequisite; current-main
+text results are the complete MCP scope for this issue.
 
 ## Acceptance Criteria
 
-These criteria prove the implementation locally once prerequisites exist; they
-are not claims that design has implemented it. Concrete test ownership is in
+These criteria prove the implementation locally on current main; they are not
+claims that design has implemented it. Concrete test ownership is in
 [tasks.md](tasks.md).
 
 1. **AC1 — Typed contract:** fixtures pin all severity/location shapes, nullable
@@ -232,10 +239,15 @@ are not claims that design has implemented it. Concrete test ownership is in
 6. **AC6 — REST:** real-server response/schema parity, 404, fixed 503s and closed
    query validation; invalid input invokes no evaluator. Served OpenAPI covers
    report variants, bounds, predicate domains and all documented statuses.
-7. **AC7 — MCP:** real HTTP and stdio expose the same report as REST; legacy
-   content stays text. After the named local #152/#153 dependency is supplied,
-   both newer revisions prove #153 schema/structuredContent/error parity and
-   unchanged negotiation/legacy behavior. No unsupported revision is advertised.
+7. **AC7 — MCP:** real HTTP and stdio expose the same report as REST using
+   main's 2025-03-26 contract: one text block containing report JSON and
+   isError=false on success; existing isError operational failures and -32602
+   malformed-argument errors remain. tools/list advertises the required id
+   input and closed argument shape; tests cover empty/nonempty findings,
+   missing mail, invalid inputs and sanitized analysis failures. The report
+   descriptor has no outputSchema and its result has no structuredContent.
+   Existing initialization/protocol behavior remains pinned. The later #153
+   follow-up is documented and is not a prerequisite or local criterion.
 8. **AC8 — UI:** real message pages display nonempty, empty and failure states
    with escaped fields; link locators do not create links. Reading the page does
    not modify stored fields or warm the inbox list.

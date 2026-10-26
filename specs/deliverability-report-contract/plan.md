@@ -2,6 +2,8 @@
 
 [Specification](spec.md), [proposed decision 0085](../../docs/decisions/0085-deliverability-report.md).
 This plan is design work. Its behavior tests are implementation obligations.
+Current-main scope was corrected at [re-intake](intake-current-main.md) under
+explicit operator instruction; earlier runs remain historical.
 
 ## Technical context
 
@@ -35,13 +37,10 @@ harness under 0020. No global mutable probe, sleep synchronization, attribute
 coverage exclusion, intermediate chaos probability or dependency widening.
 Keep bundle/recipe routing unchanged. Commit unsigned; no push or publication.
 
-The chief's final design commit contains spec.md, plan.md, tasks.md and 0085.
-The decision index is a required implementation documentation update unless
-explicitly allowed in this design commit. The exact-four-files instruction and
-the index-inventory gate conflict: absent such permission, run and report that
-gate failure honestly; do not weaken the test, change accepted records, hide the
-proposal during tests or claim a green design baseline. Structural design-check
-and the full house gates are distinct proofs.
+The chief's final design artifacts are spec.md, plan.md, tasks.md and proposed
+0085. The proposal already has its required decision-index row on this candidate;
+retain its proposed status. Structural design-check and the full house gates
+are distinct proofs. Use the current recipe's commit and validator contract.
 
 ## Research and resolved choices
 
@@ -59,10 +58,11 @@ with weak references disassociates those references, while try_unwrap/drop ends
 the old object's lifetime. New objects cannot validate that old identity. Tests
 must exercise these public ownership escapes rather than assuming IDs are unique.
 
-The older tracked rulings copy lacks the latest packet's #251 and #152/#153
-text. Do not silently invent accepted records. Required integration artifacts
-are named in spec AC7; implementation may proceed independently through legacy
-surfaces but cannot finish the newer-revision step until supplied locally.
+The operator's current brief withdraws the earlier structured-output prerequisite.
+Implement on current main independently of epic #164, with report JSON in the
+existing MCP 2025-03-26 text block. There is no dependency on 0079/0080/0082.
+The report's structuredContent/outputSchema integration follows when #153 lands
+as a later, small follow-up, outside this issue's completion criteria.
 
 ## Project structure and files
 
@@ -71,9 +71,9 @@ surfaces but cannot finish the newer-revision step until supplied locally.
 | `src/deliverability.rs` (new), `src/lib.rs` | Report/severity/location/config types; bounded demo scan; canonicalizer; cache/service and errors; pure collector and typed input-key owner. Declare the new module. |
 | `src/store.rs` | Own an empty report service; expose stored-snapshot analysis internally; extend the existing wait owner with optional qualification. Leave Filter::matches, mutation order, insert and persistence untouched. |
 | `src/api.rs` | Report GET, empty-query admission, typed optional assert/await severity, shared failure mapping and qualified snapshot counting. |
-| `src/mcp.rs` | One tool/input schema, shared severity admission and wait option; legacy result formatting, then #153 registration using supplied shared owners. |
+| `src/mcp.rs` | One tool/input schema, shared severity admission and wait option; current 2025-03-26 text_result formatting. |
 | `src/ui.rs` | Escaped server-rendered report section on message view; offload report/render work; explicit empty/failure states. |
-| `src/static/openapi.json`, `src/static/llms.txt`, `README.md` | Report schema, route/errors, demo disclaimer, predicate/count meaning and examples; document newer revisions only after integration. |
+| `src/static/openapi.json`, `src/static/llms.txt`, `README.md` | Report schema, route/errors, demo disclaimer, predicate/count meaning and examples; document current text results and the later #153 follow-up. |
 | `docs/decisions/README.md` | Proposed 0085 index row; no change to existing statuses. |
 | `tests/api.rs`, `tests/mcp.rs`, `tests/stdio.rs`, `tests/ui.rs` | Real-server surface/validation/parity and wait tests. |
 | `tests/persistence.rs`, `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` | Extend lazy/restart proof where public protocols suffice; retain acceptance/extraction/count guarantees. |
@@ -142,8 +142,8 @@ per-message route and legacy tool. Serialize the same Report on all surfaces.
 Keep operational failure separate from finding severity: a provider failure
 returns Err, not an error-severity finding that an `error` threshold might hide.
 REST 400/404/503 and existing legacy MCP -32602/isError are pinned by tests.
-Modern MCP schema/error policy is deliberately delegated to the missing #153
-owner, not guessed in a parallel branch.
+Report outputSchema/structuredContent is deferred to a later, small follow-up
+when #153 lands. Current-main text results fully satisfy AC7 here.
 
 Extend one internal wait loop with optional analysis settings, preserving the
 public unqualified wait entry point if its signature is externally used. The
@@ -170,9 +170,10 @@ failure. The list page never requests reports. Keep all report strings escaped
 even though current rule strings are fixed; adversarial fixture providers prove
 that a later provider cannot create markup or a URL fetch.
 
-Finally integrate the supplied #152/#153 owner and test both newer revisions on
-HTTP and stdio; update living user docs and the proposed index row. Do not edit
-historic specs or accepted rulings. Ordered tasks assign each proof explicitly.
+Finally prove report JSON text-result parity on current HTTP and stdio tools;
+update living user docs and retain the proposed index row. Document the later
+#153 follow-up without a prerequisite. Do not edit historic specs or accepted
+rulings. Ordered tasks assign each proof explicitly.
 
 ## Quickstart and validation
 
@@ -198,13 +199,13 @@ design-check/selftest, delivery-proof-test and fail-closed native-tls absence.
 Exact coverage requires zero missed lines, branches and functions. No installs,
 network access, weakened checks or inherited baseline receipts substitute for
 new execution on the committed candidate. Retain command/exits/log hashes and
-commit/tree identity in run-local evidence. The design commit remains HEAD.
+commit/tree identity in run-local evidence. Bind verification to the committed candidate.
 
 ## Risks
 
 | Risk | Mitigation and accepted cost |
 |---|---|
-| Missing newer MCP owners | Carry AC7 and the exact missing local files/contracts; integrate only supplied artifacts. Legacy completion is not full feature completion. |
+| MCP scope drifts into epic #164 | Pin current 2025-03-26 JSON-in-text results and unchanged initialization; defer report structuredContent/outputSchema to the small follow-up when #153 lands. |
 | Derivation delays SMTP indirectly | Never evaluate under store guards; four bounded header-scan jobs only, offloaded; prove SMTP commits while jobs are held. Shared OS/pool contention remains, no latency SLA. |
 | Same id/different bytes or ownership escape | Weak upgrade + ptr_eq and full inputs, live selection first; prove clone, make_mut/try_unwrap, replacement and restart. Never key on id/TTL alone. |
 | Cancellation refunds capacity early | Worker owns permit, slot pin and owned lock; deterministic abort/unwind tests, with no separate publication task. |
@@ -215,4 +216,3 @@ commit/tree identity in run-local evidence. The design commit remains HEAD.
 | Provider makes future reports stale | Explicit immutable provider inputs and key identity; #253 owns refresh/wakeup before external observations can ship. |
 | Demo is mistaken for deliverability assurance | Synthetic rule namespace and explicit empty-report disclaimer in every user-facing explanation. No score or authentication success. |
 | New framework expands exact coverage burden | One module, bounded deque, existing offload/wait owner and static collector; no dynamic registry, executor or new dependency. |
-| Exact commit scope conflicts with index gate | Request a narrow index exception; absent permission, commit exactly the authorized four artifacts and record the resulting gate failure, not green verification. |
