@@ -327,10 +327,42 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-The synthetic demo.marker.v1 remains: the first root X-Swarmail-Demo field,
-unfolded and space/tab trimmed, selects info|warning|error and emits the fixed
-hint "Remove the X-Swarmail-Demo header." Disabling the demo leaves bulk rules
-active. Empty findings do not imply deliverability or authentication success.
+`swarmail-html/1` retains the synthetic demo.marker.v1: the first root
+X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
+and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
+html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
+html.img.alt-missing.v1, html.image-only.v1, html.gmail-clipping.v1 and
+html.tracking-pixel.v1. They warn on literal position CSS, display:flex/inline-flex,
+video, absent alt (empty alt passes), image-only HTML and clipping risk; a remote
+HTTP(S) img with explicit integer width/height each 0 or 1 gets an info disclosure.
+Each affected HTML MIME part contributes at most one finding per rule, at its
+structural child-index path (root []). Plain-text alternatives do not cure HTML.
+Attachment/filename-bearing subtrees and attached messages are excluded.
+
+Clipping means strictly more than 104448 decoded UTF-8 HTML bytes per part
+(102 KiB), after transfer/charset decoding and before entity decoding; this is
+an approximate Gmail risk heuristic, not its live boundary or an SMTP limit.
+The applicability matrix covers Gmail web/mobile, classic Outlook for Windows
+(Word renderer), and Apple Mail macOS/iOS. CSS rows target classic Outlook;
+video targets Gmail and classic Outlook. There is no Apple-specific unsupported
+feature row. New Outlook is different; unlisted features are unassessed.
+
+The embedded, versioned catalogue src/deliverability/html-rules.json names
+Can I email (CSS position/display:flex and HTML video), WHATWG alternative-text,
+Mailchimp Outlook/Gmail-clipping guidance, and MDN Tracking pixel. Its summaries
+are Swarmail-authored heuristics dated 2026-10-26, not an imported dataset or
+fresh client-version measurements; current empirical measurements were not
+supplied. Source URLs, client scopes, selectors, thresholds and fixed hints are
+tracked there. No runtime network access or new dependency is needed.
+
+This finite lexical model respects source quotes, comments, CSS strings/functions
+and nested media blocks. Hidden conditional comments and template content are
+inert; head style blocks are checked. CSS escaped identifiers, cascade, layout,
+CSS visibility and CSS-only pixel sizing are unassessed. Hidden text can defeat
+image-only detection, and decorative tiny remote images can trigger disclosure.
+A lone pixel can receive both image-only and tracking findings. Empty findings
+do not certify client compatibility. Empty findings do not imply deliverability
+or authentication success.
 Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
 
@@ -360,7 +392,13 @@ Complete bounded MIME inspection includes closing boundaries and attached
 containers; missing separators, ambiguous/unsupported metadata, encoded multipart,
 truncation or exhausted budgets fail without partial success. Embedded messages
 stay opaque. No body transfer decoding, SMTP admission change or stored-field
-rewrite follows. REST: 404 missing, 503 "deliverability analysis unavailable" (capacity
+rewrite follows. HTML analysis refuses raw inputs over 8 MiB before MIME parsing,
+aggregate decoded HTML over 4 MiB, more than 256 outer MIME parts, depth above 32
+(root 0), or lexical nesting above 32. Detected eligible transfer-decode errors,
+MIME parse failure and incomplete supported lexical constructs fail the whole
+report, without a partial count or success cache entry. Charset replacement
+follows pinned mail-parser behavior. These workload limits do not bound prior
+parser allocations or total RSS. REST: 404 missing, 503 "deliverability analysis unavailable" (capacity
 or deadline) / "deliverability analysis failed" (analysis/size), native JSON error.
 Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
 Cache loss at restart costs recomputation. These are cache/job bounds, not total

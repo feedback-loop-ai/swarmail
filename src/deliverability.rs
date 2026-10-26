@@ -7,7 +7,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
-pub const RULE_SET_ID: &str = "swarmail-bulk/1";
+mod html;
+
+pub const RULE_SET_ID: &str = "swarmail-html/1";
 pub const MAX_FINDINGS: usize = 256;
 pub const MAX_REPORT_BYTES: usize = 65_536;
 const MAX_HEADER_BYTES: usize = 65_536;
@@ -868,6 +870,7 @@ fn collect(raw: &[u8], inputs: &Inputs, out: &mut Collector) -> Result<(), Analy
         }
     }
     bulk(raw, &fields, size, inputs, out)?;
+    html::collect(raw, out)?;
     #[cfg(test)]
     for finding in &inputs.fixture {
         out.push(finding.clone())?;
@@ -1090,7 +1093,7 @@ mod tests {
         let empty = Collector(Vec::new()).finish(&Inputs::default()).unwrap();
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            json!({"rule_set_id":"swarmail-bulk/1","findings":[]})
+            json!({"rule_set_id":"swarmail-html/1","findings":[]})
         );
         assert!(empty.qualifies(Severity::Info));
     }
@@ -1259,7 +1262,7 @@ mod tests {
     #[tokio::test]
     async fn cache_identity_covers_bytes_config_rules() {
         let service = Service::default();
-        let mut email = super::concurrency_tests::email("same", "box", "a@x.io");
+        let mut email = super::concurrency_tests::html_email("same", "box", "a@x.io");
         email.raw = b"X-Swarmail-Demo: warning\n\n".to_vec();
         let email = Arc::new(email);
         let first = service.report(email.clone(), false).await.unwrap();
@@ -1312,7 +1315,7 @@ mod tests {
     #[tokio::test]
     async fn cache_rejects_clone_reinsert_and_recovered_owner() {
         let store = Store::new(0);
-        let mut e = super::concurrency_tests::email("same", "box", "a@x.io");
+        let mut e = super::concurrency_tests::html_email("same", "box", "a@x.io");
         e.raw = b"X-Swarmail-Demo: error\n\n".to_vec();
         let selected = store.insert(e).unwrap();
         let dirty = store.report(selected.clone()).await.unwrap();
@@ -1369,13 +1372,17 @@ mod tests {
             pinned.push(
                 service
                     .pin(
-                        &Arc::new(super::concurrency_tests::email(&n.to_string(), "box", "a")),
+                        &Arc::new(super::concurrency_tests::html_email(
+                            &n.to_string(),
+                            "box",
+                            "a",
+                        )),
                         &input,
                     )
                     .unwrap(),
             );
         }
-        let mail = Arc::new(super::concurrency_tests::email("next", "box", "a"));
+        let mail = Arc::new(super::concurrency_tests::html_email("next", "box", "a"));
         assert!(matches!(
             service.pin(&mail, &input),
             Err(AnalysisError::Unavailable)
@@ -1387,12 +1394,12 @@ mod tests {
         assert_eq!(service.slots.lock().unwrap().len(), CACHE_SLOTS);
         let store = Store::new(1);
         let old = store
-            .insert(super::concurrency_tests::email("old", "box", "a"))
+            .insert(super::concurrency_tests::html_email("old", "box", "a"))
             .unwrap();
         store.report(old.clone()).await.unwrap();
         let weak = Arc::downgrade(&old);
         store
-            .insert(super::concurrency_tests::email("new", "box", "a"))
+            .insert(super::concurrency_tests::html_email("new", "box", "a"))
             .unwrap();
         assert!(store.get("old").is_none());
         store.report(old.clone()).await.unwrap();
@@ -1405,7 +1412,7 @@ mod tests {
     #[tokio::test]
     async fn report_provider_snapshot_is_deterministic() {
         let service = Service::default();
-        let email = Arc::new(super::concurrency_tests::email("seam", "box", "a"));
+        let email = Arc::new(super::concurrency_tests::html_email("seam", "box", "a"));
         let part = finding(Location::MimePart { path: vec![1, 0] }, Severity::Warning);
         let link = finding(
             Location::Link {
@@ -1504,11 +1511,11 @@ mod tests {
     #[tokio::test]
     async fn report_failed_scan_is_not_exact_or_clean() {
         let store = Store::new(0);
-        let mut bad = super::concurrency_tests::email("bad", "box", "a");
+        let mut bad = super::concurrency_tests::html_email("bad", "box", "a");
         bad.raw = vec![b'x'; MAX_HEADER_BYTES + 1];
         store.insert(bad).unwrap();
         store
-            .insert(super::concurrency_tests::email("clean", "box", "a"))
+            .insert(super::concurrency_tests::html_email("clean", "box", "a"))
             .unwrap();
         assert_eq!(
             store

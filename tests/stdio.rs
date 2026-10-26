@@ -1224,6 +1224,7 @@ async fn report_stdio_text_contract() {
     for raw in [
         &b"\r\nempty\r\n"[..],
         b"X-Swarmail-Demo: warning\r\n\r\nbody\r\n",
+        b"Content-Type: text/html\r\n\r\n<p style='position:absolute'>Hello</p><video></video>\r\n",
     ] {
         let id = report_wire::smtp_raw(srv.smtp_addr, "stdio-report", raw).await;
         let expected = report_wire::http_json(
