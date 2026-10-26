@@ -23,6 +23,7 @@
 //! or clock steps. Per-inbox order, POP3 numbering, oldest-only pruning and
 //! the data file's restore sequence follow acceptance.
 
+use crate::deliverability::{AnalysisError, Report, Service, Severity};
 use crate::model::Email;
 use crate::persist;
 use dashmap::DashMap;
@@ -151,6 +152,7 @@ pub fn newest_first(a: &Arc<Email>, b: &Arc<Email>) -> std::cmp::Ordering {
 }
 
 pub struct Store {
+    pub(crate) reports: Service,
     /// Oldest at the front, newest at the back (insertion order). A deque
     /// because eviction pops the front: a `Vec`'s front-drain memmoves every
     /// remaining element on each capped insert, which at the default cap
@@ -255,6 +257,7 @@ impl Store {
     pub fn new(max_per_inbox: usize) -> Self {
         let (global_tx, _) = broadcast::channel(8192);
         Self {
+            reports: Service::default(),
             inboxes: DashMap::new(),
             index: DashMap::new(),
             watchers: DashMap::new(),
@@ -908,6 +911,37 @@ pub enum WaitOutcome {
 }
 
 impl Store {
+    /// Analyze only an already-selected immutable snapshot, outside store guards.
+    pub(crate) async fn report(&self, email: Arc<Email>) -> Result<Arc<Report>, AnalysisError> {
+        self.reports.report(email, false).await
+    }
+
+    /// Snapshot qualification shared by exact assert and wait. A failure aborts
+    /// the entire scan; it cannot silently turn into a clean match or a count.
+    pub(crate) async fn qualify(
+        &self,
+        candidates: Vec<Arc<Email>>,
+        threshold: Severity,
+        stop_after: usize,
+        ready_only: bool,
+    ) -> Result<Vec<Arc<Email>>, AnalysisError> {
+        let mut matches = Vec::new();
+        for email in candidates {
+            if self
+                .reports
+                .report(email.clone(), ready_only)
+                .await?
+                .qualifies(threshold)
+            {
+                matches.push(email);
+                if matches.len() == stop_after {
+                    break;
+                }
+            }
+        }
+        Ok(matches)
+    }
+
     /// Wait until `want` emails matching `filter` exist in `inbox`, or the
     /// timeout elapses.
     ///
@@ -926,21 +960,50 @@ impl Store {
         want: usize,
         timeout: Duration,
     ) -> WaitOutcome {
+        // No report work is possible for the legacy entry point.
+        self.wait_for_report(inbox, filter, want, timeout, None)
+            .await
+            .unwrap()
+    }
+
+    /// Shared wait owner; subscription survives sequential report evaluation.
+    pub(crate) async fn wait_for_report(
+        &self,
+        inbox: &str,
+        filter: &Filter,
+        want: usize,
+        timeout: Duration,
+        threshold: Option<Severity>,
+    ) -> Result<WaitOutcome, AnalysisError> {
+        let deadline = Instant::now() + timeout;
         let mut rx = self.subscribe(inbox);
         #[cfg(test)]
         self.run_post_subscribe_gate();
-        let deadline = Instant::now() + timeout;
         loop {
-            let mut matches = self.list(inbox, filter);
+            let candidates = self.list(inbox, filter);
+            let mut matches = if let Some(threshold) = threshold {
+                if timeout.is_zero() {
+                    self.qualify(candidates, threshold, want, true).await?
+                } else {
+                    tokio::time::timeout_at(
+                        deadline.into(),
+                        self.qualify(candidates, threshold, want, false),
+                    )
+                    .await
+                    .map_err(|_| AnalysisError::Unavailable)??
+                }
+            } else {
+                candidates
+            };
             if matches.len() >= want {
                 matches.truncate(want);
-                return WaitOutcome::Found(matches);
+                return Ok(WaitOutcome::Found(matches));
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return WaitOutcome::Timeout {
+                return Ok(WaitOutcome::Timeout {
                     matched: matches.len(),
-                };
+                });
             }
             // Block until any event (new mail, lag, channel close) or the
             // deadline; the loop re-scans either way. Every `recv` parks on

@@ -403,6 +403,16 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
                 json!({ "inbox": inbox, "total": total, "emails": emails }),
             ))
         }
+        "swarmail_get_deliverability_report" => {
+            let id = required_id(a)?;
+            match store.get(&id) {
+                None => Ok(error_result(format!("message {id} not found"))),
+                Some(email) => match store.report(email).await {
+                    Ok(report) => Ok(text_result(serde_json::to_value(report).unwrap())),
+                    Err(error) => Ok(error_result(error.message().into())),
+                },
+            }
+        }
         "swarmail_get_email" => {
             let id = required_id(a)?;
             match store.get(&id) {
@@ -459,6 +469,12 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
         },
         "swarmail_wait_for_email" => {
             let inbox = arg_inbox(a)?;
+            let threshold = arg_str(a, "no_findings_at_or_above")?
+                .map(|s| {
+                    serde_json::from_value::<crate::deliverability::Severity>(json!(s))
+                        .map_err(|_| refusal("no_findings_at_or_above", "info, warning or error"))
+                })
+                .transpose()?;
             let filter = Filter {
                 to: arg_str(a, "to")?,
                 from: arg_str(a, "from")?,
@@ -506,7 +522,7 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
             // instead of sleeping.
             let _park = crate::api::park_await(&inbox);
             let outcome = tokio::select! {
-                outcome = store.wait_for(&inbox, &filter, want, timeout) => Some(outcome),
+                outcome = store.wait_for_report(&inbox, &filter, want, timeout, threshold) => Some(outcome),
                 _ = crate::api::shutdown_signal(ctx.shutdown.clone()) => None,
             };
             // The total is counted *after* the wait, in both arms: it
@@ -514,7 +530,8 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
             // same residual the REST await names, bounded by one insert.
             let total = store.count(&inbox, &Filter::default());
             match outcome {
-                Some(WaitOutcome::Found(matches)) => {
+                Some(Err(error)) => Ok(error_result(error.message().into())),
+                Some(Ok(WaitOutcome::Found(matches))) => {
                     let emails: Vec<Value> = matches
                         .iter()
                         .map(|e| serde_json::to_value(&**e).unwrap())
@@ -523,7 +540,7 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
                         json!({ "matched": want, "total": total, "emails": emails }),
                     ))
                 }
-                Some(WaitOutcome::Timeout { matched }) => Ok(text_result(
+                Some(Ok(WaitOutcome::Timeout { matched })) => Ok(text_result(
                     json!({ "matched": matched, "total": total, "timed_out": true }),
                 )),
                 None => Ok(error_result("shutting down".into())),
@@ -671,6 +688,8 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
             "limit": { "type": "integer", "minimum": 0, "maximum": 250, "default": 100 },
             "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Matches to skip, newest first; total is counted before paging" } },
             "additionalProperties": false } },
+        { "name": "swarmail_get_deliverability_report", "description": "Lazy versioned report from stored bytes. Only the synthetic demo rule ships; empty findings do not imply deliverability. Returns report JSON in a text block (2025-03-26).",
+          "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_get_email", "description": "Fetch one captured email in full by id.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_get_latest_email", "description": "Fetch the most recent email(s) in an inbox.",
@@ -687,6 +706,7 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
             "from": { "type": "string", "description": "Case-insensitive substring of the header From address" },
             "subject": { "type": "string" }, "since_ms": { "type": "integer", "description": "Arrival time lower bound in ms since the epoch; negative values are legal" },
             "count": { "type": "integer", "minimum": 0, "maximum": 250, "default": 1, "description": "Matched emails to wait for; 0 still means at least one" },
+            "no_findings_at_or_above": { "type": "string", "enum": ["info", "warning", "error"], "description": "Qualify messages with no findings at or above this inclusive threshold; analysis failures are operational errors" },
             "timeout_ms": { "type": "integer", "default": 5000, "minimum": 0, "maximum": 60000 } },
             "additionalProperties": false } },
         { "name": "swarmail_extract_links", "description": "Extract all http(s) URLs from a captured email's text/HTML bodies.",
@@ -1013,7 +1033,7 @@ mod tests {
             .insert(crate::store::email("keep", "default", "a@x.io"))
             .unwrap();
         let tools = TOOLS.as_array().unwrap();
-        assert_eq!(tools.len(), 12);
+        assert_eq!(tools.len(), 13);
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             assert_eq!(

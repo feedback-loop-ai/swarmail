@@ -1214,3 +1214,64 @@ async fn a_reply_that_cannot_be_written_exits_one() {
     .await;
     assert_eq!(code, 1);
 }
+
+#[path = "common/mod.rs"]
+mod report_wire;
+
+#[tokio::test]
+async fn report_stdio_text_contract() {
+    let srv = common::start().await;
+    for raw in [
+        &b"\r\nempty\r\n"[..],
+        b"X-Swarmail-Demo: warning\r\n\r\nbody\r\n",
+    ] {
+        let id = report_wire::smtp_raw(srv.smtp_addr, "stdio-report", raw).await;
+        let expected = report_wire::http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/messages/{id}/deliverability"),
+            None,
+        )
+        .await
+        .1;
+        let input = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+            "name":"swarmail_get_deliverability_report","arguments":{"id":id}}});
+        let (code, output) = bridge_over(
+            &format!("http://{}", srv.http_addr),
+            format!("{input}\n").as_bytes(),
+        )
+        .await;
+        assert_eq!(code, 0);
+        let reply: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        let result = &reply["result"];
+        assert_eq!(result["isError"], false);
+        assert!(result.get("structuredContent").is_none());
+        assert_eq!(result["content"].as_array().unwrap().len(), 1);
+        assert_eq!(result["content"][0]["type"], "text");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                result["content"][0]["text"].as_str().unwrap()
+            )
+            .unwrap(),
+            expected
+        );
+    }
+    for (arguments, code) in [
+        (serde_json::json!({}), -32602),
+        (serde_json::json!({"id":null}), -32602),
+    ] {
+        let input = serde_json::json!({"id":1,"method":"tools/call","params":{"name":"swarmail_get_deliverability_report","arguments":arguments}});
+        let (_, output) = bridge_over(
+            &format!("http://{}", srv.http_addr),
+            format!("{input}\n").as_bytes(),
+        )
+        .await;
+        let reply: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(reply["error"]["code"], code);
+    }
+    let input = b"{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"swarmail_get_deliverability_report\",\"arguments\":{\"id\":\"missing\"}}}\n";
+    let (_, output) = bridge_over(&format!("http://{}", srv.http_addr), input).await;
+    let reply: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+    assert_eq!(reply["result"]["isError"], true);
+    srv.stop().await;
+}

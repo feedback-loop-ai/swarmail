@@ -120,3 +120,14 @@ proofs remain CI-owned. Verify the already-present proposed index row; never
 accept this proposal or alter accepted records. Compatible work may
 proceed under 0045 §8 and the supplied operator direction. A concrete accepted
 contract contradiction still waits for the operator; frozen weakening is refused.
+
+## Compatible implementation note — 2026-10-26
+
+The current-main implementation keeps this record proposed. Its report service
+owns Weak identity/config/version slots and worker-held admission; no derived
+state enters Email or persistence. The existing wait loop owns subscription,
+analysis and deadline handling, and all adapters share its typed result.
+`tests/deliverability.rs`, the stdio report witness and owner-local tests prove
+the current text-block contract and the bounded lazy behavior. The report's
+structuredContent/outputSchema remains the later small follow-up when #153
+lands; no part of this implementation depends on 0079/0080/0082.

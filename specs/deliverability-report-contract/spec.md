@@ -291,3 +291,26 @@ exchange and tag-only release-rate proofs. Live hosting settings, namespaces,
 sealing, publication and decision acceptance remain operator/CI owned, not new
 local criteria. Recipe routing and protected review remain as this candidate
 ships them. This seat never pushes, merges, tags, publishes or accepts decisions.
+
+## Implementation record — 2026-10-26
+
+The current-main implementation uses the single `deliverability` module, a
+Store-owned Weak cache and the existing Store wait/offload owners. The pure
+collector takes explicit `Inputs`; #253 must extend that complete immutable
+identity before adding external observations. Its test fixture contributes
+MIME/link findings without shipping a resolver or a provider registry.
+
+Behavior witnesses are consolidated in `tests/deliverability.rs` (real SMTP,
+REST, HTTP MCP, UI, restart and served documentation), `tests/stdio.rs`
+(`report_stdio_text_contract`), measured inline tests in `src/deliverability.rs`
+and `src/ui.rs`, and `src/deliverability/concurrency_tests.rs`. The latter owns
+worker-hold deadlines, panic-safe release and cold lost-window diagnostics per
+0020; deterministic failure/retry and identity/limit tests remain inline.
+The cache is never accessed by mutation, SMTP, seed, restore or fan-out.
+No dependency, recipe, accepted decision or gate was changed.
+
+MCP remains 2025-03-26 with JSON in one text block: the report tool descriptor
+has no outputSchema and its result has no structuredContent. The report's
+structuredContent/outputSchema integration follows when #153 lands, as a small
+follow-up through its shared owner. 0085 remains proposed. Local gate evidence
+is recorded separately and does not substitute for CI/operator-owned proofs.

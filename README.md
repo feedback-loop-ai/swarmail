@@ -84,7 +84,7 @@ swarmail mcp                   # the stdio MCP bridge
 swarmail gen-cert --domain localhost --out ./certs
 ```
 
-Twelve MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
+Thirteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
 compatibility layer (MailHog/Mailpit), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies.
@@ -684,11 +684,11 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   "content":[{"type":"text","text":"{\"emails\":[{…\"codes\":[\"424242\"]…}]}"}]}}
 ```
 
-Twelve tools: `swarmail_search_emails`, `swarmail_get_email`,
+Thirteen tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`. Except for malformed seed fixture
+`swarmail_set_chaos`, `swarmail_clear_chaos`, `swarmail_get_deliverability_report`. Except for malformed seed fixture
 content and the supplied
 `timeout_ms` refusal described below, every tool validates its supplied
 arguments at the envelope: a wrong-typed or malformed value — the
@@ -1274,7 +1274,7 @@ before publication or merge; agent runs never push or merge.
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [x] POP3 server; MailHog/Mailpit API compat shims
 - [x] Exact 100/100/100 coverage contract (lines, branches, functions) in the gate and CI
-- [x] MCP: HTTP + stdio, 12 tools
+- [x] MCP: HTTP + stdio, 13 tools
 - [x] Kubernetes: the Helm chart (OCI-published, decision 0008 *accepted*)
 - [ ] crates.io publish — the package is publish-ready (see *Publishing*);
   the operator runs `cargo publish --locked` with their token
@@ -1328,3 +1328,48 @@ Apache-2.0 license, shall be dual licensed as above, without any additional
 terms or conditions.
 
 The WHATWG HTML entities data and derived table are licensed under CC-BY-4.0; attribution and transformation details are in [NOTICE](./NOTICE).
+
+## Deliverability reports
+
+
+GET /api/v1/messages/{id}/deliverability takes no query keys and returns
+{rule_set_id, findings:[{rule_id,severity,location,fix_hint}]}. Severity is
+info < warning < error. Locations are tagged header {name,occurrence:null|u64},
+mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
+are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
+rule, typed location, severity and hint, with exact duplicates removed.
+Only synthetic demo.marker.v1 ships in swarmail-demo/1: the first root
+X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error.
+It emits the fixed hint "Remove the X-Swarmail-Demo header." No marker means
+no findings. Empty findings do not imply deliverability or authentication success.
+Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
+The existing message page renders the same report without polling.
+
+swarmail_get_deliverability_report requires string id and admits no other keys.
+On current MCP 2025-03-26 it returns report JSON in one text block, isError=false.
+Missing mail and failed/unavailable analysis use isError=true; malformed arguments
+use -32602. No report outputSchema/structuredContent yet; that small follow-up
+lands when #153 lands, independently of this delivery.
+
+REST assert/await and MCP wait_for_email admit optional no_findings_at_or_above
+(info|warning|error). It qualifies ordinary-filter candidates before paging;
+failed reports abort, never count as clean. Exact assert counts its snapshot,
+including zero, and never subscribes. Example: assert?count=0&no_findings_at_or_above=warning
+holds when zero candidates qualify; it is not a universal inbox health assertion.
+Wait still requires at least one, even count=0, and keeps ordinary totals/order.
+Zero timeout uses completed cache entries only: cold/busy required reports return
+unavailable. An incomplete scan at deadline is unavailable; a complete insufficient
+scan keeps the usual timeout with its exact count. Shutdown keeps its existing error.
+The option is refused on list/count; absent means existing behavior.
+
+Cache: 128 Weak-identity slots per Store, exact immutable inputs and rule version,
+four admitted blocking jobs retained through cancellation. Up to 256 findings and
+65536 compact JSON bytes per cached report. Root headers above 65536 source bytes
+(including terminating blank line) fail, never truncate; body size does not enter
+the demo. REST: 404 missing, 503 "deliverability analysis unavailable" (capacity
+or deadline) / "deliverability analysis failed" (analysis/size), native JSON error.
+Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
+Cache loss at restart costs recomputation. These are cache/job bounds, not total
+memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
+no DNS, substantive authentication or spam checks, external scorer or new dependency
+ships here. Future inputs must become part of the complete immutable cache key.

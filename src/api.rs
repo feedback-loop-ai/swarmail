@@ -2,6 +2,7 @@
 
 use crate::chaos::{Chaos, ChaosConfig};
 use crate::compat;
+use crate::deliverability::{AnalysisError, Severity};
 use crate::feed;
 use crate::mcp::{self, McpContext};
 use crate::model::Email;
@@ -823,6 +824,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/messages/{id}/raw", get(get_raw))
         .route(
+            "/api/v1/messages/{id}/deliverability",
+            get(get_deliverability),
+        )
+        .route(
             "/api/v1/chaos",
             get(get_chaos).put(set_chaos).delete(clear_chaos),
         )
@@ -890,6 +895,7 @@ impl ListQuery {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AwaitQuery {
+    pub no_findings_at_or_above: Option<Severity>,
     pub to: Option<String>,
     pub from: Option<String>,
     pub subject: Option<String>,
@@ -962,6 +968,7 @@ impl CountQuery {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssertQuery {
+    pub no_findings_at_or_above: Option<Severity>,
     pub to: Option<String>,
     pub from: Option<String>,
     pub subject: Option<String>,
@@ -1330,7 +1337,7 @@ async fn await_messages(
     // resolution path.
     let _park = park_await(&inbox);
     let outcome = tokio::select! {
-        outcome = state.store.wait_for(&inbox, &filter, want, timeout) => Some(outcome),
+        outcome = state.store.wait_for_report(&inbox, &filter, want, timeout, q.no_findings_at_or_above) => Some(outcome),
         _ = shutdown_signal(state.shutdown.clone()) => None,
     };
     // The total is counted *after* the wait, in both arms: it describes the
@@ -1340,7 +1347,8 @@ async fn await_messages(
     // in the decision.
     let total = state.store.count(&inbox, &Filter::default());
     match outcome {
-        Some(WaitOutcome::Found(matches)) => {
+        Some(Err(error)) => Err(analysis_error(error)),
+        Some(Ok(WaitOutcome::Found(matches))) => {
             // The page is `limit`'s business, exactly as on list: the wait
             // still triggers at `count` matches, the response carries at
             // most the limit's worth of them.
@@ -1355,7 +1363,7 @@ async fn await_messages(
             )
                 .into_response())
         }
-        Some(WaitOutcome::Timeout { matched }) => Ok((
+        Some(Ok(WaitOutcome::Timeout { matched })) => Ok((
             StatusCode::REQUEST_TIMEOUT,
             Json(AwaitResponse {
                 matched,
@@ -1384,7 +1392,21 @@ async fn assert_messages(
     // exactly as on list, inert here — an assertion's answer is a count,
     // not a page (0030 §3, kept by 0048 §4).
     let want = q.exact_count();
-    let matched = state.store.count(&inbox, &q.filter());
+    let matched = if let Some(threshold) = q.no_findings_at_or_above {
+        state
+            .store
+            .qualify(
+                state.store.list(&inbox, &q.filter()),
+                threshold,
+                usize::MAX,
+                false,
+            )
+            .await
+            .map_err(analysis_error)?
+            .len()
+    } else {
+        state.store.count(&inbox, &q.filter())
+    };
     if matched == want {
         Ok((
             StatusCode::OK,
@@ -1423,6 +1445,28 @@ async fn clear_inbox(
             "storage commit failed".into(),
         )),
     }
+}
+
+pub(crate) fn analysis_error(error: AnalysisError) -> ApiError {
+    ApiError(StatusCode::SERVICE_UNAVAILABLE, error.message().into())
+}
+
+async fn get_deliverability(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    raw: RawQuery,
+) -> ApiResult<Json<std::sync::Arc<crate::deliverability::Report>>> {
+    let ViewQuery {} = parse_query(
+        raw.0.as_deref().unwrap_or(""),
+        "GET /api/v1/messages/{id}/deliverability",
+    )?;
+    let email = state
+        .store
+        .get(&id)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "message not found".into()))?;
+    Ok(Json(
+        state.store.report(email).await.map_err(analysis_error)?,
+    ))
 }
 
 async fn get_message(
