@@ -215,3 +215,26 @@ commands. This phase implements no feature and creates no decision document.
 The explicit task-wide gate request also requires an intake baseline attempt;
 its receipt will record actual outcomes separately. The missing newer MCP
 contract is explicitly carried to design, not claimed implemented or proven.
+
+
+## Intake baseline verification
+
+All 14 commands in [baseline-gates.json](baseline-gates.json) exited zero on
+committed intake baseline `cb5bde0b72acac279cbfec2f6096c849cd115629`
+(tree `bf7ef9189df8508bda98f2069371090fe0f3b53c`). This includes every
+house gate, engine/shim integrity, design-validator selftest, delivery-boundary
+proof and fail-closed native-tls absence. Cargo ran offline, without installs;
+compile reported 76 valuations over 14 groups with zero unruled.
+
+Coverage was exact: **14,677/14,677 lines, 822/822 branches and 1,597/1,597
+functions**; the complete coverage selftest passed. Evidence is under
+`target/coverage/run.fLg9UQ` and `.forge/evidence/issue252-intake/`.
+The receipt records command exits, durations, log hashes and commit/tree
+identity; all 14 log hashes were checked. The workspace client's 300-second
+wait timed out while the runner continued; the completed persisted receipt
+and logs prove the outcomes, not the interrupted client response.
+
+This final receipt/documentation commit changes no tested source, gate or
+bundle bytes. No report implementation or newer MCP conformance is claimed.
+Design still needs the explicitly missing local #152/#153 contract artifacts,
+and verify must rerun every gate on the committed implementation candidate.
