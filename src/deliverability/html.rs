@@ -598,6 +598,7 @@ mod tests {
         );
         let c = catalogue(DATA).unwrap();
         assert_eq!(c.rules.len(), 7);
+        assert_eq!(fixture["pairs"].as_array().unwrap().len(), c.rules.len());
         for (rule, pair) in c.rules.iter().zip(fixture["pairs"].as_array().unwrap()) {
             assert_eq!(pair["rule_id"], rule.id);
             for (key, matched) in [("pass", false), ("fail", true)] {
@@ -709,6 +710,7 @@ mod tests {
         );
         for body in [
             "position:absolute; display:flex <p title='display:flex'>ok</p>",
+            "<custom-tag:label style \t= \n 'font:12px/14px;display:block' title \t= \t test>ok</custom-tag:label>",
             "<!--<video><img><style>.x{display:flex}</style>-->",
             "<!--[if mso]><video></video><![endif]-->",
             "<script>var s='<video>';display:flex;</script>",
@@ -801,6 +803,7 @@ mod tests {
             "<?x '",
             "<p",
             "<p x='",
+            "<p unfinished",
             "<p x=",
             "<p x='ok'",
             "<!--",
@@ -932,11 +935,10 @@ mod tests {
         // Pinned decoder replaces invalid UTF-8, it does not promise losslessness.
         let replaced = b"Content-Type: text/html; charset=utf-8\r\n\r\n<img alt=''>\xff";
         assert!(
-            !evaluate(replaced, &Inputs::default())
+            evaluate(replaced, &Inputs::default())
                 .unwrap()
                 .findings
-                .iter()
-                .any(|f| f.rule_id == "html.image-only.v1")
+                .is_empty()
         );
         assert_eq!(
             evaluate(b"", &Inputs::default()),
