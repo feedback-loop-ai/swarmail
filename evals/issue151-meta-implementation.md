@@ -53,8 +53,13 @@ are retained. The tests add no mocks or sleep-based absence assertions.
 After repair the focused actual_stdio_helper_ group passes all five tests.
 Standalone eval fmt and locked all-target clippy pass. The full wrappers target
 passes all 19 tests, including the existing process-cleanup regression (124.41s).
-The independent full eval suite and committed-candidate house gates are the
-remaining verification work; this initial receipt does not claim they passed.
+The first independent full eval command exited 101 after all 52 library tests
+and 31 executable tests passed: boundary::sequential_contracts_and_decision_links_are_honest
+still required decisions 0063/0076 to be proposed. The verified operator rulings
+and both tracked records already say accepted (operator, 2026-10-26). Updated
+only those stale test assertions to require the recorded acceptance and date,
+without editing or accepting either decision. Full-suite and committed-candidate
+house proof remains pending; no failed or interrupted command is counted green.
 
 ## Known delivery prerequisite
 
