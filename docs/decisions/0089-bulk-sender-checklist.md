@@ -5,37 +5,84 @@
 - **Scope:** Epic #251 issue #257, additive rules through proposed 0085.
 - **Authority:** supplied #251 operator ruling and issue #257 task brief.
 - **Preserves:** accepted 0001–0005, report/cache/wait ownership and all gates.
-- **Number:** 0089 explicitly assigned by this task; absent reserved numbers
-  such as 0088 are not reused.
+- **Number:** 0089 was assigned and created at intake; reserved gaps are not reused.
 
-## Proposal at intake
+## Proposed ruling — chief synthesis
 
-Extend the existing lazy, versioned typed deliverability findings with the
-bulk-sender checklist: RFC 8058 one-click List-Unsubscribe/Post structure,
-Message-ID, Date, a genuine text/plain alternative, and evidence-dependent
-DMARC presence, From-domain alignment and aligned DKIM/SPF authentication.
-Every rule has a published source in its fix hint and paired real-protocol
-fixtures. The [intake criteria](../../specs/bulk-sender-checklist/intake.md)
-state the checkable behavior and complete local gate commands.
+The normative IDs, severities, hints, syntax, coordinates, authentication truth
+tables and analysis limits are in the
+[specification](../../specs/bulk-sender-checklist/spec.md#contract).
+This elaborates intake, accepting neither this proposal nor 0085.
 
-Keep the existing report shape and shared collector, canonicalization, bounds,
-cache and adapters. Change the rule-set version when rule semantics change.
-Missing authentication observations produce explicit not-evaluated findings;
-missing evidence and sender-supplied authentication headers never establish
-passing authentication or alignment. #255 owns genuine authentication results.
-Trusted immutable test observations may exercise the future input boundary on
-real servers without adding a public observation-injection surface. Any such
-inputs must be included in cache identity before evaluated results are used.
+1. Add seven checks through the existing lazy report: one-click structure,
+   Message-ID, Date, sender plain body, DMARC presence, From alignment and
+   passing aligned DKIM-or-SPF. Set swarmail-bulk/1; retain demo.marker.v1 and
+   its flag. Preserve serialized shapes, collector/cache, wait owner and adapters.
+2. A pass emits nothing; failure emits its ID. Auth Unknown emits a distinct
+   *.not_evaluated.v1 ID with fixed "Not evaluated:" hint. Header defects and
+   auth failure/unknown are error; plain-text advice is warning. Production
+   defaults Unknown, excluding every message at every existing threshold.
+   Exact zero assertions and minimum-one waits retain their original meanings.
+3. Validate complete original singleton headers using current RFC 5322 syntax;
+   obsolete-only forms are unsupported by this checklist, not universally invalid.
+   One-click requires a complete list with a supported HTTPS URI and exact
+   RFC 8058 Post token. Syntax cannot prove DKIM header coverage, endpoint
+   operation or Message-ID uniqueness. Date uses calendar validity, never freshness.
+4. Genuine outer-message plain text includes empty/default/nested/encoded body
+   leaves, excluding attachment ancestry and embedded messages and respecting
+   digest defaults. Never synthesize from HTML. This is presence advice, not
+   equivalence or an unconditional provider mandate.
+5. Consume internal immutable three-state facts: policy presence, valid From,
+   DKIM pass/alignment and SPF pass/alignment. Presence accepts valid p=none.
+   Alignment is valid From AND either alignment; authenticated sender is valid
+   From AND either passing aligned mechanism. False wins AND, True wins OR,
+   otherwise unresolved combinations stay Unknown. #255 owns verification,
+   domains/alignment, provenance and selected-mail binding. Sender headers cannot
+   supply evidence. Include all effective facts/policy identity in Inputs equality
+   alongside Weak selected-mail identity. #253/#255 own expiry/refresh/wakes.
+6. Keep job/cache/report bounds and worker-held cancellation ownership. Add
+   inclusive metadata limits: 8,388,608 raw bytes, 65,536 per header block,
+   262,144 aggregate header bytes, 256 outer MIME entities, depth 32 (root zero).
+   Complete bounded structural inspection precedes a report; exhausted budgets
+   or ambiguous/truncated MIME produce existing sanitized failure, never partial
+   success. No SMTP limit change, decoded-body work, durable derived state or
+   separate executor.
+7. Fixed new hints cite supplied Gmail/Yahoo and applicable RFC references and
+   never echo sender content. Root header occurrences are null/0/1 for absence/
+   invalid singleton/duplicate witness; MIME advice uses root path []. URLs
+   are citations, not live verification.
+8. Every logical rule gets passing/failing real SMTP/report fixtures. Auth pairs
+   evaluate immutable trusted inputs on a real server through a private seam;
+   injected Findings do not prove rule logic. Public fixtures prove unknowns
+   despite spoofed headers. Preserve protocol parity, frozen guarantees,
+   cache/worker tests and exact coverage. No dependency or routing change.
 
-Design must pin stable rule IDs, severities, source hints, duplicate/invalid
-header handling, MIME scope/bounds, not-evaluated encoding within the current
-finding fields and its existing threshold behavior. It must distinguish a
-structural one-click check from RFC 8058's authenticated signing requirements,
-and local plain-text checklist advice from an unconditional provider mandate.
-The intake does not claim live provider-policy verification or delivery success.
+## Alternatives ruled and costs
 
-No authentication implementation, DNS query, external scorer, new dependency,
-SMTP-path work or extraction relocation is introduced by this proposal.
-Compatible implementation may proceed under accepted 0045 §8; a conflict with
-an accepted ruling requires operator disposition and weakening a frozen
-guarantee remains refused. This record does not accept itself or proposed 0085.
+The [dated adjudication](../../specs/bulk-sender-checklist/spec.md#panel-adjudication--2026-10-26)
+records both positions. Adopt simplicity's one owner and narrow scope; choose
+robustness's separate error-level unknown IDs over same-ID warnings. Pay more IDs
+and no positive production qualification until genuine evidence arrives.
+Choose per-mechanism facts over precombined booleans: pay a larger fixture matrix
+while leaving #255 verification out of scope.
+
+Choose explicit structural budgets/complete metadata inspection over raw size
+plus potentially truncated parsing: pay boundary tests and unavailable analysis
+for some accepted mail. Choose occurrence 1 over aggregate 0 for duplicates.
+Keep the narrow syntax and presence-only scope: obsolete legal mail can be flagged
+and plain bodies may be empty or not equivalent. No provider acceptance promise.
+
+Synchronous acceptance, subscribe-before-scan, oldest-only pruning and ingest
+extraction remain. No stronger durability, webhook delivery, retention or resource
+isolation follows. Selected reads may finish after deletion; fresh ones cannot.
+Four jobs still share the existing blocking pool/OS. Compatible implementation
+may proceed under accepted 0045 §8; an accepted-ruling contradiction needs operator
+disposition and frozen weakening is refused.
+
+## Proof and disposition
+
+[Tasks](../../specs/bulk-sender-checklist/tasks.md) pair every change with a proof;
+AC1–AC10 and the [plan](../../specs/bulk-sender-checklist/plan.md) govern handoff
+and complete local gates. The existing index row stays proposed. CI/operator
+proofs remain theirs. This is a design proposal, not feature completion,
+decision acceptance or publication authorization.
