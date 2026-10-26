@@ -2336,27 +2336,65 @@ const OUTLOOK_0061: &str = r#"<!--[if mso]><v:roundrect href="https://x.io/verif
 #[tokio::test]
 async fn outlook_conditional_attributes_store_only_complete_urls() {
     let srv = start().await;
-    for (html, links, codes) in [
-        (OUTLOOK_0061.to_string(), json!(["https://x.io/verify?name=O'Brien&t=abc"]), json!([])),
+    for (index, (html, links, codes)) in [
+        (OUTLOOK_0061, json!(["https://x.io/verify?name=O'Brien&t=abc"]), json!([])),
         (
-            r#"<!--[IF !mso]><v:roundrect href="https://x.io/verify?name=O&#39;Brien&amp;t=abc">111111</v:roundrect><![endif]-->222222"#.into(),
+            r#"<!--[IF !mso]><v:roundrect href="https://x.io/verify?name=O&#39;Brien&amp;t=abc">111111</v:roundrect><![endif]-->222222"#,
             json!(["https://x.io/verify?name=O'Brien&t=abc"]), json!(["222222"]),
         ),
         (
-            r#"<!-- <a href="https://x.io/ordinary?name=O&#39;Brien">333333</a> -->444444"#.into(),
+            r#"<!-- <a href="https://x.io/ordinary?name=O&#39;Brien">333333</a> -->444444"#,
             json!(["https://x.io/ordinary?name=O"]), json!(["444444"]),
         ),
-    ] {
-        let id = send_raw(srv.smtp_addr, "outlook0061", &format!(
-            "Content-Type: text/html; charset=utf-8\r\n\r\n{html}"
-        )).await;
+        (
+            r#"<!--[if mso]><a href="https://x.io/O&#39;B">111111</a>--><a href="https://x.io/tail">222222</a>"#,
+            json!(["https://x.io/O", "https://x.io/tail"]), json!(["222222"]),
+        ),
+        (
+            "<!--[iF mso]><a href=\"https://x.io/O&#39;B\">111111</a><![EnDiF] \t--><a href=\"https://x.io/tail\">222222</a>",
+            json!(["https://x.io/O'B", "https://x.io/tail"]), json!(["222222"]),
+        ),
+        (
+            r#"<!--[if mso]><a href="https://x.io/O&#39;B">111111</a><![endif] extra <a href="https://x.io/C&#39;D">333333</a>--><a href="https://x.io/tail">222222</a>"#,
+            json!(["https://x.io/O", "https://x.io/C", "https://x.io/tail"]), json!(["222222"]),
+        ),
+    ].into_iter().enumerate() {
+        let inbox = format!("outlook0061-{index}");
+        let data = format!("Content-Type: text/html; charset=utf-8\r\n\r\n{html}");
+        let id = send_raw(srv.smtp_addr, &inbox, &data).await;
+        let body = format!("{html}\r\n");
+        let raw = format!("{data}\r\n");
         let (status, email) = http_json(
             srv.http_addr, "GET", &format!("/api/v1/messages/{id}"), None,
         ).await;
         assert_eq!(status, 200);
         assert_eq!(email["links"], links, "{html}");
         assert_eq!(email.get("codes").cloned().unwrap_or(json!([])), codes);
-        assert_eq!(email["html"], format!("{html}\r\n"));
+        assert_eq!(email["html"], body);
+        assert_eq!(email["text"], Value::Null);
+        let (status, _, bytes) = http_raw(
+            srv.http_addr, "GET", &format!("/api/v1/messages/{id}/raw"), None,
+        ).await;
+        assert_eq!(status, 200);
+        assert_eq!(bytes, raw.as_bytes());
+        let (status, pit) = http_json(
+            srv.http_addr, "GET", &format!("/api/v1/message/{id}"), None,
+        ).await;
+        assert_eq!(status, 200);
+        assert_eq!(pit["ID"], id);
+        assert_eq!(pit["Username"], inbox);
+        assert_eq!(pit["HTML"], body);
+        assert_eq!(pit["Text"], "");
+        let (status, hog) = http_json(
+            srv.http_addr, "GET", &format!("/api/v2/messages?inbox={inbox}"), None,
+        ).await;
+        assert_eq!(status, 200);
+        assert_eq!(hog["total"], 1);
+        assert_eq!(hog["count"], 1);
+        assert_eq!(hog["items"].as_array().unwrap().len(), 1);
+        assert_eq!(hog["items"][0]["ID"], id);
+        assert_eq!(hog["items"][0]["Content"]["Body"], body);
+        assert_eq!(hog["items"][0]["Raw"]["Data"], raw);
     }
     srv.stop().await;
 }

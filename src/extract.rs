@@ -187,10 +187,16 @@ struct LinkScanStats {
     ordinary_bytes: u64,
     /// HTML source inside quoted attribute values, quotes excluded.
     quoted_bytes: u64,
+    /// Actual decoder invocations for each source-region kind.
+    ordinary_decodes: u64,
+    quoted_decodes: u64,
+    #[cfg(test)]
+    decoded_ranges: Vec<(usize, usize)>,
     /// Candidate bytes the trim's one counting pass examined.
     trim_counted: u64,
     /// Bytes the trim removed, one step each.
     trim_removed: u64,
+    tags: TagScanStats,
 }
 
 /// Extract all http(s) URLs from the plain-text and HTML bodies, text
@@ -223,8 +229,10 @@ fn links_scanned(text: Option<&str>, html: Option<&str>, stats: &mut LinkScanSta
             out: &mut out,
             stats,
         };
-        walk(html, &mut TagScanStats::default(), &mut regions);
+        let mut tags = TagScanStats::default();
+        walk(html, &mut tags, &mut regions);
         regions.ordinary(html.len());
+        regions.stats.tags = tags;
     }
     dedup(out)
 }
@@ -304,6 +312,9 @@ impl LinkRegions<'_> {
     fn ordinary(&mut self, end: usize) {
         let src = &self.html[self.cursor..end];
         self.stats.ordinary_bytes += src.len() as u64;
+        self.stats.ordinary_decodes += 1;
+        #[cfg(test)]
+        self.stats.decoded_ranges.push((self.cursor, end));
         push_urls(&URL_RE, &decode_refs(src), self.out, self.stats);
         self.cursor = end;
     }
@@ -316,6 +327,9 @@ impl Regions for LinkRegions<'_> {
         self.ordinary(start);
         let value = &self.html[start..end];
         self.stats.quoted_bytes += value.len() as u64;
+        self.stats.quoted_decodes += 1;
+        #[cfg(test)]
+        self.stats.decoded_ranges.push((start, end));
         let decoded = decode_refs(value);
         let leading = decoded.trim_start();
         // Only a URL starting the value owns its decoded quotes. Nested
@@ -439,6 +453,23 @@ struct TagScanStats {
     raw_bytes: u64,
     /// One per `</` examined inside raw text.
     close_probes: u64,
+    /// Conditional qualification: comparisons and actual traversal predicates,
+    /// including unsuccessful searches, independent of consumption totals.
+    conditional_opener_bytes: u64,
+    conditional_trailing_bytes: u64,
+    conditional_marker_bytes: u64,
+    conditional_header_probes: u64,
+    conditional_search_bytes: u64,
+    /// Work in the shared tag scanner, including ordinary source tags.
+    tag_name_bytes: u64,
+    attribute_steps: u64,
+    quote_search_bytes: u64,
+    #[cfg(test)]
+    conditional_payloads: Vec<(usize, usize)>,
+    #[cfg(test)]
+    payload_positions: Vec<usize>,
+    #[cfg(test)]
+    value_ranges: Vec<(usize, usize)>,
     /// The reference decoder's work over the emitted runs.
     refs: RefScanStats,
 }
@@ -513,6 +544,7 @@ enum Kind<'a> {
 fn markup_at<'a>(
     bytes: &'a [u8],
     lt: usize,
+    stats: &mut TagScanStats,
     regions: &mut dyn Regions,
 ) -> Option<(usize, Kind<'a>)> {
     let rest = &bytes[lt..];
@@ -528,12 +560,10 @@ fn markup_at<'a>(
         // Outlook conditional comments keep codes suppressed, but their
         // source attributes own encoded quotes just like ordinary tags
         // (0061 R4.4). Ordinary comments retain their decoded delimiters.
-        if body
-            .get(..3)
-            .is_some_and(|open| open.eq_ignore_ascii_case(b"[if"))
-            && body.get(3).is_some_and(u8::is_ascii_whitespace)
+        if len >= 3
+            && let Some((start, end)) = conditional_payload(&body[..len - 3], stats)
         {
-            conditional_values(&bytes[..lt + 4 + len - 3], lt + 4, regions);
+            conditional_values(&bytes[..lt + 4 + end], lt + 4 + start, stats, regions);
         }
         return Some((lt + 4 + len, Kind::Other));
     }
@@ -542,24 +572,73 @@ fn markup_at<'a>(
             let gt = rest[2..].iter().position(|&byte| byte == b'>')?;
             Some((lt + 2 + gt + 1, Kind::Other))
         }
-        b'/' => tag(bytes, lt + 2, regions).map(|(name, end)| (end, Kind::End(name))),
-        _ => tag(bytes, lt + 1, regions).map(|(name, end)| (end, Kind::Start(name))),
+        b'/' => tag(bytes, lt + 2, stats, regions).map(|(name, end)| (end, Kind::End(name))),
+        _ => tag(bytes, lt + 1, stats, regions).map(|(name, end)| (end, Kind::Start(name))),
     }
 }
 
-/// Visit source tags after the conditional opener, bounded by its comment
-/// close. Reuse the attribute scanner without exposing comment text as code
-/// runs or interpreting decoded markup. Each tag advances the cursor,
-/// including quoted angle brackets; an unfinished tag ends this bounded walk.
-fn conditional_values(bytes: &[u8], start: usize, regions: &mut dyn Regions) {
-    let Some(header) = bytes[start..].windows(2).position(|w| w == b"]>") else {
-        return;
-    };
-    let mut search = start + header + 2;
-    while let Some(offset) = bytes[search..].iter().position(|&byte| byte == b'<') {
+/// Qualify the complete raw envelope before reporting any values. Offsets
+/// exclude the header and final marker; no header search can cross the marker.
+fn conditional_payload(body: &[u8], stats: &mut TagScanStats) -> Option<(usize, usize)> {
+    for (index, expected) in b"[if".iter().enumerate() {
+        stats.conditional_opener_bytes += 1;
+        if !body
+            .get(index)
+            .is_some_and(|byte| byte.eq_ignore_ascii_case(expected))
+        {
+            return None;
+        }
+    }
+    stats.conditional_opener_bytes += 1;
+    if !body.get(3).is_some_and(u8::is_ascii_whitespace) {
+        return None;
+    }
+    let end = body.iter().rposition(|byte| {
+        stats.conditional_trailing_bytes += 1;
+        !byte.is_ascii_whitespace()
+    })? + 1;
+    let marker = end.checked_sub(9)?;
+    if !body[marker..end]
+        .iter()
+        .zip(b"<![endif]")
+        .all(|(byte, expected)| {
+            stats.conditional_marker_bytes += 1;
+            byte.eq_ignore_ascii_case(expected)
+        })
+    {
+        return None;
+    }
+    let header = body.get(4..marker)?.windows(2).position(|window| {
+        stats.conditional_header_probes += 1;
+        window == b"]>"
+    })?;
+    Some((4 + header + 2, marker))
+}
+
+/// Visit only the qualified payload, keeping original source offsets. Each
+/// complete tag advances the cursor; an unfinished tag ends the scan without
+/// restarting at later angle brackets. Inner tags never affect outer state.
+fn conditional_values(
+    bytes: &[u8],
+    start: usize,
+    stats: &mut TagScanStats,
+    regions: &mut dyn Regions,
+) {
+    #[cfg(test)]
+    stats.conditional_payloads.push((start, bytes.len()));
+    let mut search = start;
+    loop {
+        #[cfg(test)]
+        stats.payload_positions.push(search);
+        let Some(offset) = bytes[search..].iter().position(|&byte| {
+            stats.conditional_search_bytes += 1;
+            byte == b'<'
+        }) else {
+            return;
+        };
         search += offset + 1;
         if bytes.get(search).is_some_and(u8::is_ascii_alphabetic) {
-            let Some((_, end)) = tag(bytes, search, regions) else {
+            let Some((_, end)) = tag(bytes, search, stats, regions) else {
                 return;
             };
             search = end;
@@ -572,17 +651,33 @@ fn conditional_values(bytes: &[u8], start: usize, regions: &mut dyn Regions) {
 /// only after `=` and optional whitespace, so the apostrophe in
 /// `alt=don't` is a value byte; a quoted `>` never ends the tag. Each
 /// closed value is reported to `regions` as soon as its quote closes.
-fn tag<'a>(bytes: &'a [u8], start: usize, regions: &mut dyn Regions) -> Option<(&'a [u8], usize)> {
-    let name_len = bytes[start..].iter().position(|&byte| ends_name(byte))?;
+fn tag<'a>(
+    bytes: &'a [u8],
+    start: usize,
+    stats: &mut TagScanStats,
+    regions: &mut dyn Regions,
+) -> Option<(&'a [u8], usize)> {
+    let name_len = bytes[start..].iter().position(|&byte| {
+        stats.tag_name_bytes += 1;
+        ends_name(byte)
+    })?;
     let mut index = start + name_len;
     let mut after_equals = false;
     loop {
-        match *bytes.get(index)? {
+        let byte = *bytes.get(index)?;
+        stats.attribute_steps += 1;
+        match byte {
             b'>' => return Some((&bytes[start..start + name_len], index + 1)),
             b'=' => after_equals = true,
             quote @ (b'"' | b'\'') if after_equals => {
-                let close =
-                    index + 1 + bytes[index + 1..].iter().position(|&byte| byte == quote)?;
+                let close = index
+                    + 1
+                    + bytes[index + 1..].iter().position(|&byte| {
+                        stats.quote_search_bytes += 1;
+                        byte == quote
+                    })?;
+                #[cfg(test)]
+                stats.value_ranges.push((index + 1, close));
                 regions.value(index + 1, close);
                 index = close;
                 after_equals = false;
@@ -628,7 +723,7 @@ fn skip_markup(
     regions: &mut dyn Regions,
 ) -> Option<usize> {
     let len = html.len();
-    let Some((end, kind)) = markup_at(html.as_bytes(), lt, regions) else {
+    let Some((end, kind)) = markup_at(html.as_bytes(), lt, stats, regions) else {
         stats.markup_bytes += (len - lt) as u64;
         return None;
     };
@@ -643,7 +738,7 @@ fn skip_markup(
                     return None;
                 };
                 stats.raw_bytes += (close - end) as u64;
-                let Some((_, close_end)) = tag(html.as_bytes(), close + 2, regions) else {
+                let Some((_, close_end)) = tag(html.as_bytes(), close + 2, stats, regions) else {
                     stats.markup_bytes += (len - close) as u64;
                     return None;
                 };
@@ -1028,6 +1123,145 @@ mod tests {
     // ---- issue #136: source boundaries before decoding ----
 
     #[test]
+    fn conditional_missing_marker_uses_ordinary_source() {
+        let html = r#"<!--[if mso]><a href="https://x.io/O&#39;B">1111</a>--><a href="https://x.io/tail">2222</a>"#;
+        assert_eq!(
+            extract_links(None, Some(html)),
+            vec!["https://x.io/O", "https://x.io/tail"]
+        );
+        assert_eq!(alt_codes(None, Some(html)), vec!["2222"]);
+    }
+
+    #[test]
+    fn conditional_markers_ignore_ascii_case() {
+        let html = r#"<!--[iF mso]><a href="https://x.io/O&#39;B">1111</a><![EnDiF] 	--><a href="https://x.io/tail">2222</a>"#;
+        assert_eq!(
+            extract_links(None, Some(html)),
+            vec!["https://x.io/O'B", "https://x.io/tail"]
+        );
+        assert_eq!(alt_codes(None, Some(html)), vec!["2222"]);
+    }
+
+    #[test]
+    fn conditional_marker_must_be_final() {
+        let html = r#"<!--[if mso]><a href="https://x.io/O&#39;B">1111</a><![endif] extra <a href="https://x.io/C&#39;D">3333</a>--><a href="https://x.io/tail">2222</a>"#;
+        assert_eq!(
+            extract_links(None, Some(html)),
+            vec!["https://x.io/O", "https://x.io/C", "https://x.io/tail"]
+        );
+        assert_eq!(alt_codes(None, Some(html)), vec!["2222"]);
+    }
+
+    #[test]
+    fn conditional_scan_work_is_bounded() {
+        let small = "<!--[if x]><a h='z'>é<![endif]-->";
+        for size in [1, 16, 256, 4096] {
+            for (html, expected) in [
+                (small.repeat(size), vec![]),
+                (
+                    format!("<!--[if x]>{}<![endif]-->", "é[if mso <!? <é ".repeat(size)),
+                    vec![],
+                ),
+                (
+                    format!("<!--[if x {}<![endif]-->", "[if é ".repeat(size)),
+                    vec![],
+                ),
+                (
+                    "<!--[if x]><a h='https://x.io/O&#39;B'>é-->".repeat(size),
+                    vec!["https://x.io/O"],
+                ),
+                (
+                    "<!--[if x]><a h='https://x.io/O&#39;B'><![endif]bad-->".repeat(size),
+                    vec!["https://x.io/O"],
+                ),
+                (
+                    format!(
+                        "<!--[if x]><a h='https://x.io/O&#39;B' q='{}<![endif]-->",
+                        "é<a h=\"https://x.io/C&#39;D\">".repeat(size)
+                    ),
+                    vec!["https://x.io/O'B", "https://x.io/C"],
+                ),
+                (
+                    format!("<!--[if x]><a h='{}<![endif]-->", "é<".repeat(size)),
+                    vec![],
+                ),
+                (
+                    format!("<!--[if x]><{}<![endif]-->", "abc".repeat(size)),
+                    vec![],
+                ),
+                ("<!--[if x]><a h=''><![endif] \t-->".repeat(size), vec![]),
+            ] {
+                let (links, stats) = links_with_stats(None, Some(&html));
+                assert_eq!(links, expected);
+                assert_eq!(stats.ordinary_bytes + stats.quoted_bytes, html.len() as u64);
+                assert_eq!(stats.ordinary_decodes, stats.quoted_decodes + 1);
+                assert_eq!(
+                    stats.decoded_ranges.len() as u64,
+                    stats.ordinary_decodes + stats.quoted_decodes
+                );
+                let mut cursor = 0;
+                for &(start, end) in &stats.decoded_ranges {
+                    assert_eq!(start, cursor);
+                    assert!(end >= start);
+                    cursor = end;
+                }
+                assert_eq!(cursor, html.len());
+                let tags = &stats.tags;
+                for pair in tags.payload_positions.windows(2) {
+                    assert!(pair[0] < pair[1]);
+                }
+                let mut previous = 0;
+                for &(start, end) in &tags.value_ranges {
+                    assert!(start >= previous);
+                    assert!(end >= start);
+                    let &(lo, hi) = tags
+                        .conditional_payloads
+                        .iter()
+                        .find(|&&(_, hi)| start <= hi)
+                        .unwrap();
+                    assert!(lo <= start);
+                    assert!(end <= hi);
+                    previous = end;
+                }
+                let n = html.len() as u64;
+                let comments = html.matches("-->").count() as u64;
+                assert!(tags.conditional_opener_bytes <= 4 * comments);
+                assert!(tags.conditional_trailing_bytes <= n + comments);
+                assert!(tags.conditional_marker_bytes <= 9 * comments);
+                assert!(tags.conditional_header_probes <= n);
+                assert!(
+                    tags.conditional_search_bytes <= n,
+                    "payload search exceeds input bytes"
+                );
+                assert!(tags.tag_name_bytes <= n);
+                assert!(tags.attribute_steps <= n);
+                assert!(tags.quote_search_bytes <= n);
+            }
+        }
+        let (_, stats) = links_with_stats(None, Some(small));
+        let tags = &stats.tags;
+        assert_eq!(
+            (
+                tags.conditional_opener_bytes,
+                tags.conditional_trailing_bytes,
+                tags.conditional_marker_bytes,
+                tags.conditional_header_probes
+            ),
+            (4, 1, 9, 2)
+        );
+        assert_eq!(
+            (
+                tags.conditional_search_bytes,
+                tags.tag_name_bytes,
+                tags.attribute_steps,
+                tags.quote_search_bytes
+            ),
+            (3, 2, 5, 2)
+        );
+        assert_eq!((stats.ordinary_decodes, stats.quoted_decodes), (2, 1));
+    }
+
+    #[test]
     fn conditional_comment_attributes_are_source_bounded() {
         for (html, want) in [
             (
@@ -1056,12 +1290,73 @@ mod tests {
             ),
             (
                 r#"<!--[if mso]><a href="https://x.io/O&#39;B">x<a title--><a href="https://x.io/tail">t</a>"#,
-                vec!["https://x.io/O'B", "https://x.io/tail"],
+                vec!["https://x.io/O", "https://x.io/tail"],
             ),
             (
                 r#"<!--[if mso]><a href="https://x.io/O&#39;B-->"#,
                 vec!["https://x.io/O"],
             ),
+            (
+                r#"<!--[if mso]><a href="https://x.io/O&#39;B">x<a title<![endif]--><a href="https://x.io/tail">t</a>"#,
+                vec!["https://x.io/O'B", "https://x.io/tail"],
+            ),
+            (
+                r#"<!--[if mso]><a href="https://x.io/O&#39;B" title="unfinished <![endif]--><a href="https://x.io/tail">t</a>"#,
+                vec!["https://x.io/O'B", "https://x.io/tail"],
+            ),
+            (
+                r#"<!--[if mso]><a href="https://x.io/O&#39;B" title="https://x.io/C&#39;D<![endif]--><a href="https://x.io/tail">t</a>"#,
+                vec!["https://x.io/O'B", "https://x.io/C", "https://x.io/tail"],
+            ),
+            (
+                r#"<!--[if mso]><a href="https://x.io/O&#39;B">x</a>"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!-- [if mso]><a href="https://x.io/O&#39;B"><![endif]-->"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!--&#91;if mso]><a href="https://x.io/O&#39;B"><![endif]-->"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                "<!--[if\u{a0}mso]><a href=\"https://x.io/O&#39;B\"><![endif]-->",
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!--[if mso]><a href="https://x.io/O&#39;B">&lt;![endif]-->"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!--[if mso]><a href="https://x.io/O&#39;B"><![endif]é-->"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!--[if mso <a href="https://x.io/O&#39;B"><![endif]-->"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!--[if mso <a href="https://x.io/O&#39;B"><![endif]-->]><!--later-->"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!--[if mso]><a href="https://x.io/O&#39;B">--> <![endif]-->"#,
+                vec!["https://x.io/O"],
+            ),
+            (
+                r#"<!--[if mso]><é <!opaque> <a href="https://x.io/é&#39;b?next=https://y.io/Foo_(bar)&amp;amp;x=1" title='https://x.io/C&#34;D'><![endif]-->"#,
+                vec![
+                    "https://x.io/é'b?next=https://y.io/Foo_(bar)&amp;x=1",
+                    "https://x.io/C\"D",
+                ],
+            ),
+            ("<!-->1111<!--->2222<!-- -->3333<!--[if-->", vec![]),
+            ("<!--[if ]>-->", vec![]),
+            ("<!--[if <![endif]-->", vec![]),
+            ("<!--[if ]><![endif]-->", vec![]),
+            ("<!--[if mso]><a title=''><a<![endif]-->", vec![]),
+            ("<!--[if mso]><a h='x' <![endif]-->", vec![]),
             ("<!--[if mso]>no tags<![endif]-->", vec![]),
         ] {
             let (links, stats) = links_with_stats(None, Some(html));
@@ -1072,6 +1367,13 @@ mod tests {
             alt_codes(
                 None,
                 Some("<!--[if mso]><a title='3333'>1111</a><![endif]-->2222")
+            ),
+            vec!["2222"]
+        );
+        assert_eq!(
+            alt_codes(
+                None,
+                Some("<head><!--[if mso]></head><script><template><![endif]-->1111</head>2222")
             ),
             vec!["2222"]
         );

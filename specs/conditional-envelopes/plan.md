@@ -1,7 +1,7 @@
 # Plan — conditional envelopes
 
 Date: 2026-10-26. Implements [spec.md](spec.md); ordered proof is in
-[tasks.md](tasks.md). This design does not claim an implementation repair.
+[tasks.md](tasks.md). The design below is retained; the dated implementation proof follows.
 
 ## Technical context and research
 
@@ -239,3 +239,134 @@ AC1–AC5 are implemented or a protected verification verdict. The implementatio
 tasks remain unchecked and must supply their new regressions, mutation receipts
 and renewed final-candidate gates. The chief validates committed artifact
 structure after committing; the sequence's pinned check owns advancement.
+
+## Implementation proof — 2026-10-26
+
+Implemented the already-authorized R4.4 qualification and the same scanner's
+LOW work-proof finding. Recorded 0061/0049 rulings and every unrelated path
+remain unchanged. Qualification precedes callbacks, uses the first raw close,
+requires the immediate ASCII opener/header and final case-insensitive marker
+after ASCII-only trailing whitespace, and bounds attribute scanning before
+the marker. Failed qualification keeps ordinary-comment/unfinished-tail behavior.
+The local counters observe real qualification/search/tag predicates, failed
+tails and decode calls. Test-only traces prove ordered payload progress,
+bounded value ranges and complete, once-decoded source partitioning.
+
+Inherited HEAD: 98c1812ced05e83a48a972896e9c296ce46d526a; inherited tree:
+2a7919dcd695e4452df0ec427174aac4c6646206.
+The staged code snapshot tree is **ed1e7369f7d173dec920f1e539b6d9d0d45c751a**, before
+these proof-only Markdown updates. Final commit/tree identity is recorded in
+the run-local commit.json after committing; source bytes below bind every
+final gate and evaluator to the delivered implementation:
+
+- src/extract.rs SHA-256: 55b8440f99ffa8cb4faa77e744baf9f98a7d7376153b1ad3d52e8bfcc1233aca
+- tests/compat.rs SHA-256: bfa75ae0b03ea33c40c209fae723df2fb81cd8295299d912320d1548207cddf2
+- Regression-first extract snapshot SHA-256: 173820e3be60d58726abffc7d8edf2cf8973fec4f4d418cbfdd5f140d7105f98.
+  Its production prefix was checked byte-for-byte against inherited HEAD.
+- Final receipt ledger: plain path
+  .forge/epic192/conditional-envelopes/implementation/final-gates.json,
+  SHA-256 660a1b8a5e7fc6735b1943007236f9095697410115491d077ea23433bd18c50d.
+  Each entry retains exact command, UTC interval, exit, source identities and
+  log SHA-256. Full logs/snapshots/patches are in that ignored directory;
+  no tracked link points into it.
+
+### Regression-first and negative-control receipts
+
+All following exact invocations selected one test. Missing-marker and
+non-final baseline failures returned full O'B/C'D URLs where ordinary
+prefixes O/C were required; the corrected old no-marker fixture also failed.
+Mixed case genuinely passed the baseline. After qualification, the temporary
+case-sensitive-marker mutant produced the truncated URL and failed the mixed-case
+test. The separate work mutant repeats actual suffix searches: exact URL output
+and partition assertions still pass before the payload-work bound fails.
+Both mutants compile, fail behaviorally with exit 101, restore byte-for-byte to
+the final source hash above, and pass after restoration. Neither is committed.
+
+| Receipt | Exit | Log SHA-256 |
+|---|---|---|
+| baseline-missing | 101 | 85380cbf107960f43a644df777f822a42d29dd75d8ce9d082613e45e22f5ddcf |
+| baseline-case | 0 | 046a6bc01ce436faf3482b0c0977733c5c644d9cc56b238dcd895c1499e2cb92 |
+| baseline-final | 101 | 568b5bcd01c4ea5152ffb0417f9d8f0ca9a8e718a59ad32ecf422d37b33fc27f |
+| baseline-boundaries | 101 | 055e7ab820430a59e6dc1c9ea0c85fe1f3608ea94de0ea6db5ffde84501e9850 |
+| case-mutant-red | 101 | f428fe6d146e5ddb8b1d64e659a137279f31d324b82bfae145a7818e71f30293 |
+| case-restored-green | 0 | 1e38c6e0cc78efc7d15e1fef05d0511b8e77bc22de6deefb0bee14f67a334ca9 |
+| work-mutant-red | 101 | 59c878c234a094495df501684eb9a7dd1dd2a24e3eec5304d5c79db8a6c94438 |
+| work-restored-green | 0 | ad0308b4b36c7ce33c027dce6201f310156b6d3385297a7e95c7d22942cb086b |
+
+| Mutation | Mutant source SHA-256 | Patch SHA-256 |
+|---|---|---|
+| case | 8aedbf5fc93bb8b44011fcc6aec2adfbe12a95028c85d0d7dde36c46c23e2dbe | b10e8fbe4c3b25eaa2d05cda0477150cf50a271f873e7b9d75772a92b0dfbc0a |
+| work | 3d2c5d614283d46a2d60f935185a8ede14d9c455737f30ffc243089cb07627af | 31a266ea1712553133214eaf9b11bd80fbc3dad804396d8378deb2317a2be8e5 |
+
+The three requested exact regressions, existing source-boundary evaluator and
+work evaluator pass on final bytes. Work checks use sizes 1/16/256/4096 across
+valid/missing/non-final envelopes, repeated malformed openers, multibyte payloads,
+unfinished names/attributes and later angle brackets. All eight categories have
+positive exact small-fixture pins; every separately specified linear bound is
+asserted, together with ordered ranges and decoder invocation/partition checks.
+The real SMTP/HTTP Outlook evaluator covers six isolated inboxes, exact native
+stored arrays immediately after 250, raw/body bytes and both existing shim
+projections. Complete conditional-only and duplicate-anchor URLs remain singleton
+arrays. Historical live/reopen, independent-MIME text-first, nested URL and #136
+evaluators each select one passing test.
+
+### Final local gates
+
+All 29 final receipts exited 0 on the source identities above. Exact coverage:
+**14988/14988 lines, 838/838 branches, 1610/1610 functions**, zero missed in each
+dimension; report target/coverage/run.FPPem1. Coverage selftest reports every
+refusal arm refuses and every pass arm passes. The initial gate pass found a
+collapsible-if lint and three cold short-circuit branches in compound test
+assertions; these were corrected with a let-chain and separate invariant
+assertions/enclosing-payload lookup. Initial logs remain under first-pass/.
+No gate, exclusion, harness placement or dependency policy changed.
+
+Packet checksums, candidate engine digest and fixed-shim integrity pass.
+Pinned bundle compilation retains current routing and reports 76 valuations
+over 14 groups, zero unruled; no policy-sweep warning. Native-tls absence
+accepts only Cargo's explicit no-package diagnostic (Cargo exit 101, wrapper
+exit 0). Every house command and configured supplemental proof ran offline
+with installed tools. Pinned script copies were executed after checking shims.
+Extraction: 41 passing tests; compat: 36; documentation contracts: 25;
+delivery recipes: 15. The full locked workspace suite passes.
+
+| Final receipt | Exit | Log SHA-256 |
+|---|---|---|
+| final-bundle | 0 | ad83b8df41a4b44f1d748cf6c6ef17dd8a7db503246c50e2ff0dab8e04b895ff |
+| final-clippy | 0 | d6b6e5e891252beafe874c20a7e5b775d8d81b97a69d66a8250c9d4ca6075708 |
+| final-compat | 0 | 58afdfcbf6fb4ad7f089d9932adee276643db38a86066740ff3c82d3cb1cab4a |
+| final-coverage-selftest | 0 | b592c0da51ed12d117e2c705e14aed0ee8c1d78e05a03496ffa0dd69fa928cad |
+| final-coverage | 0 | f0cd395c1aa79face844dbd52ef3f6c5a3577a48356c8af0158b0c83105d557a |
+| final-delivery-proof | 0 | 2969d73ecccc45098e6907c604407b44967f3fe4669573a6cd4c5e8b82785d8c |
+| final-design-selftest | 0 | 1d5eb6cef8be9f99e87fa8b1394ed2df9172cf2c4da06f6d74cc03c95245735e |
+| final-docs | 0 | eb0ef57aa096dfae06c0838fdf02d732b60e6b3f4ee1bd9e5d8b5cc6bf4c40c6 |
+| final-engine | 0 | d59591f9d6f693cfccb0906c65ee27e7aa2a907ab4d85f90d8c8303abfee6c10 |
+| final-extract | 0 | 843651dcf0300bd7903f6e392506fa1b8a205ec390aae725691f46c1965dac33 |
+| final-fmt | 0 | e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 |
+| final-green-boundaries | 0 | 8b61a27351bef4096d97e0b2a907b8b3276a0809cbf9ae91d769140a9374f310 |
+| final-green-case | 0 | fe849427392cadb1ffc84bf4b2ff50d0097cf06736e72dff4844cfe1c7f46a28 |
+| final-green-fidelity | 0 | 1bbba5ba49e0ac0fc3efeaf1ff76d7acad6c95cb4350df97418b96a73c9e0bf1 |
+| final-green-final | 0 | bdea71f9d39760e3c604a0e7e46d12dcc5dee801544214dc4fd930530c32cb7c |
+| final-green-historical | 0 | f8fa9baced0a208f9d7c4dd2c10c8404c95098a803e30151e3e095640b960a68 |
+| final-green-mime | 0 | cf68b86d28bf1f2efa92da656914a021e508ec4ff8db5d5d682352e40be6d2b6 |
+| final-green-missing | 0 | 39c85ca1195fe6eb852cb8aca393b0760f82ccb32168249434037c85099fc8b2 |
+| final-green-nested | 0 | a6d469b908a8070be95cc04b95026b641a984eefe0f1984ca8b00990f69e16e8 |
+| final-green-wire | 0 | dcf648085d4be38cfdf38ddd013fd7a60bf252dbb1dc0d0d7cf115aaaeea9ff7 |
+| final-green-work | 0 | 6b78f3c16b90ac8e2b6856b26a7868aa658786217ab3a29181f06b0c50dac5d4 |
+| final-licenses | 0 | 71dadc8c8978da797b94dc581b666330c737551839c8fc820d7647130930c4b7 |
+| final-native-tls | 0 | 2bb6caf966b1f99bd1046e5b5c634e4526b914f80441762405e271227f59263b |
+| final-packet | 0 | 9a560c912c084f4b51c8d5c47561e0bac9b4db5107b068af9b7de631fd09f0af |
+| final-publish | 0 | 939ac40398ee171a956e8423b96d4a9c62b4b1c30250a6fa6146b585ddf0647f |
+| final-recipes | 0 | 0e02d1b46736f50ef2e8f2df78f3412ac79358730c9e70647f511ba2e2bff9c7 |
+| final-seal | 0 | e022b8e780d716cdbafdf4723515738c62bf480308724cfbb2051566d835b200 |
+| final-shims | 0 | 785e16dc6e9db3dcf3e2f94347f10c6c3508b97edc039d75e9676f3b0ea1b39c |
+| final-test | 0 | 95bffbc0132590a69f92a330f180ed0760579fe45829d655efb6e515de361259 |
+
+The commands and exact selector names are in the gate inventory, quickstart
+and task ledger above; receipt names map directly to their full commands in
+the hashed JSON ledger. Local proof does not claim protected verify/review or
+CI/operator evidence: macOS, chart/history, Docker, advisory/network, privileged
+port-80, live GitHub settings, namespaces, release/tag, sealing and publication
+remain with their recorded owners. No decision acceptance or broader prior-run
+LOW disposition is changed. All scoped implementation and proof records are
+committed unsigned; the tracked worktree is checked clean after committing.

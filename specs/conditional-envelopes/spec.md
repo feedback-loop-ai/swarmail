@@ -1,6 +1,7 @@
 # Qualify Outlook conditional envelopes
 
-Date: 2026-10-26. Status: drafted design; implementation remains owed.
+Date: 2026-10-26. Status: implemented and proved locally; dated evidence is in plan.md.
+Protected verification and review remain engine-owned.
 Scope: the R4.4 follow-up to run `implement-the-operator-s-2026-10-eec6b2f0`,
 whose review ruled REVIEW-RESIDUAL-OK. This design addresses correctness
 MEDIUM 1 and LOW 2 / guarantees G1 in the supplied review.
