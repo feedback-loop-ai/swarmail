@@ -260,7 +260,7 @@ impl<'a> Scan<'a> {
                 }
                 b'(' => {
                     parentheses += 1;
-                    if parentheses > NESTING {
+                    if braces.len() + parentheses > NESTING {
                         return Err(AnalysisError::Failed);
                     }
                     segment.push('(');
@@ -838,6 +838,11 @@ mod tests {
             ] {
                 assert_eq!(evaluate(&raw(&body), &Inputs::default()).is_ok(), n == 32);
             }
+        }
+        // A declaration block and its value functions share one lexical budget.
+        for n in [31, 32] {
+            let body = format!("<style>.x{{x:{}x{}}}</style>", "(".repeat(n), ")".repeat(n));
+            assert_eq!(evaluate(&raw(&body), &Inputs::default()).is_ok(), n == 31);
         }
         // Byte-accounted cursor progress, including long inert/raw and entity runs.
         let c = catalogue(DATA).unwrap();
