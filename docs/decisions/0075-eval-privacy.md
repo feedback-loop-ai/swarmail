@@ -1,6 +1,6 @@
 # 0075 — Closed eval environments and safe diagnostics
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-24
 - **Issue:** Epic #192 / #196, integrated onto #194
 - **Number:** renumbered from 0062; 0062–0074 are reserved/taken and are not reused.

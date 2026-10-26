@@ -66,22 +66,22 @@ them. What may land while a decision is still proposed is stated in
 | [0057](0057-codex-delivery-recipes.md) | Codex triages and authors; fast bugs use one or two independent reviewers, risky work the full panel; up to eight isolated runs | accepted (operator directive, 2026-10-23) | (Codex-led recipes before epic #192; GLM 5.3 test review; Flash only) |
 | [0058](0058-codex-review-routing.md) | Exact operator-directed Codex review routing and fast-feature dispatch fallback (amends 0057) | accepted (operator, 2026-10-24) | (operator directive, 2026-10-24) |
 | [0061](0061-compat-webhook-proof.md) | Compat refusal recognition and extraction repair boundaries | proposed — awaiting the operator | (#170/#190, lane D) |
-| [0062](0062-rpc-edge-contracts.md) | RPC edge contracts and the supplied ID ruling | proposed — awaiting the operator | (Epic #192, issue #180) |
-| [0063](0063-eval-provenance.md) | Reproduce public fixture choices and bind eval evidence | proposed — awaiting the operator | (Epic #192, issue #200) |
-| [0064](0064-coverage-reservation-tooling.md) | Direct exclusive coverage reservation with checked tooling | proposed — awaiting the operator | (Epic #192 issue #174) |
+| [0062](0062-rpc-edge-contracts.md) | RPC edge contracts and the supplied ID ruling | accepted (operator, 2026-10-26) | (Epic #192, issue #180) |
+| [0063](0063-eval-provenance.md) | Reproduce public fixture choices and bind eval evidence | accepted (operator, 2026-10-26) | (Epic #192, issue #200) |
+| [0064](0064-coverage-reservation-tooling.md) | Direct exclusive coverage reservation with checked tooling | accepted (operator, 2026-10-26) | (Epic #192 issue #174) |
 | [0065](0065-decoded-inbox-metrics.md) | Decoded inbox identity for HTTP request metrics (amends 0043 §6 narrowly) | accepted (operator, 2026-10-24) | (Epic #192, issue #202) |
 | [0067](0067-webhook-ca-safety.md) | Public webhook certificates and off-worker CA construction | accepted (operator, 2026-10-24) | (Epic #192, issue #195; supplied operator ruling and patch 10) |
 | [0068](0068-webhook-get-failure.md) | Document webhook GET preparation failure | accepted (operator, 2026-10-24) | (Epic #192, issue #195; supplied operator ruling and patch 10) |
 | [0069](0069-bounded-ca-execution.md) | Bounded webhook CA execution | accepted (operator, 2026-10-25) | (Epic #192; split from #195, implemented by #220) |
 | [0070](0070-object-only-chaos-and-seed.md) | Object-only REST seed and chaos admission; narrow proposed exception to 0029’s custom-deserializer prohibition | accepted (operator, 2026-10-24) | (Epic #192, issue #181; real positional-array mutation probes) |
 | [0071](0071-eval-trap-scoring.md) | Named eval traps invalidate a trial | accepted (operator, 2026-10-24) | (#192/#198) |
-| [0072](0072-delivery-proof-residuals.md) | Distinguish delivery proof completion from documented limits | proposed — awaiting the operator | (NEXT-171, epic #192) |
-| [0073](0073-matrix-cancellation.md) | Matrix cancellation stops admission and waits for owned cleanup with complete schema-1 accounting | proposed — awaiting the operator | (Epic #192, issue #194) |
-| [0074](0074-strict-native-queries.md) | Refuse unsupported queries before native operations | proposed — awaiting the operator | (Epic #192, issue #197) |
-| [0075](0075-eval-privacy.md) | Closed eval environments and safe diagnostics (renumbered from 0062) | proposed — awaiting the operator | (Epic #192, issue #196 on #194) |
-| [0076](0076-sequential-eval-trials.md) | Sequential eval trials with explicit concurrency evidence | proposed — awaiting the operator | (Epic #192, issue #199) |
-| [0077](0077-webhook-ca-port.md) | Compatible webhook CA port and LOW repairs | proposed — awaiting the operator | (Epic #192, issue #195) |
-| [0078](0078-ca-executor-ownership.md) | Bounded CA ownership, logical accounting and admission | proposed — awaiting the operator | (Epic #192, issue #220; compatible choices under accepted 0069) |
+| [0072](0072-delivery-proof-residuals.md) | Distinguish delivery proof completion from documented limits | accepted (operator, 2026-10-26) | (NEXT-171, epic #192) |
+| [0073](0073-matrix-cancellation.md) | Matrix cancellation stops admission and waits for owned cleanup with complete schema-1 accounting | accepted (operator, 2026-10-26) | (Epic #192, issue #194) |
+| [0074](0074-strict-native-queries.md) | Refuse unsupported queries before native operations | accepted (operator, 2026-10-26) | (Epic #192, issue #197) |
+| [0075](0075-eval-privacy.md) | Closed eval environments and safe diagnostics (renumbered from 0062) | accepted (operator, 2026-10-26) | (Epic #192, issue #196 on #194) |
+| [0076](0076-sequential-eval-trials.md) | Sequential eval trials with explicit concurrency evidence | accepted (operator, 2026-10-26) | (Epic #192, issue #199) |
+| [0077](0077-webhook-ca-port.md) | Compatible webhook CA port and LOW repairs | accepted (operator, 2026-10-26) | (Epic #192, issue #195) |
+| [0078](0078-ca-executor-ownership.md) | Bounded CA ownership, logical accounting and admission | accepted (operator, 2026-10-26) | (Epic #192, issue #220; compatible choices under accepted 0069) |
 | [0081](0081-glm-flash-seats.md) | GLM Flash tests review only; intake keeps its workspace hands and models | proposed — awaiting the operator | (Revised operator ruling, 2026-10-26: “GLM-5.3-Flash seats (revised)”) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that

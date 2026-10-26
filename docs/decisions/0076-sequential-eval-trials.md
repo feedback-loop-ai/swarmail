@@ -1,6 +1,6 @@
 # 0076 — Sequential eval trials with explicit concurrency evidence
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-25; current-main port synthesis.
 - **Issue:** Epic #192 / #199; namespace isolation belongs to #221.
 - **Specification:** [Sequential eval trials](../../specs/eval-sequential-trials/spec.md).

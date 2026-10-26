@@ -1,6 +1,6 @@
 # 0077 — Port accepted webhook CA contracts without widening scope
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-25
 - **Scope:** Epic #192, issue #195, current-main port and three LOW repairs.
 - **Specification:** [Webhook CA port and LOW repairs](../../specs/webhook-ca-port-lows/spec.md).

@@ -1,6 +1,6 @@
 # 0064 — Direct exclusive coverage reservation with checked tooling
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-24
 - **Scope:** Epic #192 issue #174; coverage explicit-target reservation and its selftest.
 - **Design:** [spec](../../specs/coverage-selftest/spec.md),
