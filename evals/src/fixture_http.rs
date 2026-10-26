@@ -186,7 +186,13 @@ impl Helper {
                 json!({"tools":[{"name":"eval_http","description":"Request the public fixture app. Identity is supplied automatically, including GET /. Read GET / to discover the app's forms. Paths are app-relative; mail is read with Swarmail MCP.","inputSchema":{"type":"object","properties":{"method":{"type":"string","enum":["GET","POST"]},"path":{"type":"string"},"body":{}},"required":["method","path"],"additionalProperties":false}}]}),
             ),
             Some("tools/call") => match serde_json::from_value::<Call>(message["params"].clone()) {
-                Ok(call) if call.name == "eval_http" => {
+                // Metadata is named context, not a new positional slot.
+                Ok(call)
+                    if call.name == "eval_http"
+                        && message["params"]
+                            .as_array()
+                            .is_none_or(|fields| fields.len() == 2) =>
+                {
                     let arguments =
                         json!({"method":call.arguments.method,"path":call.arguments.path});
                     let mut arguments = arguments;

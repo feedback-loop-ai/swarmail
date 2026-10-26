@@ -651,8 +651,15 @@ async fn actual_stdio_helper_preserves_closed_calls() {
     let mut outputs = Vec::new();
     for version in REVISIONS {
         let args = json!({"method":"GET","path":"/"});
-        let mut messages = vec![initialize(version)];
-        let mut expected = vec![initialized(version)];
+        // Preserve the pre-existing two-slot positional form while refusing
+        // a third slot: only the named params._meta field is new.
+        let mut messages = vec![
+            initialize(version),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":[
+                "eval_http", {"method":"GET","path":"/legacy-control"}
+            ]}),
+        ];
+        let mut expected = vec![initialized(version), http_result(1)];
         for params in [
             json!({"name":"eval_http","arguments":args,"unknown":META_SENTINEL}),
             json!({"name":"eval_http","arguments":{"method":"GET","path":"/","_meta":{}}}),
@@ -680,7 +687,12 @@ async fn actual_stdio_helper_preserves_closed_calls() {
                 expected.push(protocol_error(id, -32602, "tool_arguments_invalid"));
             }
         }
-        for params in [Value::Null, json!([]), json!("wrong-shape")] {
+        for params in [
+            Value::Null,
+            json!([]),
+            json!(["eval_http", args, {"progressToken":META_SENTINEL}]),
+            json!("wrong-shape"),
+        ] {
             let id = messages.len();
             messages.push(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":params}));
             expected.push(protocol_error(id, -32602, "tool_arguments_invalid"));
@@ -694,7 +706,12 @@ async fn actual_stdio_helper_preserves_closed_calls() {
         outputs.push((stdio_exchange(&url, &messages).await, expected));
     }
     let requests = finish_http(requests, server, count).await;
-    assert!(requests.is_empty());
+    assert_eq!(requests.len(), REVISIONS.len());
+    for request in &requests {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/legacy-control");
+        assert!(request.body.is_empty());
+    }
     for (output, expected) in outputs {
         assert_metadata_discarded(std::slice::from_ref(&output), &requests);
         assert_eq!(replies(&output), expected);

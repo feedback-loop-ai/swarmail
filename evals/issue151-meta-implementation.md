@@ -54,12 +54,24 @@ After repair the focused actual_stdio_helper_ group passes all five tests.
 Standalone eval fmt and locked all-target clippy pass. The full wrappers target
 passes all 19 tests, including the existing process-cleanup regression (124.41s).
 The first independent full eval command exited 101 after all 52 library tests
-and 31 executable tests passed: boundary::sequential_contracts_and_decision_links_are_honest
+and 19 executable tests passed: boundary::sequential_contracts_and_decision_links_are_honest
 still required decisions 0063/0076 to be proposed. The verified operator rulings
 and both tracked records already say accepted (operator, 2026-10-26). Updated
 only those stale test assertions to require the recorded acceptance and date,
 without editing or accepting either decision. Full-suite and committed-candidate
 house proof remains pending; no failed or interrupted command is counted green.
+
+After the boundary repair the complete standalone eval command passed all 236
+tests (including the five real stdio tests), with saved exit 0. The transport
+returned a 300-second timeout; the later saved exit and complete log, ending
+with wrappers and doc tests, establish success independently of that timeout.
+
+A further closed-shape control then failed (exit 101): serde's new field also
+admitted a third positional call element, previously refused. Kept the explicit
+ignored field and constrained positional calls to their former two-slot arity.
+A positive legacy positional control and negative third-slot control prove that
+only the named metadata slot is newly admitted. No new params or argument shape
+is otherwise accepted or tightened. The full suite is rerun after this repair.
 
 ## Known delivery prerequisite
 
