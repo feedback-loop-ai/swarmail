@@ -82,3 +82,12 @@ uses the exact current directive as its scope; any further contradiction of
 accepted policy requires the operator under 0045 §8. The design seat records
 no operator acceptance. AC1–AC11 and the paired tasks are the proof obligations;
 implementation, dispatcher/evaluator proofs and full verification are outstanding.
+
+## Dated tests-routing amendment pointer — 2026-10-26
+
+The operator's revised direction changes only `codex-review-tests` in Standard,
+Careful and fast design/engine review to local Spark GLM-5.3-Flash through dsh,
+with reasoning effort not applicable. Proposed [0081](0081-glm-flash-seats.md)
+records the exact direction and prior intake-hands refusal. Intake and every
+other seat keep their models; this accepted historical body is preserved.
+0081 remains proposed, and this pointer accepts no decision.

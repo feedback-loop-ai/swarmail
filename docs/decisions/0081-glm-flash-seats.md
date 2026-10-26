@@ -39,8 +39,8 @@ to change it. The revised ruling resolves the former prerequisite by leaving
 intake on Sol and moving only tests review. It supersedes this proposal's
 previous intake assignments and its statement that tests-only delivery is
 incomplete. No adapter relaxation, hands removal or engine repair is needed
-or authorized. The old implementation report is historical under the revised
-spec and will receive a dated supersession notice during implementation.
+or authorized. The old implementation report is preserved beneath a dated supersession
+notice in the [implementation record](../../specs/glm-flash-seats/implementation.md).
 
 ## Proposed ruling
 
@@ -98,7 +98,7 @@ stoppage. CI owns the existing platform/network/release checks; the operator
 owns live Spark availability, credentials, model choice and sealing. Do not
 probe the endpoint from a seat or add network/namespaces acceptance criteria.
 
-Implementation updates the existing index row and current route summaries,
+The implementation updates the existing index row and current route summaries,
 and labels superseded evidence. Accepted 0057/0058 bodies remain historical;
 any pointer is a dated addendum. This explicit operator direction authorizes
 only the narrow tests substitution while 0081 remains proposed; no unrelated

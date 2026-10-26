@@ -1,3 +1,42 @@
+# Implementation — tests-only GLM Flash review
+
+Date: 2026-10-26. Implements the revised operator direction recorded in
+proposed [0081](../../docs/decisions/0081-glm-flash-seats.md); no decision is accepted.
+
+Only `agents/codex-review-tests.json` changes executable routing: singleton
+`glm-flash`, explicit empty efforts. The existing dsh adapter maps it to local
+`spark-glm/GLM-5.3-Flash-EXL3`; reasoning effort is not applicable. The shared
+overlay supplies Standard, Careful and both fast full panels. Intake stays
+Sol medium/high with its existing workspace hands. Other seats, charters,
+permissions, policies, engine, adapter and application code stay unchanged.
+
+The Rust source proof pins the Spark route and empty effort map. The Python
+resolved proof compares admitted provider/model/local/status/effort and member
+identity, rejecting old Sonnet, wrong provider/model/route, blocked resolution,
+fallback, office or compiled effort, and missing/replaced members through the
+same comparator. Complete panel checks and existing dispatch controls remain.
+A run-local comparison against d55a89d checks unchanged source and resolved
+fields; recipe descriptions are the only bundle changes.
+
+Final verification receipts are run-local and identify the committed candidate
+and pinned engine. House gates and focused resolution are recorded separately
+from the full dispatcher script: its pre-existing `1-cross-attempt` assertion
+must remain red if the pinned engine completes instead of refusing. A focused
+pass does not claim dispatcher-wide correlation enforcement. No live provider
+is called. CI and operator proof ownership remains as specified in the
+[spec](spec.md); no additional local network or platform criteria apply.
+
+## Superseded attempt — 2026-10-26
+
+The blocked report below preserves the earlier intake migration findings.
+The operator's later **“GLM-5.3-Flash seats (revised)”** ruling supersedes its
+scope and its statement that tests-only delivery is insufficient. The intake
+refusal remains valid evidence of the pinned engine's hands boundary; it is
+no longer a prerequisite for this tests-only change. Read the report below
+as a historical account of that attempt, not current implementation status.
+
+---
+
 # Implementation prerequisite: blocked
 
 Date: 2026-10-26. Result: blocked; routing implementation remains outstanding.

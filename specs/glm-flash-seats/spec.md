@@ -1,6 +1,6 @@
 # GLM Flash tests review
 
-Created: 2026-10-26. Revised: 2026-10-26. Status: draft; tests-only implementation remains outstanding.
+Created: 2026-10-26. Revised: 2026-10-26. Status: implemented; final proof receipts are run-local.
 
 Decision: 0081
 
@@ -40,7 +40,7 @@ compatibility prerequisite; it does not require fixing the adapter or engine.
 The older [implementation report](implementation.md) describes the superseded
 attempt, including its statement that tests-only delivery was insufficient.
 That statement no longer governs. The current intake framing already records
-the revised scope. Implementation will label the old report accordingly.
+the revised scope. The implementation record labels the old report accordingly.
 
 ## Composition to preserve
 

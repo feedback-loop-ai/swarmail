@@ -18,7 +18,7 @@ choosing the path:
 +----------------+----------------------+------------------------------+
 | chore          | Implement -> verify  | DeepSeek Flash               |
 | feature        | Implement -> verify  | Qwen Max + official Flash       |
-| design/engine  | Design -> implement  | Astra (2) + Flash + Sonnet + Fable  |
+| design/engine  | Design -> implement  | Astra (2) + Flash + GLM + Fable  |
 | escalate       | Stop                 | Operator ruling needed       |
 +----------------+----------------------+------------------------------+
 ```
@@ -53,7 +53,7 @@ they are useful when the operator has already ruled that path necessary:
 | Review: correctness | Claude Fable 5.1 / high | Codex Astra / high |
 | Review: security    | Official Flash / high | Official Flash / high |
 | Review: guarantees  | absent                | Codex Astra / high    |
-| Review: tests       | Sonnet 5.5 / high     | Sonnet 5.5 / high     |
+| Review: tests       | GLM Flash / N/A       | GLM Flash / N/A       |
 | Review: independent | absent                | Fable 5.1 / high      |
 | Ship                | Pinned exec gate      | Pinned exec gate      |
 +---------------------+-----------------------+-----------------------+
@@ -79,7 +79,12 @@ five required role assignments as Careful. Both Astra roles retain distinct
 offices, charters and results; independent Fable is a separately required
 correctness reading. Five roles do not mean five model families. See accepted
 [0058](../docs/decisions/0058-codex-review-routing.md) for the operator-directed
-review matrix.
+review matrix, with the revised 2026-10-26 tests-only direction recorded in
+proposed [0081](../docs/decisions/0081-glm-flash-seats.md). The tests member
+selects only `glm-flash`: dsh routes it to local
+`spark-glm/GLM-5.3-Flash-EXL3`. Reasoning effort is not applicable, represented
+by an explicit empty office effort map and absent compiled effort. Intake
+stays on Sol with its existing workspace hands.
 
 Every Codex reviewer has a single-model chain except dedicated fast-feature
 correctness: `[qwen-max, sonnet]`. Only a settled pre-session dispatch failure
@@ -87,7 +92,8 @@ correctness: `[qwen-max, sonnet]`. Only a settled pre-session dispatch failure
 adverse verdicts and malformed facts cannot trigger substitution; exhaustion
 refuses shipping. Flash security never substitutes. DeepSeek uses official
 Flash only; Pro is forbidden. DashScope Qwen keeps provider-default effort;
-other requested reviewers use high. All reviewers retain read-only charters
+Spark tests effort is not applicable; the other requested reviewers use high.
+All reviewers retain read-only charters
 and `class: gate`; only panel security or the combined chore reviewer owns hold.
 The dsh adapter does not claim native tool confinement: those reviewers'
 read-only conduct is a charter obligation, and the delivery gates detect tree

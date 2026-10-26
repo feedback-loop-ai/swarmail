@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "description": "Codex leads intake, design and implementation; Standard review uses Claude Fable 5.1 correctness, official DeepSeek Flash security and Claude Sonnet 5.5 tests. Inherits the pinned proof chain and protected policy.",
+  "description": "Codex leads intake, design and implementation; Standard review uses Claude Fable 5.1 correctness, official DeepSeek Flash security and GLM-5.3-Flash tests through dsh (effort not applicable). Inherits the pinned proof chain and protected policy.",
   "extends": "self",
   "override": {
     "bundle": [

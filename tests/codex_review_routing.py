@@ -83,10 +83,10 @@ def resolved_matrix(engine, out):
                  'review:tests': ('claude', ['fable', 'glm-flash']),
                  'intake': ('dsh', ['glm-flash']), 'implement': ('dsh', ['glm-flash'])},
         'codex': {'review:correctness': ('claude', ['fable']),
-                  'review:security': ('dsh', ['flash']), 'review:tests': ('claude', ['sonnet'])},
+                  'review:security': ('dsh', ['flash']), 'review:tests': ('dsh', ['glm-flash'])},
     }
     five = {'correctness': ('codex', ['astra']), 'security': ('dsh', ['flash']),
-            'tests': ('claude', ['sonnet']), 'guarantees': ('codex', ['astra']),
+            'tests': ('dsh', ['glm-flash']), 'guarantees': ('codex', ['astra']),
             'independent': ('claude', ['fable'])}
     expected['codex-careful'] = {'review:' + k: v for k, v in five.items()}
     expected['codex-fast'] = {'review:chore': ('dsh', ['flash']),
@@ -115,6 +115,87 @@ def resolved_matrix(engine, out):
             if recipe != 'self' and key.startswith('implement'):
                 chain = ['luna'] if recipe == 'codex-fast' else ['sol']
                 assert agent['provider'] == 'codex' and agent['chain'] == chain
+        if recipe != 'self':
+            keys = (['review:design:tests', 'review:engine:tests']
+                    if recipe == 'codex-fast' else ['review:tests'])
+            result = call([engine, 'agents', 'show', 'codex-review-tests'], ROOT,
+                          out / (recipe + '-tests-office'))
+            assert result.returncode == 0, result.stderr
+            office = json.loads(result.stdout)
+            adapter_path = ROOT / 'adapters/dsh.json'
+            adapter = json.loads(adapter_path.read_text())
+            wanted = dict(agent='codex-review-tests', provider='dsh',
+                chain=['glm-flash'], model='glm-flash', chosen_index=0,
+                models=['glm-flash'], efforts={}, effort=None,
+                candidates=[dict(model='glm-flash', provider='dsh', effort=None)],
+                concrete='spark-glm/GLM-5.3-Flash-EXL3', route='local',
+                resolution=[('glm-flash', 'dsh', 'ok')],
+                chosen={'index': 0, 'model': 'glm-flash', 'provider': 'dsh'},
+                adapter_digest=next(a['adapter_digest'] for a in agents.values()
+                                    if a['agent'] == 'codex-review-security'),
+                charter_digest=office['charter_digest'])
+            tests = {}
+            for key, selected in agents.items():
+                if not key.endswith(':tests'):
+                    continue
+                capability = manifest['capabilities']['sites'][key]
+                assert capability['office'] == 'codex-review-tests'
+                assert len(capability['candidates']) == 1
+                pins = capability['candidates'][0]['model_pins']['read']
+                assert pins == [{'id': adapter['models']['glm-flash'], 'route': 'spark-glm'}]
+                candidates = (manifest['select']['review'][key.split(':')[1]]['panel']['tests']['candidates']
+                              if recipe == 'codex-fast' else [selected])
+                tests[key] = dict(agent=selected['agent'], provider=selected['provider'],
+                    chain=selected['chain'], model=selected['model'],
+                    chosen_index=selected['chosen_index'], effort=selected.get('effort'),
+                    models=office['models'], efforts=office['efforts'], concrete=pins[0]['id'],
+                    route=adapter['routes'][pins[0]['route']],
+                    candidates=[dict(model=c['model'], provider=c['provider'], effort=c.get('effort'))
+                                for c in candidates],
+                    resolution=[(c['model'], c['provider'], c['status'])
+                                for c in office['resolution']['chain']],
+                    chosen=office['resolution']['chosen'],
+                    adapter_digest=selected['adapter_digest'],
+                    charter_digest=selected['charter_digest'])
+            def assert_tests(matrix):
+                assert matrix == {key: wanted for key in keys}, (recipe, matrix)
+            assert_tests(tests)
+            mutations = ['sonnet', 'provider', 'concrete', 'route', 'status',
+                         'fallback', 'office-effort', 'compiled-effort', 'missing', 'replaced']
+            for key in keys:
+                for mutation in mutations:
+                    bad = copy.deepcopy(tests)
+                    row = bad[key]
+                    if mutation == 'sonnet':
+                        row.update(provider='claude', chain=['sonnet'], model='sonnet',
+                                   models=['sonnet'], concrete='claude-sonnet-5-5')
+                    elif mutation == 'provider':
+                        row['provider'] = 'claude'
+                    elif mutation == 'concrete':
+                        row['concrete'] = 'dashscope/glm-5.3'
+                    elif mutation == 'route':
+                        row['route'] = 'uncontracted'
+                    elif mutation == 'status':
+                        row['resolution'] = [('glm-flash', 'dsh', 'blocked')]
+                    elif mutation == 'fallback':
+                        row['chain'].append('sonnet')
+                    elif mutation == 'office-effort':
+                        row['efforts'] = {'glm-flash': 'high'}
+                    elif mutation == 'compiled-effort':
+                        row['effort'] = 'high'
+                        row['candidates'][0]['effort'] = 'high'
+                    elif mutation == 'missing':
+                        del bad[key]
+                    else:
+                        row['agent'] = 'review-tests'
+                    try:
+                        assert_tests(bad)
+                    except AssertionError:
+                        pass
+                    else:
+                        raise AssertionError(('tests mutant accepted', recipe, key, mutation))
+            dump(out / (recipe + '-tests-matrix.json'),
+                 dict(actual=tests, negative_controls=mutations, providers_called=False))
         # Resolve inherited efforts instead of inferring them from model aliases.
         for key in ['intake', *[k for k in agents if k.startswith('implement')]]:
             if recipe == 'self' or key not in agents:

@@ -231,23 +231,32 @@ fn full_panel() -> Value {
 #[test]
 fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
     for (name, base, models, effort) in [
-        ("correctness", "correctness", vec!["fable"], "fable"),
-        ("security", "security", vec!["flash"], "flash"),
-        ("tests", "tests", vec!["sonnet"], "sonnet"),
-        ("guarantees", "guarantees", vec!["astra"], "astra"),
-        ("astra-correctness", "correctness", vec!["astra"], "astra"),
-        ("independent", "correctness", vec!["fable"], "fable"),
+        ("correctness", "correctness", vec!["fable"], Some("fable")),
+        ("security", "security", vec!["flash"], Some("flash")),
+        ("tests", "tests", vec!["glm-flash"], None),
+        ("guarantees", "guarantees", vec!["astra"], Some("astra")),
+        (
+            "astra-correctness",
+            "correctness",
+            vec!["astra"],
+            Some("astra"),
+        ),
+        ("independent", "correctness", vec!["fable"], Some("fable")),
         (
             "feature-correctness",
             "correctness",
             vec!["qwen-max", "sonnet"],
-            "sonnet",
+            Some("sonnet"),
         ),
     ] {
         let overlay = office(&format!("codex-review-{name}"));
         assert_eq!(overlay["extends"], format!("review-{base}"));
         assert_eq!(overlay["models"], json!(models), "{name}");
-        assert_eq!(overlay["efforts"], json!({effort: "high"}), "{name}");
+        let efforts = match effort {
+            Some(model) => json!({model: "high"}),
+            None => json!({}),
+        };
+        assert_eq!(overlay["efforts"], efforts, "{name}");
         assert!(overlay.get("charter").is_none());
         assert!(overlay.get("hands").is_none(), "inherit read-only review");
         assert_eq!(
@@ -256,6 +265,21 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
         );
     }
     let dsh = read_json("adapters/dsh.json");
+    assert_eq!(dsh["models"]["glm-flash"], "spark-glm/GLM-5.3-Flash-EXL3");
+    assert_eq!(dsh["routes"]["spark-glm"], "local");
+    assert!(
+        dsh["judges"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("glm-flash"))
+    );
+    assert!(
+        dsh["effortless_routes"]["spark-glm"]
+            .as_str()
+            .is_some_and(|s| s.contains("not applicable"))
+    );
+    assert_eq!(dsh["tool_permissions"], "unsupported");
+    assert_eq!(dsh["mcp"], "unsupported");
     assert_eq!(dsh["models"]["qwen-max"], "dashscope/qwen3.8-max");
     assert_eq!(dsh["models"]["flash"], "deepseek-flash");
     assert_eq!(dsh["credentials"]["deepseek-official"], "DEEPSEEK_API_KEY");

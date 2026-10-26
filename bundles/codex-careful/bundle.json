@@ -1,6 +1,6 @@
 {
   "name": "codex-careful",
-  "description": "Codex Sol xhigh implementation; five required reviewers: Astra correctness, official Flash security, Sonnet 5.5 tests, Astra guarantees and independent Fable 5.1. Inherits all protected shell gates.",
+  "description": "Codex Sol xhigh implementation; five required reviewers: Astra correctness, official Flash security, GLM-5.3-Flash tests through dsh (effort not applicable), Astra guarantees and independent Fable 5.1. Inherits all protected shell gates.",
   "extends": "codex",
   "override": {
     "bundle": [

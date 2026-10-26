@@ -1,6 +1,6 @@
 {
   "name": "codex-fast",
-  "description": "Triage first: one Flash reviewer for chore, Qwen Max correctness with Sonnet 5.5 dispatch fallback plus Flash security for feature; design/engine retain the council and five required reviewer roles. All pinned shell gates remain.",
+  "description": "Triage first: one Flash reviewer for chore, Qwen Max correctness with Sonnet 5.5 dispatch fallback plus Flash security for feature; design/engine retain the council and five required reviewer roles, with GLM-5.3-Flash tests through dsh (effort not applicable). All pinned shell gates remain.",
   "extends": "codex",
   "policy": "policy.json",
   "override": {

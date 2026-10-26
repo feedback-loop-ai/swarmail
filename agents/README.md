@@ -44,10 +44,13 @@ operator's Codex work models and independent external reviewers. The shared
 design council now uses those Codex offices. See the
 [recipe tables](../bundles/README.md) for exact chains, efforts and launch
 commands. The `self` intake/implement and review offices above retain their
-original chains. The accepted operator-directed amendment in
-[0058](../docs/decisions/0058-codex-review-routing.md) assigns Fable correctness,
-Flash security and Sonnet tests to Standard; Careful and fast full-risk lanes
+original chains. Accepted [0058](../docs/decisions/0058-codex-review-routing.md), with the
+operator's revised 2026-10-26 tests assignment recorded in proposed
+[0081](../docs/decisions/0081-glm-flash-seats.md), assigns Fable correctness,
+Flash security and GLM Flash tests to Standard; Careful and fast full-risk lanes
 add distinct Astra correctness/guarantees and independent Fable offices.
+The tests office selects only `glm-flash` through dsh on local Spark; reasoning
+effort is not applicable. Both intake offices retain their Sol routes and hands.
 `codex-review-independent` and `codex-review-correctness` both directly inherit
 the full correctness base charter; the engine permits only one overlay level.
 Independent Fable has its own required verdict.

@@ -1,9 +1,7 @@
 {
   "extends": "review-tests",
   "models": [
-    "sonnet"
+    "glm-flash"
   ],
-  "efforts": {
-    "sonnet": "high"
-  }
+  "efforts": {}
 }
