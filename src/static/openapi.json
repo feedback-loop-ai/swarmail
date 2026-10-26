@@ -3,7 +3,7 @@
   "info": {
     "title": "Swarmail",
     "version": "0.1.0",
-    "description": "The fastest AI-native SMTP mail mock. Accepts any SMTP traffic on :1025, answers POP3 (RFC 1939 core + TOP/CAPA) on :1110 with the inbox as the maildrop, and exposes captured email through this API on :8025 — including MailHog/Mailpit-compatible read endpoints. Every accepted message is queryable immediately — there is no async gap where mail can be lost."
+    "description": "Built for a program waiting on mail. Accepts any SMTP traffic on :1025, answers POP3 (RFC 1939 core + TOP/CAPA) on :1110 with the inbox as the maildrop, and exposes captured email through this API on :8025 — including MailHog/Mailpit-compatible read endpoints. Every accepted message is queryable immediately — there is no async gap where mail can be lost."
   },
   "paths": {
     "/healthz": { "get": { "summary": "Liveness/uptime", "responses": { "403": { "$ref": "#/components/responses/GuardRefused" }, "200":{ "description": "`{\"status\":\"ok\",\"uptime_seconds\":n}` — every listener is accepting" }, "503": { "description": "`{\"status\":\"degraded\",\"degraded\":[\"smtp\",\"pop3\"]}` naming each listener whose accept loop is in a failed-accept backoff, or `{\"status\":\"stopping\"}` once the stop has fired — stopping wins over degraded (decision 0027)" } } } },

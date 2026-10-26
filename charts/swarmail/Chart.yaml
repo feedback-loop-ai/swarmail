@@ -1,10 +1,10 @@
 apiVersion: v2
 name: swarmail
 description: >-
-  Lossless SMTP mail mock for tests and agents — per-test inboxes, chaos
-  engineering, push-based awaits, native MCP, webhooks and a live UI.
+  An SMTP mail mock built for a program waiting on mail: lossless bursts,
+  per-test inboxes, wait_for assertions, chaos injection, MCP built in.
 type: application
-version: 0.1.2
+version: 0.1.3
 appVersion: "0.1.0"
 home: https://github.com/feedback-loop-ai/swarmail
 sources:
