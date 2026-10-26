@@ -1,6 +1,7 @@
 # Swarmail
 
-> The fastest AI-native SMTP mail mock: a single Rust binary that accepts any SMTP
+> An SMTP mail mock built for a program waiting on mail, not a human at a web UI:
+> a single Rust binary that accepts any SMTP
 > traffic on :1025 and exposes captured email through REST, MCP and a web UI on
 > :8025. Every accepted message is queryable immediately — there is no async gap
 > where mail can be lost.

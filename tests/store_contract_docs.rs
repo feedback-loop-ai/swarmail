@@ -1889,3 +1889,78 @@ fn issue_182_pop3_documents_the_snapshot_and_live_store_skew() {
         "README POP3 live-store qualification",
     );
 }
+
+/// The operator's 2026-10-26 positioning is copy and placement, rather than
+/// a new delivery guarantee. Expected words stay independent of the assets.
+#[test]
+fn positioning_slogan_leads_the_readme_and_landing_hero() {
+    let full = "Most mail mocks are built for a human looking at a web UI. Swarmail is built for a program waiting on mail.";
+    let readme = raw("README.md");
+    let (_, after_h1) = readme.split_once("\n# Swarmail\n").unwrap();
+    assert_eq!(
+        after_h1.lines().find(|line| !line.trim().is_empty()),
+        Some(format!("**{full}**").as_str()),
+        "the bold slogan must lead immediately after the H1, before badges"
+    );
+    let introduction = after_h1.split("\n## Contents").next().unwrap();
+    assert!(introduction.contains(concat!(
+        "**Email infrastructure for tests and agents.** One Rust binary: a lossless\n",
+        "SMTP mock with per-test inboxes, chaos engineering, push-based waiting,\n",
+        "native MCP for AI agents, and a live web UI — swallowing mail faster than\n",
+        "your tests can produce it."
+    )));
+    assert!(introduction.contains("*The swarm never drops a letter.*"));
+
+    let landing = raw("docs/index.html");
+    let (_, hero) = landing.split_once("<header id=\"top\">").unwrap();
+    let (hero, _) = hero.split_once("</header>").unwrap();
+    let (_, tagline) = hero.split_once("<p class=\"tagline\">").unwrap();
+    let (tagline, after_tagline) = tagline.split_once("</p>").unwrap();
+    let tags = regex::Regex::new("<[^>]*>").unwrap();
+    let visible = tags.replace_all(tagline, "");
+    assert_eq!(
+        visible.split_whitespace().collect::<Vec<_>>().join(" "),
+        full
+    );
+    let details = after_tagline
+        .trim_start()
+        .strip_prefix("<p class=\"hero-details\">")
+        .unwrap();
+    let (details, _) = details.split_once("</p>").unwrap();
+    assert_eq!(
+        tags.replace_all(details, "")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+        "One Rust binary: a lossless SMTP mock with per-test inboxes, chaos engineering, push-based waiting, MCP for AI agents and a live web UI. It swallows mail faster than your tests can produce it — and hands it back with every link and OTP code already extracted."
+    );
+}
+
+#[test]
+fn positioning_package_description_is_cargos_effective_metadata() {
+    assert_eq!(
+        env!("CARGO_PKG_DESCRIPTION"),
+        "An SMTP mail mock built for a program waiting on mail: lossless bursts, per-test inboxes, wait_for assertions, chaos injection, MCP built in."
+    );
+}
+
+#[test]
+fn current_descriptions_drop_unmeasured_superlatives() {
+    // Historical specs and accepted records are evidence, not current copy.
+    for path in [
+        "README.md",
+        "docs/index.html",
+        "src/static/llms.txt",
+        "src/static/openapi.json",
+        "Cargo.toml",
+        "charts/swarmail/Chart.yaml",
+        "src/config.rs",
+        "src/ui.rs",
+        "src/main.rs",
+    ] {
+        refuses(&raw(path).to_ascii_lowercase(), path, &["fastest"]);
+    }
+    assert!(
+        raw("src/main.rs").starts_with("//! Swarmail — built for a program waiting on mail.\n")
+    );
+}

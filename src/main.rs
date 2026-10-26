@@ -1,4 +1,4 @@
-//! Swarmail — the fastest AI-native SMTP mail mock.
+//! Swarmail — built for a program waiting on mail.
 
 use clap::Parser;
 use std::io::IsTerminal;

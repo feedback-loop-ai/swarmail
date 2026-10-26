@@ -134,6 +134,8 @@ async fn index_lists_inboxes() {
     let (st, page) = http_get_text(srv.http_addr, "/").await;
     assert_eq!(st, 200);
     assert!(page.contains("Swarmail"));
+    assert!(page.contains("<div class=\"muted\">Built for a program waiting on mail. ·"));
+    assert!(!page.to_ascii_lowercase().contains("fastest"));
     assert!(page.contains("ui-inbox"), "{page}");
 }
 

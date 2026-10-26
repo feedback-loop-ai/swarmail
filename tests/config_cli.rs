@@ -309,3 +309,15 @@ fn non_serve_subcommands_are_not_server_configs() {
     .unwrap();
     serve_args_or_panic(cli);
 }
+
+#[test]
+fn top_level_help_states_the_positioning() {
+    let err = Cli::try_parse_from(["swarmail", "--help"]).unwrap_err();
+    assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+    let help = err.render().to_string();
+    assert_eq!(
+        help.lines().next(),
+        Some("Built for a program waiting on mail.")
+    );
+    assert!(!help.to_ascii_lowercase().contains("fastest"));
+}

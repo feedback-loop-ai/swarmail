@@ -55,7 +55,7 @@ fn page(title: &str, body: String) -> Html<String> {
     let title = esc(title);
     Html(format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title>{STYLE}</head>
-<body><div class="wrap"><h1>📮 Swarmail</h1><div class="muted">the fastest AI-native mail mock · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div>{body}</div></body></html>"#
+<body><div class="wrap"><h1>📮 Swarmail</h1><div class="muted">Built for a program waiting on mail. · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div>{body}</div></body></html>"#
     ))
 }
 
