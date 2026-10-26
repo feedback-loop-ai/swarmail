@@ -1211,3 +1211,27 @@ fn install_refusing_trigger(
         name,
     }
 }
+
+/// Deliver exact raw DATA bytes (including final CRLF) into a named test inbox.
+pub async fn smtp_raw(addr: std::net::SocketAddr, inbox: &str, raw: &[u8]) -> String {
+    let mut conn = SmtpConn::connect(addr).await;
+    conn.send("EHLO report-test").await;
+    assert!(conn.reply().await.starts_with("250"));
+    let auth = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        format!("\0{inbox}\0x"),
+    );
+    conn.send(&format!("AUTH PLAIN {auth}")).await;
+    assert!(conn.reply().await.starts_with("235"));
+    for line in ["MAIL FROM:<sender@x.io>", "RCPT TO:<rcpt@x.io>"] {
+        conn.send(line).await;
+        assert!(conn.reply().await.starts_with("250"));
+    }
+    conn.send("DATA").await;
+    assert!(conn.reply().await.starts_with("354"));
+    conn.send_bytes(raw).await;
+    conn.send(".").await;
+    let accepted = conn.reply().await;
+    assert!(accepted.starts_with("250"), "{accepted}");
+    accepted.split_whitespace().last().unwrap().into()
+}

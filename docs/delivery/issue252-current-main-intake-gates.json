@@ -1,0 +1,142 @@
+{
+  "phase": "current-main-intake-baseline",
+  "commit": "6bf4bd628f41aba517df7ab129ad737555aa57ca",
+  "tree": "e7bb41c3d2338d9c128a971ec608defc84b3615d",
+  "engine_sha256": "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
+  "started_utc": "2026-10-26T12:40:47.081111+00:00",
+  "cargo_net_offline": true,
+  "status": "pass",
+  "gates": [
+    {
+      "name": "engine-pin",
+      "command": "printf '%s  %s\\n' ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f .forge/bin/brokkr | sha256sum --check --strict",
+      "exit_code": 0,
+      "duration_seconds": 0.164,
+      "log": ".forge/evidence/issue252-current-main-intake/engine-pin.log",
+      "log_sha256": "d59591f9d6f693cfccb0906c65ee27e7aa2a907ab4d85f90d8c8303abfee6c10"
+    },
+    {
+      "name": "shim-integrity",
+      "command": "sha256sum --check --strict bundles/self/scripts/shims.sha256",
+      "exit_code": 0,
+      "duration_seconds": 0.008,
+      "log": ".forge/evidence/issue252-current-main-intake/shim-integrity.log",
+      "log_sha256": "785e16dc6e9db3dcf3e2f94347f10c6c3508b97edc039d75e9676f3b0ea1b39c"
+    },
+    {
+      "name": "format",
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "duration_seconds": 0.816,
+      "log": ".forge/evidence/issue252-current-main-intake/format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "clippy",
+      "command": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "exit_code": 0,
+      "duration_seconds": 0.365,
+      "log": ".forge/evidence/issue252-current-main-intake/clippy.log",
+      "log_sha256": "9d892c5778d0c975f64a671e66ea5a753502353da3addd1dfdf3825225e406a2"
+    },
+    {
+      "name": "workspace-tests",
+      "command": "cargo test --workspace --locked",
+      "exit_code": 0,
+      "duration_seconds": 136.382,
+      "log": ".forge/evidence/issue252-current-main-intake/workspace-tests.log",
+      "log_sha256": "6d72ae74f7c0767ac65cbcba4ad4cfc158d8d36135393eae4f2316abc2aee350"
+    },
+    {
+      "name": "bundle-compile",
+      "command": ".forge/bin/brokkr compile --bundle bundles/self",
+      "exit_code": 0,
+      "duration_seconds": 0.032,
+      "log": ".forge/evidence/issue252-current-main-intake/bundle-compile.log",
+      "log_sha256": "ad83b8df41a4b44f1d748cf6c6ef17dd8a7db503246c50e2ff0dab8e04b895ff"
+    },
+    {
+      "name": "exact-coverage",
+      "command": "bash bundles/self/scripts/coverage-gate.sh",
+      "exit_code": 0,
+      "duration_seconds": 245.999,
+      "log": ".forge/evidence/issue252-current-main-intake/exact-coverage.log",
+      "log_sha256": "57d7ea7b3369c6d6b21cae2486689867e83dd6590e60d2c9d792a8341cc36f98"
+    },
+    {
+      "name": "coverage-selftest",
+      "command": "bash bundles/self/scripts/coverage-gate.sh selftest",
+      "exit_code": 0,
+      "duration_seconds": 19.294,
+      "log": ".forge/evidence/issue252-current-main-intake/coverage-selftest.log",
+      "log_sha256": "ba8b1813204ad4c8b639d325d03ee76396d79a066727f0fc84765ac87f036ec4"
+    },
+    {
+      "name": "publish-guard-proof",
+      "command": "bash bundles/self/scripts/publish-guard-test.sh",
+      "exit_code": 0,
+      "duration_seconds": 6.273,
+      "log": ".forge/evidence/issue252-current-main-intake/publish-guard-proof.log",
+      "log_sha256": "939ac40398ee171a956e8423b96d4a9c62b4b1c30250a6fa6146b585ddf0647f"
+    },
+    {
+      "name": "seal-keyless-proof",
+      "command": "bash bundles/self/scripts/seal-branch-test.sh",
+      "exit_code": 0,
+      "duration_seconds": 4.921,
+      "log": ".forge/evidence/issue252-current-main-intake/seal-keyless-proof.log",
+      "log_sha256": "e022b8e780d716cdbafdf4723515738c62bf480308724cfbb2051566d835b200"
+    },
+    {
+      "name": "licenses",
+      "command": "cargo deny check licenses",
+      "exit_code": 0,
+      "duration_seconds": 0.715,
+      "log": ".forge/evidence/issue252-current-main-intake/licenses.log",
+      "log_sha256": "71dadc8c8978da797b94dc581b666330c737551839c8fc820d7647130930c4b7"
+    },
+    {
+      "name": "design-selftest",
+      "command": "bash bundles/self/scripts/design-check.sh selftest",
+      "exit_code": 0,
+      "duration_seconds": 4.771,
+      "log": ".forge/evidence/issue252-current-main-intake/design-selftest.log",
+      "log_sha256": "1d5eb6cef8be9f99e87fa8b1394ed2df9172cf2c4da06f6d74cc03c95245735e"
+    },
+    {
+      "name": "delivery-boundary-proof",
+      "command": "bash bundles/self/scripts/delivery-proof-test.sh",
+      "exit_code": 0,
+      "duration_seconds": 8.83,
+      "log": ".forge/evidence/issue252-current-main-intake/delivery-boundary-proof.log",
+      "log_sha256": "2969d73ecccc45098e6907c604407b44967f3fe4669573a6cd4c5e8b82785d8c"
+    },
+    {
+      "name": "native-tls-absence",
+      "command": "out=$(cargo tree --locked -i native-tls 2>&1); code=$?; if [ \"$code\" -eq 0 ]; then printf '%s\\n' \"$out\"; exit 1; elif printf '%s' \"$out\" | grep -q 'did not match any packages'; then printf '%s\\n' \"$out\"; exit 0; else printf '%s\\n' \"$out\"; exit 1; fi",
+      "exit_code": 0,
+      "duration_seconds": 0.164,
+      "log": ".forge/evidence/issue252-current-main-intake/native-tls-absence.log",
+      "log_sha256": "c20322ba4adf68e75b4b544969d1187b0abaf3b0585b10cd47b0ce97c167025f"
+    }
+  ],
+  "finished_utc": "2026-10-26T12:47:55.821414+00:00",
+  "run_id": "epic-251-issue-252-implement-the-22ac6e57",
+  "coverage": {
+    "lines": {
+      "count": 14677,
+      "covered": 14677
+    },
+    "branches": {
+      "count": 822,
+      "covered": 822
+    },
+    "functions": {
+      "count": 1597,
+      "covered": 1597
+    }
+  },
+  "coverage_evidence": "target/coverage/run.WDpZr7",
+  "scope_note": "Fresh committed current-main intake baseline only; report implementation and behavior criteria remain unimplemented. The final receipt commit changes documentation/evidence only, not tested source, gate or bundle bytes.",
+  "transport_note": "The workspace client timed out after 300 seconds while the command continued. The completed persisted receipt and 14 verified log hashes establish command outcomes."
+}
