@@ -180,3 +180,21 @@ privileged port-80 exchange and tag-only release-rate proofs. The operator owns
 live GitHub settings, setup, sealing and publication. These are not additional
 local acceptance criteria; namespace/network access is not requested. No push,
 merge, tag, publication, issue closure or decision acceptance is authorized.
+
+## Intake baseline evidence
+
+All 14 local checks passed on framing commit
+`80eefbedbecf5516e15efbc2f0e5f5895d6f3166`, tree
+`4813f46abe4ac98754066bebce1b8645f6363d6a`. The
+[committed receipt](../../docs/delivery/issue257-intake-gates.json) records
+commands, exit statuses, engine identity and checked log hashes. Exact coverage
+is **15,520/15,520 lines, 876/876 branches and 1,656/1,656 functions**; its
+selftest passed. Full report evidence is under `target/coverage/run.LPZ37E`;
+logs are under the ignored candidate-local intake evidence directory.
+
+The workspace client timed out after 300 seconds; the continuing runner's
+durable final receipt and all 14 log hashes were checked after completion.
+Cargo ran offline and nothing was installed. The receipt commit adds only
+documentation/evidence; tested production, tests, gates and bundle bytes are
+unchanged. This is resolved intake, not feature completion. Implementation
+and fresh verification remain required.
