@@ -262,7 +262,7 @@ below. Structural design validation does not prove the feature implemented.
    delete snapshots. Preserve four jobs/128 slots and subscribe-before-scan.
    Tests use per-owner seams/barriers, never sleep as synchronization.
 8. **AC8 — Delivery:** living docs expose this version, applicability, sources,
-   gaps and error boundaries; index 0090 as proposed during implementation.
+   gaps and error boundaries; retain the already-indexed proposed 0090 status.
    Preserve recipe routing and accepted decisions. Run all local house gates
    using the candidate-local pinned engine, exact coverage and its selftest,
    plus structural design/publish/seal proofs and native-tls absence. Commit

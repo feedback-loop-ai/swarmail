@@ -23,9 +23,10 @@ Tests follow 0020: deterministic tests inline, only concrete cold diagnostic
 paths in owner-declared cfg(test) harnesses, real servers for protocol proof.
 No coverage exclusions, allowlist widening, routing edits or new service owner.
 
-The chief commits exactly spec.md, plan.md, tasks.md and proposed 0090. Intake's
-requested index row belongs to the implementation task, because this chief's
-explicit commit scope excludes the index. Do not edit historical specs or
+The final chief commit contains exactly spec.md, plan.md, tasks.md and proposed
+0090. A separate prerequisite commit supplies 0090's proposed index row: the
+repository inventory tests require it immediately, so deferral to implementation
+is invalid. Do not edit historical specs or
 accepted records. Run-local receipts stay outside specs, so HEAD remains the
 single design commit and all design files remain clean.
 
@@ -60,7 +61,7 @@ filename/disposition and encoding-error flags before implementing the walker.
 | `tests/deliverability.rs`, `tests/stdio.rs` | Extend real-server parity, predicates, restart and failure witnesses with HTML. |
 | Existing deliverability/store owner tests | Keep cache/cancellation/ready-only/watcher/prune/ingest invariants; use HTML input in relevant cases. Cold-path harness only if 0020 requires it. |
 | `README.md`, `src/static/llms.txt`, report descriptions in `src/static/openapi.json` | Replace demo-only explanations with versioned finite HTML rules, known gaps, limits and quickstart; schema stays unchanged. |
-| `docs/decisions/README.md` | Add proposed 0090 index row in implementation; do not change 0085 or accepted statuses. |
+| `docs/decisions/README.md` | Verify the already-added proposed 0090 index row; do not change 0085 or accepted statuses. |
 | SMTP, persistence, model, webhook, routing, Cargo.toml/Cargo.lock/deny.toml | Preservation owners; no planned production edits. |
 
 ## Data model and implementation approach
@@ -91,7 +92,7 @@ filename/disposition and encoding-error flags before implementing the walker.
    canonicalizes and checks encoded report bytes. Retain successful-result-only
    caching and fixed sanitized errors.
 6. Extend existing protocol/owner fixtures, update current version expectations
-   coherently and living docs/index, then run all gates. Do not replace synthetic
+   coherently and living docs, verify the proposed index row, then run all gates. Do not replace synthetic
    regression tests that still prove header/qualification behavior.
 
 ## Contracts and proof map
