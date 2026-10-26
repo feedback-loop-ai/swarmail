@@ -111,7 +111,7 @@ T1 establishes the adapter boundary; T7 wires it; T10 proves both transports.
   a real server and checks independent expected keys, variants, enums, statuses
   and examples; existing `every_decision_file_has_exactly_one_resolving_index_row`
   and `every_index_row_matches_its_records_status` pass without accepting 0085.
-- [ ] **T14 — Commit and verify the candidate (AC10).** Run focused witnesses,
+- [x] **T14 — Commit and verify the candidate (AC10).** Run focused witnesses,
   all house gates offline, engine/shim hashes, exact coverage and selftest,
   publish/seal proofs, licenses, native-tls absence, design selftest and delivery
   proof. **Proof:** fresh per-command logs/exits/hashes bound to committed tree;
@@ -124,4 +124,13 @@ Implementation witness placement: the wire witnesses for T7/T8/T10/T11/T13
 are grouped in `tests/deliverability.rs`, with stdio in `tests/stdio.rs`.
 Owner tests combine related ordering/lifetime properties under descriptive
 `report_*` names; the spec's implementation record names their homes. T14
-remains pending until fresh gates pass on the committed implementation.
+is proved by the fresh committed-candidate receipt linked below.
+
+
+All fourteen local checks passed on implementation commit `e8828fe`, including
+exact coverage at **15,520/15,520 lines, 876/876 branches and 1,656/1,656 functions**
+and its independent selftest. The [implementation gate receipt](../../docs/delivery/issue252-implementation-gates.json)
+binds commands, exits and log hashes to that committed candidate. This final
+receipt/checklist commit changes no production, dependency, gate or bundle bytes.
+CI/operator-owned proofs remain as listed in spec.md. 0085 remains proposed;
+report structuredContent/outputSchema follows when #153 lands.
