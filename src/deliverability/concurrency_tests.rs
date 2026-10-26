@@ -190,6 +190,12 @@ async fn report_wait_deadline_and_zero_timeout() {
             .await,
         Err(AnalysisError::Unavailable)
     ));
+    assert!(matches!(
+        store
+            .wait_for_report("box", &f, 1, Duration::from_millis(10), threshold)
+            .await,
+        Err(AnalysisError::Unavailable)
+    ));
     drop(guard);
     store
         .insert(crate::store::email("two", "box", "a"))
@@ -432,4 +438,43 @@ async fn report_wait_shutdown_interrupts_worker_and_slot_waits() {
     assert_eq!(store.reports.jobs.available_permits(), JOBS - 1);
     held.open();
     stopping.await.unwrap();
+}
+
+#[tokio::test]
+async fn report_complete_scan_timeout_does_not_reanalyze_after_eviction() {
+    let store = Store::new(0);
+    let email = store
+        .insert(crate::store::email("warm", "box", "a"))
+        .unwrap();
+    store.report(email).await.unwrap();
+    let filter = Filter::default();
+    let wait = store.wait_for_report(
+        "box",
+        &filter,
+        2,
+        Duration::from_millis(10),
+        Some(Severity::Error),
+    );
+    tokio::pin!(wait);
+    assert!(
+        std::future::Future::poll(
+            wait.as_mut(),
+            &mut std::task::Context::from_waker(std::task::Waker::noop())
+        )
+        .is_pending()
+    );
+    // All selected reports completed; only the inbox receiver is parked now.
+    for n in 0..CACHE_SLOTS {
+        store
+            .reports
+            .pin(&mail(&n.to_string()), &Inputs::default())
+            .unwrap();
+    }
+    *store.reports.gate.lock().unwrap() = Some(Arc::new(|| {
+        panic!("deadline expiry started another cold scan")
+    }));
+    match wait.await.unwrap() {
+        WaitOutcome::Timeout { matched } => assert_eq!(matched, 1),
+        _ => panic!("insufficient completed scan changed into success"),
+    }
 }

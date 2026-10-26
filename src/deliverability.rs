@@ -340,7 +340,7 @@ mod concurrency_tests;
 mod tests {
     use super::concurrency_tests::{config, get, mail, post, smtp};
     use super::*;
-    use crate::store::{Filter, WaitOutcome};
+    use crate::store::Filter;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;

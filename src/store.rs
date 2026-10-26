@@ -1022,7 +1022,17 @@ impl Store {
                     #[cfg(test)]
                     CLOSED_PROBE.fetch_add(1, Ordering::Relaxed);
                 }
-                Err(_elapsed) => {} // parked past the deadline; the next scan reports it
+                Err(_elapsed) => {
+                    // A qualified scan already completed. Its exact snapshot
+                    // count remains valid even if the cache was evicted while
+                    // parked; expiry must not start another cold analysis.
+                    if threshold.is_some() {
+                        return Ok(WaitOutcome::Timeout {
+                            matched: matches.len(),
+                        });
+                    }
+                    // Preserve the unqualified wait's final rescan.
+                }
             }
         }
     }

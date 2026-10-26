@@ -2885,6 +2885,7 @@ mod tests {
                 "count",
                 "from",
                 "limit",
+                "no_findings_at_or_above",
                 "since_ms",
                 "subject",
                 "timeout_ms",
@@ -2894,14 +2895,22 @@ mod tests {
         );
         assert_eq!(
             names("/api/v1/inboxes/{inbox}/assert"),
-            ["count", "from", "limit", "since_ms", "subject", "to"],
+            [
+                "count",
+                "from",
+                "limit",
+                "no_findings_at_or_above",
+                "since_ms",
+                "subject",
+                "to"
+            ],
             "the assert's advertised set is the handler's fields — no timeout, no offset"
         );
 
         // The parser accepts each documented name, so the document is never
         // ahead of the handler.
         let q: AwaitQuery = serde_urlencoded::from_str(
-            "to=a&from=b&subject=c&since_ms=1&limit=7&count=2&timeout_ms=3",
+            "to=a&from=b&subject=c&since_ms=1&limit=7&count=2&timeout_ms=3&no_findings_at_or_above=warning",
         )
         .expect("the await parser accepts every documented parameter");
         assert_eq!(
@@ -2910,14 +2919,17 @@ mod tests {
         );
         assert_eq!((q.since_ms, q.limit, q.count), (Some(1), Some(7), Some(2)));
         assert_eq!(q.timeout_ms, Some(3));
-        let q: AssertQuery =
-            serde_urlencoded::from_str("to=a&from=b&subject=c&since_ms=1&limit=7&count=2")
-                .expect("the assert parser accepts every documented parameter");
+        assert_eq!(q.no_findings_at_or_above, Some(Severity::Warning));
+        let q: AssertQuery = serde_urlencoded::from_str(
+            "to=a&from=b&subject=c&since_ms=1&limit=7&count=2&no_findings_at_or_above=error",
+        )
+        .expect("the assert parser accepts every documented parameter");
         assert_eq!(
             (q.to.as_deref(), q.from.as_deref(), q.subject.as_deref()),
             (Some("a"), Some("b"), Some("c"))
         );
         assert_eq!((q.since_ms, q.limit, q.count), (Some(1), Some(7), Some(2)));
+        assert_eq!(q.no_findings_at_or_above, Some(Severity::Error));
         // …and refuses what the document leaves out (decision 0048 §4): an
         // assert never waits.
         let err = serde_urlencoded::from_str::<AssertQuery>("timeout_ms=1")
