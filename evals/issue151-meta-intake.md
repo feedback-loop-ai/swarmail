@@ -146,3 +146,36 @@ owns live settings, authenticated wrapper interoperability, paid baseline,
 publication and acceptance. Namespaces remain deferred under #221. These are
 owned external proofs, not extra criteria for this offline seat. This result
 frames only part 3 and does not claim the baseline or all of #151 is complete.
+
+## Observed intake checks — 2026-10-26
+
+Ran the local house inventory offline on framing commit bd6a928 with the
+verified candidate-local engine and pinned script owners. Saved per-command
+exits and logs under .forge/intake151-meta (plain provenance path). The MCP
+transport timed out after 300 seconds; subsequent workspace reads recovered
+the status file and logs. The saved exits, not that timeout, prove the results.
+
+| Check | Exit |
+|---|---|
+| Engine pin / shim integrity | 0 / 0 |
+| Root fmt / locked all-target clippy / locked workspace tests | 0 / 0 / 0 |
+| Candidate-local brokkr compile | 0 (76 valuations, 0 unruled) |
+| Exact coverage / coverage selftest | 0 / 0 |
+| Publish guard / keyless seal proof | 0 / 0 |
+| License check / fail-closed native-tls absence | 0 / 0 |
+| Design selftest / delivery tamper proof | 0 / 0 |
+| Standalone eval fmt / locked all-target clippy | 0 / 0 |
+
+Coverage explicitly reports exact 100/100/100 for lines, branches and
+functions. All required local house commands ran and passed. Additional
+standalone eval wrappers execution was interrupted by the workspace command's
+execution deadline before an exit was recorded; its log ends while the owned
+cleanup regression is running. No pass or test failure is inferred. The full
+eval test command was not reached. Both remain required for implementation
+verification; intake does not extend a process deadline or alter that suite.
+
+No helper behavior or tests changed. The requested failing-first stdio tests,
+repair and resulting eval-suite proof remain later-phase work. Resolved means
+the task is framed with checkable criteria and commands; it does not mean
+implementation, live interoperability or the baseline is complete. This
+receipt-only follow-up records the observed framing-candidate checks.
