@@ -1,0 +1,74 @@
+[
+  {
+    "label": "claude-opus",
+    "argv": [
+      "swarmail-evals",
+      "agent-claude",
+      "--model",
+      "claude-opus-5-5"
+    ],
+    "model": "claude-opus-5-5",
+    "public_argv": false,
+    "wrapper_profile": "claude_2_1_310"
+  },
+  {
+    "label": "claude-sonnet",
+    "argv": [
+      "swarmail-evals",
+      "agent-claude",
+      "--model",
+      "claude-sonnet-5-5"
+    ],
+    "model": "claude-sonnet-5-5",
+    "public_argv": false,
+    "wrapper_profile": "claude_2_1_310"
+  },
+  {
+    "label": "codex-sol",
+    "argv": [
+      "swarmail-evals",
+      "agent-codex",
+      "--model",
+      "gpt-6.1-sol"
+    ],
+    "model": "gpt-6.1-sol",
+    "public_argv": false,
+    "wrapper_profile": "codex_0_164_0"
+  },
+  {
+    "label": "codex-luna",
+    "argv": [
+      "swarmail-evals",
+      "agent-codex",
+      "--model",
+      "gpt-6-luna"
+    ],
+    "model": "gpt-6-luna",
+    "public_argv": false,
+    "wrapper_profile": "codex_0_164_0"
+  },
+  {
+    "label": "glm-dashscope",
+    "argv": [
+      "swarmail-evals",
+      "agent-dsh",
+      "--model",
+      "dashscope/glm-5.3"
+    ],
+    "model": "dashscope/glm-5.3",
+    "public_argv": false,
+    "wrapper_profile": "dsh_0_1_5_rc_1"
+  },
+  {
+    "label": "glm-spark",
+    "argv": [
+      "swarmail-evals",
+      "agent-dsh",
+      "--model",
+      "spark-glm/GLM-5.3-Flash-EXL3"
+    ],
+    "model": "spark-glm/GLM-5.3-Flash-EXL3",
+    "public_argv": false,
+    "wrapper_profile": "dsh_0_1_5_rc_1"
+  }
+]

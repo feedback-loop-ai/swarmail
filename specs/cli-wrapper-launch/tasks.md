@@ -1,0 +1,28 @@
+# CLI wrapper launch tasks
+
+Ordered implementation tasks. Every checkbox pairs work with its proving test;
+none denotes completed implementation. Preserve existing tests and literal
+bounds. Run no provider agent. Spec AC references bind the task to requirements.
+
+- [ ] T1 — Establish fixed profile/model constants, manifest/auth types and shared private-file admission in evals/src/wrappers.rs; retain eight-input admission. **Proof:** evals/tests/wrappers.rs covers both models per family, duplicate/unknown/malformed inputs, exact/over 65536-byte reads, mode/owner/parent/symlink/FIFO refusal, source immutability and zero preflight launches (AC1–AC3).
+- [ ] T2 — Add clean runtime/ancestry preflight and symlink-aware managed-source checks using internal synthetic roots, with no production bypass. **Proof:** wrappers tests cover every listed ambient source, /etc family directory/file/dangling-link/read-error cases, absence allowing launch, and cleared full environment; tests never modify host /etc (AC2–AC3).
+- [ ] T3 — Implement the three fixed builders, private credential projections, format-specific quoting and literal goal transport; replace wrapper-tail missing-contract refusal with exec. **Proof:** six-model real stand-ins inspect exact argv/stdin/cwd/env/config, selected key only, no source refresh token, private-before-payload modes, dsh 65535/65536 boundary/leading dash/NUL, and independent golden/decoded configuration with difficult literal strings (AC1–AC4).
+- [ ] T4 — Add the internal fixture-http-isolated env-clearing exec boundary and wire both-server configurations to it. **Proof:** effective helper environment excludes synthetic credentials/unknown variables for all families; real stdio MCP/loopback HTTP retains exactly eval_http, every-request identity, decoys, redirect/path refusal, response/input limits and deadline tests. Real Swarmail tools/list equals Claude's explicit allowed-name inventory (AC1–AC4, AC7).
+- [ ] T5 — Add the required canonical provenance.agent.tool_surface and finite optional declaration selector; bind it through trial/matrix contexts and every row constructor, including invalid/setup/cancel/unstarted rows. **Proof:** provenance/results and binary unit tests accept each canonical profile and refuse missing/duplicate/unknown/noncanonical/mismatched metadata; builtin and generic external records remain explicit; existing 64 KiB/private-argv bounds remain tested (AC5).
+- [ ] T6 — Propagate tool-surface equality through artifacts/replay, baseline accounting and report output; set the exact six tracked agent profiles. **Proof:** retained matrix round trips and corruption tests reject changed surfaces, all refused suffixes preserve declared basis, report tests expose mixed/asymmetric surfaces with unchanged counts/Wilson/quantiles, and baseline declarations match all six model/profile pairs (AC5, AC8).
+- [ ] T7 — Prove wrappers reuse runner-owned groups and private-state lifetime. **Proof:** real stand-ins with children/grandchildren exercise normal leader exit, launch failure/nonzero, deadline, SIGTERM/SIGINT and TERM resistance; readiness/Pending/release and cessation/direct-child wait assertions precede publication/admission release, and a cleanup-bypass negative control fails. Canary tests scan every public/retained sink and verify owned state disposal on each ending (AC4, AC6).
+- [ ] T8 — Remove baseline_execute's remaining missing-contract refusal while preserving fresh controls and retained validation before any paid slot. **Proof:** baseline tests inject each invalid control/exit/retention case and assert zero stand-in launches; valid controls proceed, failed paid cells remain in the report and complete product with no retry; real oracle/null proof target still passes. Actual dry-run asserts 16/6/32/480, five repetitions, concurrency 1, 600000 ms, zero credential reads/launches and no output directory (AC7–AC8).
+- [ ] T9 — Replace current refusing-wrapper guidance in evals/wrappers.md, README.md and run-plan.md with schemas, exact recipes, measured/inferred distinctions, configured asymmetry and operator commands. Preserve dated intake failures and scope ownership. **Proof:** documentation/command tests validate examples/declarations/dry-run, local links and outstanding six-model/HTTP smoke labels; no new tracked Markdown link targets .forge or .brokkr. No raw transcripts/tokens/costs are claimed (AC9).
+- [ ] T10 — Resolve/reprove the carried eval-local lifecycle assertion without weakening it, and run all plan/charter checks with the digest-checked local engine against the final committed implementation. **Proof:** full standalone fmt/locked clippy/tests plus direct wrappers/baseline/proof targets and dry-run, all root gates including exact coverage/selftest and publish/seal proofs, shim/native-tls proofs, pinned compile/design/delivery selftests. Record every exit. #243's missing authority target and decision-index integration remain separately owned; if a required check fails, retain its exact evidence and do not claim whole-feature completion (AC9).
+
+Operator follow-up (not a local acceptance checkbox): first authenticated smoke
+for every approved model, actual HTTP MCP interoperability including dsh, live
+tool inventory, paid baseline/publication/reprioritization, sealing and decision
+acceptance. CI/#201 owns macOS eval evidence; #221 owns namespace isolation.
+
+## Dated integration scope — 2026-10-26
+
+The [integration tasks](../wrapper-integration/tasks.md) now own the formerly
+separate index and #243 repairs cited in T10. The wrapper proposal is 0083 and
+remains proposed. Preserve the original launch tasks and prior failure receipts;
+reprove the unchanged implementation on the merged committed candidate.

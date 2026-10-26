@@ -281,9 +281,146 @@ pub struct CommandIdentity {
     pub algorithm: String,
     pub sha256: String,
 }
+/// Declared recipe, never an observed tool inventory or binary attestation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[value(rename_all = "snake_case")]
+pub enum WrapperProfile {
+    #[serde(rename = "claude_2_1_310")]
+    #[value(name = "claude_2_1_310")]
+    Claude2_1_310,
+    #[serde(rename = "codex_0_164_0")]
+    #[value(name = "codex_0_164_0")]
+    Codex0_164_0,
+    #[serde(rename = "dsh_0_1_5_rc_1")]
+    #[value(name = "dsh_0_1_5_rc_1")]
+    Dsh0_1_5Rc1,
+}
+impl WrapperProfile {
+    pub fn family(self) -> &'static str {
+        match self {
+            Self::Claude2_1_310 => "claude",
+            Self::Codex0_164_0 => "codex",
+            Self::Dsh0_1_5Rc1 => "dsh",
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Claude2_1_310 => "claude_2_1_310",
+            Self::Codex0_164_0 => "codex_0_164_0",
+            Self::Dsh0_1_5Rc1 => "dsh_0_1_5_rc_1",
+        }
+    }
+    pub fn validate_model(self, model: Option<&str>) -> Result<(), String> {
+        crate::wrappers::validate_model(self.family(), model.ok_or("wrapper_model_missing")?)
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceBasis {
+    DeclaredConfiguration,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ToolSurface {
+    BuiltinNotApplicable,
+    ExternalUnknown,
+    InvalidRequest,
+    Wrapper {
+        revision: u8,
+        basis: SurfaceBasis,
+        profile: WrapperProfile,
+        restrictions: Vec<String>,
+        residuals: Vec<String>,
+    },
+}
+impl ToolSurface {
+    pub fn declared(profile: WrapperProfile) -> Self {
+        let (restrictions, residuals): (&[&str], &[&str]) = match profile {
+            WrapperProfile::Claude2_1_310 => (
+                &[
+                    "empty builtins",
+                    "strict two-server MCP",
+                    "explicit MCP tool permissions",
+                    "restricted settings",
+                    "disabled skills",
+                ],
+                &[
+                    "nearby-version measurement",
+                    "server-delivered policy unmeasured",
+                    "exact-version live inventory unmeasured",
+                    "unconfined; same-uid access",
+                ],
+            ),
+            WrapperProfile::Codex0_164_0 => (
+                &[
+                    "read-only sandbox",
+                    "web search disabled",
+                    "ephemeral",
+                    "user config and rules ignored",
+                    "two declared MCP servers",
+                ],
+                &[
+                    "native shell, reading and edit tools",
+                    "code-mode MCP access",
+                    "ChatGPT account connectors; removal unproved",
+                    "project trust override effect unmeasured",
+                    "unconfined; same-uid access",
+                ],
+            ),
+            WrapperProfile::Dsh0_1_5Rc1 => (
+                &[
+                    "fresh DSH_HOME",
+                    "overlay-only MCP servers",
+                    "telemetry disabled",
+                ],
+                &[
+                    "native shell, file, web and subagent tools; removal unmeasured",
+                    "plugin composition unmeasured",
+                    "live HTTP MCP unmeasured",
+                    "unconfined; same-uid access",
+                ],
+            ),
+        };
+        Self::Wrapper {
+            revision: 1,
+            basis: SurfaceBasis::DeclaredConfiguration,
+            profile,
+            restrictions: restrictions.iter().map(|s| s.to_string()).collect(),
+            residuals: residuals.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+    pub fn for_request(valid: bool, builtin: bool, profile: Option<WrapperProfile>) -> Self {
+        if !valid {
+            Self::InvalidRequest
+        } else if builtin {
+            Self::BuiltinNotApplicable
+        } else {
+            profile.map(Self::declared).unwrap_or(Self::ExternalUnknown)
+        }
+    }
+    pub fn validate(&self, kind: AgentKind, model: &Availability<String>) -> Result<(), String> {
+        match (self, kind) {
+            (Self::BuiltinNotApplicable, AgentKind::Builtin)
+            | (Self::ExternalUnknown, AgentKind::External)
+            | (Self::InvalidRequest, AgentKind::Invalid) => Ok(()),
+            (Self::Wrapper { profile, .. }, AgentKind::External)
+                if *self == Self::declared(*profile) =>
+            {
+                profile.validate_model(match model {
+                    Availability::Present { value, .. } => Some(value),
+                    _ => None,
+                })
+            }
+            _ => Err("invalid declared tool surface".into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentIdentity {
+    pub tool_surface: ToolSurface,
     pub kind: AgentKind,
     pub executable_sha256: Availability<String>,
     pub command: Availability<CommandIdentity>,
@@ -348,6 +485,9 @@ pub fn task_hash(task: &str) -> Option<String> {
 impl Provenance {
     pub fn validate(&self) -> Result<(), String> {
         self.fixture.validate()?;
+        self.agent
+            .tool_surface
+            .validate(self.agent.kind, &self.agent.model)?;
         if let Some(m) = &self.matrix {
             seed_bytes(&m.master_seed)?;
         }

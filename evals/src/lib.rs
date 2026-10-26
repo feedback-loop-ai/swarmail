@@ -23,3 +23,7 @@ pub mod results;
 #[cfg(test)]
 #[path = "../tests/common/coordination.rs"]
 pub(crate) mod test_support;
+
+pub mod baseline;
+pub mod fixture_http;
+pub mod wrappers;

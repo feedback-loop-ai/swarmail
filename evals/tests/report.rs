@@ -421,7 +421,14 @@ fn the_report_separates_harness_errors_from_the_success_rate() {
 fn empty_and_all_error_inputs_give_null_estimates_and_bad_rows_refuse() {
     let _trial_scope = trial_scope();
     let (code, v) = report_of("");
-    assert_eq!((code, v), (Some(0), json!({"groups": []})));
+    assert_eq!(code, Some(0));
+    assert_eq!(v["groups"], json!([]));
+    assert!(
+        v["tool_surface_note"]
+            .as_str()
+            .unwrap()
+            .contains("asymmetric")
+    );
     let (code, v) = report_of(&row("t", "harness_error", Some("harness_error"), 3));
     assert_eq!(code, Some(0));
     let g = &v["groups"][0];
