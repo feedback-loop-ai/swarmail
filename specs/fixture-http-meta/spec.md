@@ -2,7 +2,7 @@
 
 Date: 2026-10-26. Status: draft. Epic #164, issue #151 part 3.
 
-Decision: 0084 — [Fixture HTTP metadata](../../docs/decisions/0084-fixture-http-meta.md).
+Decision: 0087 — [Fixture HTTP metadata](../../docs/decisions/0087-fixture-http-meta.md).
 
 ## Feature and rationale
 
@@ -15,7 +15,7 @@ this one reserved field. A GET with a supplied body, including `""`, receives a
 fixed tool error naming the problem; callers must omit the body.
 
 Implementation changes belong only in `evals/`. This chief's expressly required
-artifacts are the three files in this directory and decision 0084. No root
+artifacts are the three files in this directory and decision 0087. No root
 server, dependencies, manifests, locks, routing, scoring or decision acceptance
 changes are authorized. This draft is not implementation or baseline success.
 
@@ -37,7 +37,7 @@ The requested `.brokkr/state/tasks/` directory is absent. The matching
 Both run-local positions were read in full. The tracked
 [operator rulings](../../docs/rulings/epic-192.md) remain authority; no new
 operator acceptance is inferred. The 2026-10-26 ledger reserves 0079–0083;
-0084 is the next free number in this candidate and supplied ledger.
+0087 is the next free number in this candidate and supplied ledger.
 
 Accepted [0055](../../docs/decisions/0055-agent-eval-harness.md) requires the
 independent eval workspace's real-process proof. Accepted
@@ -120,7 +120,7 @@ retain `fixture_request_refused`. Existing malformed call refusals retain
    record actual exits. Root coverage does not measure evals. No green delivery
    claim while a gate fails, including the decision-index conflict below.
 8. **AC8 — Design artifact proof:** this chief commits exactly spec.md, plan.md,
-   tasks.md and proposed decision 0084 unsigned, with one touched spec directory,
+   tasks.md and proposed decision 0087 unsigned, with one touched spec directory,
    clean committed artifacts and a passing pinned design-check. Positions stay
    ignored. No push, merge, tag, publication or decision acceptance.
 

@@ -14,7 +14,7 @@ and a real port-zero HTTP listener in evals/tests/wrappers.rs.
 Preserve accepted 0001–0005, closed arguments under 0044, privacy under 0075,
 standalone proof under 0055, exact root coverage and all existing dependencies
 and routing. No paid/model calls, ambient credential reading, root-server edits
-or decision acceptance. Commit unsigned and never push. Decision 0084 records
+or decision acceptance. Commit unsigned and never push. Decision 0087 records
 a compatible helper wire-contract repair, not an amendment weakening a ruling.
 The chief's four-artifact restriction leaves the decision index unmodified;
 the root inventory gate needs operator-owned scope resolution before green
@@ -47,7 +47,7 @@ contracts and quickstart directly; no external template is needed.
 | evals/tests/wrappers.rs | Extend current real HTTP capture and real stdio tests; no second harness framework. |
 | evals/wrappers.md | Document metadata discard, optional progress omission and GET-body refusal. |
 | evals/issue151-meta-implementation.md | Later implementation receipts: exact red/green commands, exits, logs and limitations. |
-| specs/fixture-http-meta/{spec,plan,tasks}.md and docs/decisions/0084-fixture-http-meta.md | This chief's only committed artifacts. |
+| specs/fixture-http-meta/{spec,plan,tasks}.md and docs/decisions/0087-fixture-http-meta.md | This chief's only committed artifacts. |
 
 No implementation edits to earlier historical specs or accepted decisions.
 The decision index requires separately authorized documentation integration;

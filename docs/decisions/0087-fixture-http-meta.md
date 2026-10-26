@@ -1,4 +1,4 @@
-# 0084 — Discard fixture HTTP request metadata and name GET-body refusals
+# 0087 — Discard fixture HTTP request metadata and name GET-body refusals
 
 - **Status:** proposed
 - **Date:** 2026-10-26
@@ -7,7 +7,7 @@
 - **Supplements:** [0055](0055-agent-eval-harness.md) and the helper boundary
   described by proposed [0083](0083-cli-wrapper-launch.md), compatibly with
   accepted [0075](0075-eval-privacy.md) and [0044](0044-compat-validation.md).
-- **Number:** 0084 is next free in the verified 2026-10-26 operator ledger and
+- **Number:** 0087 is next free in the verified 2026-10-26 operator ledger and
   candidate; 0079–0083 remain allocated. Historical reserved numbers stay reserved.
 
 ## Context
