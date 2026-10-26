@@ -1,8 +1,8 @@
 # Tasks — CommonMark tracked-link guard
 
 Execute in order. All four regression families must demonstrate the old
-scanner's behavior failure before any scanner repair. The chief leaves these
-implementation tasks unchecked; structural design validation is not completion.
+scanner's behavior failure before any scanner repair. The chief originally left these
+implementation tasks unchecked; their completed proof is recorded below.
 The plan gives exact filters and gate commands; AC references name spec criteria.
 
 - [x] T1 — Verify issue packet checksums and engine digest; inspect the current boundary and protected-file diff. Test: packet-local `sha256sum --check --strict SHA256SUMS`, engine digest check from the plan, and an initially clean `git status --short`; retain identities (AC6–AC7).
@@ -13,10 +13,11 @@ The plan gives exact filters and gate commands; AC references name spec criteria
 - [x] T6 — Recognize definitions and code relative to quote/list content indentation and valid continuation state using that same view. Test: T3 exact filter green for ordered/unordered/quoted/nested forms, continuation destinations, and fenced/indented-code controls; assert raw target and original physical line with Unicode prefixes (AC3, AC5).
 - [x] T7 — Add one local Markdown escape/reference decoder using the existing complete entity snapshot and existing serde_json; preserve URL stage order. Test: T4 exact filter green plus helper cases for exact case, semicolon, decimal/hex digit limits, replacement scalars, multi-scalar names, malformed input, escaped ampersands, emitted escapes/entities, actual query/fragments and one percent pass (AC4–AC5).
 - [x] T8 — Add a combined container/entity/destination-backtick tracked fixture and advancing-parser malformed-input controls. Test: guard refuses with exact file/start-line/raw spelling, repaired citation passes, genuine code stays inert, and long unmatched runs terminate without a wall-clock assertion. Run the complete boundary suite, including inventory/read/encoding and filesystem-independent classifier controls (AC2–AC6).
-- [ ] T9 — Review the bounded implementation and preserve evidence of the four red/green mappings. Test: `git diff --check`, protected-file diff confirms no changes to production/manifests/locks/entity data/license policy/bundles, and independent eval fmt/clippy/full suite from the plan passes. Preserve existing assertions rather than weakening failures (AC1, AC6–AC7).
-- [ ] T10 — Commit implementation unsigned and run every local house gate and intake proof in the plan on that candidate; retain receipts outside the design directory. Test: exact zero-miss coverage plus its selftest, pinned-engine compile without the unread-input warning, fixed-shim proof, publish/seal proofs, license/native-tls proof, design selftest and delivery proof all report their actual status. Re-run the independent eval checks for the committed candidate; leave no uncommitted implementation. CI/operator obligations stay with their named owners (AC7).
+- [x] T9 — Review the bounded implementation and preserve evidence of the four red/green mappings. Test: `git diff --check`, protected-file diff confirms no changes to production/manifests/locks/entity data/license policy/bundles, and independent eval fmt/clippy/full suite from the plan passes. Preserve existing assertions rather than weakening failures (AC1, AC6–AC7).
+- [x] T10 — Commit implementation unsigned and run every local house gate and intake proof in the plan on that candidate; retain receipts outside the design directory. Test: exact zero-miss coverage plus its selftest, pinned-engine compile without the unread-input warning, fixed-shim proof, publish/seal proofs, license/native-tls proof, design selftest and delivery proof all report their actual status. Re-run the independent eval checks for the committed candidate; leave no uncommitted implementation. CI/operator obligations stay with their named owners (AC7).
 
 
 Implementation evidence and remaining gate accounting are recorded in
-[implementation.md](implementation.md). T9 and T10 remain open until the
-committed implementation's full independent eval and house proofs finish.
+[implementation.md](implementation.md). All tasks are complete: the committed implementation's independent eval and
+house proofs passed, including exact zero-miss coverage and every selftest.
+The record names the proving commit and the CI/operator-owned obligations.

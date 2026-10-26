@@ -58,12 +58,44 @@ are unchanged.
 
 ## Gate accounting
 
-The focused 15-test boundary suite and independent eval clippy pass locally.
-Full independent eval checks and every local house gate must still run on the
-committed implementation. An initial full eval attempt was terminated by the
-workspace command's 30-second limit, exit 124; it is not a passing receipt.
-The subsequent gate driver uses persistent background execution and records
-actual command completion separately.
+All 22 recorded checks pass on implementation commit
+`e5762ee63c7cac6ed340071fe54dab16225bc52c`, scanner SHA-256
+`192a2f3674860a1033730c1fc61ac3964a5a68d0daaefb3370c546eaa2d7e3d0`.
+The receipt manifest at
+`.forge/epic192/issue245/implement-gates/results.jsonl` has SHA-256
+`f65dc0318e96acae09029817ba2137db8586a3ee2592d6c8b75c78bd349ed886`.
+Every receipt records command, commit, source/log digests, exit status and
+elapsed time; each saved log digest was rechecked after the run.
+
+| Proof | Result |
+|---|---|
+| Four exact regression filters | One executed test each, all pass after repair |
+| Independent eval boundary/full suites, fmt, locked all-target clippy | Pass; boundary has 15 tests; full eval exited 0 after 396 seconds |
+| Root fmt, locked all-target clippy, locked workspace tests | Pass |
+| Candidate-local engine identity and self-bundle compile | Pass; SHA-256 matches `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`; no unread-input warning |
+| Exact root coverage | Pass: 14,677/14,677 lines, 822/822 branches, 1,597/1,597 functions; zero misses |
+| Coverage selftest, publish guard proof, keyless seal proof | Pass |
+| Permissive licenses, fixed shim checks, fail-closed native-tls absence | Pass |
+| Design selftest and delivery-boundary proof | Pass |
+| Protected-file diff and whitespace checks | Pass; only this guard and its implementation/progress records differ from the design commit |
+
+The canonical pinned bundle scripts were executed after checking the public
+shims, with offline Cargo and the candidate-local engine on PATH. The root
+coverage report is under `target/coverage/run.95ONr4/`; it measures the root
+crate, not this separate eval workspace. Recipe routing is unchanged.
+
+An initial full eval attempt hit the workspace command's 30-second limit,
+exit 124, and is retained as interrupted evidence. A detached-driver attempt
+produced no completion receipt. Subsequent gate batches ran directly with a
+longer command budget. The full eval RPC response timed out at 300 seconds,
+but the underlying command finished successfully and its complete log, exit
+status and digests were recovered and verified. Neither timeout is counted
+as a passing test; the completed 396-second run provides the full eval proof.
+
+The final documentation commit records these already completed proofs;
+the scanner bytes remain those of the implementation commit. Its relevant
+follow-up checks are the tracked-document boundary suite, formatting and
+whitespace checks.
 
 CI retains Helm/chart-bump/history, Docker smoke, network RustSec, privileged
 port-80 and tag-only proofs. Issue #201 owns macOS eval evidence; the operator
