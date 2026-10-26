@@ -163,3 +163,18 @@ The public script shims are integrity-checked, then canonical bundle scripts
 execute under 0050. Use candidate-local `.forge/bin/brokkr` with the exact
 recorded digest, run offline and install nothing. The intake gate receipt is
 baseline evidence for framing only; implementation requires fresh verification.
+
+## Intake baseline evidence
+
+All 14 commands in the [gate receipt](../../docs/delivery/issue259-intake-gates.json)
+passed on framing commit `fcd4f811d9f12d2d56bbe58862ec35686a9f37b7`, tree
+`8e5e268d18be3df9bd3238093fd0cb8dd68e3b59`. Every recorded log hash was checked.
+Exact coverage passed at 100% lines, branches and functions; the full coverage
+selftest passed. Coverage evidence is `target/coverage/run.bqJrY0`; per-command
+logs remain in `.forge/evidence/issue259-intake/`. The workspace client timed
+out after 300 seconds, but the continued runner finished all commands and
+wrote its final receipt; the timeout is not used as a gate verdict.
+
+The receipt commit changes documentation/evidence only; tested source, gates
+and bundle bytes remain unchanged. This resolves intake framing, not the HTML
+feature. Design, implementation and fresh implementation verification remain.
