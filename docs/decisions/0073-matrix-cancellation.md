@@ -1,6 +1,6 @@
 # 0073 — Matrix cancellation waits for owned cleanup
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-24.
 - **Issue:** Epic #192, #194.
 - **Specification:** [matrix cancellation](../../specs/matrix-cancellation/spec.md).

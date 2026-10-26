@@ -1,6 +1,6 @@
 # 0063 — Reproduce public fixture choices and bind eval evidence
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-24; current-main synthesis 2026-10-25.
 - **Issue:** Epic #192 / #200.
 - **Specification:** [eval provenance](../../specs/eval-provenance/spec.md).

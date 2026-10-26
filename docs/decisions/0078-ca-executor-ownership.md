@@ -1,6 +1,6 @@
 # 0078 — Resolve bounded CA execution ownership and admission
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-25
 - **Scope:** Epic #192, issue #220.
 - **Specification:** [bounded CA executor](../../specs/bounded-ca-executor/spec.md).

@@ -1,6 +1,6 @@
 # 0062 — RPC edge contracts and the supplied ID ruling
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-24
 - **Scope:** Epic #192, issue #180; six stdio/MCP residuals.
 - **Specification:** [RPC edge contracts](../../specs/rpc-edge-contracts/spec.md).

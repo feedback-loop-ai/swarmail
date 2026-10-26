@@ -1,6 +1,6 @@
 # 0074 — Refuse unsupported queries before native operations
 
-- **Status:** proposed — acceptance belongs to the operator.
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-24
 - **Scope:** Epic #192, issue #197.
 - **Spec:** [strict native queries](../../specs/strict-native-queries/spec.md).
