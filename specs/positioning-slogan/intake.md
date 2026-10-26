@@ -80,3 +80,11 @@ fi
 CI owns Linux/macOS jobs, Helm lint/render, event-baseline chart history and its selftest, Docker smoke, network-backed RustSec, privileged port-80 exchange and tag-only release proofs named in the house inventory. The operator owns live repository settings, sealing and release acts. No external settings read, network or namespace proof is an intake acceptance criterion. Do not read GitHub, CI, the canonical journal or sibling worktrees.
 
 This framing is the intake deliverable. Product implementation, its design and final feature verification remain outstanding; the engine alone selects subsequent phases.
+
+## Intake baseline verification receipt
+
+All local house gates passed on committed framing 8150d45e123fc189283f4d054b3ffe5db4abde92 using the digest-matched candidate-local engine and offline Cargo: format, locked workspace clippy/tests, self-bundle compile, exact coverage, coverage selftest, publish guard proof, keyless seal proof and license check. Fixed-shim integrity, design selftest, delivery tamper-boundary proof and fail-closed native-tls absence also passed. The compile reported 76 policy valuations over 14 groups, zero unruled, with no policy-sweep warning.
+
+Coverage covered all 14,677 lines, 822 branches and 1,597 functions exactly. Per-command logs and exit codes are retained in the run-local proof directory .forge/proofs/positioning-intake-2764001f/; status.json records done: true and every exit code zero. The workspace transport timed out while the foreground batch continued; the final saved status and logs, not that timeout, establish these results.
+
+This receipt adds documentation only. These are intake baseline proofs on unchanged product files, not proof of slogan implementation. The later implementation must satisfy AC1–AC8 and rerun final candidate verification. CI/operator-owned checks remain as assigned above.
