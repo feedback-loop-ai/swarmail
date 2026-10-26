@@ -387,16 +387,26 @@ fn date(value: &[u8]) -> bool {
     ]
     .iter()
     .position(|m| m.eq_ignore_ascii_case(month));
-    let (Some(day), Some(month), Some(year)) = (number(day, 1, 2), month, number(year, 4, 9))
+    let (Some(day), Some(month)) = (number(day, 1, 2), month) else {
+        return false;
+    };
+    if year.len() < 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let significant = year.trim_start_matches('0');
+    if significant.len() < 4 || (significant.len() == 4 && significant < "1900") {
+        return false;
+    }
+    // The Gregorian calendar repeats every 400 years. Reduce bounded source
+    // digits before using chrono, avoiding integer overflow and its year ceiling.
+    let cycle = year
+        .bytes()
+        .fold(0u32, |n, b| (n * 10 + u32::from(b - b'0')) % 400);
+    let Some(calendar) =
+        chrono::NaiveDate::from_ymd_opt(2000 + cycle as i32, month as u32 + 1, day)
     else {
         return false;
     };
-    let Some(calendar) = chrono::NaiveDate::from_ymd_opt(year as i32, month as u32 + 1, day) else {
-        return false;
-    };
-    if year < 1900 {
-        return false;
-    }
     if let Some(w) = weekday {
         let expected = ["Mon,", "Tue,", "Wed,", "Thu,", "Fri,", "Sat,", "Sun,"]
             [calendar.weekday().num_days_from_monday() as usize];
@@ -1706,6 +1716,9 @@ mod tests {
         }
         for v in [
             "Mon, 26 Oct 2026 12:00:00 +0000",
+            "Mon, 26 Oct 000000002026 12:00 +0000",
+            "1 Jan 999999999 12:00 +0000",
+            "29 Feb 1000000000000000 12:00 +0000",
             "26 oct 2026 12:00 -0000",
             "(pre) 29 Feb 2000 23:59:60 -2359 (post)",
             "Sun, 1 Mar 2026 00:00 +0000",
@@ -1722,10 +1735,12 @@ mod tests {
             "x Oct 2026 12:00 +0000",
             "26 Oct 26 12:00 +0000",
             "26 Oct 1899 12:00 +0000",
+            "26 Oct 0000 12:00 +0000",
+            "26 Oct 00001899 12:00 +0000",
+            "26 Oct 20x6 12:00 +0000",
             "31 Apr 2026 12:00 +0000",
             "29 Feb 1900 12:00 +0000",
             "0 Jan 2026 12:00 +0000",
-            "1 Jan 999999999 12:00 +0000",
             "26 Oct 2026 12 +0000",
             "26 Oct 2026 12:00:00:00 +0000",
             "26 Oct 2026 24:00 +0000",

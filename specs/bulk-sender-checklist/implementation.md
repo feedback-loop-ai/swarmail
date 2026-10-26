@@ -10,6 +10,9 @@ Message-ID/Date syntax, complete one-click URI lists and an iterative outer MIME
 metadata walk. Inspection finishes the complete bounded tree, including attached
 containers, before returning a report. It does not decode body transfers, extract
 links/codes, consult a clock, resolve names or contact unsubscribe endpoints.
+Date calendar/weekday arithmetic reduces years modulo the Gregorian 400-year
+cycle after enforcing the year floor; long numeric years do not overflow or
+inherit chrono's artificial year ceiling.
 The raw/header/aggregate/entity/depth limits are inclusive analysis limits;
 accepted mail exceeding them remains stored and available through `/raw`.
 

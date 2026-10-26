@@ -186,6 +186,8 @@ async fn bulk_one_click_identity_date_pairs() {
             "(pre) 29 Feb 2000\r\n\t23:59:60 -0000 (post)",
             "date",
         ),
+        ("Date", "Mon, 26 Oct 000000002026 12:00 +0000", "date"),
+        ("Date", "29 Feb 1000000000000000 12:00 +0000", "date"),
     ] {
         let line = BASE.lines().find(|line| line.starts_with(name)).unwrap();
         let raw = format!(
