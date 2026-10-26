@@ -185,8 +185,32 @@ fn historical_rows_refuse_and_current_rows_keep_report_accounting() {
             results::read(&bytes(&value)).unwrap()
         })
         .collect();
+    let mut current = swarmail_evals::report::report(&rows);
+    assert!(
+        current["tool_surface_note"]
+            .as_str()
+            .unwrap()
+            .contains("asymmetric")
+    );
+    current.as_object_mut().unwrap().remove("tool_surface_note");
     assert_eq!(
-        swarmail_evals::report::report(&rows).to_string(),
+        current["groups"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("tool_surfaces"),
+        Some(json!([{"kind":"external_unknown"}]))
+    );
+    assert_eq!(
+        current["groups"][1]
+            .as_object_mut()
+            .unwrap()
+            .remove("tool_surfaces"),
+        Some(json!([{"kind":"invalid_request"}]))
+    );
+    // Remove exactly the newly asserted metadata. Every historical accounting
+    // field, including intervals and quantiles, still matches byte-for-byte.
+    assert_eq!(
+        current.to_string(),
         include_str!("data/report-v1.json").trim()
     );
     let req = runner::TrialRequest {

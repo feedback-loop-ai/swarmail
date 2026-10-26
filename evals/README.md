@@ -67,6 +67,17 @@ unset they build the root `swarmail` binary once per test binary
 reading the executable path from Cargo's artifact report, so a custom
 `CARGO_TARGET_DIR` is honoured).
 
+## Approved baseline setup (#151 part 1)
+
+The fixed six-model declarations and control-gated `baseline` command are
+under [run-plan.md](run-plan.md). Read [wrappers.md](wrappers.md) for the
+closed private selection/auth schemas, exact versioned launch recipes and
+conservative per-family tool surfaces. Offline stand-ins prove assembly;
+first authenticated smoke with each approved model, live HTTP MCP (especially
+dsh), and the paid baseline remain operator-owned. Dry-run opens no private
+selection, creates no output and launches nothing. Never treat offline assembly
+or a declared surface as a provider interoperability or confinement claim.
+
 ## Commands
 
 ```bash

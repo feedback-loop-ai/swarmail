@@ -27,6 +27,8 @@ pub struct AgentSpec {
     pub config_id: Option<String>,
     #[serde(default)]
     pub public_argv: bool,
+    #[serde(default)]
+    pub wrapper_profile: Option<crate::provenance::WrapperProfile>,
 }
 
 /// Parse and validate a matrix agent file.
@@ -55,8 +57,16 @@ pub fn parse_agents(text: &str) -> Result<Vec<AgentSpec>, String> {
         {
             return Err("public agent declaration exceeds bounds".into());
         }
-        if builtin && (a.model.is_some() || a.config_id.is_some() || a.public_argv) {
+        if builtin
+            && (a.model.is_some()
+                || a.config_id.is_some()
+                || a.public_argv
+                || a.wrapper_profile.is_some())
+        {
             return Err("builtin declarations cannot be overridden".into());
+        }
+        if let Some(profile) = a.wrapper_profile {
+            profile.validate_model(a.model.as_deref())?;
         }
         if builtin && !a.argv.is_empty() {
             return Err(format!("built-in agent {} takes an empty argv", a.label));
@@ -147,7 +157,15 @@ pub fn report(rows: &[TrialResult]) -> Value {
                     .count();
                 classes.insert(class.as_str().to_string(), json!(n));
             }
+            let mut surfaces = Vec::new();
+            for row in &rows {
+                let surface = &row.provenance.agent.tool_surface;
+                if !surfaces.contains(surface) {
+                    surfaces.push(surface.clone());
+                }
+            }
             json!({
+                "tool_surfaces": surfaces,
                 "task": task,
                 "agent": agent,
                 "attempts": attempts,
@@ -168,7 +186,7 @@ pub fn report(rows: &[TrialResult]) -> Value {
             })
         })
         .collect();
-    json!({ "groups": out })
+    json!({ "groups": out, "tool_surface_note": "Per-family tool surfaces are asymmetric declared configurations: Claude disables builtins; Codex retains native reading/edit tools, code-mode and ChatGPT connectors; dsh retains native tools whose removal is unmeasured. All trials are unconfined." })
 }
 
 #[cfg(test)]

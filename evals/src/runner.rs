@@ -403,6 +403,7 @@ pub struct TrialRequest {
     pub agent_model: Option<String>,
     pub agent_config_id: Option<String>,
     pub public_argv: bool,
+    pub wrapper_profile: Option<crate::provenance::WrapperProfile>,
     pub target_build: Option<crate::identity::TargetBuild>,
     pub assigned_agent: Option<crate::provenance::AgentIdentity>,
     pub harness_identity: Option<crate::provenance::HarnessIdentity>,
@@ -2034,12 +2035,18 @@ pub fn validate_request(req: &TrialRequest) -> Result<(Task, String), String> {
         return Err("public declaration exceeds bounds".into());
     }
     if BUILTINS.contains(&label)
-        && (req.agent_model.is_some() || req.agent_config_id.is_some() || req.public_argv)
+        && (req.agent_model.is_some()
+            || req.agent_config_id.is_some()
+            || req.public_argv
+            || req.wrapper_profile.is_some())
     {
         return Err("builtin declarations cannot be overridden".into());
     }
     if req.public_argv && req.argv.iter().any(|v| v.to_str().is_none()) {
         return Err("public_argv_requires_utf8".into());
+    }
+    if let Some(profile) = req.wrapper_profile {
+        profile.validate_model(req.agent_model.as_deref())?;
     }
     tasks::validate_task(&task)?;
     Ok((task, label.to_string()))
@@ -3020,6 +3027,7 @@ pub fn make_provenance(
             chaos,
         },
         agent: AgentIdentity {
+            tool_surface: ToolSurface::for_request(valid.is_some(), builtin, req.wrapper_profile),
             kind: if valid.is_none() {
                 AgentKind::Invalid
             } else if builtin {

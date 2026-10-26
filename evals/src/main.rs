@@ -14,7 +14,10 @@ use std::process::{ExitCode, Stdio};
 use std::time::{Duration, Instant};
 use swarmail_evals::runner::{self, TrialRequest, TrialResult};
 use swarmail_evals::tasks::{self, Catalogue, Outcome};
-use swarmail_evals::{artifacts, fixture, identity, oracle, provenance, report, state};
+use swarmail_evals::{
+    artifacts, baseline, fixture, fixture_http, identity, oracle, provenance, report, state,
+    wrappers,
+};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
@@ -31,6 +34,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Run fresh controls before the approved paid baseline. Paid admission
+    /// currently refuses: locally evidenced CLI/auth contracts are incomplete.
+    Baseline {
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Launch Claude with private selected OAuth authentication.
+    AgentClaude {
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Launch Codex with private selected ChatGPT authentication.
+    AgentCodex {
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Launch dsh with the selected private route credential.
+    AgentDsh {
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        config: PathBuf,
+    },
+    /// Serve one app-bound HTTP tool over MCP stdio using the EVAL inputs.
+    FixtureHttp,
+    #[command(hide = true)]
+    FixtureHttpIsolated,
     /// Print the v2 task catalogue (schema version 2) as JSON.
     Tasks,
     /// Run the fixture app against a Swarmail SMTP address. Reads its admin
@@ -76,6 +114,8 @@ enum Cmd {
         agent_config_id: Option<String>,
         #[arg(long)]
         public_argv: bool,
+        #[arg(long, value_enum)]
+        wrapper_profile: Option<provenance::WrapperProfile>,
         #[arg(long, hide = true)]
         worker_context: Option<String>,
         /// The external agent's program and literal arguments (no shell).
@@ -164,6 +204,25 @@ fn main() -> ExitCode {
         Err(_) => return fail("runtime unavailable"),
     };
     match cli.command {
+        Cmd::Baseline {
+            config,
+            output,
+            dry_run,
+        } => rt.block_on(run_baseline(config, output, dry_run)),
+        Cmd::AgentClaude { model, config } => wrapper_result("claude", model, config),
+        Cmd::AgentCodex { model, config } => wrapper_result("codex", model, config),
+        Cmd::AgentDsh { model, config } => wrapper_result("dsh", model, config),
+        Cmd::FixtureHttpIsolated => match wrappers::isolated_helper() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => fail("helper_setup_failed"),
+        },
+        Cmd::FixtureHttp => match wrappers::Inputs::environment() {
+            Ok(inputs) => match rt.block_on(fixture_http::serve(inputs)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => fail(e),
+            },
+            Err(e) => fail(e),
+        },
         Cmd::Tasks => {
             let catalogue = tasks::catalogue();
             if let Err(e) = tasks::validate_catalogue(&catalogue) {
@@ -222,6 +281,7 @@ fn main() -> ExitCode {
             agent_model,
             agent_config_id,
             public_argv,
+            wrapper_profile,
             worker_context,
         } => {
             let fixture = match provenance::FixtureInputs::resolve(
@@ -237,7 +297,10 @@ fn main() -> ExitCode {
             if agent
                 .as_deref()
                 .is_some_and(|s| runner::BUILTINS.contains(&s))
-                && (agent_model.is_some() || agent_config_id.is_some() || public_argv)
+                && (agent_model.is_some()
+                    || agent_config_id.is_some()
+                    || public_argv
+                    || wrapper_profile.is_some())
             {
                 return fail("builtin_declaration_invalid");
             }
@@ -252,6 +315,7 @@ fn main() -> ExitCode {
                 agent_model,
                 agent_config_id,
                 public_argv,
+                wrapper_profile,
                 ..Default::default()
             };
             if let Some(context) = worker_context {
@@ -408,6 +472,15 @@ impl WorkerContext {
     fn apply(self, req: &mut TrialRequest) -> Result<(), String> {
         req.matrix = Some(self.cell.coordinates.clone());
         req.trial_id = Some(self.cell.trial_id.clone());
+        let expected = runner::make_provenance(req, None, None).agent;
+        if expected.kind != self.agent.kind
+            || expected.model != self.agent.model
+            || expected.config_id != self.agent.config_id
+            || expected.command != self.agent.command
+            || expected.tool_surface != self.agent.tool_surface
+        {
+            return Err("worker_agent_context_invalid".into());
+        }
         req.assigned_agent = Some(self.agent);
         let path = runner::selected_swarmail_bin()?.ok_or("worker_target_missing")?;
         let target = identity::TargetBuild {
@@ -519,18 +592,31 @@ async fn matrix_pending_test_hold() {
     let check = MATRIX_PENDING_CHECKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     if std::env::var(MATRIX_PENDING_HOLD_AT_ENV)
         .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+        .and_then(|v| v.parse::<usize>().ok())
         != Some(check)
     {
         return;
     }
+    // Separate observers acknowledge delivery without consuming the production
+    // receivers. The real pending check must still observe its own queued event.
+    let mut observed_term =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("probe TERM subscription");
+    let mut observed_int =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("probe INT subscription");
     if std::fs::create_dir_all(&dir).is_err()
         || std::fs::write(dir.join("entered"), check.to_string()).is_err()
     {
         return;
     }
     while !dir.join("release").exists() {
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        tokio::select! {
+            biased;
+            _ = observed_term.recv() => { let _ = std::fs::write(dir.join("signal-term"),b"queued");},
+            _ = observed_int.recv() => { let _ = std::fs::write(dir.join("signal-int"),b"queued");},
+            _ = tokio::time::sleep(Duration::from_millis(5)) => {},
+        }
     }
 }
 
@@ -656,6 +742,7 @@ fn cell_request(
         agent_model: spec.model.clone(),
         agent_config_id: spec.config_id.clone(),
         public_argv: spec.public_argv,
+        wrapper_profile: spec.wrapper_profile,
         target_build: target.cloned(),
         ..Default::default()
     }
@@ -742,12 +829,18 @@ struct OutputWriter {
 }
 
 fn start_output_writer() -> OutputWriter {
+    start_output_writer_to(None)
+}
+
+fn start_output_writer_to(file: Option<std::fs::File>) -> OutputWriter {
     let (tx, rx) = std::sync::mpsc::sync_channel::<OutputMessage>(1);
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let thread_wake = wake.clone();
     std::thread::spawn(move || {
-        let stdout = std::io::stdout();
-        let mut out = stdout.lock();
+        let mut out: Box<dyn Write + Send> = match file {
+            Some(file) => Box::new(file),
+            None => Box::new(std::io::stdout()),
+        };
         while let Ok(message) = rx.recv() {
             thread_wake.notify_one();
             let result = out
@@ -1095,6 +1188,18 @@ async fn run_child_assigned(
             "--test-pass-row",
             &serde_json::to_string(&pass).unwrap(),
         ]);
+    }
+    if let Some(model) = &spec.model {
+        cmd.args(["--agent-model", model]);
+    }
+    if let Some(config) = &spec.config_id {
+        cmd.args(["--agent-config-id", config]);
+    }
+    if spec.public_argv {
+        cmd.arg("--public-argv");
+    }
+    if let Some(profile) = spec.wrapper_profile {
+        cmd.args(["--wrapper-profile", profile.name()]);
     }
     if !argv.is_empty() {
         cmd.arg("--").args(argv);
@@ -1508,6 +1613,52 @@ async fn matrix_with_options(
         Ok(s) => s,
         Err(e) => return fail(e),
     };
+    matrix_run(
+        MatrixInvocation {
+            ids,
+            specs,
+            trials,
+            deadline_ms,
+            master,
+            retention,
+        },
+        &mut MatrixResources::default(),
+    )
+    .await
+}
+
+struct MatrixInvocation {
+    ids: Vec<String>,
+    specs: Vec<report::AgentSpec>,
+    trials: u32,
+    deadline_ms: Option<u64>,
+    master: provenance::FixtureInputs,
+    retention: Option<PathBuf>,
+}
+#[derive(Default)]
+struct MatrixResources {
+    signals: Option<(tokio::signal::unix::Signal, tokio::signal::unix::Signal)>,
+    writer: Option<OutputWriter>,
+    resolved: Option<(PathBuf, identity::TargetBuild)>,
+    plan: Option<artifacts::MatrixPlan>,
+    interrupted: bool,
+}
+async fn matrix_run(invocation: MatrixInvocation, resources: &mut MatrixResources) -> ExitCode {
+    let MatrixInvocation {
+        ids,
+        specs,
+        trials,
+        deadline_ms,
+        master,
+        retention,
+    } = invocation;
+    if trials == 0
+        || ids.is_empty()
+        || specs.is_empty()
+        || ids.iter().any(|id| tasks::find(id).is_none())
+    {
+        return fail("matrix_input_invalid");
+    }
     let total_slots = match ids
         .len()
         .checked_mul(specs.len())
@@ -1538,6 +1689,7 @@ async fn matrix_with_options(
             .map(|i| assigned_cell(&ids, &specs, trials, i, &master, &matrix_id, deadline_ms))
             .collect(),
     });
+    resources.plan = planned.clone();
     let mut evidence_failed = false;
     let mut evidence = match retention.as_ref().zip(planned.as_ref()) {
         Some((root, plan)) => match MatrixEvidence::start(root, plan) {
@@ -1568,7 +1720,12 @@ async fn matrix_with_options(
                 assigned_cell(&ids, &specs, trials, i, &master, &matrix_id, deadline_ms)
             })
     };
-    let (mut term, mut int) = match install_matrix_signals() {
+    let (mut term, mut int) = match resources
+        .signals
+        .take()
+        .map(Ok)
+        .unwrap_or_else(install_matrix_signals)
+    {
         Ok(signals) => signals,
         Err(_) => {
             eprintln!("swarmail-evals: matrix_signal_setup_failed");
@@ -1591,8 +1748,8 @@ async fn matrix_with_options(
             return ExitCode::from(2);
         }
     };
-    let writer = start_output_writer();
-    let mut interrupted = false;
+    let writer = resources.writer.take().unwrap_or_else(start_output_writer);
+    let mut interrupted = resources.interrupted;
     #[cfg(test)]
     matrix_test_hold(
         MATRIX_ADMISSION_HOLD_ENV,
@@ -1605,6 +1762,8 @@ async fn matrix_with_options(
     let mut resolution_error = None;
     let resolved = if interrupted || evidence_failed {
         None
+    } else if let Some(resolved) = &resources.resolved {
+        Some(resolved.clone())
     } else {
         match resolve_matrix_bin(&mut term, &mut int, &mut interrupted).await {
             #[cfg(test)]
@@ -1620,6 +1779,7 @@ async fn matrix_with_options(
             }
         }
     };
+    resources.resolved = resolved.clone();
     if let Some(error) = resolution_error.as_deref() {
         let _ = error;
         eprintln!("swarmail-evals: harness error for every trial: target_unavailable");
@@ -1801,6 +1961,8 @@ async fn matrix_with_options(
         evidence_failed = true;
         eprintln!("swarmail-evals: artifact_publication_failed");
     }
+    resources.signals = Some((term, int));
+    resources.interrupted = interrupted;
     if output_failed || interrupted || any_error || evidence_failed {
         ExitCode::from(2)
     } else if any_fail {
@@ -1808,6 +1970,221 @@ async fn matrix_with_options(
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn wrapper_result(harness: &str, model: String, config: PathBuf) -> ExitCode {
+    match wrappers::run(harness, &model, &config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(code) => {
+            // run returns only finite harness-authored categories.
+            eprintln!("swarmail-evals: wrapper refused: {code}; see evals/wrappers.md");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn numeric_status(code: ExitCode) -> u8 {
+    if code == ExitCode::SUCCESS {
+        0
+    } else if code == ExitCode::from(1) {
+        1
+    } else {
+        2
+    }
+}
+
+fn baseline_leaf(output: &std::path::Path) -> Result<PathBuf, String> {
+    let parent = output
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    artifacts::safe_root(parent)?;
+    let name = output.file_name().ok_or("baseline_output_invalid")?;
+    // This primitive creates exclusively with 0700 before exposing payload.
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let path = parent.join(name);
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&path)
+        .map_err(|_| "baseline_output_exists_or_unavailable")?;
+    let dir = std::fs::File::open(&path).map_err(|_| "baseline_output_unavailable")?;
+    dir.set_permissions(std::fs::Permissions::from_mode(0o700))
+        .map_err(|_| "baseline_output_permissions")?;
+    Ok(path)
+}
+fn baseline_stream(root: &std::path::Path, name: &str) -> Result<std::fs::File, String> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(root.join(name))
+        .map_err(|_| "baseline_stream_unavailable")?;
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|_| "baseline_stream_permissions")?;
+    Ok(f)
+}
+
+async fn run_baseline(config: PathBuf, output: PathBuf, dry_run: bool) -> ExitCode {
+    let plan = baseline::Plan::new(&output);
+    if !config.is_absolute() {
+        return fail("baseline_config_locator_invalid");
+    }
+    if dry_run {
+        // Before credential reads, output creation, random fixture resolution,
+        // signal setup, preparation, trial or provider process launch.
+        print_line(&plan);
+        return ExitCode::SUCCESS;
+    }
+    match baseline_execute(&config, &output, &plan).await {
+        Ok(code) => ExitCode::from(code),
+        Err(_) => {
+            eprintln!("swarmail-evals: baseline refused; evidence kept; see evals/wrappers.md");
+            ExitCode::from(2)
+        }
+    }
+}
+
+async fn baseline_execute(
+    config: &std::path::Path,
+    output: &std::path::Path,
+    plan: &baseline::Plan,
+) -> Result<u8, String> {
+    let signals = install_matrix_signals().map_err(|_| "baseline_signals_unavailable")?;
+    let root = baseline_leaf(output)?;
+    let mut resources = MatrixResources {
+        signals: Some(signals),
+        ..Default::default()
+    };
+    let master = provenance::FixtureInputs::default();
+    resources.writer = Some(start_output_writer_to(Some(baseline_stream(
+        &root,
+        "controls.jsonl",
+    )?)));
+    let status = numeric_status(
+        matrix_run(
+            MatrixInvocation {
+                ids: plan.tasks.clone(),
+                specs: plan.control_agents.clone(),
+                trials: 1,
+                deadline_ms: Some(plan.deadline_ms),
+                master: master.clone(),
+                retention: Some(root.join("controls")),
+            },
+            &mut resources,
+        )
+        .await,
+    );
+    let controls = baseline::rows(&artifacts::read_file(
+        &root,
+        "controls.jsonl",
+        4096 * provenance::RESULT_LIMIT,
+    )?)?;
+    let control_plan = resources
+        .plan
+        .as_ref()
+        .ok_or("baseline_control_plan_missing")?;
+    let (exe, target) = resources
+        .resolved
+        .clone()
+        .ok_or("baseline_target_missing")?;
+    let harness = identity::harness();
+    baseline::validate_controls(
+        &controls,
+        control_plan,
+        plan,
+        status,
+        &harness,
+        &target.identity,
+    )?;
+    // Validate immutable retained bytes as well as stdout and the in-memory
+    // prelaunch plan. A failed retention marker never authorizes paid work.
+    let retained = artifacts::matrix(&root.join("controls").join(&control_plan.matrix_id))?;
+    if retained.len() != controls.len()
+        || retained
+            .iter()
+            .zip(&controls)
+            .any(|(a, b)| a.original_result != *b)
+    {
+        return Err("baseline_control_retention_invalid".into());
+    }
+    baseline_transition(&mut resources).await?;
+    wrappers::validate_config(config)?;
+    let agents = plan.effective_agents(&exe, config)?;
+    resources.writer = Some(start_output_writer_to(Some(baseline_stream(
+        &root,
+        "paid.jsonl",
+    )?)));
+    let paid_status = numeric_status(
+        matrix_run(
+            MatrixInvocation {
+                ids: plan.tasks.clone(),
+                specs: agents.clone(),
+                trials: plan.paid_repetitions,
+                deadline_ms: Some(plan.deadline_ms),
+                master,
+                retention: Some(root.join("paid")),
+            },
+            &mut resources,
+        )
+        .await,
+    );
+    let paid = baseline::rows(&artifacts::read_file(
+        &root,
+        "paid.jsonl",
+        4096 * provenance::RESULT_LIMIT,
+    )?)?;
+    // Strict parsing is needed to report; complete accounting is needed for a
+    // successful run. Diagnostic reports may describe an incomplete row set.
+    let accounting = resources
+        .plan
+        .as_ref()
+        .ok_or_else(|| "baseline_paid_plan_missing".to_string())
+        .and_then(|p| {
+            baseline::validate_accounting(
+                &paid,
+                p,
+                &agents,
+                &plan.tasks,
+                plan.paid_repetitions,
+                &harness,
+                &target.identity,
+            )
+        })
+        .is_ok();
+    let report_ok = artifacts::publish(
+        &root,
+        "report.json",
+        &artifacts::encode(&report::report(&paid), artifacts::PLAN_LIMIT)?,
+    )
+    .is_ok();
+    Ok(baseline::status(
+        paid_status,
+        accounting && !resources.interrupted,
+        report_ok,
+        &paid,
+    ))
+}
+
+async fn baseline_transition(resources: &mut MatrixResources) -> Result<(), String> {
+    let (term, int) = resources
+        .signals
+        .as_mut()
+        .ok_or("baseline_signals_missing")?;
+    #[cfg(test)]
+    matrix_test_hold(
+        "EVAL_TEST_BASELINE_GAP_HOLD",
+        term,
+        int,
+        &mut resources.interrupted,
+    )
+    .await;
+    if resources.interrupted || pending_matrix_signal(term, int).await.is_some() {
+        resources.interrupted = true;
+        return Err("baseline_interrupted".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2759,6 +3136,9 @@ while :; do :; done
             pending.join("entered").is_file()
         });
         unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        eventually("queued TERM acknowledgement", || {
+            pending.join("signal-term").is_file()
+        });
         std::fs::write(pending.join("release"), b"release").unwrap();
         assert!(probe.wait().success());
         assert!(!before_spawn.path().join("launches.log").exists());
@@ -2799,6 +3179,9 @@ while :; do :; done
         let launches = std::fs::read_to_string(between_rows.path().join("launches.log")).unwrap();
         assert_eq!(launches.lines().collect::<Vec<_>>(), ["signup"]);
         unsafe { libc::kill(probe.pid(), libc::SIGINT) };
+        eventually("queued INT acknowledgement", || {
+            pending.join("signal-int").is_file()
+        });
         std::fs::write(pending.join("release"), b"release").unwrap();
         assert!(probe.wait().success());
         let rows = matrix_probe_rows(between_rows.path());
@@ -2832,6 +3215,9 @@ while :; do :; done
             pending.join("entered").is_file()
         });
         unsafe { libc::kill(probe.pid(), libc::SIGTERM) };
+        eventually("queued TERM acknowledgement", || {
+            pending.join("signal-term").is_file()
+        });
         std::fs::write(pending.join("release"), b"release").unwrap();
         assert!(probe.wait().success());
         let rows = matrix_probe_rows(before_enqueue.path());
@@ -3741,3 +4127,48 @@ mod privacy_tests {
 #[cfg(test)]
 #[path = "../tests/common/coordination.rs"]
 mod test_support;
+
+#[cfg(test)]
+mod baseline_tests {
+    use super::*;
+    struct Probe(std::process::Child);
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    #[tokio::test]
+    async fn transition_retains_signals_between_matrices_and_never_admits_paid_work() {
+        if std::env::var_os("EVAL_TEST_BASELINE_TRANSITION_CHILD").is_some() {
+            let mut resources = MatrixResources {
+                signals: Some(install_matrix_signals().unwrap()),
+                ..Default::default()
+            };
+            assert!(baseline_transition(&mut resources).await.is_err());
+            assert!(resources.interrupted);
+            assert!(baseline_transition(&mut resources).await.is_err());
+            return;
+        }
+        for signal in [libc::SIGTERM, libc::SIGINT] {
+            let dir = tempfile::tempdir().unwrap();
+            let hold = dir.path().join("gap");
+            let mut child = Probe(std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "baseline_tests::transition_retains_signals_between_matrices_and_never_admits_paid_work", "--nocapture"])
+                .env("EVAL_TEST_BASELINE_TRANSITION_CHILD", "1").env("EVAL_TEST_BASELINE_GAP_HOLD", &hold)
+                .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !hold.join("entered").exists() {
+                assert!(Instant::now() < deadline, "child did not acknowledge gap");
+                assert!(child.0.try_wait().unwrap().is_none());
+                std::thread::yield_now();
+            }
+            // The child has acknowledged installed signal ownership and the
+            // actual between-matrices boundary. No timing guess is involved.
+            assert_eq!(unsafe { libc::kill(child.0.id() as i32, signal) }, 0);
+            std::fs::write(hold.join("release"), b"release").unwrap();
+            assert!(child.0.wait().unwrap().success());
+            assert!(!dir.path().join("paid.jsonl").exists());
+        }
+    }
+}
