@@ -125,3 +125,52 @@ merge, tag, publication or issue closure was performed.
 CI owns the charter's macOS/chart/Docker/network/privileged-port evidence; #201
 owns eval macOS gating. The operator owns live Claude/client smoke, paid trials
 and the baseline. None is claimed as locally proved.
+
+
+## Retry verification — 2026-10-26
+
+Rechecked committed candidate ed7ef1a657797252e292c62ed0ba0126a9c5be1f. The whole supplied evidence packet
+again passes its SHA256SUMS check from the packet directory. The candidate-local
+engine matches ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f,
+and public shim hashes pass. Inspection found no further helper defect. This
+retry changes only this receipt; the original failing-first evidence remains
+recorded above. All implementation changes remain under evals/.
+
+Fresh exact commands, candidate hashes, exits, timings, full logs and authority
+hashes are under ignored .forge/implement151-meta-retry. All commands run with
+CARGO_NET_OFFLINE=true and the existing bundle routing; scripts execute from
+their pinned bundle owners after shim verification. The initial transport calls
+timed out after 300 seconds. Later recovered exits and completed summaries
+establish the following results independently of those transport timeouts.
+
+| Check (exact command arrays retained with receipts) | Exit |
+|---|---:|
+| Independent eval fmt / locked all-target clippy | 0 / 0 |
+| Real stdio `actual_stdio_helper_` group | 0 (five tests) |
+| Full locked eval suite | 0 (236 tests and doc-test completion; 580.89 seconds) |
+| Root fmt / locked all-target clippy | 0 / 0 |
+| Root locked workspace tests | 101 |
+| Candidate-local brokkr compile | 0 (76 valuations, 0 unruled, no warning) |
+| Exact coverage / coverage selftest | 1 / 0 |
+| Publish guard / keyless seal proof | 0 / 0 |
+| License check | 0 |
+| Design selftest / delivery tamper proof | 0 / 0 |
+| Fail-closed native-tls absence proof | 0 (raw 101, package specifically absent) |
+
+Both root failures remain the two decision-inventory assertions described
+above: 0084-fixture-http-meta.md has no index row. Coverage stops on those same
+assertions and preserves target/coverage/run.oCWrno/run.log. Exact 100% coverage
+is still unproved on this candidate. No evidence input or decision is missing;
+the remaining work is index integration, expressly assigned outside this
+evals-only seat by proposed decision 0084 and the committed design. The exact
+row for that owner to add to docs/decisions/README.md is:
+
+```markdown
+| [0084](0084-fixture-http-meta.md) | Discard fixture HTTP request metadata and name GET-body refusals | proposed — awaiting the operator | (Epic #164, issue #151 part 3) |
+```
+
+That row would index the proposal without accepting it. The owner must then
+rerun the failing gates; no green outcome is inferred here. This retry preserves
+the root index and all gate assertions and reports **broken** because required
+local gates remain red. CI and operator proof ownership remains as recorded
+above. This receipt is committed unsigned; no push or publication is performed.
