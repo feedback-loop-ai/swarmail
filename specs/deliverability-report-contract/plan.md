@@ -39,13 +39,19 @@ Keep bundle/recipe routing unchanged. Commit unsigned; no push or publication.
 
 The chief's final design artifacts are spec.md, plan.md, tasks.md and proposed
 0085. The proposal already has its required decision-index row on this candidate;
-retain its proposed status. Structural design-check and the full house gates
+retain its proposed status and do not modify the index merely to restate it.
+Only those four artifacts belong in the chief commit. Keep run-local gate
+evidence outside the spec directory, so the design commit remains HEAD and
+all design artifacts stay clean through validation. Structural design-check and the full house gates
 are distinct proofs. Use the current recipe's commit and validator contract.
 
 ## Research and resolved choices
 
-Both panel positions and tracked intake were read after verifying the supplied
-packet hashes. Local source confirms Email.raw is byte-exact and skipped in JSON;
+Both current-run panel positions and the current-main intake were read after
+verifying the supplied packet hashes. The missing legacy tasks directory is
+replaced by that local framing; the old intake prerequisite is historical.
+The dated adjudication in spec.md owns the synthesis, including the current
+panel agreement and costs; it supersedes the older opposing attributions. Local source confirms Email.raw is byte-exact and skipped in JSON;
 get/list hand out immutable Arcs; Filter::matches executes under inbox guards;
 wait_for subscribes before scanning and after Closed; offload re-raises panics.
 message_view is server rendered with esc, so a second browser workflow is
@@ -74,7 +80,7 @@ as a later, small follow-up, outside this issue's completion criteria.
 | `src/mcp.rs` | One tool/input schema, shared severity admission and wait option; current 2025-03-26 text_result formatting. |
 | `src/ui.rs` | Escaped server-rendered report section on message view; offload report/render work; explicit empty/failure states. |
 | `src/static/openapi.json`, `src/static/llms.txt`, `README.md` | Report schema, route/errors, demo disclaimer, predicate/count meaning and examples; document current text results and the later #153 follow-up. |
-| `docs/decisions/README.md` | Proposed 0085 index row; no change to existing statuses. |
+| `docs/decisions/README.md` | Verify the existing proposed 0085 index row; no planned edit or status change. |
 | `tests/api.rs`, `tests/mcp.rs`, `tests/stdio.rs`, `tests/ui.rs` | Real-server surface/validation/parity and wait tests. |
 | `tests/persistence.rs`, `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` | Extend lazy/restart proof where public protocols suffice; retain acceptance/extraction/count guarantees. |
 | Owner-local test modules; optional `src/deliverability/concurrency_tests.rs` and `src/store/deliverability_tests.rs` | Deterministic ownership, admission and wait interleavings; use separate files only for concrete cold-path need. |
@@ -89,7 +95,7 @@ Use explicit ordering ranks, never enum debug text or lexical severity order.
 A test-only version/input fixture demonstrates key changes without a public
 version switch or a production registry.
 
-Suggested concrete cache is a short mutex around a VecDeque of at most 128
+Use a short mutex around a VecDeque of at most 128
 Arc<Slot>s. Each slot holds Weak<Email>, config, version and an Arc async mutex
 of optional completed Arc<Report> (plus its compact serialized bytes if shared).
 The deque owns one Arc. Lookup/pinning and oldest-unpinned eviction happen under
@@ -150,7 +156,9 @@ public unqualified wait entry point if its signature is externally used. The
 cheap path must remain identical when omitted. Add a shared qualifier over
 owned ordinary-filter snapshots for asserts and waits; never change Filter.
 A scan freezes its candidate set and evaluates sequentially newest-first.
-Assertions scan all candidates for an exact count. A wait may stop once want
+Assertions scan all candidates for an exact count, never subscribe or wait for
+future mail; awaiting a selected snapshot's analysis does not turn assert into
+a mail wait. A wait may stop once want
 qualifiers exist, since it returns at most want; insufficient scans must complete
 to report a matched count. Pages are selected only after qualification.
 
@@ -158,7 +166,11 @@ Keep subscribe before snapshot, receiver alive through work, and re-subscribe
 before the next scan on Closed. Race analysis/slot waits against the one original
 deadline and existing shutdown receiver. A completed insufficient scan can yield
 the existing timeout/count; an interrupted scan yields unavailable without a
-partial matched value. Zero deadline permits only immediately ready completion.
+partial matched value. For a zero deadline, use completed cache entries with nonblocking slot access:
+submit no cold job. Return Found as soon as want qualifiers are ready, Timeout
+with an exact count after a complete insufficient scan, or unavailable if any
+still-required report is cold/busy. Pin these outcomes rather than depending on
+the scheduling race between an already-expired timer and a cold blocking job.
 New arrivals during a scan remain queued notifications for a subsequent scan.
 No pending-report wake topic, polling interval or detached candidate fan-out.
 
@@ -171,7 +183,7 @@ even though current rule strings are fixed; adversarial fixture providers prove
 that a later provider cannot create markup or a URL fetch.
 
 Finally prove report JSON text-result parity on current HTTP and stdio tools;
-update living user docs and retain the proposed index row. Document the later
+update living user docs and verify the existing proposed index row. Document the later
 #153 follow-up without a prerequisite. Do not edit historic specs or accepted
 rulings. Ordered tasks assign each proof explicitly.
 

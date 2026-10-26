@@ -10,8 +10,9 @@
 - **Preserves:** 0001–0003 and ingest extraction under 0005; 0010 exact assert /
   minimum-one wait; 0014/0021 read and watcher ordering; 0029/0044/0074 admission;
   0023/0030 offload and existing panic symmetry. No accepted ruling is amended.
-- **Number:** 0085 is assigned by this task and absent before this proposal;
-  reserved/missing earlier numbers are not reused.
+- **Number:** retain the existing 0085 assigned to this contract by the earlier
+  design. This current-main synthesis revises that proposal, not its status;
+  reserved/missing numbers are not reused.
 
 ## Decision proposed
 
@@ -43,8 +44,8 @@ semantics and error text, is [the specification](../../specs/deliverability-repo
    lookups cannot. No final liveness check or stronger snapshot is promised.
 5. Pinned slots serialize same-key computation. Evict oldest unpinned slots;
    all-pinned capacity refuses. At most four evaluations enter the existing
-   blocking pool; the actual worker retains its permit and slot guard through
-   cancellation/unwind. Cache bookkeeping never executes analysis. Retain at
+   blocking pool; the actual worker retains its permit, slot pin, selected mail
+   Arc and slot guard through cancellation/unwind. Cache bookkeeping never executes analysis. Retain at
    most 256 findings and 65,536 compact JSON report bytes per slot, failing
    explicitly on excess. These are cache/job limits, not RSS or latency claims.
    Ordinary failures are not cached; panics follow Store::offload symmetry.
@@ -65,6 +66,9 @@ semantics and error text, is [the specification](../../specs/deliverability-repo
    analysis, recover lag by scanning, freeze inputs for one request, retain one
    deadline/shutdown race. An incomplete analysis scan at deadline is an
    unavailable error; a complete insufficient scan retains existing timeout.
+   Zero timeout uses only ready cached reports and nonblocking slot access; it
+   submits no cold work. Exact asserts analyze their snapshot without subscribing
+   or waiting for future mail, and fail on any required report failure.
 8. #253 extends a pure collector with explicit immutable observation/policy
    inputs, adding their full identity to the key. It owns expiry, refresh and
    wake semantics. No ambient DNS/time, resolver, registry or authentication
@@ -72,15 +76,24 @@ semantics and error text, is [the specification](../../specs/deliverability-repo
 
 ## Alternatives ruled and costs
 
-Robustness wins bounded Weak-cache ownership over simplicity's Email-owned
-slot/reset-on-insert. Pay eviction, admission and 503 paths; keep ingest,
-constructors and persisted Email free of derived state. Simplicity wins the
-existing snapshot boundary over robustness's final liveness recheck: a selected
-read can complete after deletion, but this does not resurrect future lookups.
-Robustness's artificial marker beats a missing-Subject warning because it proves
-all severities without implying a substantive quality check. Structural paths
-and source offsets settle locator identity without inventing a link traversal.
-Simplicity wins one wait owner, server rendering and static rule composition.
+The 2026-10-26 current-run positions converge on a bounded Store-owned Weak
+cache, selected-snapshot reads, artificial demo and current-main MCP. This
+replaces earlier opposing attributions; neither current member asks for an
+Email-owned cache or final liveness recheck. Adopt simplicity's one module,
+short mutex/deque, static composition and one wait owner; make robustness's
+identity, worker-owned cancellation bounds and failure-is-not-clean rules
+mandatory. The [spec adjudication](../../specs/deliverability-report-contract/spec.md#panel-adjudication--2026-10-26-synthesis)
+records each rejected alternative and its cost.
+
+In particular, reject Email slot/reset-on-insert in favor of weak ownership:
+pay eviction/admission proofs and busy responses, keep mutation/constructors
+free of derived state. Reject final liveness rechecks: selected reads may
+finish after deletion, while fresh requests must select again. Reject a
+separate executor: keep four admitted jobs on the existing pool and explicitly
+retain shared contention. Reject dropping failed predicate candidates: pay
+unavailable errors instead of a false clean or partial exact count. Reject a
+missing-Subject quality rule, generic providers and UI polling: ship the
+synthetic marker, fixture coordinates and server-rendered first-read latency.
 
 Reject a persistent cache, background scanner, extra protocol negotiator, new
 executor, mutable raw mail, dynamic rule framework, real authentication checks
@@ -103,7 +116,7 @@ No newer MCP conformance, decision acceptance or protocol change is implied.
 Spec AC1–AC10 and [paired tasks](../../specs/deliverability-report-contract/tasks.md)
 require typed fixtures, identity/cancellation/deadline interleavings, real SMTP /
 REST / MCP / stdio / UI proofs, all local house gates and exact coverage. CI-only
-proofs remain CI-owned. Add the proposed index row at the permitted documentation
-step; never accept this proposal or alter accepted records. Compatible work may
+proofs remain CI-owned. Verify the already-present proposed index row; never
+accept this proposal or alter accepted records. Compatible work may
 proceed under 0045 §8 and the supplied operator direction. A concrete accepted
 contract contradiction still waits for the operator; frozen weakening is refused.

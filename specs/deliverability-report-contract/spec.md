@@ -1,6 +1,6 @@
 # Deliverability report contract
 
-Date: 2026-10-26. Status: design draft, current-main scope corrected at re-intake. Epic #251, issue #252.
+Date: 2026-10-26. Status: synthesized design draft on current main. Epic #251, issue #252.
 
 Current framing: [current-main intake](intake-current-main.md). The operator
 explicitly withdrew the earlier #153 prerequisite; this active draft is revised
@@ -36,8 +36,10 @@ Both supplied issue-packet files passed their SHA256SUMS. README digest:
 operator-rulings digest:
 `5b8da87b897306a313f673b134edd1a56e0f477117a07618e3ec345449a6c6f9`.
 The packet's prior-outcomes section is empty. The run-local simplicity and
-robustness positions were both read. The legacy tasks directory is absent;
-[intake.md](intake.md) is the framing. No external source, journal or sibling
+robustness positions for run `epic-251-issue-252-implement-the-22ac6e57` were
+both read. The requested legacy tasks directory is absent;
+[intake-current-main.md](intake-current-main.md) supplies the current framing.
+The earlier [intake.md](intake.md) is historical, not a prerequisite authority. No external source, journal or sibling
 worktree was consulted. The tracked [rulings](../../docs/rulings/epic-192.md)
 copy predates the supplied #251 ruling; the dated authority above is transcribed
 from the verified packet, not inferred from that older copy.
@@ -91,14 +93,18 @@ rule emits none. Later occurrences never override the first. The typed immutable
 configuration is `{demo_enabled: bool}`, default true; no public configuration
 endpoint or CLI flag is added solely for the demo.
 
-The raw header scan accepts CRLF and LF, stops at the first empty line or EOF,
+Header names are nonempty printable ASCII excluding colon and whitespace.
+Unfolding replaces the continuation line break and its leading space/tab run
+with one space. The raw header scan accepts CRLF and LF, stops at the first
+empty line or EOF,
 compares field names ASCII-case-insensitively, ignores non-field lines and orphan
 continuations, and associates continuation lines only with the preceding valid
 field. No charset conversion or lossy UTF-8 conversion precedes matching. A
 malformed line terminates that preceding-field association. Non-ASCII values do
 not match the three tokens. The complete header block is limited to 65,536
 source bytes (including its terminating empty line when present); exceeding it
-returns an analysis failure, even if a marker appeared earlier. Body size and
+returns an analysis failure, even if a marker appeared earlier or the demo
+rule is disabled. Body size and
 body syntax do not affect this rule. This bounded byte scan does not parse HTML.
 
 ## Execution, cache and failures
@@ -114,7 +120,9 @@ Same-key misses serialize through one slot; a successful evaluation is reused.
 An active or caller-held slot cannot be evicted. Evict the oldest unpinned slot
 when full; if every slot is pinned, return unavailable. A job reserves one of
 four permits before offload, with no queued blocking job on refusal. The worker
-owns its permit and slot guard until completion, even if the caller cancels.
+owns its permit, slot pin, selected mail Arc and slot guard until completion or
+unwind, even if the caller cancels. Cancellation before submission releases
+reservations without leaving a pending cell.
 Waiting same-key callers use an async slot lock, not blocking-pool threads.
 Ordinary failure leaves the slot empty; panic retains Store::offload's existing
 unwind behavior and releases guards. No new panic-to-success conversion.
@@ -150,7 +158,8 @@ mail or parser diagnostics. Failure is never an empty report or a clean match.
   through its shared result/schema owner. No resource or second formatter.
 - Existing message UI page: server-rendered report section with rule-set id,
   severity, rule id, locator and hint; explicit empty and unavailable/failed
-  states. Escape all strings and render link locators as text. No list warming,
+  states. An existing message page remains 200 with a failed report section;
+  missing mail remains 404. Escape all strings and render link locators as text. No list warming,
   background polling, dashboard, new client bundle or automatic URL fetch.
 - Existing REST assert/await and MCP wait gain optional
   `no_findings_at_or_above=info|warning|error`. Absent means existing behavior.
@@ -159,7 +168,8 @@ mail or parser diagnostics. Failure is never an empty report or a clean match.
 
 The predicate qualifies each ordinary-filter candidate iff its successful report
 has no finding at or above the inclusive threshold. An empty report qualifies.
-Exact-count assert counts qualifying messages, including zero; it is not a
+Exact-count assert evaluates its selected snapshot without subscribing or
+waiting for future mail, counts qualifying messages including zero, and is not a
 universal claim that every inbox message is clean. Wait still requires at least
 one, including supplied count=0. Empty inboxes cannot satisfy waits. Preserve
 newest-first store listing order, existing count/page caps and inert assert
@@ -177,8 +187,11 @@ across it. Scan candidates sequentially, not one spawned task per message.
 For the new predicate only, an unfinished analysis scan at the deadline is 503
 `deliverability analysis unavailable` (MCP operational error), not a fabricated
 matched count. A completed insufficient scan followed by deadline expiry keeps
-the existing timeout shape/count. A zero timeout allows a ready complete scan,
-but cannot wait for cold work. Shutdown retains existing shutdown errors. Exact
+the existing timeout shape/count. A zero timeout allows a ready scan using completed cached reports and
+nonblocking slot access; it submits no cold job and does not wait for an owned
+slot. If enough qualifying reports are ready it succeeds; a complete insufficient
+scan times out with its exact count, and a required cold/busy report returns
+unavailable without a partial count. Shutdown retains existing shutdown errors. Exact
 asserts fail on any candidate analysis failure, never count partial successes.
 All counts describe selected snapshots, not a whole-store transaction.
 
@@ -193,21 +206,28 @@ It owns refresh/wakeup, expiry and operational-failure policy before introducing
 live DNS. Future authentication must similarly identify envelope/client inputs.
 No ambient network/time reads are permitted inside this issue's evaluator.
 
-## Panel adjudication
+## Panel adjudication — 2026-10-26 synthesis
 
-| Conflict | Ruling and cost of rejecting the alternative |
+This adjudicates the current run's two positions, replacing the earlier panel's
+attributions in this active draft. Both now endorse the bounded Weak cache,
+selected-snapshot reads, artificial marker, typed coordinates and current-main
+MCP. There is no remaining direct conflict on those choices; the chief does
+not invent one. The differences in emphasis are resolved into these bindings:
+
+| Question | Adopt, reject, and cost |
 |---|---|
-| Message-owned slot versus bounded Weak cache | Adopt robustness's store-owned Weak identity and explicit bounds. Reject simplicity's Email field/reset-at-insert approach: it would enlarge constructors and require ingest ownership resets. Pay cache eviction/admission code and possible 503/recomputation; avoid coupling derived state to public Email clones/persistence. |
-| Final liveness recheck versus selected snapshot | Adopt simplicity's existing snapshot boundary; reject robustness's post-analysis recheck. Pay the possibility that a previously selected read completes after deletion. Do not imply whole-store atomicity or new retention guarantees. Fresh lookups still refuse. |
-| Missing Subject versus artificial marker | Adopt robustness's marker, limited to the first occurrence. Reject simplicity's missing-subject warning: it looks like a substantive mail-quality rule and exercises only warning. Pay one deliberately synthetic documented header. |
-| Ordinal parts/links versus structural identity | Choose structural part paths; replace both proposed occurrence-based link schemes with an explicit source-byte offset. Pay a coordinate contract and provider fixtures; avoid an unspecified future tokenizer defining occurrence identity. |
-| Unbounded shared offload versus bounded derived work | Adopt four permits, 128 slots and explicit limits, using existing offload. Reject an unbounded demo service and also a dedicated executor/general scheduler. Pay extra tests and busy responses; shared-pool/OS contention is still possible. |
-| Separate pending UI/wait/provider machinery | Adopt simplicity's server rendering, one wait loop and static collector. Reject loading/polling jobs, persistent reports and generic provider frameworks. First view pays analysis latency; future heavy rules must justify their own design. |
+| Small module versus resilient ownership | Adopt simplicity's single `src/deliverability.rs`, short mutex/deque and existing offload owner, with robustness's full-key Weak validation and worker-owned permit/pin/guard. Reject the older Email-owned slot/reset design and unbounded memoization. The cost is admission/eviction code, linear search over 128 slots, recomputation and truthful busy errors; derived state never burdens insert/clone/restore. |
+| Removal during a read | Adopt both current positions' selected-snapshot boundary. Reject the earlier final liveness recheck: it still races a later delete and cannot promise atomicity. The chosen cost is that a read selected before removal may finish afterward; later live lookups cannot resurrect it. |
+| Resource limits versus executor infrastructure | Robustness's four-job, 128-slot and complete-payload bounds are mandatory, including cancellation/unwind proofs. Simplicity's existing blocking pool wins over a dedicated executor, scheduler or sweeper. The losing isolation alternative would cost new lifecycle machinery; by rejecting it we retain shared-pool/OS contention and make no hard latency/RSS claim. |
+| Small predicates versus truthful results | Robustness's failure-is-not-clean rule and complete exact-count scan are mandatory. Simplicity's one shared wait loop and sequential qualifier win over a second watcher/pending-report subsystem. The cost is cold-read latency, explicit unavailable on an incomplete deadline scan, and potentially expensive exact scans; failed candidates can never silently count as nonmatches. |
+| Rule and coordinate scope | Adopt both positions' synthetic first-header marker, explicit typed locations, canonicalizer and immutable inputs. Reject substantive missing-Subject/authentication/spam rules and an ordinal URL traversal contract. The cost is an explicitly artificial demo and fixture-only MIME/link coverage until later rules supply real coordinates. |
+| UI and sibling extension | Adopt simplicity's server rendering and static collector, with robustness's escaped inactive locators and complete observation identity requirement. Reject loading endpoints, background scanning, dynamic provider registries and guessed DNS policy. The cost is first-view latency and a later #253 design obligation for expiry/refresh/wakeup. |
+| MCP timing | The operator's withdrawal governs both positions: current 2025-03-26 text_result completes this issue. Reject the earlier #153 prerequisite and any new negotiator. The cost is one later, small report structuredContent/outputSchema follow-up when #153 lands; no newer-revision claim is made now. |
 
-Both positions' typed output, full input identity, truthful failures, strict
-admission, no SMTP analysis and no dependency widening are retained. The
-operator's later correction removes the newer-MCP prerequisite; current-main
-text results are the complete MCP scope for this issue.
+The accepted complexity is confined to evidence-backed ownership, bounds and
+truthful outcomes. No new dependency, ingest callback, persistent cache or
+report-ready event channel is justified. Keep 0085 proposed; this synthesis
+accepts no ruling and changes none of the frozen guarantees.
 
 ## Acceptance Criteria
 
@@ -233,7 +253,8 @@ claims that design has implemented it. Concrete test ownership is in
    finish. Cache entries do not retain raw messages or alter oldest-only pruning.
 5. **AC5 — Resource/failure behavior:** deterministic barriers prove same-key
    coalescing, four-job refusal, 128-slot eviction/all-pinned refusal, report
-   size/findings limits, cancellation retaining capacity, guard release on panic,
+   size/findings limits, cancellation before/after submission retaining correct
+   capacity and pins, guard release on panic,
    failure retry and shutdown/deadline interruption. Failures never become clean
    reports. SMTP can commit and be queried while report workers are held.
 6. **AC6 — REST:** real-server response/schema parity, 404, fixed 503s and closed
@@ -255,7 +276,9 @@ claims that design has implemented it. Concrete test ownership is in
    assert including zero, minimum-one wait, filter-before-page, newest-first
    output, mismatch, timeout, shutdown, invalid admission and failure-not-clean.
    Owner-local interleavings prove subscribe-before-scan, delivery during
-   analysis, lag recovery and Closed re-subscription without sleep synchronization.
+   analysis, lag recovery and Closed re-subscription without sleep synchronization;
+   distinguish zero-timeout warm/empty/cold/busy scans, partial-scan unavailability
+   and complete-scan timeouts. Exact asserts never subscribe for future mail.
 10. **AC10 — Extension and delivery:** a deterministic additional-input fixture
     proves collector, serialization, threshold and cache-key agreement. No DNS,
     authentication/content/spam rules or external scorer is present. Current

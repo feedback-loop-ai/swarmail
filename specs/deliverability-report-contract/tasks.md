@@ -4,6 +4,9 @@ All unchecked items below are implementation work, not claims of completed
 behavior. Test names are required witnesses to add/extend in the listed owner;
 existing preservation suites are named where no new test is needed. Keep
 inline tests measured unless 0020's concrete cold-path rule requires a harness.
+The 2026-10-26 synthesis in spec.md resolves the current panel; these tasks
+implement that contract, with no gate on the withdrawn MCP prerequisite.
+T1 establishes the adapter boundary; T7 wires it; T10 proves both transports.
 
 - [ ] **T1 — Pin the current-main MCP contract (AC7).** Use main's existing
   2025-03-26 text_result/error_result and input admission owners. No dependency
@@ -76,9 +79,11 @@ inline tests measured unless 0020's concrete cold-path rule requires a harness.
   `report_wait_deadline_and_shutdown` deterministically cover initial and Closed
   subscription windows, completion without another delivery, pinned-config
   stability, cancellation during a slot wait/worker, exact zero-timeout policy,
-  complete-scan timeout and incomplete-scan unavailable. Real REST/MCP shutdown
+  complete-scan timeout and incomplete-scan unavailable. Cover warm, empty, cold
+  and busy zero-timeout scans and prove that zero timeout submits no cold work. Real REST/MCP shutdown
   tests pin existing error shapes. `report_failed_scan_is_not_exact_or_clean`
-  proves an assert never reports a partial successful count.
+  proves an assert never reports a partial successful count or subscribes for
+  future mail.
 - [ ] **T10 — Prove current-main MCP report results (AC7).** Use the existing
   2025-03-26 result helpers and tool descriptor. **Proof:**
   `report_mcp_text_contract` in tests/mcp.rs and `report_stdio_text_contract` in
@@ -100,7 +105,7 @@ inline tests measured unless 0020's concrete cold-path rule requires a harness.
   serialization and threshold reuse, and changes its explicit input identity
   to prove no stale reuse. Production ships only demo.marker.v1.
 - [ ] **T13 — Update living contract documentation (AC6/AC10).** OpenAPI,
-  llms.txt, README and proposed 0085 index row; document snapshot/failure bounds,
+  llms.txt and README; verify the existing proposed 0085 index row; document snapshot/failure bounds,
   synthetic rule, empty-report meaning and exact-count predicate example.
   **Proof:** `report_served_docs_match_contract` fetches actual OpenAPI/llms from
   a real server and checks independent expected keys, variants, enums, statuses
