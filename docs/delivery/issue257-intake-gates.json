@@ -1,0 +1,153 @@
+{
+  "phase": "intake baseline only",
+  "tested_commit": "80eefbedbecf5516e15efbc2f0e5f5895d6f3166",
+  "tested_tree": "4813f46abe4ac98754066bebce1b8645f6363d6a",
+  "offline": true,
+  "engine_sha256": "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
+  "gates": [
+    {
+      "name": "engine identity",
+      "command": "printf '%s  %s\\n' ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f .forge/bin/brokkr | sha256sum --check --strict",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 0.11,
+      "log": ".forge/evidence/issue257-intake/01.log",
+      "log_sha256": "d59591f9d6f693cfccb0906c65ee27e7aa2a907ab4d85f90d8c8303abfee6c10"
+    },
+    {
+      "name": "public shim integrity",
+      "command": "sha256sum --check --strict bundles/self/scripts/shims.sha256",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 0.0,
+      "log": ".forge/evidence/issue257-intake/02.log",
+      "log_sha256": "785e16dc6e9db3dcf3e2f94347f10c6c3508b97edc039d75e9676f3b0ea1b39c"
+    },
+    {
+      "name": "format",
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 0.78,
+      "log": ".forge/evidence/issue257-intake/03.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "clippy",
+      "command": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 16.3,
+      "log": ".forge/evidence/issue257-intake/04.log",
+      "log_sha256": "4139fb52816349e630823140b1542b0f88f6dee9840c94e8ca63ba98398d47a9"
+    },
+    {
+      "name": "workspace tests",
+      "command": "cargo test --workspace --locked",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 163.25,
+      "log": ".forge/evidence/issue257-intake/05.log",
+      "log_sha256": "bd1160a83a4e9c015064fa6321e9bfb76c9380cae070f142134bdc5b18e0751a"
+    },
+    {
+      "name": "bundle compile",
+      "command": ".forge/bin/brokkr compile --bundle bundles/self",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 0.02,
+      "log": ".forge/evidence/issue257-intake/06.log",
+      "log_sha256": "ad83b8df41a4b44f1d748cf6c6ef17dd8a7db503246c50e2ff0dab8e04b895ff"
+    },
+    {
+      "name": "exact coverage",
+      "command": "bash bundles/self/scripts/coverage-gate.sh",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 245.44,
+      "log": ".forge/evidence/issue257-intake/07.log",
+      "log_sha256": "dc8b6d3375242ad1eb9ecfb3a29d43897630354915ac255ff7fc1c8e5511d72a"
+    },
+    {
+      "name": "coverage selftest",
+      "command": "bash bundles/self/scripts/coverage-gate.sh selftest",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 19.41,
+      "log": ".forge/evidence/issue257-intake/08.log",
+      "log_sha256": "95d101f2129ef4d420b20a406a40cf5f36e14a1735315b40647bec5f9328548c"
+    },
+    {
+      "name": "publish guard proof",
+      "command": "bash bundles/self/scripts/publish-guard-test.sh",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 6.13,
+      "log": ".forge/evidence/issue257-intake/09.log",
+      "log_sha256": "939ac40398ee171a956e8423b96d4a9c62b4b1c30250a6fa6146b585ddf0647f"
+    },
+    {
+      "name": "seal branch keyless proof",
+      "command": "bash bundles/self/scripts/seal-branch-test.sh",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 4.76,
+      "log": ".forge/evidence/issue257-intake/10.log",
+      "log_sha256": "e022b8e780d716cdbafdf4723515738c62bf480308724cfbb2051566d835b200"
+    },
+    {
+      "name": "license policy",
+      "command": "cargo deny check licenses",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 0.66,
+      "log": ".forge/evidence/issue257-intake/11.log",
+      "log_sha256": "71dadc8c8978da797b94dc581b666330c737551839c8fc820d7647130930c4b7"
+    },
+    {
+      "name": "design check selftest",
+      "command": "bash bundles/self/scripts/design-check.sh selftest",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 4.62,
+      "log": ".forge/evidence/issue257-intake/12.log",
+      "log_sha256": "1d5eb6cef8be9f99e87fa8b1394ed2df9172cf2c4da06f6d74cc03c95245735e"
+    },
+    {
+      "name": "delivery tamper-boundary proof",
+      "command": "bash bundles/self/scripts/delivery-proof-test.sh",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 8.79,
+      "log": ".forge/evidence/issue257-intake/13.log",
+      "log_sha256": "2969d73ecccc45098e6907c604407b44967f3fe4669573a6cd4c5e8b82785d8c"
+    },
+    {
+      "name": "native-tls absence",
+      "command": "out=$(cargo tree --locked -i native-tls 2>&1); code=$?; if [ \"$code\" -eq 0 ]; then printf '%s\\n' \"$out\" >&2; exit 1; elif printf '%s' \"$out\" | grep -q 'did not match any packages'; then printf 'native-tls absent\\n'; else printf '%s\\n' \"$out\" >&2; exit 1; fi",
+      "exit_code": 0,
+      "policy_sweep_warning": false,
+      "elapsed_seconds": 0.16,
+      "log": ".forge/evidence/issue257-intake/14.log",
+      "log_sha256": "5c44a704a571fbcd788d8a0e177e0ecae66da179ade09dcd1428b42841a6fb68"
+    }
+  ],
+  "all_passed": true,
+  "log_hashes_verified": true,
+  "coverage": {
+    "lines": {
+      "count": 15520,
+      "covered": 15520
+    },
+    "branches": {
+      "count": 876,
+      "covered": 876
+    },
+    "functions": {
+      "count": 1656,
+      "covered": 1656
+    },
+    "evidence": "target/coverage/run.LPZ37E"
+  },
+  "limitation": "Intake baseline only; implementation is outstanding. Final receipt commit changes documentation/evidence only. The workspace client timed out after 300 seconds, but the runner completed all gates and its durable receipt and log hashes were checked."
+}
