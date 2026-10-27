@@ -1,7 +1,11 @@
 //! Detectable completion: metadata binds bytes and is published last.
 use crate::{
     provenance::*,
+<<<<<<< HEAD
     results,
+=======
+    results::{self, ResultRecord},
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     runner::TrialResult,
     state::Snapshot,
     tasks::{self, Outcome},
@@ -173,6 +177,7 @@ fn retain_with(
     }
     ensure_root(root)?;
     let out = crate::runner::create_private_artifact_dir(root, &row.trial_id)?;
+<<<<<<< HEAD
     row.validate().map_err(|e| {
         if e.starts_with("schema_version ") {
             "result-version mismatch"
@@ -180,6 +185,9 @@ fn retain_with(
             "invalid result"
         }
     })?;
+=======
+    row.validate().map_err(|_| "invalid result")?;
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     if let Some(s) = snap {
         crate::state::validate_publication(s)?;
         if s.trial_id != row.trial_id || row.task.as_deref() != Some(&s.task) {
@@ -277,6 +285,7 @@ pub fn trial(root: &Path) -> Result<ValidatedTrial, String> {
     if meta.schema_version != 1 || !generated_id(&meta.trial_id) {
         return Err("metadata version/identity".into());
     }
+<<<<<<< HEAD
     let record =
         results::read(&bound(root, &meta.result, "result.json", SMALL_LIMIT)?).map_err(|e| {
             if e.starts_with("schema_version ") {
@@ -286,6 +295,13 @@ pub fn trial(root: &Path) -> Result<ValidatedTrial, String> {
             }
         })?;
     let row = record;
+=======
+    let record = results::read(&bound(root, &meta.result, "result.json", SMALL_LIMIT)?)
+        .map_err(|_| "invalid result")?;
+    let ResultRecord::V2(row) = record else {
+        return Err("result-version mismatch".into());
+    };
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     if meta.trial_id != row.trial_id {
         return Err("result/metadata identity mismatch".into());
     }
@@ -323,7 +339,11 @@ pub fn trial(root: &Path) -> Result<ValidatedTrial, String> {
         }
     };
     bound(root, &meta.diagnostics, "diagnostics.log", SMALL_LIMIT)?;
+<<<<<<< HEAD
     Ok(ValidatedTrial { row, state })
+=======
+    Ok(ValidatedTrial { row: *row, state })
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -422,6 +442,7 @@ pub fn validate_plan(plan: &MatrixPlan) -> Result<(), String> {
     Ok(())
 }
 pub fn matches_cell(row: &TrialResult, c: &PlannedCell) -> Result<(), String> {
+<<<<<<< HEAD
     row.validate().map_err(|e| {
         if e.starts_with("schema_version ") {
             "result-version mismatch"
@@ -429,6 +450,9 @@ pub fn matches_cell(row: &TrialResult, c: &PlannedCell) -> Result<(), String> {
             "invalid result"
         }
     })?;
+=======
+    row.validate().map_err(|_| "invalid result")?;
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     if row.trial_id != c.trial_id
         || row.task.as_deref() != Some(&c.task)
         || row.agent.as_deref() != Some(&c.agent)
@@ -499,7 +523,11 @@ mod tests {
         };
         let row = crate::runner::refused_row(&req, &"0".repeat(32));
         let snap = Snapshot {
+<<<<<<< HEAD
             schema_version: crate::state::SNAPSHOT_SCHEMA,
+=======
+            schema_version: 1,
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
             trial_id: row.trial_id.clone(),
             task: "signup".into(),
             frozen: true,
@@ -519,17 +547,25 @@ mod tests {
             "metadata.json",
         ] {
             let root = tempfile::tempdir().unwrap();
+<<<<<<< HEAD
             let mut injected = false;
             let r = retain_with(root.path(), &row, Some(&snap), |root, name, bytes| {
                 if name == stage {
                     injected = true;
+=======
+            let r = retain_with(root.path(), &row, Some(&snap), |root, name, bytes| {
+                if name == stage {
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
                     return Err("injected write failure".into());
                 }
                 publish(root, name, bytes)
             });
             assert!(r.is_err());
+<<<<<<< HEAD
             assert!(injected, "{stage} injection was not reached");
             assert_eq!(r.unwrap_err(), "injected write failure");
+=======
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
             assert!(
                 !root
                     .path()

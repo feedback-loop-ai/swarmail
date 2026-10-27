@@ -77,7 +77,10 @@ fn facts(exe: &Path, cwd: &Path) -> TrialResult {
 }
 #[test]
 fn runtime_checkout_cannot_supply_harness_source_or_external_target_source() {
+<<<<<<< HEAD
     let _trial_scope = common::trial_scope();
+=======
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-b", "unrelated"]);
     git(
@@ -166,7 +169,10 @@ fn an_owned_real_cargo_build_that_changes_source_refuses_association() {
 }
 #[test]
 fn rebuilds_follow_source_git_indirection_packed_refs_and_archive_unavailability() {
+<<<<<<< HEAD
     let _trial_scope = common::trial_scope();
+=======
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("repo");
     std::fs::create_dir(&root).unwrap();
@@ -253,10 +259,15 @@ fn rebuilds_follow_source_git_indirection_packed_refs_and_archive_unavailability
     );
 }
 
+<<<<<<< HEAD
 #[cfg(target_os = "linux")]
 #[test]
 fn runtime_git_helpers_have_closed_maps_and_private_source_locators_never_publish() {
     let _trial_scope = common::trial_scope();
+=======
+#[test]
+fn runtime_git_helpers_have_closed_maps_and_private_source_locators_never_publish() {
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
     let dir = tempfile::tempdir().unwrap();
     let discovery = dir.path().join("private-discovery-canary-200");
@@ -371,6 +382,7 @@ fn runtime_git_helpers_have_closed_maps_and_private_source_locators_never_publis
             );
         }
     }
+<<<<<<< HEAD
     use std::io::Write;
     let mut report = common::cli()
         .args(["report", "--input", "-"])
@@ -395,6 +407,10 @@ fn runtime_git_helpers_have_closed_maps_and_private_source_locators_never_publis
     public.extend_from_slice(&report.stderr);
     public.extend_from_slice(&replay.stdout);
     public.extend_from_slice(&replay.stderr);
+=======
+    let mut public = out.stdout.clone();
+    public.extend_from_slice(&out.stderr);
+>>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     for entry in std::fs::read_dir(evidence.join(&row.trial_id)).unwrap() {
         public.extend(std::fs::read(entry.unwrap().path()).unwrap());
     }
