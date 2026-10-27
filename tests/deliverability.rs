@@ -43,9 +43,6 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-bulk/1");
-    assert_eq!(first["findings"].as_array().unwrap().len(), 7);
-    assert_eq!(
     assert_eq!(first["rule_set_id"], "swarmail-html/1");
     assert_eq!(first["findings"].as_array().unwrap().len(), 8);
     assert_eq!(

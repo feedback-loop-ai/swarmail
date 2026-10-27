@@ -74,12 +74,13 @@ pub(super) fn passing() -> AuthEvidence {
 }
 pub(super) fn mail(id: &str) -> Arc<Email> {
     Arc::new(email(id, "box", "a"))
+}
 pub(super) fn html_email(id: &str, inbox: &str, to: &str) -> Email {
     let mut e = crate::store::email(id, inbox, to);
     e.raw = b"Content-Type: text/html\r\n\r\n<p>Hello</p><img alt=\"\" src=\"cid:x\">".to_vec();
     e
 }
-}
+
 
 #[tokio::test]
 async fn coalesced_miss_survives_caller_cancel() {
