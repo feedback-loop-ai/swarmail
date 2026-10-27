@@ -77,10 +77,9 @@ pub(super) fn mail(id: &str) -> Arc<Email> {
 }
 pub(super) fn html_email(id: &str, inbox: &str, to: &str) -> Email {
     let mut e = crate::store::email(id, inbox, to);
-    e.raw = b"Content-Type: text/html\r\n\r\n<p>Hello</p><img alt=\"\" src=\"cid:x\">".to_vec();
+    e.raw = b"From: sender@example.test\r\nMessage-ID: <html@example.test>\r\nDate: Mon, 26 Oct 2026 12:00:00 +0000\r\nList-Unsubscribe: <https://example.test/unsubscribe>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nbody\r\n--b\r\nContent-Type: text/html\r\n\r\n<p>Hello</p><img alt=\"\" src=\"cid:x\">\r\n--b--\r\n".to_vec();
     e
 }
-
 
 #[tokio::test]
 async fn coalesced_miss_survives_caller_cancel() {

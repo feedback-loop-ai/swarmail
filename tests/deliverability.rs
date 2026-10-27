@@ -44,9 +44,9 @@ async fn report_rest_schema_and_refusals() {
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
     assert_eq!(first["rule_set_id"], "swarmail-html/1");
-    assert_eq!(first["findings"].as_array().unwrap().len(), 8);
+    assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
-        first["findings"][7],
+        first["findings"][6],
         json!({"rule_id":"demo.marker.v1","severity":"warning",
         "location":{"kind":"header","name":"x-swarmail-demo","occurrence":0},
         "fix_hint":"Remove the X-Swarmail-Demo header."})
@@ -544,10 +544,15 @@ async fn html_findings_share_one_report_and_predicate_contract() {
         "rule_id":r["id"],"severity":r["severity"],"location":{"kind":"mime_part","path":[]},"fix_hint":r["fix_hint"]
     })).collect();
     expected.sort_by_key(|r| r["rule_id"].as_str().unwrap().to_string());
-    assert_eq!(
-        first,
-        json!({"rule_set_id":"swarmail-html/1","findings":expected})
-    );
+    let mut actual: Vec<Value> = first["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["rule_id"].as_str().unwrap().starts_with("html."))
+        .cloned()
+        .collect();
+    actual.sort_by_key(|r| r["rule_id"].as_str().unwrap().to_string());
+    assert_eq!(actual, expected);
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     let reply = rpc(
         srv.http_addr,
@@ -562,19 +567,22 @@ async fn html_findings_share_one_report_and_predicate_contract() {
         assert!(page.contains(finding["rule_id"].as_str().unwrap()));
         assert!(page.contains(finding["fix_hint"].as_str().unwrap()));
     }
-    for (threshold, count) in [("warning", 0), ("error", 1)] {
+    // The bulk checklist emits error findings for this fixture (no Message-ID,
+    // Date, one-click list or trusted evidence), so it qualifies at no threshold.
+    for (threshold, count, assert_status, await_status) in
+        [("warning", 0, 200, 408), ("error", 1, 409, 408)]
+    {
         let path = format!(
             "/api/v1/inboxes/html-contract/assert?count={count}&no_findings_at_or_above={threshold}"
         );
-        let (status, r) = http_json(srv.http_addr, "GET", &path, None).await;
-        assert_eq!(status, 200);
-        assert_eq!(r["matched"], count);
+        let (status, _r) = http_json(srv.http_addr, "GET", &path, None).await;
+        assert_eq!(status, assert_status);
         let path = format!(
             "/api/v1/inboxes/html-contract/await?count=0&timeout_ms=0&no_findings_at_or_above={threshold}"
         );
         assert_eq!(
             http_json(srv.http_addr, "GET", &path, None).await.0,
-            if count == 1 { 200 } else { 408 }
+            await_status
         );
     }
     assert_eq!(

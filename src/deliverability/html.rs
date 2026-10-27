@@ -559,7 +559,9 @@ mod tests {
         format!("Content-Type: text/html; charset=utf-8\r\n\r\n{body}").into_bytes()
     }
     fn report(body: &str) -> Report {
-        evaluate(&raw(body), &Inputs::default()).unwrap()
+        let mut r = evaluate(&raw(body), &Inputs::default()).unwrap();
+        r.findings.retain(|f| f.rule_id.starts_with("html."));
+        r
     }
     fn ids(body: &str) -> Vec<String> {
         report(body)
@@ -872,8 +874,13 @@ mod tests {
         let nested = multipart(&[text.clone(), image.clone()], "inner", "");
         let raw_mime = multipart(&[image.clone(), nested], "outer", "");
         let r = evaluate(&raw_mime, &Inputs::default()).unwrap();
-        assert_eq!(r.findings.len(), 4);
-        for pair in r.findings.chunks(2) {
+        let html: Vec<_> = r
+            .findings
+            .iter()
+            .filter(|f| f.rule_id.starts_with("html."))
+            .collect();
+        assert_eq!(html.len(), 4);
+        for pair in html.chunks(2) {
             assert_eq!(pair[0].location, Location::MimePart { path: vec![0] });
             assert_eq!(pair[1].location, Location::MimePart { path: vec![1, 1] });
         }
@@ -881,7 +888,8 @@ mod tests {
             evaluate(&text, &Inputs::default())
                 .unwrap()
                 .findings
-                .is_empty()
+                .iter()
+                .all(|f| !f.rule_id.starts_with("html."))
         );
         for headers in [
             "Content-Type: text/html\r\nContent-Disposition: attachment",
@@ -895,7 +903,8 @@ mod tests {
                 )
                 .unwrap()
                 .findings
-                .is_empty()
+                .iter()
+                .all(|f| !f.rule_id.starts_with("html."))
             );
         }
         let attached = multipart(
@@ -907,7 +916,8 @@ mod tests {
             evaluate(&attached, &Inputs::default())
                 .unwrap()
                 .findings
-                .is_empty()
+                .iter()
+                .all(|f| !f.rule_id.starts_with("html."))
         );
         let attached_message =
             [b"Content-Type: message/rfc822\r\n\r\n".as_slice(), &image].concat();
@@ -915,18 +925,43 @@ mod tests {
             evaluate(&attached_message, &Inputs::default())
                 .unwrap()
                 .findings
-                .is_empty()
+                .iter()
+                .all(|f| !f.rule_id.starts_with("html."))
         );
         let inline = b"Content-Type: text/html\r\nContent-Disposition: inline\r\n\r\n<video>";
-        assert_eq!(
-            evaluate(inline, &Inputs::default()).unwrap().findings.len(),
-            1
-        );
+        let n = evaluate(inline, &Inputs::default())
+            .unwrap()
+            .findings
+            .iter()
+            .filter(|f| f.rule_id.starts_with("html."))
+            .count();
+        assert_eq!(n, 1);
         for (encoding, body) in [
             ("base64", STANDARD.encode("<video>")),
             ("quoted-printable", "=3Cvideo=3E".into()),
         ] {
-            assert_eq!(evaluate(format!("Content-Type: text/html\r\nContent-Transfer-Encoding: {encoding}\r\n\r\n{body}").as_bytes(), &Inputs::default()).unwrap(), report("<video>"));
+            let r = evaluate(
+                format!(
+                    "Content-Type: text/html\r\nContent-Transfer-Encoding: {encoding}\r\n\r\n{body}"
+                )
+                .as_bytes(),
+                &Inputs::default(),
+            )
+            .unwrap();
+            let html: Vec<_> = r
+                .findings
+                .iter()
+                .filter(|f| f.rule_id.starts_with("html."))
+                .cloned()
+                .collect();
+            let expected_report = report("<video>");
+            let expected: Vec<_> = expected_report
+                .findings
+                .iter()
+                .filter(|f| f.rule_id.starts_with("html."))
+                .cloned()
+                .collect();
+            assert_eq!(html, expected);
         }
         for encoding in ["base64", "quoted-printable"] {
             let bad = format!(
@@ -943,7 +978,8 @@ mod tests {
             evaluate(replaced, &Inputs::default())
                 .unwrap()
                 .findings
-                .is_empty()
+                .iter()
+                .all(|f| !f.rule_id.starts_with("html."))
         );
         assert_eq!(
             evaluate(b"", &Inputs::default()),
@@ -971,11 +1007,12 @@ mod tests {
                     "Content-Type: text/html; charset=windows-1252\r\nContent-Transfer-Encoding: {encoding}\r\n\r\n{encoded}"
                 );
                 let r = evaluate(message.as_bytes(), &Inputs::default()).unwrap();
-                assert_eq!(
-                    r.findings.len(),
-                    usize::from(size > 104448),
-                    "{size} {encoding}"
-                );
+                let html_n = r
+                    .findings
+                    .iter()
+                    .filter(|f| f.rule_id.starts_with("html."))
+                    .count();
+                assert_eq!(html_n, usize::from(size > 104448), "{size} {encoding}");
             }
         }
         // HTML source bytes, not entity-decoded characters, count.
@@ -1028,11 +1065,12 @@ mod tests {
             }
             assert_eq!(evaluate(&message, &Inputs::default()).is_ok(), n == DEPTH);
         }
-        // Two contributions per HTML part; exact 256 succeeds before dedup.
-        for n in [128, 129] {
+        // Two contributions per HTML part; the 256 cap counts the seven bulk
+        // findings this minimal fixture also emits, so 124 parts stay exact.
+        for n in [124, 125] {
             let message = multipart(&vec![raw("<img>"); n], "findings", "");
             let r = evaluate(&message, &Inputs::default());
-            assert_eq!(r.is_ok(), n == 128);
+            assert_eq!(r.is_ok(), n == 124);
         }
         // No partial cache entry survives a later malformed part.
         let bad = multipart(&[raw("<video>"), raw("<script>")], "bad", "");
