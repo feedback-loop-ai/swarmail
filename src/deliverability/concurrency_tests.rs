@@ -51,8 +51,13 @@ impl Drop for Held {
         self.open();
     }
 }
+pub(super) fn html_email(id: &str, inbox: &str, to: &str) -> Email {
+    let mut e = crate::store::email(id, inbox, to);
+    e.raw = b"Content-Type: text/html\r\n\r\n<p>Hello</p><img alt=\"\" src=\"cid:x\">".to_vec();
+    e
+}
 pub(super) fn mail(id: &str) -> Arc<Email> {
-    Arc::new(crate::store::email(id, "box", "a"))
+    Arc::new(html_email(id, "box", "a"))
 }
 
 #[tokio::test]
@@ -154,9 +159,7 @@ async fn report_wait_deadline_and_zero_timeout() {
             .await,
         Ok(WaitOutcome::Timeout { matched: 0 })
     ));
-    let email = store
-        .insert(crate::store::email("one", "box", "a"))
-        .unwrap();
+    let email = store.insert(html_email("one", "box", "a")).unwrap();
     assert!(matches!(
         store
             .wait_for_report("box", &f, 1, Duration::ZERO, threshold)
@@ -197,12 +200,8 @@ async fn report_wait_deadline_and_zero_timeout() {
         Err(AnalysisError::Unavailable)
     ));
     drop(guard);
-    store
-        .insert(crate::store::email("two", "box", "a"))
-        .unwrap();
-    let newest = store
-        .insert(crate::store::email("warm-newest", "box", "a"))
-        .unwrap();
+    store.insert(html_email("two", "box", "a")).unwrap();
+    let newest = store.insert(html_email("warm-newest", "box", "a")).unwrap();
     store.report(newest).await.unwrap();
     let mut held = Held::new(&store.reports);
     let s = store.clone();
@@ -235,8 +234,7 @@ async fn report_wait_subscribes_before_analysis_and_resubscribes_after_clear() {
         if n.fetch_add(1, Ordering::SeqCst) == 0 {
             s.clear("box").unwrap();
         } else {
-            s.insert(crate::store::email("after-closed", "box", "a"))
-                .unwrap();
+            s.insert(html_email("after-closed", "box", "a")).unwrap();
         }
     })));
     let outcome = store
@@ -260,7 +258,7 @@ async fn report_wait_subscribes_before_analysis_and_resubscribes_after_clear() {
 #[tokio::test]
 async fn report_wait_observes_delivery_during_analysis_and_recovers_lag() {
     let store = Arc::new(Store::new(0));
-    let mut dirty = crate::store::email("dirty", "box", "a");
+    let mut dirty = html_email("dirty", "box", "a");
     dirty.raw = b"X-Swarmail-Demo: error\n".to_vec();
     store.insert(dirty).unwrap();
     let mut held = Held::new(&store.reports);
@@ -284,7 +282,7 @@ async fn report_wait_observes_delivery_during_analysis_and_recovers_lag() {
     // Overflow the existing wake ring while the original snapshot is analyzed.
     for n in 0..32 {
         store
-            .insert(crate::store::email(&format!("new{n}"), "box", "a"))
+            .insert(html_email(&format!("new{n}"), "box", "a"))
             .unwrap();
     }
     held.open();
@@ -349,7 +347,10 @@ pub(super) async fn smtp(srv: &crate::RunningServer) -> String {
         ("MAIL FROM:<s@x.io>\r\n", "250"),
         ("RCPT TO:<r@x.io>\r\n", "250"),
         ("DATA\r\n", "354"),
-        ("X-Swarmail-Demo: warning\r\n\r\nbody\r\n.\r\n", "250"),
+        (
+            "X-Swarmail-Demo: warning\r\nContent-Type: text/html\r\n\r\n<p>body 424242 https://x.io/</p><img alt=\"\" src=\"cid:x\">\r\n.\r\n",
+            "250",
+        ),
     ] {
         write.write_all(command.as_bytes()).await.unwrap();
         line.clear();
@@ -367,7 +368,7 @@ async fn report_workers_do_not_hold_store_guards() {
     for n in 0..JOBS {
         let email = srv
             .store
-            .insert(crate::store::email(&n.to_string(), "held", "a"))
+            .insert(html_email(&n.to_string(), "held", "a"))
             .unwrap();
         let store = srv.store.clone();
         tasks.push(tokio::spawn(async move { store.report(email).await }));
@@ -394,9 +395,7 @@ async fn report_workers_do_not_hold_store_guards() {
 #[tokio::test]
 async fn report_wait_shutdown_interrupts_worker_and_slot_waits() {
     let srv = crate::run_on(&config(None)).await.unwrap();
-    srv.store
-        .insert(crate::store::email("one", "box", "a"))
-        .unwrap();
+    srv.store.insert(html_email("one", "box", "a")).unwrap();
     let mut held = Held::new(&srv.store.reports);
     let url = format!(
         "http://{}/api/v1/inboxes/box/await?no_findings_at_or_above=error&timeout_ms=60000",
@@ -443,9 +442,7 @@ async fn report_wait_shutdown_interrupts_worker_and_slot_waits() {
 #[tokio::test]
 async fn report_complete_scan_timeout_does_not_reanalyze_after_eviction() {
     let store = Store::new(0);
-    let email = store
-        .insert(crate::store::email("warm", "box", "a"))
-        .unwrap();
+    let email = store.insert(html_email("warm", "box", "a")).unwrap();
     store.report(email).await.unwrap();
     let filter = Filter::default();
     let wait = store.wait_for_report(
