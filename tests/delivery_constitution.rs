@@ -294,11 +294,11 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         ),
         (
             "bundles/self/scripts/verify-seat.sh",
-            "2935005daa160a86e12f08b1c2d1db490b1415237e6af1c3d2530f9b9d7b1008",
+            "92fdb64952d1c9bdba983a7bc41dc7166486e7011b8bdfb043e92b493f8cda34",
         ),
         (
             "bundles/self/scripts/delivery-proof-test.sh",
-            "9a048b395f5a73360127b8e20455a70ed2c89aa1d82d67974b8882c6903d08a3",
+            "501fc55856fa21b55403b0568e8fb2fad10b64d85b692cbb0e70b64f62573769",
         ),
     ] {
         assert_eq!(
@@ -608,14 +608,28 @@ exit 0
         engine_permissions.set_mode(0o755);
         std::fs::set_permissions(&engine, engine_permissions).unwrap();
 
+        let fake_bin = base.join("fixture swarmail binary");
+        std::fs::write(&fake_bin, b"").unwrap();
+        std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let cargo_script = r#"#!/usr/bin/env bash
 printf 'cargo:%s\n' "$*" >> "$GATE_ORDER"
 if [ "$1" = tree ]; then
   printf 'error: package ID specification native-tls did not match any packages\n' >&2
   exit 101
 fi
+if [ "$1" = metadata ]; then
+  printf '%s\n' '{"packages":[{"id":"swarmail","manifest_path":"__CANDIDATE__/Cargo.toml","name":"swarmail"}]}'
+  exit 0
+fi
+if [ "$1" = test ] && [ "$2" = "--workspace" ] && [ "$3" = "--locked" ]; then
+  printf '%s\n' '{"reason":"compiler-artifact","package_id":"swarmail","target":{"name":"swarmail","kind":["bin"]},"profile":{"test":false},"executable":"__FAKEBIN__"}'
+  exit 0
+fi
 exit 0
 "#;
+        let cargo_script = cargo_script
+            .replace("__CANDIDATE__", &candidate.display().to_string())
+            .replace("__FAKEBIN__", &fake_bin.display().to_string());
         let cargo = bin.join("cargo");
         std::fs::write(&cargo, cargo_script).unwrap();
         let mut cargo_permissions = std::fs::metadata(&cargo).unwrap().permissions();
@@ -812,7 +826,11 @@ fi
         [
             "cargo:fmt --all -- --check",
             "cargo:clippy --workspace --all-targets --locked -- -D warnings",
-            "cargo:test --workspace --locked",
+            "cargo:test --workspace --locked --message-format=json-render-diagnostics",
+            "cargo:metadata --locked --format-version 1 --no-deps",
+            "cargo:fmt --manifest-path evals/Cargo.toml --all -- --check",
+            "cargo:clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings",
+            "cargo:test --manifest-path evals/Cargo.toml --locked",
             "brokkr",
             "coverage-gate.sh",
         ]
@@ -1447,4 +1465,3 @@ fn standalone_eval_gates_are_in_verify_ci_and_the_single_inventory() {
     }
     assert!(ci.contains(r#"SWARMAIL_BIN="$candidate_bin" cargo test"#));
 }
-

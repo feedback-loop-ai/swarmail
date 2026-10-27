@@ -6,7 +6,7 @@ Backlog: Epic #192 / issue #201; stopped run re-drive-epic-192-issue-201-at-t-ea
 Baseline: 487818c00fe5c5b4e4fbc89b5daae34d3bd6d22b, tree df5414398e885de5065646e92d58296471eaf563.
 Design run: epic-192-issue-201-repair-the-ex-b449ce2e.
 
-Decision: 0062 — [Required review proof ownership](../../docs/decisions/0062-review-proof.md), proposed.
+Decision: 0062 — required review proof ownership, proposed (record superseded; see accepted 0085).
 
 ## Feature and rationale
 

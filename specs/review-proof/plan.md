@@ -17,7 +17,7 @@ dialect sections explicitly.
 ## Constitution check
 
 Preserve accepted 0001–0005, 0007/0013 as amended by 0057/0058, 0045 §8,
-0050, 0055 and 0056. [0062](../../docs/decisions/0062-review-proof.md) is proposed,
+0050, 0055 and 0056. 0062 (required review proof ownership) was proposed,
 not authority to contradict existing rulings. Preserve protected review,
 security-only panel hold, witnessed security, unknown-fact refusal, bounded
 returns, candidate binding, offline verification and exact coverage.
