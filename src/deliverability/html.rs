@@ -6,10 +6,7 @@ use mail_parser::{MessageParser, MimeHeaders, PartType};
 use serde::Deserialize;
 use std::{collections::HashMap, sync::LazyLock};
 
-const RAW_BYTES: usize = 8_388_608;
 const HTML_BYTES: usize = 4_194_304;
-const PARTS: usize = 256;
-const DEPTH: usize = 32;
 const NESTING: usize = 32;
 const DATA: &str = include_str!("html-rules.json");
 static CATALOGUE: LazyLock<Result<Catalogue, AnalysisError>> = LazyLock::new(|| catalogue(DATA));
@@ -119,21 +116,15 @@ fn collect_catalogue(
     collect_with(raw, c.as_ref().map_err(|e| *e)?, out)
 }
 fn collect_with(raw: &[u8], c: &Catalogue, out: &mut Collector) -> Result<(), AnalysisError> {
-    if raw.len() > RAW_BYTES {
-        return Err(AnalysisError::Failed);
-    }
+    // Raw size, part count and nesting depth are already bounded by the
+    // engine's own admission budgets, so this walk relies on them.
     let message = MessageParser::default()
         .parse(raw)
         .ok_or(AnalysisError::Failed)?;
     let mut stack = vec![(0usize, Vec::new(), false)];
     let mut eligible = Vec::new();
-    let mut count = 0;
     let mut bytes = 0;
     while let Some((id, path, excluded)) = stack.pop() {
-        count += 1;
-        if count > PARTS || path.len() > DEPTH {
-            return Err(AnalysisError::Failed);
-        }
         let part = &message.parts[id];
         let excluded = excluded
             || part.attachment_name().is_some()
@@ -554,6 +545,11 @@ mod tests {
     use super::*;
     use base64::{Engine, engine::general_purpose::STANDARD};
     use serde_json::{Value, json};
+
+    // The engine owns these admission budgets; the resource-limit tests pin them.
+    const RAW_BYTES: usize = super::super::MAX_RAW_BYTES;
+    const PARTS: usize = super::super::MAX_PARTS;
+    const DEPTH: usize = super::super::MAX_DEPTH;
 
     fn raw(body: &str) -> Vec<u8> {
         format!("Content-Type: text/html; charset=utf-8\r\n\r\n{body}").into_bytes()
