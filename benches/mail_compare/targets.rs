@@ -353,9 +353,11 @@ impl Owned {
 
     /// Page `path(start, PAGE)` to completion: `[(server id, subject)]`.
     /// Complete means the pages reached the matching count with every id
-    /// distinct and the count unchanged. A page that does not parse, a
-    /// repeated id, a moving count, an empty page short of the count or
-    /// more pages than `max_pages` is an error, never a shorter success.
+    /// distinct, every page before the last full and the count unchanged.
+    /// A page that does not parse, a repeated id, a moving count, a short
+    /// page before the count or more pages than `max_pages` is an error,
+    /// never a shorter success. A complete walk is not a snapshot: churn
+    /// that keeps the count can pass, so exact-count checks run quiescent.
     async fn scan(
         &self,
         path: impl Fn(u32, u32) -> String,
@@ -365,8 +367,9 @@ impl Owned {
         let mut out: Vec<(String, String)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut expected = None;
-        for n in 0..max_pages {
-            let start = n * PAGE;
+        for _ in 0..max_pages {
+            // The next offset is what arrived, never a fixed stride.
+            let start = u32::try_from(out.len()).map_err(|_| WireError::Oversized)?;
             let (status, v) = self.http.get_json(&path(start, PAGE)).await?;
             let (total, items) = (status == 200)
                 .then(|| self.page(&v, start))
@@ -385,7 +388,9 @@ impl Owned {
             match (out.len() as u64).cmp(&total) {
                 std::cmp::Ordering::Equal => return Ok(out),
                 std::cmp::Ordering::Greater => return Err(WireError::Incomplete),
-                std::cmp::Ordering::Less if got == 0 => return Err(WireError::Incomplete),
+                std::cmp::Ordering::Less if got < PAGE as usize => {
+                    return Err(WireError::Incomplete);
+                }
                 std::cmp::Ordering::Less => {}
             }
         }

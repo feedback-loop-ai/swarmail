@@ -109,7 +109,9 @@ libc = "0.2"
 # binary tests, which spawn the shipped `serve` process and read its startup
 # line back. Already a main dependency — this only makes the features
 # visible to the test/bench targets; no new crate enters the tree.
-tokio = { version = "1", features = ["rt", "time", "process"] }
+# test-util pauses the clock for the comparison adapter's wait-frame
+# proofs (exact cutoffs without sleeping as synchronization, 0020 §5).
+tokio = { version = "1", features = ["rt", "time", "process", "test-util"] }
 # Panic-safe scratch cleanup at the persist/tls fixture helpers (issue #101):
 # TempDir drop guards held for the test's whole life, so `-wal`/`-shm`
 # sidecars and the tls pair die with the directory by construction and

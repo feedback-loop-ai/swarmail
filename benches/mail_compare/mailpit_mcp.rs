@@ -171,9 +171,11 @@ pub fn tools() -> Value {
         {
             "name": "mailpit_wait",
             "description": "Client-side polling, not a Mailpit wait facility: a complete scan of \
-                GET /api/v1/search at once and then every 100 ms until a message matches or \
-                timeout_ms passes. Answers found (with every match) or timeout, each only after a \
-                complete scan, plus how many scans and HTTP requests it took.",
+                GET /api/v1/search at once, then 100 ms after each completed scan, until a scan \
+                matches or timeout_ms (counted from when the call was accepted) passes. Answers \
+                found (a scan that ended in time matched), late (the first match was seen by a \
+                scan that ended after timeout_ms) or timeout (no scan saw a match: not proof that \
+                none existed meanwhile), with every match and the scans and HTTP requests taken.",
             "inputSchema": {"type": "object", "additionalProperties": false,
                 "required": ["query", "timeout_ms"],
                 "properties": {"query": query,
@@ -326,14 +328,18 @@ fn search_path(query: &str, start: u64, limit: u64) -> String {
 }
 
 /// Every match of `query`, paged to completion: the scan ends exactly
-/// when the pages reach messages_count, with every ID distinct and the
-/// count unchanged; anything else is incomplete, never a shorter answer.
+/// when the pages reach messages_count, with every ID distinct, every
+/// page before the last full and the count unchanged; anything else is
+/// incomplete, never a shorter answer. A complete walk is not a snapshot:
+/// equal-count churn between pages can pass these checks.
 async fn complete_search(b: &mut Budget<'_>, query: &str) -> Result<(u64, Vec<Value>), ToolError> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     let mut expected = None;
-    for page_no in 0..u64::from(b.bounds.max_pages) {
-        let start = page_no * SCAN_PAGE;
+    for _ in 0..b.bounds.max_pages {
+        // The next offset is what was received, never a fixed stride, so a
+        // short page cannot silently skip the matches it left out.
+        let start = out.len() as u64;
         let (_, v) = b.get(&search_path(query, start, SCAN_PAGE)).await?;
         let mut page = summary_page(v, start)?;
         let matching = page["messages_count"]
@@ -356,19 +362,122 @@ async fn complete_search(b: &mut Budget<'_>, query: &str) -> Result<(u64, Vec<Va
         match (out.len() as u64).cmp(&matching) {
             std::cmp::Ordering::Equal => return Ok((matching, out)),
             std::cmp::Ordering::Greater => return Err(ToolError::Incomplete),
-            std::cmp::Ordering::Less if got == 0 => return Err(ToolError::Incomplete),
+            // A short page before the last is not progress either.
+            std::cmp::Ordering::Less if (got as u64) < SCAN_PAGE => {
+                return Err(ToolError::Incomplete);
+            }
             std::cmp::Ordering::Less => {}
         }
     }
     Err(ToolError::Budget("pages per scan"))
 }
 
-/// Run one validated call against Mailpit within `bounds`.
-pub async fn run_call(http: &Http, bounds: &Bounds, call: &Call) -> Result<Value, ToolError> {
+/// One tool call's time frame, fixed at its admission (queue time
+/// included, spec C2): `ceiling` ends the whole operation and is never
+/// replaced; a wait's observations count only up to `cutoff`, and its
+/// last scan may finish by `response`, which never passes the ceiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub ceiling: Instant,
+    pub cutoff: Instant,
+    pub response: Instant,
+}
+
+impl Frame {
+    pub fn new(admitted: Instant, bounds: &Bounds, wait: Duration) -> Frame {
+        let ceiling = admitted + bounds.operation;
+        let cutoff = admitted + wait;
+        Frame {
+            ceiling,
+            cutoff,
+            response: ceiling.min(cutoff + bounds.request),
+        }
+    }
+}
+
+/// One complete scan for a wait, and the HTTP requests spent so far.
+pub trait Scan {
+    async fn scan(&mut self) -> Result<(u64, Vec<Value>), ToolError>;
+    fn requests(&self) -> u32;
+}
+
+struct SearchScan<'a> {
+    budget: Budget<'a>,
+    query: &'a str,
+}
+
+impl Scan for SearchScan<'_> {
+    async fn scan(&mut self) -> Result<(u64, Vec<Value>), ToolError> {
+        complete_search(&mut self.budget, self.query).await
+    }
+    fn requests(&self) -> u32 {
+        self.budget.requests
+    }
+}
+
+pub const WAIT_METHOD: &str = "client-side poll of /api/v1/search";
+
+/// The labelled common-client poll (proposed decision 0093 §4–5): a scan
+/// at once, then one `interval` after each completed scan while before
+/// the cutoff. `found` needs a complete scan that matched by the cutoff;
+/// a match first seen by a scan that ended later is `late`, censored for
+/// the requested interval. `timeout` is answered only at or after the
+/// cutoff and means no complete scan saw a match, not continuous absence.
+/// No scan starts at or after the cutoff; a scan still running at
+/// `response` is incomplete, an error like every other failed scan.
+pub async fn poll_wait<S: Scan>(
+    s: &mut S,
+    frame: Frame,
+    interval: Duration,
+) -> Result<Value, ToolError> {
+    let mut scans = 0u32;
+    loop {
+        let (matching, messages) = tokio::time::timeout_at(frame.response, s.scan())
+            .await
+            .map_err(|_| ToolError::Budget("operation deadline"))??;
+        scans += 1;
+        let done = Instant::now();
+        let status = match (matching > 0, done <= frame.cutoff) {
+            (true, true) => "found",
+            (true, false) => "late",
+            (false, false) => "timeout",
+            (false, true) => {
+                // The frozen poll interval, not synchronization: the
+                // sleep never reaches past the cutoff it observes.
+                tokio::time::sleep_until((done + interval).min(frame.cutoff)).await;
+                if Instant::now() < frame.cutoff {
+                    continue;
+                }
+                "timeout"
+            }
+        };
+        return Ok(json!({"status": status, "messages_count": matching,
+            "messages": messages, "scans": scans, "requests": s.requests(),
+            "method": WAIT_METHOD}));
+    }
+}
+
+/// Run one validated call against Mailpit within `bounds`, its frame
+/// starting at `admitted`. A call whose ceiling passed while it queued
+/// refuses without sending a request.
+pub async fn run_call(
+    http: &Http,
+    bounds: &Bounds,
+    call: &Call,
+    admitted: Instant,
+) -> Result<Value, ToolError> {
+    let wait = match call {
+        Call::Wait { timeout_ms, .. } => Duration::from_millis(*timeout_ms),
+        _ => Duration::ZERO,
+    };
+    let frame = Frame::new(admitted, bounds, wait);
+    if Instant::now() >= frame.ceiling {
+        return Err(ToolError::Budget("operation deadline"));
+    }
     let mut b = Budget {
         http,
         bounds,
-        deadline: Instant::now() + bounds.operation,
+        deadline: frame.ceiling,
         requests: 0,
         bytes: 0,
     };
@@ -397,29 +506,10 @@ pub async fn run_call(http: &Http, bounds: &Bounds, call: &Call) -> Result<Value
             }
             Ok(v)
         }
-        Call::Wait { query, timeout_ms } => {
-            let until = Instant::now() + Duration::from_millis(*timeout_ms);
-            // The last scan starts before `until` and may take one request
-            // bound to finish; the operation deadline allows exactly that.
-            b.deadline = until + bounds.request;
-            let mut scans = 0u32;
-            loop {
-                let (matching, messages) = complete_search(&mut b, query).await?;
-                scans += 1;
-                if matching > 0 {
-                    return Ok(json!({"status": "found", "messages_count": matching,
-                        "messages": messages, "scans": scans, "requests": b.requests,
-                        "method": "client-side poll of /api/v1/search"}));
-                }
-                if Instant::now() + bounds.poll_interval >= until {
-                    return Ok(json!({"status": "timeout", "messages_count": 0,
-                        "messages": [], "scans": scans, "requests": b.requests,
-                        "method": "client-side poll of /api/v1/search"}));
-                }
-                // The frozen poll interval, not synchronization: the
-                // absolute deadline above ends the wait.
-                tokio::time::sleep(bounds.poll_interval).await;
-            }
+        Call::Wait { query, .. } => {
+            b.deadline = frame.response;
+            let mut scan = SearchScan { budget: b, query };
+            poll_wait(&mut scan, frame, bounds.poll_interval).await
         }
     }
 }
@@ -531,7 +621,7 @@ where
     let reader = tokio::spawn(read_lines(input, bounds.max_line, in_tx));
     let (done_tx, mut done_rx) = mpsc::channel::<(u64, Result<Value, ToolError>)>(1);
     let mut initialized = false;
-    let mut queue: VecDeque<(Value, Call)> = VecDeque::new();
+    let mut queue: VecDeque<(Value, Call, Instant)> = VecDeque::new();
     let mut running: Option<Running> = None;
     let mut seq = 0u64;
     let end = loop {
@@ -555,12 +645,12 @@ where
             }
         }
         if running.is_none()
-            && let Some((id, call)) = queue.pop_front()
+            && let Some((id, call, admitted)) = queue.pop_front()
         {
             seq += 1;
             let (http, bounds2, tx) = (http.clone(), bounds.clone(), done_tx.clone());
             let task = tokio::spawn(async move {
-                let outcome = run_call(&http, &bounds2, &call).await;
+                let outcome = run_call(&http, &bounds2, &call, admitted).await;
                 let _ = tx.send((seq, outcome)).await;
             });
             running = Some(Running { seq, id, task });
@@ -610,7 +700,7 @@ fn handle(
     initialized: &mut bool,
     busy: usize,
     bounds: &Bounds,
-    queue: &mut VecDeque<(Value, Call)>,
+    queue: &mut VecDeque<(Value, Call, Instant)>,
     running: &mut Option<Running>,
 ) -> Option<Value> {
     let Ok(msg) = serde_json::from_slice::<Value>(line) else {
@@ -654,7 +744,7 @@ fn handle(
                         let r = running.take().expect("checked above");
                         r.task.abort();
                     }
-                    queue.retain(|(qid, _)| qid != t);
+                    queue.retain(|(qid, _, _)| qid != t);
                 }
             }
             _ => {}
@@ -662,7 +752,7 @@ fn handle(
         return None;
     };
     let in_flight = |id: &Value| {
-        running.as_ref().is_some_and(|r| &r.id == id) || queue.iter().any(|(q, _)| q == id)
+        running.as_ref().is_some_and(|r| &r.id == id) || queue.iter().any(|(q, _, _)| q == id)
     };
     match method {
         "initialize" => {
@@ -699,7 +789,7 @@ fn handle(
                     "too many tool calls in flight; retry later",
                 ));
             }
-            queue.push_back((id, call));
+            queue.push_back((id, call, Instant::now()));
             None
         }
         _ => Some(error(id, -32601, "method not found")),

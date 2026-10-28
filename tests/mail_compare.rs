@@ -1960,6 +1960,266 @@ async fn cancellation_eof_queue_and_output_bounds_hold() {
     assert_eq!(end, mailpit_mcp::End::OutputBlocked);
 }
 
+/// `n` distinct summaries `prefix0..`, enough to fill a scan page.
+fn many(prefix: &str, n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("{prefix}{i}")).collect()
+}
+
+#[tokio::test]
+async fn full_pages_isolate_duplicate_moving_short_and_overlong_scans() {
+    let addr = responder(Box::new(|t: &str| {
+        let q = |s: &str| t.contains(&format!("query={s}&"));
+        let at = |s: u64| t.contains(&format!("&start={s}&"));
+        let page = |matching: u64, start: u64, ids: Vec<String>| {
+            let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+            (200, page_json(matching, start, &ids))
+        };
+        Some(match t {
+            // A full first page, then an ID already seen.
+            _ if q("dup") && at(0) => page(251, 0, many("a", 250)),
+            _ if q("dup") && at(250) => page(251, 250, vec!["a7".into()]),
+            // A full first page, then the matching count moves.
+            _ if q("moving") && at(0) => page(300, 0, many("m", 250)),
+            _ if q("moving") && at(250) => page(301, 250, many("n", 50)),
+            // A short page before the last: the old fixed stride would
+            // have asked for start=250 next and skipped two matches.
+            _ if q("short") && at(0) => page(300, 0, many("s", 248)),
+            _ if q("short") && at(250) => page(300, 250, many("t", 50)),
+            // An empty page while matches remain makes no progress.
+            _ if q("stall") && at(0) => page(300, 0, many("x", 250)),
+            _ if q("stall") => page(300, 250, Vec::new()),
+            // More full pages than one scan may read.
+            _ if q("long") => {
+                let start: u64 = t
+                    .split("&start=")
+                    .nth(1)
+                    .unwrap()
+                    .split('&')
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                page(1000, start, many(&format!("l{start}-"), 250))
+            }
+            // Exactly two full pages: complete.
+            _ if q("exact") && at(0) => page(500, 0, many("e", 250)),
+            _ if q("exact") && at(250) => page(500, 250, many("f", 250)),
+            _ => page(0, 0, Vec::new()),
+        })
+    }))
+    .await;
+    let bounds = mailpit_mcp::Bounds {
+        max_body: 1 << 20,
+        max_operation_bytes: 8 << 20,
+        max_pages: 3,
+        ..small_bounds()
+    };
+    let http = wire::Http::new(addr, bounds.request, bounds.max_body);
+    let wait = |query: &str| mailpit_mcp::Call::Wait {
+        query: query.into(),
+        timeout_ms: 2000,
+    };
+    for (query, want) in [
+        ("dup", mailpit_mcp::ToolError::Incomplete),
+        ("moving", mailpit_mcp::ToolError::Incomplete),
+        ("short", mailpit_mcp::ToolError::Incomplete),
+        ("stall", mailpit_mcp::ToolError::Incomplete),
+        ("long", mailpit_mcp::ToolError::Budget("pages per scan")),
+    ] {
+        let got =
+            mailpit_mcp::run_call(&http, &bounds, &wait(query), tokio::time::Instant::now()).await;
+        assert_eq!(got, Err(want), "{query}");
+    }
+    let v = mailpit_mcp::run_call(&http, &bounds, &wait("exact"), tokio::time::Instant::now())
+        .await
+        .unwrap();
+    assert_eq!(v["status"], "found", "{v}");
+    assert_eq!(v["messages"].as_array().unwrap().len(), 500);
+    assert_eq!(
+        (v["scans"].clone(), v["requests"].clone()),
+        (1.into(), 2.into())
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_call_that_outlived_its_ceiling_in_the_queue_sends_nothing() {
+    let bounds = mailpit_mcp::Bounds {
+        operation: Duration::from_secs(1),
+        ..small_bounds()
+    };
+    // Nothing listens here: the refusal must come before any request.
+    let http = wire::Http::new(
+        "127.0.0.1:9".parse().unwrap(),
+        bounds.request,
+        bounds.max_body,
+    );
+    let admitted = tokio::time::Instant::now();
+    tokio::time::advance(bounds.operation).await;
+    for call in [
+        mailpit_mcp::Call::List { start: 0, limit: 1 },
+        mailpit_mcp::Call::Read { id: "x".into() },
+        mailpit_mcp::Call::Wait {
+            query: "q".into(),
+            timeout_ms: 30_000,
+        },
+    ] {
+        let got = mailpit_mcp::run_call(&http, &bounds, &call, admitted).await;
+        assert_eq!(
+            got,
+            Err(mailpit_mcp::ToolError::Budget("operation deadline")),
+            "{call:?}"
+        );
+    }
+    assert_eq!(http.requests(), 0, "an expired queued call issued HTTP");
+}
+
+/// A scripted scan for the controlled clock: each step takes its virtual
+/// duration and then answers its matching count, or its error.
+struct Scripted {
+    steps: std::collections::VecDeque<(u64, Result<u64, mailpit_mcp::ToolError>)>,
+    t0: tokio::time::Instant,
+    starts: Vec<u64>,
+}
+
+impl mailpit_mcp::Scan for Scripted {
+    async fn scan(&mut self) -> Result<(u64, Vec<serde_json::Value>), mailpit_mcp::ToolError> {
+        self.starts
+            .push((tokio::time::Instant::now() - self.t0).as_millis() as u64);
+        let (ms, answer) = self.steps.pop_front().unwrap_or((0, Ok(0)));
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        answer.map(|n| {
+            (
+                n,
+                (0..n)
+                    .map(|i| serde_json::json!({"ID": format!("m{i}")}))
+                    .collect(),
+            )
+        })
+    }
+    fn requests(&self) -> u32 {
+        self.starts.len() as u32
+    }
+}
+
+/// `(answer, elapsed ms, scan start offsets ms)` of one controlled wait.
+async fn scripted_wait(
+    wait_ms: u64,
+    steps: &[(u64, Result<u64, mailpit_mcp::ToolError>)],
+) -> (
+    Result<serde_json::Value, mailpit_mcp::ToolError>,
+    u64,
+    Vec<u64>,
+) {
+    let bounds = mailpit_mcp::Bounds::default();
+    let t0 = tokio::time::Instant::now();
+    let frame = mailpit_mcp::Frame::new(t0, &bounds, Duration::from_millis(wait_ms));
+    let mut s = Scripted {
+        steps: steps.iter().copied().collect(),
+        t0,
+        starts: Vec::new(),
+    };
+    let got = mailpit_mcp::poll_wait(&mut s, frame, bounds.poll_interval).await;
+    let elapsed = (tokio::time::Instant::now() - t0).as_millis() as u64;
+    (got, elapsed, s.starts)
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_wait_frame_composes_one_ceiling_cutoff_and_response_allowance() {
+    let b = mailpit_mcp::Bounds::default();
+    let t0 = tokio::time::Instant::now();
+    let s = Duration::from_secs;
+    let frame = |w| mailpit_mcp::Frame::new(t0, &b, s(w));
+    // A 30 s wait under the 30 s ceiling gets no extra 10 s.
+    assert_eq!(
+        frame(30),
+        mailpit_mcp::Frame {
+            ceiling: t0 + s(30),
+            cutoff: t0 + s(30),
+            response: t0 + s(30)
+        }
+    );
+    assert_eq!(frame(1).response, t0 + s(11));
+    assert_eq!(frame(25).response, t0 + s(30));
+    assert_eq!(frame(0).ceiling, t0 + b.operation);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_poll_observes_until_the_exact_cutoff_and_never_past_the_ceiling() {
+    use mailpit_mcp::ToolError;
+    let status = |r: &Result<serde_json::Value, ToolError>| r.as_ref().unwrap()["status"].clone();
+
+    // Present: the immediate scan answers.
+    let (r, at, starts) = scripted_wait(1000, &[(0, Ok(2))]).await;
+    assert_eq!((status(&r), at, starts), ("found".into(), 0, vec![0]));
+    assert_eq!(r.unwrap()["messages_count"], 2);
+
+    // Empty: a scan at once and 100 ms after each, timeout exactly at the
+    // cutoff, never at the last scan.
+    let (r, at, starts) = scripted_wait(1000, &[]).await;
+    assert_eq!(status(&r), "timeout");
+    assert_eq!(at, 1000);
+    assert_eq!(starts, (0..10).map(|i| i * 100).collect::<Vec<_>>());
+    let v = r.unwrap();
+    assert_eq!(
+        (v["scans"].clone(), v["requests"].clone()),
+        (10.into(), 10.into())
+    );
+
+    // The last partial interval: 30 ms scans start every 130 ms; the
+    // last ends at 940, the next would start after the cutoff, and the
+    // answer still waits for the cutoff instead of returning early.
+    let (r, at, starts) = scripted_wait(1000, &[(30, Ok(0)); 8]).await;
+    assert_eq!((status(&r), at), ("timeout".into(), 1000));
+    assert_eq!(starts, (0..8).map(|i| i * 130).collect::<Vec<_>>());
+
+    // A scan that ends exactly at the cutoff counts; one that ends a
+    // millisecond later is late, kept and censored.
+    let (r, at, _) = scripted_wait(1000, &[(0, Ok(0)), (900, Ok(1))]).await;
+    assert_eq!((status(&r), at), ("found".into(), 1000));
+    let (r, at, _) = scripted_wait(1000, &[(0, Ok(0)), (901, Ok(1))]).await;
+    assert_eq!((status(&r), at), ("late".into(), 1001));
+    assert_eq!(r.unwrap()["messages"].as_array().unwrap().len(), 1);
+
+    // A scan that started in time and ended later with no match is a
+    // complete observation: timeout, answered when it ended.
+    let (r, at, starts) = scripted_wait(1000, &[(0, Ok(0)), (950, Ok(0))]).await;
+    assert_eq!(
+        (status(&r), at, starts),
+        ("timeout".into(), 1050, vec![0, 100])
+    );
+
+    // No scan starts at or after the cutoff.
+    let (r, at, starts) = scripted_wait(250, &[]).await;
+    assert_eq!(
+        (status(&r), at, starts),
+        ("timeout".into(), 250, vec![0, 100, 200])
+    );
+
+    // A scan still running when the response allowance ends is
+    // incomplete: an error at cutoff + request bound, not a timeout.
+    let (r, at, _) = scripted_wait(1000, &[(0, Ok(0)), (20_000, Ok(1))]).await;
+    assert_eq!(
+        (r, at),
+        (Err(ToolError::Budget("operation deadline")), 11_000)
+    );
+
+    // Under a 30 s wait the 30 s ceiling is the response bound: a scan
+    // in flight then ends the call at 30 s, never 40 s.
+    let (r, at, starts) = scripted_wait(30_000, &[(29_850, Ok(0)), (20_000, Ok(1))]).await;
+    assert_eq!(
+        (r, at, starts),
+        (
+            Err(ToolError::Budget("operation deadline")),
+            30_000,
+            vec![0, 29_950]
+        )
+    );
+
+    // A failed scan is an error at once, never an early timeout.
+    let (r, at, _) = scripted_wait(1000, &[(0, Ok(0)), (5, Err(ToolError::Incomplete))]).await;
+    assert_eq!((r, at), (Err(ToolError::Incomplete), 105));
+}
+
 // ---- real pinned competitors -----------------------------------------------
 //
 // These need the pinned Mailpit and MailHog executables, which CI does not
