@@ -159,7 +159,6 @@ fn input_calendar_hex_depth_and_serialization_bounds() {
     assert!(a::encode(&"x".repeat(63), 64).is_err());
 }
 #[test]
-<<<<<<< HEAD
 fn historical_rows_refuse_and_current_rows_keep_report_accounting() {
     let historical = include_str!("data/results-v1.jsonl");
     assert!(swarmail_evals::report::parse_rows(historical).is_err());
@@ -214,31 +213,6 @@ fn historical_rows_refuse_and_current_rows_keep_report_accounting() {
         current.to_string(),
         include_str!("data/report-v1.json").trim()
     );
-=======
-fn historical_rows_keep_their_original_shape_and_report_accounting() {
-    let historical = include_str!("data/results-v1.jsonl");
-    let rows = swarmail_evals::report::parse_rows(historical).unwrap();
-    let report = swarmail_evals::report::report(&rows);
-    let legacy = report["groups"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|v| v["agent"] == "legacy" && v["task"] == "signup")
-        .unwrap();
-    assert_eq!(legacy["success_rate"], 0.5);
-    assert_eq!(
-        report.to_string(),
-        include_str!("data/report-v1.json").trim()
-    );
-    for l in historical.lines() {
-        let r = results::read(l.as_bytes()).unwrap();
-        assert!(matches!(r, results::ResultRecord::V1(_)));
-        assert_eq!(
-            serde_json::to_value(r).unwrap(),
-            serde_json::from_str::<Value>(l).unwrap()
-        );
-    }
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let req = runner::TrialRequest {
         task: Some("signup".into()),
         agent: Some("null".into()),
@@ -247,11 +221,7 @@ fn historical_rows_keep_their_original_shape_and_report_accounting() {
     };
     let row = runner::refused_row(&req, &"0".repeat(32));
     let mixed = format!("{historical}{}\n", serde_json::to_string(&row).unwrap());
-<<<<<<< HEAD
     assert!(swarmail_evals::report::parse_rows(&mixed).is_err());
-=======
-    assert_eq!(swarmail_evals::report::parse_rows(&mixed).unwrap().len(), 4);
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
 }
 #[test]
 fn strict_version_dispatch_required_nullable_fields_duplicates_and_hybrids() {
@@ -262,15 +232,11 @@ fn strict_version_dispatch_required_nullable_fields_duplicates_and_hybrids() {
         ..Default::default()
     };
     let row = runner::refused_row(&req, &"0".repeat(32));
-<<<<<<< HEAD
     let mut valid = serde_json::to_value(&row).unwrap();
     // This is a synthetic wire fixture; its boolean duplicate vector must
     // not depend on whether the checkout happened to be dirty at build time.
     valid["provenance"]["harness"]["source_dirty"] =
         json!({"status":"present","source":"build_git","value":true});
-=======
-    let valid = serde_json::to_value(&row).unwrap();
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     assert!(results::read(&bytes(&valid)).is_ok());
     fn required(v: &Value, path: &mut Vec<String>, root: &Value) {
         if let Value::Object(map) = v {
@@ -336,10 +302,7 @@ fn strict_version_dispatch_required_nullable_fields_duplicates_and_hybrids() {
 }
 #[test]
 fn trial_retention_replay_preserves_original_and_refuses_tampered_bytes_and_symlinks() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let (dir, row) = retained("signup", "oracle");
     let root = dir.path().join(&row.trial_id);
     let replay = check(&root);
@@ -352,7 +315,6 @@ fn trial_retention_replay_preserves_original_and_refuses_tampered_bytes_and_syml
     assert_eq!(value["business_replay"]["verdict"]["outcome"], "pass");
     let result = root.join("result.json");
     let original = std::fs::read(&result).unwrap();
-<<<<<<< HEAD
     let original_meta = std::fs::read(root.join("metadata.json")).unwrap();
     for concurrency in [
         None,
@@ -376,8 +338,6 @@ fn trial_retention_replay_preserves_original_and_refuses_tampered_bytes_and_syml
         assert!(refused.stdout.is_empty());
     }
     std::fs::write(root.join("metadata.json"), original_meta).unwrap();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     std::fs::write(&result, b"{}").unwrap();
     let refused = check(&root);
     assert_eq!(refused.status.code(), Some(2));
@@ -402,10 +362,7 @@ fn trial_retention_replay_preserves_original_and_refuses_tampered_bytes_and_syml
 }
 #[test]
 fn snapshot_semantics_and_historical_version_cannot_be_laundered_by_new_hashes() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let (dir, row) = retained("signup", "oracle");
     let root = dir.path().join(&row.trial_id);
     let state = root.join("state.json");
@@ -432,10 +389,7 @@ fn snapshot_semantics_and_historical_version_cannot_be_laundered_by_new_hashes()
 }
 #[test]
 fn early_errors_and_impossible_retention_are_truthful_without_private_diagnostics() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     let out = cli()
         .env("SWARMAIL_BIN", "/missing-target")
@@ -501,10 +455,7 @@ fn early_errors_and_impossible_retention_are_truthful_without_private_diagnostic
 }
 #[test]
 fn a_real_eight_cell_retained_matrix_replays_offline_in_order_and_checks_all_before_output() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.json");
     save(
@@ -561,10 +512,7 @@ fn a_real_eight_cell_retained_matrix_replays_offline_in_order_and_checks_all_bef
 }
 #[test]
 fn supplied_invalid_seeds_times_and_builtin_declarations_launch_nothing() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     for args in [
         vec!["--seed", "bad"],
         vec!["--fixture-time", "tomorrow"],
@@ -734,10 +682,7 @@ fn helper_agent() {
 }
 #[test]
 fn fresh_fixture_processes_repeat_only_the_declared_projection() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     for task in ["invite-time", "digest-forty", "stale-otp"] {
         let mut projections = vec![];
@@ -777,7 +722,6 @@ fn fresh_fixture_processes_repeat_only_the_declared_projection() {
 #[test]
 fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
     let encoded = serde_json::to_vec(&swarmail_evals::tasks::Catalogue {
-<<<<<<< HEAD
         schema_version: 2,
         tasks: swarmail_evals::tasks::catalogue(),
     })
@@ -794,16 +738,6 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
     assert_eq!(
         p::task_hash("digest-forty").unwrap(),
         "c82c90e57c55e69680b023497d86b2d7900396f369ee9e80f4b67049dcbe0548"
-=======
-        schema_version: 1,
-        tasks: swarmail_evals::tasks::catalogue(),
-    })
-    .unwrap();
-    assert_eq!(encoded, include_bytes!("data/catalogue-v1.json"));
-    assert_eq!(
-        p::catalogue_hash(),
-        "b9a01e4b9b17ee5aef4de2f555d3656d668ef01c7dddf50c251bcb43c6d96902"
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     );
     assert_eq!(
         p::task_hash("signup").unwrap(),
@@ -813,10 +747,7 @@ fn catalogue_encoding_and_scorer_definition_have_independent_golden_hashes() {
 
 #[test]
 fn declared_model_public_command_and_legacy_private_configuration_stay_distinct() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let out = cli()
         .args([
             "trial",
@@ -876,12 +807,8 @@ fn declared_model_public_command_and_legacy_private_configuration_stay_distinct(
     );
 }
 #[test]
-<<<<<<< HEAD
 fn sequential_retained_matrices_preserve_duplicate_occurrences_and_exclusive_ownership() {
     let _trial_scope = trial_scope();
-=======
-fn concurrent_retained_matrices_preserve_duplicate_occurrences_and_exclusive_ownership() {
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.json");
     save(&agents, &json!([{"label":"null","argv":[]}]));
@@ -904,17 +831,10 @@ fn concurrent_retained_matrices_preserve_duplicate_occurrences_and_exclusive_own
             .spawn()
             .unwrap()
     };
-<<<<<<< HEAD
     // #199 admits sequential trials; retain both matrices' full provenance
     // and exclusive artifact ownership assertions on that supported path.
     for _ in 0..2 {
         let out = start().wait_with_output().unwrap();
-=======
-    let first = start();
-    let second = start();
-    for child in [first, second] {
-        let out = child.wait_with_output().unwrap();
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
         assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
         let text = String::from_utf8(out.stdout).unwrap();
         let rows = text
@@ -922,17 +842,8 @@ fn concurrent_retained_matrices_preserve_duplicate_occurrences_and_exclusive_own
             .map(|l| results::read(l.as_bytes()).unwrap())
             .collect::<Vec<_>>();
         assert_eq!(rows.len(), 2);
-<<<<<<< HEAD
         let a = &rows[0];
         let b = &rows[1];
-=======
-        let results::ResultRecord::V2(a) = &rows[0] else {
-            panic!("v2 required");
-        };
-        let results::ResultRecord::V2(b) = &rows[1] else {
-            panic!("v2 required");
-        };
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
         assert_eq!(a.provenance.matrix.as_ref().unwrap().task_index, 0);
         assert_eq!(b.provenance.matrix.as_ref().unwrap().task_index, 1);
         assert_eq!(a.provenance.fixture.fixture_time, TIME);
@@ -952,10 +863,7 @@ fn concurrent_retained_matrices_preserve_duplicate_occurrences_and_exclusive_own
 }
 #[test]
 fn business_replay_never_rewrites_budget_or_infrastructure_history() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let (dir, row) = retained("signup", "oracle");
     let root = dir.path().join(&row.trial_id);
     let result = root.join("result.json");
@@ -984,10 +892,7 @@ fn business_replay_never_rewrites_budget_or_infrastructure_history() {
 
 #[test]
 fn retained_reader_enforces_fixed_paths_declared_lengths_and_all_size_boundaries() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("bound.json");
     for (limit, kind) in [
@@ -1046,10 +951,7 @@ fn retained_reader_enforces_fixed_paths_declared_lengths_and_all_size_boundaries
 
 #[test]
 fn matrix_publication_failures_and_conflicting_child_evidence_never_overwrite_or_complete() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     for mode in ["index_failure", "partial_evidence", "published_conflict"] {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("runs");
@@ -1107,10 +1009,7 @@ fn matrix_publication_failures_and_conflicting_child_evidence_never_overwrite_or
 }
 #[test]
 fn invalid_requests_and_missing_targets_retain_explicit_unscorable_error_evidence() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     for args in [
         vec!["--agent", "oracle"],
@@ -1168,10 +1067,7 @@ fn invalid_requests_and_missing_targets_retain_explicit_unscorable_error_evidenc
 
 #[test]
 fn replacing_a_measured_target_fails_affected_cells_without_relaunch_or_invented_source() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("swarmail");
     std::fs::copy(swarmail_bin(), &target).unwrap();
@@ -1205,13 +1101,7 @@ fn replacing_a_measured_target_fails_affected_cells_without_relaunch_or_invented
         "second cell refuses before launch"
     );
     for line in text.lines() {
-<<<<<<< HEAD
         let row = results::read(line.as_bytes()).unwrap();
-=======
-        let results::ResultRecord::V2(row) = results::read(line.as_bytes()).unwrap() else {
-            panic!("v2");
-        };
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
         assert_eq!(
             row.provenance.target.executable_sha256,
             p::Availability::present(digest.clone(), p::Source::MeasuredBytes)
@@ -1225,10 +1115,7 @@ fn replacing_a_measured_target_fails_affected_cells_without_relaunch_or_invented
 
 #[test]
 fn a_retained_snapshot_requires_nullable_keys_without_changing_legacy_bare_state() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let (dir, row) = retained("signup", "oracle");
     let root = dir.path().join(&row.trial_id);
     let path = root.join("state.json");
@@ -1285,10 +1172,7 @@ fn canaries(root: &Path) -> Vec<String> {
 }
 #[test]
 fn external_private_claims_are_absent_from_trial_matrix_replay_and_failure_publication() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     use swarmail_evals::state::FailureClass;
     for mode in [
         "private_claims",
@@ -1409,10 +1293,7 @@ fn external_private_claims_are_absent_from_trial_matrix_replay_and_failure_publi
 
 #[test]
 fn publication_guard_refuses_supplied_state_before_any_result_or_state_bytes() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let (dir, row) = retained("signup", "oracle");
     let mut snap: swarmail_evals::state::Snapshot =
         serde_json::from_value(load(&dir.path().join(&row.trial_id).join("state.json"))).unwrap();
@@ -1469,10 +1350,7 @@ fn bare(task: &str, path: &Path) -> std::process::Output {
 }
 #[test]
 fn historical_unknown_claims_score_without_mutation_and_reader_errors_do_not_reflect_input() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     let private = tempfile::tempdir().unwrap();
     let (row, _) = helper_trial(
@@ -1609,10 +1487,7 @@ fn historical_unknown_claims_score_without_mutation_and_reader_errors_do_not_ref
 
 #[test]
 fn retained_matrix_historical_claims_remain_scoreable_and_a_bad_later_cell_emits_no_rows() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.json");
     save(&agents, &json!([{"label":"null","argv":[]}]));
@@ -1711,10 +1586,7 @@ fn retained_matrix_historical_claims_remain_scoreable_and_a_bad_later_cell_emits
 
 #[test]
 fn retained_plan_coordinates_versions_and_cross_cell_results_refuse_even_with_new_bindings() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     let dir = tempfile::tempdir().unwrap();
     let agents = dir.path().join("agents.json");
     save(&agents, &json!([{"label":"null","argv":[]}]));
@@ -1827,10 +1699,7 @@ fn retained_plan_coordinates_versions_and_cross_cell_results_refuse_even_with_ne
 
 #[test]
 fn public_native_argv_hashes_the_original_declaration_and_non_utf8_opt_in_refuses() {
-<<<<<<< HEAD
     let _trial_scope = trial_scope();
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     use std::{
         ffi::OsString,
         os::unix::{ffi::OsStringExt, fs::PermissionsExt},
@@ -1896,7 +1765,6 @@ fn public_native_argv_hashes_the_original_declaration_and_non_utf8_opt_in_refuse
     assert!(!marker.exists());
     assert!(!String::from_utf8_lossy(&out.stderr).contains("private-native-canary"));
 }
-<<<<<<< HEAD
 
 #[test]
 fn retained_agent_input_accepts_the_exact_bound_and_refuses_one_extra_byte_before_admission() {
@@ -1937,5 +1805,3 @@ fn retained_agent_input_accepts_the_exact_bound_and_refuses_one_extra_byte_befor
     assert!(out.stdout.is_empty());
     assert!(!untouched.exists());
 }
-=======
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
