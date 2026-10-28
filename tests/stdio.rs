@@ -1227,14 +1227,13 @@ async fn report_stdio_text_contract() {
         b"Content-Type: text/html\r\n\r\n<p style='position:absolute'>Hello</p><video></video>\r\n",
     ] {
         let id = report_wire::smtp_raw(srv.smtp_addr, "stdio-report", raw).await;
-        let expected = report_wire::http_json(
+        let (status, expected) = report_wire::http_json(
             srv.http_addr,
             "GET",
             &format!("/api/v1/messages/{id}/deliverability"),
             None,
         )
-        .await
-        .1;
+        .await;
         let input = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
             "name":"swarmail_get_deliverability_report","arguments":{"id":id}}});
         let (code, output) = bridge_over(
@@ -1245,17 +1244,23 @@ async fn report_stdio_text_contract() {
         assert_eq!(code, 0);
         let reply: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
         let result = &reply["result"];
-        assert_eq!(result["isError"], false);
+        assert_eq!(result["isError"], raw.is_empty());
         assert!(result.get("structuredContent").is_none());
         assert_eq!(result["content"].as_array().unwrap().len(), 1);
         assert_eq!(result["content"][0]["type"], "text");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(
-                result["content"][0]["text"].as_str().unwrap()
-            )
-            .unwrap(),
-            expected
-        );
+        if raw.is_empty() {
+            assert_eq!(status, 503);
+            assert_eq!(result["content"][0]["text"], expected["error"]);
+        } else {
+            assert_eq!(status, 200);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(
+                    result["content"][0]["text"].as_str().unwrap()
+                )
+                .unwrap(),
+                expected
+            );
+        }
     }
     for (arguments, code) in [
         (serde_json::json!({}), -32602),
