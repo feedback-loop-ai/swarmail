@@ -406,6 +406,7 @@ fn tool_descriptors(revision: Revision) -> Value {
                     | "swarmail_wait_for_email"
                     | "swarmail_extract_links"
                     | "swarmail_extract_codes"
+                    | "swarmail_get_deliverability_report"
             );
             tool["annotations"] = if read_only {
                 json!({"readOnlyHint": true})

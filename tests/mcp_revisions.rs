@@ -279,6 +279,7 @@ async fn revision_tool_annotations() {
         "swarmail_wait_for_email",
         "swarmail_extract_links",
         "swarmail_extract_codes",
+        "swarmail_get_deliverability_report",
     ];
     for version in VERSIONS {
         let (_, reply) = post(
