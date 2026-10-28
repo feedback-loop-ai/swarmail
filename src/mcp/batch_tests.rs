@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 async fn sixteen_maximum_waits_register_together_before_any_delivery() {
     let (_stop, shutdown) = tokio::sync::watch::channel(false);
     let ctx = McpContext {
+        tool_rate: Arc::new(ToolRate::default()),
         store: Arc::new(Store::new(0)),
         chaos: Arc::new(Chaos::default()),
         shutdown,
