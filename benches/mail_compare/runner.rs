@@ -3,6 +3,7 @@
 //! instance. Rows stream as they happen; cleanup that is not proved stops
 //! all later work.
 
+use crate::mailpit_mcp::{Frame, Scan, ToolError, poll_wait};
 use crate::protocol::{
     Connection, Observation, Protocol, TargetKind, ThroughputProfile, WaitProfile,
 };
@@ -99,7 +100,7 @@ fn tag(run_id: &str, target: TargetKind, profile: usize, rep: u32) -> String {
     format!("{}t{t}p{profile:02}r{rep:02}", &h[..8])
 }
 
-fn row(
+pub fn row(
     run: &str,
     target: TargetKind,
     profile: &str,
@@ -616,7 +617,16 @@ async fn waits(
         r.token = Some(msg.token.clone());
         if send_one(owned, &msg, step, clock, &mut r).await {
             r.invoked_ns = Some(clock.now_ns());
-            observe(owned, mode, interval, &msg.token, deadline, clock, &mut r).await;
+            observe(
+                owned,
+                mode,
+                (interval, step),
+                &msg.token,
+                deadline,
+                clock,
+                &mut r,
+            )
+            .await;
         }
         fail(&r, "observed");
         emit(sink, &r)?;
@@ -642,7 +652,7 @@ async fn waits(
             observe(
                 owned,
                 mode,
-                interval,
+                (interval, step),
                 &msg.token,
                 deadline,
                 clock,
@@ -670,7 +680,16 @@ async fn waits(
         let mut r = row(run, owned.kind, &w.name, rep, Phase::Empty, i, "timeout");
         r.token = Some(token.clone());
         r.invoked_ns = Some(clock.now_ns());
-        observe(owned, mode, interval, &token, empty_deadline, clock, &mut r).await;
+        observe(
+            owned,
+            mode,
+            (interval, step),
+            &token,
+            empty_deadline,
+            clock,
+            &mut r,
+        )
+        .await;
         fail(&r, "timeout");
         emit(sink, &r)?;
     }
@@ -717,7 +736,7 @@ async fn send_one(
 async fn observe(
     owned: &Owned,
     mode: Observation,
-    interval: Duration,
+    (interval, step): (Duration, Duration),
     token: &str,
     deadline: Duration,
     clock: &Clock,
@@ -734,21 +753,39 @@ async fn observe(
             Some("observed")
         }
     };
-    let result: Result<Option<&'static str>, crate::wire::WireError> = match mode {
+    let result: Result<Option<&'static str>, &'static str> = match mode {
         Observation::Native => owned
             .native_wait(token, deadline)
             .await
-            .map(|a| a.and_then(|t| judge(&t))),
-        Observation::Poll => loop {
-            match owned.find(token).await {
-                Ok(t) => match judge(&t) {
-                    Some(o) => break Ok(Some(o)),
-                    None if Instant::now() + interval >= until => break Ok(None),
-                    None => tokio::time::sleep(interval).await,
-                },
-                Err(e) => break Err(e),
-            }
-        },
+            .map(|a| a.and_then(|t| judge(&t)))
+            .map_err(|e| e.reason()),
+        // The adapter's poll, so both observe under one tested rule
+        // (proposed decision 0093 §5): a scan at once and `interval` after
+        // each completed one; only a scan that ended by the cutoff can
+        // observe in time, a later match is late (censored), and a scan
+        // still running one request bound past the cutoff is an error.
+        Observation::Poll => {
+            let cutoff = tokio::time::Instant::from_std(until);
+            let frame = Frame {
+                ceiling: cutoff + step,
+                cutoff,
+                response: cutoff + step,
+            };
+            let mut s = FindScan {
+                owned,
+                token,
+                last: Vec::new(),
+            };
+            poll_wait(&mut s, frame, interval)
+                .await
+                .map(|v| match (v["status"].as_str(), judge(&s.last)) {
+                    (_, Some("unrelated")) => Some("unrelated"),
+                    (Some("found"), o) => o,
+                    (Some("late"), Some(_)) => Some("late"),
+                    _ => None,
+                })
+                .map_err(|e| e.reason())
+        }
     };
     let at = clock.now_ns();
     r.requests = Some(owned.http.requests() - before);
@@ -760,7 +797,29 @@ async fn observe(
         Ok(None) => r.outcome = "timeout".into(),
         Err(e) => {
             r.outcome = "error".into();
-            r.reason = Some(e.reason().into());
+            r.reason = Some(e.into());
         }
+    }
+}
+
+/// One complete `find` per scan, keeping the last answer to judge.
+struct FindScan<'a> {
+    owned: &'a Owned,
+    token: &'a str,
+    last: Vec<String>,
+}
+
+impl Scan for FindScan<'_> {
+    async fn scan(&mut self) -> Result<(u64, Vec<serde_json::Value>), ToolError> {
+        self.last = self
+            .owned
+            .find(self.token)
+            .await
+            .map_err(|e| ToolError::Transport(e.reason()))?;
+        Ok((self.last.len() as u64, Vec::new()))
+    }
+
+    fn requests(&self) -> u32 {
+        0
     }
 }

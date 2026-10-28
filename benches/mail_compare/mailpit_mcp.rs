@@ -97,6 +97,18 @@ pub enum ToolError {
 }
 
 impl ToolError {
+    /// A short fixed reason, for records that keep no prose.
+    pub fn reason(self) -> &'static str {
+        match self {
+            ToolError::NotFound => "not_found",
+            ToolError::Upstream(_) => "upstream_status",
+            ToolError::Transport(r) | ToolError::Budget(r) => r,
+            ToolError::Malformed => "malformed",
+            ToolError::Incomplete => "incomplete",
+            ToolError::ReplyTooLarge => "reply_too_large",
+        }
+    }
+
     pub fn text(self) -> String {
         match self {
             ToolError::NotFound => "not_found: Mailpit has no message with that id".into(),

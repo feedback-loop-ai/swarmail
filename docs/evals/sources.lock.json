@@ -1,6 +1,6 @@
 {
-  "lock_version": 2,
-  "checked_on": "2026-10-28",
+  "lock_version": 3,
+  "checked_on": "2026-10-29",
   "entries": [
     {
       "target": "swarmail",
@@ -18,8 +18,19 @@
           "target_commitish": "develop",
           "published_at": "2026-10-22T22:04:42Z"
         },
-        "source_revision": {
-          "unresolved": "the release metadata's target_commitish is the branch 'develop', not a commit; no tagged commit id was captured"
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-10-28"
+        },
+        "tagged_source": {
+          "observed": {
+            "tag_object": "c00f93d0a78967e9f84c291eb34ab73386fdbe0c",
+            "commit": "ce798cfd781ef07b321427fc5082b3eebdcae460",
+            "tag_signature": "unsigned"
+          }
+        },
+        "binary_build_provenance": {
+          "unresolved": "no build attestation, reproducible build or published build record ties the executable to a commit; the tag's commit is source identity only, so whether this executable was built from it is unknown"
         },
         "artifact": {
           "kind": "archive",
@@ -43,25 +54,105 @@
           {
             "kind": "release_metadata",
             "path": "sources/mailpit/mailpit-release.json",
+            "size": 16811,
             "sha256": "fb04595546c56ded6e64a0634eb55a0e224aa6f29624dbdc179f1d1700319e37",
             "attribution": {
-              "unresolved": "GitHub REST release object 421248634: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/axllent/mailpit/releases/421248634"
+              }
             }
           },
           {
             "kind": "license",
             "path": "sources/mailpit/mailpit-license.txt",
+            "size": 1085,
             "sha256": "9dade1b3ace5dd6c36ca58eef466ae7dd9afe52bfb978deffa44645f6f0a2aa9",
             "attribution": {
-              "unresolved": "LICENSE, byte-identical to the archive's LICENSE member: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/axllent/mailpit/blob/ce798cfd781ef07b321427fc5082b3eebdcae460/LICENSE",
+                "upstream_path": "LICENSE",
+                "git_blob": "66bfbe73e8dee3227346373108573f60c3c72b99"
+              }
             }
           },
           {
             "kind": "api",
             "path": "sources/mailpit/mailpit-swagger.json",
+            "size": 62930,
             "sha256": "77cd5441b66fabfadaee3fafc84e63c927edc0eaed88590d82745c94b663f3ca",
             "attribution": {
-              "unresolved": "OpenAPI 2.0 document titled 'Mailpit API', version v1, recorded by the host as the v1.32.0 tag's: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/axllent/mailpit/blob/ce798cfd781ef07b321427fc5082b3eebdcae460/server/ui/api/v1/swagger.json",
+                "upstream_path": "server/ui/api/v1/swagger.json",
+                "git_blob": "5f0f3aff9b778de28d09c35ce11473e6d517c1dc"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailpit/mailpit-readme.md",
+            "size": 7330,
+            "sha256": "f5eada664ddeaede87b605f059a0350cf7f09c103998fe37039155d8b484ffc5",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/axllent/mailpit/blob/ce798cfd781ef07b321427fc5082b3eebdcae460/README.md",
+                "upstream_path": "README.md",
+                "git_blob": "a7c8a7db7c92433a39cb2f3d40f3be7a01849c0c"
+              }
+            }
+          },
+          {
+            "kind": "source",
+            "path": "sources/mailpit/mailpit-websockets-hub.go",
+            "size": 2711,
+            "sha256": "2d3ba8f9e7152093f782fa66f4423554c7cf20a27ec8d6467fecdc44098c56c8",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/axllent/mailpit/blob/ce798cfd781ef07b321427fc5082b3eebdcae460/server/websockets/hub.go",
+                "upstream_path": "server/websockets/hub.go",
+                "git_blob": "a3f8b49c886350ed8d6b98d0ae02effc36e3cf1c"
+              }
+            }
+          },
+          {
+            "kind": "git_ref",
+            "path": "sources/mailpit/mailpit-ref.json",
+            "size": 329,
+            "sha256": "5c03d07247406665fad39afcb72fd3b59a740cd0dd5055e1b9078f4f802f8d08",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/axllent/mailpit/git/refs/tags/v1.32.0"
+              }
+            }
+          },
+          {
+            "kind": "git_tag",
+            "path": "sources/mailpit/mailpit-tag.json",
+            "size": 669,
+            "sha256": "f564424850b286491665f63fd18d142da14f29f96de207653c7dc575ec4ef2ad",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/axllent/mailpit/git/tags/c00f93d0a78967e9f84c291eb34ab73386fdbe0c"
+              }
+            }
+          },
+          {
+            "kind": "git_tree",
+            "path": "sources/mailpit/mailpit-tree.json",
+            "size": 66152,
+            "sha256": "7ca5a2010e38f14c594e8974976877cb9a02934192d28ff451cd883b12b77224",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/axllent/mailpit/git/trees/ce798cfd781ef07b321427fc5082b3eebdcae460"
+              }
             }
           }
         ],
@@ -86,7 +177,30 @@
           "basis": "`mailpit --help` of the pinned executable lists '-d, --database string  Database to store persistent data' and '-m, --max int  Max number of messages to store (default 500)'; the launch puts the database inside the owned scratch and raises the cap above every profile's per-instance residency. Pruning behavior at the cap is not established, and nothing about durability is claimed."
         },
         "wait": {
-          "unresolved": "neither the captured v1 Swagger nor the release metadata describes a wait, stream or event facility; absence from Swagger is not proof none exists, and no stream source was reviewed"
+          "reviewed": [
+            {
+              "upstream_path": "server/websockets/hub.go",
+              "size": 2711,
+              "sha256": "2d3ba8f9e7152093f782fa66f4423554c7cf20a27ec8d6467fecdc44098c56c8",
+              "git_blob": "a3f8b49c886350ed8d6b98d0ae02effc36e3cf1c",
+              "retained_as": {
+                "observed": "sources/mailpit/mailpit-websockets-hub.go"
+              }
+            },
+            {
+              "upstream_path": "server/websockets/client.go",
+              "size": 3962,
+              "sha256": "2b2f619c7002797d9a0b7a10b01e60de3586e4fc10bc205dd14c243cc056ba97",
+              "git_blob": "c66e396bde2239067cd505aeb809c57462f02f5e",
+              "retained_as": {
+                "unresolved": "not retained here: its header attributes it to The Gorilla WebSocket Authors under a BSD-style license whose text was not captured, so its bytes are bound by digest and git blob id only"
+              }
+            }
+          ],
+          "finding": "Reviewed server/websockets/hub.go and client.go at the tagged commit: a hub sends Type/Data notifications to registered websocket clients; Broadcast returns without sending when no client is counted and otherwise hands the message to the hub from a new goroutine, so the order of separate broadcasts is not fixed; each client queues 256 prepared messages and a client whose queue is full is dropped; the upgrade response is written before the hub registers the client, and nothing acknowledges registration; writes have a 10 s deadline and pings run every 54 s. These bodies do not show which route serves the hub, which producer broadcasts new mail or when relative to storage, or any replay after a gap. A dropped notification is not a lost stored message, and no lossless subscribe-before-scan wait is established.",
+          "best_wait": {
+            "unresolved": "no route, producer, registration-acknowledgement or gap-replay evidence and no real-binary observation exist, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
         }
       }
     },
@@ -101,8 +215,19 @@
           "target_commitish": "master",
           "published_at": "2020-08-11T18:04:41Z"
         },
-        "source_revision": {
-          "unresolved": "the release metadata's target_commitish is the branch 'master', not a commit; no tagged commit id was captured"
+        "acquisition": {
+          "basis": "host_supplied_capture",
+          "captured_on": "2026-10-28"
+        },
+        "tagged_source": {
+          "observed": {
+            "tag_object": "056259cd4133e22624340741776709bb46eb9ae9",
+            "commit": "0441dd494b03c9255a9b8e90e3458ebb115eacff",
+            "tag_signature": "unsigned"
+          }
+        },
+        "binary_build_provenance": {
+          "unresolved": "no build attestation, reproducible build or published build record ties the executable to a commit; the tag's commit is source identity only, so whether this executable was built from it is unknown"
         },
         "artifact": {
           "kind": "executable",
@@ -126,25 +251,91 @@
           {
             "kind": "release_metadata",
             "path": "sources/mailhog/mailhog-release.json",
+            "size": 10714,
             "sha256": "5d0fb9ec9732b663e1f1e3a66babd0c986146e5fceb9a0c86632ce201aa45cfc",
             "attribution": {
-              "unresolved": "GitHub REST release object 29571762: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailhog/MailHog/releases/29571762"
+              }
             }
           },
           {
             "kind": "license",
             "path": "sources/mailhog/mailhog-license.txt",
+            "size": 1082,
             "sha256": "3cfc2f2454199ebf2cc3ec3c0ad4bf79904724c398f8558c3a8e71fd7bb400b2",
             "attribution": {
-              "unresolved": "LICENSE.md: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/LICENSE.md",
+                "upstream_path": "LICENSE.md",
+                "git_blob": "eec4a9acfa5d0f6ab24821196c63541ac72e5ab3"
+              }
             }
           },
           {
             "kind": "api",
             "path": "sources/mailhog/mailhog-swagger.json",
+            "size": 13247,
             "sha256": "d0280c63684abd83ea27a38392ba7484b2b0eb7f5e527bac443a51885c615ff6",
             "attribution": {
-              "unresolved": "Swagger 2.0 document titled 'MailHog API', version 2.0.0, recorded by the host as the v1.0.1 tag's: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/docs/APIv2/swagger-2.0.json",
+                "upstream_path": "docs/APIv2/swagger-2.0.json",
+                "git_blob": "ca8236386ddda22e0234b6eb3eaecdd14909f26e"
+              }
+            }
+          },
+          {
+            "kind": "setup",
+            "path": "sources/mailhog/mailhog-readme.md",
+            "size": 4003,
+            "sha256": "08a1163c117f47cd32c15b4ac350886de659d0bc6479d4ad639c7d14412f29ca",
+            "attribution": {
+              "observed": {
+                "from": "commit",
+                "url": "https://github.com/mailhog/MailHog/blob/0441dd494b03c9255a9b8e90e3458ebb115eacff/README.md",
+                "upstream_path": "README.md",
+                "git_blob": "9c55041ca0fa581b9b6085d1d8355050243b80fe"
+              }
+            }
+          },
+          {
+            "kind": "git_ref",
+            "path": "sources/mailhog/mailhog-ref.json",
+            "size": 333,
+            "sha256": "fa8f2627028e510357c36eccc4a2eaaade242f86faeeb05a5c8d273b0ad09d5b",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailhog/MailHog/git/refs/tags/v1.0.1"
+              }
+            }
+          },
+          {
+            "kind": "git_tag",
+            "path": "sources/mailhog/mailhog-tag.json",
+            "size": 649,
+            "sha256": "35ad3177fd12f62470e77395f19c93adb49411df9013332bc34a8cb7d550187f",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailhog/MailHog/git/tags/056259cd4133e22624340741776709bb46eb9ae9"
+              }
+            }
+          },
+          {
+            "kind": "git_tree",
+            "path": "sources/mailhog/mailhog-tree.json",
+            "size": 85233,
+            "sha256": "e50a90d970d0f2d6236ee58707a089cf0126447a911f20b3096476caa73d107f",
+            "attribution": {
+              "observed": {
+                "from": "api",
+                "url": "https://api.github.com/repos/mailhog/MailHog/git/trees/0441dd494b03c9255a9b8e90e3458ebb115eacff"
+              }
             }
           }
         ],
@@ -165,7 +356,30 @@
           "basis": "`MailHog -h` of the pinned executable lists \"-storage string  Message storage: 'memory' (default), 'mongodb' or 'maildir'\" and no retention-cap flag. No captured source document states the memory store's bounds."
         },
         "wait": {
-          "unresolved": "the captured v2 Swagger describes list and search only; no wait, stream or event source was captured or reviewed"
+          "reviewed": [
+            {
+              "upstream_path": "vendor/github.com/mailhog/MailHog-Server/websockets/hub.go",
+              "size": 1468,
+              "sha256": "1f4b14c2f6083cec1e4b80aa1bb6a719d0c088769d6a442638639dc0ac4800fb",
+              "git_blob": "1a29e5678172893fa67914c17c715f91bf814903",
+              "retained_as": {
+                "unresolved": "not retained here: it is the vendored MailHog-Server package, whose own license file was not captured, so its bytes are bound by digest and git blob id only"
+              }
+            },
+            {
+              "upstream_path": "vendor/github.com/mailhog/MailHog-Server/websockets/connection.go",
+              "size": 1681,
+              "sha256": "346585974c6dc17f9db6dc2dc71378d7241a7bd51b4b7c8d4f3247f5c1355b13",
+              "git_blob": "1fcb17aa65fc340bd82ba1cb12a66ae92ef6166c",
+              "retained_as": {
+                "unresolved": "not retained here: it is the vendored MailHog-Server package, whose own license file was not captured, so its bytes are bound by digest and git blob id only"
+              }
+            }
+          ],
+          "finding": "Reviewed the vendored MailHog-Server websockets hub.go and connection.go at the tagged commit: the hub sends each broadcast to registered connections, each queuing 256 messages, and unregisters a connection whose queue is full; Broadcast blocks its caller until the hub loop takes the message; the upgrade response is written before the connection is registered, and nothing acknowledges registration; connections have a 10 s write deadline and a 60 s pong deadline. These bodies do not show the route that serves the hub, the producer of new-mail broadcasts, the EventSource stream the README advertises, or any replay after a gap. A dropped notification is not a lost stored message, and no lossless subscribe-before-scan wait is established.",
+          "best_wait": {
+            "unresolved": "no route, producer, registration-acknowledgement or gap-replay evidence and no real-binary observation exist, so a best-available wait cannot be selected (proposed decision 0093 §4); the labelled common-client poll is the only selected method"
+          }
         }
       }
     }

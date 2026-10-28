@@ -230,11 +230,55 @@ fn the_corpus_is_deterministic_equal_width_and_dot_stuffed() {
     assert!(wire::same_body(None, Some("  ")));
 }
 
+#[test]
+fn late_observations_are_retained_but_censored_like_timeouts() {
+    let p = smoke();
+    let m = manifest(&p, "late");
+    let wait = |phase, sample, outcome: &str, observed: Option<u64>| {
+        let mut r = runner::row("late", TargetKind::Swarmail, "w", 0, phase, sample, outcome);
+        (r.invoked_ns, r.start_ns, r.ack_ns, r.observed_ns) =
+            (Some(100), Some(100), Some(120), observed);
+        r
+    };
+    let rows = vec![
+        wait(Phase::Present, 0, "observed", Some(150)),
+        wait(Phase::Present, 1, "late", Some(9_000)),
+        wait(Phase::Present, 2, "timeout", None),
+        wait(Phase::Future, 0, "late", Some(9_500)),
+        wait(Phase::Future, 1, "observed", Some(110)),
+    ];
+    let life = runner::Lifecycle {
+        launches: Vec::new(),
+        cleanups: Vec::new(),
+    };
+    let r = report::report(&p, &m, &rows, &life);
+    let w = &r.waits[0];
+    assert_eq!(
+        (w.present_latency.samples, w.present_latency.censored),
+        (1, 2)
+    );
+    assert_eq!(
+        (w.future_latency.samples, w.future_latency.censored),
+        (1, 1)
+    );
+    // The late observation's offset is not folded into the quantiles,
+    // and the signed offset of the on-time one stays negative.
+    assert_eq!(w.future_offset_from_ack.values[0].1, Some(-10));
+    assert_eq!(w.outcomes["present"]["late"], 1);
+    assert_eq!(w.outcomes["future"]["late"], 1);
+}
+
 // ---- the frozen method and the source lock ------------------------------
 
 #[test]
 fn the_committed_protocol_and_lock_refuse_collection_and_say_why() {
     let p = Protocol::parse(PROTOCOL).expect("the committed protocol parses");
+    // Its predecessor's bytes are kept and still parse as what they were.
+    let draft2 = include_bytes!("../docs/evals/history/2026-10-28-protocol.draft-2.json");
+    let old = Protocol::parse(draft2).expect("draft-2 still parses");
+    old.validate().expect("draft-2 is still structurally valid");
+    assert_eq!(p.supersedes.as_deref(), Some(old.id.as_str()));
+    assert!(p.change_reason.is_some());
     let s = SourceLock::parse(SOURCES).expect("the committed lock parses");
     s.validate()
         .expect("the committed lock is structurally valid, its gaps named");
@@ -244,11 +288,11 @@ fn the_committed_protocol_and_lock_refuse_collection_and_say_why() {
     let why = refusals(protocol::collection_ready(&p, &s));
     for expected in [
         "protocol is a draft, not frozen",
-        "mailpit: source revision unresolved: the release metadata's target_commitish is the branch 'develop'",
-        "mailhog: source revision unresolved: the release metadata's target_commitish is the branch 'master'",
-        "sources/mailpit/mailpit-swagger.json attribution unresolved",
-        "mailpit: no captured setup document",
-        "mailhog: wait source unresolved",
+        "mailpit: binary build provenance unresolved (no build attestation",
+        "mailhog: binary build provenance unresolved (no build attestation",
+        "cannot declare the official-artifact claim scope",
+        "mailpit: best wait unresolved: no route, producer",
+        "mailhog: best wait unresolved: no route, producer",
         "mailpit does not store in memory",
         "resource budget is not enforced",
         "unresolved: primary attribution of MailHog's /api/v1/messages/{id} read",
@@ -262,6 +306,15 @@ fn the_committed_protocol_and_lock_refuse_collection_and_say_why() {
         !why.contains("mailhog does not store in memory"),
         "MailHog's memory store is not refused: {why}"
     );
+    // The captures resolved what v2 named as gaps; build provenance and
+    // the best wait stay open, and nothing else stands in for them.
+    for resolved in [
+        "tagged source unresolved",
+        "attribution unresolved",
+        "no captured setup document",
+    ] {
+        assert!(!why.contains(resolved), "{resolved} still refused: {why}");
+    }
     assert_eq!(p.targets, TargetKind::ALL.to_vec());
     assert_eq!(p.statistics.orders.len(), 6, "every target order once");
     assert!(
@@ -314,6 +367,71 @@ fn the_provisioned_artifacts_match_the_pins_and_their_basis() {
         .0
         .join("");
     assert!(why.contains("historical"), "{why}");
+    // The v2 bytes are kept as committed, still verify under their own
+    // reader with source_revision meaning built-from, and the current
+    // reader refuses them rather than reinterpreting that field.
+    let v2 = include_bytes!("../docs/evals/history/2026-10-28-sources.lock.v2.json");
+    let old = protocol::v2::SourceLock::parse(v2).unwrap();
+    old.validate()
+        .expect("the historical lock still validates under v2");
+    old.verify_files(&evals_dir())
+        .expect("its documents are still the committed bytes");
+    let why = SourceLock::parse(v2)
+        .expect_err("v2 is not a current lock")
+        .0
+        .join("");
+    assert!(why.contains("source_revision means built-from"), "{why}");
+    // The tag chains the captures record: source identity, not the
+    // executable's build.
+    for (t, tag_object, commit) in [
+        (
+            TargetKind::Mailpit,
+            "c00f93d0a78967e9f84c291eb34ab73386fdbe0c",
+            "ce798cfd781ef07b321427fc5082b3eebdcae460",
+        ),
+        (
+            TargetKind::Mailhog,
+            "056259cd4133e22624340741776709bb46eb9ae9",
+            "0441dd494b03c9255a9b8e90e3458ebb115eacff",
+        ),
+    ] {
+        let pin = s.pin(t).unwrap();
+        let protocol::Fact::Observed(ts) = &pin.tagged_source else {
+            panic!("{t}: tagged source unresolved");
+        };
+        assert_eq!(
+            (ts.tag_object.as_str(), ts.commit.as_str()),
+            (tag_object, commit)
+        );
+        assert_eq!(ts.tag_signature, "unsigned");
+        assert!(pin.binary_build_provenance.gap().is_some(), "{t}");
+        assert!(pin.wait.best_wait.gap().is_some(), "{t}");
+        assert_eq!(pin.wait.reviewed.len(), 2, "{t}");
+    }
+}
+
+#[test]
+fn sha1_and_git_blob_ids_match_their_published_vectors() {
+    let hex = |b: [u8; 20]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    for (msg, want) in [
+        (&b""[..], "da39a3ee5e6b4b0d3255bfef95601890afd80709"),
+        (b"abc", "a9993e364706816aba3e25717850c26c9cd0d89d"),
+        (
+            b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+            "84983e441c3bd26ebaae4aa1f95129e5e54670f1",
+        ),
+    ] {
+        assert_eq!(hex(protocol::sha1(msg)), want);
+    }
+    assert_eq!(
+        hex(protocol::sha1(&vec![b'a'; 1_000_000])),
+        "34aa973cd4c4daa4f61eeb2bdbad27316534016f"
+    );
+    // `printf 'hello\n' | git hash-object --stdin`
+    assert_eq!(
+        protocol::git_blob_id(b"hello\n"),
+        "ce013625030ba8dba906f756967f9e9ca394464a"
+    );
 }
 
 fn evals_dir() -> PathBuf {
@@ -430,7 +548,7 @@ fn committed_entry(t: TargetKind) -> serde_json::Value {
 
 fn lock_of(entries: Vec<serde_json::Value>) -> SourceLock {
     lock_from(
-        serde_json::json!({"lock_version": 2, "checked_on": "2026-10-28", "entries": entries}),
+        serde_json::json!({"lock_version": 3, "checked_on": "2026-10-29", "entries": entries}),
     )
     .expect("parses")
 }
@@ -443,14 +561,46 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
         .expect("the committed pin validates");
     let cases: Vec<(&str, serde_json::Value, &str)> = vec![
         (
-            "/pin/source_revision",
-            serde_json::json!({"observed": "v1.32.0"}),
-            "not a full commit id",
+            "/pin/tagged_source/observed/commit",
+            "v1.32.0".into(),
+            "needs a full tag object and commit id",
         ),
         (
-            "/pin/source_revision",
+            "/pin/tagged_source/observed/tag_signature",
+            " ".into(),
+            "signature status is not recorded",
+        ),
+        (
+            "/pin/tagged_source",
             serde_json::json!({"unresolved": " "}),
-            "unresolved without a reason",
+            "tagged_source is unresolved without a reason",
+        ),
+        (
+            "/pin/tagged_source",
+            serde_json::json!({"unresolved": "not captured"}),
+            "cites a commit the lock does not resolve",
+        ),
+        // A tag's commit is not build evidence: a built-from claim that
+        // cites the tag capture is refused, as is a branch for a commit.
+        (
+            "/pin/binary_build_provenance",
+            serde_json::json!({"observed": {"commit": "ce798cfd781ef07b321427fc5082b3eebdcae460", "evidence": "sources/mailpit/mailpit-tag.json"}}),
+            "cites no captured build evidence",
+        ),
+        (
+            "/pin/binary_build_provenance",
+            serde_json::json!({"observed": {"commit": "develop", "evidence": "sources/mailpit/build.json"}}),
+            "is not a full commit id",
+        ),
+        (
+            "/pin/binary_build_provenance",
+            serde_json::json!({"unresolved": ""}),
+            "binary_build_provenance is unresolved without a reason",
+        ),
+        (
+            "/pin/acquisition/captured_on",
+            "yesterday".into(),
+            "captured_on \"yesterday\"",
         ),
         (
             "/pin/release/repository",
@@ -527,14 +677,30 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
         ("/pin/documents/2/sha256", "nope".into(), "digest is not 64"),
         (
             "/pin/documents/2/attribution",
-            serde_json::json!({"observed": {"url": "https://example.invalid/swagger.json", "revision": "main"}}),
-            "not attributed to the official repository",
+            serde_json::json!({"observed": {"from": "api", "url": "https://example.invalid/swagger.json"}}),
+            "an API object cannot attribute it",
         ),
         (
             "/pin/documents/2/attribution",
-            serde_json::json!({"observed": {"url": "https://github.com/axllent/mailpit/blob/v1.32.0/swagger.json", "revision": "v1.32.0"}}),
-            "no full revision",
+            serde_json::json!({"observed": {"from": "api", "url": "https://example.invalid/swagger.json"}}),
+            "not attributed to the official repository's API",
         ),
+        (
+            "/pin/documents/2/attribution/observed/url",
+            "https://github.com/axllent/mailpit/blob/v1.32.0/server/ui/api/v1/swagger.json".into(),
+            "not attributed to its path at the tagged commit",
+        ),
+        (
+            "/pin/documents/2/attribution/observed/git_blob",
+            "main".into(),
+            "a repository path and a full git blob id",
+        ),
+        (
+            "/pin/documents/5/attribution",
+            serde_json::json!({"observed": {"from": "commit", "url": "x", "upstream_path": "x", "git_blob": "x"}}),
+            "is an API object, not a file of the tagged commit",
+        ),
+        ("/pin/documents/0/size", 0.into(), "size 0 is out of bounds"),
         (
             "/pin/documents/2/kind",
             "setup".into(),
@@ -557,9 +723,35 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
         ),
         ("/pin/storage/basis", " ".into(), "no basis"),
         (
-            "/pin/wait",
+            "/pin/wait/best_wait",
             serde_json::json!({"unresolved": ""}),
-            "wait is unresolved without a reason",
+            "best_wait is unresolved without a reason",
+        ),
+        (
+            "/pin/wait/best_wait",
+            serde_json::json!({"observed": " "}),
+            "names no mechanism",
+        ),
+        ("/pin/wait/finding", " ".into(), "states no finding"),
+        (
+            "/pin/wait/reviewed/0/retained_as",
+            serde_json::json!({"observed": "sources/mailpit/mailpit-readme.md"}),
+            "names no retained source document with its digest",
+        ),
+        (
+            "/pin/wait/reviewed/1/retained_as",
+            serde_json::json!({"unresolved": " "}),
+            "server/websockets/client.go is unresolved without a reason",
+        ),
+        (
+            "/pin/wait/reviewed/1/upstream_path",
+            "server/websockets/hub.go".into(),
+            "listed twice",
+        ),
+        (
+            "/pin/wait/reviewed/0/upstream_path",
+            "../hub.go".into(),
+            "is malformed",
         ),
         ("/role", "candidate".into(), "cannot be the candidate"),
         ("/pin", serde_json::Value::Null, "a competitor needs a pin"),
@@ -585,17 +777,17 @@ fn the_source_lock_refuses_mutable_foreign_false_and_incomplete_pins() {
     extra["pin"]["verified"] = true.into();
     assert!(
         lock_from(
-            serde_json::json!({"lock_version": 2, "checked_on": "2026-10-28", "entries": [extra]})
+            serde_json::json!({"lock_version": 3, "checked_on": "2026-10-29", "entries": [extra]})
         )
         .is_err(),
         "an unknown field never parses"
     );
     let mut v = json(SOURCES);
-    v["lock_version"] = 3.into();
+    v["lock_version"] = 4.into();
     v["checked_on"] = "today".into();
     let why = refusals(lock_from(v).unwrap().validate());
     assert!(
-        why.contains("lock_version 3 is not 2") && why.contains("checked_on"),
+        why.contains("lock_version 4 is not 3") && why.contains("checked_on"),
         "{why}"
     );
     // A complete pin alone does not admit a draft protocol.
@@ -676,6 +868,100 @@ fn captured_documents_are_rechecked_and_a_false_digest_basis_refuses() {
         "{why}"
     );
     assert!(why.contains("mailhog-license.txt is missing"), "{why}");
+}
+
+#[test]
+fn the_tag_chain_and_every_blob_are_rechecked_against_the_captures() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = evals_copy(root.path());
+    // Byte checks only: several of these edits are refused structurally
+    // too, and this proves the captures refuse them on their own.
+    let check = |entry: serde_json::Value| refusals(lock_of(vec![entry]).verify_files(&dir));
+    for t in [TargetKind::Mailpit, TargetKind::Mailhog] {
+        lock_of(vec![committed_entry(t)])
+            .verify_files(&dir)
+            .unwrap_or_else(|r| panic!("{t} verifies: {r}"));
+    }
+    let other = "0123456789abcdef0123456789abcdef01234567";
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        // The tag chain: a different commit or tag object, a claimed
+        // signature, all refused against the captured objects.
+        (
+            "/pin/tagged_source/observed/commit",
+            other.into(),
+            "the captured tag object does not name v1.32.0, commit 0123",
+        ),
+        (
+            "/pin/tagged_source/observed/commit",
+            other.into(),
+            "the captured tree is not the complete listing of commit 0123",
+        ),
+        (
+            "/pin/tagged_source/observed/tag_object",
+            other.into(),
+            "the captured ref does not name tag object 0123",
+        ),
+        (
+            "/pin/tagged_source/observed/tag_signature",
+            "valid".into(),
+            "signature \"valid\"",
+        ),
+        // A document is the blob its attribution names, at that path in
+        // the tagged tree, with its stated size.
+        (
+            "/pin/documents/2/attribution/observed/git_blob",
+            other.into(),
+            "mailpit-swagger.json is not the git blob its attribution names",
+        ),
+        (
+            "/pin/documents/1/attribution/observed/upstream_path",
+            "LICENSE.md".into(),
+            "mailpit-license.txt is not LICENSE.md in the tagged tree",
+        ),
+        (
+            "/pin/documents/3/size",
+            7.into(),
+            "mailpit-readme.md is not 7 bytes",
+        ),
+        (
+            "/pin/wait/reviewed/1/git_blob",
+            other.into(),
+            "reviewed source server/websockets/client.go is not in the tagged tree",
+        ),
+        // An API capture names itself; another object's URL refuses.
+        (
+            "/pin/documents/5/attribution/observed/url",
+            "https://api.github.com/repos/axllent/mailpit/git/refs/tags/v1.31.0".into(),
+            "mailpit-ref.json does not name itself",
+        ),
+    ];
+    for (path, value, want) in cases {
+        let mut e = committed_entry(TargetKind::Mailpit);
+        *e.pointer_mut(path).unwrap() = value;
+        let why = check(e);
+        assert!(why.contains(want), "{path}: expected {want:?} in:\n{why}");
+    }
+    // A truncated tree listing proves nothing about absent paths, even
+    // when the lock is rewritten to its new digest.
+    let tree = dir.join("sources/mailpit/mailpit-tree.json");
+    let mut v = json(&std::fs::read(&tree).unwrap());
+    v["truncated"] = true.into();
+    let bytes = serde_json::to_vec(&v).unwrap();
+    std::fs::write(&tree, &bytes).unwrap();
+    let mut e = committed_entry(TargetKind::Mailpit);
+    e["pin"]["documents"][7]["sha256"] = targets::sha256_hex(&bytes).into();
+    e["pin"]["documents"][7]["size"] = bytes.len().into();
+    assert!(check(e).contains("the captured tree is not the complete listing"));
+    // A changed source body refuses by digest before anything else.
+    let hub = dir.join("sources/mailpit/mailpit-websockets-hub.go");
+    let mut bytes = std::fs::read(&hub).unwrap();
+    bytes[0] ^= 1;
+    std::fs::write(&hub, &bytes).unwrap();
+    let why = check(committed_entry(TargetKind::Mailpit));
+    assert!(
+        why.contains("mailpit-websockets-hub.go does not match its digest"),
+        "{why}"
+    );
 }
 
 #[test]

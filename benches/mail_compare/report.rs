@@ -177,6 +177,10 @@ fn throughput_cell(
     }
 }
 
+fn censored(outcome: &str) -> bool {
+    matches!(outcome, "timeout" | "late")
+}
+
 fn wait_cell(target: TargetKind, profile: String, rs: &[&Row], qs: &[u32]) -> WaitCell {
     let (mut present, mut future, mut offset) = (Vec::new(), Vec::new(), Vec::new());
     let (mut present_censored, mut future_censored) = (0, 0);
@@ -195,12 +199,14 @@ fn wait_cell(target: TargetKind, profile: String, rs: &[&Row], qs: &[u32]) -> Wa
         let observed = r.outcome == "observed";
         match r.phase {
             Phase::Present if observed => present.extend(diff(r.observed_ns, r.invoked_ns)),
-            Phase::Present => present_censored += usize::from(r.outcome == "timeout"),
+            // A late observation is retained but censored for the
+            // requested interval, like a timeout.
+            Phase::Present => present_censored += usize::from(censored(&r.outcome)),
             Phase::Future if observed => {
                 future.extend(diff(r.observed_ns, r.start_ns));
                 offset.extend(diff(r.observed_ns, r.ack_ns));
             }
-            Phase::Future => future_censored += usize::from(r.outcome == "timeout"),
+            Phase::Future => future_censored += usize::from(censored(&r.outcome)),
             _ => {}
         }
     }

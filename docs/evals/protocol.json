@@ -1,9 +1,9 @@
 {
   "protocol_version": 1,
-  "id": "fair-mail-comparison-draft-2",
+  "id": "fair-mail-comparison-draft-3",
   "status": "draft",
-  "supersedes": "fair-mail-comparison-draft-1",
-  "change_reason": "Official Mailpit v1.32.0 and MailHog v1.0.1 artifacts were provisioned (decision 0092): the competitor retention is stated as launched, and the common-client poll interval is proposed. Draft-1 was never frozen or collected.",
+  "supersedes": "fair-mail-comparison-draft-2",
+  "change_reason": "Source lock v3 (proposed decision 0093) binds each competitor's tag chain, setup document and reviewed websocket source; build provenance and the best-available wait stay open. The common-client poll is selected as the labelled common method with a cutoff that is never cut short, not as a best wait. Draft-2 was never frozen or collected; its bytes are kept under docs/evals/history/.",
   "targets": [
     "swarmail",
     "mailpit",
@@ -109,13 +109,13 @@
           "target": "mailpit",
           "mode": "poll",
           "interval_ms": 100,
-          "justification": "Common-client polling over the captured API's search endpoint (/api/v1/search): an immediate complete scan, then one every 100 ms until one absolute deadline. Provisional: no wait or stream source has been reviewed (sources.lock.json), so this is not the best available mechanism."
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v1/search): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
         },
         {
           "target": "mailhog",
           "mode": "poll",
           "interval_ms": 100,
-          "justification": "Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): an immediate complete scan, then one every 100 ms until one absolute deadline. Provisional: no wait or stream source has been reviewed (sources.lock.json), so this is not the best available mechanism."
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
         }
       ]
     },
@@ -138,13 +138,13 @@
           "target": "mailpit",
           "mode": "poll",
           "interval_ms": 100,
-          "justification": "Common-client polling over the captured API's search endpoint (/api/v1/search): an immediate complete scan, then one every 100 ms until one absolute deadline. Provisional: no wait or stream source has been reviewed (sources.lock.json), so this is not the best available mechanism."
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v1/search): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
         },
         {
           "target": "mailhog",
           "mode": "poll",
           "interval_ms": 100,
-          "justification": "Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): an immediate complete scan, then one every 100 ms until one absolute deadline. Provisional: no wait or stream source has been reviewed (sources.lock.json), so this is not the best available mechanism."
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
         }
       ]
     }
@@ -217,8 +217,8 @@
     ]
   },
   "unresolved": [
-    "mailpit and mailhog full source revisions and document acquisition attribution (sources.lock.json names each gap)",
-    "a reviewed wait or stream source for mailpit and mailhog before any best-available or adapter wait claim; the 100 ms poll is provisional",
+    "binary build provenance for mailpit and mailhog: nothing ties either executable to its tagged commit, so a measurement needs a protocol that declares the official-artifact claim scope (protocol version 2, proposed decision 0093 §2)",
+    "the best-available wait for mailpit and mailhog (wait-best): the reviewed websocket sources establish no lossless subscribe-before-scan wait, and route, producer, registration and gap evidence is missing; wait-common's poll is the selected common method, not a best wait",
     "mailpit stores in a scratch SQLite file, not memory: the matched memory profile cannot run it, and an explicitly unmatched storage profile is not yet frozen",
     "a runtime that enforces the 2 CPU / 2 GiB service budget, and its recorded enforcement evidence; otherwise a separately frozen unenforced local profile",
     "primary attribution of MailHog's /api/v1/messages/{id} read, which no captured document describes",

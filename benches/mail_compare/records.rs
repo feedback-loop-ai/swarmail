@@ -46,7 +46,7 @@ pub struct Row {
     pub sample: u32,
     pub token: Option<String>,
     /// accepted | rejected | failed_before_terminator | ambiguous for sends;
-    /// observed | timeout | error | unrelated for waits; visible | verified
+    /// observed | late | timeout | error | unrelated for waits; visible | verified
     /// for verification.
     pub outcome: String,
     pub reason: Option<String>,
