@@ -95,6 +95,11 @@ def resolved_matrix(engine, out):
         'review:feature:security': ('dsh', ['flash']),
         **{'review:' + lane + ':' + k: v for lane in ['design', 'engine'] for k, v in five.items()}}
     expected['mixed-opus-terra'] = {'review:' + k: v for k, v in five.items()}
+    # Proposed 0099: zero-Codex careful lane; Fable correctness, Opus independent.
+    expected['claude-careful'] = {'review:' + k: v for k, v in five.items()}
+    expected['claude-careful']['review:correctness'] = ('claude', ['fable'])
+    expected['claude-careful']['review:independent'] = ('claude', ['opus'])
+    expected['claude-careful']['intake'] = ('claude', ['haiku55'])
     expected['codex']['intake'] = ('codex', ['sol'])
     expected['codex-careful']['intake'] = ('codex', ['sol'])
     expected['mixed-opus-terra']['intake'] = ('codex', ['terra61'])
@@ -117,7 +122,8 @@ def resolved_matrix(engine, out):
         for key, agent in agents.items():
             if recipe != 'self' and key.startswith('implement'):
                 work = {'codex-fast': ('codex', ['luna']),
-                        'mixed-opus-terra': ('claude', ['opus'])}.get(recipe, ('codex', ['sol']))
+                        'mixed-opus-terra': ('claude', ['opus']),
+                        'claude-careful': ('claude', ['sonnet'])}.get(recipe, ('codex', ['sol']))
                 assert (agent['provider'], agent['chain']) == work, (recipe, key, agent)
         if recipe != 'self':
             keys = (['review:design:tests', 'review:engine:tests']
@@ -213,6 +219,8 @@ def resolved_matrix(engine, out):
                 'high' if key == 'intake' else 'xhigh')
             if recipe == 'mixed-opus-terra':
                 model, effort = ('terra61' if key == 'intake' else 'opus'), 'high'
+            if recipe == 'claude-careful':
+                model, effort = ('haiku55' if key == 'intake' else 'sonnet'), 'high'
             assert office['models'] == [model] and office['efforts'] == {model: effort}
         if recipe == 'codex-fast':
             selected = agents['triage']
@@ -267,13 +275,15 @@ def resolved_matrix(engine, out):
     base = manifests['self']
     shared_design = {k: v for k, v in base['agents'].items() if k.startswith('design:')}
     for recipe, manifest in manifests.items():
-        assert {k: v for k, v in manifest['agents'].items()
-                if k.startswith('design:')} == shared_design, recipe
+        design = {k: v for k, v in manifest['agents'].items() if k.startswith('design:')}
+        # claude-careful replaces the design crew; its route is pinned below.
+        assert (design != shared_design) == (recipe == 'claude-careful'), recipe
         for key in ['design:check', 'verify', 'ship']:
             assert manifest['drivers'][key] == base['drivers'][key], (recipe, key)
             assert manifest['hands'][key] == base['hands'][key], (recipe, key)
             assert manifest['boundary'][key] == base['boundary'][key], (recipe, key)
     mixed_route(engine, out, manifests)
+    claude_careful_route(engine, out, manifests)
     print('resolved triage/intake, work/review matrices and negative controls passed', flush=True)
 
 
@@ -412,6 +422,182 @@ def mixed_route(engine, out, manifests):
             bad['review:extra'] = copy.deepcopy(bad['review:tests'])
         rejected.append(refuses(assert_mixed, bad, ('mixed', mutation)))
     dump(out / 'mixed-route-matrix.json', dict(actual=observed, rejected=rejected,
+         presence='unknown: resolution is not a provider invocation', providers_called=False))
+
+
+# Operator-directed zero-Codex careful lane (proposed 0099): office, provider,
+# concrete pin, adapter route, office effort (None: not applicable) and
+# workspace hands for each of its ten model seats.
+CLAUDE_CAREFUL_ROUTE = {
+    'intake': ('claude-intake', 'claude', 'haiku55', 'claude-haiku-5-5', None, 'high', True),
+    'design:positions:simplicity': ('claude-position-simplicity', 'claude', 'opus',
+                                    'claude-opus-5-5', None, 'high', True),
+    'design:positions:robustness': ('dsh-position-robustness', 'dsh', 'flash', 'deepseek-flash',
+                                    ('deepseek-official', 'uncontracted'), 'high', False),
+    'design:chief': ('claude-chief-architect', 'claude', 'fable', 'claude-fable-5-1', None, 'high', True),
+    'implement': ('claude-implementer', 'claude', 'sonnet', 'claude-sonnet-5-5', None, 'high', True),
+    'review:correctness': ('codex-review-correctness', 'claude', 'fable', 'claude-fable-5-1',
+                           None, 'high', False),
+    'review:security': ('codex-review-security', 'dsh', 'flash', 'deepseek-flash',
+                        ('deepseek-official', 'uncontracted'), 'high', False),
+    'review:guarantees': ('codex-review-guarantees', 'dsh', 'flash', 'deepseek-flash',
+                          ('deepseek-official', 'uncontracted'), 'high', False),
+    'review:tests': ('codex-review-tests', 'dsh', 'glm-flash', 'spark-glm/GLM-5.3-Flash-EXL3',
+                     ('spark-glm', 'local'), None, False),
+    'review:independent': ('claude-review-independent', 'claude', 'opus', 'claude-opus-5-5',
+                           None, 'high', False),
+}
+VALIDATOR = ['scripts/design-check.sh', 'scripts/speckit/check-prerequisites.sh',
+             'scripts/speckit/common.sh']
+
+
+def claude_careful_route(engine, out, manifests):
+    cc, careful = manifests['claude-careful'], manifests['codex-careful']
+    adapters = {name: json.loads((ROOT / f'adapters/{name}.json').read_text())
+                for name in ['codex', 'claude', 'dsh']}
+    source = json.loads((ROOT / 'bundles/claude-careful/bundle.json').read_text())
+    observed = {}
+    for key in CLAUDE_CAREFUL_ROUTE:
+        selected = cc['agents'].get(key)
+        if selected is None:
+            continue
+        result = call([engine, 'agents', 'show', selected['agent']], ROOT,
+                      out / ('claude-careful-' + key.replace(':', '-') + '-office'))
+        assert result.returncode == 0, result.stderr
+        office = json.loads(result.stdout)
+        site = cc['capabilities']['sites'][key]
+        pins = [p for c in site['candidates'] for p in c['model_pins']['read']]
+        observed[key] = dict(agent=selected['agent'], site_office=site['office'],
+            provider=selected['provider'], chain=selected['chain'], model=selected['model'],
+            chosen_index=selected['chosen_index'], skipped=selected['skipped'],
+            effort=selected.get('effort'), models=office['models'], efforts=office['efforts'],
+            resolution=[(c['model'], c['provider'], c['status']) for c in office['resolution']['chain']],
+            chosen=office['resolution']['chosen'], concrete=[p['id'] for p in pins],
+            route=[(p['route'], adapters[selected['provider']]['routes'][p['route']])
+                   for p in pins if 'route' in p],
+            charter=office['charter'], limits=office.get('limits'),
+            hands=cc['hands'].get(key), boundary=cc['boundary'].get(key))
+    # The whole composed route, not only the ten rows: every hired provider
+    # and every concrete pin any site can read.
+    sites = cc['capabilities']['sites'].values()
+    observed['providers'] = sorted({a['provider'] for a in cc['agents'].values()}
+                                   | {c['provider'] for s in sites for c in s['candidates']})
+    observed['pins'] = sorted({p['id'] for s in sites for c in s['candidates']
+                               for p in c['model_pins']['read']})
+    observed['source'] = dict(extends=source['extends'], override=source['override'],
+        seats=sorted(source['seats']),
+        limits={k: source['seats'][k].get('limits') for k in ['implement', 'review']})
+    observed['validator'] = {k: v for k, v in cc['files'].items() if k.startswith('scripts/')}
+    observed['aliases'] = {a: adapters['claude']['models'][a] for a in ['haiku', 'haiku55']}
+
+    def charter(agent):
+        office = json.loads((ROOT / f'agents/{agent}.json').read_text())
+        while 'charter' not in office:
+            office = json.loads((ROOT / f"agents/{office['extends']}.json").read_text())
+        return office['charter']
+    base_limits = {key: json.loads((ROOT / f'agents/{base}.json').read_text())['limits']
+                   for key, base in [('intake', 'intake'), ('implement', 'implementer')]}
+    wanted = {}
+    for key, (agent, provider, model, concrete, route, effort, hands) in CLAUDE_CAREFUL_ROUTE.items():
+        wanted[key] = dict(agent=agent, site_office=agent, provider=provider, chain=[model],
+            model=model, chosen_index=0, skipped=[], effort=None, models=[model],
+            efforts={model: effort} if effort else {},
+            resolution=[(model, provider, 'ok')],
+            chosen={'index': 0, 'model': model, 'provider': provider},
+            concrete=[concrete], route=[route] if route else [], charter=charter(agent),
+            limits=base_limits.get(key),
+            hands=careful['hands']['intake'] if hands else None,
+            boundary='namespace' if hands else None)
+    wanted['providers'] = ['claude', 'dsh', 'exec']
+    wanted['pins'] = sorted({row[3] for row in CLAUDE_CAREFUL_ROUTE.values()})
+    four_hours = {'max_attempts': 3, 'timeout_seconds': 14400}
+    wanted['source'] = dict(extends='codex-careful', seats=['design', 'implement', 'intake', 'review'],
+        override={'bundle': ['description'], 'seats': ['intake', 'design', 'implement', 'review']},
+        limits={'implement': four_hours, 'review': four_hours})
+    wanted['validator'] = {k: manifests['self']['files'][k] for k in VALIDATOR}
+    wanted['aliases'] = {'haiku': 'claude-haiku-4-5-20251001', 'haiku55': 'claude-haiku-5-5'}
+    assert all(p['provider'] != 'codex' for p in cc['agents'].values())
+
+    def assert_claude_careful(matrix):
+        assert matrix == wanted, matrix
+        # Outside the model offices, everything is careful's, field for field.
+        for section in set(cc) | set(careful):
+            if section in ['agents', 'capabilities', 'files', 'bundle_name', 'hands', 'boundary']:
+                continue
+            assert cc[section] == careful[section], section
+        for section in ['hands', 'boundary']:
+            # Only the hands-less dsh robustness position drops out.
+            assert set(careful[section]) - set(cc[section]) == {'design:positions:robustness'}, section
+            assert all(cc[section][k] == careful[section][k] for k in cc[section]
+                       if k not in ['intake', 'implement', 'design:chief',
+                                    'design:positions:simplicity']), section
+        assert set(cc['agents']) == set(careful['agents'])
+        assert set(cc['capabilities']['sites']) == set(careful['capabilities']['sites'])
+        assert {k: v for k, v in cc['capabilities'].items() if k != 'sites'} == \
+            {k: v for k, v in careful['capabilities'].items() if k != 'sites'}
+    assert_claude_careful(observed)
+    mutations = ['model', 'provider', 'concrete', 'route', 'effort', 'compiled-effort',
+                 'status', 'fallback', 'missing', 'replaced', 'hands', 'boundary']
+    rejected = []
+    for key in CLAUDE_CAREFUL_ROUTE:
+        for mutation in mutations:
+            bad = copy.deepcopy(observed)
+            row = bad[key]
+            if mutation == 'model':
+                row['concrete'] = ['gpt-6.1-sol']
+            elif mutation == 'provider':
+                row['provider'] = 'codex'
+            elif mutation == 'concrete':
+                row['concrete'] = ['dashscope/glm-5.3']
+            elif mutation == 'route':
+                row['route'] = [('spark-glm', 'local')] if key != 'review:tests' else [('dashscope', 'uncontracted')]
+            elif mutation == 'effort':
+                row['efforts'] = {row['model']: 'xhigh'}
+            elif mutation == 'compiled-effort':
+                row['effort'] = 'high'
+            elif mutation == 'status':
+                row['resolution'] = [(row['model'], row['provider'], 'blocked')]
+            elif mutation == 'fallback':
+                row['chain'].append('sonnet' if row['model'] != 'sonnet' else 'opus')
+            elif mutation == 'missing':
+                del bad[key]
+            elif mutation == 'replaced':
+                row['agent'] = 'review-correctness' if key.startswith('review') else 'implementer'
+            elif mutation == 'hands':
+                row['hands'] = {'kind': 'workspace', 'network': True, 'binds': []}
+            else:
+                row['boundary'] = 'harness'
+            rejected.append(refuses(assert_claude_careful, bad, ('claude-careful', key, mutation)))
+    for mutation in ['codex-provider', 'gpt-pin', 'haiku-4.5', 'glm-effort', 'codex-design',
+                     'validator', 'implement-limit', 'review-limit', 'historical-haiku',
+                     'merged', 'extra-member']:
+        bad = copy.deepcopy(observed)
+        if mutation == 'codex-provider':
+            bad['providers'] = sorted(bad['providers'] + ['codex'])
+        elif mutation == 'gpt-pin':
+            bad['pins'] = sorted(bad['pins'] + ['gpt-6.1-sol'])
+        elif mutation == 'haiku-4.5':
+            bad['intake']['concrete'] = ['claude-haiku-4-5-20251001']
+        elif mutation == 'glm-effort':
+            bad['review:tests']['efforts'] = {'glm-flash': 'high'}
+        elif mutation == 'codex-design':
+            bad['design:positions:simplicity'].update(agent='codex-position-simplicity',
+                site_office='codex-position-simplicity', provider='codex', chain=['sol'],
+                model='sol', models=['sol'], efforts={'sol': 'high'}, concrete=['gpt-6.1-sol'])
+        elif mutation == 'validator':
+            bad['validator']['scripts/design-check.sh'] = '0' * 64
+        elif mutation == 'implement-limit':
+            bad['source']['limits']['implement'] = {'max_attempts': 3, 'timeout_seconds': 7200}
+        elif mutation == 'review-limit':
+            bad['source']['limits']['review'] = {'max_attempts': 3, 'timeout_seconds': 3600}
+        elif mutation == 'historical-haiku':
+            bad['aliases']['haiku'] = 'claude-haiku-5-5'
+        elif mutation == 'merged':
+            bad['review:guarantees'] = copy.deepcopy(bad['review:security'])
+        else:
+            bad['review:extra'] = copy.deepcopy(bad['review:tests'])
+        rejected.append(refuses(assert_claude_careful, bad, ('claude-careful', mutation)))
+    dump(out / 'claude-careful-route-matrix.json', dict(actual=observed, rejected=rejected,
          presence='unknown: resolution is not a provider invocation', providers_called=False))
 
 

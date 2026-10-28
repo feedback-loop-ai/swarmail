@@ -88,6 +88,7 @@ them. What may land while a decision is still proposed is stated in
 | [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
 | [0090](0090-mixed-provider-routing.md) | Separate operator-directed mixed-provider route: Terra 6.1 intake, Opus 5.5 implementation, careful's five-member panel | proposed — awaiting the operator | (Operator directive, 2026-10-28; run `verify-and-independently-review--53f33089`) |
 | [0098](0098-review-panel-flash-and-deadline.md) | Full-panel correctness and guarantees on official DeepSeek Flash through dsh; 14400 s review deadline for `codex`, `codex-careful`, `codex-fast` (amends 0058; mixed inherits) | proposed — awaiting the operator | (Operator directions, 2026-10-28: dsh Flash correctness/guarantees; four-times review timeout) |
+| [0099](0099-claude-careful-recipe.md) | Zero-Codex `claude-careful` recipe: Haiku 5.5 intake; Opus 5.5 / official Flash / Fable 5.1 design; Sonnet 5.5 implementation; Fable, Flash (2), GLM and Opus reviewers; the leaf carries self's design validator byte for byte | proposed — awaiting the operator | (Operator directions, 2026-10-28/29: claude-centric recipe without Codex) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

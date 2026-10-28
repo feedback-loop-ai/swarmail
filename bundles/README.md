@@ -71,6 +71,7 @@ they are useful when the operator has already ruled that path necessary:
 | opus      | claude-opus-5-5       | Claude CLI                 |
 | fable     | claude-fable-5-1      | Claude CLI                 |
 | sonnet    | claude-sonnet-5-5     | Claude CLI                 |
+| haiku55   | claude-haiku-5-5      | Claude CLI                 |
 | flash     | deepseek-flash        | Official DeepSeek platform |
 +-----------+-----------------------+----------------------------+
 ```
@@ -115,6 +116,43 @@ The `codex-fast` implementation seat uses GPT-6 Luna at xhigh effort. Its
 triage seat uses Claude Opus 5.5 (`opus`) at medium effort with no fallback;
 strategy selection and reviewer routes are unchanged.
 
+`claude-careful` is the zero-Codex careful lane recorded in proposed
+[0099](../docs/decisions/0099-claude-careful-recipe.md), for use while Codex
+credits are exhausted. It extends `codex-careful` and replaces the intake,
+design, implement and review seats; policy, verify, ship, protected review
+and security hold are careful's. No Codex model appears anywhere in its
+composed route, and every chain is a single model:
+
+```text
++---------------------+------------------------------------------+
+| Seat                | claude-careful                           |
++---------------------+------------------------------------------+
+| Intake              | Haiku 5.5 / high (workspace hands)       |
+| Design: simplicity  | Opus 5.5 / high (workspace hands)        |
+| Design: robustness  | Official Flash / high (dsh, no hands)    |
+| Design: chief       | Fable 5.1 / high (workspace hands)       |
+| Design: check       | Offline exec gate (self's validator)     |
+| Implement           | Sonnet 5.5 / high, 14400 s, 3 attempts   |
+| Verify              | Pinned offline gates                     |
+| Review: correctness | Fable 5.1 / high                         |
+| Review: security    | Official Flash / high                    |
+| Review: guarantees  | Official Flash / high                    |
+| Review: tests       | GLM Flash / N/A                          |
+| Review: independent | Opus 5.5 / high                          |
+| Review: deadline    | 14400 s, 3 attempts                      |
+| Ship                | Pinned exec gate                         |
++---------------------+------------------------------------------+
+```
+
+The engine has no agent-only override of a sequence, so this recipe
+redefines the whole design seat. Its `./scripts/design-check.sh` then
+resolves against `bundles/claude-careful/`, the only root its exec box
+binds, so that directory carries byte-identical copies of `self`'s
+validator and its two speckit helpers; `tests/delivery_recipes.rs` refuses
+any drift. The dsh robustness position has no hands (dsh declares none);
+it writes its run-local position file through its own tools, under its
+charter. GLM serves only the tests member, so each run uses one Spark seat.
+
 Codex work offices inherit the original intake, design and implementation
 charters. Their declared workspace hands put writes through the engine's
 boxed workspace tool under the realm's namespace boundary; the native Codex
@@ -155,6 +193,7 @@ export PATH="$PWD/.forge/bin:$PATH"
 brokkr compile --bundle bundles/codex
 brokkr compile --bundle bundles/codex-careful
 brokkr compile --bundle bundles/codex-fast
+brokkr compile --bundle bundles/claude-careful
 brokkr recipes show codex-fast
 mkdir -p .forge
 brokkr run --recipe codex-fast \
