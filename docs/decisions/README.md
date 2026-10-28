@@ -92,6 +92,7 @@ them. What may land while a decision is still proposed is stated in
 | [0090](0090-mcp-options-admission.md) | MCP OPTIONS admission and modern version headers | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0091](0091-mcp-report-output.md) | Thirteen-tool structured MCP output, report schema included | proposed — awaiting the operator | (Epic #164, issue #153 follow-up on the current #152 integration; supplements 0082) |
 | [0094](0094-focused-mail-waits.md) | Ingest link provenance and focused code/link waits | proposed — awaiting the operator | (Epic #164, issue #154 on provisional #153; number provisional — #155 holds 0092, #156 0093; supplements 0082/0091) |
+| [0097](0097-focused-review-repair.md) | Strict restore and full-story focused review repair | proposed — awaiting the operator | (Epic #164, issue #154 protected-review follow-up; supplements 0094; number provisional — 0090–0092 and 0096 collide across candidate branches, operator-owned) |
 
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
