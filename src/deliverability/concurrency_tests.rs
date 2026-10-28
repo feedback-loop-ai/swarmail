@@ -409,13 +409,15 @@ async fn report_workers_do_not_hold_store_guards() {
     assert_eq!(status, 503);
     assert_eq!(value, "{\"error\":\"deliverability analysis unavailable\"}");
     let reply = post(&srv, "/mcp", serde_json::json!({"id":1,"method":"tools/call","params":{"name":"swarmail_get_deliverability_report","arguments":{"id":id}}})).await;
-    assert_eq!(reply["result"]["isError"], true);
     assert_eq!(
-        reply["result"]["content"][0]["text"],
-        AnalysisError::Unavailable.message()
+        reply,
+        serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"deliverability analysis unavailable"}],"isError":true}})
     );
     // The same real exhausted service must return an error, never a
     // structured success, for both modern revisions over HTTP and the bridge.
+    // The literal is pinned independently of the production message owner,
+    // so two equally malformed adapter replies cannot pass by agreeing.
+    let unavailable = serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"deliverability analysis unavailable"}],"isError":true}});
     for revision in ["2025-06-18", "2025-11-25"] {
         let call = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"swarmail_get_deliverability_report","arguments":{"id":id}}});
         let http = client()
@@ -428,13 +430,7 @@ async fn report_workers_do_not_hold_store_guards() {
             .unwrap();
         assert_eq!(http.status(), 200);
         let http: serde_json::Value = serde_json::from_str(&http.text().await.unwrap()).unwrap();
-        assert_eq!(http["id"], 2);
-        assert_eq!(http["result"]["isError"], true);
-        assert_eq!(
-            http["result"]["content"][0]["text"],
-            AnalysisError::Unavailable.message()
-        );
-        assert!(http["result"].get("structuredContent").is_none());
+        assert_eq!(http, unavailable);
 
         let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":revision}});
         let initialized = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"});
@@ -455,9 +451,15 @@ async fn report_workers_do_not_hold_store_guards() {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["id"], 1);
         assert_eq!(replies[0]["result"]["protocolVersion"], revision);
-        assert_eq!(replies[1], http);
+        assert_eq!(replies[1], unavailable);
     }
+    assert!(
+        held.entered.try_recv().is_err(),
+        "a refused report must not enter a worker"
+    );
+    assert_eq!(srv.store.reports.jobs.available_permits(), 0);
     let next = smtp(&srv).await;
     assert!(
         srv.store.get(&id).is_none(),
@@ -466,6 +468,85 @@ async fn report_workers_do_not_hold_store_guards() {
     assert!(srv.store.get(&next).is_some());
     srv.store.delete(&next).unwrap();
     srv.store.clear("held").unwrap();
+    held.open();
+    for task in tasks {
+        task.await.unwrap().unwrap();
+    }
+    srv.stop().await;
+}
+
+// An unavailable report requested as a notification is silent on both modern
+// adapters while every worker stays held: HTTP answers an empty 202 and the
+// real bridge function — in-memory streams, real loopback HTTP, not a spawned
+// binary — writes no line for it. Only EOF draining proves the silence; a ping
+// proves liveness and correlation, never completion of a concurrent tool.
+#[tokio::test]
+async fn report_unavailable_notifications_keep_bridge_silent() {
+    let srv = crate::run_on(&config(None)).await.unwrap();
+    let mut held = Held::new(&srv.store.reports);
+    let mut tasks = Vec::new();
+    for n in 0..JOBS {
+        let email = srv
+            .store
+            .insert(email(&n.to_string(), "held", "a"))
+            .unwrap();
+        let store = srv.store.clone();
+        tasks.push(tokio::spawn(async move { store.report(email).await }));
+        held.entry().await;
+    }
+    let id = smtp(&srv).await;
+    let note = serde_json::json!({"jsonrpc":"2.0","method":"tools/call","params":{"name":"swarmail_get_deliverability_report","arguments":{"id":id}}});
+    let ping = serde_json::json!({"jsonrpc":"2.0","id":"after","method":"ping"});
+    let pong = serde_json::json!({"jsonrpc":"2.0","id":"after","result":{}});
+    for revision in ["2025-06-18", "2025-11-25"] {
+        let send = |body: &serde_json::Value| {
+            client()
+                .post(format!("http://{}/mcp", srv.http_addr))
+                .header("MCP-Protocol-Version", revision)
+                .header("Content-Type", "application/json")
+                .body(body.to_string())
+                .send()
+        };
+        let silent = send(&note).await.unwrap();
+        assert_eq!(silent.status(), 202);
+        assert!(silent.bytes().await.unwrap().is_empty());
+        let alive = send(&ping).await.unwrap();
+        assert_eq!(alive.status(), 200);
+        let alive: serde_json::Value = serde_json::from_str(&alive.text().await.unwrap()).unwrap();
+        assert_eq!(alive, pong);
+
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":revision}});
+        let initialized = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+        let input = format!("{init}\n{initialized}\n{note}\n{ping}\n");
+        let mut reader = input.as_bytes();
+        let mut output = Vec::new();
+        let code = crate::stdio::bridge(
+            &format!("http://{}", srv.http_addr),
+            &mut reader,
+            &mut output,
+            Duration::from_secs(10),
+        )
+        .await;
+        // The bridge returns only after EOF and every admitted exchange drain.
+        assert_eq!(code, 0);
+        let replies: Vec<serde_json::Value> = std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 2, "{replies:?}");
+        assert_eq!(replies[0]["id"], 1);
+        assert_eq!(replies[0]["result"]["protocolVersion"], revision);
+        assert_eq!(replies[1], pong);
+    }
+    // Every refusal ran against the held service: no worker was entered and
+    // no permit was freed while the notifications were answered.
+    assert!(
+        held.entered.try_recv().is_err(),
+        "a refused report must not enter a worker"
+    );
+    assert_eq!(srv.store.reports.jobs.available_permits(), 0);
+    assert!(srv.store.get(&id).is_some());
     held.open();
     for task in tasks {
         task.await.unwrap().unwrap();
