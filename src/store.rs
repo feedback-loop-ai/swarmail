@@ -231,6 +231,13 @@ pub struct Store {
     /// SMTP and answers health. Per instance; compiled only under test.
     #[cfg(test)]
     compat_gate: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+    /// Test-only monotonic clock for the focused wait's deadline (decision
+    /// 0094 §4, the seam per 0020): when set, every deadline observation of
+    /// [`Store::wait_focused`] reads it instead of `Instant::now`, so a test
+    /// can cross the deadline inside an evaluation instead of racing a real
+    /// millisecond. Per instance; compiled only under test.
+    #[cfg(test)]
+    wait_clock: std::sync::Mutex<Option<std::sync::Arc<dyn Fn() -> Instant + Send + Sync>>>,
 }
 
 impl Totals {
@@ -275,6 +282,8 @@ impl Store {
             snapshot_gate: std::sync::Mutex::new(None),
             #[cfg(test)]
             compat_gate: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            wait_clock: std::sync::Mutex::new(None),
         }
     }
 
@@ -480,6 +489,29 @@ impl Store {
         if let Some(gate) = gate {
             gate();
         }
+    }
+
+    /// Test-only: install (or remove) the focused wait clock. See the field
+    /// doc.
+    #[cfg(test)]
+    pub(crate) fn set_wait_clock(
+        &self,
+        clock: Option<std::sync::Arc<dyn Fn() -> Instant + Send + Sync>>,
+    ) {
+        *self.wait_clock.lock().expect("wait clock poisoned") = clock;
+    }
+
+    /// The focused wait's monotonic now: the test clock when one is
+    /// installed, cloned out so no seam lock survives the call.
+    fn wait_now(&self) -> Instant {
+        #[cfg(test)]
+        {
+            let clock = self.wait_clock.lock().expect("wait clock poisoned").clone();
+            if let Some(clock) = clock {
+                return clock();
+            }
+        }
+        Instant::now()
     }
 
     /// Subscribe to every accepted email (webhook dispatcher).
@@ -902,6 +934,11 @@ impl Store {
     }
 }
 
+/// One focused scan's evaluation (see [`Store::wait_focused`]): `Some` is
+/// a terminal result, `None` a snapshot with nothing eligible.
+pub(crate) type FocusedEvaluation =
+    Arc<dyn Fn(Vec<Arc<Email>>) -> Option<serde_json::Value> + Send + Sync>;
+
 /// The result of a bounded wait for matching mail.
 pub enum WaitOutcome {
     /// At least `want` matches exist; holds up to `want`, newest first.
@@ -1036,6 +1073,64 @@ impl Store {
             }
         }
     }
+
+    /// The focused waits' one owner (decision 0094 §4), beside the report
+    /// wait rather than inside it: report expiry, ready-only access and cold
+    /// analysis stay exactly as they are, and focused evaluation never
+    /// touches a report.
+    ///
+    /// `evaluate` sees one complete filtered snapshot, newest acceptance
+    /// first, on the blocking pool — no store guard is held across it — and
+    /// answers `Some` for a terminal result (selected or ambiguous) or
+    /// `None` when nothing in the snapshot is eligible. The answer is `None`
+    /// only once the deadline has passed.
+    ///
+    /// The deadline is fixed before the first subscription and every scan
+    /// is subscribed first (decision 0002); a released channel re-subscribes
+    /// before the next scan, and lag rescans. Whether a scan is the last is
+    /// decided *before* its capture: an evaluation that crosses the deadline
+    /// after capturing an ineligible snapshot is followed by exactly one
+    /// fresh terminal scan, so mail committed during that evaluation is
+    /// seen, and a terminal scan never schedules another however long it
+    /// runs. A zero timeout scans once. Evaluation may finish after the
+    /// nominal deadline and see a commit made just after it; no arrival
+    /// cutoff is promised.
+    pub(crate) async fn wait_focused(
+        &self,
+        inbox: &str,
+        filter: &Filter,
+        timeout: Duration,
+        evaluate: FocusedEvaluation,
+    ) -> Option<serde_json::Value> {
+        let deadline = self.wait_now() + timeout;
+        let mut rx = self.subscribe(inbox);
+        #[cfg(test)]
+        self.run_post_subscribe_gate();
+        loop {
+            let terminal = self.wait_now() >= deadline;
+            let snapshot = self.list(inbox, filter);
+            let evaluate = evaluate.clone();
+            if let Some(found) = Self::offload(move || evaluate(snapshot)).await {
+                return Some(found);
+            }
+            if terminal {
+                return None;
+            }
+            let remaining = deadline.saturating_duration_since(self.wait_now());
+            if remaining.is_zero() {
+                // The evaluation crossed the deadline: one fresh, terminal scan.
+                continue;
+            }
+            match tokio::time::timeout(remaining, rx.recv()).await {
+                Ok(Ok(_)) | Ok(Err(RecvError::Lagged(_))) | Err(_) => {}
+                Ok(Err(RecvError::Closed)) => {
+                    rx = self.subscribe(inbox);
+                    #[cfg(test)]
+                    self.run_post_subscribe_gate();
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1059,6 +1154,7 @@ pub(crate) fn email(id: &str, inbox: &str, to: &str) -> Email {
         size: 1,
         text: None,
         html: None,
+        link_metadata: None,
         links: vec![],
         codes: vec![],
         message_id: None,
@@ -2372,5 +2468,308 @@ mod bounded_tests {
                 assert_boundary_round(store, round, &path);
             }
         }
+    }
+}
+
+/// The focused wait's lifecycle (decision 0094 §4), proven through
+/// per-store seams — the post-subscribe gate and the wait clock — and
+/// evaluations that re-enter the store, never through sleeps or a real
+/// millisecond. Branch-stable, so inline and measured (decision 0020 §1).
+#[cfg(test)]
+mod focused_wait_tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use std::sync::Mutex;
+
+    fn coded(id: &str) -> Email {
+        let mut mail = email(id, "box", "a@x.io");
+        mail.codes = vec!["1234".into()];
+        mail
+    }
+
+    /// The newest eligible ids, or `None`: the shape a focused tool answers.
+    fn eligible_ids(emails: &[Arc<Email>]) -> Option<Value> {
+        let ids: Vec<&str> = emails
+            .iter()
+            .filter(|e| !e.codes.is_empty())
+            .map(|e| e.id.as_str())
+            .collect();
+        (!ids.is_empty()).then(|| json!(ids))
+    }
+
+    /// A controlled clock: elapsed whole seconds since an origin.
+    fn controlled_clock(store: &Store) -> Arc<AtomicU64> {
+        let origin = Instant::now();
+        let elapsed = Arc::new(AtomicU64::new(0));
+        let observed = elapsed.clone();
+        store.set_wait_clock(Some(Arc::new(move || {
+            origin + Duration::from_secs(observed.load(Ordering::SeqCst))
+        })));
+        elapsed
+    }
+
+    /// A delivery made while the first scan's evaluation runs — the store
+    /// re-entered from the evaluation, so no guard is held across it —
+    /// wakes the receiver subscribed before that scan: the second scan
+    /// sees it, newest first, and the ineligible mail is skipped.
+    #[tokio::test]
+    async fn a_delivery_during_evaluation_wakes_the_prior_subscription() {
+        let store = Arc::new(Store::new(0));
+        store.insert(email("unusable", "box", "a@x.io")).unwrap();
+        let weak = Arc::downgrade(&store);
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = calls.clone();
+        let evaluate: FocusedEvaluation = Arc::new(move |emails| {
+            if seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                let store = weak.upgrade().unwrap();
+                store.insert(coded("one")).unwrap();
+                store.insert(coded("two")).unwrap();
+            }
+            eligible_ids(&emails)
+        });
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(30),
+            store.wait_focused("box", &Filter::default(), Duration::from_secs(30), evaluate),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, Some(json!(["two", "one"])));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A released channel is answered by one re-subscribe before the next
+    /// scan (decision 0002 per iteration): the clear in the first window
+    /// closes the channel, the insert in the second lands on the new one.
+    #[tokio::test]
+    async fn a_closed_channel_resubscribes_before_scanning() {
+        let store = Arc::new(Store::new(0));
+        let weak = Arc::downgrade(&store);
+        let fires = Arc::new(AtomicU64::new(0));
+        let gate = fires.clone();
+        store.set_post_subscribe_gate(Some(Arc::new(move || {
+            let store = weak.upgrade().unwrap();
+            if gate.fetch_add(1, Ordering::SeqCst) == 0 {
+                store.clear("box").unwrap();
+            } else {
+                store.insert(coded("eligible")).unwrap();
+            }
+        })));
+        let evaluate: FocusedEvaluation = Arc::new(|emails| eligible_ids(&emails));
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(30),
+            store.wait_focused("box", &Filter::default(), Duration::from_secs(30), evaluate),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, Some(json!(["eligible"])));
+        assert_eq!(fires.load(Ordering::SeqCst), 2);
+        store.set_post_subscribe_gate(None);
+    }
+
+    /// A flood past the wake ring lags the receiver; lag is a rescan of
+    /// stored truth, and the delivery made during that rescan is found.
+    #[tokio::test]
+    async fn a_lagged_receiver_rescans_stored_truth() {
+        let store = Arc::new(Store::new(0));
+        let weak = Arc::downgrade(&store);
+        store.set_post_subscribe_gate(Some(Arc::new(move || {
+            let store = weak.upgrade().unwrap();
+            for i in 0..=WATCHER_CAP {
+                store
+                    .insert(email(&format!("inert-{i}"), "box", "a@x.io"))
+                    .unwrap();
+            }
+        })));
+        let weak = Arc::downgrade(&store);
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = calls.clone();
+        let evaluate: FocusedEvaluation = Arc::new(move |emails| {
+            if seen.fetch_add(1, Ordering::SeqCst) == 1 {
+                weak.upgrade().unwrap().insert(coded("usable")).unwrap();
+            }
+            eligible_ids(&emails)
+        });
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(30),
+            store.wait_focused("box", &Filter::default(), Duration::from_secs(30), evaluate),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, Some(json!(["usable"])));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        store.set_post_subscribe_gate(None);
+    }
+
+    /// Ineligible wakes never renew the deadline: each scan delivers one
+    /// and moves the clock two seconds. The second scan ends past the 3 s
+    /// deadline, so exactly one fresh terminal scan follows — and it stops
+    /// the wait although it also moves the clock.
+    #[tokio::test]
+    async fn ineligible_wakes_keep_one_deadline_and_one_terminal_scan() {
+        let store = Arc::new(Store::new(0));
+        let clock = controlled_clock(&store);
+        let weak = Arc::downgrade(&store);
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = calls.clone();
+        let evaluate: FocusedEvaluation = Arc::new(move |emails| {
+            let scan = seen.fetch_add(1, Ordering::SeqCst);
+            weak.upgrade()
+                .unwrap()
+                .insert(email(&format!("wake-{scan}"), "box", "a@x.io"))
+                .unwrap();
+            clock.store((scan + 1) * 2, Ordering::SeqCst);
+            eligible_ids(&emails)
+        });
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(30),
+            store.wait_focused("box", &Filter::default(), Duration::from_secs(3), evaluate),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        store.set_wait_clock(None);
+    }
+
+    /// The review's G1 on the historical patch: an ineligible snapshot whose
+    /// evaluation crosses the deadline must not answer from that stale
+    /// snapshot. The first evaluation is held while eligible mail commits
+    /// and the clock passes the deadline; one fresh terminal capture
+    /// follows. Without the commit, that terminal scan times out once.
+    #[tokio::test]
+    async fn expiry_during_evaluation_takes_one_fresh_terminal_snapshot() {
+        for deliver in [true, false] {
+            let store = Arc::new(Store::new(0));
+            store.insert(email("initial", "box", "a@x.io")).unwrap();
+            let clock = controlled_clock(&store);
+            let (entered, entry) = tokio::sync::oneshot::channel();
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            let held = Mutex::new(Some((entered, released)));
+            let calls = Arc::new(AtomicU64::new(0));
+            let seen = calls.clone();
+            let advancing = clock.clone();
+            let evaluate: FocusedEvaluation = Arc::new(move |emails| {
+                seen.fetch_add(1, Ordering::SeqCst);
+                // Hold the first evaluation; the terminal one moves time on
+                // again and must still be the last.
+                match held.lock().unwrap().take() {
+                    Some((entered, released)) => {
+                        entered.send(()).unwrap();
+                        released.recv().unwrap();
+                    }
+                    None => {
+                        advancing.fetch_add(10, Ordering::SeqCst);
+                    }
+                }
+                eligible_ids(&emails)
+            });
+            let waiting = store.clone();
+            let task = tokio::spawn(async move {
+                waiting
+                    .wait_focused("box", &Filter::default(), Duration::from_secs(1), evaluate)
+                    .await
+            });
+            entry.await.unwrap();
+            if deliver {
+                store.insert(coded("fresh")).unwrap();
+            }
+            clock.store(2, Ordering::SeqCst);
+            release.send(()).unwrap();
+            let outcome = tokio::time::timeout(Duration::from_secs(30), task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(outcome, deliver.then(|| json!(["fresh"])));
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    /// A zero timeout is one terminal scan, even when time moves inside it.
+    #[tokio::test]
+    async fn a_zero_timeout_scans_exactly_once() {
+        let store = Store::new(0);
+        store.insert(email("initial", "box", "a@x.io")).unwrap();
+        let clock = controlled_clock(&store);
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = calls.clone();
+        let evaluate: FocusedEvaluation = Arc::new(move |emails| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            clock.store(100, Ordering::SeqCst);
+            eligible_ids(&emails)
+        });
+        let outcome = store
+            .wait_focused("box", &Filter::default(), Duration::ZERO, evaluate)
+            .await;
+        assert_eq!(outcome, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let evaluate: FocusedEvaluation = Arc::new(|emails| eligible_ids(&emails));
+        store.insert(coded("ready")).unwrap();
+        let outcome = store
+            .wait_focused("box", &Filter::default(), Duration::ZERO, evaluate)
+            .await;
+        assert_eq!(outcome, Some(json!(["ready"])));
+    }
+
+    /// A parked wait — acknowledged by its clock reads: the deadline, then
+    /// per scan the terminal check and the remaining time, read right
+    /// before `recv` with no await between — rescans on an unusable
+    /// delivery and parks again; an other-recipient delivery wakes it but
+    /// never reaches the evaluation, and other-inbox mail never wakes it.
+    /// Only the target completes it.
+    #[tokio::test]
+    async fn a_parked_wait_rescans_on_wakes_and_completes_on_the_target() {
+        let store = Arc::new(Store::new(0));
+        let origin = Instant::now();
+        let reads = Arc::new(AtomicU64::new(0));
+        let parked = Arc::new(tokio::sync::Notify::new());
+        let (observed, notify) = (reads.clone(), parked.clone());
+        store.set_wait_clock(Some(Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            notify.notify_one();
+            origin
+        })));
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = calls.clone();
+        let evaluate: FocusedEvaluation = Arc::new(move |emails| {
+            seen.fetch_add(1, Ordering::SeqCst);
+            assert!(emails.iter().all(|e| e.recipients == ["a@x.io"]));
+            eligible_ids(&emails)
+        });
+        let waiting = store.clone();
+        let filter = Filter {
+            to: Some("a@x.io".into()),
+            ..Filter::default()
+        };
+        let task = tokio::spawn(async move {
+            waiting
+                .wait_focused("box", &filter, Duration::from_secs(60), evaluate)
+                .await
+        });
+        let mut other = coded("other-recipient");
+        other.recipients = vec!["b@x.io".into()];
+        other.to.clear();
+        let mut elsewhere = coded("other-inbox");
+        elsewhere.inbox = "elsewhere".into();
+        let deliveries = [
+            vec![email("unusable", "box", "a@x.io")],
+            vec![elsewhere, other],
+            vec![coded("target")],
+        ];
+        for (round, mails) in deliveries.into_iter().enumerate() {
+            let round = round as u64;
+            while reads.load(Ordering::SeqCst) < 3 + 2 * round {
+                parked.notified().await;
+            }
+            assert_eq!(calls.load(Ordering::SeqCst), 1 + round);
+            for mail in mails {
+                store.insert(mail).unwrap();
+            }
+        }
+        let outcome = tokio::time::timeout(Duration::from_secs(30), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome, Some(json!(["target"])));
+        store.set_wait_clock(None);
     }
 }

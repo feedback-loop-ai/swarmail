@@ -1284,3 +1284,327 @@ async fn a_legacy_data_file_sheds_the_unused_inbox_index_and_keeps_its_mail() {
     assert_eq!(inserted, "1");
     drop(conn);
 }
+
+async fn focused(
+    addr: std::net::SocketAddr,
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":format!("swarmail_wait_for_{tool}"),"arguments":args}});
+    let (status, reply) = common::http_json(addr, "POST", "/mcp", Some(&body.to_string())).await;
+    assert_eq!(status, 200);
+    serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+/// The schema a data file had before decision 0094: no occurrence column.
+const PRE_METADATA_SCHEMA: &str = "CREATE TABLE emails (
+    id TEXT PRIMARY KEY, inbox TEXT NOT NULL, seq INTEGER NOT NULL,
+    from_json TEXT NOT NULL, to_json TEXT NOT NULL, cc_json TEXT NOT NULL,
+    recipients_json TEXT NOT NULL, subject TEXT, received_at TEXT NOT NULL,
+    received_ms INTEGER NOT NULL, size INTEGER NOT NULL, text TEXT, html TEXT,
+    links_json TEXT NOT NULL, codes_json TEXT NOT NULL, message_id TEXT,
+    in_reply_to TEXT, references_json TEXT NOT NULL DEFAULT '[]',
+    raw BLOB NOT NULL, envelope_from TEXT);
+CREATE INDEX emails_seq ON emails(seq);
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('emails_inserted', '1'), ('emails_dropped', '0');";
+
+/// Decision 0094 §2 on a genuine pre-column file: the row keeps its stored
+/// links and codes exactly — deliberately ones re-extraction would not
+/// produce, and more codes than fresh ingest keeps — through two restarts,
+/// its occurrences stay unknown (SQL NULL, never backfilled), and fresh
+/// mail beside it records its occurrences.
+#[tokio::test]
+async fn a_pre_metadata_data_file_keeps_unknown_provenance_across_restarts() {
+    let (_dir, db) = data_file("pre-metadata");
+    let codes: Vec<String> = (0..70).map(|i| format!("{:06}", 100000 + i)).collect();
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(PRE_METADATA_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO emails (id, inbox, seq, from_json, to_json, cc_json, recipients_json, subject,
+                received_at, received_ms, size, text, html, links_json, codes_json, raw)
+             VALUES ('legacy-row', 'legacy', 0, '{\"address\":\"old@x.io\"}', '[]', '[]', '[]', 'Old',
+                '1970-01-01T00:00:01Z', 1000, 3, 'see https://old.test/a', NULL,
+                '[\"https://old.test/a\",\"https://old.test/b\"]', ?1, x'00ff')",
+            [serde_json::to_string(&codes).unwrap()],
+        )
+        .unwrap();
+    }
+    let mut fresh = String::new();
+    for restart in 0..3 {
+        let srv = serve_data_file(&db).await;
+        if restart == 0 {
+            let raw = b"From: app@x.io\r\nTo: r@x.io\r\nSubject: New\r\nContent-Type: text/html\r\n\r\n<a href='https://new.test/go' rel=next>Go</a>\r\n";
+            fresh = common::smtp_raw(srv.smtp_addr, "legacy", raw).await;
+        }
+        let links = focused(
+            srv.http_addr,
+            "link",
+            serde_json::json!({"inbox":"legacy","host":"old","timeout_ms":0}),
+        )
+        .await;
+        assert_eq!(links["status"], "ambiguous");
+        let rows: Vec<serde_json::Value> = links["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                serde_json::json!([
+                    c["url"],
+                    c["link_index"],
+                    c["anchor_text"],
+                    c["rel"],
+                    c["source"],
+                    c["sender"]
+                ])
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                serde_json::json!(["https://old.test/a", 0, null, null, null, {"address":"old@x.io"}]),
+                serde_json::json!(["https://old.test/b", 1, null, null, null, {"address":"old@x.io"}]),
+            ]
+        );
+        let new = focused(
+            srv.http_addr,
+            "link",
+            serde_json::json!({"inbox":"legacy","anchor_text":"^Go$","timeout_ms":0}),
+        )
+        .await;
+        assert_eq!(
+            (
+                new["selected_url"].clone(),
+                new["candidates"][0]["rel"].clone()
+            ),
+            (
+                serde_json::json!("https://new.test/go"),
+                serde_json::json!("next")
+            )
+        );
+        let unknown = focused(
+            srv.http_addr,
+            "link",
+            serde_json::json!({"inbox":"legacy","anchor_text":"","host":"old","timeout_ms":0}),
+        )
+        .await;
+        assert_eq!(
+            unknown["status"], "timed_out",
+            "an unknown label never matches"
+        );
+        // The newest mail has no code; the historical array is complete.
+        let code = focused(
+            srv.http_addr,
+            "code",
+            serde_json::json!({"inbox":"legacy","timeout_ms":0}),
+        )
+        .await;
+        assert_eq!(
+            (code["status"].clone(), code["candidates_total"].clone()),
+            (serde_json::json!("ambiguous"), serde_json::json!(70))
+        );
+        assert_eq!(code["candidates"][0]["email_id"], "legacy-row");
+        let (_, row) =
+            common::http_json(srv.http_addr, "GET", "/api/v1/messages/legacy-row", None).await;
+        assert_eq!(
+            row["links"],
+            serde_json::json!(["https://old.test/a", "https://old.test/b"])
+        );
+        assert_eq!(row["codes"], serde_json::json!(codes));
+        assert!(row.get("link_metadata").is_none());
+        srv.stop().await;
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let stored: Vec<(String, Option<String>)> = conn
+            .prepare("SELECT id, link_metadata_json FROM emails ORDER BY seq")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(stored, [
+            ("legacy-row".into(), None),
+            (fresh.clone(), Some(r#"[{"url":"https://new.test/go","anchor_text":"Go","rel":"next","source":"html"}]"#.into())),
+        ]);
+    }
+}
+
+/// Damage to the occurrence column refuses the restore instead of reading
+/// as "no links" — including a missing nullable member — while SQL NULL
+/// and a known empty array both serve.
+#[tokio::test]
+async fn a_corrupt_occurrence_column_refuses_to_serve() {
+    let (_dir, db) = data_file("corrupt-metadata");
+    let srv = serve_data_file(&db).await;
+    let id = send(&srv, "corrupt", "plain").await;
+    srv.stop().await;
+    let set = |value: Option<&str>| {
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute(
+                "UPDATE emails SET link_metadata_json = ?1 WHERE id = ?2",
+                rusqlite::params![value, id],
+            )
+            .unwrap();
+    };
+    for corrupt in [
+        "{",
+        "null",
+        r#"[{"url":"https://x.io/","rel":null,"source":"html"}]"#,
+        r#"[{"url":"https://x.io/","anchor_text":null,"rel":null,"source":"pdf"}]"#,
+    ] {
+        set(Some(corrupt));
+        let cfg = swarmail::config::Config {
+            smtp_listen: "127.0.0.1:0".into(),
+            http_listen: "127.0.0.1:0".into(),
+            pop3_listen: "127.0.0.1:0".into(),
+            max_per_inbox: 0,
+            data_file: Some(db.clone()),
+            tls_cert: None,
+            tls_key: None,
+            smtp: Default::default(),
+            pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        };
+        let err = match swarmail::run_on(&cfg).await {
+            Ok(_) => panic!("a corrupt occurrence column must refuse to serve: {corrupt}"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("Text at index: 19"),
+            "{corrupt}: {err}"
+        );
+    }
+    for valid in [None, Some("[]")] {
+        set(valid);
+        let srv = serve_data_file(&db).await;
+        let none = focused(
+            srv.http_addr,
+            "link",
+            serde_json::json!({"inbox":"corrupt","timeout_ms":0}),
+        )
+        .await;
+        assert_eq!(none["status"], "timed_out");
+        srv.stop().await;
+    }
+}
+
+/// Newest means accepted last (decision 0094 §5), and a restart restores
+/// that order from the persisted sequence: with the stamps and the ids of
+/// two rows reversed on disk, the code wait still selects the mail
+/// accepted second and lists the first as older.
+#[tokio::test]
+async fn restored_acceptance_order_decides_the_newest_code() {
+    let (_dir, db) = data_file("restored-order");
+    let srv = serve_data_file(&db).await;
+    let first =
+        common::smtp_raw(srv.smtp_addr, "order", b"Subject: a\r\n\r\ncode 111111\r\n").await;
+    let second =
+        common::smtp_raw(srv.smtp_addr, "order", b"Subject: b\r\n\r\ncode 222222\r\n").await;
+    srv.stop().await;
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(&format!(
+        "UPDATE emails SET id = 'zzzz-first', received_ms = 9000000000000 WHERE id = '{first}';
+         UPDATE emails SET id = '0000-second', received_ms = -9000000000000 WHERE id = '{second}';"
+    ))
+    .unwrap();
+    drop(conn);
+    for _ in 0..2 {
+        let srv = serve_data_file(&db).await;
+        let code = focused(
+            srv.http_addr,
+            "code",
+            serde_json::json!({"inbox":"order","timeout_ms":0}),
+        )
+        .await;
+        assert_eq!(code["selected"]["email_id"], "0000-second");
+        assert_eq!(code["selected"]["code"], "222222");
+        assert_eq!(code["older_candidates"][0]["email_id"], "zzzz-first");
+        assert_eq!(
+            code["older_candidates"][0]["age_ms"], 0,
+            "a future stamp has no negative age"
+        );
+        srv.stop().await;
+    }
+}
+
+/// A refused insert at the cap is invisible to a parked focused wait: the
+/// refused mail would have been the only match, yet the wait completes
+/// only on the later accepted target, the incumbent was never evicted by
+/// the refusal, and the restart copy holds exactly what was accepted.
+#[tokio::test]
+async fn a_refused_insert_under_the_cap_never_completes_a_focused_wait() {
+    let (_dir, db) = data_file("refuse-focused");
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c.max_per_inbox = 1;
+        c
+    })
+    .await;
+    let incumbent = common::smtp_raw(
+        srv.smtp_addr,
+        "capped",
+        b"Subject: i\r\n\r\nhttps://app.test/incumbent\r\n",
+    )
+    .await;
+    let http = srv.http_addr;
+    let waiting = tokio::spawn(async move {
+        focused(
+            http,
+            "link",
+            serde_json::json!({"inbox":"capped","path":"^/(refused|target)$","timeout_ms":60000}),
+        )
+        .await
+    });
+    common::wait_for_metric_row(srv.http_addr, "swarmail_awaits_active{inbox=\"capped\"}", 1).await;
+    let trigger = common::refusing_trigger(&db, "insert");
+    let reply = common::smtp_send(
+        srv.smtp_addr,
+        Some("capped"),
+        "s@x.io",
+        "r@x.io",
+        "refused",
+        "https://app.test/refused",
+    )
+    .await
+    .expect_err("the refused insert must not answer 250");
+    assert!(
+        reply.starts_with("451 4.3.0 storage commit failed"),
+        "{reply}"
+    );
+    let (status, _) = common::http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{incumbent}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "the refusal evicted nothing");
+    drop(trigger);
+    let target = common::smtp_raw(
+        srv.smtp_addr,
+        "capped",
+        b"Subject: t\r\n\r\nhttps://app.test/target\r\n",
+    )
+    .await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["selected_url"], "https://app.test/target");
+    assert_eq!(
+        (
+            result["matched"].clone(),
+            result["candidates_total"].clone()
+        ),
+        (serde_json::json!(1), serde_json::json!(1))
+    );
+    assert_eq!(result["candidates"][0]["email_id"], target);
+    srv.stop().await;
+    let srv = serve_data_file(&db).await;
+    assert_eq!(
+        common::list_all_ids(srv.http_addr, "capped").await,
+        [target].into()
+    );
+    srv.stop().await;
+}

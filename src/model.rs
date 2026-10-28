@@ -44,6 +44,37 @@ pub struct EmailAddress {
     pub address: String,
 }
 
+/// One link occurrence as ingest found it (decision 0094 §1): every URL
+/// match in source order, text part first, before the exact-string
+/// deduplication `links` applies. Labels are lexical, never rendered: a
+/// `None` is unknown, `Some("")` a known empty label. Every member is
+/// required on restore — a missing nullable member is corruption, not an
+/// implicit null — and an unknown member refuses (decision 0094 §2).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LinkMetadata {
+    pub url: String,
+    #[serde(deserialize_with = "required_nullable")]
+    pub anchor_text: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    pub rel: Option<String>,
+    pub source: LinkSource,
+}
+
+/// A nullable member that must be present. A plain `Option` field takes a
+/// missing key as `None`; naming a deserializer turns that default off.
+fn required_nullable<'de, D: Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(de)
+}
+
+/// Which selected body an occurrence came from.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkSource {
+    Text,
+    Html,
+}
+
 /// A captured email.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Email {
@@ -77,6 +108,14 @@ pub struct Email {
     pub html: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<String>,
+    /// The ingest-time occurrences behind `links` (decision 0094): `Some`
+    /// for every fresh SMTP or seeded mail — `Some([])` is known empty —
+    /// and `None` for a row restored from before the column existed, never
+    /// backfilled. Internal: no Email serialization carries it, so every
+    /// existing read, feed and webhook payload keeps its bytes; only the
+    /// focused link wait exposes it.
+    #[serde(skip)]
+    pub link_metadata: Option<Vec<LinkMetadata>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub codes: Vec<String>,
     /// RFC 5322 Message-ID, normalized (angle brackets stripped) — the

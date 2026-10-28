@@ -964,3 +964,106 @@ async fn all_claim_routes_preserve_refusals_and_canonical_roles() {
     assert!(snap.identities[0].facts.confirmed);
     rig.stop().await;
 }
+
+/// Focused tools drive the application's actual actions without reading bodies.
+/// Independent rigs keep each trap control out of the successful trial's ledger.
+#[tokio::test]
+async fn focused_tools_complete_link_and_code_traps_without_guessing() {
+    use swarmail_evals::state::FailureClass;
+    for (task, anchor, decoy) in [
+        ("confirm-decoys", "^Confirm$", "^Unsubscribe$"),
+        ("magic-login", "^Sign in$", "^This wasn't me$"),
+        ("entity-url", "Claim the", "View this email"),
+        (
+            "digest-forty",
+            tasks::DIGEST_ITEM,
+            r"^Async drop RFC enters final comment period \(part 1\)$",
+        ),
+    ] {
+        for negative in [false, true] {
+            let rig = Rig::new(task, 1).await;
+            rig.prepare().await;
+            let mut mcp = rig.mcp().await;
+            let ambiguous = mcp
+                .call(
+                    "swarmail_wait_for_link",
+                    json!({"inbox":rig.inbox(0),"timeout_ms":0}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(ambiguous["status"], "ambiguous");
+            assert!(ambiguous.get("selected_url").is_none());
+            assert!(
+                rig.snapshot().await.events.is_empty(),
+                "ambiguity causes no guessed action"
+            );
+            let result = mcp.call("swarmail_wait_for_link",json!({"inbox":rig.inbox(0),"anchor_text":if negative {decoy} else {anchor},"timeout_ms":0})).await.unwrap();
+            assert_eq!(result["status"], "selected", "{task}: {result}");
+            rig.app(0)
+                .get(result["selected_url"].as_str().unwrap())
+                .await
+                .unwrap();
+            let snapshot = rig.snapshot().await;
+            if negative {
+                assert!(
+                    snapshot
+                        .events
+                        .iter()
+                        .any(|e| e.category == Some(FailureClass::WrongLink)),
+                    "{task}"
+                );
+            } else {
+                assert!(
+                    snapshot
+                        .events
+                        .iter()
+                        .all(|e| e.category != Some(FailureClass::WrongLink)),
+                    "{task}"
+                );
+                let facts = &snapshot.identities[0].facts;
+                assert!(match task {
+                    "confirm-decoys" => facts.confirmed,
+                    "magic-login" => facts.magic_login && facts.logged_in,
+                    "entity-url" => facts.marketing_completed,
+                    "digest-forty" => facts.digest_selected,
+                    _ => unreachable!(),
+                });
+            }
+            rig.stop().await;
+        }
+    }
+    for negative in [false, true] {
+        let rig = Rig::new("stale-otp", 1).await;
+        rig.prepare().await;
+        let mut mcp = rig.mcp().await;
+        let result = mcp
+            .call(
+                "swarmail_wait_for_code",
+                json!({"inbox":rig.inbox(0),"timeout_ms":0}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "selected");
+        assert_eq!(result["older_candidates_total"], 1);
+        let code = if negative {
+            &result["older_candidates"][0]["code"]
+        } else {
+            &result["selected"]["code"]
+        };
+        let (status, _) = rig
+            .app(0)
+            .post("/otp/verify", json!({"code":code}))
+            .await
+            .unwrap();
+        assert_eq!(status, if negative { 410 } else { 200 });
+        let snapshot = rig.snapshot().await;
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .any(|e| e.category == Some(FailureClass::StaleCode)),
+            negative
+        );
+        rig.stop().await;
+    }
+}

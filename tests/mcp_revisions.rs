@@ -287,6 +287,8 @@ async fn revision_tool_annotations() {
         ("swarmail_seed_email", false),
         ("swarmail_set_chaos", false),
         ("swarmail_clear_chaos", false),
+        ("swarmail_wait_for_code", true),
+        ("swarmail_wait_for_link", true),
     ];
     for version in VERSIONS {
         let (_, reply) = post(
@@ -916,5 +918,7 @@ async fn revision_tool_schemas_and_text_safety() {
     }
 }
 
+#[path = "mcp_revisions/focused.rs"]
+mod focused;
 #[path = "mcp_revisions/structured.rs"]
 mod structured;

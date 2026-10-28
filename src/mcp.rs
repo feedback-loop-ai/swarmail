@@ -413,6 +413,8 @@ fn tool_descriptors(revision: Revision) -> Value {
                     | "swarmail_extract_links"
                     | "swarmail_extract_codes"
                     | "swarmail_get_deliverability_report"
+                    | focused::CODE
+                    | focused::LINK
             );
             tool["annotations"] = if read_only {
                 json!({"readOnlyHint": true})
@@ -746,6 +748,7 @@ async fn tool_call(
                 None => Ok(error_result("shutting down".into())),
             }
         }
+        focused::CODE | focused::LINK => focused::call(ctx, &name, a, revision).await,
         "swarmail_extract_links" | "swarmail_extract_codes" => {
             let id = required_id(a)?;
             match store.get(&id) {
@@ -932,7 +935,9 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "swarmail_extract_codes":output_object(json!({"codes":strings}), json!(["codes"])),
         "swarmail_seed_email":output_object(json!({"id":{"type":"string"},"links":strings,"codes":strings}), json!(["id","links","codes"])),
         "swarmail_set_chaos":output_object(json!({"connect":event,"mail_from":event,"rcpt":event,"data":event}), json!(["connect","mail_from","rcpt","data"])),
-        "swarmail_clear_chaos":output_object(json!({"chaos":{"type":"string","const":"disabled"}}), json!(["chaos"]))
+        "swarmail_clear_chaos":output_object(json!({"chaos":{"type":"string","const":"disabled"}}), json!(["chaos"])),
+        focused::CODE:focused::output_schema(false, &address),
+        focused::LINK:focused::output_schema(true, &address)
     })
 });
 
@@ -968,7 +973,7 @@ static SCHEMA_INBOX_ONLY: std::sync::LazyLock<Value> = std::sync::LazyLock::new(
 const TO_FILTER_DESCRIPTION: &str = "Case-insensitive substring of any recipient: the To and Cc headers and the SMTP envelope recipients (RCPT TO, so a Bcc'd address matches) — not a header-presence assertion";
 
 static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
-    json!([
+    let mut tools = json!([
         { "name": "swarmail_search_emails", "description": "Search captured emails in an inbox by recipient, sender, subject or arrival time. Returns full emails (bodies, links, codes included) and the full match count as total; offset pages past the limit.",
           "inputSchema": { "type": "object", "properties": {
             "inbox": { "type": "string" }, "to": { "type": "string", "description": TO_FILTER_DESCRIPTION },
@@ -1015,8 +1020,13 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
             "delay_ms": { "type": "integer", "minimum": 0, "maximum": 300000 } },
             "required": ["event", "probability"], "additionalProperties": false } },
         { "name": "swarmail_clear_chaos", "description": "Disable all chaos rules.", "inputSchema": { "type": "object", "additionalProperties": false } },
-    ])
+    ]);
+    // Appended (decision 0094 §7): every earlier entry keeps its place.
+    tools.as_array_mut().unwrap().extend(focused::descriptors());
+    tools
 });
+
+mod focused;
 
 #[cfg(test)]
 mod batch_tests;
@@ -1036,7 +1046,7 @@ mod tests {
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
         let schemas = OUTPUT_SCHEMAS.as_object().unwrap();
-        assert_eq!(names.len(), 13);
+        assert_eq!(names.len(), 15);
         assert_eq!(
             names,
             schemas
@@ -1045,7 +1055,8 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>()
         );
         for schema in schemas.values() {
-            assert!(schema.is_object() && schema.get("$ref").is_none());
+            assert!(schema.is_object());
+            assert!(schema.get("$ref").is_none());
         }
         for revision in [Revision::June, Revision::November] {
             for tool in tool_descriptors(revision).as_array().unwrap() {
@@ -1572,7 +1583,7 @@ mod tests {
             .insert(crate::store::email("keep", "default", "a@x.io"))
             .unwrap();
         let tools = TOOLS.as_array().unwrap();
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 15);
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             assert_eq!(
@@ -1631,6 +1642,8 @@ mod tests {
                 ("swarmail_get_latest_email", json!({})),
                 ("swarmail_clear_inbox", json!({})),
                 ("swarmail_wait_for_email", json!({"timeout_ms": 60000})),
+                ("swarmail_wait_for_code", json!({"timeout_ms": 60000})),
+                ("swarmail_wait_for_link", json!({"timeout_ms": 60000})),
                 ("swarmail_seed_email", json!({"to": "a@x.io"})),
             ] {
                 let mut arguments = extra.clone();
@@ -1652,6 +1665,8 @@ mod tests {
                 ("swarmail_get_latest_email", json!({})),
                 ("swarmail_clear_inbox", json!({})),
                 ("swarmail_wait_for_email", json!({"timeout_ms": 60000})),
+                ("swarmail_wait_for_code", json!({"timeout_ms": 60000})),
+                ("swarmail_wait_for_link", json!({"timeout_ms": 60000})),
                 ("swarmail_seed_email", json!({"to": "a@x.io"})),
             ] {
                 let mut arguments = extra.clone();
