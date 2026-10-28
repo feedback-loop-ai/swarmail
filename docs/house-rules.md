@@ -250,6 +250,11 @@ full-panel correctness and guarantees members from Codex Astra to official
 DeepSeek Flash through dsh at high effort (security's route; offices and
 results stay separate) and gives the `codex`, `codex-careful` and `codex-fast`
 review seat a 14400 s deadline instead of 3600 s.
+Proposed [0099](decisions/0099-claude-careful-recipe.md) records the
+2026-10-28/29 direction for `claude-careful`, a zero-Codex careful lane:
+Haiku 5.5 intake, an Opus 5.5 / official Flash / Fable 5.1 design council,
+Sonnet 5.5 implementation, and Fable correctness, Flash security and
+guarantees, GLM tests and Opus independent review, with careful's gates.
 DeepSeek Pro is forbidden; other reviewers
 have no fallback. Every lane retains all shell gates, protected review and the
 hard security hold. The `self` bundle
