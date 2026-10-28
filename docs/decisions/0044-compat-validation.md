@@ -168,3 +168,13 @@ amendments this record makes now carry dated markers in
   until 2026-10-19.)*
 - *(Updated by [0049](0049-extraction-compat.md) (accepted 2026-10-19):
   §§4/5/7, as the 0049 pointer above describes.)*
+
+## Proposed reconciliation pointer — 2026-10-26
+
+The operator-directed #152 implementation is recorded in proposed
+[0079](0079-mcp-version-negotiation.md) and proposed
+[0080](0080-mcp-source-reconciliation.md). §§1–2 batch admission applies to March only. Header admission also covers non-POST methods, with whole-plane Origin and POST body/parse precedence retained. §1 methodless-response replies remain an explicit unresolved transport conflict.
+This dated pointer preserves the accepted historical body and status. It neither
+accepts a proposal nor claims an incompatible amendment has been accepted.
+See the [clause ledger](../../specs/mcp-version-negotiation/reconciliation.md)
+for source evidence, compatible repairs, remaining costs and external ownership.

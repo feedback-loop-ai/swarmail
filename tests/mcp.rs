@@ -2296,13 +2296,12 @@ async fn a_silent_notification_still_takes_effect() {
     assert_eq!(list["total"], 2, "both silent seeds ran: {list}");
 }
 
-/// `initialize` answers the one supported revision and advertises only
-/// what exists (decision 0029 §2): the client's requested version is not
-/// echoed, and `resources` — whose every method is unknown — is gone.
+/// Unsupported proposals receive the newest supported revision (0079);
+/// only existing capabilities are advertised.
 #[tokio::test]
 async fn initialize_answers_the_supported_version_and_advertises_only_tools() {
     let srv = start().await;
-    for requested in ["2025-06-18", "2024-11-05", "1999-01-01"] {
+    for requested in ["2024-11-05", "1999-01-01"] {
         let (st, body) = rpc(
             srv.http_addr,
             "initialize",
@@ -2311,7 +2310,7 @@ async fn initialize_answers_the_supported_version_and_advertises_only_tools() {
         .await;
         assert_eq!(st, 200, "{requested}: {body}");
         assert_eq!(
-            body["result"]["protocolVersion"], "2025-03-26",
+            body["result"]["protocolVersion"], "2025-11-25",
             "{requested}: {body}"
         );
         let capabilities = &body["result"]["capabilities"];
@@ -2321,7 +2320,7 @@ async fn initialize_answers_the_supported_version_and_advertises_only_tools() {
             "no resources are advertised: {capabilities}"
         );
     }
-    // Even with no params at all: the constant is the answer.
+    // Omitted proposals preserve legacy negotiation.
     let (_, body) = rpc(srv.http_addr, "initialize", "{}").await;
     assert_eq!(body["result"]["protocolVersion"], "2025-03-26", "{body}");
 }
@@ -2826,6 +2825,7 @@ async fn zero_timeout_finishes_on_the_first_dispatch_poll() {
     ] {
         let (stop, shutdown) = tokio::sync::watch::channel(false);
         let ctx = McpContext {
+            tool_rate: Arc::new(swarmail::mcp::ToolRate::default()),
             store: Arc::new(Store::new(0)),
             chaos: Arc::new(Chaos::default()),
             shutdown,

@@ -838,7 +838,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/mcp",
-            post(mcp_endpoint).layer(axum::extract::DefaultBodyLimit::max(MCP_BODY_LIMIT)),
+            post(mcp_endpoint)
+                .layer(axum::Extension(Arc::new(mcp::ToolRate::default())))
+                .fallback(mcp_method_not_allowed)
+                .layer(axum::extract::DefaultBodyLimit::max(MCP_BODY_LIMIT)),
         )
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
@@ -1895,6 +1898,20 @@ pub(crate) fn mcp_body_refusal(cause: &str) -> String {
     format!("request body refused: {cause} (the limit is {MCP_BODY_LIMIT} bytes)")
 }
 
+/// Version admission also applies to non-POST methods (modern Transports,
+/// Protocol Version Header). The whole-plane Origin guard still runs first;
+/// POST keeps its bounded-body/parse precedence inside dispatch.
+async fn mcp_method_not_allowed(headers: axum::http::HeaderMap) -> Response {
+    match mcp::header_revision(&headers) {
+        Err(reason) => (
+            StatusCode::BAD_REQUEST,
+            Json(mcp::error_object(-32600, reason, serde_json::Value::Null)),
+        )
+            .into_response(),
+        Ok(_) => (StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response(),
+    }
+}
+
 /// The body is taken as bounded bytes and parsed inside `mcp::dispatch`:
 /// malformed JSON and invalid UTF-8 alike are a JSON-RPC `-32700` with a
 /// null id (HTTP 400), not a plain-text rejection (decisions 0029 §2, 0044
@@ -1903,6 +1920,8 @@ pub(crate) fn mcp_body_refusal(cause: &str) -> String {
 /// `-32600` naming the limit and the cause, never axum's plain text.
 async fn mcp_endpoint(
     State(state): State<AppState>,
+    axum::Extension(tool_rate): axum::Extension<Arc<mcp::ToolRate>>,
+    headers: axum::http::HeaderMap,
     body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
 ) -> Response {
     let body = match body {
@@ -1917,11 +1936,12 @@ async fn mcp_endpoint(
         }
     };
     let ctx = McpContext {
+        tool_rate,
         store: state.store.clone(),
         chaos: state.chaos.clone(),
         shutdown: state.shutdown.clone(),
     };
-    mcp::dispatch(&ctx, &body).await
+    mcp::dispatch_with_headers(&ctx, &body, &headers).await
 }
 
 // ---------- machine-readable docs ----------

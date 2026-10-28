@@ -82,10 +82,13 @@ them. What may land while a decision is still proposed is stated in
 | [0076](0076-sequential-eval-trials.md) | Sequential eval trials with explicit concurrency evidence | accepted (operator, 2026-10-26) | (Epic #192, issue #199) |
 | [0077](0077-webhook-ca-port.md) | Compatible webhook CA port and LOW repairs | accepted (operator, 2026-10-26) | (Epic #192, issue #195) |
 | [0078](0078-ca-executor-ownership.md) | Bounded CA ownership, logical accounting and admission | accepted (operator, 2026-10-26) | (Epic #192, issue #220; compatible choices under accepted 0069) |
+| [0079](0079-mcp-version-negotiation.md) | Revision-qualified MCP negotiation and admission | proposed — awaiting the operator | (Epic #164, issue #152) |
+| [0080](0080-mcp-source-reconciliation.md) | MCP source reconciliation and operator-chosen deviations | proposed — awaiting the operator | (Epic #164, issue #152) |
 | [0081](0081-glm-flash-seats.md) | GLM Flash tests review only; intake keeps its workspace hands and models | proposed — awaiting the operator | (Revised operator ruling, 2026-10-26: “GLM-5.3-Flash seats (revised)”) |
 | [0083](0083-cli-wrapper-launch.md) | Evidence-based CLI launches and declared tool surfaces | proposed — awaiting the operator | (Epic #164, issue #151 part 1; operator allocation 2026-10-26) |
 | [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
+
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
