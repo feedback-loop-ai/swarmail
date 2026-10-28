@@ -85,6 +85,7 @@ them. What may land while a decision is still proposed is stated in
 | [0079](0079-mcp-version-negotiation.md) | Revision-qualified MCP negotiation and admission | proposed — awaiting the operator | (Epic #164, issue #152) |
 | [0080](0080-mcp-source-reconciliation.md) | MCP source reconciliation and operator-chosen deviations | proposed — awaiting the operator | (Epic #164, issue #152) |
 | [0081](0081-glm-flash-seats.md) | GLM Flash tests review only; intake keeps its workspace hands and models | proposed — awaiting the operator | (Revised operator ruling, 2026-10-26: “GLM-5.3-Flash seats (revised)”) |
+| [0082](0082-mcp-structured-output.md) | Revision-qualified structured MCP tool outputs | proposed — awaiting the operator | (Epic #164, issue #153; revision-qualified schemas and results) |
 | [0083](0083-cli-wrapper-launch.md) | Evidence-based CLI launches and declared tool surfaces | proposed — awaiting the operator | (Epic #164, issue #151 part 1; operator allocation 2026-10-26) |
 | [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
