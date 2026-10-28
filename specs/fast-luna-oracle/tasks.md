@@ -1,0 +1,10 @@
+# Tasks: repair the fast Luna oracle
+
+All implementation and delivery tasks below remain outstanding at design time.
+Execute in order; stop and surface any need for semantic or security changes.
+
+- [ ] T1 — Establish the original regression (AC3). Test: run `cargo test --locked --test delivery_recipes fast_strategy_selectors_have_no_default_and_keep_one_two_or_five_reviewers -- --exact` before editing; retain actual output showing the Luna-versus-Sol assertion failure. Setup/compiler failure is not equivalent evidence.
+- [ ] T2 — Replace only the two stale assertion lines with exact Luna/xhigh expectations (AC1, AC2, AC4). Test: rerun T1 successfully and inspect the diff from the chief's commit; exactly two assertion replacements in `tests/delivery_recipes.rs`, all loop/diagnostic/selector/reviewer bytes unchanged.
+- [ ] T3 — Prove the whole recipe target (AC2, AC3). Test: `cargo test --locked --test delivery_recipes` passes, including the unchanged adjacent Luna/xhigh/no-provider-fallback test; inspect that its source is unchanged. Retain exact singleton and effort equalities so wrong/extra models and wrong effort still fail.
+- [ ] T4 — Run the complete required delivery gates on the repaired candidate (AC5). Test: every command/proof in `docs/house-rules.md` section Gates passes under its prescribed ownership, including locked Cargo checks, pinned engine compile, exact coverage and selftest, publish/seal proofs, license check and fail-closed native-tls absence. Attribute CI-only proofs separately; record unavailable/failing checks without claiming completion or changing unrelated files.
+- [ ] T5 — Submit the bounded candidate to the existing engine-route protected review and ship gates (AC4, AC5). Test: verify the reviewed diff still contains only T2 outside the three design documents, collect the five distinct 0058 role results required by the recorded classification, and require actual pinned gate verdicts on the candidate. Preserve hard security hold, bounded returns and no DeepSeek Pro; any authorized commit is unsigned, with no push, merge, tag or issue closure.
