@@ -26,6 +26,63 @@ fn result_text(reply: &Value) -> Value {
     serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
 }
 
+/// The seven bulk findings of a single-part mail without Message-ID, Date,
+/// one-click list or text/plain, written independently of any response.
+fn bulk_findings() -> Vec<Value> {
+    let mut findings = Vec::new();
+    let sources =
+        "https://support.google.com/mail/answer/81126 https://senders.yahooinc.com/best-practices/";
+    for (rule, header, hint, rfc) in [
+        (
+            "one_click",
+            Some("list-unsubscribe"),
+            "Provide one HTTPS List-Unsubscribe list and one exact List-Unsubscribe-Post: List-Unsubscribe=One-Click value. This structural check does not verify DKIM header coverage or endpoint operation.",
+            "8058#section-3",
+        ),
+        (
+            "message_id",
+            Some("message-id"),
+            "Provide exactly one Message-ID using the supported current RFC 5322 syntax; obsolete-only forms are unsupported by this checklist.",
+            "5322#section-3.6.4",
+        ),
+        (
+            "date",
+            Some("date"),
+            "Provide exactly one calendar-valid Date using current RFC 5322 syntax and a numeric zone; obsolete-only forms are unsupported by this checklist.",
+            "5322#section-3.6.1",
+        ),
+        (
+            "plain_text",
+            None,
+            "Include a sender-supplied text/plain body. This is checklist advice, not proof of equivalent content or an unconditional provider mandate.",
+            "2046#section-5.1.4",
+        ),
+        (
+            "dmarc_presence.not_evaluated",
+            Some("from"),
+            "Not evaluated: trusted applicable DMARC policy evidence is unavailable.",
+            "7489#section-6.1",
+        ),
+        (
+            "from_alignment.not_evaluated",
+            Some("from"),
+            "Not evaluated: trusted From identity or DKIM/SPF alignment evidence is incomplete.",
+            "7489#section-3.1",
+        ),
+        (
+            "authenticated_sender.not_evaluated",
+            Some("from"),
+            "Not evaluated: trusted From identity or passing-and-aligned DKIM/SPF evidence is incomplete.",
+            "7489#section-3.1",
+        ),
+    ] {
+        findings.push(json!({"rule_id":format!("bulk.{rule}.v1"), "severity": if header.is_none() { "warning" } else { "error" },
+            "location": match header { Some(name) => json!({"kind":"header","name":name,"occurrence":null}), None => json!({"kind":"mime_part","path":[]}) },
+            "fix_hint":format!("{hint} Sources: https://www.rfc-editor.org/rfc/rfc{rfc} {sources}")}));
+    }
+    findings
+}
+
 #[tokio::test]
 async fn report_rest_schema_and_refusals() {
     let srv = start().await;
@@ -557,56 +614,7 @@ async fn html_findings_share_one_report_and_predicate_contract() {
         "rule_id":r["id"],"severity":r["severity"],"location":{"kind":"mime_part","path":[]},"fix_hint":r["fix_hint"]
     })).collect();
     expected.sort_by_key(|r| r["rule_id"].as_str().unwrap().to_string());
-    let sources =
-        "https://support.google.com/mail/answer/81126 https://senders.yahooinc.com/best-practices/";
-    for (rule, header, hint, rfc) in [
-        (
-            "one_click",
-            Some("list-unsubscribe"),
-            "Provide one HTTPS List-Unsubscribe list and one exact List-Unsubscribe-Post: List-Unsubscribe=One-Click value. This structural check does not verify DKIM header coverage or endpoint operation.",
-            "8058#section-3",
-        ),
-        (
-            "message_id",
-            Some("message-id"),
-            "Provide exactly one Message-ID using the supported current RFC 5322 syntax; obsolete-only forms are unsupported by this checklist.",
-            "5322#section-3.6.4",
-        ),
-        (
-            "date",
-            Some("date"),
-            "Provide exactly one calendar-valid Date using current RFC 5322 syntax and a numeric zone; obsolete-only forms are unsupported by this checklist.",
-            "5322#section-3.6.1",
-        ),
-        (
-            "plain_text",
-            None,
-            "Include a sender-supplied text/plain body. This is checklist advice, not proof of equivalent content or an unconditional provider mandate.",
-            "2046#section-5.1.4",
-        ),
-        (
-            "dmarc_presence.not_evaluated",
-            Some("from"),
-            "Not evaluated: trusted applicable DMARC policy evidence is unavailable.",
-            "7489#section-6.1",
-        ),
-        (
-            "from_alignment.not_evaluated",
-            Some("from"),
-            "Not evaluated: trusted From identity or DKIM/SPF alignment evidence is incomplete.",
-            "7489#section-3.1",
-        ),
-        (
-            "authenticated_sender.not_evaluated",
-            Some("from"),
-            "Not evaluated: trusted From identity or passing-and-aligned DKIM/SPF evidence is incomplete.",
-            "7489#section-3.1",
-        ),
-    ] {
-        expected.push(json!({"rule_id":format!("bulk.{rule}.v1"), "severity": if header.is_none() { "warning" } else { "error" },
-            "location": match header { Some(name) => json!({"kind":"header","name":name,"occurrence":null}), None => json!({"kind":"mime_part","path":[]}) },
-            "fix_hint":format!("{hint} Sources: https://www.rfc-editor.org/rfc/rfc{rfc} {sources}")}));
-    }
+    expected.extend(bulk_findings());
     expected.push(json!({"rule_id":"demo.marker.v1","severity":"warning","location":{"kind":"header","name":"x-swarmail-demo","occurrence":0},"fix_hint":"Remove the X-Swarmail-Demo header."}));
     expected.sort_by_key(|r| r["rule_id"].as_str().unwrap().to_string());
     assert_eq!(expected.len(), 15);
@@ -682,6 +690,18 @@ async fn empty_smtp_message_has_an_exact_composable_report() {
         http_bytes(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await,
         (200, vec![])
     );
+    // A zero-time qualified wait never submits cold work: before any
+    // analysis it reports unavailable rather than a clean or failed scan.
+    assert_eq!(
+        http_json(
+            srv.http_addr,
+            "GET",
+            "/api/v1/inboxes/empty-report/await?count=1&timeout_ms=0&no_findings_at_or_above=error",
+            None
+        )
+        .await,
+        (503, json!({"error":"deliverability analysis unavailable"}))
+    );
     // The bulk collector refuses missing MIME metadata; HTML's empty-input
     // handling must not turn another collector's failure into a clean report.
     for _ in 0..2 {
@@ -697,6 +717,10 @@ async fn empty_smtp_message_has_an_exact_composable_report() {
     )
     .await;
     assert_eq!(reply["result"]["isError"], true);
+    assert_eq!(
+        reply["result"]["content"],
+        json!([{"type":"text","text":"deliverability analysis failed"}])
+    );
     let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     assert_eq!(status, 200);
     assert!(page.contains("deliverability analysis failed"));
@@ -719,9 +743,49 @@ async fn empty_smtp_message_has_an_exact_composable_report() {
             let reply = rpc(srv.http_addr, "tools/call", json!({"name":"swarmail_wait_for_email", "arguments":{"inbox":"empty-report","count":count,"timeout_ms":1000,"no_findings_at_or_above":threshold}})).await;
             assert_eq!(reply["result"]["isError"], true);
             assert_eq!(
-                reply["result"]["content"][0]["text"],
-                "deliverability analysis failed"
+                reply["result"]["content"],
+                json!([{"type":"text","text":"deliverability analysis failed"}])
             );
+            // Failures are never cached, so earlier evaluations leave no
+            // ready report for a zero-time wait to read.
+            let path = format!(
+                "/api/v1/inboxes/empty-report/await?count={count}&timeout_ms=0&no_findings_at_or_above={threshold}"
+            );
+            assert_eq!(
+                http_json(srv.http_addr, "GET", &path, None).await,
+                (503, json!({"error":"deliverability analysis unavailable"}))
+            );
+            let reply = rpc(srv.http_addr, "tools/call", json!({"name":"swarmail_wait_for_email", "arguments":{"inbox":"empty-report","count":count,"timeout_ms":0,"no_findings_at_or_above":threshold}})).await;
+            assert_eq!(reply["result"]["isError"], true);
+            assert_eq!(
+                reply["result"]["content"],
+                json!([{"type":"text","text":"deliverability analysis unavailable"}])
+            );
+            // A genuinely empty inbox needs no analysis: exact zero holds,
+            // exact one mismatches and the minimum-one wait times out.
+            let path = format!(
+                "/api/v1/inboxes/empty-report-none/assert?count={count}&no_findings_at_or_above={threshold}"
+            );
+            let (status, value) = http_json(srv.http_addr, "GET", &path, None).await;
+            assert_eq!(status, if count == 0 { 200 } else { 409 }, "{value}");
+            assert_eq!(
+                (&value["matched"], &value["ok"]),
+                (&json!(0), &json!(count == 0))
+            );
+            for timeout in [0, 50] {
+                let path = format!(
+                    "/api/v1/inboxes/empty-report-none/await?count={count}&timeout_ms={timeout}&no_findings_at_or_above={threshold}"
+                );
+                let (status, value) = http_json(srv.http_addr, "GET", &path, None).await;
+                assert_eq!(status, 408, "{value}");
+                assert_eq!(value["matched"], 0);
+                let reply = rpc(srv.http_addr, "tools/call", json!({"name":"swarmail_wait_for_email", "arguments":{"inbox":"empty-report-none","count":count,"timeout_ms":timeout,"no_findings_at_or_above":threshold}})).await;
+                let value = result_text(&reply);
+                assert_eq!(
+                    (&value["matched"], &value["timed_out"]),
+                    (&json!(0), &json!(true))
+                );
+            }
         }
     }
     assert_eq!(
@@ -733,6 +797,10 @@ async fn empty_smtp_message_has_an_exact_composable_report() {
         )
         .await,
         before
+    );
+    assert_eq!(
+        http_bytes(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await,
+        (200, vec![])
     );
     srv.stop().await;
 }
@@ -776,25 +844,19 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
                 http_bytes(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await,
                 (200, raw.as_bytes().to_vec())
             );
-            let findings = if *warning {
-                vec![
-                    json!({"rule_id":rule["id"],"severity":rule["severity"],"fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}),
-                ]
-            } else {
-                vec![]
-            };
-            let (status, expected) = report(srv.http_addr, &id).await;
-            assert_eq!(status, 200);
-            assert_eq!(expected["rule_set_id"], "swarmail-html/3");
-            let html: Vec<Value> = expected["findings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|f| f["rule_id"].as_str().unwrap().starts_with("html."))
-                .cloned()
-                .collect();
-            assert_eq!(html, findings);
-            assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
+            // The whole combined report is fixed here, not read back from a
+            // response: a common wrong aggregate must fail every adapter.
+            let mut findings = bulk_findings();
+            if *warning {
+                assert_eq!(rule["id"], "html.css.position.v1");
+                assert_eq!(rule["severity"], "warning");
+                findings.push(json!({"rule_id":"html.css.position.v1","severity":"warning","fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}));
+            }
+            findings.sort_by_key(|f| f["rule_id"].as_str().unwrap().to_string());
+            let expected = json!({"rule_set_id":"swarmail-html/3","findings":findings});
+            for _ in 0..2 {
+                assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
+            }
             let reply = rpc(
                 srv.http_addr,
                 "tools/call",
@@ -808,7 +870,10 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
             if *warning {
                 assert!(page.contains(rule["fix_hint"].as_str().unwrap()));
             }
-            for (threshold, count) in [("warning", 0), ("error", 0)] {
+            // Production authentication is Unknown, so the bulk errors keep
+            // every pair unqualified at every threshold; HTML warning
+            // discrimination is proved on HTML-only reports in its owner tests.
+            for (threshold, count) in [("info", 0), ("warning", 0), ("error", 0)] {
                 let path = format!(
                     "/api/v1/inboxes/{inbox}/assert?count={count}&no_findings_at_or_above={threshold}"
                 );

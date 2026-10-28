@@ -1250,6 +1250,7 @@ async fn report_stdio_text_contract() {
         assert_eq!(result["content"][0]["type"], "text");
         if raw.is_empty() {
             assert_eq!(status, 503);
+            assert_eq!(expected["error"], "deliverability analysis failed");
             assert_eq!(result["content"][0]["text"], expected["error"]);
         } else {
             assert_eq!(status, 200);
