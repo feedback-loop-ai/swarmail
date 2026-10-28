@@ -823,22 +823,75 @@ mod tests {
             r#"[{"url":"x","anchor_text":null,"rel":null,"source":"HTML"}]"#,
             r#"[{"url":1,"anchor_text":null,"rel":null,"source":"html"}]"#,
             r#"[{"url":"x","anchor_text":3,"rel":null,"source":"html"}]"#,
+            r#"[{"url":"x","url":"y","anchor_text":null,"rel":null,"source":"html"}]"#,
+            r#"[{"url":"x","anchor_text":null,"rel":null,"source":null}]"#,
+            r#"[{"url":"x","anchor_text":null,"rel":null,"source":["html"]}]"#,
+            r#"[{"url":"x","anchor_text":null,"rel":null,"source":0}]"#,
         ] {
-            persist
-                .state
-                .lock()
-                .unwrap()
-                .conn
-                .execute("UPDATE emails SET link_metadata_json=?1", [corrupt])
-                .unwrap();
-            assert!(
-                matches!(
-                    persist.load(),
-                    Err(rusqlite::Error::FromSqlConversionFailure(19, _, _))
-                ),
-                "{corrupt}"
-            );
+            corrupt_load(&persist, corrupt);
         }
+        // The shapes a derived reader admits (decision 0097 §1): a complete
+        // positional occurrence and a tagged source of either variant, each
+        // otherwise valid, refuse for that reason and no other.
+        for (corrupt, cause) in [
+            (
+                r#"[["https://x.io/a","Confirm",null,"html"]]"#,
+                "invalid type: sequence, expected a link occurrence object",
+            ),
+            (
+                r#"[{"url":"https://x.io/a","anchor_text":null,"rel":null,"source":{"html":null}}]"#,
+                "invalid type: map, expected a string",
+            ),
+            (
+                r#"[{"url":"https://x.io/a","anchor_text":null,"rel":null,"source":{"text":null}}]"#,
+                "invalid type: map, expected a string",
+            ),
+            (
+                r#"[{"url":"x","anchor_text":null,"url":"y","rel":null,"source":"html"}]"#,
+                "duplicate field `url`",
+            ),
+        ] {
+            let error = corrupt_load(&persist, corrupt);
+            assert!(error.contains(cause), "{corrupt}: {error}");
+        }
+        // The same row with valid populated bytes restores exactly.
+        persist
+            .state
+            .lock()
+            .unwrap()
+            .conn
+            .execute(
+                "UPDATE emails SET link_metadata_json=?1",
+                [stored.as_deref().unwrap()],
+            )
+            .unwrap();
+        assert_eq!(persist.load().unwrap().0, [mail]);
+    }
+
+    /// Writes `corrupt` into the one row's occurrence column and returns the
+    /// metadata decoder's own refusal: column 19, read as Text, caused by a
+    /// JSON decode — not some other failure of the restore.
+    fn corrupt_load(persist: &Persist, corrupt: &str) -> String {
+        persist
+            .state
+            .lock()
+            .unwrap()
+            .conn
+            .execute("UPDATE emails SET link_metadata_json=?1", [corrupt])
+            .unwrap();
+        let error = persist.load().unwrap_err();
+        assert!(
+            matches!(
+                error,
+                rusqlite::Error::FromSqlConversionFailure(19, rusqlite::types::Type::Text, _)
+            ),
+            "{corrupt}: {error:?}"
+        );
+        std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<serde_json::Error>()
+            .unwrap()
+            .to_string()
     }
 
     #[test]

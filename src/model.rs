@@ -1,6 +1,8 @@
 //! Core data model.
 
+use serde::de::{self, MapAccess, Visitor, value::MapAccessDeserializer};
 use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt;
 
 /// The blank-inbox refusal (decision 0044 §3): one sentence, every plane.
 pub const BLANK_INBOX_REFUSAL: &str = "inbox must not be blank";
@@ -50,15 +52,54 @@ pub struct EmailAddress {
 /// `None` is unknown, `Some("")` a known empty label. Every member is
 /// required on restore — a missing nullable member is corruption, not an
 /// implicit null — and an unknown member refuses (decision 0094 §2).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct LinkMetadata {
     pub url: String,
-    #[serde(deserialize_with = "required_nullable")]
     pub anchor_text: Option<String>,
-    #[serde(deserialize_with = "required_nullable")]
     pub rel: Option<String>,
     pub source: LinkSource,
+}
+
+/// The closed member set an occurrence object restores from. A derived
+/// struct reader also admits a positional array, so it is reached only
+/// through [`LinkMetadata`]'s map-only reader (decision 0097 §2), which
+/// decodes the raw entries: a duplicate key refuses rather than collapsing.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Members {
+    url: String,
+    #[serde(deserialize_with = "required_nullable")]
+    anchor_text: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    rel: Option<String>,
+    source: LinkSource,
+}
+
+impl<'de> Deserialize<'de> for LinkMetadata {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct Object;
+        impl<'de> Visitor<'de> for Object {
+            type Value = LinkMetadata;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a link occurrence object")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<LinkMetadata, A::Error> {
+                let Members {
+                    url,
+                    anchor_text,
+                    rel,
+                    source,
+                } = Members::deserialize(MapAccessDeserializer::new(map))?;
+                Ok(LinkMetadata {
+                    url,
+                    anchor_text,
+                    rel,
+                    source,
+                })
+            }
+        }
+        de.deserialize_map(Object)
+    }
 }
 
 /// A nullable member that must be present. A plain `Option` field takes a
@@ -68,11 +109,23 @@ fn required_nullable<'de, D: Deserializer<'de>>(de: D) -> Result<Option<String>,
 }
 
 /// Which selected body an occurrence came from.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum LinkSource {
     Text,
     Html,
+}
+
+/// Exactly the string ingest writes (decision 0097 §1). A derived enum
+/// reader also admits a tagged object such as `{"html":null}`.
+impl<'de> Deserialize<'de> for LinkSource {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        match String::deserialize(de)?.as_str() {
+            "text" => Ok(Self::Text),
+            "html" => Ok(Self::Html),
+            other => Err(de::Error::unknown_variant(other, &["text", "html"])),
+        }
+    }
 }
 
 /// A captured email.

@@ -1431,8 +1431,10 @@ async fn a_pre_metadata_data_file_keeps_unknown_provenance_across_restarts() {
 }
 
 /// Damage to the occurrence column refuses the restore instead of reading
-/// as "no links" — including a missing nullable member — while SQL NULL
-/// and a known empty array both serve.
+/// as "no links" — including a missing nullable member, a complete
+/// positional occurrence and a tagged source of either variant (decision
+/// 0097 §1), each refused for its own decode and not for a held file —
+/// while SQL NULL, a known empty array and valid populated bytes all serve.
 #[tokio::test]
 async fn a_corrupt_occurrence_column_refuses_to_serve() {
     let (_dir, db) = data_file("corrupt-metadata");
@@ -1448,11 +1450,33 @@ async fn a_corrupt_occurrence_column_refuses_to_serve() {
             )
             .unwrap();
     };
-    for corrupt in [
-        "{",
-        "null",
-        r#"[{"url":"https://x.io/","rel":null,"source":"html"}]"#,
-        r#"[{"url":"https://x.io/","anchor_text":null,"rel":null,"source":"pdf"}]"#,
+    for (corrupt, cause) in [
+        ("{", "invalid type: map, expected a sequence"),
+        ("null", "invalid type: null, expected a sequence"),
+        (
+            r#"[{"url":"https://x.io/","rel":null,"source":"html"}]"#,
+            "missing field `anchor_text`",
+        ),
+        (
+            r#"[{"url":"https://x.io/","anchor_text":null,"rel":null,"source":"pdf"}]"#,
+            "unknown variant `pdf`",
+        ),
+        (
+            r#"[["https://x.io/","Confirm",null,"html"]]"#,
+            "invalid type: sequence, expected a link occurrence object",
+        ),
+        (
+            r#"[{"url":"https://x.io/","anchor_text":"Confirm","rel":null,"source":{"html":null}}]"#,
+            "invalid type: map, expected a string",
+        ),
+        (
+            r#"[{"url":"https://x.io/","anchor_text":"Confirm","rel":null,"source":{"text":null}}]"#,
+            "invalid type: map, expected a string",
+        ),
+        (
+            r#"[{"url":"https://x.io/","url":"https://y.io/","anchor_text":null,"rel":null,"source":"html"}]"#,
+            "duplicate field `url`",
+        ),
     ] {
         set(Some(corrupt));
         let cfg = swarmail::config::Config {
@@ -1470,11 +1494,45 @@ async fn a_corrupt_occurrence_column_refuses_to_serve() {
             Ok(_) => panic!("a corrupt occurrence column must refuse to serve: {corrupt}"),
             Err(e) => e,
         };
+        let err = err.to_string();
         assert!(
-            err.to_string().contains("Text at index: 19"),
+            err.contains("Text at index: 19") && err.contains(cause),
             "{corrupt}: {err}"
         );
     }
+    set(Some(
+        r#"[{"url":"https://x.io/","anchor_text":"Confirm","rel":"","source":"html"},{"url":"https://x.io/","anchor_text":null,"rel":null,"source":"text"}]"#,
+    ));
+    let srv = serve_data_file(&db).await;
+    let link = focused(
+        srv.http_addr,
+        "link",
+        serde_json::json!({"inbox":"corrupt","anchor_text":"^Confirm$","timeout_ms":0}),
+    )
+    .await;
+    assert_eq!(link["status"], "selected");
+    assert_eq!(link["selected_url"], "https://x.io/");
+    assert_eq!(link["matched"], 1);
+    let only = &link["candidates"];
+    assert_eq!(only.as_array().unwrap().len(), 1);
+    assert_eq!(only[0]["email_id"], id.as_str());
+    assert_eq!(only[0]["link_index"], 0);
+    assert_eq!(only[0]["rel"], "");
+    assert_eq!(only[0]["source"], "html");
+    assert_eq!(link["candidates_total"], 1);
+    let both = focused(
+        srv.http_addr,
+        "link",
+        serde_json::json!({"inbox":"corrupt","timeout_ms":0}),
+    )
+    .await;
+    assert_eq!(both["candidates_total"], 2);
+    assert_eq!(
+        both["candidates"][1]["anchor_text"],
+        serde_json::Value::Null
+    );
+    assert_eq!(both["candidates"][1]["source"], "text");
+    srv.stop().await;
     for valid in [None, Some("[]")] {
         set(valid);
         let srv = serve_data_file(&db).await;

@@ -504,3 +504,73 @@ async fn focused_schema_negatives() {
     wire.finish().await;
     srv.stop().await;
 }
+
+/// Decision 0097 §4: every current surface states the compatibility the
+/// served catalogue actually has — thirteen existing March entries kept,
+/// two focused waits appended, fifteen in all — and keeps the OpenAPI pin
+/// for REST-backed schemas apart from the MCP-only focused schemas. The
+/// blanket "catalogue bytes unchanged" claims the review found are gone.
+#[tokio::test]
+async fn served_prose_states_additive_discovery() {
+    let srv = start().await;
+    let list = json!({"jsonrpc":"2.0","id":1,"method":"tools/list"});
+    let tools = post(srv.http_addr, &[], &list).await.1["result"]["tools"].clone();
+    let names: Vec<&str> = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.len(), 15);
+    assert_eq!(names[13..], FOCUSED);
+    assert!(names[..13].iter().all(|name| !FOCUSED.contains(name)));
+    let flat = |text: &str| {
+        text.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase()
+    };
+    let (status, llms) = common::http_get_text(srv.http_addr, "/llms.txt").await;
+    assert_eq!(status, 200);
+    let (status, api) = common::http_get_text(srv.http_addr, "/openapi.json").await;
+    assert_eq!(status, 200);
+    let api: Value = serde_json::from_str(&api).unwrap();
+    let readme =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    let surfaces = [
+        ("README", flat(&readme)),
+        ("llms.txt", flat(&llms)),
+        (
+            "openapi",
+            flat(
+                api["paths"]["/mcp"]["post"]["description"]
+                    .as_str()
+                    .unwrap(),
+            ),
+        ),
+    ];
+    for (surface, text) in &surfaces {
+        for clause in [
+            "thirteen existing",
+            "existing result bytes",
+            "appends the two focused waits after them",
+            "fifteen",
+            "explicit output projections",
+            "mcp-only",
+            "independently stated expectations",
+        ] {
+            assert!(text.contains(clause), "{surface} omits {clause:?}");
+        }
+        for stale in [
+            "march catalogue/result bytes are unchanged",
+            "keeps its catalogue and result bytes",
+            "preserves catalogue/result bytes",
+            "thirteen mcp tools",
+            "13 tools",
+        ] {
+            assert!(!text.contains(stale), "{surface} still claims {stale:?}");
+        }
+    }
+    assert!(surfaces[0].1.contains("fifteen mcp tools"));
+    srv.stop().await;
+}
