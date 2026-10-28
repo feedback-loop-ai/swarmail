@@ -414,6 +414,50 @@ async fn report_workers_do_not_hold_store_guards() {
         reply["result"]["content"][0]["text"],
         AnalysisError::Unavailable.message()
     );
+    // The same real exhausted service must return an error, never a
+    // structured success, for both modern revisions over HTTP and the bridge.
+    for revision in ["2025-06-18", "2025-11-25"] {
+        let call = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"swarmail_get_deliverability_report","arguments":{"id":id}}});
+        let http = client()
+            .post(format!("http://{}/mcp", srv.http_addr))
+            .header("MCP-Protocol-Version", revision)
+            .header("Content-Type", "application/json")
+            .body(call.to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(http.status(), 200);
+        let http: serde_json::Value = serde_json::from_str(&http.text().await.unwrap()).unwrap();
+        assert_eq!(http["id"], 2);
+        assert_eq!(http["result"]["isError"], true);
+        assert_eq!(
+            http["result"]["content"][0]["text"],
+            AnalysisError::Unavailable.message()
+        );
+        assert!(http["result"].get("structuredContent").is_none());
+
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":revision}});
+        let initialized = serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+        let input = format!("{init}\n{initialized}\n{call}\n");
+        let mut reader = input.as_bytes();
+        let mut output = Vec::new();
+        let code = crate::stdio::bridge(
+            &format!("http://{}", srv.http_addr),
+            &mut reader,
+            &mut output,
+            Duration::from_secs(10),
+        )
+        .await;
+        assert_eq!(code, 0);
+        let replies: Vec<serde_json::Value> = std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["result"]["protocolVersion"], revision);
+        assert_eq!(replies[1], http);
+    }
     let next = smtp(&srv).await;
     assert!(
         srv.store.get(&id).is_none(),
