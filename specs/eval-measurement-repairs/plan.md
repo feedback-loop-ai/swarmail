@@ -1,6 +1,6 @@
 # Implementation plan — eval measurement repairs
 
-Implements [spec.md](spec.md) under existing proposed
+Implements [spec.md](spec.md) under accepted
 [0055](../../docs/decisions/0055-agent-eval-harness.md), without amending it.
 The chief commits design artifacts only; the ordered implementation and
 verification obligations remain in [tasks.md](tasks.md).
@@ -22,9 +22,9 @@ pruning and 0005 ingest extraction are unchanged. Real protocol tests use
 0004 inbox routing and follow 0020's fresh state, poles-only chaos and
 explicit synchronization rules. Evals stays outside the root coverage report
 as already ruled in 0055; no coverage exclusion or floor change is allowed.
-Root gates remain byte-identical. The root gate suite does not prove evals,
-so implement and reviewers must independently run its own suite until the
-deferred CI wiring lands. No new public contract or decision is introduced.
+The root workspace remains unchanged and does not include evals. CI and
+pinned verify run evals as a standalone suite against the candidate binary
+from root tests. No new public contract or decision is introduced.
 
 ## Research and resolved questions
 
@@ -162,13 +162,11 @@ a gate could not run. A known baseline evals format failure is a pending
 repair, not permission to format production code in this design commit.
 
 Design validation checks nonempty files, `## Acceptance Criteria`, `## Risks`,
-task checkboxes and the existing relative decision link/status. Stage exactly
-the three design files, sign a plain imperative commit citing #148, verify its
-signature and changed paths, and confirm branch/clean tracked state. Later
-implementation likewise appends signed commits without pushing or rewriting
-`fd66988`/`4dac267`. The chief's required JSON result must identify the
-committed paths on success or explicitly disclose any commit blocker and
-uncommitted artifacts; result/position files stay gitignored.
+task checkboxes and the existing relative decision link/status. The original
+design handoff predated accepted 0056. Later implementation appends unsigned
+commits without pushing or rewriting `fd66988`/`4dac267`. The chief's required
+JSON result must identify the committed paths on success or explicitly disclose any commit blocker and uncommitted artifacts; result/position files
+stay gitignored.
 
 ## Risks
 
@@ -182,5 +180,5 @@ uncommitted artifacts; result/position files stay gitignored.
 | Agents deliberately cause infrastructure errors. | Preserve existing snapshot authority and visible harness-error counts; no intent inference or new taxonomy. |
 | Matrix loop changes lose labels or repeat IDs. | Validate the full ordered 2×2×2 product and use existing row/ID constructors. |
 | Tests contaminate other trials. | Own real servers and scratch paths, process-local environment overrides, chaos 0/100 and normal cleanup. |
-| Gate or signing tools are unavailable in the seat. | Record the blocker; never bypass signing, weaken gates or claim implementation complete. |
-| Scope collides with epic #120 batch 5. | Evals-only implementation and unchanged root source/scripts/bundle/CI; diff and boundary tests enforce the separation. |
+| A required gate is unavailable in the seat. | Record the blocker; never weaken gates or claim implementation complete. |
+| Standalone gate wiring drifts between owners. | CI, pinned verify and the single house-rule inventory name the same eval checks and candidate-binary prerequisite. |
