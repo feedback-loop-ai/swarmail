@@ -281,7 +281,6 @@ pub struct CommandIdentity {
     pub algorithm: String,
     pub sha256: String,
 }
-<<<<<<< HEAD
 /// Declared recipe, never an observed tool inventory or binary attestation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -422,11 +421,6 @@ impl ToolSurface {
 #[serde(deny_unknown_fields)]
 pub struct AgentIdentity {
     pub tool_surface: ToolSurface,
-=======
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentIdentity {
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
     pub kind: AgentKind,
     pub executable_sha256: Availability<String>,
     pub command: Availability<CommandIdentity>,
@@ -479,11 +473,7 @@ fn check_revision(a: &Availability<String>, sources: &[Source]) -> Result<(), St
 pub fn catalogue_hash() -> String {
     sha256(
         &serde_json::to_vec(&crate::tasks::Catalogue {
-<<<<<<< HEAD
             schema_version: crate::tasks::CATALOGUE_SCHEMA,
-=======
-            schema_version: 1,
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
             tasks: crate::tasks::catalogue(),
         })
         .expect("typed catalogue"),
@@ -495,7 +485,6 @@ pub fn task_hash(task: &str) -> Option<String> {
 impl Provenance {
     pub fn validate(&self) -> Result<(), String> {
         self.fixture.validate()?;
-<<<<<<< HEAD
         self.agent
             .tool_surface
             .validate(self.agent.kind, &self.agent.model)?;
@@ -505,14 +494,6 @@ impl Provenance {
         if self.task.catalogue_schema != crate::tasks::CATALOGUE_SCHEMA
             || !is_hash(&self.task.catalogue_sha256)
             || self.task.scorer_id != "business-score-v2"
-=======
-        if let Some(m) = &self.matrix {
-            seed_bytes(&m.master_seed)?;
-        }
-        if self.task.catalogue_schema != 1
-            || !is_hash(&self.task.catalogue_sha256)
-            || self.task.scorer_id != "business-score-v1"
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
         {
             return Err("unsupported catalogue/scorer".into());
         }
