@@ -1,6 +1,6 @@
 {
   "name": "codex-careful",
-  "description": "Codex Sol xhigh implementation; five required reviewers: Astra correctness, official Flash security, GLM-5.3-Flash tests through dsh (effort not applicable), Astra guarantees and independent Fable 5.1. Inherits all protected shell gates.",
+  "description": "Codex Sol xhigh implementation; five required reviewers: official DeepSeek Flash correctness, security and guarantees through dsh (separate offices and results), GLM-5.3-Flash tests through dsh (effort not applicable) and independent Fable 5.1, under a 4-hour review deadline. Inherits all protected shell gates.",
   "extends": "codex",
   "override": {
     "bundle": [
@@ -47,7 +47,7 @@
       ],
       "limits": {
         "max_attempts": 3,
-        "timeout_seconds": 3600
+        "timeout_seconds": 14400
       },
       "aggregate": "review-panel",
       "panel": {
