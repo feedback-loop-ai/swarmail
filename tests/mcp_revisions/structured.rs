@@ -1669,9 +1669,10 @@ async fn modern_storage_errors_and_revision_isolation() {
                 ),
             ] {
                 let result = wire.request(&call(json!(2), "wait_for_email", args)).await;
-                assert_eq!(result["result"]["isError"], true);
-                assert_eq!(result["result"]["content"][0]["text"], message);
-                assert!(result["result"].get("structuredContent").is_none());
+                assert_eq!(
+                    result,
+                    json!({"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":message}],"isError":true}})
+                );
             }
             wire.finish().await;
         }
@@ -1734,6 +1735,146 @@ async fn modern_storage_errors_and_revision_isolation() {
         0
     );
     srv.stop().await;
+}
+
+// Every malformed report argument shape refuses with the correlated -32602
+// arm on both modern revisions and both adapters — never a tool result, never
+// structuredContent. Expectations are literal, not derived from production.
+#[tokio::test]
+async fn modern_report_argument_refusals() {
+    const CONTAINER: &str = "arguments must be an object of named arguments";
+    let srv = start().await;
+    let stored =
+        common::smtp_raw(srv.smtp_addr, "arguments", b"From: s@x.io\r\n\r\nbody\r\n").await;
+    let report = |id: Value, arguments: Option<Value>| {
+        let mut params = json!({"name":"swarmail_get_deliverability_report"});
+        if let Some(arguments) = arguments {
+            params["arguments"] = arguments;
+        }
+        json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":params})
+    };
+    let cases = [
+        (report(json!(20), None), json!(20), "missing id"),
+        (report(json!(21), Some(json!({}))), json!(21), "missing id"),
+        (
+            report(json!(22), Some(json!({"id":null}))),
+            json!(22),
+            "id must be a string",
+        ),
+        (
+            report(json!(23), Some(json!({"id":7}))),
+            json!(23),
+            "id must be a string",
+        ),
+        (
+            report(json!("null-container"), Some(Value::Null)),
+            json!("null-container"),
+            CONTAINER,
+        ),
+        (
+            report(json!(24), Some(json!([{"id":stored}]))),
+            json!(24),
+            CONTAINER,
+        ),
+        (report(json!(25), Some(json!(stored))), json!(25), CONTAINER),
+        (report(json!(26), Some(json!(3))), json!(26), CONTAINER),
+        (
+            report(json!(27), Some(json!({"id":stored,"extra":1}))),
+            json!(27),
+            "unknown argument: extra",
+        ),
+        // An explicit JSON-RPC null id is a request, answered — not silence.
+        (
+            report(Value::Null, Some(json!({}))),
+            Value::Null,
+            "missing id",
+        ),
+    ];
+    for version in &VERSIONS[1..] {
+        for stdio in [false, true] {
+            let mut wire = Wire::start(srv.http_addr, version, stdio).await;
+            for (request, id, message) in &cases {
+                assert_eq!(
+                    wire.request(request).await,
+                    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":message}}),
+                    "{version} stdio={stdio}: {request}"
+                );
+            }
+            // The refusals left the delivered mail and the adapter usable.
+            let reply = wire
+                .request(&call(
+                    json!(28),
+                    "get_deliverability_report",
+                    json!({"id":stored}),
+                ))
+                .await;
+            assert_eq!(reply["result"]["isError"], false);
+            assert_eq!(reply["result"]["structuredContent"], text(&reply));
+            wire.finish().await;
+        }
+    }
+    srv.stop().await;
+}
+
+// Notifications on both modern revisions and adapters: an admitted seed takes
+// effect exactly once, malformed report calls refuse without effect, and no
+// notification earns a reply. HTTP is checked on its raw empty body; the
+// binary's silence is proved by EOF draining, since a ping is no tool barrier.
+#[tokio::test]
+async fn modern_notification_refusal_contract() {
+    let note = |name: &str, arguments: Value| {
+        let mut request = call(Value::Null, name, arguments);
+        request.as_object_mut().unwrap().remove("id");
+        request
+    };
+    let notes = [
+        note(
+            "seed_email",
+            json!({"inbox":"notify","to":"a@x.io","subject":"once"}),
+        ),
+        note("get_deliverability_report", json!({"id":7})),
+        note("get_deliverability_report", json!([])),
+        note("get_deliverability_report", json!({"id":"x","extra":1})),
+    ];
+    let ping = json!({"jsonrpc":"2.0","id":"after","method":"ping"});
+    let pong = json!({"jsonrpc":"2.0","id":"after","result":{}});
+    for version in &VERSIONS[1..] {
+        for stdio in [false, true] {
+            let srv = start().await;
+            if stdio {
+                let mut binary = Binary::start(srv.http_addr);
+                binary.ready(version).await;
+                for request in &notes {
+                    binary.send(request).await;
+                }
+                binary.send(&ping).await;
+                assert_eq!(binary.reply().await, pong);
+                // EOF drains every admitted exchange; no trailing line may follow.
+                binary.finish().await;
+            } else {
+                for request in &notes {
+                    assert_eq!(
+                        http_send_text_with_headers(
+                            srv.http_addr,
+                            "POST",
+                            "/mcp",
+                            &[("MCP-Protocol-Version", version)],
+                            Some(&request.to_string()),
+                        )
+                        .await,
+                        (202, String::new()),
+                        "{version}: {request}"
+                    );
+                }
+                let mut wire = Wire::Http(srv.http_addr, Some(version));
+                assert_eq!(wire.request(&ping).await, pong);
+            }
+            let all = swarmail::store::Filter::default();
+            assert_eq!(srv.store.count("notify", &all), 1, "{version} {stdio}");
+            assert_eq!(srv.store.count("default", &all), 0, "{version} {stdio}");
+            srv.stop().await;
+        }
+    }
 }
 
 #[tokio::test]
