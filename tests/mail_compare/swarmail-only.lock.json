@@ -1,0 +1,14 @@
+{
+  "lock_version": 1,
+  "entries": [
+    {
+      "target": "swarmail",
+      "status": "candidate",
+      "unverified_reason": null,
+      "source": null,
+      "artifact": null,
+      "supports_memory_storage": true,
+      "launch": null
+    }
+  ]
+}

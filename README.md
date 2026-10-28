@@ -1152,6 +1152,13 @@ parse, was the cost. The capped query paths publish in the same run
 (`ingest/threads/view@cap`, `ingest/store/count@cap`,
 `ingest/store/count@cap-filtered`).
 
+These are in-process ingest microbenchmarks. They are not network
+throughput, wait latency or agent results, and they compare nothing.
+The fair comparison against Mailpit and MailHog has its own method and
+driver, and so far no results: see [docs/evals](docs/evals/README.md)
+for what is built, what is still missing and why. This README states no
+comparative or agent numbers until admitted evidence exists to cite.
+
 ## Repo layout
 
 | Path | What it is |
@@ -1251,6 +1258,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/store_contract_docs.rs` | the store, maildrop and compat contracts as documented — README, llms.txt, the chart comment and the served schema, their numbers built from the running constants — and every decision index row agreeing with its record's status |
 | `tests/delivery_constitution.rs` | structural pins on `bundles/self/` (0050): the review-residual stops, the design sequence ending in the pinned check, the verify seat's pinned gates and shim check; and the documented install examples and CI's chart-history and docker-smoke wiring (#141) |
 | `tests/delivery_recipes.rs` | Codex recipe discovery, triage routing and single/double/full review, inherited shell gates, work-seat tools, exact routes and independent review without Pro or author-model fallback (0057); [recipe tables and launch commands](bundles/README.md) |
+| `tests/mail_compare.rs` | the fair wire comparison driver (proposed 0091) against the real binary it launches: method and source-pin refusals, hand-computed quantiles, exact throughput and present/future/empty wait reconciliation, a bounded 1,000-session run, closed-environment, private-output and reaped-group facts read from `/proc`, admission refusals, and every `scripts/compare-mail.sh` mode refusing without launching an agent |
 | `tests/tooling_patches.rs` | the actual tooling-patch helper against real Git repositories: source identity, clean state, strict records, safe paths, all checksums before mutation and ordered patch application |
 | unit | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |
 
