@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "description": "Codex leads intake, design and implementation; Standard review uses Claude Fable 5.1 correctness, official DeepSeek Flash security and GLM-5.3-Flash tests through dsh (effort not applicable). Inherits the pinned proof chain and protected policy.",
+  "description": "Codex leads intake, design and implementation; Standard review uses Claude Fable 5.1 correctness, official DeepSeek Flash security and GLM-5.3-Flash tests through dsh (effort not applicable), under a 4-hour review deadline. Inherits the pinned proof chain and protected policy.",
   "extends": "self",
   "override": {
     "bundle": [
@@ -47,7 +47,7 @@
       ],
       "limits": {
         "max_attempts": 3,
-        "timeout_seconds": 3600
+        "timeout_seconds": 14400
       },
       "aggregate": "review-panel",
       "panel": {

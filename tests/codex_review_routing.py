@@ -85,8 +85,9 @@ def resolved_matrix(engine, out):
         'codex': {'review:correctness': ('claude', ['fable']),
                   'review:security': ('dsh', ['flash']), 'review:tests': ('dsh', ['glm-flash'])},
     }
-    five = {'correctness': ('codex', ['astra']), 'security': ('dsh', ['flash']),
-            'tests': ('dsh', ['glm-flash']), 'guarantees': ('codex', ['astra']),
+    # Proposed 0098: correctness and guarantees take security's official Flash route.
+    five = {'correctness': ('dsh', ['flash']), 'security': ('dsh', ['flash']),
+            'tests': ('dsh', ['glm-flash']), 'guarantees': ('dsh', ['flash']),
             'independent': ('claude', ['fable'])}
     expected['codex-careful'] = {'review:' + k: v for k, v in five.items()}
     expected['codex-fast'] = {'review:chore': ('dsh', ['flash']),
@@ -253,10 +254,13 @@ def resolved_matrix(engine, out):
                                                 providers_called=False))
         # Negative controls run the same whole-matrix assertion used above.
         for key in [k for k in actual if k.startswith('review')]:
-            for mutation in ['missing', 'pro', 'fallback', 'merged']:
+            for mutation in ['missing', 'pro', 'fallback', 'merged', 'astra']:
                 bad = copy.deepcopy(actual)
                 if mutation == 'missing':
                     del bad[key]
+                elif mutation == 'astra':
+                    # The pre-0098 Astra route must not satisfy the matrix.
+                    bad[key] = ('codex', ['astra'])
                 else:
                     bad[key] = ('dsh', ['deepseek-pro']) if mutation == 'pro' else ('claude', ['fable', 'sol']) if mutation == 'fallback' else ('codex', ['sol'])
                 assert bad != expected[recipe], (recipe, key, mutation)
@@ -273,17 +277,20 @@ def resolved_matrix(engine, out):
     print('resolved triage/intake, work/review matrices and negative controls passed', flush=True)
 
 
-# Operator-directed mixed route (proposed 0090): office, provider, concrete pin,
+# Operator-directed mixed route (proposed 0090, review members per proposed
+# 0098): office, provider, concrete pin,
 # adapter route and office effort for each of its seven model seats.
 MIXED_ROUTE = {
     'intake': ('mixed-terra-intake', 'codex', 'terra61', 'gpt-6.1-terra', None, 'high'),
     'implement': ('mixed-opus-implementer', 'claude', 'opus', 'claude-opus-5-5', None, 'high'),
-    'review:correctness': ('codex-review-astra-correctness', 'codex', 'astra', 'gpt-6-astra', None, 'high'),
+    'review:correctness': ('codex-review-astra-correctness', 'dsh', 'flash', 'deepseek-flash',
+                           ('deepseek-official', 'uncontracted'), 'high'),
     'review:security': ('codex-review-security', 'dsh', 'flash', 'deepseek-flash',
                         ('deepseek-official', 'uncontracted'), 'high'),
     'review:tests': ('codex-review-tests', 'dsh', 'glm-flash', 'spark-glm/GLM-5.3-Flash-EXL3',
                      ('spark-glm', 'local'), None),
-    'review:guarantees': ('codex-review-guarantees', 'codex', 'astra', 'gpt-6-astra', None, 'high'),
+    'review:guarantees': ('codex-review-guarantees', 'dsh', 'flash', 'deepseek-flash',
+                          ('deepseek-official', 'uncontracted'), 'high'),
     'review:independent': ('codex-review-independent', 'claude', 'fable', 'claude-fable-5-1', None, 'high'),
 }
 
