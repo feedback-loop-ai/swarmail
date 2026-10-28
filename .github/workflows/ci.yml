@@ -316,7 +316,7 @@ jobs:
             echo "REFUSAL: admitted brokkr version is '$built' but the record pins '$expected'" >&2
             exit 1
           fi
-          for recipe in self codex codex-careful codex-fast mixed-opus-terra; do
+          for recipe in self codex codex-careful codex-fast mixed-opus-terra claude-careful; do
             output="$engine_dir/$recipe.log"
             if "$artifact" compile --bundle "bundles/$recipe" > "$output" 2>&1; then
               cat "$output"

@@ -62,6 +62,16 @@ All reviewer chains are single-model except dedicated fast-feature correctness:
 Qwen Max then Sonnet 5.5 on pre-session dispatch failure only. No completed
 verdict or malformed facts trigger substitution. DeepSeek Pro is forbidden.
 
+Proposed [0099](../docs/decisions/0099-claude-careful-recipe.md) adds the
+zero-Codex `claude-careful` offices, each an overlay of one base office that
+keeps its charter: `claude-intake` (Haiku 5.5), `claude-position-simplicity`
+(Opus 5.5), `dsh-position-robustness` (official DeepSeek Flash through dsh,
+without hands), `claude-chief-architect` (Fable 5.1), `claude-implementer`
+(Sonnet 5.5) and `claude-review-independent` (Opus 5.5, of the correctness
+base), all at high effort with single-model chains. Claude work offices take
+careful intake's boxed workspace hands; the recipe reuses the Fable
+correctness, Flash security and guarantees, and GLM tests offices unchanged.
+
 `codex-fast` adds `codex-triage`, `codex-fast-implementer` and
 `codex-bug-reviewer`: triage uses Claude Opus 5.5 (`opus`) at medium effort
 with no fallback and records scope; implementation stays on Codex Luna at

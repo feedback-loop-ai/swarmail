@@ -561,10 +561,11 @@ fn the_inventory_refuses_missing_dangling_duplicate_and_malformed_entries() {
         ]
     );
 
-    let dangling = format!("{index}| [0099](0099-ghost.md) | ghost | proposed | |\n");
+    // The ghost takes a number no record will reach (0099 became a real record).
+    let dangling = format!("{index}| [9999](9999-ghost.md) | ghost | proposed | |\n");
     assert_eq!(
         inventory_problems(&dangling, &names),
-        ["0099-ghost.md: an index row with no file"]
+        ["9999-ghost.md: an index row with no file"]
     );
 
     let r34 = row_of("0034");
