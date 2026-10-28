@@ -9,7 +9,7 @@ use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
 mod html;
 
-pub const RULE_SET_ID: &str = "swarmail-html/1";
+pub const RULE_SET_ID: &str = "swarmail-html/2";
 pub const MAX_FINDINGS: usize = 256;
 pub const MAX_REPORT_BYTES: usize = 65_536;
 const MAX_HEADER_BYTES: usize = 65_536;
@@ -1093,9 +1093,43 @@ mod tests {
         let empty = Collector(Vec::new()).finish(&Inputs::default()).unwrap();
         assert_eq!(
             serde_json::to_value(&empty).unwrap(),
-            json!({"rule_set_id":"swarmail-html/1","findings":[]})
+            json!({"rule_set_id":"swarmail-html/2","findings":[]})
         );
         assert!(empty.qualifies(Severity::Info));
+    }
+
+    #[test]
+    fn empty_html_keeps_later_collectors_and_finish_bounds() {
+        let mut out = Collector(Vec::new());
+        html::collect(b"", &mut out).unwrap();
+        let f = finding(
+            Location::Header {
+                name: "fixture".into(),
+                occurrence: None,
+            },
+            Severity::Warning,
+        );
+        out.push(f.clone()).unwrap();
+        assert_eq!(
+            out.finish(&Inputs::default()).unwrap().findings,
+            vec![f.clone()]
+        );
+        let mut bounded = Collector(Vec::new());
+        html::collect(b"", &mut bounded).unwrap();
+        for _ in 0..MAX_FINDINGS {
+            bounded.push(f.clone()).unwrap();
+        }
+        assert_eq!(bounded.push(f.clone()), Err(AnalysisError::Failed));
+        let mut too_large = f;
+        too_large.fix_hint = "x".repeat(MAX_REPORT_BYTES);
+        assert_eq!(
+            Collector(vec![too_large]).finish(&Inputs::default()),
+            Err(AnalysisError::Failed)
+        );
+        assert_eq!(
+            evaluate(b"", &Inputs::default()),
+            Err(AnalysisError::Failed)
+        );
     }
 
     #[test]

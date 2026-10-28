@@ -69,3 +69,15 @@ CI/operator-only proofs retain their owners. The proposed index row is supplied
 by a separate prerequisite commit because the inventory gate requires it now.
 The final chief commit is restricted to this decision and the three design files. Only the operator may accept this proposal. Compatible work under
 the supplied #251 direction and 0045 §8 can proceed; frozen weakening cannot.
+
+## Repair implementation pointer — 2026-10-28 (proposed 0091)
+
+[0091](0091-html-review-repair.md), still **proposed**, records the compatible
+review repair: swarmail-html/2 preserves CSS component ownership and literal URL
+data, treats exact-empty raw only as no HTML parts (other collectors/limits
+still run), and proves counted helper inspections separately from progress.
+The [implementation ledger](../../specs/html-review-repair/implementation.md)
+names regressions, original non-security findings and proof boundaries. The
+historical text above remains as recorded; no proposal is accepted here. Later
+main integration must preserve bulk/unknown-authentication semantics and receive
+fresh combined verification/review.

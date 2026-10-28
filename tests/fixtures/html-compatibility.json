@@ -1,6 +1,6 @@
 {
   "catalogue_snapshot": {
-    "rule_set_id": "swarmail-html/1",
+    "rule_set_id": "swarmail-html/2",
     "provenance": "Swarmail-authored heuristics; no downloaded dataset or current empirical client measurements supplied. Reference guidance was not fetched or freshly verified. New Outlook is not classic Outlook; unlisted behavior is unassessed.",
     "rules": [
       {

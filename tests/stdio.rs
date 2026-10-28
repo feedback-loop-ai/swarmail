@@ -1222,7 +1222,7 @@ mod report_wire;
 async fn report_stdio_text_contract() {
     let srv = common::start().await;
     for raw in [
-        &b"\r\nempty\r\n"[..],
+        &b""[..],
         b"X-Swarmail-Demo: warning\r\n\r\nbody\r\n",
         b"Content-Type: text/html\r\n\r\n<p style='position:absolute'>Hello</p><video></video>\r\n",
     ] {

@@ -131,3 +131,15 @@ analysis and deadline handling, and all adapters share its typed result.
 the current text-block contract and the bounded lazy behavior. The report's
 structuredContent/outputSchema remains the later small follow-up when #153
 lands; no part of this implementation depends on 0079/0080/0082.
+
+## Repair implementation pointer — 2026-10-28 (proposed 0091)
+
+[0091](0091-html-review-repair.md), still **proposed**, records the compatible
+review repair: swarmail-html/2 preserves CSS component ownership and literal URL
+data, treats exact-empty raw only as no HTML parts (other collectors/limits
+still run), and proves counted helper inspections separately from progress.
+The [implementation ledger](../../specs/html-review-repair/implementation.md)
+names regressions, original non-security findings and proof boundaries. The
+historical text above remains as recorded; no proposal is accepted here. Later
+main integration must preserve bulk/unknown-authentication semantics and receive
+fresh combined verification/review.

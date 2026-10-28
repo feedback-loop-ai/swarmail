@@ -43,7 +43,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/1");
+    assert_eq!(first["rule_set_id"], "swarmail-html/2");
     assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
         first["findings"][6],
@@ -81,7 +81,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-html/1",
+        "swarmail-html/2",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -304,59 +304,71 @@ async fn report_threshold_exact_count_and_min_one() {
 #[tokio::test]
 async fn report_failure_is_never_clean_and_ui_keeps_message() {
     let srv = start().await;
-    let raw = "Content-Type: text/html\r\n\r\n<video><script>\r\n";
-    let id = smtp_raw(srv.smtp_addr, "failure", raw.as_bytes()).await;
-    smtp_raw(
-        srv.smtp_addr,
-        "failure",
-        b"Subject: clean newest\r\n\r\nbody\r\n",
-    )
-    .await;
-    assert_eq!(
-        report(srv.http_addr, &id).await,
-        (503, json!({"error":"deliverability analysis failed"}))
-    );
-    for op in ["assert?count=1", "await?count=2"] {
-        let path = format!("/api/v1/inboxes/failure/{op}&no_findings_at_or_above=error");
-        assert_eq!(
-            http_json(srv.http_addr, "GET", &path, None).await,
-            (503, json!({"error":"deliverability analysis failed"}))
-        );
-    }
-    for (name, args) in [
-        ("swarmail_get_deliverability_report", json!({"id":id})),
+    for (inbox, raw) in [
         (
-            "swarmail_wait_for_email",
-            json!({"inbox":"failure","count":2,"no_findings_at_or_above":"error"}),
+            "failure-html",
+            "Content-Type: text/html\r\n\r\n<video><script>\r\n".to_string(),
+        ),
+        (
+            "failure-headers",
+            format!("Subject: {}\r\n\r\nbody\r\n", "x".repeat(65_536)),
         ),
     ] {
-        let reply = rpc(
-            srv.http_addr,
-            "tools/call",
-            json!({"name":name,"arguments":args}),
+        let id = smtp_raw(srv.smtp_addr, inbox, raw.as_bytes()).await;
+        smtp_raw(
+            srv.smtp_addr,
+            inbox,
+            b"Subject: clean newest\r\n\r\nbody\r\n",
         )
         .await;
-        assert_eq!(reply["result"]["isError"], true);
-        assert_eq!(
-            reply["result"]["content"][0]["text"],
-            "deliverability analysis failed"
-        );
+        for _ in 0..2 {
+            assert_eq!(
+                report(srv.http_addr, &id).await,
+                (503, json!({"error":"deliverability analysis failed"}))
+            );
+        }
+        for op in ["assert?count=1", "await?count=2"] {
+            let path = format!("/api/v1/inboxes/{inbox}/{op}&no_findings_at_or_above=error");
+            assert_eq!(
+                http_json(srv.http_addr, "GET", &path, None).await,
+                (503, json!({"error":"deliverability analysis failed"}))
+            );
+        }
+        for (name, args) in [
+            ("swarmail_get_deliverability_report", json!({"id":id})),
+            (
+                "swarmail_wait_for_email",
+                json!({"inbox":inbox,"count":2,"no_findings_at_or_above":"error"}),
+            ),
+        ] {
+            let reply = rpc(
+                srv.http_addr,
+                "tools/call",
+                json!({"name":name,"arguments":args}),
+            )
+            .await;
+            assert_eq!(reply["result"]["isError"], true);
+            assert_eq!(
+                reply["result"]["content"][0]["text"],
+                "deliverability analysis failed"
+            );
+        }
+        let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+        assert_eq!(status, 200);
+        assert!(page.contains("deliverability analysis failed"));
+        let (status, list) = http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/inboxes/{inbox}/messages"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        let clean = list["emails"][0]["id"].as_str().unwrap();
+        let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{clean}")).await;
+        assert_eq!(status, 200);
+        assert!(page.contains("bulk.from_alignment.not_evaluated.v1"));
     }
-    let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
-    assert_eq!(status, 200);
-    assert!(page.contains("deliverability analysis failed"));
-    let (status, list) = http_json(
-        srv.http_addr,
-        "GET",
-        "/api/v1/inboxes/failure/messages",
-        None,
-    )
-    .await;
-    assert_eq!(status, 200);
-    let clean = list["emails"][0]["id"].as_str().unwrap();
-    let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{clean}")).await;
-    assert_eq!(status, 200);
-    assert!(page.contains("bulk.from_alignment.not_evaluated.v1"));
     srv.stop().await;
 }
 
@@ -505,7 +517,7 @@ async fn report_served_docs_match_contract() {
         "Empty findings do not imply deliverability",
         "when #153 lands",
         "JSON in one text block",
-        "swarmail-html/1",
+        "swarmail-html/2",
         "104448",
         "classic Outlook",
         "conditional comments",
@@ -601,5 +613,157 @@ async fn html_findings_share_one_report_and_predicate_contract() {
             .1,
         raw.as_bytes()
     );
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn empty_smtp_message_has_an_exact_composable_report() {
+    let srv = start().await;
+    // smtp_raw sends DATA followed immediately by ".\r\n" and asserts 250.
+    let id = smtp_raw(srv.smtp_addr, "empty-report", b"").await;
+    let before = http_json(
+        srv.http_addr,
+        "GET",
+        &format!("/api/v1/messages/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(before.0, 200);
+    assert_eq!(
+        http_bytes(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await,
+        (200, vec![])
+    );
+    // The bulk collector refuses missing MIME metadata; HTML's empty-input
+    // handling must not turn another collector's failure into a clean report.
+    for _ in 0..2 {
+        assert_eq!(
+            report(srv.http_addr, &id).await,
+            (503, json!({"error":"deliverability analysis failed"}))
+        );
+    }
+    let reply = rpc(
+        srv.http_addr,
+        "tools/call",
+        json!({"name":"swarmail_get_deliverability_report","arguments":{"id":id}}),
+    )
+    .await;
+    assert_eq!(reply["result"]["isError"], true);
+    let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+    assert_eq!(status, 200);
+    assert!(page.contains("deliverability analysis failed"));
+    let path = "/api/v1/inboxes/empty-report/assert?count=0&no_findings_at_or_above=info";
+    assert_eq!(http_json(srv.http_addr, "GET", path, None).await.0, 503);
+    assert_eq!(
+        http_json(
+            srv.http_addr,
+            "GET",
+            &format!("/api/v1/messages/{id}"),
+            None
+        )
+        .await,
+        before
+    );
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
+    let srv = start().await;
+    let catalogue: Value =
+        serde_json::from_str(include_str!("../src/deliverability/html-rules.json")).unwrap();
+    let rule = &catalogue["rules"][0];
+    for (n, (css, warning)) in [
+        ("--unused:{position:absolute};color:red", false),
+        ("--unused:{position:absolute};position:absolute", true),
+        ("background:url(https://x.test/*/a.png)", false),
+        (
+            "background:url(https://x.test/*/a.png);position:absolute",
+            true,
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        for sheet in [false, true] {
+            let inbox = format!("css-pair-{n}-{sheet}");
+            let body = if sheet {
+                format!("<style>.x{{{css}}}</style><p>Hello</p>")
+            } else {
+                format!("<p style='{css}'>Hello</p>")
+            };
+            let raw = format!("Content-Type: text/html\r\n\r\n{body}\r\n");
+            let id = smtp_raw(srv.smtp_addr, &inbox, raw.as_bytes()).await;
+            let before = http_json(
+                srv.http_addr,
+                "GET",
+                &format!("/api/v1/messages/{id}"),
+                None,
+            )
+            .await;
+            assert_eq!(before.0, 200);
+            assert_eq!(
+                http_bytes(srv.http_addr, &format!("/api/v1/messages/{id}/raw")).await,
+                (200, raw.as_bytes().to_vec())
+            );
+            let findings = if *warning {
+                vec![
+                    json!({"rule_id":rule["id"],"severity":rule["severity"],"fix_hint":rule["fix_hint"],"location":{"kind":"mime_part","path":[]}}),
+                ]
+            } else {
+                vec![]
+            };
+            let (status, expected) = report(srv.http_addr, &id).await;
+            assert_eq!(status, 200);
+            assert_eq!(expected["rule_set_id"], "swarmail-html/2");
+            let html: Vec<Value> = expected["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|f| f["rule_id"].as_str().unwrap().starts_with("html."))
+                .cloned()
+                .collect();
+            assert_eq!(html, findings);
+            assert_eq!(report(srv.http_addr, &id).await, (200, expected.clone()));
+            let reply = rpc(
+                srv.http_addr,
+                "tools/call",
+                json!({"name":"swarmail_get_deliverability_report","arguments":{"id":id}}),
+            )
+            .await;
+            assert_eq!(result_text(&reply), expected);
+            let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
+            assert_eq!(status, 200);
+            assert_eq!(page.contains("html.css.position.v1"), *warning);
+            if *warning {
+                assert!(page.contains(rule["fix_hint"].as_str().unwrap()));
+            }
+            for (threshold, count) in [("warning", 0), ("error", 0)] {
+                let path = format!(
+                    "/api/v1/inboxes/{inbox}/assert?count={count}&no_findings_at_or_above={threshold}"
+                );
+                let (status, value) = http_json(srv.http_addr, "GET", &path, None).await;
+                assert_eq!(status, 200);
+                assert_eq!(value["matched"], count);
+                assert_eq!(value["ok"], true);
+                let path = format!(
+                    "/api/v1/inboxes/{inbox}/await?timeout_ms=0&no_findings_at_or_above={threshold}"
+                );
+                assert_eq!(
+                    http_json(srv.http_addr, "GET", &path, None).await.0,
+                    if count == 1 { 200 } else { 408 }
+                );
+            }
+            assert_eq!(
+                http_json(
+                    srv.http_addr,
+                    "GET",
+                    &format!("/api/v1/messages/{id}"),
+                    None
+                )
+                .await,
+                before
+            );
+        }
+    }
     srv.stop().await;
 }

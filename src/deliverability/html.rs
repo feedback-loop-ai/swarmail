@@ -1,7 +1,7 @@
 //! Finite source-aware risk heuristics, not a renderer. Data is authored locally
 //! from named guidance; no client measurement or runtime networking is implied.
 use super::{AnalysisError, Collector, Finding, Location, Severity};
-use crate::extract::decode_refs;
+use crate::extract::decode_refs_counted;
 use mail_parser::{MessageParser, MimeHeaders, PartType};
 use serde::Deserialize;
 use std::{collections::HashMap, sync::LazyLock};
@@ -118,6 +118,9 @@ fn collect_catalogue(
 fn collect_with(raw: &[u8], c: &Catalogue, out: &mut Collector) -> Result<(), AnalysisError> {
     // Raw size, part count and nesting depth are already bounded by the
     // engine's own admission budgets, so this walk relies on them.
+    if raw.is_empty() {
+        return Ok(());
+    }
     let message = MessageParser::default()
         .parse(raw)
         .ok_or(AnalysisError::Failed)?;
@@ -167,12 +170,41 @@ fn collect_with(raw: &[u8], c: &Catalogue, out: &mut Collector) -> Result<(), An
     Ok(())
 }
 
-/// Every cursor advance is accounted per invocation (including inert content).
-/// Helpers scan disjoint slices or a constant number of passes over those slices.
+/// Cursor displacement is a progress invariant, never a work estimate.
+/// Inspections charge reads/probes at their execution site and conservative
+/// length-bounded library operations per invocation (including failed helpers).
+/// The census and fixed bound are in specs/html-review-repair/implementation.md.
 #[derive(Default)]
 struct Work {
     html: usize,
     css: usize,
+    inspections: u64,
+}
+impl Work {
+    fn byte(&mut self, b: &[u8], i: usize) -> Option<u8> {
+        self.inspections += 1;
+        b.get(i).copied()
+    }
+    fn prefix(&mut self, b: &[u8], i: usize, prefix: &[u8]) -> bool {
+        self.inspections += prefix.len() as u64 + 1;
+        b[i..].starts_with(prefix)
+    }
+    fn charge(&mut self, n: usize) {
+        self.inspections += n as u64;
+    }
+    fn decode(&mut self, s: &str) -> String {
+        decode_refs_counted(s, &mut self.inspections)
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Context {
+    Rules,
+    Declarations,
+    Component,
+}
+struct Frame {
+    close: u8,
+    context: Context,
 }
 struct Scan<'a> {
     catalogue: &'a Catalogue,
@@ -188,6 +220,9 @@ impl<'a> Scan<'a> {
         }
     }
     fn declaration(&mut self, source: &str) {
+        // Split, trim, !important, seven selectors and their finite value lists.
+        // Segments are disjoint; opaque components contribute one sentinel.
+        self.work.charge(64 * (source.len() + 1));
         let Some((property, value)) = source.split_once(':') else {
             return;
         };
@@ -214,94 +249,133 @@ impl<'a> Scan<'a> {
         let b = source.as_bytes();
         let mut i = 0;
         let mut segment = String::new();
-        let mut braces = Vec::new();
-        let mut parentheses = 0;
+        let mut frames: Vec<Frame> = Vec::new();
+        let root = if inline {
+            Context::Declarations
+        } else {
+            Context::Rules
+        };
+        let mut in_value = false;
         while i < b.len() {
             let start = i;
-            match b[i] {
-                b'/' if b.get(i + 1) == Some(&b'*') => {
-                    i = terminated(b, i + 2, b"*/")?;
-                    segment.push(' ');
+            self.work.charge(8); // repeated delimiter reads, sentinel/copy and frame operations
+            let context = frames.last().map_or(root, |f| f.context);
+            let component = context == Context::Component;
+            match self.work.byte(b, i).unwrap() {
+                b'/' if self.work.byte(b, i + 1) == Some(b'*') => {
+                    i = terminated(b, i + 2, b"*/", &mut self.work)?;
+                    if !component {
+                        segment.push(' ');
+                    }
                 }
                 b'\'' | b'"' => {
-                    let quote = b[i];
-                    i += 1;
-                    loop {
-                        match b.get(i) {
-                            Some(v) if *v == quote => {
-                                i += 1;
-                                break;
-                            }
-                            Some(b'\\') => {
-                                i += 2;
-                            }
-                            Some(_) => {
-                                i += 1;
-                            }
-                            None => return Err(AnalysisError::Failed),
-                        }
+                    i = string_end(b, i, &mut self.work)?;
+                    if !component {
+                        segment.push('\0');
                     }
-                    // Strings cannot manufacture literal property/value tokens.
-                    segment.push('\0');
                 }
                 b'\\' => {
-                    let end = (i + 2).min(b.len());
-                    segment.push_str(&String::from_utf8_lossy(&b[i..end]));
+                    let end = escaped_end(source, i, &mut self.work);
+                    if !component {
+                        self.work.charge(end - i);
+                        segment.push_str(&source[i..end]);
+                    }
                     i = end;
                 }
-                b'(' => {
-                    parentheses += 1;
-                    if braces.len() + parentheses > NESTING {
+                b'u' | b'U' if url_start(b, i, &mut self.work) => {
+                    if frames.len() == NESTING {
                         return Err(AnalysisError::Failed);
                     }
-                    segment.push('(');
+                    if let Some(end) = url_end(source, i + 4, &mut self.work)? {
+                        if !component {
+                            segment.push('\0');
+                        }
+                        i = end;
+                    } else {
+                        // Quoted url uses the ordinary function/string grammar.
+                        if !component {
+                            segment.push(b[i] as char);
+                        }
+                        i += 1;
+                    }
+                }
+                b'(' | b'[' | b'{' if component || in_value || b[i] != b'{' => {
+                    if frames.len() == NESTING {
+                        return Err(AnalysisError::Failed);
+                    }
+                    let close = match b[i] {
+                        b'(' => b')',
+                        b'[' => b']',
+                        _ => b'}',
+                    };
+                    frames.push(Frame {
+                        close,
+                        context: Context::Component,
+                    });
+                    if !component {
+                        segment.push('\0');
+                    }
                     i += 1;
                 }
-                b')' => {
-                    if parentheses == 0 {
+                b'{' => {
+                    if frames.len() == NESTING {
                         return Err(AnalysisError::Failed);
                     }
-                    parentheses -= 1;
-                    segment.push(')');
-                    i += 1;
-                }
-                b'{' if parentheses == 0 => {
-                    if braces.len() == NESTING {
-                        return Err(AnalysisError::Failed);
-                    }
+                    self.work.charge(3 * segment.len() + 7);
                     let container = segment
                         .trim_start()
                         .to_ascii_lowercase()
                         .starts_with("@media");
-                    braces.push(!container);
+                    frames.push(Frame {
+                        close: b'}',
+                        context: if container {
+                            Context::Rules
+                        } else {
+                            Context::Declarations
+                        },
+                    });
                     segment.clear();
+                    in_value = false;
                     i += 1;
                 }
-                b'}' if parentheses == 0 => {
-                    if braces.last() == Some(&true) {
-                        self.declaration(&segment);
-                    }
-                    if braces.pop().is_none() {
+                b')' | b']' | b'}' => {
+                    let frame = frames.pop().ok_or(AnalysisError::Failed)?;
+                    if frame.close != b[i] {
                         return Err(AnalysisError::Failed);
                     }
-                    segment.clear();
+                    if frame.context != Context::Component {
+                        if frame.context == Context::Declarations {
+                            self.declaration(&segment);
+                        }
+                        segment.clear();
+                        in_value = false;
+                    }
                     i += 1;
                 }
-                b';' if parentheses == 0 => {
-                    if braces.last().copied().unwrap_or(inline) {
+                b';' if !component => {
+                    if context == Context::Declarations {
                         self.declaration(&segment);
                     }
                     segment.clear();
+                    in_value = false;
                     i += 1;
                 }
                 _ => {
-                    segment.push(b[i] as char);
-                    i += 1;
+                    if !component {
+                        if b[i] == b':' && context == Context::Declarations {
+                            in_value = true;
+                        }
+                        let c = next_char(source, i, &mut self.work);
+                        segment.push(c);
+                        i += c.len_utf8();
+                    } else {
+                        i += 1;
+                    }
                 }
             }
             self.work.css += i - start;
         }
-        if !braces.is_empty() || parentheses != 0 {
+        if !frames.is_empty() {
             return Err(AnalysisError::Failed);
         }
         if inline {
@@ -317,26 +391,34 @@ impl<'a> Scan<'a> {
         let mut text = false;
         while i < b.len() {
             let start = i;
-            if b[i] != b'<'
-                || !b
-                    .get(i + 1)
+            if self.work.byte(b, i) != Some(b'<')
+                || !self
+                    .work
+                    .byte(b, i + 1)
                     .is_some_and(|v| v.is_ascii_alphabetic() || matches!(v, b'/' | b'!' | b'?'))
             {
                 i += 1;
-                while i < b.len() && b[i] != b'<' {
+                while i < b.len() && self.work.byte(b, i) != Some(b'<') {
                     i += 1;
                 }
                 if suppressed.is_empty() {
-                    text |= decode_refs(&source[start..i])
-                        .chars()
-                        .any(|c| !c.is_whitespace());
+                    let decoded = self.work.decode(&source[start..i]);
+                    self.work.charge(decoded.len() + 1);
+                    text |= decoded.chars().any(|c| !c.is_whitespace());
                 }
-            } else if b[i..].starts_with(b"<!--") {
-                i = terminated(b, i + 4, b"-->")?;
-            } else if b.get(i + 1).is_some_and(|v| matches!(v, b'!' | b'?')) {
-                i = inert_end(b, i + 2)?;
+            } else if self.work.prefix(b, i, b"<!--") {
+                i = terminated(b, i + 4, b"-->", &mut self.work)?;
+            } else if self
+                .work
+                .byte(b, i + 1)
+                .is_some_and(|v| matches!(v, b'!' | b'?'))
+            {
+                i = inert_end(b, i + 2, &mut self.work)?;
             } else {
-                let tag = tag(source, i)?;
+                let tag = tag(source, i, &mut self.work)?;
+                // Fixed rule comparisons, <=32 suppression entries, stack/name
+                // copies and fixed-key map probes. Hash collision internals excluded.
+                self.work.charge(512 + 64 * tag.name.len());
                 i = tag.end;
                 if tag.closing {
                     if suppressed.last() == Some(&tag.name) {
@@ -351,7 +433,7 @@ impl<'a> Scan<'a> {
                     }
                     let in_template = suppressed.iter().any(|s| s == "template");
                     if tag.name == "script" || tag.name == "style" || tag.name == "title" {
-                        let (end, after) = raw_end(source, i, &tag.name)?;
+                        let (end, after) = raw_end(source, i, &tag.name, &mut self.work)?;
                         if tag.name == "style" && !in_template {
                             self.css(&source[i..end], false)?;
                         }
@@ -373,7 +455,12 @@ impl<'a> Scan<'a> {
                                     max_dimension,
                                 } => {
                                     *hit |= tag.name == "img"
-                                        && remote_small(&tag.attrs, *min_dimension, *max_dimension);
+                                        && remote_small(
+                                            &tag.attrs,
+                                            *min_dimension,
+                                            *max_dimension,
+                                            &mut self.work,
+                                        );
                                 }
                                 _ => {}
                             }
@@ -386,6 +473,7 @@ impl<'a> Scan<'a> {
         if !suppressed.is_empty() {
             return Err(AnalysisError::Failed);
         }
+        self.work.charge(32);
         for (r, hit) in self.catalogue.rules.iter().zip(&mut self.matched) {
             match r.selector {
                 Selector::ImageOnly => *hit |= image && !text,
@@ -396,25 +484,110 @@ impl<'a> Scan<'a> {
         Ok(())
     }
 }
-fn inert_end(b: &[u8], mut i: usize) -> Result<usize, AnalysisError> {
+fn next_char(source: &str, i: usize, work: &mut Work) -> char {
+    let c = source[i..].chars().next().unwrap();
+    work.charge(c.len_utf8());
+    c
+}
+fn escaped_end(source: &str, i: usize, work: &mut Work) -> usize {
+    if i + 1 == source.len() {
+        source.len()
+    } else {
+        i + 1 + next_char(source, i + 1, work).len_utf8()
+    }
+}
+fn string_end(b: &[u8], mut i: usize, work: &mut Work) -> Result<usize, AnalysisError> {
+    let quote = work.byte(b, i).unwrap();
+    i += 1;
+    loop {
+        match work.byte(b, i) {
+            Some(c) if c == quote => return Ok(i + 1),
+            Some(b'\\') => i += 2,
+            Some(_) => i += 1,
+            None => return Err(AnalysisError::Failed),
+        }
+    }
+}
+fn css_space(c: u8) -> bool {
+    matches!(c, b'\t' | b'\n' | b'\x0c' | b'\r' | b' ')
+}
+fn url_start(b: &[u8], i: usize, work: &mut Work) -> bool {
+    work.charge(6); // bounded boundary and case-insensitive literal probe
+    (i == 0
+        || !matches!(b[i-1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-' | b'\\' | 128..=255))
+        && b.get(i..i + 4)
+            .is_some_and(|s| s.eq_ignore_ascii_case(b"url("))
+}
+/// None selects ordinary quoted function handling; Some consumes an unquoted
+/// token. Comments and component delimiters in that token are URL data.
+fn url_end(source: &str, mut i: usize, work: &mut Work) -> Result<Option<usize>, AnalysisError> {
+    let b = source.as_bytes();
+    while work.byte(b, i).is_some_and(css_space) {
+        i += 1;
+    }
+    if matches!(work.byte(b, i), Some(b'\'' | b'"')) {
+        return Ok(None);
+    }
+    loop {
+        match work.byte(b, i).ok_or(AnalysisError::Failed)? {
+            b')' => return Ok(Some(i + 1)),
+            c if css_space(c) => {
+                while work.byte(b, i).is_some_and(css_space) {
+                    i += 1;
+                }
+                return if work.byte(b, i) == Some(b')') {
+                    Ok(Some(i + 1))
+                } else {
+                    Err(AnalysisError::Failed)
+                };
+            }
+            b'\\' => {
+                i += 1;
+                let c = work.byte(b, i).ok_or(AnalysisError::Failed)?;
+                if matches!(c, b'\r' | b'\n' | b'\x0c') {
+                    return Err(AnalysisError::Failed);
+                }
+                if c.is_ascii_hexdigit() {
+                    let mut digits = 0;
+                    while digits < 6 && work.byte(b, i).is_some_and(|c| c.is_ascii_hexdigit()) {
+                        i += 1;
+                        digits += 1;
+                    }
+                    if work.byte(b, i).is_some_and(css_space) {
+                        let cr = work.byte(b, i) == Some(b'\r');
+                        i += 1;
+                        if cr && work.byte(b, i) == Some(b'\n') {
+                            i += 1;
+                        }
+                    }
+                } else {
+                    i += next_char(source, i, work).len_utf8();
+                }
+            }
+            b'\'' | b'"' | b'(' | 0..=8 | 11 | 14..=31 | 127 => return Err(AnalysisError::Failed),
+            _ => i += next_char(source, i, work).len_utf8(),
+        }
+    }
+}
+fn inert_end(b: &[u8], mut i: usize, work: &mut Work) -> Result<usize, AnalysisError> {
     let mut quote = None;
-    while let Some(c) = b.get(i) {
+    while let Some(c) = work.byte(b, i) {
         if let Some(q) = quote {
-            if *c == q {
+            if c == q {
                 quote = None;
             }
         } else if matches!(c, b'\'' | b'"') {
-            quote = Some(*c);
-        } else if *c == b'>' {
+            quote = Some(c);
+        } else if c == b'>' {
             return Ok(i + 1);
         }
         i += 1;
     }
     Err(AnalysisError::Failed)
 }
-fn terminated(b: &[u8], mut i: usize, end: &[u8]) -> Result<usize, AnalysisError> {
+fn terminated(b: &[u8], mut i: usize, end: &[u8], work: &mut Work) -> Result<usize, AnalysisError> {
     while i + end.len() <= b.len() {
-        if b[i..].starts_with(end) {
+        if work.prefix(b, i, end) {
             return Ok(i + end.len());
         }
         i += 1;
@@ -427,27 +600,28 @@ struct Tag {
     attrs: HashMap<String, String>,
     end: usize,
 }
-fn tag(source: &str, start: usize) -> Result<Tag, AnalysisError> {
+fn tag(source: &str, start: usize, work: &mut Work) -> Result<Tag, AnalysisError> {
     let b = source.as_bytes();
-    let closing = b[start + 1] == b'/';
+    let closing = work.byte(b, start + 1) == Some(b'/');
     let mut i = start + 1 + usize::from(closing);
     let n = i;
-    while b
-        .get(i)
+    while work
+        .byte(b, i)
         .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b':'))
     {
         i += 1;
     }
+    work.charge(i - n);
     let name = source[n..i].to_ascii_lowercase();
     let mut attrs = HashMap::new();
     loop {
-        while b
-            .get(i)
-            .is_some_and(|c| c.is_ascii_whitespace() || *c == b'/')
+        while work
+            .byte(b, i)
+            .is_some_and(|c| c.is_ascii_whitespace() || c == b'/')
         {
             i += 1;
         }
-        match b.get(i) {
+        match work.byte(b, i) {
             None => return Err(AnalysisError::Failed),
             Some(b'>') => {
                 return Ok(Tag {
@@ -460,27 +634,28 @@ fn tag(source: &str, start: usize) -> Result<Tag, AnalysisError> {
             _ => {}
         }
         let n = i;
-        while b
-            .get(i)
+        while work
+            .byte(b, i)
             .is_some_and(|c| !c.is_ascii_whitespace() && !matches!(c, b'=' | b'>' | b'/'))
         {
             i += 1;
         }
+        work.charge(3 * (i - n) + 1); // lowercase, hash and key comparison
         let attr = source[n..i].to_ascii_lowercase();
-        while b.get(i).is_some_and(|c| c.is_ascii_whitespace()) {
+        while work.byte(b, i).is_some_and(|c| c.is_ascii_whitespace()) {
             i += 1;
         }
         let mut value = "";
-        if b.get(i) == Some(&b'=') {
+        if work.byte(b, i) == Some(b'=') {
             i += 1;
-            while b.get(i).is_some_and(|c| c.is_ascii_whitespace()) {
+            while work.byte(b, i).is_some_and(|c| c.is_ascii_whitespace()) {
                 i += 1;
             }
-            let quote = b.get(i).copied().ok_or(AnalysisError::Failed)?;
+            let quote = work.byte(b, i).ok_or(AnalysisError::Failed)?;
             if matches!(quote, b'\'' | b'"') {
                 i += 1;
                 let n = i;
-                while b.get(i).is_some_and(|c| *c != quote) {
+                while work.byte(b, i).is_some_and(|c| c != quote) {
                     i += 1;
                 }
                 value = &source[n..i];
@@ -490,9 +665,9 @@ fn tag(source: &str, start: usize) -> Result<Tag, AnalysisError> {
                 i += 1;
             } else {
                 let n = i;
-                while b
-                    .get(i)
-                    .is_some_and(|c| !c.is_ascii_whitespace() && *c != b'>')
+                while work
+                    .byte(b, i)
+                    .is_some_and(|c| !c.is_ascii_whitespace() && c != b'>')
                 {
                     i += 1;
                 }
@@ -500,27 +675,41 @@ fn tag(source: &str, start: usize) -> Result<Tag, AnalysisError> {
             }
         }
         // Empty malformed attribute names (e.g. '=x') still consume input.
-        attrs.entry(attr).or_insert_with(|| decode_refs(value));
+        attrs.entry(attr).or_insert_with(|| work.decode(value));
     }
 }
-fn raw_end(source: &str, mut i: usize, name: &str) -> Result<(usize, usize), AnalysisError> {
+fn raw_end(
+    source: &str,
+    mut i: usize,
+    name: &str,
+    work: &mut Work,
+) -> Result<(usize, usize), AnalysisError> {
     let b = source.as_bytes();
     while i < b.len() {
-        if b[i..].starts_with(b"</") {
+        if work.prefix(b, i, b"</") {
+            work.charge(name.len() + 2);
             let end = i + 2 + name.len();
             if b.get(i + 2..end)
                 .is_some_and(|s| s.eq_ignore_ascii_case(name.as_bytes()))
                 && b.get(end)
                     .is_some_and(|c| c.is_ascii_whitespace() || *c == b'>')
             {
-                return Ok((i, tag(source, i)?.end));
+                return Ok((i, tag(source, i, work)?.end));
             }
         }
         i += 1;
     }
     Err(AnalysisError::Failed)
 }
-fn remote_small(attrs: &HashMap<String, String>, min: u32, max: u32) -> bool {
+fn remote_small(attrs: &HashMap<String, String>, min: u32, max: u32, work: &mut Work) -> bool {
+    // Three fixed-key lookups; trims, digit validation and bounded integer parse.
+    work.charge(
+        64 + 8 * ["src", "width", "height"]
+            .iter()
+            .filter_map(|k| attrs.get(*k))
+            .map(String::len)
+            .sum::<usize>(),
+    );
     let remote = attrs.get("src").is_some_and(|s| {
         let s = s.trim();
         s.get(..7)
@@ -582,6 +771,333 @@ mod tests {
         raw
     }
     #[test]
+    fn reviewed_custom_properties_preserve_declaration_context() {
+        for css in [
+            "--unused:{position:absolute};color:red",
+            "--unused:{a:[position:absolute;display:flex]};color:red",
+        ] {
+            for body in [
+                format!("<p style='{css}'>Hello</p>"),
+                format!("<style>.x{{{css}}}</style><p>Hello</p>"),
+            ] {
+                assert_eq!(
+                    report(&body),
+                    Report {
+                        rule_set_id: super::super::RULE_SET_ID.into(),
+                        findings: vec![]
+                    }
+                );
+            }
+        }
+    }
+    #[test]
+    fn reviewed_unquoted_url_keeps_comment_characters_literal() {
+        let css = "background:url(https://x.test/*/a.png)";
+        for body in [
+            format!("<p style='{css}'>Hello</p>"),
+            format!("<style>.x{{{css}}}</style><p>Hello</p>"),
+        ] {
+            assert_eq!(
+                Ok::<_, AnalysisError>(report(&body)),
+                Ok(Report {
+                    rule_set_id: super::super::RULE_SET_ID.into(),
+                    findings: vec![]
+                })
+            );
+        }
+    }
+    #[test]
+    fn reviewed_empty_raw_has_no_html_parts() {
+        let mut collector = Collector(Vec::new());
+        collect(b"", &mut collector).unwrap();
+        assert!(collector.0.is_empty());
+        assert_eq!(
+            evaluate(b"", &Inputs::default()),
+            Err(AnalysisError::Failed)
+        );
+    }
+    fn expected(ids: &[&str], path: &[u64]) -> Report {
+        let c = catalogue(DATA).unwrap();
+        let mut findings: Vec<_> = c
+            .rules
+            .iter()
+            .filter(|r| ids.contains(&r.id.as_str()))
+            .map(|r| Finding {
+                rule_id: r.id.clone(),
+                severity: r.severity,
+                fix_hint: r.fix_hint.clone(),
+                location: Location::MimePart {
+                    path: path.to_vec(),
+                },
+            })
+            .collect();
+        findings.sort();
+        Report {
+            rule_set_id: super::super::RULE_SET_ID.into(),
+            findings,
+        }
+    }
+    #[test]
+    fn component_values_keep_outer_and_following_declarations_visible() {
+        for (css, ids) in [
+            (
+                "--unused:{position:absolute};position:absolute",
+                vec!["html.css.position.v1"],
+            ),
+            (
+                "--unused:{a:[(position:absolute;display:flex)]};position:relative",
+                vec!["html.css.position.v1"],
+            ),
+            (
+                "--unused:{a:'}';b:/*}*/[\\]()]};display:flex",
+                vec!["html.css.display-flex.v1"],
+            ),
+            (
+                "position:{display:flex; a:[b(c)]}",
+                vec!["html.css.position.v1"],
+            ),
+            (
+                "position:fn({a:b});display:inline-flex ! IMPORTANT",
+                vec!["html.css.position.v1", "html.css.display-flex.v1"],
+            ),
+            ("display:fl{position:absolute}ex", vec![]),
+            (
+                "display:[flex];--unused:(position:absolute);color:red",
+                vec![],
+            ),
+            ("--unused:{url(x/*/a);position:absolute};color:red", vec![]),
+            (
+                "--unused:{\"position:absolute\"};position&#58;absolute",
+                vec!["html.css.position.v1"],
+            ),
+            ("--unused:{a:\\é};color:red", vec![]),
+        ] {
+            let attr = css.replace('"', "&quot;");
+            for body in [
+                format!("<p style=\"{attr}\">Hello</p>"),
+                format!(
+                    "<style>@media all {{ .x:hover[data-a=x] {{{}}} }}</style><p>Hello</p>",
+                    css.replace("&#58;", ":")
+                ),
+            ] {
+                let result = report(&body);
+                assert_eq!(result, expected(&ids, &[]), "{body}");
+                assert_eq!(result.qualifies(Severity::Warning), ids.is_empty());
+            }
+        }
+        let nested = multipart(
+            &[
+                raw("Hello"),
+                multipart(
+                    &[raw(
+                        "<p style='--unused:{position:relative};position:absolute'>Hello</p>",
+                    )],
+                    "inner",
+                    "",
+                ),
+            ],
+            "outer",
+            "",
+        );
+        let mut nested_report = evaluate(&nested, &Inputs::default()).unwrap();
+        nested_report
+            .findings
+            .retain(|f| f.rule_id.starts_with("html."));
+        assert_eq!(nested_report, expected(&["html.css.position.v1"], &[1, 0]));
+        for n in [32, 33] {
+            let css = format!(
+                "--unused:{}x{};position:absolute",
+                "[({".repeat(n / 3) + &"(".repeat(n % 3),
+                ")".repeat(n % 3) + &"})]".repeat(n / 3)
+            );
+            assert_eq!(
+                evaluate(
+                    &raw(&format!("<p style='{css}'>Hello</p>")),
+                    &Inputs::default()
+                )
+                .is_ok(),
+                n == 32
+            );
+        }
+        for css in ["--x:[}", "--x:{]", "--x:([)]", "--x:{a:b", "x:]", "}"] {
+            assert_eq!(
+                evaluate(
+                    &raw(&format!("<p style='{css}'>Hello</p>")),
+                    &Inputs::default()
+                ),
+                Err(AnalysisError::Failed)
+            );
+        }
+    }
+    #[test]
+    fn literal_urls_protect_data_without_disabling_ordinary_comments() {
+        for css in [
+            "background:URL( https://x.test/*/a.png );position:absolute",
+            "background:url(https://x.test/a{b[c;d:e]);position:absolute",
+            r"background:url(a\)b);position:absolute",
+            r"background:url(a\28 b\000029c);position:absolute",
+            "background:url(a\\29\r\nb);position:absolute",
+            "background:url(a\\\u{e9}b);position:absolute",
+            "background:url(a\\000029 b);position:absolute",
+            "background:url( );position:absolute",
+            "background:url(\"a/*\");position:absolute",
+            "background:url('a)/*');position:absolute",
+            "background:myurl(a/* comment */b);position:absolute",
+            "background:-url(a/* comment */b);position:absolute",
+            "background:éurl(a/* comment */b);position:absolute",
+            "background:\\url(a/* comment */b);position:absolute",
+            "background: url (a/* comment */b);position:absolute",
+            "--unused:(url(a/*/b));position:absolute",
+            "--unused:(url('a/*'));position:absolute",
+            "background:url( 'a/*');position:absolute",
+            "background:url(a\\29\rb);position:absolute",
+        ] {
+            // HTML double quotes protect single-quoted CSS strings.
+            let attr = css.replace('"', "&quot;");
+            for body in [
+                format!("<p style=\"{attr}\">Hello</p>"),
+                format!("<style>.x{{{css}}}</style><p>Hello</p>"),
+            ] {
+                assert_eq!(
+                    report(&body),
+                    expected(&["html.css.position.v1"], &[]),
+                    "{body}"
+                );
+            }
+        }
+        for css in [
+            "background:url(a b)",
+            "background:url(a'b)",
+            "background:url(a\"b)",
+            "background:url(a(b)",
+            "background:url(a",
+            "background:url(a\\",
+            "background:url(a\\\nb)",
+            "background:url(a\\\rb)",
+            "background:url(a\\\u{c}b)",
+            "background:url(a\0b)",
+            "background:url(a\u{1}b)",
+            "background:url(a\u{b}b)",
+            "background:url(a\u{e}b)",
+            "background:url(a\u{1f}b)",
+            "background:url(a\u{7f}b)",
+            "background:myurl(a/*/b)",
+            "background:fn(a/*/b)",
+            "background: url (a/*/b)",
+            "background:url(a);/*",
+            "background:url(a   ",
+        ] {
+            let body = format!("<style>.x{{position:absolute;{css}}}</style>");
+            assert_eq!(
+                evaluate(&raw(&body), &Inputs::default()),
+                Err(AnalysisError::Failed),
+                "{css}"
+            );
+        }
+        for n in [31, 32] {
+            let body = format!(
+                "<p style='x:{}url(a){}'>Hello</p>",
+                "(".repeat(n),
+                ")".repeat(n)
+            );
+            assert_eq!(evaluate(&raw(&body), &Inputs::default()).is_ok(), n == 31);
+        }
+    }
+    #[test]
+    fn inspected_work_has_a_fixed_linear_bound_separate_from_progress() {
+        const C: u64 = 8192;
+        const K: u64 = 4096;
+        let c = catalogue(DATA).unwrap();
+        // Chosen before measuring; each exercises the real production helper.
+        for n in [64, 512, 4096, 32768] {
+            for body in [
+                format!("<!--{}-->", "-".repeat(n)),
+                format!(
+                    "<p data-x='{}' title={}>Hello</p>",
+                    ">".repeat(n),
+                    "x".repeat(n)
+                ),
+                format!(
+                    "<script>{}</SCRIPT ><title>{}</title>",
+                    "</scripX>".repeat(n),
+                    "</titlX>".repeat(n)
+                ),
+                format!("<!x '{}'><?x \"{}\">Hello", ">".repeat(n), "'".repeat(n)),
+                format!(
+                    "<p>{}{}{}{}{}{}</p>",
+                    "&".repeat(n),
+                    "&unknown;".repeat(n),
+                    "&éé;".repeat(n),
+                    "&nGt;".repeat(n),
+                    "&#x41;".repeat(n),
+                    "&amp;lt;".repeat(n)
+                ),
+                format!(
+                    "<style>.x{{--unused:[{{({})}}];content:'{}';background:url({});display:flex}}</style>",
+                    "x;position:absolute;".repeat(n),
+                    "\\\"".repeat(n),
+                    "a/*/".repeat(n)
+                ),
+                format!(
+                    "<p style='{}'>Hello</p>",
+                    "color:red;--x:{position:absolute};".repeat(n)
+                ),
+            ] {
+                let mut scan = Scan::new(&c);
+                scan.html(&body).unwrap();
+                assert_eq!(scan.work.html, body.len(), "progress");
+                // Mutation experiment must reach this assertion with progress green.
+                assert!(
+                    scan.work.inspections <= C * body.len() as u64 + K,
+                    "inspections={} n={} limit={}",
+                    scan.work.inspections,
+                    body.len(),
+                    C * body.len() as u64 + K
+                );
+            }
+            for body in [
+                format!("<!--{}--", "-".repeat(n)),
+                format!("<p x='{}", "x".repeat(n)),
+                format!("<script>{}", "</scripX>".repeat(n)),
+                format!("<!x '{}'", ">".repeat(n)),
+                format!("<style>.x{{x:{}/*", "color:red;".repeat(n)),
+                format!("<style>.x{{background:url({}\\", "a".repeat(n)),
+                format!("<style>.x{{content:'{}\\", "a".repeat(n)),
+            ] {
+                let mut scan = Scan::new(&c);
+                assert_eq!(scan.html(&body), Err(AnalysisError::Failed));
+                assert!(scan.work.html <= body.len());
+                assert!(scan.work.inspections <= C * body.len() as u64 + K);
+            }
+        }
+        // Helper-only domains, including the 40-scalar construction lookahead.
+        for source in [
+            "",
+            "u",
+            "url(x)",
+            "&",
+            "&nGt;",
+            "&unknown;",
+            "&éé;",
+            "&#x41;",
+            "&amp;lt;",
+            "é",
+        ] {
+            let mut work = Work::default();
+            let decoded = work.decode(source);
+            assert!(5 * decoded.len() <= 6 * source.len());
+            assert!(work.inspections <= C * source.len() as u64 + K);
+            let mut scan = Scan::new(&c);
+            scan.css(source, true).unwrap();
+            assert_eq!(scan.work.css, source.len());
+            assert!(scan.work.inspections <= C * source.len() as u64 + K);
+        }
+        // Empty inline declarations and malformed short constructs count as well.
+        let mut scan = Scan::new(&c);
+        scan.css("", true).unwrap();
+        assert!(scan.work.inspections <= K);
+    }
+    #[test]
     fn reviewed_version_snapshot_and_every_rule_pair() {
         let fixture: Value =
             serde_json::from_str(include_str!("../../tests/fixtures/html-compatibility.json"))
@@ -592,7 +1108,7 @@ mod tests {
         );
         assert_eq!(
             fixture["catalogue_snapshot"]["rule_set_id"],
-            "swarmail-html/1"
+            "swarmail-html/2"
         );
         let c = catalogue(DATA).unwrap();
         assert_eq!(c.rules.len(), 7);
@@ -672,6 +1188,16 @@ mod tests {
                 &Err(AnalysisError::Failed),
                 &mut Collector(vec![])
             ),
+            Err(AnalysisError::Failed)
+        );
+        assert_eq!(
+            collect_catalogue(b"", &Err(AnalysisError::Failed), &mut Collector(vec![])),
+            Err(AnalysisError::Failed)
+        );
+        // Whitespace remains ordinary MIME input, not the exact-empty shortcut.
+        assert!(MessageParser::default().parse(b" ").is_none());
+        assert_eq!(
+            evaluate(b" ", &Inputs::default()),
             Err(AnalysisError::Failed)
         );
         // Valid selector and threshold edits change behavior without new Rust.
@@ -842,7 +1368,7 @@ mod tests {
             let body = format!("<style>.x{{x:{}x{}}}</style>", "(".repeat(n), ")".repeat(n));
             assert_eq!(evaluate(&raw(&body), &Inputs::default()).is_ok(), n == 31);
         }
-        // Byte-accounted cursor progress, including long inert/raw and entity runs.
+        // Cursor progress remains a distinct invariant, including inert/raw/entity runs.
         let c = catalogue(DATA).unwrap();
         let body = format!(
             "<script>{}</SCRIPT ><p data-x='{}'>{}{}</p><style>.x{{content:'{}';x:url({});display:flex}}</style>",
@@ -1078,16 +1604,23 @@ mod tests {
     #[tokio::test]
     async fn malformed_html_is_retried_and_never_cached() {
         let service = super::super::Service::default();
-        let mut email = crate::store::email("bad-html", "box", "a");
-        email.raw = raw("<video><script>");
-        let email = std::sync::Arc::new(email);
-        for _ in 0..2 {
-            assert_eq!(
-                service.report(email.clone(), false).await,
-                Err(AnalysisError::Failed)
-            );
+        for body in [
+            "<video><script>",
+            "<style>.x{position:absolute;background:url(a b)}</style>",
+        ] {
+            let mut email = crate::store::email("bad-html", "box", "a");
+            email.raw = raw(body);
+            let email = std::sync::Arc::new(email);
+            for _ in 0..2 {
+                assert_eq!(
+                    service.report(email.clone(), false).await,
+                    Err(AnalysisError::Failed)
+                );
+            }
+            let slot = service.slots.lock().unwrap()[0].clone();
+            assert!(slot.report.lock().await.is_none());
+            // Distinct immutable owners receive independent failed slots.
+            service.slots.lock().unwrap().clear();
         }
-        let slot = service.slots.lock().unwrap()[0].clone();
-        assert!(slot.report.lock().await.is_none());
     }
 }
