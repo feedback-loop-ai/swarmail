@@ -131,7 +131,18 @@ that revision. Modern arrays refuse one -32600/null before all effects,
 including notification-only arrays. Legacy batch initialize stays legacy.
 Modern tools annotate reads readOnlyHint:true and mutations readOnlyHint:false,
 destructiveHint:true (seed can prune, chaos changes replace configuration).
-No outputSchema or structuredContent in this delivery.
+For 2025-06-18 and 2025-11-25 every tool declares an object-root outputSchema.
+Every success returns structuredContent plus the same JSON in its existing text
+block; text-only consumers can keep reading content. Errors keep their text/RPC
+shapes without structured success data. March (also missing-version requests)
+keeps its catalogue and result bytes. Tests pin schemas to served OpenAPI through
+explicit output projections, including omitted fields and nullable provenance.
+Dual output costs bytes/tokens: the bridge retains its 10 MiB response cap and
+returns -32000 when exceeded, even when the March text alone would fit. Use smaller
+pages; one large Email can still exceed the cap. Lost mutation replies do not
+mean rollback and must not cause automatic replay. Tokens-per-success and
+invalid-argument/tool-misuse rates are measured by the operator's #151 baseline
+and subsequent client matrix; local protocol proofs do not establish improvement.
 
 The bridge fences initialize and propagates the successfully returned revision.
 For modern clients, send notifications/initialized next; its empty 202 enables
