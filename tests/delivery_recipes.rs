@@ -132,7 +132,7 @@ fn both_designs_end_in_a_model_free_offline_validator() {
             "{prompt_file}"
         ])
     );
-    for name in ["codex", "codex-careful"] {
+    for name in ["codex", "codex-careful", "mixed-opus-terra"] {
         let recipe = read_json(&format!("bundles/{name}/bundle.json"));
         assert!(
             recipe["seats"].get("design").is_none(),
@@ -213,6 +213,7 @@ fn standard_and_careful_keep_intake_without_triage() {
     for (recipe, intake) in [
         ("codex", "codex-intake"),
         ("codex-careful", "codex-careful-intake"),
+        ("mixed-opus-terra", "mixed-terra-intake"),
     ] {
         let bundle = read_json(&format!("bundles/{recipe}/bundle.json"));
         assert_eq!(bundle["seats"]["intake"]["agent"], intake, "{recipe}");
@@ -734,61 +735,202 @@ fn ship_closeout_refuses_missing_empty_and_mismatched_ledgers() {
     }
 }
 
+fn mixed_work_route_violations(
+    recipe: &Value,
+    careful: &Value,
+    codex: &Value,
+    office: &dyn Fn(&str) -> Value,
+) -> Vec<String> {
+    let mut bad = Vec::new();
+    let keys: BTreeSet<&str> = recipe
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    if keys != BTreeSet::from(["description", "extends", "name", "override", "seats"]) {
+        bad.push(format!("recipe keys {keys:?}"));
+    }
+    if recipe["extends"] != "codex-careful" {
+        bad.push("extends".into());
+    }
+    if recipe["override"] != json!({"bundle": ["description"], "seats": ["intake", "implement"]}) {
+        bad.push("override".into());
+    }
+    let seats: BTreeSet<&str> = recipe["seats"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    if seats != BTreeSet::from(["implement", "intake"]) {
+        bad.push(format!("seats {seats:?}"));
+    }
+    for (seat, agent, model, concrete) in [
+        ("intake", "mixed-terra-intake", "terra61", "gpt-6.1-terra"),
+        (
+            "implement",
+            "mixed-opus-implementer",
+            "opus",
+            "claude-opus-5-5",
+        ),
+    ] {
+        // Only the agent differs from careful's seat record: results and limits are inherited.
+        let mut inherited = careful["seats"][seat].clone();
+        inherited["agent"] = json!(agent);
+        if recipe["seats"][seat] != inherited {
+            bad.push(format!("{seat}: seat record"));
+        }
+        let overlay = office(agent);
+        let base = office(careful["seats"][seat]["agent"].as_str().unwrap());
+        let overlay_keys: BTreeSet<&str> = overlay
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        if overlay_keys != BTreeSet::from(["efforts", "extends", "hands", "models", "replaces"]) {
+            bad.push(format!("{agent}: keys {overlay_keys:?}"));
+        }
+        if overlay["extends"] != base["extends"] {
+            bad.push(format!("{agent}: charter office"));
+        }
+        if overlay["models"] != json!([model]) || overlay["efforts"] != json!({model: "high"}) {
+            bad.push(format!("{agent}: model or effort"));
+        }
+        if overlay["hands"] != base["hands"] {
+            bad.push(format!("{agent}: hands differ from careful"));
+        }
+        let adapter = if model == "opus" {
+            read_json("adapters/claude.json")
+        } else {
+            codex.clone()
+        };
+        if adapter["models"][model] != concrete {
+            bad.push(format!("{agent}: {model} pin"));
+        }
+    }
+    if codex["models"]["terra"] != "gpt-5.6-terra" {
+        bad.push("historical terra alias".into());
+    }
+    bad
+}
+
 #[test]
-fn operator_mixed_recipe_resolves_named_work_models_and_preserves_panel() {
+fn operator_mixed_recipe_overrides_only_its_two_work_seats() {
     let recipe = read_json("bundles/mixed-opus-terra/bundle.json");
-    assert_eq!(recipe["extends"], "codex-careful");
+    let careful = read_json("bundles/codex-careful/bundle.json");
+    let codex = read_json("adapters/codex.json");
+    let on_disk = |name: &str| office(name);
+    assert_eq!(
+        mixed_work_route_violations(&recipe, &careful, &codex, &on_disk),
+        Vec::<String>::new()
+    );
+    // Overlays keep the base offices' charters and limits: 14400s per office,
+    // under the recipe seat's own 7200s and three attempts.
+    for (agent, base) in [
+        ("mixed-terra-intake", "intake"),
+        ("mixed-opus-implementer", "implementer"),
+    ] {
+        assert_eq!(office(agent)["extends"], base);
+        assert!(office(base).get("extends").is_none(), "{agent}");
+        assert!(office(base)["charter"].is_string(), "{agent}");
+    }
+    assert_eq!(office("implementer")["limits"]["timeout_seconds"], 14400);
+    assert_eq!(
+        recipe["seats"]["implement"]["limits"],
+        json!({"max_attempts": 3, "timeout_seconds": 7200})
+    );
+
+    // The same comparison refuses each one-fault drift.
+    let mut extra = recipe.clone();
+    extra["override"]["seats"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("review"));
+    let mut review = recipe.clone();
+    review["seats"]["review"] = careful["seats"]["review"].clone();
+    let mut limits = recipe.clone();
+    limits["seats"]["implement"]["limits"]["timeout_seconds"] = json!(14400);
+    let mut agent = recipe.clone();
+    agent["seats"]["intake"]["agent"] = json!("codex-careful-intake");
+    let mut parent = recipe.clone();
+    parent["extends"] = json!("codex");
+    let mut policy = recipe.clone();
+    policy["policy"] = json!("policy.json");
+    let mut alias = codex.clone();
+    alias["models"]["terra"] = json!("gpt-6.1-terra");
+    let mut pin = codex.clone();
+    pin["models"]["terra61"] = json!("gpt-5.6-terra");
+    for (mutant, recipe, codex) in [
+        ("extra override", &extra, &codex),
+        ("copied review", &review, &codex),
+        ("seat limits", &limits, &codex),
+        ("careful intake", &agent, &codex),
+        ("parent", &parent, &codex),
+        ("copied policy", &policy, &codex),
+        ("historical alias", &recipe, &alias),
+        ("terra61 pin", &recipe, &pin),
+    ] {
+        assert!(
+            !mixed_work_route_violations(recipe, &careful, codex, &on_disk).is_empty(),
+            "{mutant} accepted"
+        );
+    }
+    type Drift = fn(&mut Value);
+    let drifts: [(&str, &str, Drift); 6] = [
+        ("mixed-opus-implementer", "network", |o| {
+            o["hands"]["network"] = json!(false)
+        }),
+        ("mixed-opus-implementer", "credential mask", |o| {
+            o["hands"]["binds"][0]["mask"] = json!(["credentials.toml"])
+        }),
+        ("mixed-terra-intake", "writable rustup", |o| {
+            o["hands"]["binds"][1]["mode"] = json!("overlay")
+        }),
+        ("mixed-terra-intake", "fallback", |o| {
+            o["models"] = json!(["terra61", "terra"])
+        }),
+        ("mixed-opus-implementer", "effort", |o| {
+            o["efforts"] = json!({"opus": "xhigh"})
+        }),
+        ("mixed-opus-implementer", "charter", |o| {
+            o["charter"] = json!("charters/review-correctness.md")
+        }),
+    ];
+    for (target, mutant, drift) in drifts {
+        let drifted = |name: &str| {
+            let mut value = office(name);
+            if name == target {
+                drift(&mut value);
+            }
+            value
+        };
+        assert!(
+            !mixed_work_route_violations(&recipe, &careful, &codex, &drifted).is_empty(),
+            "{mutant} accepted"
+        );
+    }
+}
+
+#[test]
+fn operator_mixed_recipe_inherits_the_careful_panel_unchanged() {
+    let recipe = read_json("bundles/mixed-opus-terra/bundle.json");
+    let careful = read_json("bundles/codex-careful/bundle.json");
     assert!(recipe["seats"].get("review").is_none());
-    assert_eq!(recipe["seats"]["intake"]["agent"], "mixed-terra-intake");
-    assert_eq!(
-        recipe["seats"]["implement"]["agent"],
-        "mixed-opus-implementer"
-    );
-    let intake = office("mixed-terra-intake");
-    let implement = office("mixed-opus-implementer");
-    assert_eq!(intake["models"], json!(["terra61"]));
-    assert_eq!(implement["models"], json!(["opus"]));
-    assert_eq!(
-        read_json("adapters/codex.json")["models"]["terra61"],
-        "gpt-6.1-terra"
-    );
-    assert_eq!(
-        read_json("adapters/claude.json")["models"]["opus"],
-        "claude-opus-5-5"
-    );
-    let review = read_json("bundles/codex-careful/bundle.json");
-    for role in [
-        "correctness",
-        "guarantees",
-        "independent",
-        "security",
-        "tests",
+    assert_eq!(careful["seats"]["review"]["panel"], full_panel());
+    for (role, model) in [
+        ("astra-correctness", "astra"),
+        ("guarantees", "astra"),
+        ("independent", "fable"),
+        ("security", "flash"),
+        ("tests", "glm-flash"),
     ] {
-        assert_eq!(review["seats"]["review"]["panel"][role]["class"], "gate");
+        assert_eq!(
+            office(&format!("codex-review-{role}"))["models"],
+            json!([model])
+        );
     }
-    for (role, agent) in [
-        ("correctness", "codex-review-astra-correctness"),
-        ("guarantees", "codex-review-guarantees"),
-        ("independent", "codex-review-independent"),
-        ("security", "codex-review-security"),
-        ("tests", "codex-review-tests"),
-    ] {
-        assert_eq!(review["seats"]["review"]["panel"][role]["agent"], agent);
-    }
-    assert_eq!(
-        office("codex-review-independent")["models"],
-        json!(["fable"])
-    );
-    assert_eq!(office("codex-review-security")["models"], json!(["flash"]));
-    assert_eq!(office("codex-review-tests")["models"], json!(["glm-flash"]));
-    assert_eq!(
-        office("codex-review-astra-correctness")["models"],
-        json!(["astra"])
-    );
-    assert_eq!(
-        office("codex-review-guarantees")["models"],
-        json!(["astra"])
-    );
     assert_eq!(
         read_json("adapters/dsh.json")["models"]["glm-flash"],
         "spark-glm/GLM-5.3-Flash-EXL3"

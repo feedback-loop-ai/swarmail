@@ -1271,7 +1271,7 @@ fn ci_record_reader_refuses_bad_fields_before_exporting_any_output() {
 }
 
 #[test]
-fn ci_admits_digest_before_executing_and_compiles_all_four_recipes() {
+fn ci_admits_digest_before_executing_and_compiles_all_five_recipes() {
     let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
     let fixture = BrokkrCiFixture::new();
     let mismatch = fixture
@@ -1303,12 +1303,19 @@ fn ci_admits_digest_before_executing_and_compiles_all_four_recipes() {
     assert!(fixture.marker.exists(), "mutant did not expose execution");
     std::fs::remove_file(&fixture.marker).unwrap();
 
+    let five = "--version\ncompile --bundle bundles/self\ncompile --bundle bundles/codex\ncompile --bundle bundles/codex-careful\ncompile --bundle bundles/codex-fast\ncompile --bundle bundles/mixed-opus-terra\n";
+    // Dropping the final recipe from the loop still exits zero: only the exact
+    // trace below catches the omission.
+    let omitted = body.replace("codex-fast mixed-opus-terra; do", "codex-fast; do");
+    assert_ne!(body, omitted);
+    let output = fixture.command(&omitted).output().unwrap();
+    assert!(output.status.success(), "{}", ci_diagnostics(&output));
+    assert_ne!(std::fs::read_to_string(&fixture.marker).unwrap(), five);
+    std::fs::remove_file(&fixture.marker).unwrap();
+
     let output = fixture.command(&body).output().unwrap();
     assert!(output.status.success(), "{}", ci_diagnostics(&output));
-    assert_eq!(
-        std::fs::read_to_string(&fixture.marker).unwrap(),
-        "--version\ncompile --bundle bundles/self\ncompile --bundle bundles/codex\ncompile --bundle bundles/codex-careful\ncompile --bundle bundles/codex-fast\ncompile --bundle bundles/mixed-opus-terra\n"
-    );
+    assert_eq!(std::fs::read_to_string(&fixture.marker).unwrap(), five);
     let args = std::fs::read_to_string(fixture.root.path().join("curl args.txt")).unwrap();
     for required in [
         "--fail\n",
@@ -1361,34 +1368,39 @@ fn ci_refuses_failed_download_or_hash_before_execution() {
 #[test]
 fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
     let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
-    for mode in ["stdout-warning", "stderr-warning", "failure"] {
-        let fixture = BrokkrCiFixture::new();
-        let output = fixture
-            .command(&body)
-            .env("COMPILE_MODE", mode)
-            .output()
-            .unwrap();
-        assert_eq!(
-            output.status.code(),
-            Some(if mode == "failure" { 23 } else { 1 })
-        );
-        let diagnostics = ci_diagnostics(&output);
-        assert!(
-            diagnostics.contains("bundles/codex-careful"),
-            "{diagnostics}"
-        );
-        let expected = if mode == "failure" {
-            "fixture compile failure"
-        } else {
-            "policy-sweep warning"
-        };
-        assert!(diagnostics.contains(expected), "{diagnostics}");
-        assert!(
-            !std::fs::read_to_string(&fixture.marker)
-                .unwrap()
-                .contains("bundles/codex-fast")
-        );
-        fixture.assert_cleaned();
+    // The final recipe gets its own failures: nothing after it could mask them,
+    // and every earlier recipe compiled clean first.
+    for (recipe, later) in [
+        ("bundles/codex-careful", Some("bundles/codex-fast")),
+        ("bundles/mixed-opus-terra", None),
+    ] {
+        for mode in ["stdout-warning", "stderr-warning", "failure"] {
+            let fixture = BrokkrCiFixture::new();
+            let output = fixture
+                .command(&body)
+                .env("FAIL_RECIPE", recipe)
+                .env("COMPILE_MODE", mode)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if mode == "failure" { 23 } else { 1 })
+            );
+            let diagnostics = ci_diagnostics(&output);
+            assert!(diagnostics.contains(recipe), "{diagnostics}");
+            let expected = if mode == "failure" {
+                "fixture compile failure"
+            } else {
+                "policy-sweep warning"
+            };
+            assert!(diagnostics.contains(expected), "{diagnostics}");
+            let marker = std::fs::read_to_string(&fixture.marker).unwrap();
+            assert!(marker.ends_with(&format!("compile --bundle {recipe}\n")));
+            if let Some(later) = later {
+                assert!(!marker.contains(later));
+            }
+            fixture.assert_cleaned();
+        }
     }
     let fixture = BrokkrCiFixture::new();
     let output = fixture
