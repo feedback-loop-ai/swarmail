@@ -757,11 +757,13 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   "content":[{"type":"text","text":"{\"emails\":[{…\"codes\":[\"424242\"]…}]}"}]}}
 ```
 
-Thirteen tools: `swarmail_search_emails`, `swarmail_get_email`,
+Fifteen tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`, `swarmail_get_deliverability_report`. Except for malformed seed fixture
+`swarmail_set_chaos`, `swarmail_clear_chaos`, `swarmail_get_deliverability_report`,
+and the two focused waits appended after them, **`swarmail_wait_for_code`** and
+**`swarmail_wait_for_link`** (below). Except for malformed seed fixture
 content and the supplied
 `timeout_ms` refusal described below, every tool validates its supplied
 arguments at the envelope: a wrong-typed or malformed value — the
@@ -803,6 +805,56 @@ Tool failures such as `shutting down` return
 An unknown MCP argument key returns JSON-RPC `-32602` in HTTP 200 for a call
 with an `id`, before any effect. Other protocol and
 argument refusals use a JSON-RPC `error` envelope as described above.
+
+### Focused waits: the newest code, the one link
+
+`swarmail_wait_for_code` and `swarmail_wait_for_link` (decision
+[0094](docs/decisions/0094-focused-mail-waits.md), proposed) wait like
+`swarmail_wait_for_email` — the same `inbox`, `to`, `from`, `subject` and
+inclusive `since_ms` filters, `timeout_ms` defaulting to 5000 and capped at
+60000, subscribe-before-scan, one deadline — and answer a decision instead of
+whole emails. Both are read-only; neither fetches, renders or trusts a link.
+
+```
+$ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
+    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"swarmail_wait_for_link",
+         "arguments":{"inbox":"quickstart","anchor_text":"^Confirm","host":"^app[.]test$"}}}'
+… {"status":"selected","selected_url":"https://app.test/confirm/1","distinct_urls":1,"matched":1,
+   "candidates":[{"url":"https://app.test/confirm/1","anchor_text":"Confirm your account",
+   "rel":null,"source":"html","link_index":1,"email_id":"…","received_ms":…,"age_ms":…,
+   "sender":{"address":"app@app.test"}}],"candidates_total":1,"candidates_truncated":false}
+```
+
+- **Codes:** the newest eligible email *in acceptance order* (not by stamp or
+  id) decides. One distinct code there is `selected`, with its `email_id`,
+  `sender`, `received_ms` and `age_ms`; several codes there are `ambiguous` —
+  never resolved from older mail. Older eligible emails' codes are listed as
+  `older_candidates`, each with its own provenance. `age_ms` is the age of
+  the parse-start stamp, not code expiry; `sender` is the stored From, which
+  can be the envelope fallback. Old matching mail answers at once: use a
+  private inbox or a `since_ms` from before your action.
+- **Links:** `anchor_text`, `host` and `path` are Rust regex *searches* (at
+  most 1024 UTF-8 bytes and 1 MiB compiled each) that must all match the
+  **same** occurrence. `host` is the parsed host (no credentials or port,
+  IDNA as punycode, IPv6 bracketed) matched ASCII case-insensitively by
+  default — a search, so an exact host is `^app[.]test$`; `path` is the
+  serialized path without query or fragment. Exactly one distinct URL
+  across every matching occurrence is `selected_url`; two spellings or two
+  destinations are `ambiguous`, with every candidate's anchor text, `rel`
+  and `text`/`html` source. Labels are lexical, decoded once and recorded at
+  ingest: inline tags join, block tags and `br` separate, suppressed content
+  and comments are omitted; an unknown label (text-part, historical or
+  unattributable links) is `null` and never matches an `anchor_text`.
+- **Shapes:** `status` is `selected`, `ambiguous` or `timed_out` (nothing
+  eligible by the deadline — a normal result). `matched` counts eligible
+  emails. Each list shows at most 250 entries, chosen after the whole
+  snapshot is evaluated, with an exact `*_total` and a `*_truncated` flag;
+  a winner appears only when `selected`. Selection is complete, so its cost
+  grows with the retained inbox; narrow filters to reach omitted entries.
+- **History:** mail stored before decision 0094 keeps its `links`; its
+  candidates carry `null` label, `rel` and `source` and are never
+  re-extracted. Email reads, feeds and webhooks are unchanged — occurrence
+  metadata is reachable only through `swarmail_wait_for_link`.
 
 Wire it up:
 
@@ -1309,6 +1361,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
+| `tests/focused_waits.rs` | the focused code/link waits over real SMTP and MCP: each filter on each tool by counterexample, ingest occurrence metadata for SMTP and seed, post-park deliveries that never complete a wait, and local applications refusing stale codes and look-alike links (proposed 0094) |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |

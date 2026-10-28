@@ -53,6 +53,7 @@ fn historical() -> swarmail::model::Email {
         size: 42,
         text: Some("line\n\t\u{0}\u{1b} 雪 \\".into()),
         html: Some("<b>untrusted</b>".into()),
+        link_metadata: None,
         links: vec!["https://x.io/?q=雪".into()],
         codes: (0..65).map(|i| format!("{i:04}")).collect(),
         message_id: Some("message@x".into()),
@@ -146,12 +147,16 @@ fn report_of(findings: Vec<Value>) -> Value {
     json!({"rule_set_id":"swarmail-bulk/1","findings":findings})
 }
 
-enum Wire {
+pub(super) enum Wire {
     Http(std::net::SocketAddr, Option<&'static str>),
     Stdio(Box<Binary>),
 }
 impl Wire {
-    async fn start(addr: std::net::SocketAddr, version: &'static str, stdio: bool) -> Self {
+    pub(super) async fn start(
+        addr: std::net::SocketAddr,
+        version: &'static str,
+        stdio: bool,
+    ) -> Self {
         if stdio {
             let mut binary = Binary::start(addr);
             binary.ready(version).await;
@@ -160,7 +165,7 @@ impl Wire {
             Self::Http(addr, Some(version))
         }
     }
-    async fn raw(&mut self, request: &Value) -> String {
+    pub(super) async fn raw(&mut self, request: &Value) -> String {
         match self {
             Self::Http(addr, version) => {
                 let headers = version
@@ -194,10 +199,10 @@ impl Wire {
             }
         }
     }
-    async fn request(&mut self, request: &Value) -> Value {
+    pub(super) async fn request(&mut self, request: &Value) -> Value {
         serde_json::from_str(&self.raw(request).await).unwrap()
     }
-    async fn finish(self) {
+    pub(super) async fn finish(self) {
         if let Self::Stdio(binary) = self {
             (*binary).finish().await;
         }
@@ -323,7 +328,15 @@ async fn legacy_bytes() {
             let run = workflow(version, stdio, false).await;
             assert_eq!(run.requests, requests, "case identities");
             assert_eq!(run.lines.len(), BASELINE.lines().count());
-            assert_eq!(run.lines.join("\n") + "\n", BASELINE);
+            // Discovery is additive (decision 0094 §7): the captured
+            // thirteen-entry catalogue is a byte prefix, then the two
+            // appended descriptors; every result line is byte-identical.
+            let baseline: Vec<&str> = BASELINE.lines().collect();
+            super::focused::assert_appended(&run.lines[0], baseline[0]);
+            assert_eq!(
+                run.lines[1..].join("\n") + "\n",
+                baseline[1..].join("\n") + "\n"
+            );
         }
     }
 }
@@ -404,7 +417,7 @@ fn compare(v: &Value, bound: i128) -> Option<std::cmp::Ordering> {
         other => other,
     })
 }
-fn schema_ok(s: &Value) -> bool {
+pub(super) fn schema_ok(s: &Value) -> bool {
     let Some(o) = s.as_object() else {
         return false;
     };
@@ -571,7 +584,7 @@ fn evaluate(s: &Value, v: &Value) -> bool {
     }
     true
 }
-fn valid(s: &Value, v: &Value) -> bool {
+pub(super) fn valid(s: &Value, v: &Value) -> bool {
     schema_ok(s) && evaluate(s, v)
 }
 fn number(literal: &str) -> Value {
@@ -805,7 +818,7 @@ fn evaluator_selftest() {
 
 /// Strip the modern-only descriptor members, checking each, leaving the
 /// March descriptor the independent baseline served.
-fn march_view(tool: &Value, read_only: bool) -> Value {
+pub(super) fn march_view(tool: &Value, read_only: bool) -> Value {
     let mut descriptor = tool.clone();
     let o = descriptor.as_object_mut().unwrap();
     assert_eq!(o.remove("outputSchema").unwrap()["type"], "object");
@@ -834,7 +847,11 @@ async fn modern_all_tools_http_and_stdio() {
             let list: Value = serde_json::from_str(&run.lines[0]).unwrap();
             let tools = list["result"]["tools"].as_array().unwrap();
             let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-            assert_eq!(names, NAMES);
+            assert_eq!(names[..13], NAMES);
+            assert_eq!(names[13..], super::focused::FOCUSED);
+            for tool in &tools[13..] {
+                super::focused::assert_march_descriptor(&march_view(tool, true));
+            }
             for (i, (tool, original)) in tools
                 .iter()
                 .zip(march["result"]["tools"].as_array().unwrap())
@@ -885,7 +902,7 @@ async fn modern_all_tools_http_and_stdio() {
 }
 
 // Schema-aware removal of annotation-only keywords: property names remain data.
-fn structural(s: &Value) -> Value {
+pub(super) fn structural(s: &Value) -> Value {
     let mut s = s.clone();
     let o = s.as_object_mut().unwrap();
     for k in ["description", "title", "default"] {
@@ -1157,14 +1174,26 @@ async fn served_openapi_pins_and_negative_controls() {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(served, projected);
-        assert_eq!(served, NAMES.into_iter().collect());
+        let focused: std::collections::BTreeSet<&str> =
+            super::focused::FOCUSED.into_iter().collect();
+        assert_eq!(served, projected.union(&focused).copied().collect());
+        assert_eq!(
+            served,
+            NAMES.into_iter().chain(focused.iter().copied()).collect()
+        );
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             let schema = &tool["outputSchema"];
             assert!(schema_ok(schema), "{name}");
             assert_eq!(schema["type"], "object");
-            assert_eq!(structural(schema), structural(&expected[name]), "{name}");
+            // The focused waits have no REST counterpart to pin; their
+            // independent expectation is decision 0094's stated contract.
+            let expected = if focused.contains(name) {
+                super::focused::expected_output(name)
+            } else {
+                expected[name].clone()
+            };
+            assert_eq!(structural(schema), structural(&expected), "{name}");
             assert!(!valid(schema, &json!({})), "vacuous {name}");
         }
     }

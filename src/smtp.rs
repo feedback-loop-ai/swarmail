@@ -34,7 +34,7 @@
 //! or a `.` CRLF line behind a bare LF, is payload.
 
 use crate::chaos::{Chaos, ChaosEvent};
-use crate::extract::{BodyOrder, extract_codes, extract_links};
+use crate::extract::{BodyOrder, extract_codes, extract_link_metadata};
 use crate::model::{Email, EmailAddress};
 use crate::store::Store;
 use chrono::Utc;
@@ -1801,7 +1801,7 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
     let text = text_part.map(|(_, text)| text);
     let html = html_part.map(|(_, html)| html);
 
-    let links = extract_links(text.as_deref(), html.as_deref());
+    let (links, link_metadata) = extract_link_metadata(text.as_deref(), html.as_deref());
     let codes = extract_codes(text.as_deref(), html.as_deref(), order);
 
     // Thread headers are extracted once, here at ingest (decision 0005), and
@@ -1837,6 +1837,7 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
         text,
         html,
         links,
+        link_metadata: Some(link_metadata),
         codes,
         message_id,
         in_reply_to,

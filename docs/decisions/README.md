@@ -90,6 +90,7 @@ them. What may land while a decision is still proposed is stated in
 | [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
 | [0091](0091-mcp-report-output.md) | Thirteen-tool structured MCP output, report schema included | proposed — awaiting the operator | (Epic #164, issue #153 follow-up on the current #152 integration; supplements 0082) |
+| [0094](0094-focused-mail-waits.md) | Ingest link provenance and focused code/link waits | proposed — awaiting the operator | (Epic #164, issue #154 on provisional #153; number provisional — #155 holds 0092, #156 0093; supplements 0082/0091) |
 
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that

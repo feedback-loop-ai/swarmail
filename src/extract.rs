@@ -17,6 +17,7 @@
 
 mod entities;
 
+use crate::model::{LinkMetadata, LinkSource};
 use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -196,6 +197,12 @@ struct LinkScanStats {
     trim_counted: u64,
     /// Bytes the trim removed, one step each.
     trim_removed: u64,
+    /// Decoded characters an anchor label examined (decision 0094 §1):
+    /// only text runs inside an open anchor, each once.
+    label_chars: u64,
+    /// Source bytes re-decoded to find which match an unquoted `href`
+    /// owns: one ordinary region and its prefix, at most once each.
+    owner_bytes: u64,
     tags: TagScanStats,
 }
 
@@ -218,23 +225,63 @@ pub fn extract_links(text: Option<&str>, html: Option<&str>) -> Vec<String> {
 }
 
 fn links_scanned(text: Option<&str>, html: Option<&str>, stats: &mut LinkScanStats) -> Vec<String> {
+    link_metadata_scanned(text, html, stats).0
+}
+
+/// The legacy `links` projection and the occurrences behind it, from one
+/// scan (decision 0094 §1): every match before deduplication, text first,
+/// so `dedup` of the occurrence URLs is exactly [`extract_links`]. An
+/// occurrence is labelled only when a complete, unsuppressed `<a>` start
+/// tag's first `href` owns it — the once-decoded, ASCII-trimmed value is
+/// that one whole match — and then carries the tag's first `rel` and the
+/// anchor's lexical text. Everything else, text-part, conditional-comment
+/// and unattributable URLs included, keeps an unknown label and rel.
+pub fn extract_link_metadata(
+    text: Option<&str>,
+    html: Option<&str>,
+) -> (Vec<String>, Vec<LinkMetadata>) {
+    link_metadata_scanned(text, html, &mut LinkScanStats::default())
+}
+
+fn link_metadata_scanned(
+    text: Option<&str>,
+    html: Option<&str>,
+    stats: &mut LinkScanStats,
+) -> (Vec<String>, Vec<LinkMetadata>) {
     let mut out = Vec::new();
     if let Some(text) = text {
         push_urls(&URL_RE, text, &mut out, stats);
     }
+    let mut metadata: Vec<LinkMetadata> = out
+        .iter()
+        .map(|url| occurrence(url, LinkSource::Text))
+        .collect();
     if let Some(html) = html {
         let mut regions = LinkRegions {
             html,
             cursor: 0,
             out: &mut out,
             stats,
+            metadata: &mut metadata,
+            regions: Vec::new(),
+            active: None,
         };
         let mut tags = TagScanStats::default();
         walk(html, &mut tags, &mut regions);
         regions.ordinary(html.len());
+        regions.finish_anchor();
         regions.stats.tags = tags;
     }
-    dedup(out)
+    (dedup(out), metadata)
+}
+
+fn occurrence(url: &str, source: LinkSource) -> LinkMetadata {
+    LinkMetadata {
+        url: url.to_string(),
+        anchor_text: None,
+        rel: None,
+        source,
+    }
 }
 
 #[cfg(test)]
@@ -305,7 +352,29 @@ struct LinkRegions<'a> {
     cursor: usize,
     out: &'a mut Vec<String>,
     stats: &'a mut LinkScanStats,
+    /// One occurrence per `out` entry, index for index.
+    metadata: &'a mut Vec<LinkMetadata>,
+    /// The regions decoded since the last tag ended: the only ones the
+    /// next tag's `href` can lie in.
+    regions: Vec<Region>,
+    /// The open anchor: its owned occurrence and the label so far.
+    active: Option<(usize, String)>,
 }
+
+/// One decoded source region and the `out` entries its matches produced.
+struct Region {
+    start: usize,
+    end: usize,
+    before: usize,
+    after: usize,
+    quoted: bool,
+}
+
+/// The block boundaries that separate label words (decision 0094 §1);
+/// `br` separates as a start tag only.
+const LABEL_BREAKS: [&[u8]; 10] = [
+    b"p", b"div", b"li", b"tr", b"h1", b"h2", b"h3", b"h4", b"h5", b"h6",
+];
 
 impl LinkRegions<'_> {
     /// The ordinary source from the cursor to `end`, decoded once.
@@ -315,13 +384,134 @@ impl LinkRegions<'_> {
         self.stats.ordinary_decodes += 1;
         #[cfg(test)]
         self.stats.decoded_ranges.push((self.cursor, end));
+        let before = self.out.len();
         push_urls(&URL_RE, &decode_refs(src), self.out, self.stats);
+        self.decoded(self.cursor, end, before, false);
         self.cursor = end;
+    }
+
+    /// Record the occurrences one region produced, and the region.
+    fn decoded(&mut self, start: usize, end: usize, before: usize, quoted: bool) {
+        let after = self.out.len();
+        self.metadata.extend(
+            self.out[before..]
+                .iter()
+                .map(|url| occurrence(url, LinkSource::Html)),
+        );
+        self.regions.push(Region {
+            start,
+            end,
+            before,
+            after,
+            quoted,
+        });
+    }
+
+    /// The `out` index of the match that begins exactly where the `href`
+    /// value begins. A quoted value is its own region, led by its leading
+    /// URL; an unquoted one sits inside an ordinary region whose match
+    /// order is recomputed from the decoded prefix — no reference straddles
+    /// the `=` or whitespace before a value, so the prefix decodes to
+    /// exactly the region decode's offset. The regions since the last tag
+    /// are contiguous and in source order from before this tag, and no
+    /// boundary falls inside a recognized value, so the first region
+    /// reaching the value's end contains all of it.
+    fn owner(&mut self, (start, end): (usize, usize)) -> Option<usize> {
+        let region = self.regions.iter().find(|region| end <= region.end)?;
+        let index = if region.quoted {
+            region.before
+        } else {
+            let prefix = decode_refs(&self.html[region.start..start]);
+            let decoded = decode_refs(&self.html[region.start..region.end]);
+            self.stats.owner_bytes += (start - region.start + region.end - region.start) as u64;
+            region.before
+                + URL_RE
+                    .find_iter(&decoded)
+                    .position(|found| found.start() == prefix.len())?
+        };
+        (index < region.after).then_some(index)
+    }
+
+    /// Open an anchor on the occurrence its `href` wholly owns, if any.
+    fn open_anchor(&mut self, href: (usize, usize), rel: Option<(usize, usize)>) {
+        let value = decode_refs(&self.html[href.0..href.1]);
+        let url = value.trim_matches(|c: char| c.is_ascii_whitespace());
+        if let Some(index) = self.owner(href).filter(|&index| self.out[index] == url) {
+            self.metadata[index].rel = rel.map(|(start, end)| decode_refs(&self.html[start..end]));
+            self.active = Some((index, String::new()));
+        }
+    }
+
+    /// Close the open anchor with its collapsed label, possibly empty.
+    fn finish_anchor(&mut self) {
+        if let Some((index, label)) = self.active.take() {
+            self.metadata[index].anchor_text = Some(label.trim_end_matches(' ').to_string());
+        }
+    }
+
+    /// A block boundary: one collapsible space in the open anchor's label.
+    fn space(&mut self) {
+        if let Some((_, label)) = &mut self.active {
+            space(label);
+        }
+    }
+}
+
+/// Collapse: a label never starts with, or repeats, the one space.
+fn space(label: &mut String) {
+    if !label.is_empty() && !label.ends_with(' ') {
+        label.push(' ');
     }
 }
 
 impl Regions for LinkRegions<'_> {
-    fn text(&mut self, _run: &str, _refs: &mut RefScanStats) {}
+    /// Inside an open anchor a run is decoded once and its ASCII whitespace
+    /// collapsed; Unicode and case stay as written. Outside one a run costs
+    /// nothing.
+    fn text(&mut self, run: &str, _refs: &mut RefScanStats) {
+        let Some((_, label)) = &mut self.active else {
+            return;
+        };
+        for c in decode_refs(run).chars() {
+            self.stats.label_chars += 1;
+            if c.is_ascii_whitespace() {
+                space(label);
+            } else {
+                label.push(c);
+            }
+        }
+    }
+
+    /// A complete tag outside every suppressed container ends the open
+    /// anchor when it is an `a`, opens the next when it is an `a` start
+    /// tag with an `href`, and separates label words when it is a block.
+    /// The ordinary source up to the tag's end is flushed first, so the
+    /// region an unquoted `href` lies in is known; a tag ends at a literal
+    /// `>`, which no match crosses, so the flush changes no match.
+    fn element(
+        &mut self,
+        name: &[u8],
+        closing: bool,
+        attrs: AnchorAttrs,
+        end: usize,
+        visible: bool,
+    ) {
+        if visible && name.eq_ignore_ascii_case(b"a") {
+            self.finish_anchor();
+            if let (false, Some(href)) = (closing, attrs.href) {
+                self.ordinary(end);
+                self.open_anchor(href, attrs.rel);
+            }
+        } else if visible
+            && (LABEL_BREAKS
+                .iter()
+                .any(|tag| name.eq_ignore_ascii_case(tag))
+                || (!closing && name.eq_ignore_ascii_case(b"br")))
+        {
+            self.space();
+        }
+        self.regions.clear();
+    }
 
     fn value(&mut self, start: usize, end: usize) {
         self.ordinary(start);
@@ -332,6 +522,7 @@ impl Regions for LinkRegions<'_> {
         self.stats.decoded_ranges.push((start, end));
         let decoded = decode_refs(value);
         let leading = decoded.trim_start();
+        let before = self.out.len();
         // Only a URL starting the value owns its decoded quotes. Nested
         // CSS/prose quotes delimit embedded URLs, and each is visited.
         if let Some(first) = ATTR_URL_RE.find(leading).filter(|m| m.start() == 0) {
@@ -341,6 +532,7 @@ impl Regions for LinkRegions<'_> {
         } else {
             push_urls(&URL_RE, &decoded, self.out, self.stats);
         }
+        self.decoded(start, end, before, true);
         self.cursor = end;
     }
 }
@@ -492,6 +684,105 @@ trait Regions {
     /// The source byte range of one quoted attribute value, its quotes
     /// excluded. Reported in source order as the tag is scanned.
     fn value(&mut self, start: usize, end: usize);
+    /// One complete start or end tag, after its values: its name, an `a`
+    /// start tag's first `href`/`rel`, where it ends, and whether it sits
+    /// outside every suppressed container.
+    fn element(
+        &mut self,
+        _name: &[u8],
+        _closing: bool,
+        _attrs: AnchorAttrs,
+        _end: usize,
+        _visible: bool,
+    ) {
+    }
+}
+
+/// The first `href` and `rel` of an `a` tag as source spans of their
+/// values (decision 0094 §1). A valueless attribute is an empty span:
+/// present and empty, never absent.
+#[derive(Clone, Copy, Default)]
+struct AnchorAttrs {
+    href: Option<(usize, usize)>,
+    rel: Option<(usize, usize)>,
+}
+
+impl AnchorAttrs {
+    fn record(&mut self, bytes: &[u8], (start, end): (usize, usize), value: (usize, usize)) {
+        let name = &bytes[start..end];
+        let slot = if name.eq_ignore_ascii_case(b"href") {
+            &mut self.href
+        } else if name.eq_ignore_ascii_case(b"rel") {
+            &mut self.rel
+        } else {
+            return;
+        };
+        slot.get_or_insert(value);
+    }
+}
+
+/// Attribute recognition over exactly the bytes [`tag`] scans outside its
+/// quoted values, so the two never disagree about where a value is: a
+/// quote opens a value only where `tag` says it does, and a quoted value
+/// that does not directly follow a name's `=` belongs to no attribute.
+#[derive(Clone, Copy)]
+enum AttrScan {
+    Gap,
+    Name(usize),
+    AfterName(usize, usize),
+    BeforeValue(usize, usize),
+    Unquoted(usize, usize, usize),
+}
+
+impl AttrScan {
+    /// One byte outside every quoted value, `>` excluded.
+    fn byte(self, bytes: &[u8], index: usize, attrs: &mut AnchorAttrs) -> Self {
+        let byte = bytes[index];
+        let space = byte.is_ascii_whitespace();
+        match self {
+            Self::Gap if space || byte == b'/' => self,
+            Self::Gap => Self::Name(index),
+            Self::Name(start) if byte == b'=' => Self::BeforeValue(start, index),
+            Self::Name(start) if space => Self::AfterName(start, index),
+            Self::Name(start) if byte == b'/' => {
+                attrs.record(bytes, (start, index), (index, index));
+                Self::Gap
+            }
+            Self::Name(_) => self,
+            Self::AfterName(start, end) if byte == b'=' => Self::BeforeValue(start, end),
+            Self::AfterName(..) if space => self,
+            Self::AfterName(start, end) => {
+                attrs.record(bytes, (start, end), (end, end));
+                Self::Gap.byte(bytes, index, attrs)
+            }
+            Self::BeforeValue(..) if space => self,
+            Self::BeforeValue(start, end) => Self::Unquoted(start, end, index),
+            Self::Unquoted(start, end, value) if space => {
+                attrs.record(bytes, (start, end), (value, index));
+                Self::Gap
+            }
+            Self::Unquoted(..) => self,
+        }
+    }
+
+    /// A quoted value `tag` reported.
+    fn quoted(self, bytes: &[u8], value: (usize, usize), attrs: &mut AnchorAttrs) -> Self {
+        if let Self::BeforeValue(start, end) = self {
+            attrs.record(bytes, (start, end), value);
+        }
+        Self::Gap
+    }
+
+    /// The tag's closing `>` at `index`.
+    fn finish(self, bytes: &[u8], index: usize, attrs: &mut AnchorAttrs) {
+        match self {
+            Self::Gap => {}
+            Self::Name(start) => attrs.record(bytes, (start, index), (index, index)),
+            Self::AfterName(start, end) => attrs.record(bytes, (start, end), (end, end)),
+            Self::BeforeValue(start, end) => attrs.record(bytes, (start, end), (index, index)),
+            Self::Unquoted(start, end, value) => attrs.record(bytes, (start, end), (value, index)),
+        }
+    }
 }
 
 /// The containers whose whole content is suppressed and whose nesting is
@@ -534,7 +825,7 @@ fn opens_markup(next: Option<&u8>) -> bool {
 }
 
 enum Kind<'a> {
-    Start(&'a [u8]),
+    Start(&'a [u8], AnchorAttrs),
     End(&'a [u8]),
     Other,
 }
@@ -572,8 +863,9 @@ fn markup_at<'a>(
             let gt = rest[2..].iter().position(|&byte| byte == b'>')?;
             Some((lt + 2 + gt + 1, Kind::Other))
         }
-        b'/' => tag(bytes, lt + 2, stats, regions).map(|(name, end)| (end, Kind::End(name))),
-        _ => tag(bytes, lt + 1, stats, regions).map(|(name, end)| (end, Kind::Start(name))),
+        b'/' => tag(bytes, lt + 2, stats, regions).map(|(name, end, _)| (end, Kind::End(name))),
+        _ => tag(bytes, lt + 1, stats, regions)
+            .map(|(name, end, attrs)| (end, Kind::Start(name, attrs))),
     }
 }
 
@@ -638,7 +930,7 @@ fn conditional_values(
         };
         search += offset + 1;
         if bytes.get(search).is_some_and(u8::is_ascii_alphabetic) {
-            let Some((_, end)) = tag(bytes, search, stats, regions) else {
+            let Some((_, end, _)) = tag(bytes, search, stats, regions) else {
                 return;
             };
             search = end;
@@ -650,25 +942,34 @@ fn conditional_values(
 /// `>` that is not inside a quoted attribute value. A quote opens a value
 /// only after `=` and optional whitespace, so the apostrophe in
 /// `alt=don't` is a value byte; a quoted `>` never ends the tag. Each
-/// closed value is reported to `regions` as soon as its quote closes.
+/// closed value is reported to `regions` as soon as its quote closes. An
+/// `a` tag also reports its first `href` and `rel`, recognized in the same
+/// pass ([`AttrScan`]); any other tag pays nothing for them.
 fn tag<'a>(
     bytes: &'a [u8],
     start: usize,
     stats: &mut TagScanStats,
     regions: &mut dyn Regions,
-) -> Option<(&'a [u8], usize)> {
+) -> Option<(&'a [u8], usize, AnchorAttrs)> {
     let name_len = bytes[start..].iter().position(|&byte| {
         stats.tag_name_bytes += 1;
         ends_name(byte)
     })?;
+    let name = &bytes[start..start + name_len];
+    let mut scan = name.eq_ignore_ascii_case(b"a").then_some(AttrScan::Gap);
+    let mut attrs = AnchorAttrs::default();
     let mut index = start + name_len;
     let mut after_equals = false;
     loop {
         let byte = *bytes.get(index)?;
         stats.attribute_steps += 1;
         match byte {
-            b'>' => return Some((&bytes[start..start + name_len], index + 1)),
-            b'=' => after_equals = true,
+            b'>' => {
+                if let Some(scan) = scan {
+                    scan.finish(bytes, index, &mut attrs);
+                }
+                return Some((name, index + 1, attrs));
+            }
             quote @ (b'"' | b'\'') if after_equals => {
                 let close = index
                     + 1
@@ -679,11 +980,18 @@ fn tag<'a>(
                 #[cfg(test)]
                 stats.value_ranges.push((index + 1, close));
                 regions.value(index + 1, close);
+                scan = scan.map(|scan| scan.quoted(bytes, (index + 1, close), &mut attrs));
                 index = close;
                 after_equals = false;
             }
-            byte if byte.is_ascii_whitespace() => {}
-            _ => after_equals = false,
+            _ => {
+                scan = scan.map(|scan| scan.byte(bytes, index, &mut attrs));
+                if byte == b'=' {
+                    after_equals = true;
+                } else if !byte.is_ascii_whitespace() {
+                    after_equals = false;
+                }
+            }
         }
         index += 1;
     }
@@ -728,8 +1036,10 @@ fn skip_markup(
         return None;
     };
     stats.markup_bytes += (end - lt) as u64;
+    let visible = containers.is_empty();
     match kind {
-        Kind::Start(name) => {
+        Kind::Start(name, attrs) => {
+            regions.element(name, false, attrs, end, visible);
             // A self-closing spelling still opens the element: the tag's
             // trailing `/` changes nothing here.
             if let Some(raw) = raw_text(name) {
@@ -738,7 +1048,8 @@ fn skip_markup(
                     return None;
                 };
                 stats.raw_bytes += (close - end) as u64;
-                let Some((_, close_end)) = tag(html.as_bytes(), close + 2, stats, regions) else {
+                let Some((_, close_end, _)) = tag(html.as_bytes(), close + 2, stats, regions)
+                else {
                     stats.markup_bytes += (len - close) as u64;
                     return None;
                 };
@@ -750,6 +1061,7 @@ fn skip_markup(
             }
         }
         Kind::End(name) => {
+            regions.element(name, true, AnchorAttrs::default(), end, visible);
             if container(name).is_some_and(|closed| containers.last() == Some(&closed)) {
                 containers.pop();
             }
@@ -796,6 +1108,286 @@ fn walk(html: &str, stats: &mut TagScanStats, regions: &mut dyn Regions) {
 mod tests {
     use super::*;
 
+    /// The occurrence projection the metadata tests compare: url, label, rel.
+    fn labelled(html: &str) -> Vec<(String, Option<String>, Option<String>)> {
+        let (links, metadata) = extract_link_metadata(None, Some(html));
+        let urls: Vec<String> = metadata.iter().map(|m| m.url.clone()).collect();
+        assert_eq!(dedup(urls), links, "the legacy projection: {html}");
+        assert!(metadata.iter().all(|m| m.source == LinkSource::Html));
+        metadata
+            .into_iter()
+            .map(|m| (m.url, m.anchor_text, m.rel))
+            .collect()
+    }
+
+    fn row(
+        url: &str,
+        label: Option<&str>,
+        rel: Option<&str>,
+    ) -> (String, Option<String>, Option<String>) {
+        (url.into(), label.map(Into::into), rel.map(Into::into))
+    }
+
+    /// Decision 0094 §1: every occurrence before deduplication, text first;
+    /// the first href and rel of a complete visible anchor, decoded once;
+    /// lexical labels with collapsed ASCII whitespace, inline joins, block
+    /// and br separators, suppressed content and comments omitted.
+    #[test]
+    fn metadata_keeps_occurrences_and_lexical_labels() {
+        let html = "<A HREF=\" https://x.io/a \" rel=\"NoFollow &amp; X\" href=\"https://x.io/ignored\" rel=ignored>  Con<b>fi</b>rm &amp;lt;<br>雪<div> next </div><!-- hidden --><script>hidden</script><template>hidden</template>end</A>\n<a href=https://x.io/a rel>Again</a><a href='https://x.io/empty' rel=''></a>\n<a href href=\"https://x.io/no\">no</a><a href=\"https://x.io/two https://x.io/three\">multi</a>\n<a href='https://x.io/trailing.'>punctuation</a><a href='https://x.io/open'>unfinished<b\n<a href=\"https://x.io/not-complete\" ";
+        let text = "https://x.io/a https://x.io/a";
+        let (links, meta) = extract_link_metadata(Some(text), Some(html));
+        assert_eq!(links, extract_links(Some(text), Some(html)));
+        let urls: Vec<_> = meta.iter().map(|m| m.url.clone()).collect();
+        assert_eq!(dedup(urls), links);
+        for text in &meta[..2] {
+            assert_eq!(*text, occurrence("https://x.io/a", LinkSource::Text));
+        }
+        assert!(meta[2..].iter().all(|m| m.source == LinkSource::Html));
+        let rows: Vec<_> = meta[2..]
+            .iter()
+            .map(|m| (m.url.as_str(), m.anchor_text.as_deref(), m.rel.as_deref()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "https://x.io/a",
+                    Some("Confirm &lt; 雪 next end"),
+                    Some("NoFollow & X")
+                ),
+                ("https://x.io/ignored", None, None),
+                ("https://x.io/a", Some("Again"), Some("")),
+                ("https://x.io/empty", Some(""), Some("")),
+                ("https://x.io/no", None, None),
+                ("https://x.io/two", None, None),
+                ("https://x.io/three", None, None),
+                ("https://x.io/trailing", None, None),
+                ("https://x.io/open", Some("unfinished"), None),
+                ("https://x.io/not-complete", None, None),
+            ]
+        );
+    }
+
+    /// The review's MEDIUM on the historical patch: an unquoted href before
+    /// a quoted rel or title kept its URL but lost its label. Ownership is
+    /// by source position in either attribute order, and a quoted neighbour
+    /// URL or a repeated destination never steals it.
+    #[test]
+    fn metadata_owns_unquoted_href_across_quoted_attributes() {
+        let html = "<a href=https://x.io/confirm rel='nofollow'>Confirm</a>\n<a rel='next' href=https://x.io/confirm>Again</a>\n<a href=https://x.io/title title='https://x.io/decoy'>Title</a>\n<a title='https://x.io/decoy' href=https://x.io/title>Reverse</a>\n<a title='https://x.io/confirm' href=https://x.io/confirm rel='last'>Last</a>";
+        let mut stats = LinkScanStats::default();
+        let (links, metadata) = link_metadata_scanned(None, Some(html), &mut stats);
+        assert_eq!(
+            links,
+            [
+                "https://x.io/confirm",
+                "https://x.io/title",
+                "https://x.io/decoy"
+            ]
+        );
+        let expected = [
+            ("https://x.io/confirm", Some("Confirm"), Some("nofollow")),
+            ("https://x.io/confirm", Some("Again"), Some("next")),
+            ("https://x.io/title", Some("Title"), None),
+            ("https://x.io/decoy", None, None),
+            ("https://x.io/decoy", None, None),
+            ("https://x.io/title", Some("Reverse"), None),
+            ("https://x.io/confirm", None, None),
+            ("https://x.io/confirm", Some("Last"), Some("last")),
+        ]
+        .map(|(url, anchor_text, rel)| LinkMetadata {
+            url: url.into(),
+            anchor_text: anchor_text.map(str::to_owned),
+            rel: rel.map(str::to_owned),
+            source: LinkSource::Html,
+        });
+        assert_eq!(metadata, expected);
+        assert_eq!(stats.ordinary_bytes + stats.quoted_bytes, html.len() as u64);
+        // Each ordinary region is re-decoded at most once, with its prefix.
+        assert!(stats.owner_bytes <= 2 * stats.ordinary_bytes);
+        assert!(stats.owner_bytes > 0);
+    }
+
+    /// Anchor boundaries: a replacement `a`, a stray close, an unfinished
+    /// tag, suppressed containers, conditional comments, attribute order,
+    /// inline versus block text and raw text each decide labels exactly.
+    #[test]
+    fn metadata_handles_replacement_suppression_and_unfinished_tags() {
+        for (html, labels) in [
+            (
+                r#"<a x=foo='A href="https://x.io/bad'>unlabelled"#,
+                vec![None],
+            ),
+            (
+                "<a href='https://x.io/1'> &nbsp; É\t雪 &nbsp; </a>",
+                vec![Some("\u{a0} É 雪 \u{a0}")],
+            ),
+            (
+                "<a href='https://x.io/1'>one<a href='https://x.io/2'/>two",
+                vec![Some("one"), Some("two")],
+            ),
+            (
+                "<a href='https://x.io/1'>one</a></a><a href='https://x.io/2'",
+                vec![Some("one"), None],
+            ),
+            (
+                "<head><a href='https://x.io/1'>hidden</a></head><a href=https://x.io/2>two",
+                vec![None, Some("two")],
+            ),
+            (
+                "<!--[if mso]><a href=https://x.io/1>hidden</a><![endif]--><a href='https://x.io/2'>two",
+                vec![None, Some("two")],
+            ),
+            (
+                "<!--[if mso]><a href='https://x.io/1'>hidden</a><![endif]--><a href=https://x.io/2>two",
+                vec![None, Some("two")],
+            ),
+            (
+                "<a title='https://x.io/1' href=https://x.io/2>two",
+                vec![None, Some("two")],
+            ),
+            (
+                r#"<a href='https://x.io/1' title="https://x.io/2">one"#,
+                vec![Some("one"), None],
+            ),
+            (
+                "<a href='https://x.io/1'> a <i> b </i><style>x</style> c<title>x</title> d</a>https://x.io/2",
+                vec![Some("a b c d"), None],
+            ),
+            (
+                "<a href=https://x.io/1><p>one</p><li>two<tr>three<h1>4</h1><h2>5</h2><h3>6</h3><h4>7</h4><h5>8</h5><h6>9</h6>x<br>y</br>z<span>w</span></a>",
+                vec![Some("one two three 4 5 6 7 8 9 x yzw")],
+            ),
+            (
+                "<p><br><a href=https://x.io/1><br> <div>one</div><br></a>",
+                vec![Some("one")],
+            ),
+            (
+                "<a href=https://x.io/1>a<template><p>b</p></template>c<head><br></head>d</a>",
+                vec![Some("acd")],
+            ),
+        ] {
+            let (_, metadata) = extract_link_metadata(None, Some(html));
+            assert_eq!(
+                metadata
+                    .iter()
+                    .map(|m| m.anchor_text.as_deref())
+                    .collect::<Vec<_>>(),
+                labels,
+                "{html}"
+            );
+        }
+        let html = format!(
+            "<a href='https://x.io/'>{}</a>",
+            "<b>&amp; x</b>".repeat(1000)
+        );
+        let mut stats = LinkScanStats::default();
+        let (_, metadata) = link_metadata_scanned(None, Some(&html), &mut stats);
+        assert_eq!(metadata[0].anchor_text.as_ref().unwrap().len(), 3000);
+        assert_eq!(stats.label_chars, 3000);
+        assert_eq!(stats.ordinary_bytes + stats.quoted_bytes, html.len() as u64);
+    }
+
+    /// The attribute recognizer is the tag scanner's own pass: names are
+    /// ASCII case-insensitive, the first href and rel win, a valueless
+    /// attribute is present-empty, whitespace may surround `=`, `/`
+    /// separates, and a quote opens a value only where `tag` says it does.
+    /// An href owns a label only as one whole decoded match.
+    #[test]
+    fn anchor_attributes_follow_the_tag_scanner() {
+        let one = |html: &str, label: Option<&str>, rel: Option<&str>| {
+            let rows = labelled(html);
+            assert_eq!(rows.len(), 1, "{html}");
+            assert_eq!(rows[0].1.as_deref(), label, "{html}");
+            assert_eq!(rows[0].2.as_deref(), rel, "{html}");
+        };
+        one("<a HREF=https://x.io/u REL=a>L</a>", Some("L"), Some("a"));
+        one(
+            "<a href = \"https://x.io/s\" rel = 'x y'>L</a>",
+            Some("L"),
+            Some("x y"),
+        );
+        one("<a href = https://x.io/s >L", Some("L"), None);
+        one("<a href \t = https://x.io/s>L", Some("L"), None);
+        one("<a/href=https://x.io/s/>L", Some("L"), None);
+        one(
+            "<a href=https://x.io/?a=b&amp;c=d rel=&amp;amp;>L",
+            Some("L"),
+            Some("&amp;"),
+        );
+        one("<a rel=x/ href=https://x.io/s>L", Some("L"), Some("x/"));
+        one("<a rel href=https://x.io/s>L", Some("L"), Some(""));
+        one("<a href=https://x.io/s rel=>L", Some("L"), Some(""));
+        one("<a href=https://x.io/s rel >L", Some("L"), Some(""));
+        one("<a href=https://x.io/s rel>L", Some("L"), Some(""));
+        one("<a href=https://x.io/s /rel=r>L", Some("L"), Some("r"));
+        one("<a href=https://x.io/s rel/>L", Some("L"), Some(""));
+        one(
+            "<a rel=first rel=second href=https://x.io/s>L",
+            Some("L"),
+            Some("first"),
+        );
+        one("<a hr\"ef=https://x.io/s>L", None, None);
+        one("<a = \"x\" href=https://x.io/s>L", Some("L"), None);
+        one("<a href==https://x.io/s>L", None, None);
+        one("<a href=>https://x.io/s</a>", None, None);
+        one("<a href>https://x.io/s</a>", None, None);
+        one("<a href >https://x.io/s</a>", None, None);
+        one("<a href/>https://x.io/s</a>", None, None);
+        one("<a href /x=https://x.io/s>L", None, None);
+        one("<a href=mailto:a@x.io>https://x.io/s</a>", None, None);
+        one("<a href=\"/relative\">https://x.io/s</a>", None, None);
+        one("<a name=top>https://x.io/s</a>", None, None);
+        one("<a href=https://x.io/?a='b'>L", None, None);
+        one("<a href='https://x.io/O&#39;B'>L</a>", Some("L"), None);
+        one("<a href=\"https://x.io/&lt;\">L</a>", None, None);
+        one("<a href=\"https://x.io/trail.\">L</a>", None, None);
+        one("<p title='https://x.io/s'><a>L</a>", None, None);
+        // Two URLs in one unquoted value: neither is owned.
+        let rows = labelled("<a http://e.io/href=https://g.io/>L</a>");
+        assert_eq!(rows, [row("http://e.io/href=https://g.io/", None, None)]);
+        // Neighbouring and repeated destinations keep their own labels.
+        let rows = labelled(
+            "https://x.io/s<a href=https://x.io/s>first</a>https://x.io/s<a href='https://x.io/s'>second</a>",
+        );
+        assert_eq!(
+            rows,
+            [
+                row("https://x.io/s", None, None),
+                row("https://x.io/s", Some("first"), None),
+                row("https://x.io/s", None, None),
+                row("https://x.io/s", Some("second"), None),
+            ]
+        );
+    }
+
+    /// Ownership work stays linear: a region is re-decoded only for the
+    /// one anchor whose tag closes it, and only while an anchor is open
+    /// are text runs examined for its label.
+    #[test]
+    fn metadata_work_is_source_proportional() {
+        for size in [1, 64, 1024] {
+            let html = format!(
+                "{}{}",
+                "<a href=https://x.io/u rel='r'>label text</a> plain &amp; text ".repeat(size),
+                "<p title='https://x.io/t'>x</p>".repeat(size)
+            );
+            let mut stats = LinkScanStats::default();
+            let (links, metadata) = link_metadata_scanned(None, Some(&html), &mut stats);
+            assert_eq!(links, ["https://x.io/u", "https://x.io/t"]);
+            assert_eq!(metadata.len(), 2 * size);
+            assert!(
+                metadata[..size]
+                    .iter()
+                    .all(|m| m.anchor_text.as_deref() == Some("label text"))
+            );
+            let n = html.len() as u64;
+            assert_eq!(stats.ordinary_bytes + stats.quoted_bytes, n);
+            assert!(stats.owner_bytes <= 2 * stats.ordinary_bytes);
+            assert_eq!(stats.label_chars, 10 * size as u64);
+        }
+    }
     /// Codes for two bodies that are alternatives — the text-preferring
     /// order every pre-0049 fixture was written against.
     fn alt_codes(text: Option<&str>, html: Option<&str>) -> Vec<String> {
