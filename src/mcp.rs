@@ -398,6 +398,11 @@ fn tool_descriptors(revision: Revision) -> Value {
                     "",
                 ));
             }
+            // The shared literal is March's byte-pinned descriptor and stays
+            // as captured; only the modern projection states the current rules.
+            if tool["name"] == "swarmail_get_deliverability_report" {
+                tool["description"] = json!(MODERN_REPORT_DESCRIPTION);
+            }
             tool["outputSchema"] = OUTPUT_SCHEMAS[tool["name"].as_str().unwrap()].clone();
             let read_only = matches!(
                 tool["name"].as_str().unwrap(),
@@ -889,7 +894,30 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         json!(["probability", "delay_ms"]),
     );
     let event = json!({"anyOf":[rule,{"type":"null"}]});
+    // Report coordinates are u64 on the wire; the producer separately owns
+    // the 65536-byte compact size, canonical order and deduplication.
+    let coordinate = json!({"type":"integer","minimum":0,"maximum":u64::MAX});
+    let path = json!({"type":"array","items":coordinate});
+    let location = json!({"oneOf":[
+        output_object(json!({
+            "kind":{"type":"string","const":"header"},
+            "name":{"type":"string","pattern":"^[\\x21-\\x39\\x3b-\\x40\\x5b-\\x7e]+$"},
+            "occurrence":{"anyOf":[coordinate,{"type":"null"}]}
+        }), json!(["kind","name","occurrence"])),
+        output_object(json!({"kind":{"type":"string","const":"mime_part"},"path":path}), json!(["kind","path"])),
+        output_object(json!({"kind":{"type":"string","const":"link"},"part_path":path,"byte_offset":coordinate}), json!(["kind","part_path","byte_offset"]))
+    ]});
+    let finding = output_object(
+        json!({
+            "rule_id":{"type":"string","minLength":1,"pattern":"^[!-~]+$"},
+            "severity":{"type":"string","enum":["info","warning","error"]},
+            "location":location,
+            "fix_hint":{"type":"string","minLength":1}
+        }),
+        json!(["rule_id", "severity", "location", "fix_hint"]),
+    );
     json!({
+        "swarmail_get_deliverability_report":output_object(json!({"rule_set_id":{"type":"string"},"findings":{"type":"array","maxItems":crate::deliverability::MAX_FINDINGS,"items":finding}}), json!(["rule_set_id","findings"])),
         "swarmail_search_emails":output_object(json!({"inbox":{"type":"string"},"total":count,"emails":emails}), json!(["inbox","total","emails"])),
         "swarmail_get_email":email,
         "swarmail_get_latest_email":output_object(json!({"emails":nonempty}), json!(["emails"])),
@@ -907,6 +935,9 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "swarmail_clear_chaos":output_object(json!({"chaos":{"type":"string","const":"disabled"}}), json!(["chaos"]))
     })
 });
+
+/// Modern-only report description; March keeps the historical TOOLS literal.
+const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-bulk/1) from the stored bytes, off the SMTP path: the bulk-sender checklist plus the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
 
 /// MCP-compatible JSON input schemas. These are objects — the MCP spec
 /// requires an object, and a `&str` schema embedded in `json!` serialized as
@@ -993,6 +1024,38 @@ mod batch_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Indexing a missing name yields Null, which once published a null
+    // outputSchema for the report; the key sets must be exactly equal.
+    #[test]
+    fn every_tool_has_exactly_one_object_output_schema() {
+        let names: std::collections::BTreeSet<&str> = TOOLS
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        let schemas = OUTPUT_SCHEMAS.as_object().unwrap();
+        assert_eq!(names.len(), 13);
+        assert_eq!(
+            names,
+            schemas
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        for schema in schemas.values() {
+            assert!(schema.is_object() && schema.get("$ref").is_none());
+        }
+        for revision in [Revision::June, Revision::November] {
+            for tool in tool_descriptors(revision).as_array().unwrap() {
+                assert!(tool["outputSchema"].is_object());
+            }
+        }
+        for tool in tool_descriptors(Revision::March).as_array().unwrap() {
+            assert!(tool.get("outputSchema").is_none());
+        }
+    }
 
     #[test]
     fn tool_rate_uses_exact_monotonic_windows() {

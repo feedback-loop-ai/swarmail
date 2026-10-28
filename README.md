@@ -1450,10 +1450,17 @@ Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
 
 swarmail_get_deliverability_report requires string id and admits no other keys.
-On current MCP 2025-03-26 it returns report JSON in one text block, isError=false.
-Missing mail and failed/unavailable analysis use isError=true; malformed arguments
-use -32602. No report outputSchema/structuredContent yet; that small follow-up
-lands when #153 lands, independently of this delivery.
+Under MCP 2025-03-26, missing-version requests included, it returns report
+JSON in one text block, isError=false. On 2025-06-18 and 2025-11-25 the same
+report is also structuredContent under a closed outputSchema matching the REST
+DeliverabilityReport: severity enum, tagged header/mime_part/link locations, u64
+coordinates, at most 256 findings (the 65536-byte bound, order and deduplication
+stay producer rules).
+Missing mail and failed/unavailable analysis use isError=true without structured
+content; malformed arguments use -32602. The March descriptor keeps its historical
+"Only the synthetic demo rule ships" wording byte-for-byte; it predates the bulk
+checklist and is not a current rule inventory. Modern descriptors state the
+current scope (proposed 0091).
 
 REST assert/await and MCP wait_for_email admit optional no_findings_at_or_above
 (info|warning|error). It qualifies ordinary-filter candidates before paging;
