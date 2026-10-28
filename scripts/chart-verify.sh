@@ -5,8 +5,9 @@
 # does not run it. Every render lands in one private `mktemp -d` scratch
 # removed on exit, so two concurrent runs never share a path (issue #104).
 #
-#   usage: chart-verify.sh [verify|history|selftest|metadata [path]]
+#   usage: chart-verify.sh [verify|positioning|history|selftest|metadata [path]]
 #   verify   (default) version coherence, then lint, render and assert.
+#   positioning  current description, patch bump and coherence; no Helm needed.
 #   history  the chart-bump check against the CI event's baseline (issue
 #            #141, proposed 0051 §2): a change to any file under the chart
 #            needs a strictly greater chart version than the baseline's.
@@ -110,6 +111,24 @@ check_coherence() { # <root>
   image="$(sed -n 's/^ *image: \(ghcr\.io\/feedback-loop-ai\/swarmail:.*\)$/\1/p' "$root/$CHART/Chart.yaml")"
   [ "$image" = "ghcr.io/feedback-loop-ai/swarmail:${app}" ] \
     || refuse "the artifacthub.io/images annotation names '${image}', not ghcr.io/feedback-loop-ai/swarmail:${app}" || return 1
+}
+
+# Current positioning is separate from generic historical metadata parsing.
+check_positioning() { # <root>
+  local root="$1" chart
+  check_coherence "$root" || return 1
+  chart="$(chart_field version <"$root/$CHART/Chart.yaml")" || return 1
+  version_gt "$chart" 0.1.2 \
+    || { refuse "positioning needs a chart version greater than 0.1.2"; return 1; }
+  python3 - "$root/$CHART/Chart.yaml" <<'PY'
+import sys, yaml
+expected = "An SMTP mail mock built for a program waiting on mail: lossless bursts, per-test inboxes, wait_for assertions, chaos injection, MCP built in."
+with open(sys.argv[1]) as chart:
+    description = yaml.safe_load(chart).get("description")
+if description != expected:
+    sys.exit("chart-verify: refusing: current chart description must match the operator's positioning")
+print("chart-verify: positioning: description, chart bump and coherence OK")
+PY
 }
 
 # The event's baseline commit, or a named refusal.
@@ -225,6 +244,36 @@ selftest() {
   fresh 0.1.0; chart 0.1 0.1.0; coh fail "a malformed chart version" "version is not a release semver string"
 
   fresh; chart 0.1.1 0.1; coh fail "a malformed appVersion" "appVersion is not a release semver string"
+
+  # Only current positioning fixtures carry today's copy. History fixtures
+  # below remain valid without a description, on their own historical terms.
+  pos() { # <expect pass|fail> <desc> [needle]
+    local got=pass
+    check_positioning "$T/repo" >"$T/out" 2>"$T/err" || got=fail
+    [ "$got" = "$1" ] || bad "positioning: $2: expected $1, got ${got}: $(cat "$T/err")"
+    if [ -n "${3:-}" ]; then
+      grep -qF "$3" "$T/err" || bad "positioning: $2: missing diagnostic $3: $(cat "$T/err")"
+    fi
+  }
+  positioning_copy() {
+    cat >>"$T/repo/$CHART/Chart.yaml" <<'YAML'
+description: >-
+  An SMTP mail mock built for a program waiting on mail: lossless bursts,
+  per-test inboxes, wait_for assertions, chaos injection, MCP built in.
+YAML
+  }
+  fresh; chart 0.1.3 0.1.0; positioning_copy; pos pass "folded exact description"
+  sed -i.orig 's/built for a program/built for people/' "$T/repo/$CHART/Chart.yaml"
+  pos fail "altered description" "current chart description"
+  chart 0.1.3 0.1.0; pos fail "missing description" "current chart description"
+  cat >>"$T/repo/$CHART/Chart.yaml" <<'YAML'
+description: Lossless SMTP mail mock for tests and agents
+YAML
+  pos fail "old description" "current chart description"
+  chart 0.1.2 0.1.0; positioning_copy; pos fail "unbumped chart" "greater than 0.1.2"
+  chart 0.1.3 0.0.9; positioning_copy; pos fail "incoherent appVersion" "not Cargo.toml"
+  chart 0.1.3 0.1.0 ghcr.io/feedback-loop-ai/swarmail:0.0.9; positioning_copy
+  pos fail "incoherent annotation" "artifacthub.io/images"
 
   # Real metadata evaluator and actual workflow run bodies. Copies live only
   # in the fixture; the script resolves its root just as it does in CI.
@@ -369,21 +418,22 @@ PYTEST
     [ "$?" -eq 2 ] && grep -q 'usage: chart-verify.sh' "$T/err" || bad "unknown mode diagnostic/exit"
   fi
   [ "$fail" -eq 0 ] || { echo "chart-verify selftest: RED" >&2; return 1; }
-  echo "chart-verify selftest: OK — versions, coherence and every event baseline"
+  echo "chart-verify selftest: OK — positioning, versions, coherence and every event baseline"
 }
 
 case "$MODE" in
   metadata) chart_metadata "${2:--}"; exit ;;
   selftest) selftest; exit ;;
   history) check_history . ; exit ;;
+  positioning) check_positioning . ; exit ;;
   verify) ;;
-  *) echo "usage: chart-verify.sh [verify|history|selftest|metadata [path]]" >&2; exit 2 ;;
+  *) echo "usage: chart-verify.sh [verify|positioning|history|selftest|metadata [path]]" >&2; exit 2 ;;
 esac
 
 command -v helm >/dev/null || { echo "helm is required" >&2; exit 1; }
 
 echo "== version coherence (appVersion = Cargo; the annotation image = appVersion)"
-check_coherence .
+check_positioning .
 APP_VERSION="$(chart_field appVersion <"$CHART/Chart.yaml")"
 export APP_VERSION
 

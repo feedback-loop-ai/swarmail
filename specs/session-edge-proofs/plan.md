@@ -1,287 +1,214 @@
-# Implementation plan: session edge proofs
+# Implementation plan: integrated session edge proofs
 
-Implements [spec.md](spec.md); ordered proof obligations are in [tasks.md](tasks.md).
+Implements [spec.md](spec.md); ordered paired proofs are in [tasks.md](tasks.md).
 
-## Residual execution posture
+## Execution posture and technical context
 
-Correct only the existing three-document family on input candidate `11134f1`.
-The actual reviewed Swarmail base is `45d68df`, followed by accepted engine-pin
-commit `238372d`; bind each later execution to its own current HEAD/tree.
-Historical implementation `e7d1d8142c3e24b2a817822969ab0dae6619680a`
-following design `150c84a` and base `cc30ea2` explains inherited AC1–AC6.
-It is not the current candidate binding. No new implementation or fixture
-repair is authorized here; retain failures and return to triage before repair.
+Retain the six proofs present at starting HEAD
+`930bf534cb18e05f4c85e28eed3473297d159743`. This chief commit revises only
+the existing spec.md, plan.md and tasks.md. Subsequent implementation means
+auditing and executing the retained tests, with zero source edits unless a
+demonstrated fixture defect requires a narrow repair. A production regression
+returns to triage with its transcript and the full review panel.
 
-## Technical context
+One Rust crate uses the existing locked Tokio/Axum stack, serde_json,
+rusqlite and tempfile fixtures. Raw TCP clients and HTTP/SQLite helpers live
+in `tests/common/mod.rs`. The integrated base supplies the owner-local POP3
+`ListenerProbe`, one-shot accept fault, backoff watch and held retry readiness.
+`AppState`/`api::serve` already share the listener's health flag.
 
-One Rust crate using the existing locked Tokio/Axum stack, serde_json,
-rusqlite and tempfile dev fixture. SMTP/POP3 tests use the real server and
-raw TCP clients in `tests/common/mod.rs`. The #177 base supplies POP3's
-private task-local `ListenerProbe`, one-shot accept error, backoff-pending
-watch and held retry readiness. `AppState` and `api::serve` already support
-sharing that listener's flag with a real HTTP server.
-
-No plan template exists at `.specify/templates/plan-template.md` in this
-checkout. Following the repository's prior plan precedent, this document
-contains the required technical context, constitution check, project
-structure, research, data model, contracts, quickstart and risks. Research,
-model and contract material stays here; the design commit has exactly three
-artifacts in this one directory.
+There is no `.specify/templates/plan-template.md` in this checkout. This plan
+retains the repository's required template sections below; research, data
+model, contracts and quickstart stay inline to respect the three-file design.
 
 ## Constitution check
 
-All assertions pin existing accepted behavior. There is no semantic change
-and no ADR to declare. Preserve synchronous insert before DATA acceptance,
-subscribe-before-check, oldest-only pruning, ingest extraction and
-`envelope_from`. Real SQLite trigger refusal is compatible with 0047's raw
-writer contract; never open a second cooperating server on a database alias.
-Keep #177's actual timer, owner-local observation and task-completion fixes.
+Prove accepted contracts without changing them: synchronous Store::insert,
+awaited storage before successful DATA 250, subscribe-before-check,
+oldest-only pruning, inbox isolation and extraction at ingest. No new ADR
+is warranted. Preserve the existing runtime admission/reap/backoff/task
+ownership and all accepted SMTP/POP3 amendments cited by the spec.
 
-Preserve 0020 placement: public wire tests in `tests/`, branch-stable positive
-library assertions inline and measured. Only a concrete failure-only arm
-would warrant the narrow declared `src/pop3/health_tests.rs` alternative
-after re-triage authorizes new work; this residual permits no such move.
-All seams remain cfg(test), privately owned and exercised. The exact
-coverage gate still measures all production code and inline tests.
+Public wire proofs remain in `tests/`; the branch-stable owner-local health
+proof stays inside the existing measured POP3 test module. No sibling
+harness, module declaration outside it, extra support path, production
+semantic change, new dependency, feature flag or coverage exclusion is
+permitted. The commission is narrower than 0020's general cold-path option.
+If a necessary repair cannot satisfy both scope and exact coverage, retain
+the failure and return to triage; do not weaken cleanup or assertions.
 
-A failing behavioral witness requiring production repair returns to triage
-with evidence before any repair; a conflicting accepted ruling additionally
-requires an explicit proposed amendment and operator decision. Full4 remains
-selected under the existing delivery policy; this document dispatches none.
+Full route, protected review, hard security hold, unsigned author commits
+and no push/merge remain binding. Any contradiction of an accepted contract
+would first require a proposed amendment and operator ruling; this proof-only
+plan grants no such implementation authority.
 
 ## Project structure and files touched
 
-| File | Residual edit |
+| File | Allowed work |
 |---|---|
-| `specs/session-edge-proofs/spec.md` | Correct current/historical identities, synthesize the current panel, define residual record acceptance while preserving AC1–AC6. |
-| `specs/session-edge-proofs/plan.md` | Correct candidate-local quickstart, add the single tracked provenance note, bound implementation and verification scope. |
-| `specs/session-edge-proofs/tasks.md` | Correct current execution binding and add paired record checks while retaining T2–T7 witness mappings and delivery obligations. |
+| `specs/session-edge-proofs/{spec,plan,tasks}.md` | This design's three committed artifacts; reconcile current scope, ancestry, proof and handoff requirements. |
+| `tests/smtp_edges.rs` | Retain AC1/AC3/AC4/AC5 and exact_data, accepted_witness, consumed_after_451 helpers; repair only demonstrated fixture defects. |
+| `tests/common/mod.rs` | Retain bounded untrimmed reply_raw and existing real server/HTTP/SQLite fixtures; preserve timeout ownership. |
+| `tests/pop3.rs` | Retain selective partial-QUIT/RSET TOP/NOOP assertions and exact surviving content for AC6. |
+| `src/pop3.rs` | AC2 only, strictly inside existing cfg(test) mod tests; reuse the current probe and unconditional cleanup. |
 
-Read-only preservation references: `tests/smtp_edges.rs` (AC1, AC3–AC5),
-`tests/pop3.rs` (AC6), `tests/common/mod.rs` (raw replies and helpers),
-`src/pop3.rs`'s inline health proof (AC2), `tests/persistence.rs`, runtime
-modules, tooling.json and its patches, scripts, bundles and accepted decisions.
-No harness move or test framework is part of this residual.
+No extra tracked paths. `tests/persistence.rs`, SMTP/store/persist/API/webhook
+runtime, existing sibling harnesses, bundles, dependency locks and product
+docs are preservation references, not edit targets. Run-local transcripts
+and receipts stay in ignored run state and never become surrogate reviews.
 
 ## Research and evidence baseline
 
-The following gaps describe the historical pre-implementation base, not the
-current candidate. The inherited implementation closes them with the witnesses mapped in
-[tasks.md](tasks.md); that source inspection does not establish passing gates.
+Chief inspection confirmed the clean starting HEAD/tree/local base in the
+spec, the seven-file branch diff and 129 POP3 additions inside the test
+module. Local remote-tracking identity does not prove network freshness.
+The six tests already encode the required traces: recipient-free DATA
+continues the original envelope; independent chaos and SQLite DATA refusals
+consume it; cancellation allows default delivery then named retry; valid
+transaction AUTH preserves identity; partial QUIT supplies a genuinely gone
+TOP slot; owner-observed backoff reaches the real HTTP router. This is source
+inspection, not a green test or fabricated baseline-red claim.
 
-At `cc30ea2`, `sequencing_errors_need_mail_then_rcpt` checks only a 503 prefix
-and stops. The DATA arm restores a recipient-free envelope but consumes a
-complete envelope before chaos/commit outcomes. `auth_during_a_transaction_is_refused`
-uses malformed base64; production checks the envelope before decoding.
-PLAIN emits `334 ` and cancellation leaves identity unset. POP3 resolves
-marked/gone slots before fetching current content; existing partial-QUIT
-and RSET tests pin RETR/DELE but omit TOP on committed-gone slots.
-
-The existing real HTTP degradation test drives SMTP, while POP3's direct
-handler case sets flags. AC2 must connect the actual POP3 accept failure to
-the actual HTTP router. The owner-held readiness from #177 closes the
-sampling window without repeated injections or deadline spinning.
-
-These were inspected coverage gaps, not observed production regressions or
-baseline-red claims. Do not fabricate red evidence. A failure in a new test
-must first be classified as fixture error, placement/coverage error or a
-concrete production defect before proceeding under the spec's scope rule.
+The previous run's ancestry/receipts are historical only. Both positions
+support retaining the concrete fixtures. Robustness adds a necessary
+structural review: inspect that SMTP awaits insert_async's whole synchronous
+mutation before 250. Immediate HTTP queries alone cannot prove that ordering
+under every schedule. Retain fresh persistence-suite and full-suite evidence;
+no new crash harness or webhook requirement follows.
 
 ## Data model and ownership
 
-No persistent model changes. Test values are a socket/session, optional
-authenticated inbox, open envelope sender/recipient vector, raw payload,
-server-returned ID and exact inbox ID set. Header sender differs from MAIL
-sender. Refused and accepted payloads/recipients differ. In AC4 the dedicated
-store separates `default` from the later named inbox; AC5 compares inbox
-inventory before any successful delivery could create an inbox.
+No schema or persistent model changes. SMTP witnesses carry socket/session,
+authenticated inbox, envelope sender/recipients, raw bytes, returned ID and
+exact inbox ID set. Keep header From distinct from envelope sender, and
+refused content/recipients distinct from recovery. Default-routing tests own
+an isolated server/store; use sufficient or unlimited capacity.
 
-POP3 uses its existing snapshot numbering, pending DELE marks and committed
-`gone` slots; no lock, cached body or new state enum. The selective trigger
-refuses one later ID so the earlier prefix genuinely commits.
+POP3 keeps existing snapshot numbers, pending DELE marks and committed gone
+slots. Selective SQLite refusal targets a later ID so a prior deletion truly
+commits; RSET clears only remaining marks. Do not add a lock or state enum.
 
-Each fixture owns ports, server handles, shutdown senders, probe and database.
-Subscribe to the backoff event before arming/triggering it. Keep the probe
-inside one `LISTENER_PROBE.scope(...serve...)`. Use release-on-drop/owned
-cleanup to remove holds and abort outstanding tasks on failure, and explicit
-stop/join on success. If a cold diagnostic is needed to preserve joining on
-failure, record it for re-triage under 0020 before changing a harness. EOF is not task completion.
+Fixtures own ephemeral ports, temporary databases, triggers, tasks, shutdown
+senders and owner-local probe. Subscribe before fault arming; hold retry
+readiness until HTTP observation. Release/abort Drop cleanup covers unwind
+and the scenario deadline; success explicitly stops and joins. Abort on
+failure is not a completed join receipt, and EOF is not task completion.
 
 ## Contracts and implementation approach
 
-Audit and execute the inherited implementation below; do not repeat these
-changes. These are preserved contract/witness descriptions, not residual
-edit targets. Any fixture or runtime defect returns to triage before repair.
+1. Audit `reply_raw` without changing trimmed/multiline callers. Exact fixed
+   SMTP lines include CRLF and the PLAIN prompt's trailing space. Drive the
+   real 354 and terminator, parse one nonempty returned ID, immediately GET
+   message and raw endpoints once, then assert metadata, exact bytes and
+   singleton inventory. Account once for send's CRLF and transparency.
+2. Keep AC1 in `sequencing_errors_need_mail_then_rcpt`: after need-RCPT,
+   RCPT/DATA complete without new MAIL/RSET/greeting. Keep two AC3 tests:
+   acknowledged DATA-only probability-100 chaos (delay zero), and a real
+   tempfile SQLite insert trigger. Each exact 451 is followed on that socket
+   by need-MAIL for RCPT/DATA, NOOP, empty inbox, fault removal and distinct
+   accepted recovery witness. No mock Store, busy-timer surrogate or reconnect.
+3. Keep AC4's literal prompt/cancel/NOOP, default delivery, later valid AUTH
+   and named delivery with disjoint inventories. AC5 uses valid three-field
+   PLAIN bytes, exact transaction-in-progress 503, unchanged inbox inventory
+   and original-envelope/default-routing completion. Malformed base64 remains
+   separately covered and cannot prove precedence.
+4. Keep AC6's real selective-delete flows: marked TOP error, exact failed
+   QUIT, gone TOP error before/after RSET, immediate NOOP after each TOP
+   refusal, exact surviving suffix at its original number, HTTP/disk prefix
+   absence and retry behavior. Retain external-clear coverage separately.
+5. Keep AC2 beside its probe: real POP3 greeting/USER/PASS/NOOP and HTTP 200
+   baseline; subscribe, arm one accept error, wake with a real connection,
+   observe held backoff, then real GET returns exact HTTP status and parsed
+   JSON equality. SMTP remains healthy and shutdown inactive. Release, close,
+   stop and join. No direct flag mutation, handler call, additional observer
+   or new recovery cycle. JSON member ordering and dynamic healthy uptime
+   are not part of the contract.
 
-1. Retain an untrimmed SMTP single-line reader delegating to existing
-   `read_line_named`, without altering reply/reply_multi callers. Use it for
-   exact prompt and fixed SMTP reply bytes. Drive DATA explicitly where an
-   exact 354 and final acceptance/refusal matter. Parse the entire success
-   prefix plus one nonempty ID, then fetch `/api/v1/messages/<id>` and its
-   `/raw` immediately; assert 200, exact metadata/raw and inbox membership.
-   Account for `SmtpConn::send` appending CRLF and dot transparency once.
-2. Retain AC1 in its current sequencing test. For AC3 use two explicit tests:
-   acknowledged HTTP DATA-chaos configuration at probability 100, delay 0;
-   and a tempfile persistent server with `refusing_trigger(db, "insert")`.
-   Assert empty pre-recovery membership, remove the cause, continue on the
-   same socket with a distinct envelope and witness exactly the accepted ID.
-   Reuse trigger remove/Drop; do not replace commit failure with a busy timer.
-3. Retain AC4 with a dedicated store, literal prompt/cancel/NOOP, default mail,
-   later valid AUTH and named mail. Retain AC5 with `base64_of` over known
-   three-field credentials and real inventory comparisons; keep malformed
-   input tests separate. Successful AUTH after AC5 is unnecessary duplication
-   of AC4; original delivery and unchanged inventory prove its own contract.
-4. Retain existing partial-QUIT and `rset_never_resurrects_a_committed_delete`
-   tests for AC6. Keep marked TOP before QUIT and gone TOP before/after RSET,
-   exact partial-QUIT error and a NOOP after every refusal. Preserve existing
-   HTTP/disk witnesses and exact suffix content; the external-clear test
-   remains a separate current-store-absence path.
-5. Retain `pop3_degradation_reaches_http_healthz` beside the POP3 probe. Bind
-   real POP3 and HTTP listeners, fresh store/shared POP3 flag, false SMTP
-   flag and live shutdown watch. Complete POP3 greeting/USER/PASS/NOOP and healthy
-   HTTP request first. Hold retry_ready false, arm accept_error, offer a
-   connection, await backoff_pending, then GET health. Compare status 503
-   and complete parsed JSON equality; do not pin member order or dynamic
-   healthy uptime. Release the hold, close clients, signal shutdown and join.
-   No new recovery cycle or API-side adapter is required.
-
-Use bounded network operations and a bounded whole-scenario failure guard;
-the limits detect hangs, not protocol latency. No sleeps, arbitrary failure
-counts, retry-until-visible reads, global injection state or auto-reconnect.
-No certificate fixture is needed for these plaintext loopback proofs.
-
-## Engine provenance
-
-The committed [tooling.json](../../bundles/self/tooling.json) and its ordered,
-checksum-pinned patches describe reproducible source inputs: Brokkr base
-`731189f9097308c01ae4f2b4c9caea5f41224844`, then
-`0001-preserve-review-residual-facts.patch`,
-`0002-preserve-review-scope-and-fixes.patch`, and
-`0003-bind-verified-candidate.patch` under `bundles/self/tooling-patches/`.
-Tooling.json alone owns exact patch paths, order and checksums; do not copy
-or change that manifest for this correction. Its recorded source-composite
-SHA-256 is `c972dde7785915743fb8d7365ad5bb5efecafd29be78520911f0cb4d74a75e5b`,
-compiler is `rustc 1.98.0`, and binary SHA-256 is
-`ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`.
-The Brokkr source base is distinct from Swarmail's reviewed base `45d68df`.
-
-Tooling.json's provenance declaration reports a release `--locked --offline`
-build, core/runtime tests, formatting, workspace all-targets clippy and four
-bundle compiles. Those are attributed historical claims, not fresh residual
-execution receipts. The named
-`.forge/epic192/engine-main-entry/build-receipt.json` is gitignored run-local
-build evidence: it is not tracked or committed. A tracked reference does not
-make its contents durable or available in another checkout. The chief checked
-ignore/untracked status, not receipt contents or the original build. This
-residual does not independently rebuild/reconstruct the source composite or
-prove bit-for-bit reproducibility across environments. Declared reproducible
-inputs and executed reproducibility proof remain distinct.
+Bound I/O and the whole scenario to detect hangs, never to assert protocol
+latency. No sleep synchronization, mid-band chaos, retry-until-visible reads,
+global mutable injection state, ignored tests or assertion weakening.
 
 ## Quickstart and verification
 
-Run from this candidate's repository root. Before any execution receipt,
-resolve current HEAD/tree, prove ancestry through reviewed base `45d68df`
-and engine-pin commit `238372d`, and record the actual diff and command exits.
-Input `11134f1` and historical cc30ea2/150c84a/e7d1d81 do not replace the
-current HEAD binding. Do not modify Git metadata or certify another tree to
-bypass a failure. Check `recipes` remains the tracked mode-120000 `bundles`
-symlink. Hash the candidate-local engine before invoking it; use its resolved
-absolute path in boxed checks. Missing/mismatched binaries are setup blocks,
-never permission to borrow a sibling binary or substitute PATH.
+Resolve HEAD/tree/base in each execution environment, inspect scope and
+cleanliness, and retain command/exit/test-count evidence against that final
+candidate. Require the recorded integrated starting commit as ancestry,
+not the previous run's commits. Check the tracked `recipes -> bundles`
+symlink and tooling identity. The required executable is:
 
 ```bash
-set -euo pipefail
-git rev-parse HEAD HEAD^{tree}
-git merge-base --is-ancestor 45d68df HEAD
-git merge-base --is-ancestor 238372d HEAD
-brokkr_candidate_bin="$(pwd -P)/.forge/bin/brokkr"
-brokkr_pinned_digest="$(jq -er '.brokkr.binary_sha256' bundles/self/tooling.json)"
-test "$brokkr_pinned_digest" = ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f
-printf '%s  %s\n' "$brokkr_pinned_digest" "$brokkr_candidate_bin" | sha256sum --check --strict -
-"$brokkr_candidate_bin" compile --bundle bundles/self
-```
-
-The root-relative equivalent is `.forge/bin/brokkr compile --bundle bundles/self`;
-boxed checks receive the absolute candidate-local path resolved above.
-Keep network disabled (`CARGO_NET_OFFLINE=true`) and install nothing.
-Run targeted tests and record nonzero executed-test counts:
-
-```bash
+export PATH="/home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-188-integration/.forge/bin:$PATH"
+export CARGO_NET_OFFLINE=true
+sha256sum /home/valentin/source/feedback-loop-ai/swarmail-epic192-delivery/NEXT-188-integration/.forge/bin/brokkr
 cargo test --locked --test smtp_edges
 cargo test --locked --test pop3
 cargo test --locked --test persistence
 cargo test --locked --lib pop3_degradation_reaches_http_healthz
 ```
 
-Update the filter if the concrete name changes; a zero-test run is not proof.
-Then execute every command in the authoritative
+Require digest `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`,
+also recorded in tooling.json; version alone is insufficient. Propagate that
+PATH to every brokkr-dependent gate, or invoke the absolute executable.
+Require nonzero executed counts (one for the filtered library proof).
+
+Run every command in the sole authoritative
 [house gate inventory](../../docs/house-rules.md#gates--part-of-every-change),
-including all specified `--locked` flags and exact 100/100/100 coverage with
-zero misses and its selftest. Keep gate output/failures as run-local evidence.
-Publish-guard and keyless seal proofs, license check and fail-closed native-tls
-absence are mandatory. For absence, capture `cargo tree --locked -i native-tls`
-status/output: success means dependency present and fails; a failure passes
-only when it explicitly says the package did not match any packages.
+with its locked flags, zero missed lines/branches/functions, coverage
+selftest, publish-guard and seal-branch proofs and license check. Record
+fail-closed native-tls absence: `cargo tree --locked -i native-tls` success
+means present and fails; nonzero is acceptable only for the explicit
+package-not-found diagnostic. Cache/metadata/tool errors do not prove absence.
 
-Verify is offline and installs nothing. It validates shims, checks the
-launched brokkr digest against tooling.json, and executes pinned bundle
-proofs, including design-check selftest and delivery tamper-boundary proof.
-Unavailable tools or caches are recorded as blockers, never skipped passes.
-Design preflight is `bash bundles/self/scripts/design-check.sh check .` plus
-its selftest; only the sequence's pinned final check owns the design verdict.
-Full house gates prove the candidate, not implementation of still-unchecked
-tasks. Independent full4 reviews and hermetic verify remain downstream.
+Actual hermetic offline verify installs nothing, re-establishes binary/shim
+identity and runs pinned proof code, including design-check selftest and
+delivery tamper-boundary proof. Missing tools/caches remain outstanding.
+Local `bash bundles/self/scripts/design-check.sh check .` and its selftest
+are design preflights only; the sequence's pinned final check owns its
+verdict. Local gates cannot replace hermetic dispatch.
 
-Root must land #177 before final integration/CI, preserving its owned-event
-fixes, and rerun required proofs against the integrated candidate. CI retains
-chart/history/selftest, Docker, network RustSec, real port-80 and tag-only
-rate obligations in their proper contexts. No seat publishes or tags.
+Obtain four actual independent reviews on the exact final candidate: Qwen
+Max correctness, Claude Opus security, official DeepSeek Flash guarantees,
+DashScope GLM-5.3 tests. Never DeepSeek Pro or fallback. Refresh affected
+proofs/reviews after repairs; provider failure or security hold is not a
+pass. These are downstream work, not chief-seat dispatches or receipts.
+
+Root owns final integration and applicable CI-only house obligations: Helm
+chart contract/history/selftest, real Docker smoke, network RustSec audit,
+real port-80 exchange and tag-context release-rate/publisher checks. If
+integration changes the candidate, rerun required evidence there. There is
+no separate #177-first landing prerequisite. This lane never pushes, merges,
+tags, publishes or claims epic closure.
 
 ## Risks
 
-Residual-specific risks and mitigations:
-
-- A valid digest can still name the wrong candidate: resolve HEAD/tree and
-  reviewed-base/pin ancestry separately from hashing the local executable.
-- Historical SHAs or preflights can appear current: inspect every surviving
-  occurrence in context; preserve dated labels rather than globally replacing.
-- A tracked receipt reference can imply committed evidence: check both
-  `git check-ignore` and `git ls-files` and retain the provenance limits above.
-- Broader cleanup can change six sensitive criteria: compare AC1–AC6 and
-  T2–T7 with input `11134f1` and restrict the diff to these three documents.
-- Full gates/providers can be unavailable: retain actual failures as run-local
-  evidence, never weaken checks, install into hermetic verify or substitute
-  a reviewer. The engine route's four-review cost remains accepted.
-
-Inherited protocol-proof risks (preservation guidance, not new edit scope):
-
 | Risk | Mitigation and accepted cost |
 |---|---|
-| Correct error masks lost envelope or stale state | Same socket, distinct envelopes/payloads, exact accepted-ID/raw/provenance and membership; longer explicit traces. |
-| Malformed AUTH hides precedence or side effects | Fresh valid encoding and exact inbox inventory before/after refusal; keep invalid-base64 cases separate. |
-| Reply trimming hides prompt/stale bytes | Bounded raw SMTP line, exact replies, POP3 NOOP immediately after TOP refusal; small fixture addition. |
-| Health recovers before HTTP observes it | Hold the actual owner's retry operand after observed backoff; no repeated-error cushion. |
-| Cleanup leaks held tasks or triggers | Scoped guards, release/abort cleanup and joins; use narrow cold-path harness only when needed. |
-| Coverage pressure tempts broad migration | Inline stable proofs, document concrete cold arm, cfg(test) declaration and unchanged exact gate; accept extra review. |
-| Pruning or parallel tests erase witnesses | Dedicated store for default routing, per-test inboxes, sufficient cap, private temp DB and ephemeral ports. |
-| SQLite refusal reaches wrong stage | Real insert trigger and DATA terminator, exact cause, distinct same-session recovery; preserve existing restart proofs. |
-| Partial QUIT proves only pending marks | Selective later-ID refusal yields committed prefix; HTTP/disk absence and RSET/TOP prove no resurrection. |
-| Scope expands into runtime repair | Preserve real failing evidence and return to triage/full panel; do not silently change the contract. |
-| Candidate or tool identity is unavailable in another seat | Resolve Git objects and exact binary digest in that execution environment before certifying any tree; missing tools/caches/providers remain blockers, never substituted passes. |
-| #177 integration invalidates proof | Root-owned landing before final CI and rerun on integrated tree; retain event ownership changes. |
-| Tests overclaim broader robustness | No new crash durability, exactly-once SMTP, webhook delivery, cap-concurrency or availability promise; existing tests retain those boundaries. |
+| Exact error hides lost envelope or changed identity | Same-socket continuation, exact accepted-ID/raw/envelope/inventory witnesses; retain longer explicit traces. |
+| Validity or precedence confused by malformed AUTH | Encode known valid three-field PLAIN and compare inventories; keep malformed coverage separate. |
+| Trimmed prompt or stale TOP output passes | Preserve raw SMTP spaces/CRLF and immediate exact POP3 NOOP after each refusal. |
+| Health recovers before HTTP or wrong owner is sampled | Subscribe before arm; observe actual owner backoff while retry is held; no polling or flag assignment. |
+| Failure leaks held tasks or test trigger | Existing scoped guards release/abort and remove triggers; successful path joins. No failure-join claim. |
+| Necessary cold arm conflicts with measured inline scope | Return to triage with evidence; no sibling harness or lower coverage. This may stop delivery. |
+| Pruning/parallelism erase a valid witness | Dedicated default store, private inbox/database/probe, adequate capacity and ephemeral ports. |
+| SQLite failure proves wrong 451 or only a pending deletion | Exact cause and true DATA boundary; selective later-ID delete refusal plus HTTP/disk gone-prefix proof. |
+| Stale candidate, binary or provider receipts substitute for work | Bind each execution and review to actual final identity; verify digest/shims in hermetic environment. Accept tool/provider latency and unresolved failures. |
+| Production regression expands scope | Preserve failing transcript and re-triage with full panel before repair. |
+| Integration changes verified content | Root refreshes required gates/reviews for the integrated candidate and records CI-only evidence separately. |
+| Serial traces overclaim robustness | Retain structural ordering review, persistence/full-suite proofs and limits below. |
 
 ## Failure-model limits retained from robustness
 
-A commit may survive a lost SMTP acknowledgement; retry can duplicate mail,
-and cancelling a session does not roll back an admitted blocking commit.
-Fresh HTTP reads prove immediate visibility, not crash durability; existing
-restart and CI stop/kill proofs retain that responsibility. Webhooks remain
-best-effort after storage with no durable replay or acceptance backpressure.
-Oldest-only pruning may legitimately evict earlier accepted mail, so these
-witnesses use isolated stores and sufficient capacity. Existing hostile-byte,
-cap/burst and TLS proofs remain intact; the string DATA helper is not a
-byte-fuzzer, and these plaintext scenarios add no certificate fixture.
-Subscribe-before-check and ingest-time extraction remain preserved boundaries.
-Failure Drop cleanup releases/aborts; only the successful path explicitly
-joins, so no failure-path join receipt or global lifetime bound is claimed.
+A persistent commit may survive a lost SMTP acknowledgement; retry may
+duplicate mail. Task cancellation does not imply rollback of admitted
+blocking work. Immediate HTTP is necessary visibility evidence but not an
+exhaustive schedule proof or crash-durability proof. Existing persistence
+and CI stop/kill tests retain those responsibilities. Memory-only restart
+and finite retention remain intentional limits.
+
+Webhooks stay best-effort after storage, with no durable replay or acceptance
+backpressure; per-sink limits are not a global memory ceiling. POP3 snapshot
+skew and partial-delete semantics remain accepted. Subscribe-before-check,
+ordered pruning and ingest extraction are preserved, not redesigned.
+Existing hostile-byte, cap/burst, TLS and generated certificate proofs stay
+in the full suite; six plaintext traces are not exhaustive transport,
+resource, arbitrary-task-cancellation or certificate-renewal assurance.

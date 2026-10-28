@@ -9,7 +9,7 @@ use std::time::Duration;
 #[command(
     name = "swarmail",
     version,
-    about = "The fastest AI-native SMTP mail mock"
+    about = "Built for a program waiting on mail."
 )]
 pub struct Cli {
     #[command(subcommand)]

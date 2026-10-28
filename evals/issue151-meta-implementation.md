@@ -107,7 +107,7 @@ from their pinned bundle owners, as required by the charter.
 ## Outstanding delivery prerequisite
 
 Result is **broken**, not complete: root tests and the exact coverage command
-fail because `0087-fixture-http-meta.md` has no decision-index row. Both
+fail because `0084-fixture-http-meta.md` has no decision-index row. Both
 `every_decision_file_has_exactly_one_resolving_index_row` and the inventory's
 negative-fixture comparison report that same missing row. Coverage stops at the
 instrumented test failure, preserving target/coverage/run.Oz5Co4/run.log; no
@@ -116,7 +116,7 @@ selftest and delivery tamper proof both pass without any gate changes.
 
 The preceding design explicitly assigns index integration to the
 operator/documentation owner, while this task permits changes only under evals/.
-That owner must add the proposed 0087 row to docs/decisions/README.md before the
+That owner must add the proposed 0084 row to docs/decisions/README.md before the
 required root gates can be green. No index edit, decision acceptance, test
 weakening, exclusion or denominator/floor reduction was made here. All tracked
 implementation changes stay under evals/ and are committed unsigned; no push,
@@ -158,15 +158,15 @@ establish the following results independently of those transport timeouts.
 | Fail-closed native-tls absence proof | 0 (raw 101, package specifically absent) |
 
 Both root failures remain the two decision-inventory assertions described
-above: 0087-fixture-http-meta.md has no index row. Coverage stops on those same
+above: 0084-fixture-http-meta.md has no index row. Coverage stops on those same
 assertions and preserves target/coverage/run.oCWrno/run.log. Exact 100% coverage
 is still unproved on this candidate. No evidence input or decision is missing;
 the remaining work is index integration, expressly assigned outside this
-evals-only seat by proposed decision 0087 and the committed design. The exact
+evals-only seat by proposed decision 0084 and the committed design. The exact
 row for that owner to add to docs/decisions/README.md is:
 
 ```markdown
-| [0087](0087-fixture-http-meta.md) | Discard fixture HTTP request metadata and name GET-body refusals | proposed — awaiting the operator | (Epic #164, issue #151 part 3) |
+| [0084](0084-fixture-http-meta.md) | Discard fixture HTTP request metadata and name GET-body refusals | proposed — awaiting the operator | (Epic #164, issue #151 part 3) |
 ```
 
 That row would index the proposal without accepting it. The owner must then
@@ -174,3 +174,11 @@ rerun the failing gates; no green outcome is inferred here. This retry preserves
 the root index and all gate assertions and reports **broken** because required
 local gates remain red. CI and operator proof ownership remains as recorded
 above. This receipt is committed unsigned; no push or publication is performed.
+
+## Integration correction — 2026-10-28
+
+The preceding receipts name 0084 as it appeared at the recorded candidate
+commits. Integration commit `76678c3` records its later allocation to the dsh
+fresh-home decision, renumbers this proposal to 0087 and adds its index row.
+That integration does not retroactively change the earlier failures or accept
+the proposal; the later verify and ship results have their own evidence.

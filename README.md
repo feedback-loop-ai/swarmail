@@ -2,6 +2,8 @@
 
 # Swarmail
 
+**Most mail mocks are built for a human looking at a web UI. Swarmail is built for a program waiting on mail.**
+
 [![CI](https://github.com/feedback-loop-ai/swarmail/actions/workflows/ci.yml/badge.svg)](https://github.com/feedback-loop-ai/swarmail/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/feedback-loop-ai/swarmail?label=release&color=blue)](https://github.com/feedback-loop-ai/swarmail/releases/latest)
 [![license: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
@@ -82,7 +84,7 @@ swarmail mcp                   # the stdio MCP bridge
 swarmail gen-cert --domain localhost --out ./certs
 ```
 
-Twelve MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
+Thirteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
 compatibility layer (MailHog/Mailpit), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies.
@@ -682,11 +684,11 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   "content":[{"type":"text","text":"{\"emails\":[{…\"codes\":[\"424242\"]…}]}"}]}}
 ```
 
-Twelve tools: `swarmail_search_emails`, `swarmail_get_email`,
+Thirteen tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
-`swarmail_set_chaos`, `swarmail_clear_chaos`. Except for malformed seed fixture
+`swarmail_set_chaos`, `swarmail_clear_chaos`, `swarmail_get_deliverability_report`. Except for malformed seed fixture
 content and the supplied
 `timeout_ms` refusal described below, every tool validates its supplied
 arguments at the envelope: a wrong-typed or malformed value — the
@@ -822,14 +824,17 @@ routes, and the `to:`-style query prefixes: in a containing search, every
 whitespace-separated word that opens with a field name and a colon
 (`to:`, ` from:alice`, `plan subject:x`, an unknown `foo:`) answers a named
 `400` — the prefix grammar is not implemented; swarmail takes `kind=`.
-Mailpit's own wrappers are looked past for that refusal — one leading `(`,
-then one exclusion `-` or `!`, then one `"` — so `-to:x`, `!from:alice`,
-`"to:x"`, `-"subject:x"` and `(to:x)` refuse by the field's name instead of
+Both shims remove every double quote from each word for refusal recognition
+only, then look past one leading `(` and one exclusion `-` or `!`
+(decision 0061, accepted 2026-10-26). Thus `-to:x`, `!from:alice`,
+`"to:x"`, `-"subject:x"`, `(to:x)`, `"-to:x"`, `"!from:alice"`,
+`"-subject:a b"`, `to":x` and `"to":x` refuse by the field's name instead of
 silently matching nothing. A URL's `://` is exempt, so `https://host/path`
 (and `-https://host/path`) stays a literal search, as do `-word` and
-`"a phrase"`, but other colon words (`mailto:x`, `"note:x"`) refuse too;
-there is no quoting, grouping or negation — an accepted query is searched
-as the literal it is.
+`"a phrase"`, but other colon words (`mailto:x`, `"note:x"`) refuse too.
+Accepted queries execute with their original quotes and markers; no quoting,
+grouping or negation grammar is implemented. Supported explicit-kind values
+stay literal (Mailpit's `subject` extension remains outside MailHog's kinds).
 swarmail's own single-message route is
 `/api/v1/messages/{id}`; the Mailpit-style singular `/api/v1/message/{id}`
 is the shim.
@@ -1224,6 +1229,8 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/smtp_edges.rs` | every protocol verb, refusal, AUTH form, DATA limit, dot-unstuffing, group addresses, chaos on connect/MAIL FROM/RCPT/DATA; the 0034 boundaries — mixed terminators, path and parameter matrices, greeting resets, validation before chaos, strict PLAIN and one AUTH per session |
 | `tests/rate.rs` | the 5k losslessness guarantee + burst |
 | `tests/burst.rs` | 1000 mails / 50 conns exact-count, per-inbox isolation, cap eviction, chaos rejection + recovery |
+| `tests/bulk_sender.rs` | Source-citing bulk rules, original header grammar, genuine text bodies, untrusted auth unknowns and inclusive analysis limits (proposed 0089) |
+| `tests/deliverability.rs` | Lazy typed report, REST/MCP parity, threshold assertions/waits, UI states, persistence, pruning and served contract documentation (proposed 0085) |
 | `tests/api.rs` | every REST route, happy + error branches |
 | `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
@@ -1269,7 +1276,7 @@ before publication or merge; agent runs never push or merge.
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [x] POP3 server; MailHog/Mailpit API compat shims
 - [x] Exact 100/100/100 coverage contract (lines, branches, functions) in the gate and CI
-- [x] MCP: HTTP + stdio, 12 tools
+- [x] MCP: HTTP + stdio, 13 tools
 - [x] Kubernetes: the Helm chart (OCI-published, decision 0008 *accepted*)
 - [ ] crates.io publish — the package is publish-ready (see *Publishing*);
   the operator runs `cargo publish --locked` with their token
@@ -1323,3 +1330,82 @@ Apache-2.0 license, shall be dual licensed as above, without any additional
 terms or conditions.
 
 The WHATWG HTML entities data and derived table are licensed under CC-BY-4.0; attribution and transformation details are in [NOTICE](./NOTICE).
+
+## Deliverability reports
+
+
+GET /api/v1/messages/{id}/deliverability takes no query keys and returns
+{rule_set_id, findings:[{rule_id,severity,location,fix_hint}]}. Severity is
+info < warning < error. Locations are tagged header {name,occurrence:null|u64},
+mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
+are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
+rule, typed location, severity and hint, with exact duplicates removed.
+swarmail-bulk/1 adds seven source-citing bulk-sender checklist rules:
+one_click, message_id and date are errors; plain_text is warning-level presence
+advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
+are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
+say "Not evaluated:" until trusted observations exist. Sender-written
+Authentication-Results and DKIM-Signature never supply evidence. #255 owns that
+verification and strict/relaxed alignment; #253/#255 own expiry and refresh.
+Production therefore excludes every message at every report predicate threshold;
+exact zero assertions still work, while waits still require a qualifying message.
+
+Headers use original bytes and complete singleton values, with root lowercase
+names and occurrence null/0/1 for absent/invalid/duplicate. Message-ID and Date
+support current RFC 5322 syntax and surrounding comments/folding; obsolete-only
+forms are unsupported by this checklist, not universally invalid Internet mail.
+Date validates calendar and weekday, numeric zones and optional seconds (including
+60), without a clock/freshness check. Message-ID checks syntax, not uniqueness.
+One-click requires a complete URI list containing HTTPS and the exact case-sensitive
+List-Unsubscribe-Post: List-Unsubscribe=One-Click value. This structural check
+proves neither signed-header DKIM coverage nor endpoint operation; no URI is fetched.
+Text advice checks genuine outer sender text/plain, including empty/default/encoded
+bodies and nested inline multiparts, excluding attachments/ancestry and embedded
+message bodies (including multipart/digest defaults). It proves neither content
+equivalence nor an unconditional provider mandate. HTML is never converted here.
+Hints cite https://support.google.com/mail/answer/81126 and
+https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 2046
+or 7489 sections. These are fixed published references, not live verification or
+provider certification. The proposed rule record is decision 0089.
+
+The synthetic demo.marker.v1 remains: the first root X-Swarmail-Demo field,
+unfolded and space/tab trimmed, selects info|warning|error and emits the fixed
+hint "Remove the X-Swarmail-Demo header." Disabling the demo leaves bulk rules
+active. Empty findings do not imply deliverability or authentication success.
+Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
+The existing message page renders the same report without polling.
+
+swarmail_get_deliverability_report requires string id and admits no other keys.
+On current MCP 2025-03-26 it returns report JSON in one text block, isError=false.
+Missing mail and failed/unavailable analysis use isError=true; malformed arguments
+use -32602. No report outputSchema/structuredContent yet; that small follow-up
+lands when #153 lands, independently of this delivery.
+
+REST assert/await and MCP wait_for_email admit optional no_findings_at_or_above
+(info|warning|error). It qualifies ordinary-filter candidates before paging;
+failed reports abort, never count as clean. Exact assert counts its snapshot,
+including zero, and never subscribes. Example: assert?count=0&no_findings_at_or_above=warning
+holds when zero candidates qualify; it is not a universal inbox health assertion.
+Wait still requires at least one, even count=0, and keeps ordinary totals/order.
+Zero timeout uses completed cache entries only: cold/busy required reports return
+unavailable. An incomplete scan at deadline is unavailable; a complete insufficient
+scan keeps the usual timeout with its exact count. Shutdown keeps its existing error.
+The option is refused on list/count; absent means existing behavior.
+
+Cache: 128 Weak-identity slots per Store, exact immutable inputs and rule version,
+four admitted blocking jobs retained through cancellation. Up to 256 findings and
+65536 compact JSON bytes per cached report. Inclusive metadata limits are
+8388608 raw bytes, 65536 per header block (including separator), 262144 aggregate
+header bytes, 256 outer entities including root, and depth 32 (root zero).
+Complete bounded MIME inspection includes closing boundaries and attached
+containers; missing separators, ambiguous/unsupported metadata, encoded multipart,
+truncation or exhausted budgets fail without partial success. Embedded messages
+stay opaque. No body transfer decoding, SMTP admission change or stored-field
+rewrite follows. REST: 404 missing, 503 "deliverability analysis unavailable" (capacity
+or deadline) / "deliverability analysis failed" (analysis/size), native JSON error.
+Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
+Cache loss at restart costs recomputation. These are cache/job bounds, not total
+memory or latency promises. #253 owns DNS observation/policy/expiry/wakeup semantics;
+no DNS/authentication verification, spam scorer, external service or new dependency
+ships here. The cache key includes every effective authentication fact and the
+immutable policy/observation identity, alongside selected Weak mail identity.

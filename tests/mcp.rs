@@ -46,9 +46,9 @@ async fn initialize_and_tools_list() {
 
     let (_, body) = rpc(srv.http_addr, "tools/list", "{}").await;
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 12);
+    assert_eq!(tools.len(), 13);
 
-    // inputSchema is a JSON *object* for all twelve tools — the JSON type,
+    // inputSchema is a JSON *object* for all thirteen tools — the JSON type,
     // not a substring (a substring check is how the string-schema bug
     // survived). Decision 0010, issue #4.
     let by_name: std::collections::HashMap<&str, &serde_json::Value> = tools

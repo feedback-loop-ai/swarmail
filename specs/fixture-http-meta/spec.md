@@ -36,8 +36,10 @@ The requested `.brokkr/state/tasks/` directory is absent. The matching
 `epic-164-issue-151-make-the-fixt-547fc316`, and supplies sufficient framing.
 Both run-local positions were read in full. The tracked
 [operator rulings](../../docs/rulings/epic-192.md) remain authority; no new
-operator acceptance is inferred. The 2026-10-26 ledger reserves 0079–0083;
-0087 is the next free number in this candidate and supplied ledger.
+operator acceptance is inferred. The supplied 2026-10-26 ledger reserves 0079–0083 and names 0084 next.
+Integration commit `76678c3` records the subsequent allocation of 0084 to
+the dsh fresh-home decision and renumbers this proposal to 0087; it does not
+change the earlier ledger or accept this proposal.
 
 Accepted [0055](../../docs/decisions/0055-agent-eval-harness.md) requires the
 independent eval workspace's real-process proof. Accepted

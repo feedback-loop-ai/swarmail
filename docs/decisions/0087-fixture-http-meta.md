@@ -7,8 +7,10 @@
 - **Supplements:** [0055](0055-agent-eval-harness.md) and the helper boundary
   described by proposed [0083](0083-cli-wrapper-launch.md), compatibly with
   accepted [0075](0075-eval-privacy.md) and [0044](0044-compat-validation.md).
-- **Number:** 0087 is next free in the verified 2026-10-26 operator ledger and
-  candidate; 0079–0083 remain allocated. Historical reserved numbers stay reserved.
+- **Number:** The supplied 2026-10-26 ledger named 0084 as next free.
+  Integration commit `76678c3` records the later allocation of 0084 to the
+  dsh fresh-home decision and renumbered this proposal to 0087. The proposal
+  remains unaccepted; historical reserved numbers stay reserved.
 
 ## Context
 

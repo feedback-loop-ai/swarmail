@@ -1225,10 +1225,40 @@ async fn machine_docs_are_served_from_the_binary() {
         "the real HTTP payload is the pinned OpenAPI document"
     );
     assert_eq!(doc["openapi"], "3.1.0");
+    assert_eq!(
+        doc["info"]["description"],
+        concat!(
+            "Built for a program waiting on mail. ",
+            "Accepts any SMTP traffic on :1025, answers POP3 (RFC 1939 core + TOP/CAPA) ",
+            "on :1110 with the inbox as the maildrop, and exposes captured email through ",
+            "this API on :8025 — including MailHog/Mailpit-compatible read endpoints. ",
+            "Every accepted message is queryable immediately — there is no async gap ",
+            "where mail can be lost."
+        )
+    );
+    assert!(!text.to_ascii_lowercase().contains("fastest"));
 
     let (st, text) = http_get_text(srv.http_addr, "/llms.txt").await;
     assert_eq!(st, 200);
-    assert!(text.contains("Swarmail"));
+    assert_eq!(text, include_str!("../src/static/llms.txt"));
+    let summary = text
+        .split("\n\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .map(|line| line.strip_prefix("> ").unwrap())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(
+        summary,
+        concat!(
+            "An SMTP mail mock built for a program waiting on mail, not a human at a web UI: ",
+            "a single Rust binary that accepts any SMTP traffic on :1025 and exposes ",
+            "captured email through REST, MCP and a web UI on :8025. Every accepted ",
+            "message is queryable immediately — there is no async gap where mail can be lost."
+        )
+    );
+    assert!(!text.to_ascii_lowercase().contains("fastest"));
 }
 
 /// Deleting an unknown id walks `Store::delete`'s no-hit arm and answers 404.

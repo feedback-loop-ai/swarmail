@@ -1,5 +1,14 @@
 # Current-main implementation — issue #200
 
+This record was committed with unresolved conflict markers. The first text below
+matches the v2-only direction in accepted 0071 and decision 0063; it is
+retained as the integration account. The second text is the conflicting
+alternative retained as historical evidence, not a current contract or
+independent verification. In particular, its v1-reader claims are
+superseded by 0071. No gate receipt is inferred from either text.
+
+## Integration account preserved from the first side
+
 The port integrates shipped patches 03–06 into current #194/#196 owners,
 preserving accepted #198/0071 business behavior. Framing/design patches 01–02
 supply historical context; this run's committed design governs implementation.
@@ -93,3 +102,109 @@ Public declarations must not contain secrets. Provenance/hashes show measured,
 declared or explicitly unavailable facts and consistency, not authenticity,
 compilation reproducibility, exact model replay or historical privacy. Incomplete
 and conflicting retained evidence is deliberately not repaired.
+
+## Conflicting alternative preserved for history
+
+The port restores the shipped #200 public contracts inside the existing #194
+and #196 owners. Decision 0063 remains proposed. The only accepted-record edit
+is the exact scoped 0055 addendum from verified patch 0003; its prior bytes and
+status are unchanged. The decision index adds one proposed 0063 row. The local
+packet's eight checksums and candidate engine digest were verified. No journal,
+GitHub, sibling worktree, decision acceptance or routing change was used.
+
+## Implementation and proof mapping
+
+- T1/AC11: exact historical-prefix/addendum comparison and baseline test-name
+  inventory passed. Root `store_contract_docs` is included in final house tests.
+- T2–T4/AC1–AC3: separate strict V1/V2 result types, original-byte version
+  dispatch, immutable v1 result/report/catalogue goldens, typed availability,
+  semantic seed/time keys and independently fixed framing/argv vectors.
+  Report formulas are unchanged. Native OsString execution is separate from
+  explicitly public UTF-8 command hashing before path resolution.
+- T5/AC1/AC8: build-time harness Git facts with worktree/packed-ref/archive
+  proofs; measured/rechecked executables; owned source comparisons including
+  private dirty-to-dirty content fingerprints. Runtime Git and Cargo use the
+  existing Groups, retained wait/drain identities and private runtime owners
+  after signal subscription. Git's complete map and private-path exclusion
+  have independent probes. Opaque target source remains unavailable.
+- T6/AC3/AC10: fixture/mail public choices use fixture-sha256-v1; independent
+  private entropy supplies every capability class. Fresh real fixture processes
+  prove deterministic projections, calendar/MIME equality and OTP transitions.
+- T7–T8/AC6–AC8: shared fixture recording copies only provisioned canonical
+  claims; Admin and retained writers enforce membership before payload. Bare
+  and strict retained historical readers keep unknown claims scoreable without
+  reflection or mutation. Reader errors use bounded categories. Real live OTP
+  and independent canary tests cover all action families and whole public trees.
+- T9–T10/AC4–AC5: every new artifact uses the existing exclusive 0700 leaf,
+  descriptor-private 0600 temporary, complete write and no-clobber publication.
+  Metadata is last. All handled trial paths finalize after cleanup. Requested
+  retention failure changes the trial outcome to infrastructure error.
+- T11–T13/AC4–AC6/AC9/AC13: current main.rs remains the matrix owner. Assigned
+  public facts travel through bounded strict CLI context before native argv;
+  the complete worker environment map is unchanged. Exact assigned v2 rows,
+  exits, 64 KiB drainage and ordered refusal accounting remain enforced. The
+  index binds rows only after cancellation arbitration and stdout commitment.
+  Immutable child conflicts leave files untouched and prevent completion.
+  Replay validates the whole matrix before emitting any row, then rescores
+  existing snapshots without binaries, services or command execution.
+- T14–T15/AC7–AC10: all baseline test names remain in their original owner.
+  Full suites and final gates are recorded under the ignored run-local
+  `.forge/epic192/issue200/` logs. Current commands, not historical receipts,
+  determine this phase's result.
+
+## Baseline adaptations
+
+Every main/runner/protocol test listed in plan.md remains. The only public
+behavior adaptations to old assertions are required by #200: new worker rows
+are v2 with generated assigned IDs; readiness-flood tests retain the original
+2048-byte execution projection bound and add the 64 KiB v2 bound; requested
+artifact failure is now infrastructure rather than best effort; preparation
+failure retains bound absent-state evidence instead of leaving no artifacts.
+All old private-value assertions, literal native argv, complete environment
+maps, private permissions, negative controls and real protocol checks remain.
+Historical matrix helper controls now use explicit wrapper argv, rather than
+relying on caller environment inheritance that #196 correctly removed.
+
+The stdout Pending acknowledgement seam now observes actual pipe pressure via
+poll, rather than merely an unscheduled writer thread. It does not change the
+production writer, five-second bound, unread-pipe test or signal assertions.
+This prevents the larger v2 representation from acknowledging a transient
+scheduling gap as the blocked write the regression needs to exercise. The
+cleanup bypass seam also waits for the existing hold-entry acknowledgement
+before dropping its waiter. Otherwise a faster cached finalizer could abort
+that waiter before it initialized its cleanup owner. The negative control
+still returns with live owned work and fails the same completion predicate;
+production cleanup registration, waits and budgets are unchanged.
+
+New composition tests cover both signals after real child retention and before
+commitment: full stdout accounting, unchanged child bytes, exit 2 and absent
+matrix index. Envelope expiry is a cancellation request through the same
+observed Pending cleanup fence, with repeated signals and a bypass negative
+control. No parent kill timer or second completion handshake was imported.
+Index-write failure preserves the committed stdout verdict while exiting 2.
+Execution wall time continues to exclude target build time. Both signals also
+remain latched when source observation has finished and owned cleanup precedes
+Cargo admission; task-join errors still pass through that cleanup fence.
+The duplicate-boolean wire vector uses explicit fixture data instead of the
+checkout's build-time dirty flag, so a clean commit exercises the same refusal.
+
+## Discriminating evidence and limits
+
+Restoring the original unknown-claim copying in an isolated mutation makes the
+real private-claim publication regression fail; restoring the exact source
+makes it pass. The receipt records only verdicts, without canary values. The
+existing cleanup bypass controls and the new envelope bypass return while
+owned work is alive; their ordinary counterparts cannot return until release.
+
+Public provenance is measured, declared or explicitly unavailable. It is not
+attestation, reproducible compilation, exact model replay, credential
+sanitization of public declarations or a secrecy certificate for historical
+input. Hashes prove consistency, not authenticity against a local writer.
+The timeout threshold cannot promise a total completion latency that bypasses
+owned cleanup. Incomplete/conflicting evidence is deliberately not repaired.
+
+T16 is complete only when the committed candidate's full gate receipts pass.
+The phase result records that actual verdict. House CI retains chart/history,
+Docker, network audit, release and privileged port-80 proofs. macOS eval proof
+belongs to #201; namespaces to #221. Current bundles/0058 own protected review
+and security hold; this implementer supplies no independent review result.

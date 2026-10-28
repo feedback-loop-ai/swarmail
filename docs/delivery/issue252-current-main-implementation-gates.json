@@ -1,0 +1,144 @@
+{
+  "phase": "implement",
+  "commit": "e8828fefd5c2778673a4a01c2e3411abb41d595e",
+  "tree": "ae0b1646d695575fa81dea86d3b2d47c4d563a5a",
+  "started_utc": "2026-10-26T13:34:34.665001+00:00",
+  "cargo_net_offline": true,
+  "status": "pass",
+  "coverage_evidence": "target/coverage/run.BtZPIG",
+  "gates": [
+    {
+      "name": "exact-coverage",
+      "command": "bash bundles/self/scripts/coverage-gate.sh",
+      "exit_code": 0,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/exact-coverage.log",
+      "log_sha256": "ae58e4cb5e943d82f5dc79ba56c54102a693a0c2e46dc601afbe6567ca137552",
+      "note": "Executed after committing e8828fe, before this receipt was initialized; not repeated because source and tested commit are unchanged."
+    },
+    {
+      "name": "engine-pin",
+      "command": "printf '%s  %s\\n' ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f .forge/bin/brokkr | sha256sum --check --strict",
+      "exit_code": 0,
+      "duration_seconds": 0.114,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/engine-pin.log",
+      "log_sha256": "d59591f9d6f693cfccb0906c65ee27e7aa2a907ab4d85f90d8c8303abfee6c10"
+    },
+    {
+      "name": "shim-integrity",
+      "command": "sha256sum --check --strict bundles/self/scripts/shims.sha256",
+      "exit_code": 0,
+      "duration_seconds": 0.008,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/shim-integrity.log",
+      "log_sha256": "785e16dc6e9db3dcf3e2f94347f10c6c3508b97edc039d75e9676f3b0ea1b39c"
+    },
+    {
+      "name": "format",
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "duration_seconds": 0.715,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/format.log",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "clippy",
+      "command": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "exit_code": 0,
+      "duration_seconds": 0.966,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/clippy.log",
+      "log_sha256": "52150acd16d47021bcfff67230a07b7bee5c1b0c22287a675f38ad91dcf04343"
+    },
+    {
+      "name": "workspace-tests",
+      "command": "cargo test --workspace --locked",
+      "exit_code": 0,
+      "duration_seconds": 138.131,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/workspace-tests.log",
+      "log_sha256": "4c0e3596341fcb072d1e25ae94ea646067ce63437dfd9092979a483f88b741df"
+    },
+    {
+      "name": "bundle-compile",
+      "command": ".forge/bin/brokkr compile --bundle bundles/self",
+      "exit_code": 0,
+      "duration_seconds": 0.032,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/bundle-compile.log",
+      "log_sha256": "ad83b8df41a4b44f1d748cf6c6ef17dd8a7db503246c50e2ff0dab8e04b895ff"
+    },
+    {
+      "name": "coverage-selftest",
+      "command": "bash bundles/self/scripts/coverage-gate.sh selftest",
+      "exit_code": 0,
+      "duration_seconds": 19.442,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/coverage-selftest.log",
+      "log_sha256": "f627d3f3b4ba6d6da6c97d730e03377e62359499d40dbbcc625990384db28d80"
+    },
+    {
+      "name": "publish-guard-proof",
+      "command": "bash bundles/self/scripts/publish-guard-test.sh",
+      "exit_code": 0,
+      "duration_seconds": 6.223,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/publish-guard-proof.log",
+      "log_sha256": "939ac40398ee171a956e8423b96d4a9c62b4b1c30250a6fa6146b585ddf0647f"
+    },
+    {
+      "name": "seal-keyless-proof",
+      "command": "bash bundles/self/scripts/seal-branch-test.sh",
+      "exit_code": 0,
+      "duration_seconds": 4.821,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/seal-keyless-proof.log",
+      "log_sha256": "e022b8e780d716cdbafdf4723515738c62bf480308724cfbb2051566d835b200"
+    },
+    {
+      "name": "licenses",
+      "command": "cargo deny check licenses",
+      "exit_code": 0,
+      "duration_seconds": 0.715,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/licenses.log",
+      "log_sha256": "71dadc8c8978da797b94dc581b666330c737551839c8fc820d7647130930c4b7"
+    },
+    {
+      "name": "design-selftest",
+      "command": "bash bundles/self/scripts/design-check.sh selftest",
+      "exit_code": 0,
+      "duration_seconds": 4.721,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/design-selftest.log",
+      "log_sha256": "1d5eb6cef8be9f99e87fa8b1394ed2df9172cf2c4da06f6d74cc03c95245735e"
+    },
+    {
+      "name": "delivery-boundary-proof",
+      "command": "bash bundles/self/scripts/delivery-proof-test.sh",
+      "exit_code": 0,
+      "duration_seconds": 9.335,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/delivery-boundary-proof.log",
+      "log_sha256": "2969d73ecccc45098e6907c604407b44967f3fe4669573a6cd4c5e8b82785d8c"
+    },
+    {
+      "name": "native-tls-absence",
+      "command": "out=$(cargo tree --locked -i native-tls 2>&1); code=$?; if [ \"$code\" -eq 0 ]; then printf '%s\\n' \"$out\"; exit 1; elif printf '%s' \"$out\" | grep -q 'did not match any packages'; then printf '%s\\n' \"$out\"; exit 0; else printf '%s\\n' \"$out\"; exit 1; fi",
+      "exit_code": 0,
+      "duration_seconds": 0.214,
+      "log": ".forge/evidence/issue252-implementation-e8828fe/native-tls-absence.log",
+      "log_sha256": "c20322ba4adf68e75b4b544969d1187b0abaf3b0585b10cd47b0ce97c167025f"
+    }
+  ],
+  "finished_utc": "2026-10-26T13:37:45.304856+00:00",
+  "end_commit": "e8828fefd5c2778673a4a01c2e3411abb41d595e",
+  "tracked_clean": true,
+  "coverage": {
+    "lines": {
+      "count": 15520,
+      "covered": 15520
+    },
+    "branches": {
+      "count": 876,
+      "covered": 876
+    },
+    "functions": {
+      "count": 1656,
+      "covered": 1656
+    }
+  },
+  "engine_sha256": "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
+  "ownership_note": "All fourteen local checks passed on the implementation commit. The subsequent receipt commit changes only delivery evidence and the task checklist; production, dependencies, gates and bundles remain identical. CI/operator-owned macOS, network RustSec, Helm/chart history, Docker, privileged port-80, release-rate, hosting settings, namespaces, sealing/publication and decision acceptance are not claimed locally.",
+  "source_tree": "e578892f8f8072cdf05f1430b9671d251b35635d",
+  "bundles_tree": "83f88e8042ef8092c1cf1640916c6b1f3858f4dc"
+}

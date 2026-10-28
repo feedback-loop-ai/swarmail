@@ -65,7 +65,7 @@ them. What may land while a decision is still proposed is stated in
 | [0056](0056-signing-policy.md) | Commit unsigned and seal the branch before merge: seats never sign, push or stop for a key; the operator re-signs every PR-branch commit in place on the same merge-base with `scripts/seal-branch.sh` (supersedes the mid-run signing rule and 0045 §9's branch-author sentence) | accepted (operator, 2026-10-20) | (operator ruling in chat, 2026-10-20) |
 | [0057](0057-codex-delivery-recipes.md) | Codex triages and authors; fast bugs use one or two independent reviewers, risky work the full panel; up to eight isolated runs | accepted (operator directive, 2026-10-23) | (Codex-led recipes before epic #192; GLM 5.3 test review; Flash only) |
 | [0058](0058-codex-review-routing.md) | Exact operator-directed Codex review routing and fast-feature dispatch fallback (amends 0057) | accepted (operator, 2026-10-24) | (operator directive, 2026-10-24) |
-| [0061](0061-compat-webhook-proof.md) | Compat refusal recognition and extraction repair boundaries | proposed — awaiting the operator | (#170/#190, lane D) |
+| [0061](0061-compat-webhook-proof.md) | Compat refusal recognition and extraction repair boundaries | accepted (operator, 2026-10-26) | (Operator ruling of 2026-10-26: §1 accepted; R4.3 keep text-first; R4.4 source-aware conditional attributes) |
 | [0062](0062-rpc-edge-contracts.md) | RPC edge contracts and the supplied ID ruling | accepted (operator, 2026-10-26) | (Epic #192, issue #180) |
 | [0063](0063-eval-provenance.md) | Reproduce public fixture choices and bind eval evidence | accepted (operator, 2026-10-26) | (Epic #192, issue #200) |
 | [0064](0064-coverage-reservation-tooling.md) | Direct exclusive coverage reservation with checked tooling | accepted (operator, 2026-10-26) | (Epic #192 issue #174) |
@@ -84,7 +84,9 @@ them. What may land while a decision is still proposed is stated in
 | [0078](0078-ca-executor-ownership.md) | Bounded CA ownership, logical accounting and admission | accepted (operator, 2026-10-26) | (Epic #192, issue #220; compatible choices under accepted 0069) |
 | [0081](0081-glm-flash-seats.md) | GLM Flash tests review only; intake keeps its workspace hands and models | proposed — awaiting the operator | (Revised operator ruling, 2026-10-26: “GLM-5.3-Flash seats (revised)”) |
 | [0083](0083-cli-wrapper-launch.md) | Evidence-based CLI launches and declared tool surfaces | proposed — awaiting the operator | (Epic #164, issue #151 part 1; operator allocation 2026-10-26) |
+| [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0087](0087-fixture-http-meta.md) | Discard fixture HTTP request metadata and name GET-body refusals | proposed — awaiting the operator | (Epic #164, issue #151) |
+| [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

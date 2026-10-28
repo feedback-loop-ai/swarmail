@@ -4,6 +4,7 @@ pub mod api;
 pub mod chaos;
 pub mod compat;
 pub mod config;
+pub mod deliverability;
 pub mod extract;
 pub mod feed;
 pub mod mcp;

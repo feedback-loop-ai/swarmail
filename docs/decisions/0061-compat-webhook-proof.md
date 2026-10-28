@@ -1,7 +1,8 @@
 # 0061 — Compat refusal recognition and extraction repair boundaries
 
-- **Status:** proposed
+- **Status:** accepted (operator, 2026-10-26)
 - **Date:** 2026-10-23
+- **Current ruling:** the dated 2026-10-26 addendum below supersedes the draft authority boundaries; the original proposal and D3 notes remain historical.
 - **Stories:** #170 and #190 under epic #192; lane D.
 - **Specification:** [compat/webhook proof](../../specs/epic192-compat-webhook-proof/spec.md).
 - **Proposes amendment to:** accepted [0049](0049-extraction-compat.md) §6, only the refusal-recognition order described in §1 below.
@@ -65,3 +66,41 @@ The chief commits exactly this proposed record and the reserved spec/plan/tasks.
 ## D3 continuation clarification — 2026-10-23
 
 This update retains proposed status and the exact unaccepted §1 amendment; it accepts no clause. Both current positions support preserving inherited compatible implementation and requiring discriminating evidence. AC10/R4.2, AC11/R4.3 and AC12/R4.4 remain separately open. Index repair and copied source/evidence identities supply no operator ruling, gate success or policy bypass. Current edit scope is the D3 spec/plan ownership table; earlier implementation's broader file list is historical. Required new unowned edits/mutations go to parent while independent compatible work proceeds.
+
+
+## Operator acceptance and decisions — 2026-10-26
+
+The operator's supplied “Decision rulings of 2026-10-26”, independently
+SHA-256 verified against the workspace evidence packet, accept §1 and resolve
+both §3 questions. The operator explicitly directs recording this record as
+accepted (operator, 2026-10-26). This is the provenance of acceptance, not a
+seat's inference from tests or a proposal. No other decision is accepted here.
+
+1. **§1 / R4.2 accepted; amends 0049 §6.** Both Mailpit and MailHog generic
+   containing searches trim as before and examine whitespace tokens. For
+   refusal recognition only, remove every double quote, then at most one
+   leading parenthesis, then at most one leading exclusion marker (- or !),
+   then apply the existing ASCII identifier-colon rule with its :// exception.
+   The five required forms in §1 name to/from/subject in JSON HTTP 400.
+   Accepted queries execute unchanged. Ordinary literals, URLs, supported
+   explicit kinds, case and dialect error precedence keep their contracts.
+2. **R4.3 decided: keep text-first links across independent MIME parts.**
+   The mixed HTML-verification/text-footer fixture stores unsubscribe then
+   verify links, while its codes remain 121212 then 2026 in source order.
+   No link BodyOrder wiring or new source-order link contract is authorized.
+3. **R4.4 decided: source-aware quoted attributes in Outlook conditional
+   comments.** Recognize their source attribute boundaries before one decode.
+   The specified O'Brien fixture stores only the complete verification URL;
+   the truncated prefix disappears. Ordinary comments retain their decoded
+   delimiters and all comment text remains suppressed for code extraction.
+   This extends 0049 §1's source-aware handling to the conditional tags,
+   without DOM/browser recovery or a general comment-semantic rewrite.
+
+These rulings close the authority questions previously left open; earlier
+pending/proposed statements above retain their historical date and scope.
+Extraction remains once at fresh ingest (0005); existing stored arrays,
+including old truncated prefixes, restore verbatim, with no migration,
+read-time fallback or write-back. Frozen 0001–0003 and all other accepted
+contracts remain unchanged. The dated 0049 addendum records this amendment.
+The implementation and evidence are recorded in the spec's 2026-10-26
+addendum and proof ledger; protected verify/review/ship remain engine-owned.

@@ -55,7 +55,7 @@ fn page(title: &str, body: String) -> Html<String> {
     let title = esc(title);
     Html(format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="{CSP}"><title>{title} · Swarmail</title>{STYLE}</head>
-<body><div class="wrap"><h1>📮 Swarmail</h1><div class="muted">the fastest AI-native mail mock · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div>{body}</div></body></html>"#
+<body><div class="wrap"><h1>📮 Swarmail</h1><div class="muted">Built for a program waiting on mail. · <a href="/">inboxes</a> · <a href="/llms.txt">llms.txt</a> · <a href="/openapi.json">openapi</a></div>{body}</div></body></html>"#
     ))
 }
 
@@ -169,6 +169,44 @@ async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> 
         )
             .into_response();
     };
+    let report = state.store.report(email.clone()).await;
+    crate::store::Store::offload(move || render_message(&email, report.as_deref())).await
+}
+
+fn report_section(
+    report: Result<&crate::deliverability::Report, &crate::deliverability::AnalysisError>,
+) -> String {
+    let body = match report {
+        Err(error) => esc(error.message()),
+        Ok(report) => {
+            let mut body = format!("<div class=\"mono\">{}</div>", esc(&report.rule_set_id));
+            if report.findings.is_empty() {
+                body.push_str("<div>No findings from this rule set.</div>");
+            }
+            for finding in &report.findings {
+                let severity = serde_json::to_value(finding.severity).unwrap();
+                let locator = serde_json::to_string(&finding.location).unwrap();
+                body.push_str(&format!(
+                    "<div class=\"card mono\">{} · {} · {} · {}</div>",
+                    esc(severity.as_str().unwrap()),
+                    esc(&finding.rule_id),
+                    esc(&locator),
+                    esc(&finding.fix_hint)
+                ));
+            }
+            body
+        }
+    };
+    format!(
+        "<h2>deliverability</h2><section>{body}<div class=\"muted\">Synthetic demo rule only. Empty findings do not imply deliverability.</div></section>"
+    )
+}
+
+fn render_message(
+    email: &crate::model::Email,
+    report: Result<&crate::deliverability::Report, &crate::deliverability::AnalysisError>,
+) -> Response {
+    let report_section = report_section(report);
     // The html preview renders in a sandboxed iframe (no scripts), its
     // markup escaped into the srcdoc attribute.
     let html_body = email
@@ -210,7 +248,7 @@ async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> 
         format!(
             r#"<h2>{}</h2>
 <div class="card"><b>From:</b> {from} &nbsp; <b>To:</b> {} &nbsp; <b>At:</b> {}</div>
-<h2>codes</h2><div>{codes}</div><h2>links</h2>{links}<h2>html</h2>{html_body}<h2>text</h2>{text_block}"#,
+{report_section}<h2>codes</h2><div>{codes}</div><h2>links</h2>{links}<h2>html</h2>{html_body}<h2>text</h2>{text_block}"#,
             esc(subject),
             to.join(", "),
             esc(&email.received_at),
@@ -222,6 +260,45 @@ async fn message_view(State(state): State<AppState>, Path(id): Path<String>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_ui_escapes_every_provider_field_and_keeps_locators_inactive() {
+        use crate::deliverability::{Finding, Location, Report, Severity};
+        let attack = "<img src=\"https://attacker/\">&'";
+        let report = Report {
+            rule_set_id: attack.into(),
+            findings: vec![
+                Finding {
+                    rule_id: attack.into(),
+                    severity: Severity::Info,
+                    location: Location::Header {
+                        name: attack.into(),
+                        occurrence: None,
+                    },
+                    fix_hint: attack.into(),
+                },
+                Finding {
+                    rule_id: "fixture".into(),
+                    severity: Severity::Error,
+                    location: Location::Link {
+                        part_path: vec![0, 1],
+                        byte_offset: 19,
+                    },
+                    fix_hint: "https://attacker/".into(),
+                },
+            ],
+        };
+        let html = report_section(Ok(&report));
+        assert!(!html.contains("<img"));
+        assert!(!html.contains("<a "));
+        assert!(html.contains("&lt;img src=&quot;https://attacker/&quot;&gt;&amp;&#39;"));
+        assert!(html.contains("byte_offset"));
+        assert!(html.contains("https://attacker/"));
+        assert!(
+            report_section(Err(&crate::deliverability::AnalysisError::Unavailable))
+                .contains("deliverability analysis unavailable")
+        );
+    }
 
     /// Every navigation arm (decision 0044 §3): no links on a lone page,
     /// next-only at the start, previous-only at the end (saturating), both
