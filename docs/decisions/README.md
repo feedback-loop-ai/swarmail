@@ -87,6 +87,7 @@ them. What may land while a decision is still proposed is stated in
 | [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
 | [0090](0090-mixed-provider-routing.md) | Separate operator-directed mixed-provider route: Terra 6.1 intake, Opus 5.5 implementation, careful's five-member panel | proposed — awaiting the operator | (Operator directive, 2026-10-28; run `verify-and-independently-review--53f33089`) |
+| [0098](0098-review-panel-flash-and-deadline.md) | Full-panel correctness and guarantees on official DeepSeek Flash through dsh; 14400 s review deadline for `codex`, `codex-careful`, `codex-fast` (amends 0058; mixed inherits) | proposed — awaiting the operator | (Operator directions, 2026-10-28: dsh Flash correctness/guarantees; four-times review timeout) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
