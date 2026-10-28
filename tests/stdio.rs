@@ -1400,6 +1400,16 @@ async fn failed_modern_negotiation_never_releases_queued_effects_as_legacy() {
             json!({"id":1,"result":{"protocolVersion":"2025-06-18"}}),
         ),
         (200, json!({"jsonrpc":"2.0","id":1,"error":{"code":-32600}})),
+        // C6 witnesses with otherwise complete metadata: each isolates one
+        // envelope defect, forwarded verbatim yet never installed.
+        (
+            200,
+            json!({"id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"peer","version":"1"}}}),
+        ),
+        (
+            200,
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"peer"},"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"peer","version":"1"}}}),
+        ),
         (
             400,
             json!({"jsonrpc":"2.0","id":1,"error":{"code":-32600},"result":{"protocolVersion":"2025-06-18"}}),
@@ -1656,6 +1666,61 @@ async fn lost_and_truncated_initialization_stay_failed_until_explicit_retry() {
         );
         release(&body, stream).await;
         assert_eq!(bridge.reply().await["id"], 5);
+        let (code, rest) = bridge.finish().await;
+        assert_eq!(code, 0);
+        assert!(rest.is_empty());
+    }
+}
+
+/// C6 on ordinary exchanges: a complete JSON reply with a malformed MCP
+/// envelope — no jsonrpc member, or result and error together — is
+/// forwarded verbatim under the implicit legacy session and a negotiated
+/// modern one alike. The bridge relays; it does not repair a peer.
+#[tokio::test]
+async fn complete_malformed_peer_replies_are_forwarded_verbatim() {
+    use serde_json::json;
+    for version in [None, Some("2025-11-25")] {
+        let mut peer = HeldPeer::start().await;
+        let mut bridge = Running::spawn(format!("http://{}", peer.addr));
+        if let Some(version) = version {
+            bridge.send(&revision_init(1, version)).await;
+            let (_, mut stream) = peer.held().await;
+            revision_result(&mut stream, 1, version).await;
+            drop(stream);
+            assert_eq!(bridge.reply().await["result"]["protocolVersion"], version);
+            bridge
+                .send("{\"method\":\"notifications/initialized\"}\n")
+                .await;
+            let (body, stream) = peer.held().await;
+            release(&body, stream).await;
+        }
+        for (id, reply) in [
+            (7, json!({"id":7,"result":{}})),
+            (
+                8,
+                json!({"jsonrpc":"2.0","id":8,"result":{},"error":{"code":-32603,"message":"peer"}}),
+            ),
+        ] {
+            bridge.send(&ping_line(&id.to_string())).await;
+            let (_, mut stream) = peer.held().await;
+            if let Some(version) = version {
+                assert!(
+                    peer.headers
+                        .lock()
+                        .unwrap()
+                        .last()
+                        .unwrap()
+                        .contains(&format!("MCP-Protocol-Version: {version}\r\n"))
+                );
+            }
+            return_after_write(&reply.to_string(), &mut stream).await;
+            drop(stream);
+            assert_eq!(
+                bridge.reply().await,
+                reply,
+                "{version:?} forwarded verbatim"
+            );
+        }
         let (code, rest) = bridge.finish().await;
         assert_eq!(code, 0);
         assert!(rest.is_empty());
