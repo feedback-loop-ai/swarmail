@@ -53,6 +53,22 @@ Focused exits on the implementation tree (all 0): `--test mcp_revisions`
 (25 passed), `--test stdio` (39), `--test deliverability` (7),
 `--lib deliverability::concurrency_tests` (9) and the direct-dispatch rate test.
 
+## Local gates (T7)
+
+The whole house inventory plus the framed proofs passed on the clean unsigned
+implementation commit `4227aef` (tree `67fe482`): fmt, locked workspace clippy
+with warnings denied, locked workspace tests, digest-matched
+`.forge/bin/brokkr compile --bundle bundles/self`, exact coverage
+(17372/17372 lines, 1202/1202 branches, 1781/1781 functions) and its selftest,
+publish-guard and keyless seal proofs, `cargo deny check licenses`,
+`design-check.sh selftest`, `delivery-proof-test.sh`, the strict shims check,
+fail-closed native-tls absence (`cargo tree --locked -i native-tls`, exit 101
+with the no-package diagnostic) and `design-check.sh check .`. The same
+inventory is rerun on the commit that records this section; receipts with
+command, exit, HEAD/tree and log hashes are run-local under
+`.forge/evidence/refusal-proof-impl/`. CI-owned contexts (macOS, Helm, Docker,
+RustSec, port-80 bridge) are not represented here and remain owed.
+
 ## Handoff (T8 of this supplement stays open)
 
 Engine verification and the five separate protected reviewers own their
