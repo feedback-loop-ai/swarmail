@@ -135,8 +135,11 @@ For 2025-06-18 and 2025-11-25 every tool declares an object-root outputSchema.
 Every success returns structuredContent plus the same JSON in its existing text
 block; text-only consumers can keep reading content. Errors keep their text/RPC
 shapes without structured success data. March (also missing-version requests)
-keeps its catalogue and result bytes. Tests pin schemas to served OpenAPI through
-explicit output projections, including omitted fields and nullable provenance.
+keeps its thirteen existing catalogue entries and existing result bytes;
+discovery appends the two focused waits after them, fifteen in all. Tests pin
+the REST-backed schemas to served OpenAPI through explicit output projections,
+including omitted fields and nullable provenance; the focused waits are MCP-only
+and their schemas are checked against independently stated expectations.
 Dual output costs bytes/tokens: the bridge retains its 10 MiB response cap and
 returns -32000 when exceeded, even when the March text alone would fit. Use smaller
 pages; one large Email can still exceed the cap. Lost mutation replies do not
