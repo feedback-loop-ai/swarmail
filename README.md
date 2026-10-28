@@ -84,7 +84,7 @@ swarmail mcp                   # the stdio MCP bridge
 swarmail gen-cert --domain localhost --out ./certs
 ```
 
-Thirteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
+Fifteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
 compatibility layer (MailHog/Mailpit), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies.
@@ -693,11 +693,16 @@ one `-32600` / null error naming the revision, before any member executes,
 including arrays containing only notifications. Modern tool descriptors add
 `readOnlyHint: true` on reads, and `readOnlyHint: false, destructiveHint: true`
 on all mutations (including seed, which can evict old mail, and chaos changes).
-Input schemas and March catalogue/result bytes are unchanged. For `2025-06-18`
-and `2025-11-25`, every tool declares an object-root `outputSchema`; successful
+Input schemas, the thirteen existing March catalogue entries and existing
+result bytes are unchanged; discovery appends the two focused waits after them
+(decision 0094, proposed), fifteen entries in all. For `2025-06-18` and
+`2025-11-25`, every tool declares an object-root `outputSchema`; successful
 results include `structuredContent` and the same JSON in the existing text block.
 Errors retain their existing text/RPC envelopes without structured success data.
-Schemas are pinned to served OpenAPI through explicit output projections in tests.
+The REST-backed tools' schemas are pinned to served OpenAPI through explicit
+output projections in tests; the two focused waits are MCP-only, with no REST
+projection, and their schemas are checked against independently stated
+expectations.
 
 Duplicating JSON increases response size and token cost. The stdio bridge keeps
 its 10 MiB response cap: a query that fits as March text may exceed it with modern
@@ -1403,7 +1408,7 @@ before publication or merge; agent runs never push or merge.
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [x] POP3 server; MailHog/Mailpit API compat shims
 - [x] Exact 100/100/100 coverage contract (lines, branches, functions) in the gate and CI
-- [x] MCP: HTTP + stdio, 13 tools
+- [x] MCP: HTTP + stdio, 15 tools
 - [x] Kubernetes: the Helm chart (OCI-published, decision 0008 *accepted*)
 - [ ] crates.io publish — the package is publish-ready (see *Publishing*);
   the operator runs `cargo publish --locked` with their token
