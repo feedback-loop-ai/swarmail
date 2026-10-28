@@ -12,3 +12,7 @@ original manifests; this recipe changes no prior verdict or decision status.
 mapping. Compilation proves resolution and policy shape, not provider access,
 model quality, result delivery, or a completed review. A failed provider or
 indeterminate member remains a refusal, never an automatic substitution.
+
+The route is recorded in proposed
+[0090](../../docs/decisions/0090-mixed-provider-routing.md); it is not an
+accepted decision.
