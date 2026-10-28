@@ -272,14 +272,21 @@ async fn revision_tool_annotations() {
     let srv = start().await;
     let request = json!({"id":1,"method":"tools/list"});
     let (_, legacy) = post(srv.http_addr, &[], &request).await;
-    let reads = [
-        "swarmail_search_emails",
-        "swarmail_get_email",
-        "swarmail_get_latest_email",
-        "swarmail_wait_for_email",
-        "swarmail_extract_links",
-        "swarmail_extract_codes",
-        "swarmail_get_deliverability_report",
+    // The exact catalogue and its modern readOnlyHint, in served order.
+    let table = [
+        ("swarmail_search_emails", true),
+        ("swarmail_get_deliverability_report", true),
+        ("swarmail_get_email", true),
+        ("swarmail_get_latest_email", true),
+        ("swarmail_delete_email", false),
+        ("swarmail_clear_inbox", false),
+        ("swarmail_clear_all", false),
+        ("swarmail_wait_for_email", true),
+        ("swarmail_extract_links", true),
+        ("swarmail_extract_codes", true),
+        ("swarmail_seed_email", false),
+        ("swarmail_set_chaos", false),
+        ("swarmail_clear_chaos", false),
     ];
     for version in VERSIONS {
         let (_, reply) = post(
@@ -289,10 +296,12 @@ async fn revision_tool_annotations() {
         )
         .await;
         let tools = reply["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 13);
-        for (actual, original) in tools
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, table.map(|(name, _)| name));
+        for ((actual, original), (_, read_only)) in tools
             .iter()
             .zip(legacy["result"]["tools"].as_array().unwrap())
+            .zip(table)
         {
             let mut descriptor = actual.clone();
             for absent in ["execution", "icons", "title"] {
@@ -300,17 +309,15 @@ async fn revision_tool_annotations() {
             }
             if version == VERSIONS[0] {
                 assert!(descriptor.get("outputSchema").is_none());
+                assert!(descriptor.get("annotations").is_none());
             } else {
-                assert_eq!(
-                    descriptor
-                        .as_object_mut()
-                        .unwrap()
-                        .remove("outputSchema")
-                        .unwrap()["type"],
-                    "object"
-                );
-            }
-            if version != VERSIONS[0] {
+                let schema = descriptor
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("outputSchema")
+                    .unwrap();
+                assert_eq!(schema["type"], "object", "{}", actual["name"]);
+                assert!(schema["properties"].is_object() || schema["oneOf"].is_array());
                 let hint = descriptor
                     .as_object_mut()
                     .unwrap()
@@ -318,7 +325,7 @@ async fn revision_tool_annotations() {
                     .unwrap();
                 assert_eq!(
                     hint,
-                    if reads.contains(&actual["name"].as_str().unwrap()) {
+                    if read_only {
                         json!({"readOnlyHint":true})
                     } else {
                         json!({"readOnlyHint":false,"destructiveHint":true})
@@ -331,6 +338,15 @@ async fn revision_tool_annotations() {
                     !description.contains("batch"),
                     "modern wait promises batching: {description}"
                 );
+                descriptor["description"] = original["description"].clone();
+            }
+            if version != VERSIONS[0] && actual["name"] == "swarmail_get_deliverability_report" {
+                let description = descriptor["description"].as_str().unwrap();
+                assert!(
+                    !description.contains("Only the synthetic demo rule ships"),
+                    "modern report repeats the stale rule scope: {description}"
+                );
+                assert!(description.contains("bulk-sender checklist"));
                 descriptor["description"] = original["description"].clone();
             }
             assert_eq!(&descriptor, original);
