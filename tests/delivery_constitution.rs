@@ -1099,7 +1099,7 @@ if [ "$*" = --version ]; then
   exit 0
 fi
 [ "$1" = compile ] && [ "$2" = --bundle ] || exit 93
-case "$3" in bundles/self|bundles/codex|bundles/codex-careful|bundles/codex-fast) ;; *) exit 94 ;; esac
+case "$3" in bundles/self|bundles/codex|bundles/codex-careful|bundles/codex-fast|bundles/mixed-opus-terra) ;; *) exit 94 ;; esac
 if [ "$3" = "${FAIL_RECIPE:-bundles/codex-careful}" ]; then
   case "${COMPILE_MODE:-clean}" in
     stdout-warning) printf 'lets the run go on without reading fixture\n' ;;
@@ -1307,7 +1307,7 @@ fn ci_admits_digest_before_executing_and_compiles_all_four_recipes() {
     assert!(output.status.success(), "{}", ci_diagnostics(&output));
     assert_eq!(
         std::fs::read_to_string(&fixture.marker).unwrap(),
-        "--version\ncompile --bundle bundles/self\ncompile --bundle bundles/codex\ncompile --bundle bundles/codex-careful\ncompile --bundle bundles/codex-fast\n"
+        "--version\ncompile --bundle bundles/self\ncompile --bundle bundles/codex\ncompile --bundle bundles/codex-careful\ncompile --bundle bundles/codex-fast\ncompile --bundle bundles/mixed-opus-terra\n"
     );
     let args = std::fs::read_to_string(fixture.root.path().join("curl args.txt")).unwrap();
     for required in [
