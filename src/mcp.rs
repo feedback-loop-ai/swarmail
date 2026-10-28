@@ -102,8 +102,8 @@ impl Default for ToolRate {
 }
 
 impl ToolRate {
-    const CAP: usize = 1024;
-    const WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+    pub(crate) const CAP: usize = 1024;
+    pub(crate) const WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
     fn take_at(&self, now: std::time::Instant) -> bool {
         let mut window = self.0.lock().unwrap();
@@ -116,6 +116,19 @@ impl ToolRate {
             window.1 += 1;
             true
         }
+    }
+}
+
+/// Test-owned window state for one limiter instance — the router's own,
+/// handed out by `api::observe_next_router_tool_rate`. No clock framework.
+#[cfg(test)]
+impl ToolRate {
+    pub(crate) fn set_window(&self, start: std::time::Instant, taken: usize) {
+        *self.0.lock().unwrap() = (start, taken);
+    }
+
+    pub(crate) fn taken(&self) -> usize {
+        self.0.lock().unwrap().1
     }
 }
 
@@ -404,6 +417,8 @@ fn tool_descriptors(revision: Revision) -> Value {
                 tool["description"] = json!(MODERN_REPORT_DESCRIPTION);
             }
             tool["outputSchema"] = OUTPUT_SCHEMAS[tool["name"].as_str().unwrap()].clone();
+            // Reads never change stored mail or extraction; the report's
+            // lazy cache fill is not a mail mutation (0085).
             let read_only = matches!(
                 tool["name"].as_str().unwrap(),
                 "swarmail_search_emails"
@@ -1072,7 +1087,7 @@ mod tests {
     fn tool_rate_uses_exact_monotonic_windows() {
         let rate = ToolRate::default();
         let now = std::time::Instant::now();
-        *rate.0.lock().unwrap() = (now, 0);
+        rate.set_window(now, 0);
         for _ in 0..ToolRate::CAP {
             assert!(rate.take_at(now));
         }
@@ -1086,7 +1101,7 @@ mod tests {
         let (_stop, ctx) = context();
         // A generated future start keeps this dispatch proof independent of
         // scheduling; the preceding test proves refill with explicit instants.
-        *ctx.tool_rate.0.lock().unwrap() = (
+        ctx.tool_rate.set_window(
             std::time::Instant::now() + std::time::Duration::from_secs(3600),
             ToolRate::CAP,
         );
@@ -1155,7 +1170,7 @@ mod tests {
             serde_json::to_value(ctx.chaos.current()).unwrap(),
             chaos_before
         );
-        *ctx.tool_rate.0.lock().unwrap() = (std::time::Instant::now(), 0);
+        ctx.tool_rate.set_window(std::time::Instant::now(), 0);
         assert_eq!(
             call(&ctx, "swarmail_seed_email", json!({"to":"a@x.io"})).await["result"]["isError"],
             false
