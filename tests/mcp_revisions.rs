@@ -279,6 +279,7 @@ async fn revision_tool_annotations() {
         "swarmail_wait_for_email",
         "swarmail_extract_links",
         "swarmail_extract_codes",
+        "swarmail_get_deliverability_report",
     ];
     for version in VERSIONS {
         let (_, reply) = post(
@@ -294,8 +295,20 @@ async fn revision_tool_annotations() {
             .zip(legacy["result"]["tools"].as_array().unwrap())
         {
             let mut descriptor = actual.clone();
-            for absent in ["outputSchema", "execution", "icons", "title"] {
+            for absent in ["execution", "icons", "title"] {
                 assert!(descriptor.get(absent).is_none(), "unexpected {absent}");
+            }
+            if version == VERSIONS[0] {
+                assert!(descriptor.get("outputSchema").is_none());
+            } else {
+                assert_eq!(
+                    descriptor
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("outputSchema")
+                        .unwrap()["type"],
+                    "object"
+                );
             }
             if version != VERSIONS[0] {
                 let hint = descriptor
@@ -740,6 +753,10 @@ async fn revision_served_contract() {
         "2025-06-18",
         "2025-11-25",
         "MCP-Protocol-Version",
+        "outputSchema",
+        "structuredContent",
+        "10 MiB",
+        "tokens-per-success",
         "version negotiation",
         "full revision conformance is not claimed",
         "operator-chosen C1-C6 deviations",
@@ -875,6 +892,13 @@ async fn revision_tool_schemas_and_text_safety() {
             "seed MIME body remains string data"
         );
         assert!(data.get("raw").is_none());
-        assert!(result["result"].get("structuredContent").is_none());
+        if version == VERSIONS[0] {
+            assert!(result["result"].get("structuredContent").is_none());
+        } else {
+            assert_eq!(result["result"]["structuredContent"], text(&result));
+        }
     }
 }
+
+#[path = "mcp_revisions/structured.rs"]
+mod structured;
