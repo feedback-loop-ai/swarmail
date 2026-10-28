@@ -123,14 +123,18 @@ Clients send Content-Type: application/json and Accept: application/json,
 text/event-stream, then MCP-Protocol-Version: <returned revision> after init.
 HTTP is stateless: missing version header means 2025-03-26; one supported
 header selects its revision. Invalid/duplicate/unsupported headers refuse
-400/-32600/null after POST body/parse checks, also on other methods. Media-header leniency is retained.
+400/-32600/null after POST body/parse checks, also on other methods except
+OPTIONS: a guard-admitted OPTIONS is 405 with Allow: POST and no CORS (decision
+0043 §4). Media-header leniency is retained.
 No sessions or SSE; GET /mcp is 405 with valid or absent version headers.
 
 Only 2025-03-26 supports batches; every batch description below refers to
 that revision. Modern arrays refuse one -32600/null before all effects,
 including notification-only arrays. Legacy batch initialize stays legacy.
-Modern tools annotate reads readOnlyHint:true and mutations readOnlyHint:false,
-destructiveHint:true (seed can prune, chaos changes replace configuration).
+Modern tools annotate the seven reads (search, get, latest, wait, both extracts
+and the deliverability report, whose cache fill changes no mail) readOnlyHint:true
+and the six mutations readOnlyHint:false, destructiveHint:true (delete, both
+clears, seed, which can prune, and both chaos changes).
 No outputSchema or structuredContent in this delivery.
 
 The bridge fences initialize and propagates the successfully returned revision.

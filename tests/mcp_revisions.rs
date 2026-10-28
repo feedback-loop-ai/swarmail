@@ -267,20 +267,33 @@ async fn revision_headers_and_isolation() {
     legacy.finish().await;
     modern.finish().await;
 }
+/// The current catalogue, written out here rather than copied from the
+/// production allowlist, so a new tool or a misclassified hint fails instead
+/// of being blessed: seven reads (the deliverability report's cache fill never
+/// changes stored mail or extraction, 0085) and six mutations.
+const CATALOGUE: [(&str, bool); 13] = [
+    ("swarmail_search_emails", true),
+    ("swarmail_get_email", true),
+    ("swarmail_get_latest_email", true),
+    ("swarmail_wait_for_email", true),
+    ("swarmail_extract_links", true),
+    ("swarmail_extract_codes", true),
+    ("swarmail_get_deliverability_report", true),
+    ("swarmail_delete_email", false),
+    ("swarmail_clear_inbox", false),
+    ("swarmail_clear_all", false),
+    ("swarmail_seed_email", false),
+    ("swarmail_set_chaos", false),
+    ("swarmail_clear_chaos", false),
+];
 #[tokio::test]
 async fn revision_tool_annotations() {
     let srv = start().await;
     let request = json!({"id":1,"method":"tools/list"});
     let (_, legacy) = post(srv.http_addr, &[], &request).await;
-    let reads = [
-        "swarmail_search_emails",
-        "swarmail_get_email",
-        "swarmail_get_latest_email",
-        "swarmail_wait_for_email",
-        "swarmail_extract_links",
-        "swarmail_extract_codes",
-        "swarmail_get_deliverability_report",
-    ];
+    let expected: std::collections::BTreeMap<&str, bool> = CATALOGUE.into_iter().collect();
+    assert_eq!(expected.len(), 13);
+    assert_eq!(expected.values().filter(|read| **read).count(), 7);
     for version in VERSIONS {
         let (_, reply) = post(
             srv.http_addr,
@@ -289,7 +302,16 @@ async fn revision_tool_annotations() {
         )
         .await;
         let tools = reply["result"]["tools"].as_array().unwrap();
+        let names: std::collections::BTreeSet<&str> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
         assert_eq!(tools.len(), 13);
+        assert_eq!(
+            names,
+            expected.keys().copied().collect(),
+            "{version} catalogue"
+        );
         for (actual, original) in tools
             .iter()
             .zip(legacy["result"]["tools"].as_array().unwrap())
@@ -304,13 +326,15 @@ async fn revision_tool_annotations() {
                     .unwrap()
                     .remove("annotations")
                     .unwrap();
+                let name = actual["name"].as_str().unwrap();
                 assert_eq!(
                     hint,
-                    if reads.contains(&actual["name"].as_str().unwrap()) {
+                    if expected[name] {
                         json!({"readOnlyHint":true})
                     } else {
                         json!({"readOnlyHint":false,"destructiveHint":true})
-                    }
+                    },
+                    "{version} {name}"
                 );
             }
             if version != VERSIONS[0] && actual["name"] == "swarmail_wait_for_email" {
@@ -323,6 +347,12 @@ async fn revision_tool_annotations() {
             }
             assert_eq!(&descriptor, original);
         }
+        // The spawned bridge lists exactly what its negotiated revision serves.
+        let mut binary = Binary::start(srv.http_addr);
+        binary.ready(version).await;
+        binary.send(&request).await;
+        assert_eq!(binary.reply().await, reply, "{version} binary tools/list");
+        binary.finish().await;
     }
 }
 fn batches() -> Vec<Value> {
@@ -595,8 +625,25 @@ async fn bridge_modern_wait_allows_seed() {
     }
 }
 
+/// The method plane's header admission. Accepted 0043 §4 keeps a
+/// guard-admitted OPTIONS at 405/Allow: POST with no Access-Control-*,
+/// whatever MCP-Protocol-Version carries; that leaves the June/November
+/// header-400 MUST unmet on OPTIONS alone (recorded beside C1–C6, not in it).
+/// Every other method refuses an invalid header 400 and a hostile Origin is
+/// refused 403 before either.
 #[tokio::test]
 async fn revision_transport_methods() {
+    fn assert_method_not_allowed(response: &reqwest::Response, context: &str) {
+        assert_eq!(response.status(), 405, "{context}");
+        assert_eq!(response.headers()["allow"], "POST", "{context}");
+        assert!(
+            response
+                .headers()
+                .keys()
+                .all(|name| !name.as_str().starts_with("access-control-")),
+            "no CORS grant: {context}"
+        );
+    }
     let srv = start().await;
     let client = reqwest::Client::new();
     for method in [
@@ -607,6 +654,7 @@ async fn revision_transport_methods() {
         reqwest::Method::OPTIONS,
         reqwest::Method::HEAD,
     ] {
+        let options = method == reqwest::Method::OPTIONS;
         for version in [
             None,
             Some(VERSIONS[0]),
@@ -621,20 +669,17 @@ async fn revision_transport_methods() {
                 request = request.header("MCP-Protocol-Version", version);
             }
             let response = request.send().await.unwrap();
-            let expected = if matches!(version, Some("bad" | "2026-07-28")) {
-                400
-            } else {
-                405
-            };
-            assert_eq!(response.status().as_u16(), expected, "{method} {version:?}");
-            if expected == 400 {
-                assert_eq!(response.headers()["content-type"], "application/json");
-                if method != reqwest::Method::HEAD {
-                    let reply: Value =
-                        serde_json::from_str(&response.text().await.unwrap()).unwrap();
-                    assert_eq!(reply["id"], Value::Null);
-                    assert_eq!(reply["error"]["code"], -32600);
-                }
+            let context = format!("{method} {version:?}");
+            if options || !matches!(version, Some("bad" | "2026-07-28")) {
+                assert_method_not_allowed(&response, &context);
+                continue;
+            }
+            assert_eq!(response.status(), 400, "{context}");
+            assert_eq!(response.headers()["content-type"], "application/json");
+            if method != reqwest::Method::HEAD {
+                let reply: Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+                assert_eq!(reply["id"], Value::Null);
+                assert_eq!(reply["error"]["code"], -32600);
             }
         }
         for values in [
@@ -645,25 +690,40 @@ async fn revision_transport_methods() {
             vec![reqwest::header::HeaderValue::from_static("2025-06-18"); 2],
             vec![reqwest::header::HeaderValue::from_bytes(b"\xff").unwrap()],
         ] {
+            let context = format!("{method} invalid header shape {values:?}");
             let mut request =
                 client.request(method.clone(), format!("http://{}/mcp", srv.http_addr));
             for value in values {
                 request = request.header("MCP-Protocol-Version", value);
             }
+            let response = request.send().await.unwrap();
+            if options {
+                assert_method_not_allowed(&response, &context);
+            } else {
+                assert_eq!(response.status(), 400, "{context}");
+            }
+        }
+        for version in [None, Some(VERSIONS[2]), Some("bad")] {
+            let mut request = client
+                .request(method.clone(), format!("http://{}/mcp", srv.http_addr))
+                .header("Origin", "https://foreign.example");
+            if let Some(version) = version {
+                request = request.header("MCP-Protocol-Version", version);
+            }
+            let response = request.send().await.unwrap();
             assert_eq!(
-                request.send().await.unwrap().status(),
-                400,
-                "{method} invalid header shape"
+                response.status(),
+                403,
+                "{method} {version:?} Origin precedence"
+            );
+            assert!(
+                response
+                    .headers()
+                    .keys()
+                    .all(|name| !name.as_str().starts_with("access-control-")),
+                "{method} {version:?}: no CORS grant on refusal"
             );
         }
-        let response = client
-            .request(method, format!("http://{}/mcp", srv.http_addr))
-            .header("Origin", "https://foreign.example")
-            .header("MCP-Protocol-Version", "bad")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 403, "Origin precedence");
     }
 }
 
@@ -736,6 +796,12 @@ async fn revision_served_contract() {
     let (_, api) = common::http_json(srv.http_addr, "GET", "/openapi.json", None).await;
     let endpoint = &api["paths"]["/mcp"];
     let description = endpoint["post"]["description"].as_str().unwrap();
+    let (status, llms) = common::http_get_text(srv.http_addr, "/llms.txt").await;
+    assert_eq!(status, 200);
+    let llms = llms.split_once("\n## MCP\n").unwrap().1;
+    let llms = llms
+        .split_once("\n## ")
+        .map_or(llms, |(section, _)| section);
     for clause in [
         "2025-03-26 only",
         "2025-06-18",
@@ -745,12 +811,34 @@ async fn revision_served_contract() {
         "full revision conformance is not claimed",
         "operator-chosen C1-C6 deviations",
         "specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register",
+        "except OPTIONS",
     ] {
         assert!(
             description.contains(clause),
             "missing {clause}: {description}"
         );
     }
+    for clause in [
+        "Revisions: 2025-03-26, 2025-06-18, 2025-11-25.",
+        "Only 2025-03-26 supports batches",
+        "except\nOPTIONS",
+        "the seven reads",
+        "the six mutations",
+        "full revision conformance is not claimed",
+        "specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register",
+    ] {
+        assert!(llms.contains(clause), "llms.txt missing {clause}");
+    }
+    // The served reference names exactly the current catalogue.
+    let named: std::collections::BTreeSet<&str> = llms
+        .split('`')
+        .filter(|token| token.starts_with("swarmail_"))
+        .collect();
+    assert_eq!(
+        named,
+        CATALOGUE.iter().map(|(name, _)| *name).collect(),
+        "llms.txt catalogue"
+    );
     assert!(
         endpoint["post"]["responses"]["400"]["description"]
             .as_str()
@@ -758,6 +846,10 @@ async fn revision_served_contract() {
             .contains("-32600")
     );
     assert!(endpoint["get"]["responses"].get("405").is_some());
+    let options = &endpoint["options"];
+    assert!(options["responses"].get("400").is_none());
+    assert!(options["responses"].get("405").is_some());
+    assert!(options["description"].as_str().unwrap().contains("0043 §4"));
 }
 
 /// These fixed descriptors use only this explicitly checked 2020-12 vocabulary.

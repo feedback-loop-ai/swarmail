@@ -88,6 +88,7 @@ them. What may land while a decision is still proposed is stated in
 | [0083](0083-cli-wrapper-launch.md) | Evidence-based CLI launches and declared tool surfaces | proposed — awaiting the operator | (Epic #164, issue #151 part 1; operator allocation 2026-10-26) |
 | [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
+| [0090](0090-mcp-options-admission.md) | MCP OPTIONS admission and modern version headers | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
