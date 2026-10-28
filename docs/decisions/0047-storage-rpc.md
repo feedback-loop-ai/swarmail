@@ -289,3 +289,13 @@ upstream replies remain as previously ruled.
 operator in the 2026-10-24 issue #180 delivery task. Proposed decision
 0062 records its implementation framing; this dated addendum preserves this
 decision's accepted status and historical text.
+
+## Proposed reconciliation pointer — 2026-10-26
+
+The operator-directed #152 implementation is recorded in proposed
+[0079](0079-mcp-version-negotiation.md) and proposed
+[0080](0080-mcp-source-reconciliation.md). §§3–4 modern arrays refuse before effects and initialization installs only a supported, matching, complete required result. The accepted supplied-ID amendment, legacy duplicate/null slots and verbatim complete replies remain authoritative; null-ID outputs and unsolicited-response status remain unresolved source conflicts.
+This dated pointer preserves the accepted historical body and status. It neither
+accepts a proposal nor claims an incompatible amendment has been accepted.
+See the [clause ledger](../../specs/mcp-version-negotiation/reconciliation.md)
+for source evidence, compatible repairs, remaining costs and external ownership.

@@ -26,12 +26,101 @@ use std::sync::Arc;
 
 pub const PROTOCOL_VERSION: &str = "2025-03-26";
 
+/// Revision belongs to one HTTP request or bridge exchange, never the store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Revision {
+    March,
+    June,
+    November,
+}
+
+impl Revision {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            PROTOCOL_VERSION => Some(Self::March),
+            "2025-06-18" => Some(Self::June),
+            "2025-11-25" => Some(Self::November),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::March => PROTOCOL_VERSION,
+            Self::June => "2025-06-18",
+            Self::November => "2025-11-25",
+        }
+    }
+
+    pub(crate) fn batch_refusal(self, body: &Value) -> Option<String> {
+        if body.is_array() && self != Self::March {
+            Some(format!("MCP {} does not support batches", self.as_str()))
+        } else {
+            None
+        }
+    }
+}
+
+/// A supplied header must contain exactly one supported value. Parse/body
+/// refusals precede this check; malformed header bytes never enter diagnostics.
+pub(crate) fn header_revision(headers: &axum::http::HeaderMap) -> Result<Revision, &'static str> {
+    let mut values = headers.get_all("mcp-protocol-version").iter();
+    match values.next() {
+        None => Ok(Revision::March),
+        Some(value) => {
+            let revision = value.to_str().ok().and_then(|v| Revision::parse(v.trim()));
+            match (revision, values.next()) {
+                (Some(revision), None) => Ok(revision),
+                _ => Err("MCP-Protocol-Version must be one supported revision"),
+            }
+        }
+    }
+}
+
+fn negotiated_revision(req: &Value) -> Result<Revision, (i64, String)> {
+    match req.pointer("/params/protocolVersion") {
+        None => Ok(Revision::March),
+        Some(Value::String(version)) => Ok(Revision::parse(version).unwrap_or(Revision::November)),
+        Some(_) => Err(refusal("protocolVersion", "a string")),
+    }
+}
+
 /// The largest batch the envelope answers. The advertised `2025-03-26`
 /// revision requires batches; the cap keeps one request's fan-out bounded —
 /// over the cap is a refusal naming the rule, never a clamp.
 pub const MCP_BATCH_CAP: usize = 16;
 
+/// A router's tool invocation rate, shared across HTTP clients and revisions.
+/// Fixed windows use monotonic time; no peer-key map or background task exists.
+#[derive(Debug)]
+pub struct ToolRate(std::sync::Mutex<(std::time::Instant, usize)>);
+
+impl Default for ToolRate {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new((std::time::Instant::now(), 0)))
+    }
+}
+
+impl ToolRate {
+    const CAP: usize = 1024;
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+    fn take_at(&self, now: std::time::Instant) -> bool {
+        let mut window = self.0.lock().unwrap();
+        if now.saturating_duration_since(window.0) >= Self::WINDOW {
+            *window = (now, 0);
+        }
+        if window.1 == Self::CAP {
+            false
+        } else {
+            window.1 += 1;
+            true
+        }
+    }
+}
+
 pub struct McpContext {
+    pub tool_rate: Arc<ToolRate>,
     pub store: Arc<Store>,
     pub chaos: Arc<Chaos>,
     /// The server's stop watch: the wait tool races its wait against it so a
@@ -81,11 +170,11 @@ pub(crate) enum Envelope {
 /// decision 0047 §3, amended 2026-10-24). `None` — silence — only for an
 /// object with no `id` and a string `method`. Other id-less objects and
 /// non-object values are invalid requests owed a null ID (decision 0044 §1).
-fn valid_id(id: &Value) -> bool {
+pub(crate) fn valid_id(id: &Value) -> bool {
     matches!(id, Value::String(_) | Value::Number(_) | Value::Null)
 }
 
-fn reply_id(value: &Value) -> Option<Value> {
+pub(crate) fn reply_id(value: &Value) -> Option<Value> {
     match value {
         Value::Object(fields) => match fields.get("id") {
             Some(id) if valid_id(id) => Some(id.clone()),
@@ -120,23 +209,62 @@ pub(crate) fn classify(body: &Value) -> Envelope {
     }
 }
 
+/// Modern arrays owe one error even if every member is a notification.
+pub(crate) fn classify_revision(body: &Value, revision: Revision) -> Envelope {
+    if revision.batch_refusal(body).is_some() {
+        Envelope::InvalidBatch
+    } else {
+        classify(body)
+    }
+}
+
 /// Answer one `POST /mcp` body: the parse lives here, from the bounded body
 /// bytes (decision 0044 §1), so malformed JSON and invalid UTF-8 alike are a
 /// JSON-RPC `-32700` with a null id, not a plain-text 400 (decision 0029
 /// §2). A JSON array is a batch, its members polled concurrently and
 /// answered in member order; a single value is one request.
 pub async fn dispatch(ctx: &McpContext, body: &[u8]) -> axum::response::Response {
+    dispatch_with_headers(ctx, body, &axum::http::HeaderMap::new()).await
+}
+
+pub(crate) async fn dispatch_with_headers(
+    ctx: &McpContext,
+    body: &[u8],
+    headers: &axum::http::HeaderMap,
+) -> axum::response::Response {
     use axum::Json;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
 
     let parsed: Result<Value, _> = serde_json::from_slice(body);
+    let revision = match &parsed {
+        Err(_) => Revision::March,
+        Ok(_) => match header_revision(headers) {
+            Ok(revision) => revision,
+            Err(reason) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(error_object(-32600, reason, Value::Null)),
+                )
+                    .into_response();
+            }
+        },
+    };
     match parsed {
         Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(error_object(
                 -32700,
                 &format!("parse error: {e}"),
+                Value::Null,
+            )),
+        )
+            .into_response(),
+        Ok(body) if revision.batch_refusal(&body).is_some() => (
+            StatusCode::OK,
+            Json(error_object(
+                -32600,
+                &revision.batch_refusal(&body).unwrap(),
                 Value::Null,
             )),
         )
@@ -164,7 +292,10 @@ pub async fn dispatch(ctx: &McpContext, body: &[u8]) -> axum::response::Response
             // wait interval instead of summing sixteen. Replies keep member
             // order; the members' effects have no order — a client that
             // needs two mutations ordered sends them as two requests.
-            let replies = futures_util::future::join_all(reqs.iter().map(|req| handle(ctx, req)));
+            let replies = futures_util::future::join_all(
+                reqs.iter()
+                    .map(|req| handle_revision(ctx, req, Revision::March, true)),
+            );
             let responses: Vec<Value> = replies.await.into_iter().flatten().collect();
             // An all-notification batch is answered with silence; a mixed
             // one carries only the requests' answers, in order.
@@ -174,7 +305,7 @@ pub async fn dispatch(ctx: &McpContext, body: &[u8]) -> axum::response::Response
                 Json(responses).into_response()
             }
         }
-        Ok(req) => match handle(ctx, &req).await {
+        Ok(req) => match handle_revision(ctx, &req, revision, false).await {
             Some(resp) => Json(resp).into_response(),
             None => StatusCode::ACCEPTED.into_response(), // no reply for a notification
         },
@@ -187,6 +318,15 @@ pub async fn dispatch(ctx: &McpContext, body: &[u8]) -> axum::response::Response
 /// `-32600`/null before method dispatch or effects (decision 0047 §3,
 /// amended 2026-10-24); other malformed id-less objects are also answered.
 pub async fn handle(ctx: &McpContext, req: &Value) -> Option<Value> {
+    handle_revision(ctx, req, Revision::March, false).await
+}
+
+async fn handle_revision(
+    ctx: &McpContext,
+    req: &Value,
+    revision: Revision,
+    batched: bool,
+) -> Option<Value> {
     // A value that is not an object is no request at all (decision 0044
     // §1): `-32600`, null id — the classification's null-id position.
     if !req.is_object() {
@@ -217,15 +357,23 @@ pub async fn handle(ctx: &McpContext, req: &Value) -> Option<Value> {
     };
 
     let outcome: Result<Value, (i64, String)> = match method.as_str() {
-        // One constant: the server speaks the revision it advertises, for
-        // any version the client asks for, and advertises only what exists.
-        "initialize" => Ok(json!({
-            "protocolVersion": PROTOCOL_VERSION,
-            "capabilities": { "tools": {} },
-            "serverInfo": { "name": "swarmail", "version": env!("CARGO_PKG_VERSION") },
-        })),
+        // An admitted legacy batch retains historical initialize behavior.
+        "initialize" => {
+            let selected = if batched {
+                Ok(Revision::March)
+            } else {
+                negotiated_revision(req)
+            };
+            selected.map(|selected| {
+                json!({
+                    "protocolVersion": selected.as_str(),
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "swarmail", "version": env!("CARGO_PKG_VERSION") },
+                })
+            })
+        }
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": TOOLS.clone() })),
+        "tools/list" => Ok(json!({ "tools": tool_descriptors(revision) })),
         "tools/call" => tool_call(ctx, req).await,
         other => Err((-32601, format!("unknown method: {other}"))),
     };
@@ -238,6 +386,35 @@ pub async fn handle(ctx: &McpContext, req: &Value) -> Option<Value> {
         Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
         Err((code, message)) => error_object(code, &message, id),
     })
+}
+
+fn tool_descriptors(revision: Revision) -> Value {
+    let mut tools = TOOLS.clone();
+    if revision != Revision::March {
+        for tool in tools.as_array_mut().unwrap() {
+            if tool["name"] == "swarmail_wait_for_email" {
+                tool["description"] = json!(tool["description"].as_str().unwrap().replace(
+                    " Waits inside one batch run concurrently; their effects have no order.",
+                    "",
+                ));
+            }
+            let read_only = matches!(
+                tool["name"].as_str().unwrap(),
+                "swarmail_search_emails"
+                    | "swarmail_get_email"
+                    | "swarmail_get_latest_email"
+                    | "swarmail_wait_for_email"
+                    | "swarmail_extract_links"
+                    | "swarmail_extract_codes"
+            );
+            tool["annotations"] = if read_only {
+                json!({"readOnlyHint": true})
+            } else {
+                json!({"readOnlyHint": false, "destructiveHint": true})
+            };
+        }
+    }
+    tools
 }
 
 fn text_result(v: Value) -> Value {
@@ -338,6 +515,11 @@ fn required_id(args: &Value) -> Result<String, (i64, String)> {
 }
 
 async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)> {
+    if !ctx.tool_rate.take_at(std::time::Instant::now()) {
+        return Ok(error_result(
+            "tool invocation rate exceeds 1024 per second; retry later".into(),
+        ));
+    }
     let params = req.pointer("/params").unwrap_or(&Value::Null);
     let name = arg_str(params, "name")?.ok_or_else(|| (-32602, "missing tool name".to_string()))?;
     // The arguments container is itself a supplied value (0025 §2): a
@@ -736,6 +918,221 @@ mod batch_tests;
 mod tests {
     use super::*;
 
+    #[test]
+    fn tool_rate_uses_exact_monotonic_windows() {
+        let rate = ToolRate::default();
+        let now = std::time::Instant::now();
+        *rate.0.lock().unwrap() = (now, 0);
+        for _ in 0..ToolRate::CAP {
+            assert!(rate.take_at(now));
+        }
+        assert!(!rate.take_at(now + ToolRate::WINDOW - std::time::Duration::from_nanos(1)));
+        assert!(rate.take_at(now + ToolRate::WINDOW));
+        assert!(rate.take_at(now + ToolRate::WINDOW));
+    }
+
+    #[tokio::test]
+    async fn exhausted_tool_rate_refuses_before_effects_and_keeps_control_available() {
+        let (_stop, ctx) = context();
+        // A generated future start keeps this dispatch proof independent of
+        // scheduling; the preceding test proves refill with explicit instants.
+        *ctx.tool_rate.0.lock().unwrap() = (
+            std::time::Instant::now() + std::time::Duration::from_secs(3600),
+            ToolRate::CAP,
+        );
+        ctx.store
+            .insert(crate::store::email("kept", "kept", "a@x.io"))
+            .unwrap();
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let observed = mutations.clone();
+        ctx.store.set_pre_mirror_gate(Some(Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })));
+        let subscriptions = Arc::new(AtomicUsize::new(0));
+        let observed = subscriptions.clone();
+        ctx.store.set_post_subscribe_gate(Some(Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })));
+        let chaos_before = serde_json::to_value(ctx.chaos.current()).unwrap();
+        for revision in [Revision::March, Revision::June, Revision::November] {
+            for (name, arguments) in [
+                ("swarmail_seed_email", json!({"to":"a@x.io"})),
+                ("swarmail_clear_all", json!({})),
+                ("swarmail_wait_for_email", json!({"timeout_ms":0})),
+                (
+                    "swarmail_set_chaos",
+                    json!({"event":"data","probability":100}),
+                ),
+            ] {
+                let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+                let reply = handle_revision(&ctx, &req, revision, false).await.unwrap();
+                assert_eq!(
+                    reply["result"]["isError"], true,
+                    "rate did not refuse {name}"
+                );
+                assert_eq!(
+                    reply["result"]["content"][0]["text"],
+                    "tool invocation rate exceeds 1024 per second; retry later"
+                );
+            }
+            for method in ["ping", "initialize", "tools/list"] {
+                assert!(
+                    handle_revision(&ctx, &json!({"id":2,"method":method}), revision, false)
+                        .await
+                        .unwrap()
+                        .get("result")
+                        .is_some()
+                );
+            }
+            assert!(
+                handle_revision(
+                    &ctx,
+                    &json!({"method":"tools/call","params":{"name":"swarmail_clear_all"}}),
+                    revision,
+                    false
+                )
+                .await
+                .is_none()
+            );
+        }
+        assert_eq!(ctx.store.list_all(&Filter::default()).len(), 1);
+        assert_eq!(ctx.store.watcher_count(), 0);
+        assert_eq!(mutations.load(Ordering::SeqCst), 0);
+        assert_eq!(subscriptions.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            serde_json::to_value(ctx.chaos.current()).unwrap(),
+            chaos_before
+        );
+        *ctx.tool_rate.0.lock().unwrap() = (std::time::Instant::now(), 0);
+        assert_eq!(
+            call(&ctx, "swarmail_seed_email", json!({"to":"a@x.io"})).await["result"]["isError"],
+            false
+        );
+        assert_eq!(
+            call(&ctx, "swarmail_wait_for_email", json!({"timeout_ms":0})).await["result"]["isError"],
+            false
+        );
+        assert_eq!(mutations.load(Ordering::SeqCst), 1);
+        assert_eq!(subscriptions.load(Ordering::SeqCst), 1);
+        ctx.store.set_pre_mirror_gate(None);
+        ctx.store.set_post_subscribe_gate(None);
+    }
+
+    #[tokio::test]
+    async fn revision_admission_has_no_transient_mutations_or_waiters() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (_stop, ctx) = context();
+        ctx.store
+            .insert(crate::store::email("kept", "kept", "a@x.io"))
+            .unwrap();
+        ctx.chaos.set_event(
+            ChaosEvent::Data,
+            ChaosRule {
+                probability: 100,
+                error: None,
+                delay_ms: 0,
+            },
+        );
+        let mutations = Arc::new(AtomicUsize::new(0));
+        let observed = mutations.clone();
+        ctx.store.set_pre_mirror_gate(Some(Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })));
+        let subscriptions = Arc::new(AtomicUsize::new(0));
+        let observed = subscriptions.clone();
+        let store = Arc::downgrade(&ctx.store);
+        ctx.store.set_post_subscribe_gate(Some(Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            // Delivery exactly after subscribe and before scan proves 0002
+            // through the MCP wait tool, without sleeps or a lost-wake window.
+            store
+                .upgrade()
+                .unwrap()
+                .insert(crate::store::email("window", "window", "a@x.io"))
+                .unwrap();
+        })));
+        let before = serde_json::to_value(ctx.store.list_all(&Filter::default())).unwrap();
+        let chaos = serde_json::to_value(ctx.chaos.current()).unwrap();
+        let member = |name: &str, arguments: Value| json!({"id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+        let members = json!([
+            member("swarmail_seed_email", json!({"to":"a@x.io"})),
+            member("swarmail_delete_email", json!({"id":"kept"})),
+            member("swarmail_clear_inbox", json!({"inbox":"kept"})),
+            member("swarmail_clear_all", json!({})),
+            member("swarmail_clear_chaos", json!({})),
+            member(
+                "swarmail_set_chaos",
+                json!({"event":"connect","probability":100})
+            ),
+            member(
+                "swarmail_wait_for_email",
+                json!({"inbox":"window","timeout_ms":0})
+            )
+        ]);
+        for revision in [Revision::June, Revision::November] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("mcp-protocol-version", revision.as_str().parse().unwrap());
+            let response =
+                dispatch_with_headers(&ctx, members.to_string().as_bytes(), &headers).await;
+            assert_eq!(response.status(), 200);
+            assert_eq!(mutations.load(Ordering::SeqCst), 0);
+            assert_eq!(subscriptions.load(Ordering::SeqCst), 0);
+            assert_eq!(ctx.store.watcher_count(), 0);
+            assert_eq!(
+                serde_json::to_value(ctx.store.list_all(&Filter::default())).unwrap(),
+                before
+            );
+            assert_eq!(serde_json::to_value(ctx.chaos.current()).unwrap(), chaos);
+            // The identical modern single wait really subscribes and sees
+            // mail inserted in its subscribe-before-scan window.
+            let request = member(
+                "swarmail_wait_for_email",
+                json!({"inbox":"window","timeout_ms":0}),
+            );
+            let reply = handle_revision(&ctx, &request, revision, false)
+                .await
+                .unwrap();
+            let data: Value =
+                serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap())
+                    .unwrap();
+            assert_eq!(data["matched"], 1);
+            ctx.store.clear("window").unwrap();
+            mutations.store(0, Ordering::SeqCst);
+            subscriptions.store(0, Ordering::SeqCst);
+        }
+        // Legacy positive controls prove both observers are live.
+        let seed = member("swarmail_seed_email", json!({"to":"a@x.io"}));
+        dispatch(&ctx, json!([seed]).to_string().as_bytes()).await;
+        assert_eq!(mutations.load(Ordering::SeqCst), 1);
+        dispatch(
+            &ctx,
+            json!([member(
+                "swarmail_wait_for_email",
+                json!({"inbox":"window","timeout_ms":0})
+            )])
+            .to_string()
+            .as_bytes(),
+        )
+        .await;
+        assert_eq!(subscriptions.load(Ordering::SeqCst), 1);
+        ctx.store.set_post_subscribe_gate(None);
+        ctx.store.set_pre_mirror_gate(None);
+    }
+
+    #[test]
+    fn version_headers_refuse_non_text_bytes_without_echoing_them() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "mcp-protocol-version",
+            axum::http::HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        assert_eq!(
+            header_revision(&headers),
+            Err("MCP-Protocol-Version must be one supported revision")
+        );
+    }
+
     /// The shared envelope classification, row by row (decision 0039 §2):
     /// bounds before silence, ids kept as JSON values, nothing discovered
     /// inside a nested array.
@@ -940,6 +1337,7 @@ mod tests {
         use axum::http::StatusCode;
         let (_stop, shutdown) = tokio::sync::watch::channel(false);
         let ctx = McpContext {
+            tool_rate: Arc::new(ToolRate::default()),
             store: Arc::new(Store::new(0)),
             chaos: Arc::new(Chaos::default()),
             shutdown,
@@ -1008,6 +1406,7 @@ mod tests {
     fn context() -> (tokio::sync::watch::Sender<bool>, McpContext) {
         let (stop, shutdown) = tokio::sync::watch::channel(false);
         let ctx = McpContext {
+            tool_rate: Arc::new(ToolRate::default()),
             store: Arc::new(Store::new(0)),
             chaos: Arc::new(Chaos::default()),
             shutdown,

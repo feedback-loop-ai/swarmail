@@ -670,6 +670,66 @@ out.
 
 ### MCP — agents drive the mail
 
+
+MCP negotiates `2025-03-26`, `2025-06-18` and `2025-11-25`. A single
+`initialize` returns a supported requested revision; an unsupported string
+receives `2025-11-25` so the client can decide whether to continue. Omission
+keeps `2025-03-26`; a supplied non-string version refuses `-32602`.
+Legacy batch initialize always returns `2025-03-26`.
+
+HTTP clients send `Content-Type: application/json`,
+`Accept: application/json, text/event-stream` and, after negotiation,
+`MCP-Protocol-Version: <negotiated revision>`. The JSON-only endpoint tolerates
+omitted media headers. It is stateless: a missing version header selects
+`2025-03-26`; exactly one supported header selects that revision, with no
+initialization-history enforcement or session IDs. Invalid, duplicate or
+unsupported version headers refuse HTTP 400 / `-32600` / null before effects,
+after POST body-limit and parse checks. Invalid headers also refuse on other
+methods; otherwise GET returns 405. SSE is not implemented.
+
+**Batches are available only under `2025-03-26`.** All batch descriptions
+below apply to that revision. Either modern revision refuses every array with
+one `-32600` / null error naming the revision, before any member executes,
+including arrays containing only notifications. Modern tool descriptors add
+`readOnlyHint: true` on reads, and `readOnlyHint: false, destructiveHint: true`
+on all mutations (including seed, which can evict old mail, and chaos changes).
+Input schemas and text results are unchanged; structured outputs belong to #153.
+
+The stdio bridge starts with legacy compatibility. Single initialize fences
+later input until a matching successful response with capabilities and server
+name/version selects the revision; it omits
+the version header for initialize and sends the returned version afterward.
+Modern clients then send `notifications/initialized`; operations wait for its
+empty HTTP 202 acknowledgment. Ping remains available. Early operations and
+repeated modern initialize refuse `-32600`; notifications stay silent without
+effects. Failed modern negotiation requires an explicit initialize retry and
+cannot release queued effects under legacy rules. Modern arrays refuse locally
+without a connection, including oversized arrays (one null-ID size refusal).
+Operational lines remain concurrent after the handshake.
+
+Tool invocations share a per-server budget of 1024 attempts per one-second
+monotonic window, including notifications and March batch members. Exhaustion
+returns a text `isError` result (notifications remain silent) before effects;
+initialize, ping and discovery remain available. This is independent of active
+wait counts and does not rate limit SMTP or REST.
+
+The bridge targets this stateless JSON server and parses identity HTTP bodies.
+It advertises the mandated JSON/SSE Accept tokens but does not implement an SSE
+client, sessions or general Streamable HTTP client conformance. These limits,
+unsolicited-response disposition, ID tolerance, legacy sender omissions, error
+taxonomy and malformed peer envelopes on stdout are documented deviations C1–C6,
+retained by the operator's 2026-10-26 choice. This delivery claims version negotiation; full
+revision conformance is not claimed. The [deviation register](specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register)
+records each revision's behavior and compatibility cost. Email
+content is untrusted data: tools return text containing JSON string fields,
+never active HTML, executable resources or fetched links. Consumers must retain
+that data boundary when displaying results or passing mail to a model.
+
+The metric is compatibility: actual Claude Code, Codex, MCP Inspector and
+Claude Desktop receipts remain operator-owned and owed (issue AC3). See the
+[implementation evidence](specs/mcp-version-negotiation/implementation.md).
+The operator holds this PR unmerged until #151's baseline exists.
+
 ```
 $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{…}}'
@@ -1225,6 +1285,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 
 | Suite | What it proves |
 |---|---|
+| `tests/mcp_revisions.rs` | revision negotiation, headers, annotations, batch refusals, binary lifecycle/concurrency and immediate SMTP visibility |
 | `tests/p2.rs` | the P2 end-to-end: MCP JSON-RPC, the seed API's parse+extraction pipeline, webhook delivery with secret and retry targets |
 | `tests/smtp_edges.rs` | every protocol verb, refusal, AUTH form, DATA limit, dot-unstuffing, group addresses, chaos on connect/MAIL FROM/RCPT/DATA; the 0034 boundaries — mixed terminators, path and parameter matrices, greeting resets, validation before chaos, strict PLAIN and one AUTH per session |
 | `tests/rate.rs` | the 5k losslessness guarantee + burst |
