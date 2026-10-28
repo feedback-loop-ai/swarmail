@@ -1,9 +1,9 @@
 {
   "extends": "review-correctness",
   "models": [
-    "astra"
+    "flash"
   ],
   "efforts": {
-    "astra": "high"
+    "flash": "high"
   }
 }

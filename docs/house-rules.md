@@ -233,7 +233,7 @@ seats — a shell proves what a model claims. Decision
 [0058](decisions/0058-codex-review-routing.md) define the operator-directed
 Codex recipes. Standard uses Fable 5.1 correctness, official DeepSeek Flash
 security and GLM Flash tests. Careful and the fast design/engine lanes require
-five separate results: Astra correctness, Flash security, GLM Flash tests, Astra
+five separate results: Flash correctness, Flash security, GLM Flash tests, Flash
 guarantees and independent Fable. `codex-fast` uses GPT-6 Luna at xhigh for
 implementation and triages first on Claude Opus 5.5 (`opus`) at medium effort
 with no fallback: isolated bugs get one combined Flash
@@ -243,7 +243,13 @@ work keeps the five-role panel. The revised 2026-10-26 operator ruling,
 recorded in proposed
 [0081](decisions/0081-glm-flash-seats.md), changes only tests review to local
 Spark `glm-flash` through dsh, with reasoning effort not applicable; intake
-keeps its current models and workspace hands.
+keeps its current models and workspace hands. The 2026-10-28 operator
+direction, recorded in proposed
+[0098](decisions/0098-review-panel-flash-and-deadline.md), moves the
+full-panel correctness and guarantees members from Codex Astra to official
+DeepSeek Flash through dsh at high effort (security's route; offices and
+results stay separate) and gives the `codex`, `codex-careful` and `codex-fast`
+review seat a 14400 s deadline instead of 3600 s.
 DeepSeek Pro is forbidden; other reviewers
 have no fallback. Every lane retains all shell gates, protected review and the
 hard security hold. The `self` bundle

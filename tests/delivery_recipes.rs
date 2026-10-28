@@ -245,12 +245,14 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
         ("correctness", "correctness", vec!["fable"], Some("fable")),
         ("security", "security", vec!["flash"], Some("flash")),
         ("tests", "tests", vec!["glm-flash"], None),
-        ("guarantees", "guarantees", vec!["astra"], Some("astra")),
+        // Proposed 0098: both full-panel correctness/guarantees members take
+        // security's official Flash route; the office names stay.
+        ("guarantees", "guarantees", vec!["flash"], Some("flash")),
         (
             "astra-correctness",
             "correctness",
-            vec!["astra"],
-            Some("astra"),
+            vec!["flash"],
+            Some("flash"),
         ),
         ("independent", "correctness", vec!["fable"], Some("fable")),
         (
@@ -315,6 +317,133 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
     assert_eq!(
         read_json("adapters/codex.json")["models"]["astra"],
         "gpt-6-astra"
+    );
+}
+
+/// Proposed 0098: the two full-panel members that left Astra take exactly
+/// security's official DeepSeek Flash route and effort, as separate offices
+/// with their own charters; the comparison refuses each one-fault drift.
+fn flash_panel_member_violations(office: &dyn Fn(&str) -> Value) -> Vec<String> {
+    let mut bad = Vec::new();
+    let security = office("codex-review-security");
+    let dsh = read_json("adapters/dsh.json");
+    if dsh["models"]["flash"] != "deepseek-flash"
+        || dsh["routes"]["deepseek-official"] != "uncontracted"
+        || dsh["tool_permissions"] != "unsupported"
+        || dsh["mcp"] != "unsupported"
+    {
+        bad.push("dsh flash route or declared capabilities".into());
+    }
+    for (name, base) in [
+        ("codex-review-astra-correctness", "review-correctness"),
+        ("codex-review-guarantees", "review-guarantees"),
+    ] {
+        let overlay = office(name);
+        let keys: BTreeSet<&str> = overlay
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        if keys != BTreeSet::from(["efforts", "extends", "models"]) {
+            bad.push(format!("{name}: keys {keys:?}"));
+        }
+        if overlay["extends"] != base {
+            bad.push(format!("{name}: charter office"));
+        }
+        if overlay["models"] != json!(["flash"]) || overlay["models"] != security["models"] {
+            bad.push(format!("{name}: model chain"));
+        }
+        if overlay["efforts"] != json!({"flash": "high"})
+            || overlay["efforts"] != security["efforts"]
+        {
+            bad.push(format!("{name}: effort"));
+        }
+    }
+    bad
+}
+
+#[test]
+fn full_panel_correctness_and_guarantees_take_the_official_flash_route() {
+    let on_disk = |name: &str| office(name);
+    assert_eq!(
+        flash_panel_member_violations(&on_disk),
+        Vec::<String>::new()
+    );
+    type Drift = fn(&mut Value);
+    let drifts: [(&str, &str, Drift); 7] = [
+        ("codex-review-astra-correctness", "astra kept", |o| {
+            o["models"] = json!(["astra"]);
+            o["efforts"] = json!({"astra": "high"})
+        }),
+        ("codex-review-guarantees", "astra kept", |o| {
+            o["models"] = json!(["astra"]);
+            o["efforts"] = json!({"astra": "high"})
+        }),
+        ("codex-review-guarantees", "fallback", |o| {
+            o["models"] = json!(["flash", "astra"])
+        }),
+        ("codex-review-astra-correctness", "effort", |o| {
+            o["efforts"] = json!({"flash": "xhigh"})
+        }),
+        (
+            "codex-review-astra-correctness",
+            "hands",
+            |o| o["hands"] = json!({"kind": "workspace", "network": false, "binds": []}),
+        ),
+        ("codex-review-guarantees", "merged charter", |o| {
+            o["extends"] = json!("review-correctness")
+        }),
+        ("codex-review-security", "security drift", |o| {
+            o["efforts"] = json!({"flash": "medium"})
+        }),
+    ];
+    for (target, mutant, drift) in drifts {
+        let drifted = |name: &str| {
+            let mut value = office(name);
+            if name == target {
+                drift(&mut value);
+            }
+            value
+        };
+        assert!(
+            !flash_panel_member_violations(&drifted).is_empty(),
+            "{target}: {mutant} accepted"
+        );
+    }
+}
+
+#[test]
+fn codex_review_seats_allow_four_hours_and_other_limits_stay() {
+    // Proposed 0098: an explicit seat limit wins over the office's, and the
+    // panel shares one deadline, so the review seat itself carries 14400 s.
+    let review = json!({"max_attempts": 3, "timeout_seconds": 14400});
+    let implement = json!({"max_attempts": 3, "timeout_seconds": 7200});
+    for recipe in ["codex", "codex-careful", "codex-fast"] {
+        let bundle = read_json(&format!("bundles/{recipe}/bundle.json"));
+        assert_eq!(bundle["seats"]["review"]["limits"], review, "{recipe}");
+        assert_eq!(
+            bundle["seats"]["implement"]["limits"], implement,
+            "{recipe}"
+        );
+    }
+    let fast = read_json("bundles/codex-fast/bundle.json");
+    assert_eq!(
+        fast["seats"]["triage"]["limits"],
+        json!({"max_attempts": 1, "timeout_seconds": 1800})
+    );
+    // mixed-opus-terra inherits careful's review seat rather than copying it.
+    let mixed = read_json("bundles/mixed-opus-terra/bundle.json");
+    assert!(mixed["seats"].get("review").is_none());
+    // The legacy self constitution keeps its original review deadline.
+    let base = read_json("bundles/self/bundle.json");
+    assert_eq!(
+        base["seats"]["review"]["limits"],
+        json!({"max_attempts": 3, "timeout_seconds": 3600})
+    );
+    assert_eq!(
+        base["seats"]["implement"]["limits"],
+        json!({"max_attempts": 3, "timeout_seconds": 7200})
     );
 }
 
@@ -920,8 +1049,8 @@ fn operator_mixed_recipe_inherits_the_careful_panel_unchanged() {
     assert!(recipe["seats"].get("review").is_none());
     assert_eq!(careful["seats"]["review"]["panel"], full_panel());
     for (role, model) in [
-        ("astra-correctness", "astra"),
-        ("guarantees", "astra"),
+        ("astra-correctness", "flash"),
+        ("guarantees", "flash"),
         ("independent", "fable"),
         ("security", "flash"),
         ("tests", "glm-flash"),
