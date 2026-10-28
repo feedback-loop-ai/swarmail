@@ -89,6 +89,7 @@ them. What may land while a decision is still proposed is stated in
 | [0090](0090-mixed-work-seats.md) | Mixed work seats and protected review | proposed — awaiting the operator | (Epic #164, issue #163; provisional number) |
 | [0091](0091-fair-mail-comparison.md) | Fair comparison evidence and target-aware experiment records | proposed — awaiting the operator | (Epic #164, issue #163; provisional number) |
 | [0092](0092-official-mail-comparison.md) | Official comparison provenance and bounded translation | proposed — awaiting the operator | (Epic #164, issue #163; provisional number) |
+| [0093](0093-source-mail-comparison.md) | Source attribution and observation contracts | proposed — awaiting the operator | (Epic #164, issue #163; provisional number) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
