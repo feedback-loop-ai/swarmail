@@ -693,7 +693,20 @@ one `-32600` / null error naming the revision, before any member executes,
 including arrays containing only notifications. Modern tool descriptors add
 `readOnlyHint: true` on reads, and `readOnlyHint: false, destructiveHint: true`
 on all mutations (including seed, which can evict old mail, and chaos changes).
-Input schemas and text results are unchanged; structured outputs belong to #153.
+Input schemas and March catalogue/result bytes are unchanged. For `2025-06-18`
+and `2025-11-25`, every tool declares an object-root `outputSchema`; successful
+results include `structuredContent` and the same JSON in the existing text block.
+Errors retain their existing text/RPC envelopes without structured success data.
+Schemas are pinned to served OpenAPI through explicit output projections in tests.
+
+Duplicating JSON increases response size and token cost. The stdio bridge keeps
+its 10 MiB response cap: a query that fits as March text may exceed it with modern
+dual output and return `-32000`. Use smaller pages; a single large email can still
+exceed the cap. Lost replies can follow committed mutations; do not replay them
+assuming rollback. The epic measures tokens-per-success and invalid-argument/
+tool-misuse rates; local tests prove representation and text compatibility, while
+the operator's #151 baseline and client matrix own measurement and client receipts.
+The #152/#153 PRs remain unmerged until that baseline exists.
 
 The stdio bridge starts with legacy compatibility. Single initialize fences
 later input until a matching successful response with capabilities and server
