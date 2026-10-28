@@ -58,7 +58,13 @@ fn recipe_discovery_uses_the_existing_bundles_without_copied_definitions() {
         Path::new("bundles"),
         "the relative library alias survives clones and worktrees"
     );
-    for name in ["self", "codex", "codex-careful", "codex-fast"] {
+    for name in [
+        "self",
+        "codex",
+        "codex-careful",
+        "codex-fast",
+        "mixed-opus-terra",
+    ] {
         assert_eq!(
             root.join("recipes").join(name).canonicalize().unwrap(),
             root.join("bundles").join(name).canonicalize().unwrap(),
@@ -69,7 +75,11 @@ fn recipe_discovery_uses_the_existing_bundles_without_copied_definitions() {
 
 #[test]
 fn recipes_cannot_replace_the_protected_policy_or_the_exec_gates() {
-    for (name, parent) in [("codex", "self"), ("codex-careful", "codex")] {
+    for (name, parent) in [
+        ("codex", "self"),
+        ("codex-careful", "codex"),
+        ("mixed-opus-terra", "codex-careful"),
+    ] {
         let recipe = read_json(&format!("bundles/{name}/bundle.json"));
         assert_eq!(recipe["extends"], parent);
         for forbidden in ["policy", "protected_phase", "remove"] {
@@ -722,4 +732,65 @@ fn ship_closeout_refuses_missing_empty_and_mismatched_ledgers() {
             );
         }
     }
+}
+
+#[test]
+fn operator_mixed_recipe_resolves_named_work_models_and_preserves_panel() {
+    let recipe = read_json("bundles/mixed-opus-terra/bundle.json");
+    assert_eq!(recipe["extends"], "codex-careful");
+    assert!(recipe["seats"].get("review").is_none());
+    assert_eq!(recipe["seats"]["intake"]["agent"], "mixed-terra-intake");
+    assert_eq!(
+        recipe["seats"]["implement"]["agent"],
+        "mixed-opus-implementer"
+    );
+    let intake = office("mixed-terra-intake");
+    let implement = office("mixed-opus-implementer");
+    assert_eq!(intake["models"], json!(["terra61"]));
+    assert_eq!(implement["models"], json!(["opus"]));
+    assert_eq!(
+        read_json("adapters/codex.json")["models"]["terra61"],
+        "gpt-6.1-terra"
+    );
+    assert_eq!(
+        read_json("adapters/claude.json")["models"]["opus"],
+        "claude-opus-5-5"
+    );
+    let review = read_json("bundles/codex-careful/bundle.json");
+    for role in [
+        "correctness",
+        "guarantees",
+        "independent",
+        "security",
+        "tests",
+    ] {
+        assert_eq!(review["seats"]["review"]["panel"][role]["class"], "gate");
+    }
+    for (role, agent) in [
+        ("correctness", "codex-review-astra-correctness"),
+        ("guarantees", "codex-review-guarantees"),
+        ("independent", "codex-review-independent"),
+        ("security", "codex-review-security"),
+        ("tests", "codex-review-tests"),
+    ] {
+        assert_eq!(review["seats"]["review"]["panel"][role]["agent"], agent);
+    }
+    assert_eq!(
+        office("codex-review-independent")["models"],
+        json!(["fable"])
+    );
+    assert_eq!(office("codex-review-security")["models"], json!(["flash"]));
+    assert_eq!(office("codex-review-tests")["models"], json!(["glm-flash"]));
+    assert_eq!(
+        office("codex-review-astra-correctness")["models"],
+        json!(["astra"])
+    );
+    assert_eq!(
+        office("codex-review-guarantees")["models"],
+        json!(["astra"])
+    );
+    assert_eq!(
+        read_json("adapters/dsh.json")["models"]["glm-flash"],
+        "spark-glm/GLM-5.3-Flash-EXL3"
+    );
 }
