@@ -43,7 +43,7 @@ async fn report_rest_schema_and_refusals() {
     assert_eq!(stored, raw);
     let (status, first) = report(srv.http_addr, &id).await;
     assert_eq!(status, 200);
-    assert_eq!(first["rule_set_id"], "swarmail-html/2");
+    assert_eq!(first["rule_set_id"], "swarmail-html/3");
     assert_eq!(first["findings"].as_array().unwrap().len(), 7);
     assert_eq!(
         first["findings"][6],
@@ -81,7 +81,7 @@ async fn report_rest_schema_and_refusals() {
     );
     let (_, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     for text in [
-        "swarmail-html/2",
+        "swarmail-html/3",
         "warning",
         "demo.marker.v1",
         "x-swarmail-demo",
@@ -517,7 +517,7 @@ async fn report_served_docs_match_contract() {
         "Empty findings do not imply deliverability",
         "when #153 lands",
         "JSON in one text block",
-        "swarmail-html/2",
+        "swarmail-html/3",
         "104448",
         "classic Outlook",
         "conditional comments",
@@ -536,8 +536,9 @@ async fn html_findings_share_one_report_and_predicate_contract() {
         "<style>.x{{position:absolute;display:flex}}</style><video></video><img src='https://pixel.test/p' width=1 height=0>{}",
         " ".repeat(104449)
     );
-    let raw =
-        format!("Subject: HTML <&>\r\nContent-Type: text/html; charset=utf-8\r\n\r\n{body}\r\n");
+    let raw = format!(
+        "Subject: HTML <&>\r\nX-Swarmail-Demo: warning\r\nContent-Type: text/html; charset=utf-8\r\n\r\n{body}\r\n"
+    );
     let id = smtp_raw(srv.smtp_addr, "html-contract", raw.as_bytes()).await;
     // The 250 has already made this same mail and its ingest extraction queryable.
     let before = http_json(
@@ -556,15 +557,63 @@ async fn html_findings_share_one_report_and_predicate_contract() {
         "rule_id":r["id"],"severity":r["severity"],"location":{"kind":"mime_part","path":[]},"fix_hint":r["fix_hint"]
     })).collect();
     expected.sort_by_key(|r| r["rule_id"].as_str().unwrap().to_string());
-    let mut actual: Vec<Value> = first["findings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|f| f["rule_id"].as_str().unwrap().starts_with("html."))
-        .cloned()
-        .collect();
-    actual.sort_by_key(|r| r["rule_id"].as_str().unwrap().to_string());
-    assert_eq!(actual, expected);
+    let sources =
+        "https://support.google.com/mail/answer/81126 https://senders.yahooinc.com/best-practices/";
+    for (rule, header, hint, rfc) in [
+        (
+            "one_click",
+            Some("list-unsubscribe"),
+            "Provide one HTTPS List-Unsubscribe list and one exact List-Unsubscribe-Post: List-Unsubscribe=One-Click value. This structural check does not verify DKIM header coverage or endpoint operation.",
+            "8058#section-3",
+        ),
+        (
+            "message_id",
+            Some("message-id"),
+            "Provide exactly one Message-ID using the supported current RFC 5322 syntax; obsolete-only forms are unsupported by this checklist.",
+            "5322#section-3.6.4",
+        ),
+        (
+            "date",
+            Some("date"),
+            "Provide exactly one calendar-valid Date using current RFC 5322 syntax and a numeric zone; obsolete-only forms are unsupported by this checklist.",
+            "5322#section-3.6.1",
+        ),
+        (
+            "plain_text",
+            None,
+            "Include a sender-supplied text/plain body. This is checklist advice, not proof of equivalent content or an unconditional provider mandate.",
+            "2046#section-5.1.4",
+        ),
+        (
+            "dmarc_presence.not_evaluated",
+            Some("from"),
+            "Not evaluated: trusted applicable DMARC policy evidence is unavailable.",
+            "7489#section-6.1",
+        ),
+        (
+            "from_alignment.not_evaluated",
+            Some("from"),
+            "Not evaluated: trusted From identity or DKIM/SPF alignment evidence is incomplete.",
+            "7489#section-3.1",
+        ),
+        (
+            "authenticated_sender.not_evaluated",
+            Some("from"),
+            "Not evaluated: trusted From identity or passing-and-aligned DKIM/SPF evidence is incomplete.",
+            "7489#section-3.1",
+        ),
+    ] {
+        expected.push(json!({"rule_id":format!("bulk.{rule}.v1"), "severity": if header.is_none() { "warning" } else { "error" },
+            "location": match header { Some(name) => json!({"kind":"header","name":name,"occurrence":null}), None => json!({"kind":"mime_part","path":[]}) },
+            "fix_hint":format!("{hint} Sources: https://www.rfc-editor.org/rfc/rfc{rfc} {sources}")}));
+    }
+    expected.push(json!({"rule_id":"demo.marker.v1","severity":"warning","location":{"kind":"header","name":"x-swarmail-demo","occurrence":0},"fix_hint":"Remove the X-Swarmail-Demo header."}));
+    expected.sort_by_key(|r| r["rule_id"].as_str().unwrap().to_string());
+    assert_eq!(expected.len(), 15);
+    assert_eq!(
+        first,
+        json!({"rule_set_id":"swarmail-html/3","findings":expected})
+    );
     assert_eq!(report(srv.http_addr, &id).await.1, first);
     let reply = rpc(
         srv.http_addr,
@@ -651,8 +700,30 @@ async fn empty_smtp_message_has_an_exact_composable_report() {
     let (status, page) = http_get_text(srv.http_addr, &format!("/ui/message/{id}")).await;
     assert_eq!(status, 200);
     assert!(page.contains("deliverability analysis failed"));
-    let path = "/api/v1/inboxes/empty-report/assert?count=0&no_findings_at_or_above=info";
-    assert_eq!(http_json(srv.http_addr, "GET", path, None).await.0, 503);
+    for threshold in ["info", "warning", "error"] {
+        for count in [0, 1] {
+            for operation in ["assert", "await"] {
+                let path = format!(
+                    "/api/v1/inboxes/empty-report/{operation}?count={count}&timeout_ms=1000&no_findings_at_or_above={threshold}"
+                );
+                let path = if operation == "assert" {
+                    path.replace("&timeout_ms=1000", "")
+                } else {
+                    path
+                };
+                assert_eq!(
+                    http_json(srv.http_addr, "GET", &path, None).await,
+                    (503, json!({"error":"deliverability analysis failed"}))
+                );
+            }
+            let reply = rpc(srv.http_addr, "tools/call", json!({"name":"swarmail_wait_for_email", "arguments":{"inbox":"empty-report","count":count,"timeout_ms":1000,"no_findings_at_or_above":threshold}})).await;
+            assert_eq!(reply["result"]["isError"], true);
+            assert_eq!(
+                reply["result"]["content"][0]["text"],
+                "deliverability analysis failed"
+            );
+        }
+    }
     assert_eq!(
         http_json(
             srv.http_addr,
@@ -714,7 +785,7 @@ async fn css_component_and_literal_url_pairs_survive_smtp_reports() {
             };
             let (status, expected) = report(srv.http_addr, &id).await;
             assert_eq!(status, 200);
-            assert_eq!(expected["rule_set_id"], "swarmail-html/2");
+            assert_eq!(expected["rule_set_id"], "swarmail-html/3");
             let html: Vec<Value> = expected["findings"]
                 .as_array()
                 .unwrap()

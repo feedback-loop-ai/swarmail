@@ -86,8 +86,8 @@ them. What may land while a decision is still proposed is stated in
 | [0083](0083-cli-wrapper-launch.md) | Evidence-based CLI launches and declared tool surfaces | proposed — awaiting the operator | (Epic #164, issue #151 part 1; operator allocation 2026-10-26) |
 | [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
-
 | [0090](0090-html-client-compatibility.md) | Versioned HTML client compatibility heuristics through the lazy report | proposed — awaiting the operator | (Epic #251, issue #259) |
+| [0091](0091-html-review-repair.md) | Repair HTML declaration context, inspected work and empty-message reports | proposed — awaiting the operator | (Epic #251, issue #259) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

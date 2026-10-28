@@ -299,7 +299,7 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/2):
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/3):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
@@ -307,7 +307,8 @@ say "Not evaluated:" until trusted observations exist. Sender-written
 Authentication-Results and DKIM-Signature never supply evidence. #255 owns that
 verification and strict/relaxed alignment; #253/#255 own expiry and refresh.
 Production therefore excludes every message at every report predicate threshold;
-exact zero assertions still work, while waits still require a qualifying message.
+exact zero assertions count qualifying messages when every required analysis succeeds;
+an analysis failure aborts the assertion. Waits still require a qualifying message.
 
 Headers use original bytes and complete singleton values, with root lowercase
 names and occurrence null/0/1 for absent/invalid/duplicate. Message-ID and Date
@@ -327,7 +328,7 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-`swarmail-html/2` retains the synthetic demo.marker.v1: the first root
+`swarmail-html/3` retains the synthetic demo.marker.v1: the first root
 X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
 and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
 html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
@@ -371,8 +372,11 @@ unclosed head or recognized tag and stray CSS closers; there is no browser repai
 Exactly zero stored raw bytes contribute no HTML findings before MIME parsing.
 The historical demo/HTML composition returns {"rule_set_id":"swarmail-html/2",
 "findings":[]} for that message; other collectors and report limits still run.
-This makes no authentication claim. Later bulk/authentication composition must
-preserve its own unknown/failure outcomes. Nonempty parse failures still fail.
+This historical result makes no authentication claim. In the current combined
+report, SMTP accepts and stores an exactly empty message, but its missing MIME
+metadata makes analysis fail: REST returns 503 and MCP returns isError.
+Assertions and waits needing that report also fail rather than count it clean.
+Nonempty parse failures still fail.
 Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
 
