@@ -89,6 +89,7 @@ them. What may land while a decision is still proposed is stated in
 | [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
 | [0090](0090-mcp-options-admission.md) | MCP OPTIONS admission and modern version headers | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
+| [0091](0091-mixed-work-seats.md) | Mixed work seats and protected review | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
