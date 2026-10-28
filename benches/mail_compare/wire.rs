@@ -137,6 +137,9 @@ pub enum WireError {
     Io,
     Oversized,
     Malformed,
+    /// A scan that could not establish completeness: a repeated id, a
+    /// moving count or pages that stop short.
+    Incomplete,
 }
 
 impl WireError {
@@ -147,6 +150,7 @@ impl WireError {
             WireError::Io => "io",
             WireError::Oversized => "oversized",
             WireError::Malformed => "malformed",
+            WireError::Incomplete => "incomplete",
         }
     }
 }

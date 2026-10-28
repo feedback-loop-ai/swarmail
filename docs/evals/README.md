@@ -2,28 +2,111 @@
 
 Issue [#163](https://github.com/feedback-loop-ai/swarmail/issues/163) (epic #164).
 Specification: [fair mail comparison](../../specs/fair-mail-comparison/spec.md).
-Decision: proposed [0091](../decisions/0091-fair-mail-comparison.md), not accepted.
+Decisions: proposed [0091](../decisions/0091-fair-mail-comparison.md) and
+proposed [0092](../decisions/0092-official-mail-comparison.md)
+([continuation spec](../../specs/official-mail-comparison/spec.md)); neither
+is accepted.
 
-**Status, 2026-10-28: no results. Infrastructure only.** This directory holds
-no baseline, no final run, no comparison, no cost and no loss, because none of
-those exists yet. Nothing in it, and nothing in the top-level README, may be
-read as a measured claim about Swarmail, Mailpit, MailHog or any agent.
+**Status, 2026-10-28: no results.** This directory holds no baseline, final
+run, comparison, cost or loss record, because none of those exists yet.
+Nothing in it, or in the top-level README, may be read as a measured claim
+about Swarmail, Mailpit, MailHog or any agent. The official competitor
+artifacts are now pinned and every local proof below ran against the real
+executables. These are untimed checks and labelled smoke runs, not
+collection.
 
 ## What exists, and what does not
 
 | Deliverable (spec) | State |
 |---|---|
-| Wire driver: `benches/mail_compare.rs` | Built. Runs the frozen throughput and wait profiles against servers it launches and owns. It has been proved only against the real Swarmail binary (`tests/mail_compare.rs`). |
-| Method: [`protocol.json`](protocol.json) | **Draft.** Collection is refused until every `unresolved` entry is closed and the status is `frozen`. |
-| Source pins: [`sources.lock.json`](sources.lock.json) | **Mailpit and MailHog are unverified.** No official source, release, licence, API or setup document and no artifact digest has been captured. The delivering seat had no network access, no container runtime and no competitor binary. |
-| One command: `scripts/compare-mail.sh` | Built. `local` runs the driver, while `controls`, `evidence` and `measure` refuse and name the phase that blocks them. No mode starts an agent. |
-| Mailpit MCP adapter (task T5) | **Not built.** A thin adapter may expose only general upstream operations that have been checked against the source. Writing one before the official API is captured, with no Mailpit to test it against, would invent capabilities. |
+| Source pins: [`sources.lock.json`](sources.lock.json) (lock v2) | **Artifacts pinned, sources incomplete.** Mailpit v1.32.0 and MailHog v1.0.1 are pinned by asset and executable digest. Captured release metadata, licences and API documents are committed under [`sources/`](sources/) and rechecked byte for byte whenever the lock is used. Still missing, and named in the lock: each full source revision, document acquisition attribution, a setup document and any wait/stream source. Collection refuses until these are closed. |
+| Method: [`protocol.json`](protocol.json) | **Draft** (`fair-mail-comparison-draft-2`, superseding draft-1). Competitor retention is stated as launched, and a 100 ms common-client poll interval is proposed. Collection is refused while `unresolved` lists anything. |
+| Wire driver: `benches/mail_compare.rs` | Built. On 2026-10-28 it ran a three-target smoke run against real Swarmail, Mailpit and MailHog. Every send was reconciled and every message was visible once with faithful stored bodies. Waits were observed or timed out as expected, and the run was sealed and admitted (`tests/mail_compare.rs`, ignored tests below). This was a smoke run, not evidence. |
+| Mailpit MCP adapter: `mail_compare mailpit-mcp` | **Built and proved locally.** It speaks MCP 2025-03-26 over stdio. Its tools are list, search, read and a labelled client-side poll, each a translation of the captured Mailpit API. It was tested against real Mailpit over real SMTP. Final client negotiation (#151/#152/#153) is not proved by these tests. JSON-RPC batches are refused, which falls short of 2025-03-26 (receivers must accept batches); that stays open with the final contracts. |
+| One command: `scripts/compare-mail.sh` | Built. `local` runs the driver as a labelled smoke run. `controls`, `evidence` and `measure` refuse and name the blocking phase. No mode starts an agent. |
 | Eval integration: comparison target, envelope and controls (T7–T9) | **Not built.** The standalone eval crate does not compile: `evals/src/{artifacts,provenance,results}.rs` and `evals/tests/{identity,provenance}.rs` contain unresolved conflict syntax. Shared-host coordination for #148/#201 is unproved. |
 | Evidence admission (T10) and the dossier (T11–T12) | **Not built, and no inputs exist.** There is no genuine #151 baseline, no reconciled final MCP contract, no final trial and no cost record. No paid trial is authorized. |
 
 These rows are open, not waived. The story is incomplete until genuine
 evidence is admitted (spec AC12–AC14). Passing local tests does not count
-as comparison evidence.
+as comparison evidence. The stopped candidate's unverified v1 lock is kept
+unchanged at [`history/2026-10-28-sources.lock.v1.json`](history/2026-10-28-sources.lock.v1.json).
+Only its own reader reads it, and nothing launches from it.
+
+## Competitor sources and observed behavior
+
+Checked on 2026-10-28 inside the delivery sandbox. There was no network, so
+nothing was fetched or authenticated upstream. The hashes show local
+consistency only.
+
+| Fact | Mailpit | MailHog |
+|---|---|---|
+| Release | [v1.32.0](https://github.com/axllent/mailpit/releases/tag/v1.32.0), published 2026-10-22; `target_commitish` is the branch `develop` | [v1.0.1](https://github.com/mailhog/MailHog/releases/tag/v1.0.1), published 2020-08-11; `target_commitish` is the branch `master` |
+| Asset | `mailpit-linux-amd64.tar.gz`, sha256 `4b5993c978e8604c70d43927e2ad103b311bba3b1822fa0cf1d4ee4ec890a93c`, **equal to the digest in the release metadata** | `MailHog_linux_amd64`, sha256 `e2ed634ded49929f089b20045581955ed217672078fd86082dd7a6c67c5d09c7`, **locally computed**, because the release metadata publishes no digest |
+| Executable | archive member `mailpit`, sha256 `262cfa28fae4554be198d1fea5ef83c0f8299317876d658623711c629a8edec8`; `version` prints `mailpit v1.32.0 compiled with go1.27.3 on linux/amd64` | the asset itself; `-version` prints `MailHog version: 1.0.1` |
+| Licence | MIT, Ralph Slooten ([text](sources/mailpit/mailpit-license.txt), byte-identical to the archive's `LICENSE`) | MIT, Ian Kent ([text](sources/mailhog/mailhog-license.txt)) |
+| API document | OpenAPI 2.0 "Mailpit API" v1 ([captured](sources/mailpit/mailpit-swagger.json)) | Swagger 2.0 "MailHog API" 2.0.0 ([captured](sources/mailhog/mailhog-swagger.json)) |
+| Storage as launched | `--database` in the owned scratch (a SQLite file, **not memory**) and `--max 10000`. Without the flag Mailpit keeps 500, which cannot hold a 3,000-message exact count. | `-storage memory`; `-h` lists no retention cap |
+| Wait or stream facility | None in the captured documents; not reviewed. Absence from Swagger is not proof that none exists. | None in the captured documents; not reviewed |
+
+Where the documents and the pinned executables disagree, the decoders follow
+the executables and the disagreement stays recorded. These differences were
+observed against the real binaries:
+
+- **Mailpit.** `total` is always the mailbox size, and the match count of a
+  search is `messages_count`; scans end on `messages_count`. Every list or
+  search page also carries an undocumented `count`. `/api/v1/message/{ID}`
+  marks the message read: an `is:unread` search drops by one per read. For
+  an HTML-only message the served `Text` is derived from the HTML. The
+  driver's storage-fidelity check therefore parses the documented
+  `/api/v1/message/{ID}/raw` with the crate's own MIME parser, while the
+  adapter passes the served Text through unchanged. An unknown ID gives
+  `404`. A bad `start` or `limit` is silently coerced (`limit=-1` returns
+  everything), so both clients bound and validate their own inputs. Without
+  `--smtp-auth-accept-any` Mailpit does not advertise AUTH. With it, the
+  AUTH user is recorded as `Username`, but there is one shared mailbox.
+- **MailHog.** The v2 Swagger documents `messages` and lowercase `id`, and
+  calls the search `total` the number of stored messages. The executable
+  answers with `items` and uppercase `ID`, and its search `total` is the
+  match count. `/api/v1/messages/{id}`, the stored raw message that
+  fidelity is checked against, is described by no captured document, and
+  its primary attribution remains open. An unknown ID gives `200 null`.
+  AUTH PLAIN is accepted for any user.
+
+## The Mailpit MCP adapter
+
+`mail_compare mailpit-mcp --endpoint http://127.0.0.1:PORT --sources
+docs/evals/sources.lock.json` serves MCP 2025-03-26 on stdin and stdout.
+The caller (later, the eval owner) starts and owns Mailpit. The adapter
+refuses any endpoint that is not a literal loopback socket, and it refuses
+a lock that fails validation or document recheck, or that pins no Mailpit.
+Results are Mailpit's own JSON in one text content block.
+
+| Tool | Translation | Closed arguments |
+|---|---|---|
+| `mailpit_list` | one page of `GET /api/v1/messages` | `start` 0..100000 (0), `limit` 1..250 (50) |
+| `mailpit_search` | one page of `GET /api/v1/search` | `query` 1..4096 bytes, `start`, `limit` |
+| `mailpit_read` | `GET /api/v1/message/{ID}`, which **marks the message read** | `id` 1..512 bytes, path-encoded |
+| `mailpit_wait` | a **client-side poll**, not a Mailpit facility: a complete paged search at once and then every 100 ms; `found` with every match, or `timeout`, each only after a complete scan | `query`, `timeout_ms` 1..30000 |
+
+The adapter has no admin, send, delete, release, tag, chaos, screenshot or
+link-check tool. It adds no task hints, extraction, cache, index or
+prefetch, and it emulates no inboxes. Its bounds are engineering ceilings,
+not upstream limits:
+
+- 64 KiB per input line;
+- eight admitted tool calls, one running at a time, with the input still
+  read while it runs;
+- 1 MiB per reply;
+- 10 s and 16 MiB per HTTP request, and 16 MiB for a whole operation;
+- 100 pages per scan and 1,000 requests per operation;
+- a 30 s operation deadline (a wait gets its timeout plus one request bound);
+- a 10 s output and cleanup bound.
+
+A repeated ID, a moving count, a short or empty page before the count, or a
+wrong `start` echo is an error, never a shorter success. Cancellation and
+EOF abort the running call, and unanswered queued calls are dropped. Errors
+are fixed strings that echo no input.
 
 ## Method, as built
 
@@ -36,10 +119,15 @@ would overflow a declared retention cap; an order that is not a permutation;
 a poll with no frozen interval; a native wait claimed for a target that has
 none implemented; and a superseding protocol that gives no change reason.
 Collection also needs a `frozen` status, an empty `unresolved` list, a budget
-that is actually enforced, and a verified pin for every competitor. The pin
-needs an official repository, a full commit id (a tag alone refuses), a
-permissive SPDX licence, documents under the official repository, archive and
-executable SHA-256, the platform and a launch template.
+that is actually enforced, retention equal to each competitor's launched cap,
+and a complete pin for every competitor. Lock v2 validates each pin: the
+official repository, tag page and release-asset URL; a full commit id (a tag
+or branch refuses); a digest basis that agrees with the release metadata (an
+upstream basis needs the published digest, while a locally computed one may
+carry none); archive versus executable digests; a version report naming the
+tag; a permissive licence; captured documents confined to `sources/<target>/`
+and rechecked by digest; and a launch template whose cap flag equals the
+stated retention. Any missing fact is a named gap, never a placeholder.
 
 Every profile runs on a fresh instance the driver owns. The child gets its own
 process group and a closed environment: `PATH`, `LANG`, a private `HOME`,
@@ -95,45 +183,47 @@ method.
 
 Prerequisites: Linux with `/proc`, the pinned Rust toolchain, a vendored or
 pre-fetched cargo registry (builds run with `--locked --offline`), and this
-checkout. For a comparison you also need the pinned Mailpit and MailHog
-executables, whose digests must match a verified `sources.lock.json`. Use
-disk-backed output and scratch paths, not a RAM tmpfs.
+checkout. For competitor runs you also need the pinned Mailpit and MailHog
+executables, with the digests in `sources.lock.json`. Use disk-backed output
+and scratch paths, not a RAM tmpfs.
 
 ```bash
 bash scripts/compare-mail.sh                       # usage; launches nothing
-bash scripts/compare-mail.sh local --output target/mail-compare/run-1 \
+# three real targets against the smoke fixture (smoke, never evidence):
+bash scripts/compare-mail.sh local --output target/mail-compare/smoke-3 \
+  --protocol tests/mail_compare/three-target-smoke.json \
   --mailpit /path/to/pinned/mailpit --mailhog /path/to/pinned/MailHog
-# the candidate alone, against the test fixture (smoke, never evidence):
-bash scripts/compare-mail.sh local --output target/mail-compare/smoke-1 \
-  --protocol tests/mail_compare/swarmail-smoke.json \
-  --sources tests/mail_compare/swarmail-only.lock.json
+# the real-binary proofs (ignored by default; they fail, not skip, without the variables):
+MAIL_COMPARE_MAILPIT=/path/to/pinned/mailpit MAIL_COMPARE_MAILHOG=/path/to/pinned/MailHog \
+  cargo test --locked --test mail_compare -- --ignored
 ```
 
-Today the first `local` line exits 2 with `blocked at phase
-"competitor-binaries"`, and the driver's `check` lists every unresolved
-protocol value. `controls`, `evidence` and `measure` exit 2 at `eval-build`.
-Once the eval sources compile, they will exit 2 at `comparison-integration`
-until tasks T7–T10 land. `measure --dry-run` opens no wrapper configuration
-and launches nothing.
+Pointing `local` at the committed draft protocol launches the full draft
+workload as a smoke run, which is hours of work and still not evidence.
+The driver's `check` lists every reason the draft cannot be collected.
+`controls`, `evidence` and `measure` exit 2 at `eval-build`. Once the eval
+sources compile, they will exit 2 at `comparison-integration` until tasks
+T7–T10 land. `measure --dry-run` opens no wrapper configuration and launches
+nothing.
 
 ## What closes the remaining rows
 
-1. An operator, with network access, captures Mailpit and MailHog from their
-   official repositories only: commit, release, licence, API and setup
-   documents, archive and executable digests, platform and the launch argv.
-   The operator records these in `sources.lock.json` and then checks the
-   HTTP mapping in `benches/mail_compare/targets.rs` against the captured API
-   documents. The official repository homes that the validator expects
-   (`TargetKind::official_repository`) also come from the author's own
-   knowledge. They were not captured, so the first capture must confirm
-   them.
-2. The operator inspects each competitor's wait or stream facilities, then
-   freezes the poll interval, retention and storage settings and a runtime
-   that actually enforces the resource budget. A new protocol revision is
-   committed before any collection.
+1. An operator with network access binds each competitor's full source
+   revision for the pinned tag. The operator also binds the acquisition URL
+   and revision of every captured document and captures a setup document.
+   The tag and the branch named by `target_commitish` cannot stand in for a
+   revision. MailHog's `/api/v1/messages/{id}` read needs a primary source.
+2. The operator reviews each competitor's wait or stream source (or
+   documents its absence) before any best-available or adapter wait claim.
+   They then freeze the poll interval, either a storage profile in which
+   Mailpit's scratch SQLite is explicitly unmatched or a matched one, and
+   either a runtime that actually enforces the resource budget or a
+   separately labelled unenforced profile. That becomes a new protocol
+   revision (with the v2 fields of decision 0092 §2), committed before any
+   collection.
 3. The eval conflict repair is coordinated and #148/#201 receive their
-   shared-host receipts. The #151 baseline and the final MCP contracts land.
-   Then T5 and T7–T10 can be built and proved.
+   shared-host receipts. The #151 baseline and the final MCP contracts land,
+   including batch handling. Then T7–T10 can be built and proved.
 4. Genuine, separately authorized runs are admitted with their actual cost
    records. Losses and unsupported cells are published beside the wins, and
    README numbers cite their run, task, model, configuration and denominator.

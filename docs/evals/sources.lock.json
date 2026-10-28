@@ -1,32 +1,173 @@
 {
-  "lock_version": 1,
+  "lock_version": 2,
+  "checked_on": "2026-10-28",
   "entries": [
     {
       "target": "swarmail",
-      "status": "candidate",
-      "unverified_reason": null,
-      "source": null,
-      "artifact": null,
-      "supports_memory_storage": true,
-      "launch": null
+      "role": "candidate",
+      "pin": null
     },
     {
       "target": "mailpit",
-      "status": "unverified",
-      "unverified_reason": "Not captured: the delivering seat had no network access, no container runtime and no Mailpit artifact, so no official repository revision, release, license, API or setup document, or artifact digest has been observed. Nothing about Mailpit is asserted.",
-      "source": null,
-      "artifact": null,
-      "supports_memory_storage": null,
-      "launch": null
+      "role": "competitor",
+      "pin": {
+        "release": {
+          "repository": "https://github.com/axllent/mailpit",
+          "tag": "v1.32.0",
+          "html_url": "https://github.com/axllent/mailpit/releases/tag/v1.32.0",
+          "target_commitish": "develop",
+          "published_at": "2026-10-22T22:04:42Z"
+        },
+        "source_revision": {
+          "unresolved": "the release metadata's target_commitish is the branch 'develop', not a commit; no tagged commit id was captured"
+        },
+        "artifact": {
+          "kind": "archive",
+          "file_name": "mailpit-linux-amd64.tar.gz",
+          "download": "https://github.com/axllent/mailpit/releases/download/v1.32.0/mailpit-linux-amd64.tar.gz",
+          "size": 10583464,
+          "sha256": "4b5993c978e8604c70d43927e2ad103b311bba3b1822fa0cf1d4ee4ec890a93c",
+          "digest_basis": "upstream_release_metadata",
+          "upstream_digest": "4b5993c978e8604c70d43927e2ad103b311bba3b1822fa0cf1d4ee4ec890a93c",
+          "member": "mailpit",
+          "executable_sha256": "262cfa28fae4554be198d1fea5ef83c0f8299317876d658623711c629a8edec8",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "mailpit v1.32.0 compiled with go1.27.3 on linux/amd64"
+        },
+        "license": {
+          "spdx": "MIT",
+          "holder": "Ralph Slooten"
+        },
+        "documents": [
+          {
+            "kind": "release_metadata",
+            "path": "sources/mailpit/mailpit-release.json",
+            "sha256": "fb04595546c56ded6e64a0634eb55a0e224aa6f29624dbdc179f1d1700319e37",
+            "attribution": {
+              "unresolved": "GitHub REST release object 421248634: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/mailpit/mailpit-license.txt",
+            "sha256": "9dade1b3ace5dd6c36ca58eef466ae7dd9afe52bfb978deffa44645f6f0a2aa9",
+            "attribution": {
+              "unresolved": "LICENSE, byte-identical to the archive's LICENSE member: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/mailpit/mailpit-swagger.json",
+            "sha256": "77cd5441b66fabfadaee3fafc84e63c927edc0eaed88590d82745c94b663f3ca",
+            "attribution": {
+              "unresolved": "OpenAPI 2.0 document titled 'Mailpit API', version v1, recorded by the host as the v1.32.0 tag's: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+            }
+          }
+        ],
+        "launch": [
+          "--smtp",
+          "{smtp_addr}",
+          "--listen",
+          "{http_addr}",
+          "--database",
+          "{data_dir}/mailpit.db",
+          "--max",
+          "10000",
+          "--disable-version-check",
+          "--smtp-disable-rdns",
+          "--smtp-auth-accept-any",
+          "--smtp-auth-allow-insecure"
+        ],
+        "storage": {
+          "backend": "scratch_file",
+          "max_messages": 10000,
+          "cap_flag": "--max",
+          "basis": "`mailpit --help` of the pinned executable lists '-d, --database string  Database to store persistent data' and '-m, --max int  Max number of messages to store (default 500)'; the launch puts the database inside the owned scratch and raises the cap above every profile's per-instance residency. Pruning behavior at the cap is not established, and nothing about durability is claimed."
+        },
+        "wait": {
+          "unresolved": "neither the captured v1 Swagger nor the release metadata describes a wait, stream or event facility; absence from Swagger is not proof none exists, and no stream source was reviewed"
+        }
+      }
     },
     {
       "target": "mailhog",
-      "status": "unverified",
-      "unverified_reason": "Not captured: the delivering seat had no network access, no container runtime and no MailHog artifact, so no official repository revision, release, license, API or setup document, or artifact digest has been observed. Nothing about MailHog is asserted.",
-      "source": null,
-      "artifact": null,
-      "supports_memory_storage": null,
-      "launch": null
+      "role": "competitor",
+      "pin": {
+        "release": {
+          "repository": "https://github.com/mailhog/MailHog",
+          "tag": "v1.0.1",
+          "html_url": "https://github.com/mailhog/MailHog/releases/tag/v1.0.1",
+          "target_commitish": "master",
+          "published_at": "2020-08-11T18:04:41Z"
+        },
+        "source_revision": {
+          "unresolved": "the release metadata's target_commitish is the branch 'master', not a commit; no tagged commit id was captured"
+        },
+        "artifact": {
+          "kind": "executable",
+          "file_name": "MailHog_linux_amd64",
+          "download": "https://github.com/mailhog/MailHog/releases/download/v1.0.1/MailHog_linux_amd64",
+          "size": 13367472,
+          "sha256": "e2ed634ded49929f089b20045581955ed217672078fd86082dd7a6c67c5d09c7",
+          "digest_basis": "locally_computed",
+          "upstream_digest": null,
+          "member": null,
+          "executable_sha256": "e2ed634ded49929f089b20045581955ed217672078fd86082dd7a6c67c5d09c7",
+          "os": "linux",
+          "arch": "amd64",
+          "version_output": "MailHog version: 1.0.1"
+        },
+        "license": {
+          "spdx": "MIT",
+          "holder": "Ian Kent"
+        },
+        "documents": [
+          {
+            "kind": "release_metadata",
+            "path": "sources/mailhog/mailhog-release.json",
+            "sha256": "5d0fb9ec9732b663e1f1e3a66babd0c986146e5fceb9a0c86632ce201aa45cfc",
+            "attribution": {
+              "unresolved": "GitHub REST release object 29571762: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+            }
+          },
+          {
+            "kind": "license",
+            "path": "sources/mailhog/mailhog-license.txt",
+            "sha256": "3cfc2f2454199ebf2cc3ec3c0ad4bf79904724c398f8558c3a8e71fd7bb400b2",
+            "attribution": {
+              "unresolved": "LICENSE.md: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+            }
+          },
+          {
+            "kind": "api",
+            "path": "sources/mailhog/mailhog-swagger.json",
+            "sha256": "d0280c63684abd83ea27a38392ba7484b2b0eb7f5e527bac443a51885c615ff6",
+            "attribution": {
+              "unresolved": "Swagger 2.0 document titled 'MailHog API', version 2.0.0, recorded by the host as the v1.0.1 tag's: the host supplied this capture; this seat has no network, so its acquisition URL and full source revision are not bound"
+            }
+          }
+        ],
+        "launch": [
+          "-smtp-bind-addr",
+          "{smtp_addr}",
+          "-api-bind-addr",
+          "{http_addr}",
+          "-ui-bind-addr",
+          "{http_addr}",
+          "-storage",
+          "memory"
+        ],
+        "storage": {
+          "backend": "memory",
+          "max_messages": null,
+          "cap_flag": null,
+          "basis": "`MailHog -h` of the pinned executable lists \"-storage string  Message storage: 'memory' (default), 'mongodb' or 'maildir'\" and no retention-cap flag. No captured source document states the memory store's bounds."
+        },
+        "wait": {
+          "unresolved": "the captured v2 Swagger describes list and search only; no wait, stream or event source was captured or reviewed"
+        }
+      }
     }
   ]
 }

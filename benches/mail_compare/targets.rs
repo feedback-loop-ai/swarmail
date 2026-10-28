@@ -93,17 +93,7 @@ pub struct Owned {
     drain: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// SHA-256 through the rustls/ring provider already in the tree — the
-/// bench adds no hashing crate.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    let rustls::SupportedCipherSuite::Tls13(suite) =
-        rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256
-    else {
-        unreachable!("a TLS 1.3 suite")
-    };
-    let out = suite.common.hash_provider.hash(bytes);
-    out.as_ref().iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use crate::protocol::sha256_hex;
 
 /// A loopback port the OS just handed out. The listener is dropped before
 /// the child binds it, so a foreign bind can win the gap; that loss shows
@@ -299,10 +289,10 @@ impl Owned {
         }
     }
 
-    // The competitor mappings below follow the upstream HTTP APIs; each
-    // must be checked against the captured `api_document` of a verified
-    // lock entry before collection. The driver launches no competitor
-    // without one, so an unchecked mapping cannot produce evidence.
+    // The competitor mappings below follow the captured API documents in
+    // docs/evals/sources/ where those agree with the pinned executables,
+    // and the executables where they do not; every disagreement is listed
+    // in docs/evals/README.md and protocol.json's unresolved list.
 
     fn list_path(&self, start: u32, limit: u32) -> String {
         match self.kind {
@@ -314,23 +304,31 @@ impl Owned {
         }
     }
 
-    fn find_path(&self, token: &str) -> String {
+    fn find_path(&self, token: &str, start: u32, limit: u32) -> String {
         let q = crate::wire::query_value(token);
         match self.kind {
             TargetKind::Swarmail => {
-                format!("/api/v1/inboxes/default/messages?subject={q}&limit=250")
+                format!("/api/v1/inboxes/default/messages?subject={q}&limit={limit}&offset={start}")
             }
-            TargetKind::Mailpit => format!("/api/v1/search?query={q}&limit=250"),
-            TargetKind::Mailhog => format!("/api/v2/search?kind=containing&query={q}&limit=250"),
+            TargetKind::Mailpit => format!("/api/v1/search?query={q}&start={start}&limit={limit}"),
+            TargetKind::Mailhog => {
+                format!("/api/v2/search?kind=containing&query={q}&start={start}&limit={limit}")
+            }
         }
     }
 
-    /// `(total, [(server id, subject)])` out of one listing page.
-    fn page(&self, v: &serde_json::Value) -> Option<(u64, Vec<(String, String)>)> {
-        let (items, id, subject): (&str, &str, SubjectOf) = match self.kind {
-            TargetKind::Swarmail => ("emails", "id", |m| m.get("subject")?.as_str()),
-            TargetKind::Mailpit => ("messages", "ID", |m| m.get("Subject")?.as_str()),
-            TargetKind::Mailhog => ("items", "ID", |m| {
+    /// One page: the count of everything the request matches (not the
+    /// mailbox size) and `[(server id, subject)]`. Mailpit's search keeps
+    /// the mailbox size in `total` and the matches in `messages_count`;
+    /// MailHog's `total` is the match count whatever its Swagger says.
+    /// Where the target echoes `start`, it must be the offset asked for.
+    fn page(&self, v: &serde_json::Value, start: u32) -> Option<(u64, Vec<(String, String)>)> {
+        let (items, id, matching, subject): (&str, &str, &str, SubjectOf) = match self.kind {
+            TargetKind::Swarmail => ("emails", "id", "total", |m| m.get("subject")?.as_str()),
+            TargetKind::Mailpit => ("messages", "ID", "messages_count", |m| {
+                m.get("Subject")?.as_str()
+            }),
+            TargetKind::Mailhog => ("items", "ID", "total", |m| {
                 m.get("Content")?
                     .get("Headers")?
                     .get("Subject")?
@@ -338,7 +336,10 @@ impl Owned {
                     .as_str()
             }),
         };
-        let total = v.get("total")?.as_u64()?;
+        let total = v.get(matching)?.as_u64()?;
+        if self.kind != TargetKind::Swarmail && v.get("start")?.as_u64()? != u64::from(start) {
+            return None;
+        }
         let list = v.get(items)?.as_array()?;
         let mut out = Vec::with_capacity(list.len());
         for m in list {
@@ -350,40 +351,65 @@ impl Owned {
         Some((total, out))
     }
 
-    /// Every message the server shows, paged to completion, as
-    /// `(token or "", server id)`. A page that does not parse, or a total
-    /// that the pages do not reach within `max_pages`, is an error.
-    pub async fn list_all(&self, max_pages: u32) -> Result<Vec<(String, String)>, WireError> {
+    /// Page `path(start, PAGE)` to completion: `[(server id, subject)]`.
+    /// Complete means the pages reached the matching count with every id
+    /// distinct and the count unchanged. A page that does not parse, a
+    /// repeated id, a moving count, an empty page short of the count or
+    /// more pages than `max_pages` is an error, never a shorter success.
+    async fn scan(
+        &self,
+        path: impl Fn(u32, u32) -> String,
+        max_pages: u32,
+    ) -> Result<Vec<(String, String)>, WireError> {
         const PAGE: u32 = 250;
-        let mut out = Vec::new();
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut expected = None;
         for n in 0..max_pages {
-            let (status, v) = self.http.get_json(&self.list_path(n * PAGE, PAGE)).await?;
+            let start = n * PAGE;
+            let (status, v) = self.http.get_json(&path(start, PAGE)).await?;
             let (total, items) = (status == 200)
-                .then(|| self.page(&v))
+                .then(|| self.page(&v, start))
                 .flatten()
                 .ok_or(WireError::Malformed)?;
+            if *expected.get_or_insert(total) != total {
+                return Err(WireError::Incomplete);
+            }
             let got = items.len();
-            out.extend(
-                items
-                    .into_iter()
-                    .map(|(id, subject)| (token_of(&subject), id)),
-            );
-            if out.len() as u64 >= total || got == 0 {
-                return Ok(out);
+            for (id, subject) in items {
+                if !seen.insert(id.clone()) {
+                    return Err(WireError::Incomplete);
+                }
+                out.push((id, subject));
+            }
+            match (out.len() as u64).cmp(&total) {
+                std::cmp::Ordering::Equal => return Ok(out),
+                std::cmp::Ordering::Greater => return Err(WireError::Incomplete),
+                std::cmp::Ordering::Less if got == 0 => return Err(WireError::Incomplete),
+                std::cmp::Ordering::Less => {}
             }
         }
         Err(WireError::Oversized)
     }
 
-    /// One search for `token`: every hit, related or not, so a target that
-    /// answers with unrelated mail is recorded doing so.
+    /// Every message the server shows, paged to completion, as
+    /// `(token or "", server id)`.
+    pub async fn list_all(&self, max_pages: u32) -> Result<Vec<(String, String)>, WireError> {
+        let all = self.scan(|s, l| self.list_path(s, l), max_pages).await?;
+        Ok(all
+            .into_iter()
+            .map(|(id, subject)| (token_of(&subject), id))
+            .collect())
+    }
+
+    /// One complete search for `token`: every hit, related or not, so a
+    /// target that answers with unrelated mail is recorded doing so.
     pub async fn find(&self, token: &str) -> Result<Vec<String>, WireError> {
-        let (status, v) = self.http.get_json(&self.find_path(token)).await?;
-        let (_, items) = (status == 200)
-            .then(|| self.page(&v))
-            .flatten()
-            .ok_or(WireError::Malformed)?;
-        Ok(items
+        const FIND_MAX_PAGES: u32 = 4;
+        let hits = self
+            .scan(|s, l| self.find_path(token, s, l), FIND_MAX_PAGES)
+            .await?;
+        Ok(hits
             .into_iter()
             .map(|(_, subject)| token_of(&subject))
             .collect())
@@ -411,7 +437,7 @@ impl Owned {
             serde_json::from_slice(&body).map_err(|_| WireError::Malformed)?;
         match status {
             200 => self
-                .page(&v)
+                .page(&v, 0)
                 .map(|(_, items)| Some(items.into_iter().map(|(_, s)| token_of(&s)).collect()))
                 .ok_or(WireError::Malformed),
             408 => Ok(None),
@@ -420,54 +446,54 @@ impl Owned {
     }
 
     /// Subject, text and HTML of one stored message, for the untimed
-    /// fidelity check.
+    /// fidelity check. Swarmail's parts come from its ingest extraction;
+    /// a competitor's from the raw message it stored, parsed by the
+    /// crate's own MIME parser — one parser for one corpus. Mailpit's
+    /// served `Text` of an HTML-only message is its own derivation, not a
+    /// stored part, so its documented raw endpoint is read instead.
     pub async fn fetch(&self, id: &str) -> Result<Fetched, WireError> {
         let id_q = crate::wire::query_value(id);
-        let path = match self.kind {
-            TargetKind::Swarmail => format!("/api/v1/messages/{id_q}"),
-            TargetKind::Mailpit => format!("/api/v1/message/{id_q}"),
-            TargetKind::Mailhog => format!("/api/v1/messages/{id_q}"),
-        };
-        let (status, v) = self.http.get_json(&path).await?;
-        if status != 200 {
-            return Err(WireError::Malformed);
-        }
-        let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
         match self.kind {
-            TargetKind::Swarmail => Ok(Fetched {
-                subject: s("subject"),
-                text: s("text"),
-                html: s("html"),
-            }),
-            TargetKind::Mailpit => Ok(Fetched {
-                subject: s("Subject"),
-                text: s("Text"),
-                html: s("HTML"),
-            }),
+            TargetKind::Swarmail => {
+                let (status, v) = self
+                    .http
+                    .get_json(&format!("/api/v1/messages/{id_q}"))
+                    .await?;
+                if status != 200 {
+                    return Err(WireError::Malformed);
+                }
+                let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+                Ok(Fetched {
+                    subject: s("subject"),
+                    text: s("text"),
+                    html: s("html"),
+                })
+            }
+            TargetKind::Mailpit => {
+                let (status, raw) = self
+                    .http
+                    .get(&format!("/api/v1/message/{id_q}/raw"))
+                    .await?;
+                if status != 200 {
+                    return Err(WireError::Malformed);
+                }
+                parse_raw(&raw)
+            }
             TargetKind::Mailhog => {
-                // The stored raw message, parsed by the crate's own MIME
-                // parser: one parser for one corpus, not a second opinion.
+                let (status, v) = self
+                    .http
+                    .get_json(&format!("/api/v1/messages/{id_q}"))
+                    .await?;
+                // MailHog answers an unknown id with `200 null`.
+                if status != 200 || v.is_null() {
+                    return Err(WireError::Malformed);
+                }
                 let raw = v
                     .get("Raw")
                     .and_then(|r| r.get("Data"))
                     .and_then(|d| d.as_str())
                     .ok_or(WireError::Malformed)?;
-                let parsed = mail_parser::MessageParser::default()
-                    .parse(raw.as_bytes())
-                    .ok_or(WireError::Malformed)?;
-                // Only parts that are text/plain or text/html as sent: the
-                // parser's converted alternatives are not what was stored.
-                let part = |idx: &[u32], html: bool| {
-                    idx.iter()
-                        .filter_map(|i| parsed.parts.get(*i as usize))
-                        .find(|p| p.is_text_html() == html && p.is_text())
-                        .and_then(|p| p.text_contents().map(str::to_owned))
-                };
-                Ok(Fetched {
-                    subject: parsed.subject().map(str::to_owned),
-                    text: part(&parsed.text_body, false),
-                    html: part(&parsed.html_body, true),
-                })
+                parse_raw(raw.as_bytes())
             }
         }
     }
@@ -596,6 +622,25 @@ pub fn token_of(subject: &str) -> String {
         (Some("mail-compare"), Some(t)) if t.starts_with("mc-") => t.to_owned(),
         _ => String::new(),
     }
+}
+
+/// Only parts that are text/plain or text/html as sent: the parser's
+/// converted alternatives are not what was stored.
+fn parse_raw(raw: &[u8]) -> Result<Fetched, WireError> {
+    let parsed = mail_parser::MessageParser::default()
+        .parse(raw)
+        .ok_or(WireError::Malformed)?;
+    let part = |idx: &[u32], html: bool| {
+        idx.iter()
+            .filter_map(|i| parsed.parts.get(*i as usize))
+            .find(|p| p.is_text_html() == html && p.is_text())
+            .and_then(|p| p.text_contents().map(str::to_owned))
+    };
+    Ok(Fetched {
+        subject: parsed.subject().map(str::to_owned),
+        text: part(&parsed.text_body, false),
+        html: part(&parsed.html_body, true),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

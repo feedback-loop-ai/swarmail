@@ -10,12 +10,15 @@
 //!       --output DIR --scratch DIR --run-id ID --bin TARGET=PATH...
 //!       [--commit SHA --dirty true|false]
 //!   mail_compare admit DIR
+//!   mail_compare mailpit-mcp --endpoint http://127.0.0.1:PORT --sources S
 //!
 //! Exit 0: the mode completed its declared checks. Exit 1: a complete,
 //! sealed run whose workload failed somewhere (the report says where).
 //! Exit 2: prerequisite, operational, interrupt, cleanup or accounting
 //! failure — it dominates, and its output is never sealed.
 
+#[path = "mail_compare/mailpit_mcp.rs"]
+mod mailpit_mcp;
 #[path = "mail_compare/protocol.rs"]
 mod protocol;
 #[path = "mail_compare/records.rs"]
@@ -31,13 +34,14 @@ mod targets;
 #[path = "mail_compare/wire.rs"]
 mod wire;
 
-use protocol::{PinStatus, Protocol, SourceLock, TargetKind};
+use protocol::{Protocol, Role, SourceLock, TargetKind};
 use std::collections::BTreeMap;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: mail_compare check|run|admit … (see scripts/compare-mail.sh)";
+const USAGE: &str =
+    "usage: mail_compare check|run|admit|mailpit-mcp … (see scripts/compare-mail.sh)";
 
 fn main() -> ExitCode {
     // cargo bench appends `--bench`; it selects nothing here.
@@ -53,6 +57,7 @@ fn main() -> ExitCode {
         Some("check") => check(&args[1..]),
         Some("run") => run(&args[1..]),
         Some("admit") => admit(&args[1..]),
+        Some("mailpit-mcp") => mailpit_mcp_mode(&args[1..]),
         Some(_) => {
             eprintln!("{USAGE}");
             2
@@ -94,6 +99,18 @@ fn load(
     let sb = std::fs::read(one(f, "sources")?).map_err(|e| format!("sources: {e}"))?;
     let p = Protocol::parse(&pb).map_err(|r| r.to_string())?;
     let s = SourceLock::parse(&sb).map_err(|r| r.to_string())?;
+    // The captured documents live beside the lock; their bytes are
+    // rechecked every time the lock is used, not trusted from last time.
+    let dir = Path::new(one(f, "sources")?)
+        .parent()
+        .unwrap_or(Path::new("."));
+    s.validate().map_err(|r| r.to_string())?;
+    s.verify_files(if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    })
+    .map_err(|r| format!("source documents: {r}"))?;
     Ok((p, pb, s, sb))
 }
 
@@ -149,6 +166,62 @@ fn admit(args: &[String]) -> i32 {
     }
 }
 
+/// The MCP adapter over stdio. The caller owns the Mailpit server; the
+/// lock must pin one, and the endpoint must be a literal loopback socket.
+/// Stdout carries only the protocol; refusals go to stderr.
+fn mailpit_mcp_mode(args: &[String]) -> i32 {
+    let ready = flags(args).and_then(|f| {
+        if let Some(k) = f
+            .keys()
+            .find(|k| !["endpoint", "sources"].contains(&k.as_str()))
+        {
+            return Err(format!("unknown flag --{k}"));
+        }
+        let addr = mailpit_mcp::parse_endpoint(one(&f, "endpoint")?)?;
+        let path = one(&f, "sources")?;
+        let s = SourceLock::parse(&std::fs::read(path).map_err(|e| format!("sources: {e}"))?)
+            .map_err(|r| r.to_string())?;
+        s.validate().map_err(|r| r.to_string())?;
+        let dir = Path::new(path)
+            .parent()
+            .filter(|d| !d.as_os_str().is_empty());
+        s.verify_files(dir.unwrap_or(Path::new(".")))
+            .map_err(|r| format!("source documents: {r}"))?;
+        s.pin(TargetKind::Mailpit)
+            .ok_or("the source lock pins no Mailpit")?;
+        Ok(addr)
+    });
+    let addr = match ready {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("mail_compare mailpit-mcp: refused: {e}");
+            return 2;
+        }
+    };
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("mail_compare mailpit-mcp: runtime: {e}");
+            return 2;
+        }
+    };
+    let bounds = mailpit_mcp::Bounds::default();
+    let end = rt.block_on(async {
+        let http = wire::Http::new(addr, bounds.request, bounds.max_body);
+        mailpit_mcp::serve(tokio::io::stdin(), tokio::io::stdout(), http, bounds).await
+    });
+    match end {
+        mailpit_mcp::End::Eof => 0,
+        other => {
+            eprintln!("mail_compare mailpit-mcp: ended: {other:?}");
+            2
+        }
+    }
+}
+
 fn kernel() -> String {
     // SAFETY: uname fills a caller-owned struct.
     let mut u: libc::utsname = unsafe { std::mem::zeroed() };
@@ -187,24 +260,22 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
     let (p, pb, s, sb) = load(&f)?;
     let mode = one(&f, "mode")?;
     p.validate().map_err(|r| r.to_string())?;
-    s.validate().map_err(|r| r.to_string())?;
     match mode {
         "collect" => protocol::collection_ready(&p, &s)
             .map_err(|r| format!("not ready for collection: {r}"))?,
         // A smoke run is labelled and never evidence, but it still launches
-        // nothing whose identity is unverified.
+        // nothing without a pinned executable digest, and never with a
+        // retention the protocol did not state.
         "smoke" => {
+            protocol::retention_matches(&p, &s).map_err(|r| r.to_string())?;
             for t in &p.targets {
-                let pin = s.entry(*t).map(|e| e.status);
-                let ok = matches!(
-                    (t, pin),
-                    (TargetKind::Swarmail, Some(PinStatus::Candidate))
-                        | (_, Some(PinStatus::Verified))
-                );
+                let ok = match s.entry(*t) {
+                    Some(e) if *t == TargetKind::Swarmail => e.role == Role::Candidate,
+                    Some(e) => e.pin.is_some(),
+                    None => false,
+                };
                 if !ok {
-                    return Err(format!(
-                        "{t} has no verified source pin; it cannot be launched"
-                    ));
+                    return Err(format!("{t} has no source pin; it cannot be launched"));
                 }
             }
         }
@@ -238,14 +309,10 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
                 (None, targets::swarmail_template(cap.unwrap_or(0)))
             }
             _ => {
-                let e = s.entry(t).ok_or_else(|| format!("{t}: no lock entry"))?;
-                let a = e
-                    .artifact
-                    .as_ref()
-                    .ok_or_else(|| format!("{t}: no artifact pin"))?;
+                let pin = s.pin(t).ok_or_else(|| format!("{t}: no source pin"))?;
                 (
-                    Some(a.executable_sha256.clone()),
-                    e.launch.clone().unwrap_or_default(),
+                    Some(pin.artifact.executable_sha256.clone()),
+                    pin.launch.clone(),
                 )
             }
         };

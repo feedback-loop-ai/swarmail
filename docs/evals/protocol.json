@@ -1,9 +1,9 @@
 {
   "protocol_version": 1,
-  "id": "fair-mail-comparison-draft-1",
+  "id": "fair-mail-comparison-draft-2",
   "status": "draft",
-  "supersedes": null,
-  "change_reason": null,
+  "supersedes": "fair-mail-comparison-draft-1",
+  "change_reason": "Official Mailpit v1.32.0 and MailHog v1.0.1 artifacts were provisioned (decision 0092): the competitor retention is stated as launched, and the common-client poll interval is proposed. Draft-1 was never frozen or collected.",
   "targets": [
     "swarmail",
     "mailpit",
@@ -108,14 +108,14 @@
         {
           "target": "mailpit",
           "mode": "poll",
-          "interval_ms": null,
-          "justification": "Pending: mailpit's official API and setup documents must be captured and inspected for a wait or stream facility before polling is chosen and its interval frozen (spec R2)."
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v1/search): an immediate complete scan, then one every 100 ms until one absolute deadline. Provisional: no wait or stream source has been reviewed (sources.lock.json), so this is not the best available mechanism."
         },
         {
           "target": "mailhog",
           "mode": "poll",
-          "interval_ms": null,
-          "justification": "Pending: mailhog's official API and setup documents must be captured and inspected for a wait or stream facility before polling is chosen and its interval frozen (spec R2)."
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): an immediate complete scan, then one every 100 ms until one absolute deadline. Provisional: no wait or stream source has been reviewed (sources.lock.json), so this is not the best available mechanism."
         }
       ]
     },
@@ -131,20 +131,20 @@
         {
           "target": "swarmail",
           "mode": "poll",
-          "interval_ms": null,
+          "interval_ms": 100,
           "justification": "The common client path: the same search poll every target gets, at the interval frozen for the competitors."
         },
         {
           "target": "mailpit",
           "mode": "poll",
-          "interval_ms": null,
-          "justification": "Pending: mailpit's official API and setup documents must be captured and inspected for a wait or stream facility before polling is chosen and its interval frozen (spec R2)."
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v1/search): an immediate complete scan, then one every 100 ms until one absolute deadline. Provisional: no wait or stream source has been reviewed (sources.lock.json), so this is not the best available mechanism."
         },
         {
           "target": "mailhog",
           "mode": "poll",
-          "interval_ms": null,
-          "justification": "Pending: mailhog's official API and setup documents must be captured and inspected for a wait or stream facility before polling is chosen and its interval frozen (spec R2)."
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): an immediate complete scan, then one every 100 ms until one absolute deadline. Provisional: no wait or stream source has been reviewed (sources.lock.json), so this is not the best available mechanism."
         }
       ]
     }
@@ -168,7 +168,7 @@
       },
       {
         "target": "mailpit",
-        "max_messages": null
+        "max_messages": 10000
       },
       {
         "target": "mailhog",
@@ -217,10 +217,12 @@
     ]
   },
   "unresolved": [
-    "mailpit and mailhog official source, release, license and artifact pins (sources.lock.json)",
-    "mailpit and mailhog wait facility inspection and frozen poll interval",
-    "mailpit and mailhog retention and memory-only storage settings from their official setup documents",
-    "a runtime that enforces the 2 CPU / 2 GiB service budget, and its recorded enforcement evidence",
-    "review of the upstream HTTP API mapping in benches/mail_compare/targets.rs against the captured API documents"
+    "mailpit and mailhog full source revisions and document acquisition attribution (sources.lock.json names each gap)",
+    "a reviewed wait or stream source for mailpit and mailhog before any best-available or adapter wait claim; the 100 ms poll is provisional",
+    "mailpit stores in a scratch SQLite file, not memory: the matched memory profile cannot run it, and an explicitly unmatched storage profile is not yet frozen",
+    "a runtime that enforces the 2 CPU / 2 GiB service budget, and its recorded enforcement evidence; otherwise a separately frozen unenforced local profile",
+    "primary attribution of MailHog's /api/v1/messages/{id} read, which no captured document describes",
+    "the MailHog v2 Swagger documents 'messages'/'id' and a search 'total' of stored messages, while the pinned executable answers 'items'/'ID' with a matching total; the decoder follows the executable and the discrepancy stays recorded",
+    "protocol v2 fields for per-target storage, resource enforcement and operation budgets (decision 0092 §2)"
   ]
 }
