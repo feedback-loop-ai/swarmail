@@ -1055,7 +1055,7 @@ mod tests {
                 .collect::<std::collections::BTreeSet<_>>()
         );
         for schema in schemas.values() {
-            assert!(schema.is_object());
+            assert_eq!(schema["type"], "object");
             assert!(schema.get("$ref").is_none());
         }
         for revision in [Revision::June, Revision::November] {
