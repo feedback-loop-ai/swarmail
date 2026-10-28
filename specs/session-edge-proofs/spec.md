@@ -1,16 +1,17 @@
 # Pin SMTP and POP3 session edges
 
-Date: 2026-10-24. Status: residual draft design for NEXT-188, issue #188,
-epic #192. Feature slug: `session-edge-proofs` (retain the existing family).
-Residual input candidate: `11134f1`; actual reviewed Swarmail base: `45d68df`;
-accepted engine-pin commit: `238372d`. Each execution must resolve its own
-current HEAD/tree after subsequent documentation commits.
+Date: 2026-10-23. Status: integrated draft design for NEXT-188, issue #188,
+epic #192. Run: `epic-192-next-188-integrated-ver-7bc38731`.
+Retain the short feature slug `session-edge-proofs` and revise its existing
+three artifacts in place.
 
-Historical ancestry only: `cc30ea2` was the review-clean #177 integration
-candidate for the earlier design `150c84a` and implementation
-`e7d1d8142c3e24b2a817822969ab0dae6619680a`. These identifiers explain
-inherited work; they are not the current reviewed base or execution binding.
-Swarmail remains one Rust crate. This design does not close epic #192.
+Starting candidate: `930bf534cb18e05f4c85e28eed3473297d159743`, tree
+`2ba9b8a5f1294adb6c41d8649ce60e70201525a1`. Local `origin/main` and
+merge-base: `df8630f69a390fc6a35e1dfc8c54f2f40dd7e624`. The three
+issue-188 commits above that base are `120ef3f`, `45d7a2f`, `930bf53`.
+This is local identity, not a network-freshness claim. Later receipts must
+bind their actual final candidate, including this design commit and any
+permitted repairs; this starting identity is not their verification receipt.
 
 ## Feature and rationale
 
@@ -20,34 +21,21 @@ survives, a completed DATA transaction is consumed, authentication remains
 unchanged, or deleted POP3 content stays unavailable. Each refusal therefore
 has a same-session continuation and an observable state witness. Accepted
 mail is queried by the exact ID returned by DATA, immediately and without
-polling, so the tests cannot conceal an acceptance-before-storage gap.
+polling, so waiting for eventual visibility cannot mask a missing accepted record.
 
-The 2026-10-24 residual corrects the review record: the quickstart borrowed a
-sibling executable and superseded digest, ancestry was not labeled historical,
-and a tracked source description could be mistaken for a committed build
-receipt. Correct these bindings together so isolated execution proves its
-actual candidate and engine. See [tracked provenance](plan.md#engine-provenance).
-
-Triage classified this residual as `engine` because executable gate guidance
-and delivery provenance are affected. Under accepted 0057, four independent
-reviews remain the smallest permitted route despite the small Markdown diff.
+Triage selected full design and four reviewers because session state,
+authentication precedence, persistence refusal and listener observation need
+contract interpretation. Test-only scope does not reduce that review burden.
+No production defect has been reproduced by this design phase.
 
 ## Scope and accepted authority
 
-This residual edits only `spec.md`, `plan.md` and `tasks.md` in this directory.
-Keep AC1–AC6 and their existing witnesses unchanged. The inherited test-only
-implementation is a preservation reference, not authorization for fixture
-repair in this residual. Preserve #177's owned admission, reap, backoff and
-task-completion events. No source, test, public interface, schema, dependency,
-engine pin, tooling patch, policy, gate, provider mapping, accepted decision
-or unrelated documentation change is authorized. No rebuild, receipt copying
-or new provenance machinery is required.
-
-Delivery authorities are accepted
-[0045](../../docs/decisions/0045-delivery-repairs.md),
-[0050](../../docs/decisions/0050-delivery-gates.md),
-[0056](../../docs/decisions/0056-signing-policy.md) and
-[0057](../../docs/decisions/0057-codex-delivery-recipes.md).
+Implementation is confined to the four existing test/fixture files named in
+[plan.md](plan.md). Any `src/pop3.rs` edit stays strictly inside its existing
+`#[cfg(test)] mod tests`. No extra source/support paths or sibling harness
+are permitted. Preserve the integrated base's owned admission, reap, backoff
+and task-completion events. No production behavior, public interface, storage schema, dependency, policy, gate,
+OpenAPI, metrics, MCP or unrelated product-documentation change is authorized.
 
 This is additional proof of accepted semantics, not a semantic amendment;
 no new decision is declared. Authorities are accepted
@@ -59,7 +47,12 @@ no new decision is declared. Authorities are accepted
 [0027's controlling clarification](../../docs/decisions/0027-living-listeners-bounded-sessions.md),
 [0028](../../docs/decisions/0028-wire-octets-auth-refusals-and-the-maildrop-snapshot.md),
 [0034](../../docs/decisions/0034-data-terminator-boundary.md) and
-[0046](../../docs/decisions/0046-smtp-pop3-edges.md).
+[0046](../../docs/decisions/0046-smtp-pop3-edges.md), plus
+[0015 as corrected by 0045](../../docs/decisions/0045-delivery-repairs.md)
+for committed POP3 prefixes and marked suffixes. Delivery authority is
+[0050](../../docs/decisions/0050-delivery-gates.md),
+[0056](../../docs/decisions/0056-signing-policy.md) and
+[0057](../../docs/decisions/0057-codex-delivery-recipes.md).
 Later acceptance markers control historical proposal wording. Accept equals
 stored, subscribe-before-check, oldest-only pruning and extraction at ingest
 remain unchanged. Stored `envelope_from`, rather than header From, proves
@@ -73,49 +66,67 @@ authority. A weakening of a frozen guarantee is refused.
 
 ## Panel synthesis and rulings
 
-The chief read both `.brokkr/state/design/positions/simplicity.md` and
-`.brokkr/state/design/positions/robustness.md`, and intake
-`.brokkr/state/tasks/epic-192-issue-188-residual-foll-84aa1533.md`.
-Both positions support the same bounded correction; there is no genuine
-conflict between them to average. The following rulings choose explicitly
-among their supported and rejected alternatives.
+Read both run-local positions, `.brokkr/state/design/positions/simplicity.md`
+and `.brokkr/state/design/positions/robustness.md`, and intake
+`.brokkr/state/tasks/epic-192-next-188-integrated-ver-7bc38731.md`.
+Both positions support the existing six proofs and full review. There is no
+genuine disagreement on protocol semantics; the conflict is between this
+commission and obsolete execution directions in the inherited design.
+These rulings choose explicit alternatives rather than averaging them:
 
 | Question | Ruling and cost |
 |---|---|
-| Artifact scope | Adopt simplicity's correction of the existing three-document family, supported by robustness. Reject a second spec family, standalone provenance file or new validator. Cost: history and current instructions coexist and need explicit labels. |
-| Binding depth | Adopt robustness's joint correction of candidate identity, executable identity and evidence provenance, also supported by simplicity. Reject a pathname/hash-only patch. Cost: each execution repeats identity checks; the cheaper alternative leaves misleading ancestry and receipt claims. |
-| Provenance ownership | Adopt one plan section with tooling.json owning patch order/checksums; name the three patches for navigation as robustness recommends. Reject a second manifest and new rebuild/attestation machinery. Cost: the recorded source composite is not independently reproduced here, and the ignored receipt is not durable tracked evidence. |
-| Historical record | Adopt both positions' explicit historical/superseded labels and preserve the dated retry2 observation. Reject global SHA replacement or deletion of history. Cost: some repetition remains, but old observations cannot masquerade as current receipts. |
-| Runtime and tests | Adopt both positions' preservation of all six criteria and witnesses. Robustness's crash, webhook, pruning, load, chaos, hostile-byte and certificate analysis sets limits, not new implementation. Reject duplicate tests, fixture repair and broader hardening in this residual. Cost: finite existing traces retain their original coverage limits. |
-| Review and gates | Retain the recorded engine route and four configured independent lenses. Reject a one-reviewer shortcut, author self-review, provider fallback and old receipts as fresh proof. Cost: full gates and provider prerequisites exceed the effort of the text correction, as accepted 0057 requires. |
+| Reimplement or retain | Adopt simplicity's reuse of the existing tests and spec family, supported by robustness. Reject a duplicate suite or design family. Cost: audit inherited tests and obtain fresh execution evidence; source presence alone is insufficient. |
+| Proof depth | Adopt robustness's causal, same-session transitions and immediate accepted-ID/raw/provenance witnesses, also supported by simplicity. Reject prefix-only, count-only, reconnect and eventually-visible substitutes. Cost: longer explicit exchanges; the cheaper alternative could conceal envelope loss or identity mutation. |
+| Health observation | Adopt both positions' owner-local probe, subscribe-before-arm order, held retry readiness and exact parsed JSON. Reject direct flag mutation, API-side adapters, polling and serialized JSON member-order requirements. Cost: real HTTP wiring and deliberate fixture ownership; harmless key reorderings remain allowed. |
+| Harness placement | Adopt both current positions and the explicit commission: retain the stable health proof inline and measured, with unconditional release/abort and success joins. Reject the inherited optional sibling-harness escape. Cost: a necessary cold failure arm that cannot meet scope and exact coverage requires re-triage, not relocation, a coverage exclusion or weaker cleanup. This does not amend 0020's general placement rule. |
+| Fixture architecture | Adopt simplicity's existing bounded raw reader, concrete assertion helpers, two independent DATA 451 fixtures and real SQLite triggers. Reject generalized fault/state frameworks, new files, feature flags and dependencies. Cost: readable repetition and schema-coupled triggers. |
+| Robustness scope | Adopt robustness's failure analysis as proof limits and structural review obligations. Reject new crash/webhook/TLS/burst paths absent re-triage. Cost: finite traces do not prove arbitrary schedules, exactly-once SMTP, durable webhooks or global resource bounds. |
+| Candidate and delivery | Adopt both positions' current-candidate binding, full gates, pinned offline verify and four actual independent reviews. Reject stale ancestry prerequisites, old receipts and version-only binary checks. Root owns final integration/CI with no separate #177-first prerequisite. Cost: real provider/tool/cache failures leave obligations outstanding. |
 
-### Clarification — 2026-10-23, retry2 (historical)
+### Clarification — 2026-10-23, retry2
 
-This dated observation describes the earlier retry2 candidate only.
+Historical entry preserved below. It records the previous run, not the
+current candidate or a current execution prerequisite. In this entry only,
+"source SHA above" refers to `e7d1d8142c3e24b2a817822969ab0dae6619680a`;
+its historical design parent/base were `150c84a`/`cc30ea2`. Its observations
+and receipts cannot satisfy this integrated run.
+
 The source already contains all six implementations. The chief independently
 resolved workspace Git HEAD to the exact source SHA above, found a clean
 starting worktree, and inspected its four-file diff (405 additions, 30
 deletions); `src/pop3.rs` additions are inside its existing cfg(test) module.
-That historical source's parent is `150c84a`, whose parent is `cc30ea2`. The earlier
+The source's parent is `150c84a`, whose parent is `cc30ea2`. The earlier
 panel/intake alternate-object visibility failure remains historical evidence;
 it did not recur in this chief workspace and is not a current observed block.
 Every later verification environment must still resolve and bind its own
 candidate; this observation is not a hermetic verification receipt.
 
-The retry2 chief also checked the tracked `recipes -> bundles` symlink (mode
+The chief also checked the tracked `recipes -> bundles` symlink (mode
 120000), and the candidate `.forge/bin/brokkr` digest
 `e525babf643d6a1e905ce6cf108a7f624895a12adaa2677497d9062c60a4d86c`
-against the then-current tooling.json; it reported 0.12.0. This historical
-preflight and e525 digest are superseded by pin commit `238372d` and the
-active ab935558 digest in the plan; they prove nothing about this residual. No prior completed gate or four-review
+against tooling.json; it reports 0.12.0. No prior completed gate or four-review
 receipt was found in the available run-local evidence. Tasks below therefore
 require retention, validation and fresh delivery proof, not duplicate coding.
 Design preflights do not substitute for the pinned verify/check seats.
 
+### Clarification — 2026-10-23, integrated candidate
+
+The chief independently resolved the starting HEAD/tree/local base recorded
+above, inspected the clean seven-file branch diff (three specs and four
+test/fixture files), and confirmed the 129 added POP3 lines are inside the
+existing test module. The exact `.forge/bin/brokkr` digest matches the task
+and `bundles/self/tooling.json`. Both current positions and intake identify
+all six proofs as already implemented. Retain them; only a demonstrated
+fixture defect permits a narrow repair within the listed files. The previous
+stale-#177 run is historical context only. Current paths, scope and delivery
+requirements here supersede its execution instructions. No test, house gate,
+hermetic verification or independent-review pass is claimed by this entry.
+
 ## Acceptance Criteria
 
-All six criteria are mandatory. Fixed SMTP replies below include CRLF on
-the wire; the PLAIN prompt must retain its space. Use exact single-line
+All six protocol criteria and the delivery criterion are mandatory. Fixed
+SMTP replies below include CRLF on the wire; the PLAIN prompt must retain its space. Use exact single-line
 assertions for the named decisions, not prefix/substring matching.
 
 ### AC1 — Recipient-free DATA preserves the open envelope
@@ -202,31 +213,24 @@ NOOP's exact `+OK` on the same stream to expose leaked headers/body/dot
 terminators. Preserve the existing external-clear TOP proof. Out-of-range
 numbers and pending DELE marks cannot substitute for a committed-gone slot.
 
-## Residual record acceptance
+### AC7 — Fresh integrated delivery evidence
 
-These additional record checks preserve, rather than replace, AC1–AC6:
+Record final candidate commit/tree/base, clean scope audit, each command,
+exit and nonzero executed counts for `smtp_edges`, `pop3`, `persistence` and
+the library health test. Every gate in the house inventory must pass,
+including exact zero missed lines, branches and functions and its selftest;
+native-tls absence must be fail-closed. Actual pinned offline verify must
+install nothing, establish binary/shim identity and execute the pinned proof
+chain, including design-check selftest and delivery tamper-boundary proof.
+Local preflights and earlier receipts do not replace that dispatch.
 
-- R1: The active quickstart runs from the candidate root, hashes its own
-  `.forge/bin/brokkr` against unchanged tooling.json and the full active
-  `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`,
-  resolves that executable absolutely for boxed checks, and compiles with it.
-  No active sibling path, PATH fallback or e525 instruction remains.
-- R2: Spec and tasks identify `45d68df` as reviewed base and `238372d` as
-  pin commit, with `11134f1` as residual input, and label cc30ea2, 150c84a
-  and e7d1d81 ancestry historical. Every retained e525 reference is historical
-  and superseded. Current execution binds its own HEAD/tree and ancestry.
-- R3: The tracked plan names the engine base, ordered patches, recorded source
-  composite, compiler and binary digest consistently with tooling.json. It
-  states that `.forge/epic192/engine-main-entry/build-receipt.json` is
-  gitignored run-local evidence, not tracked or committed, and attributes
-  historical build claims without asserting a fresh rebuild or receipt inspection.
-- R4: Diff review against `11134f1` finds only these three documents changed,
-  with AC1–AC6 and T2–T7 witnesses semantically intact and every protected
-  implementation, pin, gate, policy and accepted ruling unchanged.
-- R5: Targeted suites, all house gates and protected independent reviews are
-  recorded against the actual execution candidate before delivery. Missing
-  evidence stays outstanding; inspection, hashing or compile success alone
-  cannot satisfy verification or review.
+Require actual independent final-candidate reviews: Qwen Max correctness,
+Claude Opus security, official DeepSeek Flash guarantees and DashScope
+GLM-5.3 tests. No DeepSeek Pro, model/provider fallback or synthesized receipt.
+A security hold stops delivery. After a repair, refresh affected evidence and
+reviews with explicit final-candidate binding. Missing tools/cache/provider
+results remain outstanding. Root retains integration and CI-owned checks in
+their applicable contexts; this design is not a completion claim.
 
 ## Proof discipline and delivery boundary
 
@@ -247,7 +251,7 @@ shim integrity checks. CI-only obligations remain explicitly CI-owned.
 
 Full4 means correctness Qwen Max, security Claude Opus, guarantees official
 DeepSeek Flash, tests DashScope GLM-5.3; never DeepSeek Pro or fallback.
-Root owns #177 publication before final integration/CI and reruns proofs on
-the integrated candidate. Author commits are unsigned; no push, merge,
-tag or registry action is authorized. Drafting is not implementation,
+Root owns final integration/CI and reruns required proofs if integration
+changes the verified candidate. No separate #177 landing prerequisite applies.
+Author commits are unsigned; no push, merge, tag or registry action is authorized. Drafting is not implementation,
 verification, operator acceptance, publication or closure of #192.
