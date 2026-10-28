@@ -1,0 +1,222 @@
+//! Capture-only harness for tests/fixtures/mcp-structured-output/march-current-main.jsonl.
+//! It is copied into an unmodified pre-#153 #152 source tree as tests/capture_march_current_main.rs,
+//! beside a copy of march-current-main.cases.json named capture_cases.json, and run
+//! there; the baseline's src/ is never edited. It drives March over real HTTP
+//! (header omitted and explicit) and over the baseline's real binary bridge
+//! (protocolVersion omitted and explicit), asserts the four transcripts are
+//! byte-identical, and writes them with the requests to SWARMAIL_CAPTURE_DIR.
+mod common;
+use common::{http_send_text_with_headers, start};
+use serde_json::{Value, json};
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+const MARCH: &str = "2025-03-26";
+
+fn historical() -> swarmail::model::Email {
+    use swarmail::model::{Email, EmailAddress};
+    Email {
+        id: "historical".into(),
+        inbox: "contract".into(),
+        from: Some(EmailAddress {
+            name: Some("Sender \"雪\"".into()),
+            address: "from@x.io".into(),
+        }),
+        envelope_from: None,
+        to: vec![EmailAddress {
+            name: None,
+            address: "to@x.io".into(),
+        }],
+        cc: vec![EmailAddress {
+            name: Some("Cc".into()),
+            address: "cc@x.io".into(),
+        }],
+        recipients: vec!["bcc@x.io".into()],
+        subject: Some("quoted \"雪\" \\ subject".into()),
+        received_at: "1969-12-31T23:59:59Z".into(),
+        received_ms: -1000,
+        size: 42,
+        text: Some("line\n\t\u{0}\u{1b} 雪 \\".into()),
+        html: Some("<b>untrusted</b>".into()),
+        links: vec!["https://x.io/?q=雪".into()],
+        codes: (0..65).map(|i| format!("{i:04}")).collect(),
+        message_id: Some("message@x".into()),
+        in_reply_to: Some("parent@x".into()),
+        references: vec!["root@x".into()],
+        raw: b"never exposed".to_vec(),
+    }
+}
+
+fn minimal() -> swarmail::model::Email {
+    let mut minimal = historical();
+    minimal.id = "minimal".into();
+    minimal.inbox = "other".into();
+    minimal.envelope_from = Some(String::new());
+    minimal.from = None;
+    minimal.to.clear();
+    minimal.cc.clear();
+    minimal.recipients.clear();
+    minimal.subject = None;
+    minimal.text = None;
+    minimal.html = None;
+    minimal.links.clear();
+    minimal.codes.clear();
+    minimal.message_id = None;
+    minimal.in_reply_to = None;
+    minimal.references.clear();
+    minimal
+}
+
+struct Binary {
+    child: tokio::process::Child,
+    input: tokio::process::ChildStdin,
+    output: BufReader<tokio::process::ChildStdout>,
+}
+impl Binary {
+    fn start(addr: std::net::SocketAddr) -> Self {
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_swarmail"))
+            .args(["mcp", "--url", &format!("http://{addr}")])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let input = child.stdin.take().unwrap();
+        let output = BufReader::new(child.stdout.take().unwrap());
+        Self { child, input, output }
+    }
+    async fn send(&mut self, request: &Value) {
+        self.input.write_all(format!("{request}\n").as_bytes()).await.unwrap();
+    }
+    async fn line(&mut self) -> String {
+        let mut line = String::new();
+        let n = tokio::time::timeout(Duration::from_secs(30), self.output.read_line(&mut line))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(n > 0, "binary closed stdout");
+        line.strip_suffix('\n').unwrap().to_owned()
+    }
+    async fn finish(mut self) {
+        drop(self.input);
+        let mut rest = String::new();
+        self.output.read_to_string(&mut rest).await.unwrap();
+        assert!(rest.is_empty(), "unexpected protocol lines: {rest}");
+        assert!(self.child.wait().await.unwrap().success());
+        let mut stderr = String::new();
+        self.child.stderr.take().unwrap().read_to_string(&mut stderr).await.unwrap();
+        assert!(stderr.is_empty(), "{stderr}");
+    }
+}
+
+fn call(id: Value, name: &str, arguments: Value) -> Value {
+    json!({"jsonrpc":"2.0","id": id, "method":"tools/call", "params":{"name":format!("swarmail_{name}"), "arguments":arguments}})
+}
+
+async fn transcript(version: Option<&str>, stdio: bool) -> (Vec<String>, Vec<String>) {
+    let srv = start().await;
+    let mut binary = None;
+    if stdio {
+        let mut b = Binary::start(srv.http_addr);
+        let mut init = json!({"jsonrpc":"2.0", "id":"init", "method":"initialize", "params":{"protocolVersion":MARCH,"capabilities":{},"clientInfo":{"name":"revision-test","version":"1"}}});
+        if version.is_none() {
+            init["params"].as_object_mut().unwrap().remove("protocolVersion");
+            b.send(&init).await;
+            let reply: Value = serde_json::from_str(&b.line().await).unwrap();
+            assert_eq!(reply["result"]["protocolVersion"], MARCH);
+        } else {
+            b.send(&init).await;
+            let reply: Value = serde_json::from_str(&b.line().await).unwrap();
+            assert_eq!(reply["result"]["protocolVersion"], MARCH);
+            b.send(&json!({"method":"notifications/initialized"})).await;
+            b.send(&json!({"id":"ready", "method":"ping"})).await;
+            assert!(b.line().await.contains("\"ready\""));
+        }
+        binary = Some(b);
+    }
+    let mut requests = Vec::new();
+    let mut lines = Vec::new();
+    let cases: Value = serde_json::from_str(include_str!("capture_cases.json")).unwrap();
+    let mut seeded = Value::Null;
+    let mut steps = vec![(json!({"id":1,"method":"tools/list"}), false, None)];
+    for case in cases.as_array().unwrap() {
+        steps.push((Value::Null, case["restore"] == true, Some(case.clone())));
+    }
+    for (mut request, restore, case) in steps {
+        if restore {
+            srv.store.insert(historical()).unwrap();
+            srv.store.insert(minimal()).unwrap();
+        }
+        let name = case.as_ref().map(|c| c["tool"].as_str().unwrap().to_owned());
+        if let Some(case) = &case {
+            let mut arguments = case["arguments"].clone();
+            if arguments["id"] == "$seed" {
+                arguments["id"] = seeded.clone();
+            }
+            request = call(json!(2), name.as_deref().unwrap(), arguments);
+        }
+        let raw = if let Some(b) = binary.as_mut() {
+            b.send(&request).await;
+            b.line().await
+        } else {
+            let headers = version.map(|v| vec![("MCP-Protocol-Version", v)]).unwrap_or_default();
+            let (status, raw) = http_send_text_with_headers(
+                srv.http_addr, "POST", "/mcp", &headers, Some(&request.to_string()),
+            )
+            .await;
+            assert_eq!(status, 200);
+            raw
+        };
+        let normalized = if name.as_deref() == Some("seed_email") {
+            let reply: Value = serde_json::from_str(&raw).unwrap();
+            let payload: Value =
+                serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+            seeded = payload["id"].clone();
+            let id = seeded.as_str().unwrap();
+            assert_eq!(raw.matches(id).count(), 1);
+            raw.replace(id, "$SEED_ID")
+        } else {
+            if seeded.is_string() {
+                assert!(!raw.contains(seeded.as_str().unwrap()));
+            }
+            raw
+        };
+        let logged = if seeded.is_string() {
+            request.to_string().replace(seeded.as_str().unwrap(), "$SEED_ID")
+        } else {
+            request.to_string()
+        };
+        requests.push(logged);
+        lines.push(normalized);
+    }
+    if let Some(b) = binary {
+        b.finish().await;
+    }
+    srv.stop().await;
+    (requests, lines)
+}
+
+#[tokio::test]
+async fn capture() {
+    let dir = std::path::PathBuf::from(std::env::var("SWARMAIL_CAPTURE_DIR").unwrap());
+    let mut first: Option<(Vec<String>, Vec<String>)> = None;
+    for (label, version, stdio) in [
+        ("http-default", None, false),
+        ("http-march", Some(MARCH), false),
+        ("stdio-default", None, true),
+        ("stdio-march", Some(MARCH), true),
+    ] {
+        let (requests, lines) = transcript(version, stdio).await;
+        let body = lines.join("\n") + "\n";
+        std::fs::write(dir.join(format!("{label}.jsonl")), &body).unwrap();
+        std::fs::write(dir.join(format!("{label}.requests.jsonl")), requests.join("\n") + "\n").unwrap();
+        if let Some((r, l)) = &first {
+            assert_eq!(r, &requests, "{label} requests");
+            assert_eq!(l, &lines, "{label} bytes");
+        } else {
+            first = Some((requests, lines));
+        }
+    }
+}
