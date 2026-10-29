@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline proofs through the recorded CLI, never a live provider.
 
-Run: python3 tests/codex_review_routing.py --engine .forge/bin/brokkr --out <new-directory>
+Run: python3 tests/codex_review_routing.py --engine .brokkr/state/bin/brokkr --out <new-directory>
 Controlled forge-driver/v1 participants exercise the production dispatcher,
 aggregator, candidate fence and evaluator. Real recipe resolution is separate
 from controlled dispatch: no claim about installed provider compatibility.
@@ -85,16 +85,24 @@ def resolved_matrix(engine, out):
         'codex': {'review:correctness': ('claude', ['fable']),
                   'review:security': ('dsh', ['flash']), 'review:tests': ('dsh', ['glm-flash'])},
     }
-    five = {'correctness': ('codex', ['astra']), 'security': ('dsh', ['flash']),
-            'tests': ('dsh', ['glm-flash']), 'guarantees': ('codex', ['astra']),
+    # Proposed 0098: correctness and guarantees take security's official Flash route.
+    five = {'correctness': ('dsh', ['flash']), 'security': ('dsh', ['flash']),
+            'tests': ('dsh', ['glm-flash']), 'guarantees': ('dsh', ['flash']),
             'independent': ('claude', ['fable'])}
     expected['codex-careful'] = {'review:' + k: v for k, v in five.items()}
     expected['codex-fast'] = {'review:chore': ('dsh', ['flash']),
         'review:feature:correctness': ('dsh', ['qwen-max', 'sonnet']),
         'review:feature:security': ('dsh', ['flash']),
         **{'review:' + lane + ':' + k: v for lane in ['design', 'engine'] for k, v in five.items()}}
+    expected['mixed-opus-terra'] = {'review:' + k: v for k, v in five.items()}
+    # Proposed 0099: zero-Codex careful lane; Fable correctness, Opus independent.
+    expected['claude-careful'] = {'review:' + k: v for k, v in five.items()}
+    expected['claude-careful']['review:correctness'] = ('claude', ['fable'])
+    expected['claude-careful']['review:independent'] = ('claude', ['opus'])
+    expected['claude-careful']['intake'] = ('claude', ['haiku55'])
     expected['codex']['intake'] = ('codex', ['sol'])
     expected['codex-careful']['intake'] = ('codex', ['sol'])
+    expected['mixed-opus-terra']['intake'] = ('codex', ['terra61'])
     expected['codex-fast']['triage'] = ('claude', ['opus'])
     wanted_triage = dict(agent='codex-triage', provider='claude', chain=['opus'],
         models=['opus'], concrete=['claude-opus-5-5'], efforts={'opus': 'medium'},
@@ -113,8 +121,10 @@ def resolved_matrix(engine, out):
         assert actual == expected[recipe], (recipe, actual)
         for key, agent in agents.items():
             if recipe != 'self' and key.startswith('implement'):
-                chain = ['luna'] if recipe == 'codex-fast' else ['sol']
-                assert agent['provider'] == 'codex' and agent['chain'] == chain
+                work = {'codex-fast': ('codex', ['luna']),
+                        'mixed-opus-terra': ('claude', ['opus']),
+                        'claude-careful': ('claude', ['sonnet'])}.get(recipe, ('codex', ['sol']))
+                assert (agent['provider'], agent['chain']) == work, (recipe, key, agent)
         if recipe != 'self':
             keys = (['review:design:tests', 'review:engine:tests']
                     if recipe == 'codex-fast' else ['review:tests'])
@@ -122,7 +132,7 @@ def resolved_matrix(engine, out):
                           out / (recipe + '-tests-office'))
             assert result.returncode == 0, result.stderr
             office = json.loads(result.stdout)
-            adapter_path = ROOT / 'adapters/dsh.json'
+            adapter_path = ROOT / '.brokkr/adapters/dsh.json'
             adapter = json.loads(adapter_path.read_text())
             wanted = dict(agent='codex-review-tests', provider='dsh',
                 chain=['glm-flash'], model='glm-flash', chosen_index=0,
@@ -207,13 +217,17 @@ def resolved_matrix(engine, out):
             model = 'luna' if recipe == 'codex-fast' else 'sol'
             effort = ('medium' if key == 'intake' else 'high') if recipe == 'codex' else (
                 'high' if key == 'intake' else 'xhigh')
+            if recipe == 'mixed-opus-terra':
+                model, effort = ('terra61' if key == 'intake' else 'opus'), 'high'
+            if recipe == 'claude-careful':
+                model, effort = ('haiku55' if key == 'intake' else 'sonnet'), 'high'
             assert office['models'] == [model] and office['efforts'] == {model: effort}
         if recipe == 'codex-fast':
             selected = agents['triage']
             result = call([engine, 'agents', 'show', selected['agent']], ROOT, out / 'triage-office')
             assert result.returncode == 0, result.stderr
             office = json.loads(result.stdout)
-            adapter = json.loads((ROOT / 'adapters/claude.json').read_text())
+            adapter = json.loads((ROOT / '.brokkr/adapters/claude.json').read_text())
             triage = dict(agent=selected['agent'], provider=selected['provider'],
                 chain=selected['chain'], models=office['models'], efforts=office['efforts'],
                 concrete=[adapter['models'][model] for model in office['models']],
@@ -248,23 +262,351 @@ def resolved_matrix(engine, out):
                                                 providers_called=False))
         # Negative controls run the same whole-matrix assertion used above.
         for key in [k for k in actual if k.startswith('review')]:
-            for mutation in ['missing', 'pro', 'fallback', 'merged']:
+            for mutation in ['missing', 'pro', 'fallback', 'merged', 'astra']:
                 bad = copy.deepcopy(actual)
                 if mutation == 'missing':
                     del bad[key]
+                elif mutation == 'astra':
+                    # The pre-0098 Astra route must not satisfy the matrix.
+                    bad[key] = ('codex', ['astra'])
                 else:
                     bad[key] = ('dsh', ['deepseek-pro']) if mutation == 'pro' else ('claude', ['fable', 'sol']) if mutation == 'fallback' else ('codex', ['sol'])
                 assert bad != expected[recipe], (recipe, key, mutation)
     base = manifests['self']
     shared_design = {k: v for k, v in base['agents'].items() if k.startswith('design:')}
     for recipe, manifest in manifests.items():
-        assert {k: v for k, v in manifest['agents'].items()
-                if k.startswith('design:')} == shared_design, recipe
+        design = {k: v for k, v in manifest['agents'].items() if k.startswith('design:')}
+        # claude-careful replaces the design crew; its route is pinned below.
+        assert (design != shared_design) == (recipe == 'claude-careful'), recipe
         for key in ['design:check', 'verify', 'ship']:
             assert manifest['drivers'][key] == base['drivers'][key], (recipe, key)
             assert manifest['hands'][key] == base['hands'][key], (recipe, key)
             assert manifest['boundary'][key] == base['boundary'][key], (recipe, key)
+    mixed_route(engine, out, manifests)
+    claude_careful_route(engine, out, manifests)
     print('resolved triage/intake, work/review matrices and negative controls passed', flush=True)
+
+
+# Operator-directed mixed route (proposed 0090, review members per proposed
+# 0098): office, provider, concrete pin,
+# adapter route and office effort for each of its seven model seats.
+MIXED_ROUTE = {
+    'intake': ('mixed-terra-intake', 'codex', 'terra61', 'gpt-6.1-terra', None, 'high'),
+    'implement': ('mixed-opus-implementer', 'claude', 'opus', 'claude-opus-5-5', None, 'high'),
+    'review:correctness': ('codex-review-astra-correctness', 'dsh', 'flash', 'deepseek-flash',
+                           ('deepseek-official', 'uncontracted'), 'high'),
+    'review:security': ('codex-review-security', 'dsh', 'flash', 'deepseek-flash',
+                        ('deepseek-official', 'uncontracted'), 'high'),
+    'review:tests': ('codex-review-tests', 'dsh', 'glm-flash', 'spark-glm/GLM-5.3-Flash-EXL3',
+                     ('spark-glm', 'local'), None),
+    'review:guarantees': ('codex-review-guarantees', 'dsh', 'flash', 'deepseek-flash',
+                          ('deepseek-official', 'uncontracted'), 'high'),
+    'review:independent': ('codex-review-independent', 'claude', 'fable', 'claude-fable-5-1', None, 'high'),
+}
+
+
+def mixed_route(engine, out, manifests):
+    mixed, careful = manifests['mixed-opus-terra'], manifests['codex-careful']
+    adapters = {name: json.loads((ROOT / f'.brokkr/adapters/{name}.json').read_text())
+                for name in ['codex', 'claude', 'dsh']}
+    source = json.loads((ROOT / '.brokkr/recipes/mixed-opus-terra/bundle.json').read_text())
+    observed = {}
+    for key in MIXED_ROUTE:
+        selected = mixed['agents'].get(key)
+        if selected is None:
+            continue
+        result = call([engine, 'agents', 'show', selected['agent']], ROOT,
+                      out / ('mixed-' + key.replace(':', '-') + '-office'))
+        assert result.returncode == 0, result.stderr
+        office = json.loads(result.stdout)
+        site = mixed['capabilities']['sites'][key]
+        pins = [p for c in site['candidates'] for p in c['model_pins']['read']]
+        observed[key] = dict(agent=selected['agent'], site_office=site['office'],
+            provider=selected['provider'], chain=selected['chain'], model=selected['model'],
+            chosen_index=selected['chosen_index'], skipped=selected['skipped'],
+            effort=selected.get('effort'), models=office['models'], efforts=office['efforts'],
+            resolution=[(c['model'], c['provider'], c['status']) for c in office['resolution']['chain']],
+            chosen=office['resolution']['chosen'], concrete=[p['id'] for p in pins],
+            route=[(p['route'], adapters[selected['provider']]['routes'][p['route']])
+                   for p in pins if 'route' in p],
+            charter=office['charter'], limits=office.get('limits'),
+            hands=mixed['hands'].get(key), boundary=mixed['boundary'].get(key))
+    observed['source'] = dict(extends=source['extends'], override=source['override'],
+                              seats=sorted(source['seats']))
+    observed['aliases'] = {a: adapters['codex']['models'][a] for a in ['terra', 'terra61']}
+
+    def charter(agent):
+        office = json.loads((ROOT / f'.brokkr/agents/{agent}.json').read_text())
+        while 'charter' not in office:
+            office = json.loads((ROOT / f".brokkr/agents/{office['extends']}.json").read_text())
+        return office['charter']
+    wanted = {}
+    for key, (agent, provider, model, concrete, route, effort) in MIXED_ROUTE.items():
+        work = key in ['intake', 'implement']
+        base = 'intake' if key == 'intake' else 'implementer'
+        wanted[key] = dict(agent=agent, site_office=agent, provider=provider, chain=[model],
+            model=model, chosen_index=0, skipped=[], effort=None, models=[model],
+            efforts={model: effort} if effort else {},
+            resolution=[(model, provider, 'ok')],
+            chosen={'index': 0, 'model': model, 'provider': provider},
+            concrete=[concrete], route=[route] if route else [], charter=charter(agent),
+            limits=json.loads((ROOT / f'.brokkr/agents/{base}.json').read_text())['limits'] if work else None,
+            hands=careful['hands'].get(key), boundary=careful['boundary'].get(key))
+    wanted['source'] = dict(extends='codex-careful', seats=['implement', 'intake'],
+        override={'bundle': ['description'], 'seats': ['intake', 'implement']})
+    wanted['aliases'] = {'terra': 'gpt-5.6-terra', 'terra61': 'gpt-6.1-terra'}
+    # Limits are the office layer; the recipe's own 7200s seat limit is source-only.
+    assert source['seats']['implement']['limits'] == {'max_attempts': 3, 'timeout_seconds': 7200}
+    assert wanted['implement']['limits']['timeout_seconds'] == 14400
+
+    def assert_mixed(matrix):
+        assert matrix == wanted, matrix
+        # Everything outside the two work seats is careful's, field for field.
+        for section in set(mixed) | set(careful):
+            if section in ['agents', 'capabilities', 'files', 'bundle_name']:
+                continue
+            assert mixed[section] == careful[section], section
+        for section in ['agents', 'sites']:
+            a = mixed[section] if section == 'agents' else mixed['capabilities']['sites']
+            b = careful[section] if section == 'agents' else careful['capabilities']['sites']
+            assert set(a) == set(b), section
+            assert sorted(k for k in a if a[k] != b[k]) == ['implement', 'intake'], section
+        assert {k: v for k, v in mixed['capabilities'].items() if k != 'sites'} == \
+            {k: v for k, v in careful['capabilities'].items() if k != 'sites'}
+    assert_mixed(observed)
+    mutations = ['model', 'provider', 'concrete', 'route', 'effort', 'compiled-effort',
+                 'status', 'fallback', 'missing', 'replaced', 'hands', 'boundary']
+    rejected = []
+    for key in MIXED_ROUTE:
+        for mutation in mutations:
+            bad = copy.deepcopy(observed)
+            row = bad[key]
+            if mutation == 'model':
+                row['concrete'] = ['claude-sonnet-5-5']
+            elif mutation == 'provider':
+                row['provider'] = 'codex' if row['provider'] != 'codex' else 'claude'
+            elif mutation == 'concrete':
+                row['concrete'] = ['dashscope/glm-5.3']
+            elif mutation == 'route':
+                row['route'] = [('spark-glm', 'local')] if key != 'review:tests' else [('dashscope', 'uncontracted')]
+            elif mutation == 'effort':
+                row['efforts'] = {row['model']: 'xhigh'}
+            elif mutation == 'compiled-effort':
+                row['effort'] = 'high'
+            elif mutation == 'status':
+                row['resolution'] = [(row['model'], row['provider'], 'blocked')]
+            elif mutation == 'fallback':
+                row['chain'].append('sonnet')
+            elif mutation == 'missing':
+                del bad[key]
+            elif mutation == 'replaced':
+                row['agent'] = 'review-correctness' if key.startswith('review') else 'implementer'
+            elif mutation == 'hands':
+                row['hands'] = {'kind': 'workspace', 'network': True, 'binds': []}
+            else:
+                row['boundary'] = 'harness'
+            rejected.append(refuses(assert_mixed, bad, ('mixed', key, mutation)))
+    for mutation in ['alias', 'terra61', 'override', 'seat', 'merged', 'extra-member']:
+        bad = copy.deepcopy(observed)
+        if mutation == 'alias':
+            bad['aliases']['terra'] = 'gpt-6.1-terra'
+        elif mutation == 'terra61':
+            bad['aliases']['terra61'] = 'gpt-5.6-terra'
+        elif mutation == 'override':
+            bad['source']['override']['seats'].append('review')
+        elif mutation == 'seat':
+            bad['source']['seats'].append('review')
+        elif mutation == 'merged':
+            bad['review:guarantees'] = copy.deepcopy(bad['review:correctness'])
+        else:
+            bad['review:extra'] = copy.deepcopy(bad['review:tests'])
+        rejected.append(refuses(assert_mixed, bad, ('mixed', mutation)))
+    dump(out / 'mixed-route-matrix.json', dict(actual=observed, rejected=rejected,
+         presence='unknown: resolution is not a provider invocation', providers_called=False))
+
+
+# Operator-directed zero-Codex careful lane (proposed 0099): office, provider,
+# concrete pin, adapter route, office effort (None: not applicable) and
+# workspace hands for each of its ten model seats.
+CLAUDE_CAREFUL_ROUTE = {
+    'intake': ('claude-intake', 'claude', 'haiku55', 'claude-haiku-5-5', None, 'high', True),
+    'design:positions:simplicity': ('claude-position-simplicity', 'claude', 'opus',
+                                    'claude-opus-5-5', None, 'high', True),
+    'design:positions:robustness': ('dsh-position-robustness', 'dsh', 'flash', 'deepseek-flash',
+                                    ('deepseek-official', 'uncontracted'), 'high', False),
+    'design:chief': ('claude-chief-architect', 'claude', 'fable', 'claude-fable-5-1', None, 'high', True),
+    'implement': ('claude-implementer', 'claude', 'sonnet', 'claude-sonnet-5-5', None, 'high', True),
+    'review:correctness': ('codex-review-correctness', 'claude', 'fable', 'claude-fable-5-1',
+                           None, 'high', False),
+    'review:security': ('codex-review-security', 'dsh', 'flash', 'deepseek-flash',
+                        ('deepseek-official', 'uncontracted'), 'high', False),
+    'review:guarantees': ('codex-review-guarantees', 'dsh', 'flash', 'deepseek-flash',
+                          ('deepseek-official', 'uncontracted'), 'high', False),
+    'review:tests': ('codex-review-tests', 'dsh', 'glm-flash', 'spark-glm/GLM-5.3-Flash-EXL3',
+                     ('spark-glm', 'local'), None, False),
+    'review:independent': ('claude-review-independent', 'claude', 'opus', 'claude-opus-5-5',
+                           None, 'high', False),
+}
+VALIDATOR = ['scripts/design-check.sh', 'scripts/speckit/check-prerequisites.sh',
+             'scripts/speckit/common.sh']
+
+
+def claude_careful_route(engine, out, manifests):
+    cc, careful = manifests['claude-careful'], manifests['codex-careful']
+    adapters = {name: json.loads((ROOT / f'.brokkr/adapters/{name}.json').read_text())
+                for name in ['codex', 'claude', 'dsh']}
+    source = json.loads((ROOT / '.brokkr/recipes/claude-careful/bundle.json').read_text())
+    observed = {}
+    for key in CLAUDE_CAREFUL_ROUTE:
+        selected = cc['agents'].get(key)
+        if selected is None:
+            continue
+        result = call([engine, 'agents', 'show', selected['agent']], ROOT,
+                      out / ('claude-careful-' + key.replace(':', '-') + '-office'))
+        assert result.returncode == 0, result.stderr
+        office = json.loads(result.stdout)
+        site = cc['capabilities']['sites'][key]
+        pins = [p for c in site['candidates'] for p in c['model_pins']['read']]
+        observed[key] = dict(agent=selected['agent'], site_office=site['office'],
+            provider=selected['provider'], chain=selected['chain'], model=selected['model'],
+            chosen_index=selected['chosen_index'], skipped=selected['skipped'],
+            effort=selected.get('effort'), models=office['models'], efforts=office['efforts'],
+            resolution=[(c['model'], c['provider'], c['status']) for c in office['resolution']['chain']],
+            chosen=office['resolution']['chosen'], concrete=[p['id'] for p in pins],
+            route=[(p['route'], adapters[selected['provider']]['routes'][p['route']])
+                   for p in pins if 'route' in p],
+            charter=office['charter'], limits=office.get('limits'),
+            hands=cc['hands'].get(key), boundary=cc['boundary'].get(key))
+    # The whole composed route, not only the ten rows: every hired provider
+    # and every concrete pin any site can read.
+    sites = cc['capabilities']['sites'].values()
+    observed['providers'] = sorted({a['provider'] for a in cc['agents'].values()}
+                                   | {c['provider'] for s in sites for c in s['candidates']})
+    observed['pins'] = sorted({p['id'] for s in sites for c in s['candidates']
+                               for p in c['model_pins']['read']})
+    observed['source'] = dict(extends=source['extends'], override=source['override'],
+        seats=sorted(source['seats']),
+        limits={k: source['seats'][k].get('limits') for k in ['implement', 'review']})
+    observed['validator'] = {k: v for k, v in cc['files'].items() if k.startswith('scripts/')}
+    observed['aliases'] = {a: adapters['claude']['models'][a] for a in ['haiku', 'haiku55']}
+
+    def charter(agent):
+        office = json.loads((ROOT / f'.brokkr/agents/{agent}.json').read_text())
+        while 'charter' not in office:
+            office = json.loads((ROOT / f".brokkr/agents/{office['extends']}.json").read_text())
+        return office['charter']
+    base_limits = {key: json.loads((ROOT / f'.brokkr/agents/{base}.json').read_text())['limits']
+                   for key, base in [('intake', 'intake'), ('implement', 'implementer')]}
+    wanted = {}
+    for key, (agent, provider, model, concrete, route, effort, hands) in CLAUDE_CAREFUL_ROUTE.items():
+        wanted[key] = dict(agent=agent, site_office=agent, provider=provider, chain=[model],
+            model=model, chosen_index=0, skipped=[], effort=None, models=[model],
+            efforts={model: effort} if effort else {},
+            resolution=[(model, provider, 'ok')],
+            chosen={'index': 0, 'model': model, 'provider': provider},
+            concrete=[concrete], route=[route] if route else [], charter=charter(agent),
+            limits=base_limits.get(key),
+            hands=careful['hands']['intake'] if hands else None,
+            boundary='namespace' if hands else None)
+    wanted['providers'] = ['claude', 'dsh', 'exec']
+    wanted['pins'] = sorted({row[3] for row in CLAUDE_CAREFUL_ROUTE.values()})
+    four_hours = {'max_attempts': 3, 'timeout_seconds': 14400}
+    wanted['source'] = dict(extends='codex-careful', seats=['design', 'implement', 'intake', 'review'],
+        override={'bundle': ['description'], 'seats': ['intake', 'design', 'implement', 'review']},
+        limits={'implement': four_hours, 'review': four_hours})
+    wanted['validator'] = {k: manifests['self']['files'][k] for k in VALIDATOR}
+    wanted['aliases'] = {'haiku': 'claude-haiku-4-5-20251001', 'haiku55': 'claude-haiku-5-5'}
+    assert all(p['provider'] != 'codex' for p in cc['agents'].values())
+
+    def assert_claude_careful(matrix):
+        assert matrix == wanted, matrix
+        # Outside the model offices, everything is careful's, field for field.
+        for section in set(cc) | set(careful):
+            if section in ['agents', 'capabilities', 'files', 'bundle_name', 'hands', 'boundary']:
+                continue
+            assert cc[section] == careful[section], section
+        for section in ['hands', 'boundary']:
+            # Only the hands-less dsh robustness position drops out.
+            assert set(careful[section]) - set(cc[section]) == {'design:positions:robustness'}, section
+            assert all(cc[section][k] == careful[section][k] for k in cc[section]
+                       if k not in ['intake', 'implement', 'design:chief',
+                                    'design:positions:simplicity']), section
+        assert set(cc['agents']) == set(careful['agents'])
+        assert set(cc['capabilities']['sites']) == set(careful['capabilities']['sites'])
+        assert {k: v for k, v in cc['capabilities'].items() if k != 'sites'} == \
+            {k: v for k, v in careful['capabilities'].items() if k != 'sites'}
+    assert_claude_careful(observed)
+    mutations = ['model', 'provider', 'concrete', 'route', 'effort', 'compiled-effort',
+                 'status', 'fallback', 'missing', 'replaced', 'hands', 'boundary']
+    rejected = []
+    for key in CLAUDE_CAREFUL_ROUTE:
+        for mutation in mutations:
+            bad = copy.deepcopy(observed)
+            row = bad[key]
+            if mutation == 'model':
+                row['concrete'] = ['gpt-6.1-sol']
+            elif mutation == 'provider':
+                row['provider'] = 'codex'
+            elif mutation == 'concrete':
+                row['concrete'] = ['dashscope/glm-5.3']
+            elif mutation == 'route':
+                row['route'] = [('spark-glm', 'local')] if key != 'review:tests' else [('dashscope', 'uncontracted')]
+            elif mutation == 'effort':
+                row['efforts'] = {row['model']: 'xhigh'}
+            elif mutation == 'compiled-effort':
+                row['effort'] = 'high'
+            elif mutation == 'status':
+                row['resolution'] = [(row['model'], row['provider'], 'blocked')]
+            elif mutation == 'fallback':
+                row['chain'].append('sonnet' if row['model'] != 'sonnet' else 'opus')
+            elif mutation == 'missing':
+                del bad[key]
+            elif mutation == 'replaced':
+                row['agent'] = 'review-correctness' if key.startswith('review') else 'implementer'
+            elif mutation == 'hands':
+                row['hands'] = {'kind': 'workspace', 'network': True, 'binds': []}
+            else:
+                row['boundary'] = 'harness'
+            rejected.append(refuses(assert_claude_careful, bad, ('claude-careful', key, mutation)))
+    for mutation in ['codex-provider', 'gpt-pin', 'haiku-4.5', 'glm-effort', 'codex-design',
+                     'validator', 'implement-limit', 'review-limit', 'historical-haiku',
+                     'merged', 'extra-member']:
+        bad = copy.deepcopy(observed)
+        if mutation == 'codex-provider':
+            bad['providers'] = sorted(bad['providers'] + ['codex'])
+        elif mutation == 'gpt-pin':
+            bad['pins'] = sorted(bad['pins'] + ['gpt-6.1-sol'])
+        elif mutation == 'haiku-4.5':
+            bad['intake']['concrete'] = ['claude-haiku-4-5-20251001']
+        elif mutation == 'glm-effort':
+            bad['review:tests']['efforts'] = {'glm-flash': 'high'}
+        elif mutation == 'codex-design':
+            bad['design:positions:simplicity'].update(agent='codex-position-simplicity',
+                site_office='codex-position-simplicity', provider='codex', chain=['sol'],
+                model='sol', models=['sol'], efforts={'sol': 'high'}, concrete=['gpt-6.1-sol'])
+        elif mutation == 'validator':
+            bad['validator']['scripts/design-check.sh'] = '0' * 64
+        elif mutation == 'implement-limit':
+            bad['source']['limits']['implement'] = {'max_attempts': 3, 'timeout_seconds': 7200}
+        elif mutation == 'review-limit':
+            bad['source']['limits']['review'] = {'max_attempts': 3, 'timeout_seconds': 3600}
+        elif mutation == 'historical-haiku':
+            bad['aliases']['haiku'] = 'claude-haiku-5-5'
+        elif mutation == 'merged':
+            bad['review:guarantees'] = copy.deepcopy(bad['review:security'])
+        else:
+            bad['review:extra'] = copy.deepcopy(bad['review:tests'])
+        rejected.append(refuses(assert_claude_careful, bad, ('claude-careful', mutation)))
+    dump(out / 'claude-careful-route-matrix.json', dict(actual=observed, rejected=rejected,
+         presence='unknown: resolution is not a provider invocation', providers_called=False))
+
+
+def refuses(comparator, bad, label):
+    try:
+        comparator(bad)
+    except AssertionError:
+        return label
+    raise AssertionError(('mutant accepted',) + label)
 
 
 def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
@@ -279,7 +621,7 @@ def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
         dict(name='probe', path='.', default_branch='main', house='house.txt', boundary='harness')],
         'journal': '.forge/probe.db'})
     # Existing policies are used verbatim for review rules, including all hard stops.
-    policy = json.loads((ROOT / 'bundles/self/policy.json').read_text())
+    policy = json.loads((ROOT / '.brokkr/recipes/self/policy.json').read_text())
     review_rules = [r for r in policy['rules'] if r['from'] == 'review']
     table = dict(schema='forge.phase-machine/v1', phases=['prepare','verify','review','ship','done','stop'],
                  initial='prepare', terminal=['done','stop'], shippable_from=['review'], rules=[
@@ -295,7 +637,7 @@ def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
     bundle_dir = case / 'recipes/probe'
     bundle_dir.mkdir(parents=True)
     (bundle_dir / 'exec.py').write_text(EXEC)
-    exec_adapter = json.loads((ROOT/'adapters/exec.json').read_text())
+    exec_adapter = json.loads((ROOT/'.brokkr/adapters/exec.json').read_text())
     dump(case/'adapters/exec.json', exec_adapter)
     models = {role: role for role in roles}
     if fallback:
@@ -347,7 +689,7 @@ def main():
     parser.add_argument('--out',required=True,type=Path)
     args=parser.parse_args()
     engine=args.engine.resolve();out=args.out.resolve();out.mkdir(parents=True,exist_ok=False)
-    record=json.loads((ROOT/'bundles/self/tooling.json').read_text())['brokkr']
+    record=json.loads((ROOT/'.brokkr/recipes/self/tooling.json').read_text())['brokkr']
     digest=hashlib.sha256(engine.read_bytes()).hexdigest()
     assert digest==record['binary_sha256'], 'Refuse an unrecorded engine'
     resolved_matrix(engine,out)
