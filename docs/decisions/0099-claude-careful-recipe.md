@@ -1,11 +1,12 @@
 # 0099 — A zero-Codex careful recipe: `claude-careful`
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-29 — "accept the decisions",
+  given in chat).
 - **Date:** 2026-10-29 (operator direction given 2026-10-28 and 2026-10-29)
 - **Scope:** one additional recipe under [0057](0057-codex-delivery-recipes.md)
   and [0058](0058-codex-review-routing.md). It reuses the tests route of
   proposed [0081](0081-glm-flash-seats.md) and the security, guarantees and
-  deadline rulings of proposed
+  deadline rulings of accepted
   [0098](0098-review-panel-flash-and-deadline.md). No existing recipe, office
   route, decision body or decision status changes.
 - **Source:** operator directions to the operator's assistant: “propose me a

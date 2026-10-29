@@ -116,7 +116,7 @@ The `codex-fast` implementation seat uses GPT-6 Luna at xhigh effort. Its
 triage seat uses Claude Opus 5.5 (`opus`) at medium effort with no fallback;
 strategy selection and reviewer routes are unchanged.
 
-`claude-careful` is the zero-Codex careful lane recorded in proposed
+`claude-careful` is the zero-Codex careful lane recorded in accepted
 [0099](../docs/decisions/0099-claude-careful-recipe.md), for use while Codex
 credits are exhausted. It extends `codex-careful` and replaces the intake,
 design, implement and review seats; policy, verify, ship, protected review
