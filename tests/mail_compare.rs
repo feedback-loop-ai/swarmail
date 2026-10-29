@@ -272,13 +272,26 @@ fn late_observations_are_retained_but_censored_like_timeouts() {
 // ---- the frozen method and the source lock ------------------------------
 
 #[test]
-fn the_committed_protocol_and_lock_refuse_collection_and_say_why() {
+fn the_committed_protocol_is_frozen_and_collects_only_its_declared_limited_claim() {
     let p = Protocol::parse(PROTOCOL).expect("the committed protocol parses");
-    // Its predecessor's bytes are kept and still parse as what they were.
+    // Its predecessors' bytes are kept and still read as what they were:
+    // version 1 drafts that carry none of the version 2 sections.
     let draft2 = include_bytes!("../docs/evals/history/2026-10-28-protocol.draft-2.json");
     let old = Protocol::parse(draft2).expect("draft-2 still parses");
     old.validate().expect("draft-2 is still structurally valid");
-    assert_eq!(p.supersedes.as_deref(), Some(old.id.as_str()));
+    let draft3 = include_bytes!("../docs/evals/history/2026-10-29-protocol.draft-3.json");
+    let mid = Protocol::parse(draft3).expect("draft-3 still parses");
+    mid.validate().expect("draft-3 is still structurally valid");
+    assert_eq!(mid.supersedes.as_deref(), Some(old.id.as_str()));
+    assert_eq!(p.supersedes.as_deref(), Some(mid.id.as_str()));
+    assert_eq!(
+        (
+            old.protocol_version,
+            mid.protocol_version,
+            p.protocol_version
+        ),
+        (1, 1, 2)
+    );
     assert!(p.change_reason.is_some());
     let s = SourceLock::parse(SOURCES).expect("the committed lock parses");
     s.validate()
@@ -286,35 +299,40 @@ fn the_committed_protocol_and_lock_refuse_collection_and_say_why() {
     s.verify_files(&evals_dir())
         .expect("every captured document matches its digest and the release metadata");
     protocol::retention_matches(&p, &s).expect("retention is stated as launched");
-    let why = refusals(protocol::collection_ready(&p, &s));
-    for expected in [
-        "protocol is a draft, not frozen",
-        "mailpit: binary build provenance unresolved (no build attestation",
-        "mailhog: binary build provenance unresolved (no build attestation",
-        "cannot declare the official-artifact claim scope",
-        "mailpit: best wait unresolved: no route, producer",
-        "mailhog: best wait unresolved: no route, producer",
-        "mailpit does not store in memory",
-        "resource budget is not enforced",
-        "unresolved: primary attribution of MailHog's /api/v1/messages/{id} read",
-    ] {
-        assert!(
-            why.contains(expected),
-            "missing refusal {expected:?} in:\n{why}"
-        );
-    }
+    protocol::products_match(&p, &s).expect("the products are the locked executables");
+    p.validate().expect("the committed protocol is valid");
+    protocol::collection_ready(&p, &s).expect("the frozen protocol admits collection");
+    // What it admits is limited, and says so in the protocol itself.
+    assert_eq!(p.status, protocol::Status::Frozen);
+    assert!(p.unresolved.is_empty());
+    let claim = p.claim.as_ref().unwrap();
+    assert_eq!(claim.scope, protocol::ClaimScope::OfficialArtifact);
+    assert!(claim.statement.contains("no built-from"), "{claim:?}");
     assert!(
-        !why.contains("mailhog does not store in memory"),
-        "MailHog's memory store is not refused: {why}"
+        s.pin(TargetKind::Mailpit)
+            .unwrap()
+            .binary_build_provenance
+            .gap()
+            .is_some()
     );
-    // The captures resolved what v2 named as gaps; build provenance and
-    // the best wait stay open, and nothing else stands in for them.
-    for resolved in [
-        "tagged source unresolved",
-        "attribution unresolved",
-        "no captured setup document",
-    ] {
-        assert!(!why.contains(resolved), "{resolved} still refused: {why}");
+    assert!(
+        s.pin(TargetKind::Mailhog)
+            .unwrap()
+            .binary_build_provenance
+            .gap()
+            .is_some()
+    );
+    assert_eq!(p.storage.profile, Some(protocol::StorageProfile::Unmatched));
+    assert_eq!(
+        p.resources.profile,
+        Some(protocol::ResourceProfile::UnenforcedLocal)
+    );
+    assert!(!p.resources.enforced);
+    // Best wait stays blocked: it is not a declared profile, and the lock
+    // still names why.
+    assert!(p.waits.iter().all(|w| w.name != protocol::BEST_WAIT));
+    for t in [TargetKind::Mailpit, TargetKind::Mailhog] {
+        assert!(s.pin(t).unwrap().wait.best_wait.gap().is_some(), "{t}");
     }
     assert_eq!(p.targets, TargetKind::ALL.to_vec());
     assert_eq!(p.statistics.orders.len(), 6, "every target order once");
@@ -329,6 +347,226 @@ fn the_committed_protocol_and_lock_refuse_collection_and_say_why() {
     for t in &p.throughput {
         assert!(u64::from(t.messages) < cap.unwrap(), "{}", t.name);
     }
+    // Swarmail is launched with its shipped cap and oldest-only prune.
+    let swarmail = &p.storage.retention[0];
+    assert_eq!(swarmail.target, TargetKind::Swarmail);
+    assert_eq!(
+        (swarmail.max_messages, swarmail.prune),
+        (Some(100_000), Some(protocol::Prune::OldestOnly))
+    );
+}
+
+/// The committed protocol with one JSON edit applied.
+fn edited(f: impl Fn(&mut serde_json::Value)) -> Protocol {
+    let mut v = json(PROTOCOL);
+    f(&mut v);
+    protocol_from(v).expect("the edit keeps the shape")
+}
+
+#[test]
+fn a_changed_method_schema_product_or_parity_never_validates_or_collects() {
+    let s = SourceLock::parse(SOURCES).unwrap();
+    let invalid = |p: Protocol| refusals(p.validate());
+    // Method: a poll at another interval is not the common method, and a
+    // wait method or operation bound that is not the built one refuses.
+    let why = invalid(edited(|v| {
+        v["waits"][0]["observation"][1]["interval_ms"] = 250.into();
+    }));
+    assert!(why.contains("not the common 100 ms"), "{why}");
+    let why = invalid(edited(|v| {
+        v["budgets"]["wait_operation_ms"] = 30_000.into();
+    }));
+    assert!(
+        why.contains("longest wait 30000 plus one request bound"),
+        "{why}"
+    );
+    let why = invalid(edited(|v| {
+        v["budgets"]["adapter"]["wait_method"] = "websocket subscription".into();
+    }));
+    assert!(why.contains("adapter wait method"), "{why}");
+    let why = invalid(edited(|v| {
+        v["budgets"]["adapter"]["max_wait_ms"] = 30_000.into();
+    }));
+    assert!(why.contains("not what the adapter is built with"), "{why}");
+    let why = invalid(edited(|v| {
+        v["budgets"]["adapter"]["max_pages"] = 101.into();
+    }));
+    assert!(why.contains("page, request and byte bounds"), "{why}");
+    // Schema: the adapter's served tools are bound by digest.
+    let why = invalid(edited(|v| {
+        v["budgets"]["adapter"]["tools_sha256"] = "0".repeat(64).into();
+    }));
+    assert!(why.contains("not the schema the adapter serves"), "{why}");
+    // Product: a missing, extra, mutable or unverifiable identity refuses.
+    let why = invalid(edited(|v| {
+        v["products"][1]["release_tag"] = "latest".into();
+    }));
+    assert!(why.contains("not an immutable version tag"), "{why}");
+    let why = invalid(edited(|v| {
+        v["products"][2]["executable_sha256"] = "abc".into();
+    }));
+    assert!(why.contains("not 64 hex digits"), "{why}");
+    let why = invalid(edited(|v| {
+        v["products"].as_array_mut().unwrap().pop();
+    }));
+    assert!(
+        why.contains("mailhog needs exactly one product entry"),
+        "{why}"
+    );
+    let why = invalid(edited(|v| {
+        v["products"][0]["release_tag"] = "v1.0.0".into();
+    }));
+    assert!(why.contains("swarmail is the candidate"), "{why}");
+    let swapped = edited(|v| {
+        v["products"][1]["release_tag"] = "v9.9.9".into();
+        v["products"][2]["executable_sha256"] = "1".repeat(64).into();
+    });
+    swapped
+        .validate()
+        .expect("well formed, yet not the locked bytes");
+    let why = refusals(protocol::collection_ready(&swapped, &s));
+    assert!(
+        why.contains("mailpit: protocol release Some(\"v9.9.9\") is not the locked v1.32.0")
+            && why.contains("mailhog: protocol executable digest is not the locked one"),
+        "{why}"
+    );
+    // False parity: matched storage over different backends or caps, an
+    // enforced claim over an unenforced budget, or a retention fact that
+    // is not what the lock establishes.
+    let why = invalid(edited(|v| {
+        v["storage"]["mode"] = "memory".into();
+        v["storage"]["profile"] = "matched_memory".into();
+    }));
+    assert!(
+        why.contains("matched_memory claims one memory backend"),
+        "{why}"
+    );
+    let why = invalid(edited(|v| {
+        v["storage"]["profile"] = "matched_memory".into()
+    }));
+    assert!(
+        why.contains("mode \"mixed\" and profile MatchedMemory disagree"),
+        "{why}"
+    );
+    let why = invalid(edited(|v| v["resources"]["profile"] = "enforced".into()));
+    assert!(
+        why.contains("enforced false cannot be profile Enforced"),
+        "{why}"
+    );
+    let why = invalid(edited(|v| {
+        v["storage"]["retention"][1]["prune"] = "no_cap_observed".into();
+    }));
+    assert!(
+        why.contains("mailpit cap and prune behavior disagree"),
+        "{why}"
+    );
+    let why = invalid(edited(|v| {
+        v["storage"]["retention"][2]
+            .as_object_mut()
+            .unwrap()
+            .remove("compression");
+    }));
+    assert!(
+        why.contains("mailhog states no backend, prune behavior and compression"),
+        "{why}"
+    );
+    let why = invalid(edited(|v| v["claim"]["statement"] = " ".into()));
+    assert!(
+        why.contains("no statement of what is and is not claimed"),
+        "{why}"
+    );
+    let lying = edited(|v| v["storage"]["retention"][2]["backend"] = "scratch_file".into());
+    let why = refusals(protocol::retention_matches(&lying, &s));
+    assert!(
+        why.contains("mailhog: protocol backend ScratchFile is not the locked Memory"),
+        "{why}"
+    );
+    // A version 2 protocol without its sections, or a draft with them.
+    let why = invalid(edited(|v| {
+        v.as_object_mut().unwrap().remove("claim");
+    }));
+    assert!(why.contains("needs claim, budgets, products"), "{why}");
+    let why = invalid(edited(|v| v["protocol_version"] = 1.into()));
+    assert!(why.contains("carries version 2 sections"), "{why}");
+}
+
+#[test]
+fn a_built_from_claim_or_a_draft_or_an_unlisted_enforcement_refuses_collection() {
+    let s = SourceLock::parse(SOURCES).unwrap();
+    // A profile that requires built-from provenance rejects the explicit
+    // unresolved state: the official-artifact scope is the only way past it.
+    let why = refusals(protocol::collection_ready(
+        &edited(|v| v["claim"]["scope"] = "built_from".into()),
+        &s,
+    ));
+    for t in ["mailpit", "mailhog"] {
+        assert!(
+            why.contains(&format!(
+                "{t}: binary build provenance unresolved (no build attestation"
+            )),
+            "{why}"
+        );
+    }
+    assert!(why.contains("only a protocol declaring the official-artifact claim scope"));
+    // A historical draft never collects, even structurally valid.
+    let draft = Protocol::parse(include_bytes!(
+        "../docs/evals/history/2026-10-29-protocol.draft-3.json"
+    ))
+    .unwrap();
+    let why = refusals(protocol::collection_ready(&draft, &s));
+    for expected in [
+        "protocol is a draft, not frozen",
+        "protocol version 1 is a historical draft; only version 2 collects",
+        "unresolved: binary build provenance",
+        "mailpit: best wait unresolved: no route, producer",
+        "mailpit does not store in memory",
+        "resource budget is not enforced",
+        "unresolved: primary attribution of MailHog's /api/v1/messages/{id} read",
+    ] {
+        assert!(why.contains(expected), "missing {expected:?} in:\n{why}");
+    }
+    // An unenforced budget collects only as its named profile.
+    let why = refusals(protocol::collection_ready(
+        &edited(|v| {
+            v["resources"].as_object_mut().unwrap().remove("profile");
+        }),
+        &s,
+    ));
+    assert!(
+        why.contains("needs claim, budgets, products, resources.profile"),
+        "{why}"
+    );
+}
+
+#[test]
+fn cumulative_residency_beyond_a_declared_cap_refuses_before_any_launch() {
+    // A throughput instance's warmup and measured mail, and a wait
+    // instance's present and future sends, must all fit every cap.
+    let why = refusals(
+        edited(|v| {
+            v["storage"]["retention"][1]["max_messages"] = 3000.into();
+        })
+        .validate(),
+    );
+    assert!(
+        why.contains("3100 messages overflow mailpit's retention"),
+        "{why}"
+    );
+    let why = refusals(
+        edited(|v| {
+            v["storage"]["retention"][1]["max_messages"] = 150.into();
+            for t in v["throughput"].as_array_mut().unwrap() {
+                t["messages"] = 40.into();
+                t["warmup_messages"] = 0.into();
+                t["sessions"] = 1.into();
+            }
+        })
+        .validate(),
+    );
+    assert!(
+        why.contains("200 wait sends overflow mailpit's retention"),
+        "{why}"
+    );
 }
 
 #[test]
@@ -468,8 +706,8 @@ fn the_protocol_validator_refuses_every_malformed_method() {
         .expect("the fixture is structurally valid");
     let cases: Vec<(serde_json::Value, &str)> = vec![
         (
-            mutate(&|v| v["protocol_version"] = 2.into()),
-            "protocol_version 2",
+            mutate(&|v| v["protocol_version"] = 3.into()),
+            "protocol_version 3",
         ),
         (
             mutate(&|v| v["supersedes"] = "older".into()),
@@ -517,7 +755,7 @@ fn the_protocol_validator_refuses_every_malformed_method() {
         ),
         (
             mutate(&|v| v["storage"]["mode"] = "disk".into()),
-            "neither memory nor durable",
+            "not memory, durable or mixed",
         ),
         (
             mutate(&|v| {
@@ -3453,6 +3691,111 @@ async fn real_competitors_decode_complete_scans_searches_and_stored_bodies() {
         let facts = owned.shutdown().await;
         assert!(facts.proved() && !facts.forced_kill, "{t}: {facts:?}");
     }
+}
+
+/// The protocol's storage facts (version 2) read from the pinned
+/// executables: a finite cap that is really applied and what it evicts, and
+/// the absence of one within a bounded probe. A probe states what it saw,
+/// never that no limit exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs MAIL_COMPARE_MAILPIT and MAIL_COMPARE_MAILHOG (pinned executables)"]
+async fn real_competitor_caps_are_probed_against_the_declared_storage_facts() {
+    use protocol::MessageKind;
+    let kinds = [
+        MessageKind::Plain,
+        MessageKind::Html,
+        MessageKind::Multipart,
+    ];
+    let p = Protocol::parse(PROTOCOL).unwrap();
+    let declared = |t: TargetKind| {
+        p.storage
+            .retention
+            .iter()
+            .find(|r| r.target == t)
+            .unwrap()
+            .clone()
+    };
+
+    // Mailpit: the launch's cap flag is `--max`; launch with a small one
+    // and send more than it.
+    let mailpit = declared(TargetKind::Mailpit);
+    let mut spec = pinned(TargetKind::Mailpit);
+    let at = spec.template.iter().position(|a| a == "--max").unwrap();
+    assert_eq!(
+        spec.template[at + 1],
+        mailpit.max_messages.unwrap().to_string()
+    );
+    spec.template[at + 1] = "5".into();
+    let root = tempfile::tempdir().unwrap();
+    let clock = wire::Clock(Instant::now());
+    let mut owned = targets::Owned::launch(
+        &spec,
+        &root.path().join("s"),
+        &limits(),
+        &clock,
+        &targets::Keepers::default(),
+    )
+    .await
+    .unwrap();
+    let corpus: Vec<wire::Message> = (0..8)
+        .map(|i| wire::authored(163, "capprobe0001", i, &kinds))
+        .collect();
+    for m in &corpus {
+        send_authored(&owned, m).await;
+    }
+    // The pinned Mailpit did not evict at once: for a bounded window the
+    // listing is whatever it holds, and the fact stated is that eviction
+    // is not synchronous with acceptance, so a workload must never reach
+    // the cap, never that eviction timing or order is established. If it
+    // does evict inside the window, only a prefix of the oldest may go.
+    let window = Instant::now();
+    let kept = loop {
+        let kept = owned.list_all(8).await.unwrap();
+        if kept.len() < 8 || window.elapsed() > Duration::from_secs(20) {
+            break kept;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    let tokens: Vec<&str> = kept.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(tokens.len() >= 5, "never below the cap: {tokens:?}");
+    for m in &corpus[3..] {
+        assert!(
+            tokens.contains(&m.token.as_str()),
+            "newest kept: {tokens:?}"
+        );
+    }
+    let evicted = 8 - tokens.len();
+    for m in &corpus[..evicted] {
+        assert!(
+            !tokens.contains(&m.token.as_str()),
+            "oldest evicted: {tokens:?}"
+        );
+    }
+    for m in &corpus[evicted..] {
+        assert!(tokens.contains(&m.token.as_str()), "no gap: {tokens:?}");
+    }
+    assert!(owned.shutdown().await.proved());
+
+    // MailHog: no cap flag exists, and 1,200 messages (more than any
+    // default seen in the help or the setup document) all stay listed.
+    // This bounds what was observed; it does not prove unlimited storage.
+    let hog = declared(TargetKind::Mailhog);
+    assert_eq!(hog.max_messages, None);
+    let owned = launch_pinned(TargetKind::Mailhog, &root.path().join("h")).await;
+    let mut owned = owned;
+    for i in 0..1200 {
+        send_authored(&owned, &wire::authored(163, "capprobe0002", i, &kinds)).await;
+    }
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        let n = owned.list_all(8).await.map(|l| l.len());
+        if matches!(n, Ok(1200)) {
+            break;
+        }
+        assert!(Instant::now() < until, "MailHog never listed 1200: {n:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(owned.shutdown().await.proved());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

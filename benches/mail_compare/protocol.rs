@@ -6,7 +6,12 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// The current method's version. Version 1 is the unfrozen drafts (draft-2
+/// and draft-3), whose bytes stay under `docs/evals/history/` and still
+/// read here with none of the version 2 sections; only version 2 can
+/// collect (proposed decision 0093 §3).
+pub const PROTOCOL_VERSION: u32 = 2;
+pub const DRAFT_PROTOCOL_VERSION: u32 = 1;
 
 /// Upper bounds the validator holds every count and deadline to: a
 /// protocol is an input file, and an absurd value must refuse rather than
@@ -105,6 +110,16 @@ pub struct Protocol {
     pub resources: Resources,
     pub storage: Storage,
     pub statistics: Statistics,
+    /// Version 2: what the measurement may claim about the executables.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<Claim>,
+    /// Version 2: the common poll, the driver's wait operation bound and
+    /// the adapter's bounds and schema identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budgets: Option<Budgets>,
+    /// Version 2: the immutable product each target is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub products: Option<Vec<Product>>,
     /// Every value the method still lacks, by name. Collection refuses
     /// while one remains; the list is how a draft says what it is missing
     /// instead of carrying a placeholder that looks like a value.
@@ -178,6 +193,18 @@ pub struct Resources {
     pub cleanup_deadline_ms: u64,
     pub request_deadline_ms: u64,
     pub max_response_bytes: u64,
+    /// Version 2: the profile this budget is, under its own name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ResourceProfile>,
+}
+
+/// An unenforced budget is a separately named local profile, never the
+/// requested enforced one (proposed decision 0093 §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceProfile {
+    Enforced,
+    UnenforcedLocal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -186,9 +213,36 @@ pub struct Storage {
     /// `memory` is the matched primary profile; it is valid only when every
     /// target's lock entry records that it supports memory-only storage.
     pub mode: String,
+    /// Version 2: whether every target stores the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<StorageProfile>,
     /// Per-target retention settings, stated as launched. An exact-count
     /// workload may never knowingly overflow one (spec R3).
     pub retention: Vec<Retention>,
+}
+
+/// `Matched` claims one backend and one cap for every target; anything
+/// else is the explicitly `Unmatched` profile, whose per-target facts are
+/// the comparison's stated difference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageProfile {
+    MatchedMemory,
+    Unmatched,
+}
+
+/// What a cap does when it is reached. Only what a source or a probe
+/// established may be stated; `Unestablished` is the honest default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Prune {
+    /// The launch sets no cap, the executable's help lists no cap flag and
+    /// a bounded probe saw none applied: not proof that none exists.
+    NoCapObserved,
+    /// The cap evicts the oldest mail only (Swarmail, decision 0003).
+    OldestOnly,
+    /// A cap exists; what it evicts is not established.
+    Unestablished,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,6 +251,72 @@ pub struct Retention {
     pub target: TargetKind,
     /// `None` = unlimited, stated explicitly.
     pub max_messages: Option<u64>,
+    /// Version 2: where the target keeps mail, what the cap does and what
+    /// is established about compression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<Backend>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prune: Option<Prune>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<String>,
+}
+
+/// The limited claim a measurement of official artifacts makes (proposed
+/// decision 0093 §2). `OfficialArtifact` measures the digest-checked
+/// executable and attributes only its tagged source context; it makes no
+/// built-from claim and cannot satisfy `BuiltFrom`, which needs resolved
+/// binary build provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimScope {
+    OfficialArtifact,
+    BuiltFrom,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Claim {
+    pub scope: ClaimScope,
+    pub statement: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Budgets {
+    /// The common-client poll interval every poll observation uses.
+    pub poll_interval_ms: u64,
+    /// The wire driver's bound on one wait operation: the longest wait
+    /// deadline plus one request bound (spec clarification Q3).
+    pub wait_operation_ms: u64,
+    pub adapter: AdapterBudgets,
+}
+
+/// The MCP adapter's declared bounds and schema identity; each must equal
+/// what the adapter is built with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterBudgets {
+    pub operation_ms: u64,
+    pub request_ms: u64,
+    /// The admitted `timeout_ms` maximum: `operation_ms - request_ms`.
+    pub max_wait_ms: u64,
+    pub max_pages: u32,
+    pub max_requests: u32,
+    pub max_operation_bytes: u64,
+    pub wait_method: String,
+    /// SHA-256 of the `tools/list` array the adapter serves.
+    pub tools_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Product {
+    pub target: TargetKind,
+    /// A competitor's official release tag; the candidate has none.
+    pub release_tag: Option<String>,
+    /// A competitor's executable digest; the candidate's is recorded per
+    /// run in the manifest.
+    pub executable_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -225,6 +345,16 @@ pub fn is_name(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
+/// `v` and a dotted number: a version tag, never a branch or `latest`.
+pub fn is_release_tag(s: &str) -> bool {
+    s.strip_prefix('v').is_some_and(|n| {
+        !n.is_empty()
+            && n.split('.').count() >= 2
+            && n.split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
 pub fn is_hex(s: &str, len: usize) -> bool {
     s.len() == len
         && s.bytes()
@@ -248,9 +378,12 @@ impl Protocol {
     /// [`collection_ready`] on top.
     pub fn validate(&self) -> Result<(), Refusal> {
         let mut out = Vec::new();
-        if self.protocol_version != PROTOCOL_VERSION {
+        if !matches!(
+            self.protocol_version,
+            DRAFT_PROTOCOL_VERSION | PROTOCOL_VERSION
+        ) {
             out.push(format!(
-                "protocol_version {} is not {PROTOCOL_VERSION}",
+                "protocol_version {} is neither {DRAFT_PROTOCOL_VERSION} nor {PROTOCOL_VERSION}",
                 self.protocol_version
             ));
         }
@@ -429,6 +562,16 @@ impl Protocol {
                     out.push(format!("{n}: {t} observation has no justification"));
                 }
             }
+            // A wait instance holds every present and future send at once.
+            let sends = u64::from(w.present) + u64::from(w.future);
+            for r in &self.storage.retention {
+                if r.max_messages.is_some_and(|cap| sends > cap) {
+                    out.push(format!(
+                        "{n}: {sends} wait sends overflow {}'s retention; an exact-count workload must fit",
+                        r.target
+                    ));
+                }
+            }
         }
         let r = &self.resources;
         bounded(
@@ -474,9 +617,9 @@ impl Protocol {
         if r.enforced && (r.cpus.is_none() || r.memory_mib.is_none()) {
             out.push("resources: an enforced budget must state cpus and memory_mib".into());
         }
-        if !matches!(self.storage.mode.as_str(), "memory" | "durable") {
+        if !matches!(self.storage.mode.as_str(), "memory" | "durable" | "mixed") {
             out.push(format!(
-                "storage mode {:?} is neither memory nor durable",
+                "storage mode {:?} is not memory, durable or mixed",
                 self.storage.mode
             ));
         }
@@ -526,10 +669,199 @@ impl Protocol {
                 ));
             }
         }
+        self.validate_sections(&mut out);
         if out.is_empty() {
             Ok(())
         } else {
             Err(Refusal(out))
+        }
+    }
+
+    /// The version-specific sections. Version 1 carries none of them; a
+    /// version 2 protocol carries every one, each held to what the code
+    /// and the other sections say.
+    fn validate_sections(&self, out: &mut Vec<String>) {
+        let r = &self.resources;
+        let has = [
+            self.claim.is_some(),
+            self.budgets.is_some(),
+            self.products.is_some(),
+            r.profile.is_some(),
+            self.storage.profile.is_some(),
+            self.storage
+                .retention
+                .iter()
+                .any(|x| x.backend.is_some() || x.prune.is_some() || x.compression.is_some()),
+        ];
+        if self.protocol_version == DRAFT_PROTOCOL_VERSION {
+            if has.iter().any(|h| *h) {
+                out.push(format!(
+                    "protocol_version {DRAFT_PROTOCOL_VERSION} carries version {PROTOCOL_VERSION} sections"
+                ));
+            }
+            return;
+        }
+        let (Some(claim), Some(budgets), Some(products), Some(profile), Some(storage)) = (
+            &self.claim,
+            &self.budgets,
+            &self.products,
+            r.profile,
+            self.storage.profile,
+        ) else {
+            out.push(format!(
+                "protocol_version {PROTOCOL_VERSION} needs claim, budgets, products, resources.profile and storage.profile"
+            ));
+            return;
+        };
+        if claim.statement.trim().is_empty() {
+            out.push("claim: no statement of what is and is not claimed".into());
+        }
+        match (r.enforced, profile) {
+            (true, ResourceProfile::Enforced) | (false, ResourceProfile::UnenforcedLocal) => {}
+            _ => out.push(format!(
+                "resources: enforced {} cannot be profile {profile:?}",
+                r.enforced
+            )),
+        }
+        self.validate_retention(storage, out);
+        self.validate_budgets(budgets, out);
+        self.validate_products(products, out);
+    }
+
+    fn validate_retention(&self, profile: StorageProfile, out: &mut Vec<String>) {
+        // `mixed` is the unmatched profile's mode: each target's own
+        // backend is the declared difference.
+        match (self.storage.mode.as_str(), profile) {
+            ("memory", StorageProfile::MatchedMemory) | ("mixed", StorageProfile::Unmatched) => {}
+            (mode, _) => out.push(format!(
+                "storage: mode {mode:?} and profile {profile:?} disagree"
+            )),
+        }
+        for e in &self.storage.retention {
+            let t = e.target;
+            let (Some(_), Some(prune), Some(compression)) =
+                (e.backend, e.prune, e.compression.as_deref())
+            else {
+                out.push(format!(
+                    "storage: {t} states no backend, prune behavior and compression"
+                ));
+                continue;
+            };
+            if compression.trim().is_empty() {
+                out.push(format!("storage: {t} compression is blank"));
+            }
+            match (e.max_messages, prune) {
+                (None, Prune::NoCapObserved) => {}
+                (Some(_), Prune::OldestOnly | Prune::Unestablished) => {}
+                _ => out.push(format!("storage: {t} cap and prune behavior disagree")),
+            }
+        }
+        // False parity: a profile claiming one storage for all targets
+        // while their backends or caps differ.
+        let first = self.storage.retention.first();
+        let same = self.storage.retention.iter().all(|e| {
+            e.backend == Some(Backend::Memory)
+                && first.is_some_and(|f| f.max_messages == e.max_messages)
+        });
+        if profile == StorageProfile::MatchedMemory && !same {
+            out.push(
+                "storage: matched_memory claims one memory backend and one cap, but the targets differ"
+                    .into(),
+            );
+        }
+    }
+
+    fn validate_budgets(&self, b: &Budgets, out: &mut Vec<String>) {
+        for w in &self.waits {
+            for o in &w.observation {
+                if o.mode == Observation::Poll && o.interval_ms != Some(b.poll_interval_ms) {
+                    out.push(format!(
+                        "{}: {} polls at {:?} ms, not the common {} ms; unequal polls are not a common method",
+                        w.name, o.target, o.interval_ms, b.poll_interval_ms
+                    ));
+                }
+            }
+        }
+        let longest = self
+            .waits
+            .iter()
+            .map(|w| w.deadline_ms.max(w.empty_deadline_ms))
+            .max()
+            .unwrap_or(0);
+        if b.wait_operation_ms != longest + self.resources.request_deadline_ms {
+            out.push(format!(
+                "budgets: wait_operation_ms {} is not the longest wait {longest} plus one request bound",
+                b.wait_operation_ms
+            ));
+        }
+        let built = crate::mailpit_mcp::Bounds::default();
+        let a = &b.adapter;
+        let ms = |d: std::time::Duration| d.as_millis() as u64;
+        if (a.operation_ms, a.request_ms, a.max_wait_ms)
+            != (ms(built.operation), ms(built.request), ms(built.max_wait()))
+            || a.request_ms != self.resources.request_deadline_ms
+        {
+            out.push(
+                "budgets: adapter operation, request and maximum wait are not what the adapter is built with"
+                    .into(),
+            );
+        }
+        if (a.max_pages, a.max_requests, a.max_operation_bytes)
+            != (
+                built.max_pages,
+                built.max_requests,
+                built.max_operation_bytes,
+            )
+        {
+            out.push("budgets: adapter page, request and byte bounds are not what the adapter is built with".into());
+        }
+        if a.wait_method != crate::mailpit_mcp::WAIT_METHOD {
+            out.push(format!(
+                "budgets: adapter wait method {:?} is not {:?}",
+                a.wait_method,
+                crate::mailpit_mcp::WAIT_METHOD
+            ));
+        }
+        let tools = serde_json::to_vec(&crate::mailpit_mcp::tools(&built)).unwrap_or_default();
+        if a.tools_sha256 != sha256_hex(&tools) {
+            out.push("budgets: adapter tools_sha256 is not the schema the adapter serves".into());
+        }
+    }
+
+    fn validate_products(&self, products: &[Product], out: &mut Vec<String>) {
+        for t in &self.targets {
+            let mine: Vec<&Product> = products.iter().filter(|p| p.target == *t).collect();
+            let [p] = mine.as_slice() else {
+                out.push(format!("products: {t} needs exactly one product entry"));
+                continue;
+            };
+            match (t.official_repository(), &p.release_tag, &p.executable_sha256) {
+                (None, None, None) => {}
+                (None, ..) => out.push(format!(
+                    "products: {t} is the candidate; its identity is recorded per run, not pinned here"
+                )),
+                (Some(_), Some(tag), Some(sha)) => {
+                    if !is_release_tag(tag) {
+                        out.push(format!(
+                            "products: {t} release tag {tag:?} is not an immutable version tag"
+                        ));
+                    }
+                    if !is_hex(sha, 64) {
+                        out.push(format!("products: {t} executable digest is not 64 hex digits"));
+                    }
+                }
+                (Some(_), ..) => out.push(format!(
+                    "products: {t} needs a release tag and an executable digest"
+                )),
+            }
+        }
+        for p in products {
+            if !self.targets.contains(&p.target) {
+                out.push(format!(
+                    "products: entry for undeclared target {}",
+                    p.target
+                ));
+            }
         }
     }
 
@@ -1522,17 +1854,55 @@ fn gap(out: &mut Vec<String>, t: TargetKind, what: &str, why: &str) {
 }
 
 /// Every declared target's retention, as the protocol states it, equals
-/// the cap its pin launches with. A default the protocol did not choose
-/// (Mailpit keeps 500 unless told otherwise) can never slip in.
+/// the cap its pin launches with, and (version 2) the backend the lock
+/// establishes. A default the protocol did not choose (Mailpit keeps 500
+/// unless told otherwise) can never slip in.
 pub fn retention_matches(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
     let mut out = Vec::new();
     for r in &p.storage.retention {
-        if let Some(pin) = lock.pin(r.target)
-            && pin.storage.max_messages != r.max_messages
-        {
+        if let Some(pin) = lock.pin(r.target) {
+            if pin.storage.max_messages != r.max_messages {
+                out.push(format!(
+                    "{}: protocol retention {:?} is not the launched cap {:?}",
+                    r.target, r.max_messages, pin.storage.max_messages
+                ));
+            }
+            if r.backend.is_some_and(|b| b != pin.storage.backend) {
+                out.push(format!(
+                    "{}: protocol backend {:?} is not the locked {:?}",
+                    r.target,
+                    r.backend.unwrap_or(pin.storage.backend),
+                    pin.storage.backend
+                ));
+            }
+        }
+    }
+    if out.is_empty() {
+        Ok(())
+    } else {
+        Err(Refusal(out))
+    }
+}
+
+/// Every declared competitor product is the lock's release tag and
+/// executable digest: a protocol cannot name a different product than the
+/// bytes the lock verifies.
+pub fn products_match(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> {
+    let mut out = Vec::new();
+    for product in p.products.iter().flatten() {
+        let Some(pin) = lock.pin(product.target) else {
+            continue;
+        };
+        if product.release_tag.as_deref() != Some(pin.release.tag.as_str()) {
             out.push(format!(
-                "{}: protocol retention {:?} is not the launched cap {:?}",
-                r.target, r.max_messages, pin.storage.max_messages
+                "{}: protocol release {:?} is not the locked {}",
+                product.target, product.release_tag, pin.release.tag
+            ));
+        }
+        if product.executable_sha256.as_deref() != Some(pin.artifact.executable_sha256.as_str()) {
+            out.push(format!(
+                "{}: protocol executable digest is not the locked one",
+                product.target
             ));
         }
     }
@@ -1575,13 +1945,24 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
     if let Err(Refusal(r)) = retention_matches(p, lock) {
         out.extend(r);
     }
+    if let Err(Refusal(r)) = products_match(p, lock) {
+        out.extend(r);
+    }
     if p.status != Status::Frozen {
         out.push("protocol is a draft, not frozen".into());
+    }
+    if p.protocol_version != PROTOCOL_VERSION {
+        out.push(format!(
+            "protocol version {} is a historical draft; only version {PROTOCOL_VERSION} collects",
+            p.protocol_version
+        ));
     }
     for u in &p.unresolved {
         out.push(format!("unresolved: {u}"));
     }
-    if !p.resources.enforced {
+    // An unenforced budget collects only as the separately named local
+    // profile, and every report says so (proposed decision 0093 §3).
+    if !p.resources.enforced && p.resources.profile != Some(ResourceProfile::UnenforcedLocal) {
         out.push("resource budget is not enforced by the selected runtime".into());
     }
     for t in &p.targets {
@@ -1595,10 +1976,13 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
         }
         // Proposed 0093 §2: the checked executable may be measured while
         // its build provenance is unresolved only under a frozen method
-        // that declares that limited official-artifact claim.
-        if let Some(why) = pin.binary_build_provenance.gap() {
+        // that declares the limited official-artifact claim; a protocol
+        // that needs a built-from claim refuses it.
+        if let Some(why) = pin.binary_build_provenance.gap()
+            && p.claim.as_ref().map(|c| c.scope) != Some(ClaimScope::OfficialArtifact)
+        {
             out.push(format!(
-                "{t}: binary build provenance unresolved ({why}); protocol version {PROTOCOL_VERSION} cannot declare the official-artifact claim scope measuring without it needs"
+                "{t}: binary build provenance unresolved ({why}); only a protocol declaring the official-artifact claim scope may measure without it"
             ));
         }
         for d in &pin.documents {
@@ -1613,7 +1997,8 @@ pub fn collection_ready(p: &Protocol, lock: &SourceLock) -> Result<(), Refusal> 
         if let (true, Some(why)) = (best, pin.wait.best_wait.gap()) {
             out.push(format!("{t}: best wait unresolved: {why}"));
         }
-        if p.storage.mode == "memory" && pin.storage.backend != Backend::Memory {
+        let matched = p.storage.profile == Some(StorageProfile::MatchedMemory);
+        if (matched || p.storage.mode == "memory") && pin.storage.backend != Backend::Memory {
             out.push(format!(
                 "{t} does not store in memory; the matched memory profile cannot run it"
             ));
