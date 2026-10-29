@@ -1242,6 +1242,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/deliverability.rs` | Lazy typed report, REST/MCP parity, threshold assertions/waits, UI states, persistence, pruning and served contract documentation (proposed 0085) |
 | `tests/api.rs` | every REST route, happy + error branches |
 | `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
+| `tests/listen.rs` | every listener's bind: both address families, the bind error reported as-is, and (Linux) a burst of 600 fresh SMTP connections all greeted, past the platform default backlog of 128 |
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
