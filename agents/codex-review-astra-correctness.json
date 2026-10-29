@@ -1,9 +1,0 @@
-{
-  "extends": "review-correctness",
-  "models": [
-    "astra"
-  ],
-  "efforts": {
-    "astra": "high"
-  }
-}

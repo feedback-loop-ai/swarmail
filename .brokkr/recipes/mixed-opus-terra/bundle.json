@@ -1,0 +1,36 @@
+{
+  "name": "mixed-opus-terra",
+  "description": "Operator-directed Terra 6.1 intake, Opus 5.5 implementation and the existing careful five-member review panel.",
+  "extends": "codex-careful",
+  "override": {
+    "bundle": [
+      "description"
+    ],
+    "seats": [
+      "intake",
+      "implement"
+    ]
+  },
+  "seats": {
+    "intake": {
+      "agent": "mixed-terra-intake",
+      "class": "work",
+      "results": [
+        "resolved"
+      ]
+    },
+    "implement": {
+      "agent": "mixed-opus-implementer",
+      "class": "work",
+      "results": [
+        "complete",
+        "broken",
+        "blocked"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 7200
+      }
+    }
+  }
+}
