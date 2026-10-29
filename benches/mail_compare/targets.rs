@@ -1036,7 +1036,10 @@ pub struct Fetched {
 }
 
 /// The fixed candidate launch: memory store, OS-assigned loopback ports,
-/// the protocol's cap (`0` = unlimited).
+/// the protocol's cap (`0` = unlimited), and a session cap as high as the
+/// protocol's largest concurrency, so the stress profile measures the store
+/// rather than the default 256-session refusal (Mailpit and MailHog have no
+/// such cap).
 pub fn swarmail_template(cap: u64) -> Vec<String> {
     [
         "serve",
@@ -1046,6 +1049,8 @@ pub fn swarmail_template(cap: u64) -> Vec<String> {
         "127.0.0.1:0",
         "--http-listen",
         "{http_addr}",
+        "--max-sessions",
+        &crate::protocol::MAX_SESSIONS.to_string(),
         "--max-per-inbox",
     ]
     .iter()

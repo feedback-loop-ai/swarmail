@@ -335,7 +335,9 @@ posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
 `SWARMAIL_URL` (the MCP stdio bridge's upstream, default
 `http://127.0.0.1:8025`),
 `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
-`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
+`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`,
+`SWARMAIL_MAX_SESSIONS` (`256` concurrent sessions per SMTP and POP3
+listener, at least `1`; one more is answered `421`).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and
