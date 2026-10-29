@@ -93,8 +93,10 @@ def resolved_matrix(engine, out):
         'review:feature:correctness': ('dsh', ['qwen-max', 'sonnet']),
         'review:feature:security': ('dsh', ['flash']),
         **{'review:' + lane + ':' + k: v for lane in ['design', 'engine'] for k, v in five.items()}}
+    expected['mixed-opus-terra'] = {'review:' + k: v for k, v in five.items()}
     expected['codex']['intake'] = ('codex', ['sol'])
     expected['codex-careful']['intake'] = ('codex', ['sol'])
+    expected['mixed-opus-terra']['intake'] = ('codex', ['terra61'])
     expected['codex-fast']['triage'] = ('claude', ['opus'])
     wanted_triage = dict(agent='codex-triage', provider='claude', chain=['opus'],
         models=['opus'], concrete=['claude-opus-5-5'], efforts={'opus': 'medium'},
@@ -113,8 +115,9 @@ def resolved_matrix(engine, out):
         assert actual == expected[recipe], (recipe, actual)
         for key, agent in agents.items():
             if recipe != 'self' and key.startswith('implement'):
-                chain = ['luna'] if recipe == 'codex-fast' else ['sol']
-                assert agent['provider'] == 'codex' and agent['chain'] == chain
+                work = {'codex-fast': ('codex', ['luna']),
+                        'mixed-opus-terra': ('claude', ['opus'])}.get(recipe, ('codex', ['sol']))
+                assert (agent['provider'], agent['chain']) == work, (recipe, key, agent)
         if recipe != 'self':
             keys = (['review:design:tests', 'review:engine:tests']
                     if recipe == 'codex-fast' else ['review:tests'])
@@ -207,6 +210,8 @@ def resolved_matrix(engine, out):
             model = 'luna' if recipe == 'codex-fast' else 'sol'
             effort = ('medium' if key == 'intake' else 'high') if recipe == 'codex' else (
                 'high' if key == 'intake' else 'xhigh')
+            if recipe == 'mixed-opus-terra':
+                model, effort = ('terra61' if key == 'intake' else 'opus'), 'high'
             assert office['models'] == [model] and office['efforts'] == {model: effort}
         if recipe == 'codex-fast':
             selected = agents['triage']
@@ -264,7 +269,151 @@ def resolved_matrix(engine, out):
             assert manifest['drivers'][key] == base['drivers'][key], (recipe, key)
             assert manifest['hands'][key] == base['hands'][key], (recipe, key)
             assert manifest['boundary'][key] == base['boundary'][key], (recipe, key)
+    mixed_route(engine, out, manifests)
     print('resolved triage/intake, work/review matrices and negative controls passed', flush=True)
+
+
+# Operator-directed mixed route (proposed 0090): office, provider, concrete pin,
+# adapter route and office effort for each of its seven model seats.
+MIXED_ROUTE = {
+    'intake': ('mixed-terra-intake', 'codex', 'terra61', 'gpt-6.1-terra', None, 'high'),
+    'implement': ('mixed-opus-implementer', 'claude', 'opus', 'claude-opus-5-5', None, 'high'),
+    'review:correctness': ('codex-review-astra-correctness', 'codex', 'astra', 'gpt-6-astra', None, 'high'),
+    'review:security': ('codex-review-security', 'dsh', 'flash', 'deepseek-flash',
+                        ('deepseek-official', 'uncontracted'), 'high'),
+    'review:tests': ('codex-review-tests', 'dsh', 'glm-flash', 'spark-glm/GLM-5.3-Flash-EXL3',
+                     ('spark-glm', 'local'), None),
+    'review:guarantees': ('codex-review-guarantees', 'codex', 'astra', 'gpt-6-astra', None, 'high'),
+    'review:independent': ('codex-review-independent', 'claude', 'fable', 'claude-fable-5-1', None, 'high'),
+}
+
+
+def mixed_route(engine, out, manifests):
+    mixed, careful = manifests['mixed-opus-terra'], manifests['codex-careful']
+    adapters = {name: json.loads((ROOT / f'adapters/{name}.json').read_text())
+                for name in ['codex', 'claude', 'dsh']}
+    source = json.loads((ROOT / 'bundles/mixed-opus-terra/bundle.json').read_text())
+    observed = {}
+    for key in MIXED_ROUTE:
+        selected = mixed['agents'].get(key)
+        if selected is None:
+            continue
+        result = call([engine, 'agents', 'show', selected['agent']], ROOT,
+                      out / ('mixed-' + key.replace(':', '-') + '-office'))
+        assert result.returncode == 0, result.stderr
+        office = json.loads(result.stdout)
+        site = mixed['capabilities']['sites'][key]
+        pins = [p for c in site['candidates'] for p in c['model_pins']['read']]
+        observed[key] = dict(agent=selected['agent'], site_office=site['office'],
+            provider=selected['provider'], chain=selected['chain'], model=selected['model'],
+            chosen_index=selected['chosen_index'], skipped=selected['skipped'],
+            effort=selected.get('effort'), models=office['models'], efforts=office['efforts'],
+            resolution=[(c['model'], c['provider'], c['status']) for c in office['resolution']['chain']],
+            chosen=office['resolution']['chosen'], concrete=[p['id'] for p in pins],
+            route=[(p['route'], adapters[selected['provider']]['routes'][p['route']])
+                   for p in pins if 'route' in p],
+            charter=office['charter'], limits=office.get('limits'),
+            hands=mixed['hands'].get(key), boundary=mixed['boundary'].get(key))
+    observed['source'] = dict(extends=source['extends'], override=source['override'],
+                              seats=sorted(source['seats']))
+    observed['aliases'] = {a: adapters['codex']['models'][a] for a in ['terra', 'terra61']}
+
+    def charter(agent):
+        office = json.loads((ROOT / f'agents/{agent}.json').read_text())
+        while 'charter' not in office:
+            office = json.loads((ROOT / f"agents/{office['extends']}.json").read_text())
+        return office['charter']
+    wanted = {}
+    for key, (agent, provider, model, concrete, route, effort) in MIXED_ROUTE.items():
+        work = key in ['intake', 'implement']
+        base = 'intake' if key == 'intake' else 'implementer'
+        wanted[key] = dict(agent=agent, site_office=agent, provider=provider, chain=[model],
+            model=model, chosen_index=0, skipped=[], effort=None, models=[model],
+            efforts={model: effort} if effort else {},
+            resolution=[(model, provider, 'ok')],
+            chosen={'index': 0, 'model': model, 'provider': provider},
+            concrete=[concrete], route=[route] if route else [], charter=charter(agent),
+            limits=json.loads((ROOT / f'agents/{base}.json').read_text())['limits'] if work else None,
+            hands=careful['hands'].get(key), boundary=careful['boundary'].get(key))
+    wanted['source'] = dict(extends='codex-careful', seats=['implement', 'intake'],
+        override={'bundle': ['description'], 'seats': ['intake', 'implement']})
+    wanted['aliases'] = {'terra': 'gpt-5.6-terra', 'terra61': 'gpt-6.1-terra'}
+    # Limits are the office layer; the recipe's own 7200s seat limit is source-only.
+    assert source['seats']['implement']['limits'] == {'max_attempts': 3, 'timeout_seconds': 7200}
+    assert wanted['implement']['limits']['timeout_seconds'] == 14400
+
+    def assert_mixed(matrix):
+        assert matrix == wanted, matrix
+        # Everything outside the two work seats is careful's, field for field.
+        for section in set(mixed) | set(careful):
+            if section in ['agents', 'capabilities', 'files', 'bundle_name']:
+                continue
+            assert mixed[section] == careful[section], section
+        for section in ['agents', 'sites']:
+            a = mixed[section] if section == 'agents' else mixed['capabilities']['sites']
+            b = careful[section] if section == 'agents' else careful['capabilities']['sites']
+            assert set(a) == set(b), section
+            assert sorted(k for k in a if a[k] != b[k]) == ['implement', 'intake'], section
+        assert {k: v for k, v in mixed['capabilities'].items() if k != 'sites'} == \
+            {k: v for k, v in careful['capabilities'].items() if k != 'sites'}
+    assert_mixed(observed)
+    mutations = ['model', 'provider', 'concrete', 'route', 'effort', 'compiled-effort',
+                 'status', 'fallback', 'missing', 'replaced', 'hands', 'boundary']
+    rejected = []
+    for key in MIXED_ROUTE:
+        for mutation in mutations:
+            bad = copy.deepcopy(observed)
+            row = bad[key]
+            if mutation == 'model':
+                row['concrete'] = ['claude-sonnet-5-5']
+            elif mutation == 'provider':
+                row['provider'] = 'codex' if row['provider'] != 'codex' else 'claude'
+            elif mutation == 'concrete':
+                row['concrete'] = ['dashscope/glm-5.3']
+            elif mutation == 'route':
+                row['route'] = [('spark-glm', 'local')] if key != 'review:tests' else [('dashscope', 'uncontracted')]
+            elif mutation == 'effort':
+                row['efforts'] = {row['model']: 'xhigh'}
+            elif mutation == 'compiled-effort':
+                row['effort'] = 'high'
+            elif mutation == 'status':
+                row['resolution'] = [(row['model'], row['provider'], 'blocked')]
+            elif mutation == 'fallback':
+                row['chain'].append('sonnet')
+            elif mutation == 'missing':
+                del bad[key]
+            elif mutation == 'replaced':
+                row['agent'] = 'review-correctness' if key.startswith('review') else 'implementer'
+            elif mutation == 'hands':
+                row['hands'] = {'kind': 'workspace', 'network': True, 'binds': []}
+            else:
+                row['boundary'] = 'harness'
+            rejected.append(refuses(assert_mixed, bad, ('mixed', key, mutation)))
+    for mutation in ['alias', 'terra61', 'override', 'seat', 'merged', 'extra-member']:
+        bad = copy.deepcopy(observed)
+        if mutation == 'alias':
+            bad['aliases']['terra'] = 'gpt-6.1-terra'
+        elif mutation == 'terra61':
+            bad['aliases']['terra61'] = 'gpt-5.6-terra'
+        elif mutation == 'override':
+            bad['source']['override']['seats'].append('review')
+        elif mutation == 'seat':
+            bad['source']['seats'].append('review')
+        elif mutation == 'merged':
+            bad['review:guarantees'] = copy.deepcopy(bad['review:correctness'])
+        else:
+            bad['review:extra'] = copy.deepcopy(bad['review:tests'])
+        rejected.append(refuses(assert_mixed, bad, ('mixed', mutation)))
+    dump(out / 'mixed-route-matrix.json', dict(actual=observed, rejected=rejected,
+         presence='unknown: resolution is not a provider invocation', providers_called=False))
+
+
+def refuses(comparator, bad, label):
+    try:
+        comparator(bad)
+    except AssertionError:
+        return label
+    raise AssertionError(('mutant accepted',) + label)
 
 
 def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):

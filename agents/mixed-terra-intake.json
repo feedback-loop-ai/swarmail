@@ -1,0 +1,30 @@
+{
+  "extends": "intake",
+  "models": [
+    "terra61"
+  ],
+  "efforts": {
+    "terra61": "high"
+  },
+  "hands": {
+    "kind": "workspace",
+    "network": true,
+    "binds": [
+      {
+        "path": "~/.cargo",
+        "mode": "overlay",
+        "mask": [
+          "credentials.toml",
+          "credentials"
+        ]
+      },
+      {
+        "path": "~/.rustup",
+        "mode": "ro"
+      }
+    ]
+  },
+  "replaces": {
+    "hands": "The operator-selected work seat uses the existing bounded workspace tool and masked Cargo cache."
+  }
+}
