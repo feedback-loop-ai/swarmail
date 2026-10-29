@@ -1,0 +1,9 @@
+{
+  "extends": "review-correctness",
+  "models": [
+    "flash"
+  ],
+  "efforts": {
+    "flash": "high"
+  }
+}

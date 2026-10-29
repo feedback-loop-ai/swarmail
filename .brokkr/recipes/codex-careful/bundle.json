@@ -1,0 +1,77 @@
+{
+  "name": "codex-careful",
+  "description": "Codex Sol xhigh implementation; five required reviewers: official DeepSeek Flash correctness, security and guarantees through dsh (separate offices and results), GLM-5.3-Flash tests through dsh (effort not applicable) and independent Fable 5.1, under a 4-hour review deadline. Inherits all protected shell gates.",
+  "extends": "codex",
+  "override": {
+    "bundle": [
+      "description"
+    ],
+    "seats": [
+      "intake",
+      "implement",
+      "review"
+    ]
+  },
+  "seats": {
+    "intake": {
+      "agent": "codex-careful-intake",
+      "class": "work",
+      "results": [
+        "resolved"
+      ]
+    },
+    "implement": {
+      "agent": "codex-careful-implementer",
+      "class": "work",
+      "results": [
+        "complete",
+        "broken",
+        "blocked"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 7200
+      }
+    },
+    "review": {
+      "results": [
+        "clean",
+        "residual",
+        "security-hold"
+      ],
+      "inputs": [
+        "fixes_applied",
+        "has_security_residual",
+        "max_residual_severity",
+        "spec_defect"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 14400
+      },
+      "aggregate": "review-panel",
+      "panel": {
+        "correctness": {
+          "agent": "codex-review-astra-correctness",
+          "class": "gate"
+        },
+        "security": {
+          "agent": "codex-review-security",
+          "class": "gate"
+        },
+        "tests": {
+          "agent": "codex-review-tests",
+          "class": "gate"
+        },
+        "guarantees": {
+          "agent": "codex-review-guarantees",
+          "class": "gate"
+        },
+        "independent": {
+          "agent": "codex-review-independent",
+          "class": "gate"
+        }
+      }
+    }
+  }
+}

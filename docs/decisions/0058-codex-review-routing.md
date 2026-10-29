@@ -91,3 +91,20 @@ with reasoning effort not applicable. Proposed [0081](0081-glm-flash-seats.md)
 records the exact direction and prior intake-hands refusal. Intake and every
 other seat keep their models; this accepted historical body is preserved.
 0081 remains proposed, and this pointer accepts no decision.
+
+## Dated correctness/guarantees and deadline pointer — 2026-10-29
+
+The operator's 2026-10-28 directions move the Careful and High-risk
+correctness (`codex-review-astra-correctness`) and guarantees members from
+Codex Astra to official DeepSeek Flash through dsh at high effort, and raise
+the `codex`, `codex-careful` and `codex-fast` review deadline from 3600 s to
+14400 s. Proposed [0098](0098-review-panel-flash-and-deadline.md) records
+the exact direction and evidence. This accepted historical body is
+preserved; 0098 remains proposed, and this pointer accepts no decision.
+
+## Dated acceptance addendum — 2026-10-29
+
+The operator accepted [0098](0098-review-panel-flash-and-deadline.md) in
+chat on 2026-10-29. The pointer above, written while 0098 was proposed, is
+kept as recorded; 0098 now amends this record's correctness and guarantees
+assignments and the review deadline as it states.

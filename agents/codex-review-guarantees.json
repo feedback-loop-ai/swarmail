@@ -1,9 +1,0 @@
-{
-  "extends": "review-guarantees",
-  "models": [
-    "astra"
-  ],
-  "efforts": {
-    "astra": "high"
-  }
-}
