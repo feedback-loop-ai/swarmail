@@ -177,6 +177,7 @@ pub const SWARMAIL_TOOLS: &[&str] = &[
     "swarmail_search_emails",
     "swarmail_get_email",
     "swarmail_get_latest_email",
+    "swarmail_get_deliverability_report",
     "swarmail_delete_email",
     "swarmail_clear_inbox",
     "swarmail_clear_all",
