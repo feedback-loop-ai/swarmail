@@ -2459,24 +2459,19 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
             vec!["local", "--output", o, "--mailpit", i, "--mailhog", i],
             "is not an executable file",
         ),
-        (vec!["evidence", "--output", o], "--baseline is required"),
         (
-            vec![
-                "evidence",
-                "--output",
-                o,
-                "--baseline",
-                i,
-                "--final",
-                i,
-                "--receipts",
-                "/nonexistent/receipts",
-            ],
+            vec!["collect", "--output", o],
+            "pass --mailpit and --mailhog with their pinned executables",
+        ),
+        (vec!["evidence", "--output", o], "--final is required"),
+        (
+            vec!["evidence", "--output", o, "--final", "/nonexistent/final"],
             "does not exist",
         ),
+        (vec!["measure", "--output", o], "--config is required"),
         (
-            vec!["measure", "--output", o, "--baseline", i, "--receipts", i],
-            "--config is required",
+            vec!["measure", "--output", o, "--config", "/nonexistent/config"],
+            "does not exist",
         ),
     ];
     for (args, want) in cases {
@@ -2484,35 +2479,102 @@ fn every_delivery_mode_refuses_with_its_blocked_phase_and_launches_no_agent() {
         assert_eq!(code, 2, "{args:?}: {text}");
         assert!(text.contains(want), "{args:?}: expected {want:?} in {text}");
     }
-    for args in [
+
+    // T10's prerequisites, in order: removing or emptying any one refuses
+    // by its name, and an earlier one is always named first.
+    let prerequisites = [
+        ("baseline", "--baseline"),
+        ("final-contracts", "--contracts"),
+        ("controls", "--controls-dir"),
+        ("coordination-receipts", "--receipts"),
+        ("cost-basis", "--cost"),
+        ("identity", "--identity"),
+        ("full-product", "--product"),
+    ];
+    let empty = root.path().join("empty");
+    std::fs::write(&empty, b"").unwrap();
+    let e = empty.to_str().unwrap();
+    for mode_args in [
         vec!["controls", "--output", o],
-        vec![
-            "evidence",
-            "--output",
-            o,
-            "--baseline",
-            i,
-            "--final",
-            i,
-            "--receipts",
-            i,
-        ],
+        vec!["evidence", "--output", o, "--final", i],
+        vec!["measure", "--output", o, "--config", i],
+    ] {
+        for (n, (name, _)) in prerequisites.iter().enumerate() {
+            for corrupt in [false, true] {
+                let mut args = mode_args.clone();
+                for (m, (_, flag)) in prerequisites.iter().enumerate() {
+                    if m != n {
+                        args.extend([*flag, i]);
+                    } else if corrupt {
+                        args.extend([*flag, e]);
+                    }
+                }
+                let (code, text) = compare_mail(&args, &w);
+                assert_eq!(code, 2, "{args:?}: {text}");
+                assert!(
+                    text.contains(&format!("blocked at phase \"prerequisite-{name}\"")),
+                    "{args:?} should name {name}: {text}"
+                );
+            }
+        }
+        // Everything missing: the first in order is the one named.
+        let (code, text) = compare_mail(&mode_args, &w);
+        assert_eq!(code, 2);
+        assert!(text.contains("\"prerequisite-baseline\""), "{text}");
+        // Everything present stat-wise reaches the eval owners' refusal,
+        // which stays unconditional until T8/T9 land.
+        let mut all = mode_args.clone();
+        for (_, flag) in prerequisites {
+            all.extend([flag, i]);
+        }
+        let (code, text) = compare_mail(&all, &w);
+        assert_eq!(code, 2, "{all:?}: {text}");
+        assert!(eval_blocked(&text), "{all:?}: {text}");
+    }
+
+    // The dry run names the whole order and opens nothing: its wrapper
+    // configuration is unreadable and holds a canary that must never appear.
+    let config = root.path().join("config");
+    std::fs::write(&config, b"CANARY-credential-zzz").unwrap();
+    std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let c = config.to_str().unwrap();
+    for args in [
+        vec!["measure", "--output", o, "--config", c, "--dry-run"],
         vec![
             "measure",
             "--output",
             o,
+            "--config",
+            c,
             "--baseline",
             i,
-            "--config",
+            "--contracts",
+            i,
+            "--controls-dir",
             i,
             "--receipts",
+            i,
+            "--cost",
+            i,
+            "--identity",
+            i,
+            "--product",
             i,
             "--dry-run",
         ],
     ] {
         let (code, text) = compare_mail(&args, &w);
         assert_eq!(code, 2, "{args:?}: {text}");
-        assert!(eval_blocked(&text), "{args:?}: {text}");
+        assert!(
+            text.contains(
+                "prerequisite order: baseline final-contracts controls coordination-receipts cost-basis identity full-product"
+            ),
+            "{text}"
+        );
+        assert!(
+            !text.contains("CANARY") && !text.contains("Permission denied"),
+            "a dry run opened the wrapper configuration: {text}"
+        );
     }
     std::fs::create_dir(&out).unwrap();
     let (code, text) = compare_mail(&["local", "--output", o], &w);
