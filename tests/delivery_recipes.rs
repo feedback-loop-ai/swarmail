@@ -64,6 +64,7 @@ fn recipe_discovery_uses_the_existing_bundles_without_copied_definitions() {
         "codex-careful",
         "codex-fast",
         "mixed-opus-terra",
+        "claude-careful",
     ] {
         assert_eq!(
             root.join("recipes").join(name).canonicalize().unwrap(),
@@ -1063,5 +1064,541 @@ fn operator_mixed_recipe_inherits_the_careful_panel_unchanged() {
     assert_eq!(
         read_json("adapters/dsh.json")["models"]["glm-flash"],
         "spark-glm/GLM-5.3-Flash-EXL3"
+    );
+}
+
+// Proposed 0099: the operator's zero-Codex careful lane. One row per model
+// seat: compiled key, office, base office (charter), adapter, model key,
+// concrete pin, office effort (`None` = not applicable) and workspace hands.
+type RouteRow = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    Option<&'static str>,
+    bool,
+);
+const CLAUDE_CAREFUL_ROUTE: [RouteRow; 10] = [
+    (
+        "intake",
+        "claude-intake",
+        "intake",
+        "claude",
+        "haiku55",
+        "claude-haiku-5-5",
+        Some("high"),
+        true,
+    ),
+    (
+        "design:positions:simplicity",
+        "claude-position-simplicity",
+        "position-simplicity",
+        "claude",
+        "opus",
+        "claude-opus-5-5",
+        Some("high"),
+        true,
+    ),
+    (
+        "design:positions:robustness",
+        "dsh-position-robustness",
+        "position-robustness",
+        "dsh",
+        "flash",
+        "deepseek-flash",
+        Some("high"),
+        false,
+    ),
+    (
+        "design:chief",
+        "claude-chief-architect",
+        "chief-architect",
+        "claude",
+        "fable",
+        "claude-fable-5-1",
+        Some("high"),
+        true,
+    ),
+    (
+        "implement",
+        "claude-implementer",
+        "implementer",
+        "claude",
+        "sonnet",
+        "claude-sonnet-5-5",
+        Some("high"),
+        true,
+    ),
+    (
+        "review:correctness",
+        "codex-review-correctness",
+        "review-correctness",
+        "claude",
+        "fable",
+        "claude-fable-5-1",
+        Some("high"),
+        false,
+    ),
+    (
+        "review:security",
+        "codex-review-security",
+        "review-security",
+        "dsh",
+        "flash",
+        "deepseek-flash",
+        Some("high"),
+        false,
+    ),
+    (
+        "review:guarantees",
+        "codex-review-guarantees",
+        "review-guarantees",
+        "dsh",
+        "flash",
+        "deepseek-flash",
+        Some("high"),
+        false,
+    ),
+    (
+        "review:tests",
+        "codex-review-tests",
+        "review-tests",
+        "dsh",
+        "glm-flash",
+        "spark-glm/GLM-5.3-Flash-EXL3",
+        None,
+        false,
+    ),
+    (
+        "review:independent",
+        "claude-review-independent",
+        "review-correctness",
+        "claude",
+        "opus",
+        "claude-opus-5-5",
+        Some("high"),
+        false,
+    ),
+];
+
+/// The office each model seat of a recipe names, keyed as the compiled
+/// manifest keys them.
+fn claude_careful_seat_agents(recipe: &Value) -> BTreeSet<(String, String)> {
+    let seats = &recipe["seats"];
+    let design = &seats["design"]["sequence"];
+    let mut agents = BTreeSet::new();
+    let mut put = |key: &str, agent: &Value| {
+        agents.insert((key.to_owned(), agent.as_str().unwrap_or("").to_owned()));
+    };
+    put("intake", &seats["intake"]["agent"]);
+    put("implement", &seats["implement"]["agent"]);
+    for role in ["simplicity", "robustness"] {
+        put(
+            &format!("design:positions:{role}"),
+            &design[0]["panel"][role]["agent"],
+        );
+    }
+    put("design:chief", &design[1]["agent"]);
+    if let Some(panel) = seats["review"]["panel"].as_object() {
+        for (role, member) in panel {
+            put(&format!("review:{role}"), &member["agent"]);
+        }
+    }
+    agents
+}
+
+/// Every office the composed recipe hires, walking the extends chain with
+/// whole-seat overrides (the leaf's seat wins), as the resolver composes it.
+fn composed_offices(leaf: &Value) -> Vec<String> {
+    fn collect(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                for (key, member) in map {
+                    match (key.as_str(), member.as_str()) {
+                        ("agent", Some(agent)) => out.push(agent.to_owned()),
+                        _ => collect(member, out),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| collect(item, out)),
+            _ => {}
+        }
+    }
+    let mut seats = serde_json::Map::new();
+    let mut layer = leaf.clone();
+    loop {
+        for (name, seat) in layer["seats"].as_object().unwrap() {
+            seats.entry(name.clone()).or_insert_with(|| seat.clone());
+        }
+        match layer["extends"].as_str() {
+            Some(parent) => layer = read_json(&format!("bundles/{parent}/bundle.json")),
+            None => break,
+        }
+    }
+    let mut out = Vec::new();
+    collect(&Value::Object(seats), &mut out);
+    out
+}
+
+fn claude_careful_violations(
+    recipe: &Value,
+    office: &dyn Fn(&str) -> Value,
+    adapter: &dyn Fn(&str) -> Value,
+) -> Vec<String> {
+    let mut bad = Vec::new();
+    let keys: BTreeSet<&str> = recipe
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    if keys != BTreeSet::from(["description", "extends", "name", "override", "seats"]) {
+        bad.push(format!("recipe keys {keys:?}"));
+    }
+    if recipe["extends"] != "codex-careful" {
+        bad.push("extends".into());
+    }
+    if recipe["override"]
+        != json!({"bundle": ["description"], "seats": ["intake", "design", "implement", "review"]})
+    {
+        bad.push("override".into());
+    }
+    let seats: BTreeSet<&str> = recipe["seats"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    if seats != BTreeSet::from(["design", "implement", "intake", "review"]) {
+        bad.push(format!("seats {seats:?}"));
+    }
+    let wanted: BTreeSet<(String, String)> = CLAUDE_CAREFUL_ROUTE
+        .iter()
+        .map(|row| (row.0.to_owned(), row.1.to_owned()))
+        .collect();
+    if claude_careful_seat_agents(recipe) != wanted {
+        bad.push("seat offices".into());
+    }
+
+    // Outside the offices, each seat is the record it replaces: careful's
+    // intake, implement and review, self's design with its exec check.
+    let careful = read_json("bundles/codex-careful/bundle.json");
+    let base = read_json("bundles/self/bundle.json");
+    let mut intake = careful["seats"]["intake"].clone();
+    intake["agent"] = json!("claude-intake");
+    let mut implement = careful["seats"]["implement"].clone();
+    implement["agent"] = json!("claude-implementer");
+    implement["limits"] = json!({"max_attempts": 3, "timeout_seconds": 14400});
+    let mut review = careful["seats"]["review"].clone();
+    review["panel"]["correctness"]["agent"] = json!("codex-review-correctness");
+    review["panel"]["independent"]["agent"] = json!("claude-review-independent");
+    let mut design = base["seats"]["design"].clone();
+    design["sequence"][0]["panel"]["simplicity"]["agent"] = json!("claude-position-simplicity");
+    design["sequence"][0]["panel"]["robustness"]["agent"] = json!("dsh-position-robustness");
+    design["sequence"][1]["agent"] = json!("claude-chief-architect");
+    for (seat, expected) in [
+        ("intake", intake),
+        ("implement", implement),
+        ("review", review),
+        ("design", design),
+    ] {
+        if recipe["seats"][seat] != expected {
+            bad.push(format!("{seat}: seat record"));
+        }
+    }
+    for seat in ["implement", "review"] {
+        if recipe["seats"][seat]["limits"] != json!({"max_attempts": 3, "timeout_seconds": 14400}) {
+            bad.push(format!("{seat}: limits"));
+        }
+    }
+
+    let work_hands = office("codex-careful-intake")["hands"].clone();
+    for (key, agent, base, provider, model, concrete, effort, hands) in CLAUDE_CAREFUL_ROUTE {
+        let overlay = office(agent);
+        let mut expected_keys = BTreeSet::from(["efforts", "extends", "models"]);
+        if hands {
+            expected_keys.extend(["hands", "replaces"]);
+        }
+        let overlay_keys: BTreeSet<&str> = overlay
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        if overlay_keys != expected_keys {
+            bad.push(format!("{key}: keys {overlay_keys:?}"));
+        }
+        if overlay["extends"] != base
+            || office(base).get("extends").is_some()
+            || !office(base)["charter"].is_string()
+        {
+            bad.push(format!("{key}: charter office"));
+        }
+        if overlay["models"] != json!([model]) {
+            bad.push(format!("{key}: model chain"));
+        }
+        let efforts = effort.map_or(json!({}), |effort| json!({model: effort}));
+        if overlay["efforts"] != efforts {
+            bad.push(format!("{key}: effort"));
+        }
+        if hands
+            && (overlay["hands"] != work_hands
+                || !overlay["replaces"]["hands"]
+                    .as_str()
+                    .is_some_and(|s| !s.trim().is_empty()))
+        {
+            bad.push(format!("{key}: hands"));
+        }
+        if adapter(provider)["models"][model] != concrete {
+            bad.push(format!("{key}: {model} pin"));
+        }
+    }
+
+    // No Codex model anywhere in the composed route.
+    let codex = adapter("codex");
+    for agent in composed_offices(recipe) {
+        let mut models = office(&agent)["models"].clone();
+        let mut current = office(&agent);
+        while models.is_null() {
+            current = office(current["extends"].as_str().unwrap());
+            models = current["models"].clone();
+        }
+        for model in models.as_array().unwrap() {
+            let model = model.as_str().unwrap();
+            if codex["models"].get(model).is_some() {
+                bad.push(format!("{agent}: Codex model {model}"));
+            }
+            let routed = ["claude", "dsh"]
+                .iter()
+                .filter(|name| adapter(name)["models"].get(model).is_some())
+                .count();
+            if routed != 1 {
+                bad.push(format!("{agent}: {model} names {routed} providers"));
+            }
+        }
+    }
+
+    let claude = adapter("claude");
+    if claude["models"]["haiku"] != "claude-haiku-4-5-20251001" {
+        bad.push("historical haiku alias".into());
+    }
+    let dsh = adapter("dsh");
+    if dsh["routes"]["deepseek-official"] != "uncontracted"
+        || dsh["routes"]["spark-glm"] != "local"
+        || dsh["tool_permissions"] != "unsupported"
+        || dsh["mcp"] != "unsupported"
+        || !dsh["effortless_routes"]["spark-glm"].is_string()
+    {
+        bad.push("dsh routes or declared capabilities".into());
+    }
+    if dsh["models"].as_object().unwrap().values().any(|v| {
+        let route = v.as_str().unwrap();
+        route.contains("deepseek") && route.contains("pro")
+    }) {
+        bad.push("DeepSeek Pro".into());
+    }
+    bad
+}
+
+#[test]
+fn claude_careful_routes_every_model_seat_without_codex() {
+    let recipe = read_json("bundles/claude-careful/bundle.json");
+    let on_disk = |name: &str| office(name);
+    let adapters = |name: &str| read_json(&format!("adapters/{name}.json"));
+    assert_eq!(
+        claude_careful_violations(&recipe, &on_disk, &adapters),
+        Vec::<String>::new()
+    );
+    // The recipe keeps careful's protected policy: no table, rule or phase
+    // override, and the exec gates verify and ship stay inherited.
+    for forbidden in ["policy", "protected_phase", "remove"] {
+        assert!(recipe.get(forbidden).is_none(), "{forbidden}");
+    }
+    for gate in ["verify", "ship"] {
+        assert!(recipe["seats"].get(gate).is_none(), "{gate}");
+    }
+
+    // The same comparison refuses each one-fault drift of the recipe ...
+    let mut inherited_design = recipe.clone();
+    inherited_design["seats"]
+        .as_object_mut()
+        .unwrap()
+        .remove("design");
+    inherited_design["override"]["seats"] = json!(["intake", "implement", "review"]);
+    let mut fable_independent = recipe.clone();
+    fable_independent["seats"]["review"]["panel"]["independent"]["agent"] =
+        json!("codex-review-independent");
+    let mut flash_correctness = recipe.clone();
+    flash_correctness["seats"]["review"]["panel"]["correctness"]["agent"] =
+        json!("codex-review-astra-correctness");
+    let mut implement_limit = recipe.clone();
+    implement_limit["seats"]["implement"]["limits"]["timeout_seconds"] = json!(7200);
+    let mut review_limit = recipe.clone();
+    review_limit["seats"]["review"]["limits"]["timeout_seconds"] = json!(3600);
+    let mut candidate_check = recipe.clone();
+    candidate_check["seats"]["design"]["sequence"][2]["driver"]["command"][5] =
+        json!("scripts/design-check.sh");
+    let mut codex_position = recipe.clone();
+    codex_position["seats"]["design"]["sequence"][0]["panel"]["simplicity"]["agent"] =
+        json!("codex-position-simplicity");
+    let mut policy = recipe.clone();
+    policy["policy"] = json!("policy.json");
+    for (mutant, recipe) in [
+        ("inherited Codex design", &inherited_design),
+        ("Fable independent", &fable_independent),
+        ("Flash correctness", &flash_correctness),
+        ("implement limit", &implement_limit),
+        ("review limit", &review_limit),
+        ("candidate design check", &candidate_check),
+        ("Codex position", &codex_position),
+        ("copied policy", &policy),
+    ] {
+        assert!(
+            !claude_careful_violations(recipe, &on_disk, &adapters).is_empty(),
+            "{mutant} accepted"
+        );
+    }
+
+    // ... of an office ...
+    type Drift = fn(&mut Value);
+    let drifts: [(&str, &str, Drift); 11] = [
+        ("claude-implementer", "Codex model", |o| {
+            o["models"] = json!(["sol"]);
+            o["efforts"] = json!({"sol": "high"})
+        }),
+        ("claude-intake", "Haiku 4.5", |o| {
+            o["models"] = json!(["haiku"]);
+            o["efforts"] = json!({"haiku": "high"})
+        }),
+        ("claude-chief-architect", "fallback", |o| {
+            o["models"] = json!(["fable", "opus"])
+        }),
+        ("claude-review-independent", "fallback", |o| {
+            o["models"] = json!(["opus", "glm-flash"])
+        }),
+        ("codex-review-tests", "effort on GLM", |o| {
+            o["efforts"] = json!({"glm-flash": "high"})
+        }),
+        (
+            "dsh-position-robustness",
+            "dsh hands",
+            |o| o["hands"] = json!({"kind": "workspace", "network": false, "binds": []}),
+        ),
+        ("dsh-position-robustness", "GLM robustness", |o| {
+            o["models"] = json!(["glm-flash"]);
+            o["efforts"] = json!({})
+        }),
+        ("claude-position-simplicity", "no hands", |o| {
+            let o = o.as_object_mut().unwrap();
+            o.remove("hands");
+            o.remove("replaces");
+        }),
+        ("claude-implementer", "unmasked credentials", |o| {
+            o["hands"]["binds"][0]["mask"] = json!(["credentials.toml"])
+        }),
+        ("claude-intake", "charter", |o| {
+            o["charter"] = json!("charters/review-correctness.md")
+        }),
+        ("codex-review-security", "effort", |o| {
+            o["efforts"] = json!({"flash": "medium"})
+        }),
+    ];
+    for (target, mutant, drift) in drifts {
+        let drifted = |name: &str| {
+            let mut value = office(name);
+            if name == target {
+                drift(&mut value);
+            }
+            value
+        };
+        assert!(
+            !claude_careful_violations(&recipe, &drifted, &adapters).is_empty(),
+            "{target}: {mutant} accepted"
+        );
+    }
+
+    // ... and of an adapter alias.
+    let adapter_drifts: [(&str, &str, Drift); 4] = [
+        ("claude", "haiku55 pinned to 4.5", |a| {
+            a["models"]["haiku55"] = json!("claude-haiku-4-5-20251001")
+        }),
+        ("claude", "historical haiku moved", |a| {
+            a["models"]["haiku"] = json!("claude-haiku-5-5")
+        }),
+        ("codex", "Codex alias for opus", |a| {
+            a["models"]["opus"] = json!("gpt-6-astra")
+        }),
+        ("dsh", "DeepSeek Pro", |a| {
+            a["models"]["flash"] = json!("deepseek-pro")
+        }),
+    ];
+    for (target, mutant, drift) in adapter_drifts {
+        let drifted = |name: &str| {
+            let mut value = read_json(&format!("adapters/{name}.json"));
+            if name == target {
+                drift(&mut value);
+            }
+            value
+        };
+        assert!(
+            !claude_careful_violations(&recipe, &on_disk, &drifted).is_empty(),
+            "{target}: {mutant} accepted"
+        );
+    }
+}
+
+/// An overridden seat's `./` command resolves against the layer that wrote
+/// it, and the exec box binds only that layer: claude-careful's design check
+/// runs its own pinned copy, which must stay byte-identical to self's.
+#[test]
+fn claude_careful_design_check_is_self_validator_byte_for_byte() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let leaf = root.join("bundles/claude-careful");
+    let mut files = Vec::new();
+    let mut pending = vec![leaf.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.push(
+                    path.strip_prefix(&leaf)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            "bundle.json",
+            "scripts/design-check.sh",
+            "scripts/speckit/check-prerequisites.sh",
+            "scripts/speckit/common.sh",
+        ],
+        "the leaf carries only its seats and the design validator"
+    );
+    for script in &files[1..] {
+        assert_eq!(
+            std::fs::read(leaf.join(script)).unwrap(),
+            std::fs::read(
+                root.join("bundles/self/scripts")
+                    .join(script.trim_start_matches("scripts/"))
+            )
+            .unwrap(),
+            "{script} drifted from self's pinned copy"
+        );
+    }
+    let recipe = read_json("bundles/claude-careful/bundle.json");
+    let base = read_json("bundles/self/bundle.json");
+    assert_eq!(
+        recipe["seats"]["design"]["sequence"][2], base["seats"]["design"]["sequence"][2],
+        "the model-free validator step is self's, field for field"
     );
 }

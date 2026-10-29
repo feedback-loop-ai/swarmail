@@ -1099,7 +1099,7 @@ if [ "$*" = --version ]; then
   exit 0
 fi
 [ "$1" = compile ] && [ "$2" = --bundle ] || exit 93
-case "$3" in bundles/self|bundles/codex|bundles/codex-careful|bundles/codex-fast|bundles/mixed-opus-terra) ;; *) exit 94 ;; esac
+case "$3" in bundles/self|bundles/codex|bundles/codex-careful|bundles/codex-fast|bundles/mixed-opus-terra|bundles/claude-careful) ;; *) exit 94 ;; esac
 if [ "$3" = "${FAIL_RECIPE:-bundles/codex-careful}" ]; then
   case "${COMPILE_MODE:-clean}" in
     stdout-warning) printf 'lets the run go on without reading fixture\n' ;;
@@ -1271,7 +1271,7 @@ fn ci_record_reader_refuses_bad_fields_before_exporting_any_output() {
 }
 
 #[test]
-fn ci_admits_digest_before_executing_and_compiles_all_five_recipes() {
+fn ci_admits_digest_before_executing_and_compiles_all_six_recipes() {
     let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
     let fixture = BrokkrCiFixture::new();
     let mismatch = fixture
@@ -1303,19 +1303,22 @@ fn ci_admits_digest_before_executing_and_compiles_all_five_recipes() {
     assert!(fixture.marker.exists(), "mutant did not expose execution");
     std::fs::remove_file(&fixture.marker).unwrap();
 
-    let five = "--version\ncompile --bundle bundles/self\ncompile --bundle bundles/codex\ncompile --bundle bundles/codex-careful\ncompile --bundle bundles/codex-fast\ncompile --bundle bundles/mixed-opus-terra\n";
+    let six = "--version\ncompile --bundle bundles/self\ncompile --bundle bundles/codex\ncompile --bundle bundles/codex-careful\ncompile --bundle bundles/codex-fast\ncompile --bundle bundles/mixed-opus-terra\ncompile --bundle bundles/claude-careful\n";
     // Dropping the final recipe from the loop still exits zero: only the exact
     // trace below catches the omission.
-    let omitted = body.replace("codex-fast mixed-opus-terra; do", "codex-fast; do");
+    let omitted = body.replace(
+        "mixed-opus-terra claude-careful; do",
+        "mixed-opus-terra; do",
+    );
     assert_ne!(body, omitted);
     let output = fixture.command(&omitted).output().unwrap();
     assert!(output.status.success(), "{}", ci_diagnostics(&output));
-    assert_ne!(std::fs::read_to_string(&fixture.marker).unwrap(), five);
+    assert_ne!(std::fs::read_to_string(&fixture.marker).unwrap(), six);
     std::fs::remove_file(&fixture.marker).unwrap();
 
     let output = fixture.command(&body).output().unwrap();
     assert!(output.status.success(), "{}", ci_diagnostics(&output));
-    assert_eq!(std::fs::read_to_string(&fixture.marker).unwrap(), five);
+    assert_eq!(std::fs::read_to_string(&fixture.marker).unwrap(), six);
     let args = std::fs::read_to_string(fixture.root.path().join("curl args.txt")).unwrap();
     for required in [
         "--fail\n",
@@ -1372,7 +1375,8 @@ fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
     // and every earlier recipe compiled clean first.
     for (recipe, later) in [
         ("bundles/codex-careful", Some("bundles/codex-fast")),
-        ("bundles/mixed-opus-terra", None),
+        ("bundles/mixed-opus-terra", Some("bundles/claude-careful")),
+        ("bundles/claude-careful", None),
     ] {
         for mode in ["stdout-warning", "stderr-warning", "failure"] {
             let fixture = BrokkrCiFixture::new();
