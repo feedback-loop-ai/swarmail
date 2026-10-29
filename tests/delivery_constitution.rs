@@ -1,4 +1,4 @@
-//! Structural pins on the delivery constitution (`bundles/self/`), accepted
+//! Structural pins on the delivery constitution (`.brokkr/recipes/self/`), accepted
 //! decision 0050. These read the committed JSON and scripts; they are
 //! regression guards on the shape the repairs gave the constitution, not a
 //! substitute for the pinned engine's own evaluation (0050 §5) — the verify
@@ -61,7 +61,7 @@ fn sha256_file(path: &str) -> String {
 /// on no present valuation, which the pinned engine refuses as dead.
 #[test]
 fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
-    let policy = read_json("bundles/self/policy.json");
+    let policy = read_json(".brokkr/recipes/self/policy.json");
     let residual = rules_from(&policy, "review", "residual");
     let ids: Vec<&str> = residual.iter().map(|r| r["id"].as_str().unwrap()).collect();
     assert_eq!(
@@ -101,7 +101,7 @@ fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
 /// to implement); one failure retries and the second stops.
 #[test]
 fn only_the_design_check_advances_to_implement() {
-    let policy = read_json("bundles/self/policy.json");
+    let policy = read_json(".brokkr/recipes/self/policy.json");
     let to_implement: Vec<String> = policy["rules"]
         .as_array()
         .unwrap()
@@ -128,7 +128,7 @@ fn only_the_design_check_advances_to_implement() {
 /// returns only `drafted`, and the final step is the pinned exec validator.
 #[test]
 fn the_design_sequence_ends_in_the_pinned_exec_check() {
-    let bundle = read_json("bundles/self/bundle.json");
+    let bundle = read_json(".brokkr/recipes/self/bundle.json");
     let sequence = bundle["seats"]["design"]["sequence"].as_array().unwrap();
     let names: Vec<&str> = sequence
         .iter()
@@ -158,7 +158,7 @@ fn the_design_sequence_ends_in_the_pinned_exec_check() {
     assert_eq!(check["hands"]["network"], false);
     assert!(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("bundles/self/scripts/design-check.sh")
+            .join(".brokkr/recipes/self/scripts/design-check.sh")
             .is_file()
     );
 }
@@ -168,7 +168,7 @@ fn the_design_sequence_ends_in_the_pinned_exec_check() {
 /// shims the pinned digests name.
 #[test]
 fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
-    let seat = read_text("bundles/self/scripts/verify-seat.sh");
+    let seat = read_text(".brokkr/recipes/self/scripts/verify-seat.sh");
     for gate in [
         "\"bash $pin_q/coverage-gate.sh\"",
         "\"bash $pin_q/coverage-gate.sh selftest\"",
@@ -214,7 +214,7 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
         );
     }
     assert!(seat.contains("sha256sum --check --strict \"$pin_dir/shims.sha256\""));
-    let manifest = read_text("bundles/self/scripts/shims.sha256");
+    let manifest = read_text(".brokkr/recipes/self/scripts/shims.sha256");
     let listed: Vec<&str> = manifest
         .lines()
         .map(|l| l.split_once("  ").unwrap().1)
@@ -245,7 +245,9 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
             })
             .unwrap();
         assert!(
-            text.contains(&format!("exec bash bundles/self/scripts/{target} \"$@\"")),
+            text.contains(&format!(
+                "exec bash .brokkr/recipes/self/scripts/{target} \"$@\""
+            )),
             "{shim} is not the fixed dispatch to the pinned {target}"
         );
     }
@@ -269,35 +271,35 @@ fn verify_runs_the_pinned_gates_and_checks_the_public_shims() {
 fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
     for (path, expected) in [
         (
-            "bundles/self/bundle.json",
+            ".brokkr/recipes/self/bundle.json",
             "2a5fa3696dac122822102316041022850d1630641987b96156a2f4f784bdb265",
         ),
         (
-            "bundles/self/policy.json",
+            ".brokkr/recipes/self/policy.json",
             "652a064814e42a3d1e0e5fc5ecc600de5241da7e5cace8d73e6bf087ef15a47f",
         ),
         (
-            "bundles/self/tooling.json",
-            "44b2933b17b700aab71078752f562b82ff1e6e231195f8e00e910f1b18376f89",
+            ".brokkr/recipes/self/tooling.json",
+            "dbd9b411de49e182d719e23eb6adb6aa18f5dd19e32b05cc9613259421e2b2ff",
         ),
         (
-            "bundles/self/scripts/shims.sha256",
-            "72d34b479a900da837f34a4c3c3066f5964d067050166f7ab4067ff076978566",
+            ".brokkr/recipes/self/scripts/shims.sha256",
+            "e3acc3f2220b266f5ecdf06e1d4c5ba594892514fc2535134f7d504aa83fc30e",
         ),
         (
-            "bundles/self/scripts/coverage-gate.sh",
+            ".brokkr/recipes/self/scripts/coverage-gate.sh",
             "f96b60bef6582efbce6166a6a8da71ab73aad81e545908e2bf6238e5b36c1fbf",
         ),
         (
-            "bundles/self/scripts/design-check.sh",
+            ".brokkr/recipes/self/scripts/design-check.sh",
             "05285f7c0c0b1ee89e00daafefcf4d082c3057f07dcbe8b16c060f517e92134e",
         ),
         (
-            "bundles/self/scripts/verify-seat.sh",
-            "2935005daa160a86e12f08b1c2d1db490b1415237e6af1c3d2530f9b9d7b1008",
+            ".brokkr/recipes/self/scripts/verify-seat.sh",
+            "d48d64474f8ca6d4526a54007ce247c7cbfcb92c9e91a91ac3b388a6f329a39d",
         ),
         (
-            "bundles/self/scripts/delivery-proof-test.sh",
+            ".brokkr/recipes/self/scripts/delivery-proof-test.sh",
             "9a048b395f5a73360127b8e20455a70ed2c89aa1d82d67974b8882c6903d08a3",
         ),
     ] {
@@ -308,7 +310,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         );
     }
 
-    let manifest = read_text("bundles/self/scripts/shims.sha256");
+    let manifest = read_text(".brokkr/recipes/self/scripts/shims.sha256");
     let mut manifest_paths = manifest
         .lines()
         .map(|line| line.split_once("  ").expect("sha256 manifest row").1)
@@ -336,7 +338,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         );
     }
 
-    let bundle = read_json("bundles/self/bundle.json");
+    let bundle = read_json(".brokkr/recipes/self/bundle.json");
     let design = bundle["seats"]["design"]["sequence"]
         .as_array()
         .unwrap()
@@ -345,7 +347,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
     assert_eq!(design["driver"]["command"][4], "bash");
     assert_eq!(design["driver"]["command"][5], "./scripts/design-check.sh");
 
-    let seat = read_text("bundles/self/scripts/verify-seat.sh");
+    let seat = read_text(".brokkr/recipes/self/scripts/verify-seat.sh");
     let active = seat
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
@@ -482,18 +484,18 @@ fn ci_runs_the_chart_history_check_and_the_docker_smoke() {
 #[test]
 fn codex_correctness_charter_provenance_matches_the_tracked_library() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let readme = read_text("agents/README.md");
-    let overlay = read_json("agents/codex-review-correctness.json");
-    let base = read_json("agents/review-correctness.json");
+    let readme = read_text(".brokkr/agents/README.md");
+    let overlay = read_json(".brokkr/agents/codex-review-correctness.json");
+    let base = read_json(".brokkr/agents/review-correctness.json");
     assert_eq!(overlay["extends"], "review-correctness");
     assert_eq!(overlay["models"], json!(["fable"]));
     assert_eq!(base["charter"], "charters/review-correctness.md");
-    assert!(readme.contains("brokkr compile --bundle bundles/self"));
-    assert!(readme.contains(".forge/bin/brokkr agents show codex-review-correctness"));
+    assert!(readme.contains("brokkr compile --bundle .brokkr/recipes/self"));
+    assert!(readme.contains(".brokkr/state/bin/brokkr agents show codex-review-correctness"));
     assert!(readme.contains("historical host copy"));
     assert!(readme.contains("actual review launch"));
 
-    let charter = root.join("agents/charters/review-correctness.md");
+    let charter = root.join(".brokkr/agents/charters/review-correctness.md");
     let digest_output = std::process::Command::new("sha256sum")
         .arg(charter)
         .output()
@@ -594,8 +596,8 @@ impl VerifySeatFixture {
             std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
             std::fs::copy(source, destination).unwrap();
         }
-        let verify_source =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("bundles/self/scripts/verify-seat.sh");
+        let verify_source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(".brokkr/recipes/self/scripts/verify-seat.sh");
         std::fs::copy(verify_source, pin.join("verify-seat.sh")).unwrap();
 
         let engine_script = r#"#!/usr/bin/env bash
@@ -689,8 +691,8 @@ exit 0
             return;
         }
         if resource == "shims.sha256" {
-            let source =
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("bundles/self/scripts/shims.sha256");
+            let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(".brokkr/recipes/self/scripts/shims.sha256");
             std::fs::copy(source, path).unwrap();
             return;
         }
@@ -829,7 +831,7 @@ fi
     let argv = std::fs::read_to_string(&fixture.argv_marker).unwrap();
     assert_eq!(
         argv.lines().collect::<Vec<_>>(),
-        ["compile", "--bundle", "bundles/self"]
+        ["compile", "--bundle", ".brokkr/recipes/self"]
     );
     let startup = std::fs::read_to_string(&startup_log).unwrap();
     let observed: Vec<_> = startup.lines().collect();
@@ -945,17 +947,17 @@ fn verify_seat_refuses_missing_or_mismatched_engine_identity_before_gates() {
     std::fs::write(script, original).unwrap();
 }
 
-const PUBLISHED_ENGINE_URL: &str = "https://github.com/feedback-loop-ai/brokkr/releases/download/swarmail-engine-731189f-p3/brokkr-0.12.0-731189f-p3-x86_64-unknown-linux-gnu";
+const PUBLISHED_ENGINE_URL: &str = "https://github.com/feedback-loop-ai/brokkr/releases/download/swarmail-engine-a9893b4-p4/brokkr-0.12.0-a9893b4-p4-x86_64-unknown-linux-gnu";
 const PUBLISHED_ENGINE_DIGEST: &str =
-    "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f";
+    "29dc3309925a2556b9713b7a9b5fb8089b8e4610e86215fc89554e75634e7cad";
 const READ_TOOLING_STEP: &str = "Read the pinned brokkr record (fail closed)";
 const ADMIT_ENGINE_STEP: &str = "Admit the published brokkr and compile every recipe";
 
 #[test]
 fn published_engine_record_matches_the_operator_release() {
-    let record = read_json("bundles/self/tooling.json");
+    let record = read_json(".brokkr/recipes/self/tooling.json");
     let engine = &record["brokkr"];
-    assert_eq!(engine["sha"], "731189f9097308c01ae4f2b4c9caea5f41224844");
+    assert_eq!(engine["sha"], "a9893b4dfb67417edc99d91f941a9bac3856f138");
     assert_eq!(engine["version"], "0.12.0");
     assert_eq!(engine["binary_url"], PUBLISHED_ENGINE_URL);
     assert_eq!(engine["binary_sha256"], PUBLISHED_ENGINE_DIGEST);
@@ -964,20 +966,24 @@ fn published_engine_record_matches_the_operator_release() {
         json!([
             {"path": "tooling-patches/0001-preserve-review-residual-facts.patch", "sha256": "5d4da2217135c5a2ca14354ae9907623cf67ff0076b078277cb77a09ad3020b5"},
             {"path": "tooling-patches/0002-preserve-review-scope-and-fixes.patch", "sha256": "361272eff344a5d5e05b832281407a99c3f1a77fc1fbc5216e19fb4ce7487173"},
-            {"path": "tooling-patches/0003-bind-verified-candidate.patch", "sha256": "4098228e7649d1bda8961bb491aa29d982b462c420470e265f8b9acf0a148d96"}
+            {"path": "tooling-patches/0003-bind-verified-candidate.patch", "sha256": "4098228e7649d1bda8961bb491aa29d982b462c420470e265f8b9acf0a148d96"},
+            {"path": "tooling-patches/0004-raise-hands-command-timeout.patch", "sha256": "73bea06793febaed05edb23338e8963087ef6227888fe28cdd29337a418c15d6"}
         ])
     );
     for patch in engine["patches"].as_array().unwrap() {
         assert_eq!(
-            sha256_file(&format!("bundles/self/{}", patch["path"].as_str().unwrap())),
+            sha256_file(&format!(
+                ".brokkr/recipes/self/{}",
+                patch["path"].as_str().unwrap()
+            )),
             patch["sha256"].as_str().unwrap()
         );
     }
     let provenance = engine["binary_provenance"].as_str().unwrap();
-    assert!(provenance.contains("source base 731189f9097308c01ae4f2b4c9caea5f41224844 plus"));
-    assert!(provenance.contains("three checksum-pinned patches"));
+    assert!(provenance.contains("source base a9893b4dfb67417edc99d91f941a9bac3856f138 plus"));
+    assert!(provenance.contains("four checksum-pinned patches"));
     assert!(provenance.contains(
-        "https://github.com/feedback-loop-ai/brokkr/releases/tag/swarmail-engine-731189f-p3"
+        "https://github.com/feedback-loop-ai/brokkr/releases/tag/swarmail-engine-a9893b4-p4"
     ));
     assert!(!provenance.contains(".forge/"));
 }
@@ -1080,7 +1086,7 @@ impl BrokkrCiFixture {
         let runner_temp = root.path().join("runner temp");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(&runner_temp).unwrap();
-        std::fs::create_dir_all(root.path().join("bundles/self")).unwrap();
+        std::fs::create_dir_all(root.path().join(".brokkr/recipes/self")).unwrap();
         let fixture = Self {
             root,
             bin,
@@ -1089,7 +1095,7 @@ impl BrokkrCiFixture {
             engine,
             runner_temp,
         };
-        fixture.write_record(&read_json("bundles/self/tooling.json"));
+        fixture.write_record(&read_json(".brokkr/recipes/self/tooling.json"));
         fixture.write_command(
             &fixture.engine,
             r#"#!/usr/bin/env bash
@@ -1099,7 +1105,7 @@ if [ "$*" = --version ]; then
   exit 0
 fi
 [ "$1" = compile ] && [ "$2" = --bundle ] || exit 93
-case "$3" in bundles/self|bundles/codex|bundles/codex-careful|bundles/codex-fast|bundles/mixed-opus-terra) ;; *) exit 94 ;; esac
+case "$3" in .brokkr/recipes/self|.brokkr/recipes/codex|.brokkr/recipes/codex-careful|.brokkr/recipes/codex-fast|.brokkr/recipes/mixed-opus-terra|.brokkr/recipes/claude-careful) ;; *) exit 94 ;; esac
 if [ "$3" = "${FAIL_RECIPE:-bundles/codex-careful}" ]; then
   case "${COMPILE_MODE:-clean}" in
     stdout-warning) printf 'lets the run go on without reading fixture\n' ;;
@@ -1136,7 +1142,7 @@ cp "$FIXTURE_ASSET" "$destination"
 
     fn write_record(&self, record: &Value) {
         std::fs::write(
-            self.root.path().join("bundles/self/tooling.json"),
+            self.root.path().join(".brokkr/recipes/self/tooling.json"),
             serde_json::to_vec(record).unwrap(),
         )
         .unwrap();
@@ -1189,7 +1195,7 @@ fn ci_diagnostics(output: &std::process::Output) -> String {
 fn ci_record_reader_refuses_bad_fields_before_exporting_any_output() {
     let body = brokkr_ci_body(READ_TOOLING_STEP);
     let fixture = BrokkrCiFixture::new();
-    let valid = read_json("bundles/self/tooling.json");
+    let valid = read_json(".brokkr/recipes/self/tooling.json");
     for (field, invalids) in [
         ("sha", vec![json!("0".repeat(40) + "\n"), json!(7)]),
         ("version", vec![json!("0.12.0\n"), json!("v0.12.0")]),
@@ -1235,7 +1241,10 @@ fn ci_record_reader_refuses_bad_fields_before_exporting_any_output() {
             assert!(!fixture.github_output.exists(), "exported invalid metadata");
         }
     }
-    let record_path = fixture.root.path().join("bundles/self/tooling.json");
+    let record_path = fixture
+        .root
+        .path()
+        .join(".brokkr/recipes/self/tooling.json");
     for malformed in ["{", "{}", "null", r#"{"brokkr":[]}"#] {
         std::fs::write(&record_path, malformed).unwrap();
         let output = fixture.command(&body).output().unwrap();
@@ -1264,14 +1273,14 @@ fn ci_record_reader_refuses_bad_fields_before_exporting_any_output() {
     assert_eq!(
         std::fs::read_to_string(&fixture.github_output).unwrap(),
         format!(
-            "sha=731189f9097308c01ae4f2b4c9caea5f41224844\nversion=0.12.0\nbinary_sha256={PUBLISHED_ENGINE_DIGEST}\nbinary_url={PUBLISHED_ENGINE_URL}\n"
+            "sha=a9893b4dfb67417edc99d91f941a9bac3856f138\nversion=0.12.0\nbinary_sha256={PUBLISHED_ENGINE_DIGEST}\nbinary_url={PUBLISHED_ENGINE_URL}\n"
         )
     );
     assert!(!fixture.marker.exists());
 }
 
 #[test]
-fn ci_admits_digest_before_executing_and_compiles_all_four_recipes() {
+fn ci_admits_digest_before_executing_and_compiles_all_six_recipes() {
     let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
     let fixture = BrokkrCiFixture::new();
     let mismatch = fixture
@@ -1303,12 +1312,22 @@ fn ci_admits_digest_before_executing_and_compiles_all_four_recipes() {
     assert!(fixture.marker.exists(), "mutant did not expose execution");
     std::fs::remove_file(&fixture.marker).unwrap();
 
+    let six = "--version\ncompile --bundle .brokkr/recipes/self\ncompile --bundle .brokkr/recipes/codex\ncompile --bundle .brokkr/recipes/codex-careful\ncompile --bundle .brokkr/recipes/codex-fast\ncompile --bundle .brokkr/recipes/mixed-opus-terra\ncompile --bundle .brokkr/recipes/claude-careful\n";
+    // Dropping the final recipe from the loop still exits zero: only the exact
+    // trace below catches the omission.
+    let omitted = body.replace(
+        "mixed-opus-terra claude-careful; do",
+        "mixed-opus-terra; do",
+    );
+    assert_ne!(body, omitted);
+    let output = fixture.command(&omitted).output().unwrap();
+    assert!(output.status.success(), "{}", ci_diagnostics(&output));
+    assert_ne!(std::fs::read_to_string(&fixture.marker).unwrap(), six);
+    std::fs::remove_file(&fixture.marker).unwrap();
+
     let output = fixture.command(&body).output().unwrap();
     assert!(output.status.success(), "{}", ci_diagnostics(&output));
-    assert_eq!(
-        std::fs::read_to_string(&fixture.marker).unwrap(),
-        "--version\ncompile --bundle bundles/self\ncompile --bundle bundles/codex\ncompile --bundle bundles/codex-careful\ncompile --bundle bundles/codex-fast\ncompile --bundle bundles/mixed-opus-terra\n"
-    );
+    assert_eq!(std::fs::read_to_string(&fixture.marker).unwrap(), six);
     let args = std::fs::read_to_string(fixture.root.path().join("curl args.txt")).unwrap();
     for required in [
         "--fail\n",
@@ -1361,34 +1380,46 @@ fn ci_refuses_failed_download_or_hash_before_execution() {
 #[test]
 fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
     let body = brokkr_ci_body(ADMIT_ENGINE_STEP);
-    for mode in ["stdout-warning", "stderr-warning", "failure"] {
-        let fixture = BrokkrCiFixture::new();
-        let output = fixture
-            .command(&body)
-            .env("COMPILE_MODE", mode)
-            .output()
-            .unwrap();
-        assert_eq!(
-            output.status.code(),
-            Some(if mode == "failure" { 23 } else { 1 })
-        );
-        let diagnostics = ci_diagnostics(&output);
-        assert!(
-            diagnostics.contains("bundles/codex-careful"),
-            "{diagnostics}"
-        );
-        let expected = if mode == "failure" {
-            "fixture compile failure"
-        } else {
-            "policy-sweep warning"
-        };
-        assert!(diagnostics.contains(expected), "{diagnostics}");
-        assert!(
-            !std::fs::read_to_string(&fixture.marker)
-                .unwrap()
-                .contains("bundles/codex-fast")
-        );
-        fixture.assert_cleaned();
+    // The final recipe gets its own failures: nothing after it could mask them,
+    // and every earlier recipe compiled clean first.
+    for (recipe, later) in [
+        (
+            ".brokkr/recipes/codex-careful",
+            Some(".brokkr/recipes/codex-fast"),
+        ),
+        (
+            ".brokkr/recipes/mixed-opus-terra",
+            Some(".brokkr/recipes/claude-careful"),
+        ),
+        (".brokkr/recipes/claude-careful", None),
+    ] {
+        for mode in ["stdout-warning", "stderr-warning", "failure"] {
+            let fixture = BrokkrCiFixture::new();
+            let output = fixture
+                .command(&body)
+                .env("FAIL_RECIPE", recipe)
+                .env("COMPILE_MODE", mode)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if mode == "failure" { 23 } else { 1 })
+            );
+            let diagnostics = ci_diagnostics(&output);
+            assert!(diagnostics.contains(recipe), "{diagnostics}");
+            let expected = if mode == "failure" {
+                "fixture compile failure"
+            } else {
+                "policy-sweep warning"
+            };
+            assert!(diagnostics.contains(expected), "{diagnostics}");
+            let marker = std::fs::read_to_string(&fixture.marker).unwrap();
+            assert!(marker.ends_with(&format!("compile --bundle {recipe}\n")));
+            if let Some(later) = later {
+                assert!(!marker.contains(later));
+            }
+            fixture.assert_cleaned();
+        }
     }
     let fixture = BrokkrCiFixture::new();
     let output = fixture

@@ -1,0 +1,130 @@
+{
+  "name": "claude-careful",
+  "description": "Zero-Codex careful lane: Claude Haiku 5.5 intake; design positions Opus 5.5 simplicity and official DeepSeek Flash robustness through dsh with a Fable 5.1 chief; Sonnet 5.5 implementation; five required reviewers: Fable 5.1 correctness, official Flash security and guarantees, GLM-5.3-Flash tests through dsh (effort not applicable) and independent Opus 5.5, under a 4-hour deadline. Inherits careful's protected shell gates; the design check runs a byte-identical copy of self's pinned validator.",
+  "extends": "codex-careful",
+  "override": {
+    "bundle": [
+      "description"
+    ],
+    "seats": [
+      "intake",
+      "design",
+      "implement",
+      "review"
+    ]
+  },
+  "seats": {
+    "intake": {
+      "agent": "claude-intake",
+      "class": "work",
+      "results": [
+        "resolved"
+      ]
+    },
+    "design": {
+      "results": [
+        "designed",
+        "drafted",
+        "fail"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 14400
+      },
+      "sequence": [
+        {
+          "name": "positions",
+          "aggregate": "unanimous-pass",
+          "panel": {
+            "simplicity": {
+              "agent": "claude-position-simplicity"
+            },
+            "robustness": {
+              "agent": "dsh-position-robustness"
+            }
+          }
+        },
+        {
+          "name": "chief",
+          "agent": "claude-chief-architect",
+          "results": [
+            "drafted"
+          ]
+        },
+        {
+          "name": "check",
+          "class": "gate",
+          "driver": {
+            "command": [
+              "{brokkr}",
+              "driver",
+              "exec",
+              "--",
+              "bash",
+              "./scripts/design-check.sh",
+              "{prompt_file}"
+            ]
+          },
+          "hands": {
+            "binds": [],
+            "kind": "workspace",
+            "network": false
+          }
+        }
+      ]
+    },
+    "implement": {
+      "agent": "claude-implementer",
+      "class": "work",
+      "results": [
+        "complete",
+        "broken",
+        "blocked"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 14400
+      }
+    },
+    "review": {
+      "results": [
+        "clean",
+        "residual",
+        "security-hold"
+      ],
+      "inputs": [
+        "fixes_applied",
+        "has_security_residual",
+        "max_residual_severity",
+        "spec_defect"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 14400
+      },
+      "aggregate": "review-panel",
+      "panel": {
+        "correctness": {
+          "agent": "codex-review-correctness",
+          "class": "gate"
+        },
+        "security": {
+          "agent": "codex-review-security",
+          "class": "gate"
+        },
+        "tests": {
+          "agent": "codex-review-tests",
+          "class": "gate"
+        },
+        "guarantees": {
+          "agent": "codex-review-guarantees",
+          "class": "gate"
+        },
+        "independent": {
+          "agent": "claude-review-independent",
+          "class": "gate"
+        }
+      }
+    }
+  }
+}

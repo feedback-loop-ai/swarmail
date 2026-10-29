@@ -1,0 +1,13 @@
+{
+  "schema": "forge.realms/v3",
+  "realms": [
+    {
+      "name": "swarmail",
+      "path": "..",
+      "default_branch": "main",
+      "house": "docs/house-rules.md",
+      "dialect": "speckit"
+    }
+  ],
+  "journal": "state/forge.db"
+}
