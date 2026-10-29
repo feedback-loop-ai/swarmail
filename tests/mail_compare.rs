@@ -114,6 +114,7 @@ async fn run(
         output: root.join("out"),
         scratch: root.join("s"),
         protocol: p,
+        keepers: targets::Keepers::default(),
     };
     std::fs::create_dir(root.join("s")).unwrap();
     runner::run(cfg, wire::Clock(Instant::now())).await
@@ -983,6 +984,10 @@ fn a_protocol_whose_retention_differs_from_the_launch_refuses() {
 // ---- real runs against the real binary ---------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 async fn a_real_smoke_run_reconciles_every_message_and_wait_and_seals() {
     let root = tempfile::tempdir().unwrap();
     let (verdict, life, sealed) = run(smoke(), root.path(), "smoke-run").await;
@@ -1127,6 +1132,10 @@ async fn a_real_smoke_run_reconciles_every_message_and_wait_and_seals() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 async fn the_bounded_thousand_session_profile_accounts_for_every_attempt() {
     let mut v = json(SMOKE);
     v["throughput"] = serde_json::json!([{
@@ -1184,6 +1193,10 @@ async fn stops_running(pid: i32) -> bool {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 async fn a_launched_target_is_closed_private_bounded_and_fully_reaped() {
     let root = tempfile::tempdir().unwrap();
     let scratch = root.path().join("leaf");
@@ -1199,6 +1212,7 @@ async fn a_launched_target_is_closed_private_bounded_and_fully_reaped() {
         &scratch,
         &limits(),
         &clock,
+        &targets::Keepers::default(),
     )
     .await
     .expect("the real binary becomes ready");
@@ -1311,32 +1325,50 @@ async fn launch_refusals_happen_before_spawn_and_partial_starts_are_cleaned() {
     wrong.expected_sha256 = Some("0".repeat(64));
     let leaf = root.path().join("a");
     assert_eq!(
-        targets::Owned::launch(&wrong, &leaf, &limits(), &clock)
-            .await
-            .err(),
+        targets::Owned::launch(
+            &wrong,
+            &leaf,
+            &limits(),
+            &clock,
+            &targets::Keepers::default()
+        )
+        .await
+        .err(),
         Some(targets::LaunchError::DigestMismatch)
     );
     assert!(!leaf.exists(), "a refused digest creates nothing");
     let mut missing = swarmail_spec(targets::swarmail_template(0));
     missing.binary = root.path().join("no-such-server");
     assert_eq!(
-        targets::Owned::launch(&missing, &leaf, &limits(), &clock)
-            .await
-            .err(),
+        targets::Owned::launch(
+            &missing,
+            &leaf,
+            &limits(),
+            &clock,
+            &targets::Keepers::default()
+        )
+        .await
+        .err(),
         Some(targets::LaunchError::Binary("unreadable"))
     );
     let mut plain = swarmail_spec(targets::swarmail_template(0));
     plain.binary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     assert_eq!(
-        targets::Owned::launch(&plain, &leaf, &limits(), &clock)
-            .await
-            .err(),
+        targets::Owned::launch(
+            &plain,
+            &leaf,
+            &limits(),
+            &clock,
+            &targets::Keepers::default()
+        )
+        .await
+        .err(),
         Some(targets::LaunchError::Binary("not executable"))
     );
     std::fs::create_dir(&leaf).unwrap();
     let ok = swarmail_spec(targets::swarmail_template(0));
     assert_eq!(
-        targets::Owned::launch(&ok, &leaf, &limits(), &clock)
+        targets::Owned::launch(&ok, &leaf, &limits(), &clock, &targets::Keepers::default())
             .await
             .err(),
         Some(targets::LaunchError::Scratch),
@@ -1347,9 +1379,15 @@ async fn launch_refusals_happen_before_spawn_and_partial_starts_are_cleaned() {
     let mut broken = swarmail_spec(targets::swarmail_template(0));
     broken.template.push("--no-such-flag".into());
     let leaf = root.path().join("b");
-    match targets::Owned::launch(&broken, &leaf, &limits(), &clock)
-        .await
-        .err()
+    match targets::Owned::launch(
+        &broken,
+        &leaf,
+        &limits(),
+        &clock,
+        &targets::Keepers::default(),
+    )
+    .await
+    .err()
     {
         Some(targets::LaunchError::NotReady(_, facts)) => assert!(facts.proved(), "{facts:?}"),
         other => panic!("expected a readiness refusal, got {other:?}"),
@@ -1358,27 +1396,387 @@ async fn launch_refusals_happen_before_spawn_and_partial_starts_are_cleaned() {
 }
 
 #[tokio::test]
-async fn a_dropped_owner_kills_its_group_but_proves_no_cleanup() {
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn a_dropped_owner_leaves_its_worker_to_finish_and_prove_cleanup() {
     let root = tempfile::tempdir().unwrap();
     let scratch = root.path().join("leaf");
     let clock = wire::Clock(Instant::now());
+    let keepers = targets::Keepers::default();
     let owned = targets::Owned::launch(
         &swarmail_spec(targets::swarmail_template(0)),
         &scratch,
         &limits(),
         &clock,
+        &keepers,
     )
     .await
     .unwrap();
     let pid = owned.pid();
-    drop(owned); // cancellation
+    // Cancellation at active work: the owner is dropped with a request in
+    // flight, never told to stop.
+    let work = async move {
+        let _ = owned.list_all(4).await;
+        std::future::pending::<()>().await;
+    };
+    tokio::select! {
+        biased;
+        _ = work => unreachable!("the work never ends by itself"),
+        _ = async {} => {}
+    }
+    let settled = keepers.settle(limits().cleanup * 2).await;
+    assert_eq!(settled.len(), 1);
+    assert!(settled[0].proved(), "{:?}", settled[0]);
+    assert!(stops_running(pid).await);
     assert!(
-        stops_running(pid).await,
-        "the dropped owner's group is killed"
+        !scratch.exists(),
+        "the surviving worker disposed of the scratch"
     );
     assert!(
+        keepers.settle(limits().cleanup).await.is_empty(),
+        "a settled worker is not counted twice"
+    );
+}
+
+/// A stand-in server: `/bin/sh -c body`, which never becomes ready, so
+/// every launch of it ends in the readiness refusal and its cleanup. The
+/// shell is an existing executable: a freshly written script could be
+/// "text file busy" while a parallel test forks.
+fn fake_spec(kind: TargetKind, body: &str) -> targets::LaunchSpec {
+    targets::LaunchSpec {
+        kind,
+        binary: PathBuf::from("/bin/sh"),
+        expected_sha256: None,
+        template: vec!["-c".into(), body.into()],
+    }
+}
+
+fn short_limits() -> targets::Limits {
+    targets::Limits {
+        startup: Duration::from_millis(400),
+        cleanup: Duration::from_secs(2),
+        request: Duration::from_millis(200),
+        max_response_bytes: 1 << 20,
+        open_files: 256,
+    }
+}
+
+/// The pid a fake server wrote into its private HOME, once it has.
+async fn started(scratch: &Path) -> i32 {
+    let marker = scratch.join("home/pid");
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Ok(text) = std::fs::read_to_string(&marker)
+            && let Ok(pid) = text.trim().parse()
+        {
+            return pid;
+        }
+        assert!(Instant::now() < until, "the fake server never started");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_launch_cancelled_during_readiness_is_still_cleaned_by_its_worker() {
+    let root = tempfile::tempdir().unwrap();
+    let body = "echo $$ > \"$HOME/pid.tmp\"; mv \"$HOME/pid.tmp\" \"$HOME/pid\"; exec sleep 600";
+    let scratch = root.path().join("leaf");
+    let keepers = targets::Keepers::default();
+    let mut lim = short_limits();
+    lim.startup = Duration::from_secs(60);
+    let clock = wire::Clock(Instant::now());
+    let spec = fake_spec(TargetKind::Mailpit, body);
+    let launch = targets::Owned::launch(&spec, &scratch, &lim, &clock, &keepers);
+    let pid = tokio::select! {
+        r = launch => panic!("a never-ready server became ready: {:?}", r.err()),
+        pid = started(&scratch) => pid,
+    };
+    let settled = keepers.settle(lim.cleanup * 2).await;
+    assert_eq!(settled.len(), 1);
+    assert!(
+        settled[0].proved() && !settled[0].forced_kill,
+        "{:?}",
+        settled[0]
+    );
+    assert!(stops_running(pid).await);
+    assert!(!scratch.exists());
+}
+
+#[tokio::test]
+async fn a_term_resistant_child_is_killed_within_one_composed_cleanup_budget() {
+    let root = tempfile::tempdir().unwrap();
+    // The ignored TERM is inherited by the sleeps, so only the group's
+    // forced kill ends them.
+    let body = "trap '' TERM; while :; do sleep 1; done";
+    let lim = short_limits();
+    let clock = wire::Clock(Instant::now());
+    let scratch = root.path().join("leaf");
+    let begun = Instant::now();
+    let r = targets::Owned::launch(
+        &fake_spec(TargetKind::Mailhog, body),
+        &scratch,
+        &lim,
+        &clock,
+        &targets::Keepers::default(),
+    )
+    .await;
+    let took = begun.elapsed();
+    match r.err() {
+        Some(targets::LaunchError::NotReady(why, facts)) => {
+            assert_eq!(why, "readiness deadline");
+            assert!(facts.forced_kill && facts.proved(), "{facts:?}");
+        }
+        other => panic!("expected a readiness refusal, got {other:?}"),
+    }
+    // Startup, plus one readiness probe past it, plus one cleanup budget:
+    // the grace, the kill, the group, the drain and the listener probes
+    // share that budget rather than each taking their own.
+    let bound = lim.startup + lim.request * 2 + lim.cleanup;
+    assert!(took < bound + Duration::from_millis(500), "{took:?}");
+    assert!(!scratch.exists());
+}
+
+#[tokio::test]
+async fn output_pressure_never_stalls_the_child_or_its_cleanup() {
+    let root = tempfile::tempdir().unwrap();
+    // A "Swarmail" whose startup line names closed ports and that then
+    // floods its stdout: the drain keeps the pipe empty, and its handle
+    // is awaited at cleanup.
+    let body = "echo 'swarmail smtp=127.0.0.1:1 http=127.0.0.1:1'; exec yes flood";
+    let r = targets::Owned::launch(
+        &fake_spec(TargetKind::Swarmail, body),
+        &root.path().join("leaf"),
+        &short_limits(),
+        &wire::Clock(Instant::now()),
+        &targets::Keepers::default(),
+    )
+    .await;
+    match r.err() {
+        Some(targets::LaunchError::NotReady(why, facts)) => {
+            assert_eq!(why, "readiness deadline");
+            assert!(facts.proved() && !facts.forced_kill, "{facts:?}");
+        }
+        other => panic!("expected a readiness refusal, got {other:?}"),
+    }
+    assert!(!root.path().join("leaf").exists());
+}
+
+#[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn an_acknowledged_cleanup_hold_keeps_the_parent_waiting_even_across_cancellation() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = root.path().join("leaf");
+    let keepers = targets::Keepers::default();
+    let mut owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &scratch,
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &keepers,
+    )
+    .await
+    .unwrap();
+    let pid = owned.pid();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    owned.on_cleanup(async move {
+        let _ = entered_tx.send(());
+        let _ = release_rx.await;
+    });
+    {
+        let shutdown = owned.shutdown();
+        tokio::pin!(shutdown);
+        // One poll sends the stop; the worker acknowledges the hold.
+        assert!(
+            tokio::time::timeout(Duration::ZERO, &mut shutdown)
+                .await
+                .is_err()
+        );
+        entered_rx.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::ZERO, &mut shutdown)
+                .await
+                .is_err(),
+            "the parent is still waiting while cleanup is held"
+        );
+        assert!(
+            matches!(proc_state(pid), Some('S') | Some('R')),
+            "nothing is cleaned while the hold stands"
+        );
+        // Cancellation during cleanup: the waiting shutdown is dropped.
+    }
+    release_tx.send(()).unwrap();
+    let facts = owned.shutdown().await;
+    assert!(facts.proved(), "{facts:?}");
+    assert!(!scratch.exists());
+    let settled = keepers.settle(limits().cleanup).await;
+    assert_eq!(settled, vec![facts]);
+}
+
+#[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn a_worker_that_fails_proves_nothing_and_still_kills_its_group() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = root.path().join("leaf");
+    let keepers = targets::Keepers::default();
+    let mut owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &scratch,
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &keepers,
+    )
+    .await
+    .unwrap();
+    let pid = owned.pid();
+    // A nested failure inside the worker: its join fails, its report
+    // never arrives, and its group guard is the only cleanup left.
+    owned.on_cleanup(async { panic!("injected worker failure (expected)") });
+    let facts = owned.shutdown().await;
+    assert_eq!(facts, targets::CleanupFacts::unproved(TargetKind::Swarmail));
+    assert_eq!(
+        keepers.settle(limits().cleanup).await,
+        vec![targets::CleanupFacts::unproved(TargetKind::Swarmail)]
+    );
+    assert!(stops_running(pid).await, "the guard killed the group");
+    assert!(
         scratch.exists(),
-        "nothing was proved, so nothing was cleaned: the leaf stays for the operator"
+        "forced death proves nothing, so the scratch stays for the operator"
+    );
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn bind_ownership_is_read_from_the_kernel_and_refuses_foreign_or_ambiguous_listeners() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    let root = tempfile::tempdir().unwrap();
+    let keepers = targets::Keepers::default();
+    let mut owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &root.path().join("leaf"),
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &keepers,
+    )
+    .await
+    .unwrap();
+    let pid = owned.pid();
+    assert_eq!(targets::binds(pid, owned.smtp), targets::Bind::Owned);
+    assert_eq!(targets::binds(pid, owned.http_addr), targets::Bind::Owned);
+    let (smtp, http) = (owned.smtp, owned.http_addr);
+    assert!(owned.shutdown().await.proved());
+    assert_eq!(targets::binds(pid, smtp), targets::Bind::Absent);
+    assert_eq!(targets::binds(pid, http), targets::Bind::Absent);
+
+    let reuse = |addr: &str| {
+        let s = tokio::net::TcpSocket::new_v4().unwrap();
+        s.set_reuseport(true).unwrap();
+        s.bind(addr.parse().unwrap()).unwrap();
+        s.listen(8).unwrap().into_std().unwrap()
+    };
+    // Another group holds one listener on a port; this process holds a
+    // second on the same port, and a wildcard on another.
+    let theirs = reuse("127.0.0.1:0");
+    let port = theirs.local_addr().unwrap().port();
+    let fd = theirs.as_raw_fd();
+    let mut other = std::process::Command::new("sleep");
+    other.arg("60").process_group(0);
+    // SAFETY: dup2 and fcntl are async-signal-safe. They give the child the
+    // listener as fd 3 without close-on-exec; dup2 onto itself would keep
+    // the flag, so an fd that already is 3 has the flag cleared instead.
+    unsafe {
+        other.pre_exec(move || {
+            let r = if fd == 3 {
+                libc::fcntl(3, libc::F_SETFD, 0)
+            } else {
+                libc::dup2(fd, 3)
+            };
+            if r < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut other = other.spawn().unwrap();
+    let group = other.id() as i32;
+    drop(theirs);
+    let at = |p: u16| std::net::SocketAddr::from(([127, 0, 0, 1], p));
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        let seen = targets::binds(group, at(port));
+        if seen == targets::Bind::Owned {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "the other group never held its listener: {seen:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let ours = reuse(&format!("127.0.0.1:{port}"));
+    assert_eq!(
+        targets::binds(group, at(port)),
+        targets::Bind::Ambiguous,
+        "a second holder outside the group"
+    );
+    let wildcard = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let wport = wildcard.local_addr().unwrap().port();
+    assert_eq!(
+        targets::binds(group, at(wport)),
+        targets::Bind::Foreign,
+        "a wildcard listener accepts at the loopback address too"
+    );
+    other.kill().unwrap();
+    other.wait().unwrap();
+    assert_eq!(targets::binds(group, at(port)), targets::Bind::Foreign);
+    drop(ours);
+    drop(wildcard);
+    assert!(keepers.settle(limits().cleanup).await[0].proved());
+}
+
+#[tokio::test]
+#[cfg(not(target_os = "linux"))]
+async fn without_proc_bind_ownership_is_unknown_and_the_launch_refuses_after_cleaning() {
+    let root = tempfile::tempdir().unwrap();
+    let r = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &root.path().join("leaf"),
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &targets::Keepers::default(),
+    )
+    .await;
+    match r.err() {
+        Some(targets::LaunchError::NotReady(why, facts)) => {
+            assert_eq!(why, "smtp bind ownership unknown");
+            assert!(facts.proved(), "{facts:?}");
+        }
+        other => panic!("expected a bind refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_executable_is_rechecked_against_its_launch_digest() {
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("server");
+    std::fs::write(&bin, b"first bytes").unwrap();
+    let digest = targets::sha256_hex(b"first bytes");
+    assert!(targets::unchanged(&bin, &digest));
+    std::fs::write(&bin, b"other bytes").unwrap();
+    assert!(!targets::unchanged(&bin, &digest), "replaced bytes refuse");
+    std::fs::remove_file(&bin).unwrap();
+    assert!(
+        !targets::unchanged(&bin, &digest),
+        "a vanished executable refuses"
     );
 }
 
@@ -1408,6 +1806,10 @@ fn tamper(dir: &Path, f: impl FnOnce(&mut Vec<u8>)) {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
 async fn admission_refuses_truncated_foreign_duplicate_missing_and_altered_runs() {
     let root = tempfile::tempdir().unwrap();
     let (verdict, _, sealed) = run(tiny(), root.path(), "admit-run").await;
@@ -2533,9 +2935,15 @@ fn pinned(t: TargetKind) -> targets::LaunchSpec {
 
 async fn launch_pinned(t: TargetKind, scratch: &Path) -> targets::Owned {
     let clock = wire::Clock(Instant::now());
-    targets::Owned::launch(&pinned(t), scratch, &limits(), &clock)
-        .await
-        .unwrap_or_else(|e| panic!("{t} did not launch: {e:?}"))
+    targets::Owned::launch(
+        &pinned(t),
+        scratch,
+        &limits(),
+        &clock,
+        &targets::Keepers::default(),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("{t} did not launch: {e:?}"))
 }
 
 async fn smtp_code(r: &mut tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>) -> u16 {
@@ -2607,10 +3015,24 @@ async fn a_wrong_or_missing_competitor_binary_refuses_before_spawn() {
     let clock = wire::Clock(Instant::now());
     let mut spec = pinned(TargetKind::Mailpit);
     spec.binary = pinned(TargetKind::Mailhog).binary;
-    let r = targets::Owned::launch(&spec, &root.path().join("a"), &limits(), &clock).await;
+    let r = targets::Owned::launch(
+        &spec,
+        &root.path().join("a"),
+        &limits(),
+        &clock,
+        &targets::Keepers::default(),
+    )
+    .await;
     assert!(matches!(r, Err(targets::LaunchError::DigestMismatch)));
     spec.binary = root.path().join("absent");
-    let r = targets::Owned::launch(&spec, &root.path().join("b"), &limits(), &clock).await;
+    let r = targets::Owned::launch(
+        &spec,
+        &root.path().join("b"),
+        &limits(),
+        &clock,
+        &targets::Keepers::default(),
+    )
+    .await;
     assert!(matches!(r, Err(targets::LaunchError::Binary(_))));
     assert!(!root.path().join("a").exists() && !root.path().join("b").exists());
 }
@@ -2922,6 +3344,7 @@ async fn a_real_three_target_smoke_run_reconciles_every_message_and_wait_and_sea
         output: root.path().join("out"),
         scratch: root.path().join("s"),
         protocol: p.clone(),
+        keepers: targets::Keepers::default(),
     };
     std::fs::create_dir(root.path().join("s")).unwrap();
     let (verdict, life, sealed) = runner::run(cfg, wire::Clock(Instant::now())).await;

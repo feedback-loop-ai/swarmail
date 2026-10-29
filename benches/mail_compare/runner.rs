@@ -8,7 +8,7 @@ use crate::protocol::{
     Connection, Observation, Protocol, TargetKind, ThroughputProfile, WaitProfile,
 };
 use crate::records::{Manifest, Phase, Planned, ROW_VERSION, Row, RunDir};
-use crate::targets::{CleanupFacts, LaunchError, LaunchFacts, LaunchSpec, Limits, Owned};
+use crate::targets::{CleanupFacts, Keepers, LaunchError, LaunchFacts, LaunchSpec, Limits, Owned};
 use crate::wire::{Clock, Disposition, Message, Smtp, authored, same_body};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -22,6 +22,9 @@ pub struct Config {
     pub specs: BTreeMap<TargetKind, LaunchSpec>,
     pub output: PathBuf,
     pub scratch: PathBuf,
+    /// Every launch's cleanup worker; the caller settles them, which is
+    /// what proves an interrupted run's cleanup.
+    pub keepers: Keepers,
 }
 
 /// How a run ended. `Infrastructure` dominates: a run that could not
@@ -208,7 +211,9 @@ pub async fn run(cfg: Config, clock: Clock) -> (Verdict, Lifecycle, Option<PathB
                 }
                 leaf += 1;
                 let scratch = cfg.scratch.join(format!("leaf-{leaf:04}"));
-                let mut owned = match Owned::launch(spec, &scratch, &limits, &clock).await {
+                let mut owned = match Owned::launch(spec, &scratch, &limits, &clock, &cfg.keepers)
+                    .await
+                {
                     Ok(o) => o,
                     Err(LaunchError::NotReady(why, facts)) => {
                         life.cleanups.push(facts);
@@ -287,6 +292,24 @@ pub async fn run(cfg: Config, clock: Clock) -> (Verdict, Lifecycle, Option<PathB
             );
         }
     };
+    // Every executable must still be the bytes it was launched from: a
+    // replacement during the run would leave the record standing behind
+    // a binary nobody measured.
+    for launched in &life.launches {
+        let same = cfg.specs.get(&launched.target).is_some_and(|spec| {
+            crate::targets::unchanged(&spec.binary, &launched.executable_sha256)
+        });
+        if !same {
+            return (
+                Verdict::Infrastructure(format!(
+                    "{}: executable changed during the run",
+                    launched.target
+                )),
+                life,
+                None,
+            );
+        }
+    }
     let report = crate::report::report(p, &cfg.manifest, &rows, &life);
     if let Err(e) = dir.write_artifact(
         "report.json",
@@ -319,7 +342,7 @@ async fn warmup(
     life: &mut Lifecycle,
 ) -> Result<(), String> {
     let scratch = cfg.scratch.join(format!("leaf-{leaf:04}"));
-    let mut owned = match Owned::launch(spec, &scratch, limits, clock).await {
+    let mut owned = match Owned::launch(spec, &scratch, limits, clock, &cfg.keepers).await {
         Ok(o) => o,
         Err(LaunchError::NotReady(why, facts)) => {
             life.cleanups.push(facts);

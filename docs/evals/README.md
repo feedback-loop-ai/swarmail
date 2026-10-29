@@ -23,7 +23,7 @@ untimed checks and labelled smoke runs, not collection.
 |---|---|
 | Source pins: [`sources.lock.json`](sources.lock.json) (lock v3) | **Artifacts pinned and tagged sources bound; build provenance unknown.** Mailpit v1.32.0 and MailHog v1.0.1 are pinned by asset and executable digest. Each tag's captured ref → annotated tag → commit chain and the commit's untruncated tree listing are committed under [`sources/`](sources/). Every repository document (licence, API, setup README, reviewed source) is bound by size, SHA-256 and git blob id to its path in that tree, and rechecked whenever the lock is used. Nothing ties either executable to its tagged commit, so `binary_build_provenance` stays unresolved and the lock makes no built-from claim. |
 | Method: [`protocol.json`](protocol.json) | **Draft** (`fair-mail-comparison-draft-3`, superseding draft-2, whose bytes are kept under [`history/`](history/)). The labelled common-client poll is selected for wait-common; wait-best stays blocked. Collection is refused while `unresolved` lists anything, and protocol v2 (actual storage, enforcement, budgets and the official-artifact claim scope) is not built. |
-| Wire driver: `benches/mail_compare.rs` | Built. Its polls now use the adapter's tested wait rule, and its scans refuse short nonfinal pages. A three-target smoke run against real Swarmail, Mailpit and MailHog seals and admits (`tests/mail_compare.rs`, ignored tests below). This is a smoke run, not evidence. Owned-bind corroboration against process identity and cleanup ownership that survives cancellation (T3) are **not built**. |
+| Wire driver: `benches/mail_compare.rs` | Built. Its polls now use the adapter's tested wait rule, and its scans refuse short nonfinal pages. A three-target smoke run against real Swarmail, Mailpit and MailHog seals and admits (`tests/mail_compare.rs`, ignored tests below). This is a smoke run, not evidence. Owned-bind corroboration and a cleanup worker that survives cancellation (T3) are **built and proved locally on Linux** (see *Method, as built*). The launch-level refusal of a foreign bind is proved through the kernel reading it rests on, not by forcing the reservation race, which needs no seam and has none. |
 | Mailpit MCP adapter: `mail_compare mailpit-mcp` | **Built and proved locally.** It speaks MCP 2025-03-26 over stdio. Its tools are list, search, read and a labelled client-side poll, each a translation of the captured Mailpit API. It was tested against real Mailpit over real SMTP. Each call's time frame starts at admission (see below). Final client negotiation (#151/#152/#153) is not proved by these tests. JSON-RPC batches are refused, which falls short of 2025-03-26 (receivers must accept batches); that stays open with the final contracts. |
 | One command: `scripts/compare-mail.sh` | Built. `local` runs the driver as a labelled smoke run. `controls`, `evidence` and `measure` refuse at `comparison-integration`. No mode starts an agent. |
 | Eval integration: comparison target, envelope and controls (T7–T9) | **Eval sources repaired; comparison not built.** The conflict syntax #269 committed is resolved to the accepted side. Standalone fmt, locked all-target clippy and every test binary pass, each run whole and default-threaded. No comparison target, envelope or same-suite control exists. Cross-checkout #148/#201 shared-admission and CI receipts are unproved. |
@@ -49,7 +49,7 @@ Every criterion is open. "Proof so far" names local tests in
 | AC3 adapter | wait-frame and poll proofs on a paused clock; real SMTP → Mailpit → MCP | final client contracts (#151/#152/#153), batches | #151 / implementer |
 | AC4 controls | none | comparison target and envelope, external oracle/null controls | implementer after T8 |
 | AC5–AC7 throughput, waits, limits | smoke runs; scan and censoring tests | full frozen runs, actual storage/enforcement profiles, best wait | implementer / operator |
-| AC8–AC9 lifecycle, privacy | existing launch/cleanup/privacy tests | owned-bind corroboration and surviving cleanup worker (T3) | implementer |
+| AC8–AC9 lifecycle, privacy | launch/cleanup/privacy tests; T3 worker, hold, cancellation, forced-death, TERM-resistant, output-pressure and bind-ownership tests; real-competitor launches corroborated | CI (Linux and macOS) receipts; a forced reservation race | CI / implementer |
 | AC10 schema/replay | eval suites pass on the repaired sources | comparison typing and replay | implementer |
 | AC11 one command | delivery modes refuse with their phase | working controls/evidence/measure delegation | implementer |
 | AC12 eval readiness | standalone fmt, clippy and full default-threaded suite | #148/#201 cross-checkout coordination; CI receipts | #148/#201, CI |
@@ -198,11 +198,30 @@ process group and a closed environment: `PATH`, `LANG`, a private `HOME`,
 `TMPDIR` and `XDG_*`, and nothing inherited. stdin and stderr are `/dev/null`,
 the open-file ceiling is enforced through `setrlimit`, and scratch
 directories are 0700. Readiness means the SMTP banner `220` and a `200` from
-the HTTP listing before the startup deadline. Teardown sends SIGTERM and then
-SIGKILL to the group, reaps the child and checks that the group and both
-listeners are gone and the scratch is removed. If cleanup cannot be proved,
-all later work stops. A cancelled run kills its group but proves nothing, so
-it is never sealed.
+the HTTP listing before the startup deadline, and then both binds
+corroborated: on Linux every listening socket that accepts at each address
+(wildcard and v4-mapped ones included) must be held by a member of the
+owned process group, read from `/proc`. A foreign, ambiguous (shared with
+a non-member), absent or unreadable bind refuses the launch after
+cleaning it up. Elsewhere ownership is unknown, so every launch refuses,
+and the driver's launching tests are ignored off Linux.
+
+One cleanup worker per launch owns the child from spawn to disposal. The
+owner tells it to stop, or is dropped (a cancelled launch, an interrupted
+run), and either way the worker performs the whole cleanup within one
+composed budget: half of it is the leader's grace after SIGTERM, and the
+forced group kill, the group's disappearance, the output drain and the
+listener probes share the rest. Teardown reaps the child and checks that
+the group and both listeners are gone and the scratch is removed. A drain
+the budget cuts off is aborted and awaited, and a failed one proves
+nothing. The driver settles every worker before it exits, an interrupted
+run included, and reports whether cleanup was proved. An interrupted run is
+never sealed either way. A worker that fails proves nothing, and its group
+guard still kills the group. So does a worker dropped with the runtime
+(forced death), and that leaves the scratch for the operator. If cleanup
+cannot be proved, all later work stops. Before `index.json` is written,
+each launched executable is hashed again, and bytes that changed since
+launch refuse the seal.
 
 Measurements use the controller's monotonic clock in nanoseconds:
 
@@ -284,8 +303,7 @@ nothing.
    a matched one), and either a runtime that enforces the resource budget
    or a separately labelled unenforced profile. That revision is committed
    before any collection.
-3. Owned-bind corroboration and a cleanup owner that survives cancellation
-   (T3) land in the driver. The comparison target, envelope and same-suite
+3. The comparison target, envelope and same-suite
    controls (T8–T9) and evidence admission (T10) are built in the eval
    owners. #148/#201 receive their cross-checkout shared-admission and CI
    receipts. The #151 baseline and the final MCP contracts, batch handling

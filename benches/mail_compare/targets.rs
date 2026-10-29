@@ -1,8 +1,11 @@
 //! Owned targets (spec R4): one owner launches each server in its own
 //! process group with a closed environment and private scratch, proves
-//! protocol readiness within a deadline, and on every exit path signals,
-//! reaps and verifies that the group and its listeners are gone. It never
-//! touches a process or endpoint it did not create.
+//! protocol readiness within a deadline and that both listeners belong to
+//! that group, and on every exit path signals, reaps and verifies that the
+//! group and its listeners are gone. One cleanup worker per launch owns the
+//! child from spawn to disposal and outlives a cancelled owner (proposed
+//! decision 0093 §7). It never touches a process or endpoint it did not
+//! create.
 
 use crate::protocol::TargetKind;
 use crate::wire::{Http, WireError};
@@ -11,9 +14,13 @@ use std::net::{SocketAddr, TcpListener};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 /// The startup line Swarmail prints is read at most this far; anything
 /// after it is drained unread.
@@ -64,6 +71,71 @@ impl CleanupFacts {
     pub fn proved(&self) -> bool {
         self.reaped && self.group_gone && self.listeners_closed && self.scratch_removed
     }
+
+    /// What a worker that failed, panicked or never finished establishes:
+    /// nothing.
+    pub fn unproved(target: TargetKind) -> CleanupFacts {
+        CleanupFacts {
+            target,
+            forced_kill: false,
+            reaped: false,
+            group_gone: false,
+            listeners_closed: false,
+            scratch_removed: false,
+        }
+    }
+}
+
+/// Every cleanup worker a run started. A worker outlives its owner: a
+/// dropped `Owned` — an interrupted run, a cancelled launch — leaves its
+/// worker to finish the whole cleanup, and whoever holds the registry
+/// awaits it before reporting. Cancellation never proves cleanup by
+/// itself; only a settled worker's facts do.
+#[derive(Clone, Default)]
+pub struct Keepers(Arc<Mutex<Vec<Worked>>>);
+
+/// One registered worker and the target it cleans.
+type Worked = (TargetKind, JoinHandle<CleanupFacts>);
+
+impl Keepers {
+    /// Await every worker registered so far, all within one `bound`. A
+    /// worker that panicked, or is still running at the bound, is aborted
+    /// (its group guard kills the group) and counted unproved.
+    pub async fn settle(&self, bound: Duration) -> Vec<CleanupFacts> {
+        let workers = std::mem::take(&mut *self.0.lock().expect("keepers lock"));
+        let until = tokio::time::Instant::now() + bound;
+        let mut out = Vec::with_capacity(workers.len());
+        for (kind, mut worker) in workers {
+            match tokio::time::timeout_at(until, &mut worker).await {
+                Ok(Ok(facts)) => out.push(facts),
+                Ok(Err(_)) => out.push(CleanupFacts::unproved(kind)),
+                Err(_) => {
+                    worker.abort();
+                    let _ = worker.await;
+                    out.push(CleanupFacts::unproved(kind));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Whether a listener is held by the owned group (spec R4: corroborate
+/// both binds). The reserved port is released before the child binds it,
+/// so a foreign process can win the gap; readiness alone cannot tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bind {
+    /// Every listening socket that accepts at the address is held by a
+    /// member of the group, and there is at least one.
+    Owned,
+    /// Something listens there, and no group member holds any of it.
+    Foreign,
+    /// Group members hold some of the listening sockets, others not.
+    Ambiguous,
+    /// Nothing listens there.
+    Absent,
+    /// Ownership cannot be read on this platform or right now.
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +149,19 @@ pub enum LaunchError {
     NotReady(&'static str, CleanupFacts),
 }
 
+/// What the owner and its worker share. The drain handle and the
+/// listener addresses arrive during startup; the worker takes them when it
+/// cleans up, so a cancelled launch still disposes of both.
+#[derive(Default)]
+struct Shared {
+    addrs: Option<(SocketAddr, SocketAddr)>,
+    drain: Option<JoinHandle<()>>,
+    /// A test seam: awaited by the worker after it is told to stop and
+    /// before it cleans, so a test can hold cleanup or fail it.
+    #[cfg(test)]
+    hook: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+}
+
 /// Where a target's listing keeps a message's subject.
 type SubjectOf = fn(&serde_json::Value) -> Option<&str>;
 
@@ -86,11 +171,15 @@ pub struct Owned {
     pub http_addr: SocketAddr,
     pub http: Http,
     pub facts: LaunchFacts,
-    child: Option<Child>,
     pgid: i32,
-    scratch: PathBuf,
     limits: Limits,
-    drain: Option<tokio::task::JoinHandle<()>>,
+    shared: Arc<Mutex<Shared>>,
+    /// Set by the worker when the leader exits on its own.
+    exited: Arc<AtomicBool>,
+    /// Dropping or sending this tells the worker to clean up.
+    stop: Option<oneshot::Sender<()>>,
+    done: Option<oneshot::Receiver<CleanupFacts>>,
+    settled: Option<CleanupFacts>,
 }
 
 pub use crate::protocol::sha256_hex;
@@ -114,6 +203,7 @@ impl Owned {
         scratch: &Path,
         limits: &Limits,
         clock: &crate::wire::Clock,
+        keepers: &Keepers,
     ) -> Result<Owned, LaunchError> {
         // Absolute paths only past this point: a relative program or scratch
         // path would resolve against the child's working directory.
@@ -211,6 +301,31 @@ impl Owned {
             }
         };
         let pgid = child.id().map(|p| p as i32).unwrap_or(0);
+        let stdout = child.stdout.take();
+        // From here the worker owns the child: every later exit of this
+        // function, its cancellation included, ends in the worker's cleanup.
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let exited = Arc::new(AtomicBool::new(false));
+        let (stop_tx, stop_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        let worker = tokio::spawn(keep(
+            Worker {
+                kind: spec.kind,
+                pgid,
+                scratch: scratch.to_owned(),
+                limits: limits.clone(),
+                shared: shared.clone(),
+                exited: exited.clone(),
+            },
+            child,
+            stop_rx,
+            done_tx,
+        ));
+        keepers
+            .0
+            .lock()
+            .expect("keepers lock")
+            .push((spec.kind, worker));
         let mut owned = Owned {
             kind: spec.kind,
             smtp: "127.0.0.1:0".parse().expect("literal"),
@@ -226,19 +341,19 @@ impl Owned {
                 argv_template: spec.template.clone(),
                 ready_ns: 0,
             },
-            child: None,
             pgid,
-            scratch: scratch.to_owned(),
             limits: limits.clone(),
-            drain: None,
+            shared,
+            exited,
+            stop: Some(stop_tx),
+            done: Some(done_rx),
+            settled: None,
         };
-        let stdout = child.stdout.take();
-        owned.child = Some(child);
         let deadline = Instant::now() + limits.startup;
         let addrs = match (spec.kind, stdout) {
             (TargetKind::Swarmail, Some(out)) => {
                 let (addrs, drain) = read_startup(out, deadline).await;
-                owned.drain = drain;
+                owned.shared.lock().expect("shared lock").drain = drain;
                 addrs
             }
             _ => smtp_slot.parse().ok().zip(http_slot.parse().ok()),
@@ -247,10 +362,43 @@ impl Owned {
             let facts = owned.shutdown().await;
             return Err(LaunchError::NotReady("no listener addresses", facts));
         };
+        owned.shared.lock().expect("shared lock").addrs = Some((smtp, http));
         owned.smtp = smtp;
         owned.http_addr = http;
         owned.http = Http::new(http, limits.request, limits.max_response_bytes);
         if let Err(why) = owned.ready(deadline).await {
+            let facts = owned.shutdown().await;
+            return Err(LaunchError::NotReady(why, facts));
+        }
+        // Readiness answered, but a foreign listener that won the gap would
+        // answer too: both binds must be held by the owned group.
+        for (addr, whys) in [
+            (
+                smtp,
+                [
+                    "smtp bind is foreign",
+                    "smtp bind is ambiguous",
+                    "smtp bind is absent",
+                    "smtp bind ownership unknown",
+                ],
+            ),
+            (
+                http,
+                [
+                    "http bind is foreign",
+                    "http bind is ambiguous",
+                    "http bind is absent",
+                    "http bind ownership unknown",
+                ],
+            ),
+        ] {
+            let why = match binds(pgid, addr) {
+                Bind::Owned => continue,
+                Bind::Foreign => whys[0],
+                Bind::Ambiguous => whys[1],
+                Bind::Absent => whys[2],
+                Bind::Unknown => whys[3],
+            };
             let facts = owned.shutdown().await;
             return Err(LaunchError::NotReady(why, facts));
         }
@@ -265,13 +413,19 @@ impl Owned {
         self.pgid
     }
 
+    /// Install the worker's test hook: it runs after the worker is told to
+    /// stop and before it cleans up.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub fn on_cleanup(&self, hook: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.shared.lock().expect("shared lock").hook = Some(Box::pin(hook));
+    }
+
     /// Protocol readiness: the owned child still runs, the SMTP banner is
     /// `220` and the HTTP listing answers `200`, all before `deadline`.
     async fn ready(&mut self, deadline: Instant) -> Result<(), &'static str> {
         loop {
-            if let Some(child) = self.child.as_mut()
-                && !matches!(child.try_wait(), Ok(None))
-            {
+            if self.exited.load(Ordering::SeqCst) {
                 return Err("exited before ready");
             }
             let banner = crate::wire::Smtp::open(self.smtp, self.limits.request).await;
@@ -503,64 +657,274 @@ impl Owned {
         }
     }
 
-    /// Signal the group, reap the leader, prove the group and listeners are
-    /// gone and remove the owned scratch. Idempotent; every exit path of
-    /// the driver ends here.
+    /// Tell the worker to clean up and await its facts: signal the group,
+    /// reap the leader, prove the group and listeners are gone and remove
+    /// the owned scratch. Idempotent, and safe to cancel: the worker
+    /// carries on, and a later call (or the registry) still awaits it.
     pub async fn shutdown(&mut self) -> CleanupFacts {
-        let mut facts = CleanupFacts {
-            target: self.kind,
-            forced_kill: false,
-            reaped: self.child.is_none(),
-            group_gone: false,
-            listeners_closed: false,
-            scratch_removed: false,
-        };
-        if let Some(mut child) = self.child.take() {
-            signal_group(self.pgid, libc::SIGTERM);
-            if let Ok(Ok(_)) = tokio::time::timeout(self.limits.cleanup, child.wait()).await {
-                facts.reaped = true;
-            } else {
-                facts.forced_kill = true;
-                signal_group(self.pgid, libc::SIGKILL);
-                facts.reaped = matches!(
-                    tokio::time::timeout(self.limits.cleanup, child.wait()).await,
-                    Ok(Ok(_))
-                );
-            }
+        if let Some(facts) = &self.settled {
+            return facts.clone();
         }
-        // A member that outlived the leader still holds the group id, so
-        // the id cannot have been reused: it is still ours to kill. With no
-        // member left the kill finds nothing (ESRCH); reuse in between would
-        // need the pid space to wrap inside that instant.
-        signal_group(self.pgid, libc::SIGKILL);
-        let until = Instant::now() + self.limits.cleanup;
-        loop {
-            facts.group_gone = !group_exists(self.pgid);
-            if facts.group_gone || Instant::now() >= until {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
         }
-        if let Some(drain) = self.drain.take() {
-            facts.reaped &= tokio::time::timeout(self.limits.cleanup, drain)
+        let facts = match self.done.as_mut() {
+            Some(done) => done
                 .await
-                .is_ok();
-        }
-        facts.listeners_closed = refused(self.smtp).await && refused(self.http_addr).await;
-        facts.scratch_removed =
-            std::fs::remove_dir_all(&self.scratch).is_ok() || !self.scratch.exists();
+                .unwrap_or_else(|_| CleanupFacts::unproved(self.kind)),
+            None => CleanupFacts::unproved(self.kind),
+        };
+        self.done = None;
+        self.settled = Some(facts.clone());
         facts
     }
 }
 
-impl Drop for Owned {
-    /// Cancellation: a dropped owner kills its group synchronously. Drop
-    /// cannot await the reap, so a dropped run proves nothing about
-    /// cleanup and its output never receives a completion index.
+/// What a cleanup worker needs besides the child itself.
+struct Worker {
+    kind: TargetKind,
+    pgid: i32,
+    scratch: PathBuf,
+    limits: Limits,
+    shared: Arc<Mutex<Shared>>,
+    exited: Arc<AtomicBool>,
+}
+
+/// Kills the group if the worker itself is dropped before it finishes —
+/// the runtime shutting down under it. That is forced death: nothing is
+/// reaped or proved, and the scratch stays for the operator.
+struct GroupGuard(i32);
+
+impl Drop for GroupGuard {
     fn drop(&mut self) {
-        if self.child.is_some() {
-            signal_group(self.pgid, libc::SIGKILL);
+        signal_group(self.0, libc::SIGKILL);
+    }
+}
+
+/// The one worker that owns a launched child. It waits for the owner's
+/// stop — sent, or implied by the owner being dropped — noting an early
+/// exit of the leader meanwhile, then performs the whole cleanup and
+/// reports it to the owner (if still listening) and to the registry.
+async fn keep(
+    w: Worker,
+    mut child: Child,
+    mut stop: oneshot::Receiver<()>,
+    done: oneshot::Sender<CleanupFacts>,
+) -> CleanupFacts {
+    let mut guard = GroupGuard(w.pgid);
+    let mut reaped = None;
+    tokio::select! {
+        _ = &mut stop => {}
+        status = child.wait() => {
+            w.exited.store(true, Ordering::SeqCst);
+            reaped = Some(status.is_ok());
+            let _ = stop.await;
         }
+    }
+    #[cfg(test)]
+    {
+        let hook = w.shared.lock().expect("shared lock").hook.take();
+        if let Some(hook) = hook {
+            hook.await;
+        }
+    }
+    let facts = cleanup(&w, child, reaped).await;
+    // The group was killed and awaited above; a later kill could only
+    // reach a reused id.
+    guard.0 = 0;
+    let _ = done.send(facts.clone());
+    facts
+}
+
+/// One composed budget, `limits.cleanup`, for the whole disposal: half of
+/// it is the leader's grace after `SIGTERM`; the forced kill, the group's
+/// disappearance, the output drain and the listener probes share what
+/// remains. A step the budget cuts off is unproved, never skipped.
+async fn cleanup(w: &Worker, mut child: Child, reaped_early: Option<bool>) -> CleanupFacts {
+    let start = tokio::time::Instant::now();
+    let grace = start + w.limits.cleanup / 2;
+    let until = start + w.limits.cleanup;
+    let (addrs, drain) = {
+        let mut shared = w.shared.lock().expect("shared lock");
+        (shared.addrs, shared.drain.take())
+    };
+    let mut facts = CleanupFacts {
+        target: w.kind,
+        forced_kill: false,
+        reaped: reaped_early.unwrap_or(false),
+        group_gone: false,
+        listeners_closed: false,
+        scratch_removed: false,
+    };
+    if reaped_early.is_none() {
+        signal_group(w.pgid, libc::SIGTERM);
+        if let Ok(Ok(_)) = tokio::time::timeout_at(grace, child.wait()).await {
+            facts.reaped = true;
+        } else {
+            facts.forced_kill = true;
+            signal_group(w.pgid, libc::SIGKILL);
+            facts.reaped = matches!(
+                tokio::time::timeout_at(until, child.wait()).await,
+                Ok(Ok(_))
+            );
+        }
+    }
+    // A member that outlived the leader still holds the group id, so
+    // the id cannot have been reused: it is still ours to kill. With no
+    // member left the kill finds nothing (ESRCH); reuse in between would
+    // need the pid space to wrap inside that instant.
+    signal_group(w.pgid, libc::SIGKILL);
+    loop {
+        facts.group_gone = !group_exists(w.pgid);
+        if facts.group_gone || tokio::time::Instant::now() >= until {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The drain ends at the pipe's EOF. One the budget cuts off is aborted
+    // and awaited, never left behind; one that failed (a panic, a nested
+    // join failure) proves nothing.
+    if let Some(mut drain) = drain {
+        let drained = match tokio::time::timeout_at(until, &mut drain).await {
+            Ok(joined) => joined.is_ok(),
+            Err(_) => {
+                drain.abort();
+                let _ = drain.await;
+                false
+            }
+        };
+        facts.reaped &= drained;
+    }
+    facts.listeners_closed = match addrs {
+        Some((smtp, http)) => refused(smtp, until).await && refused(http, until).await,
+        // No address was ever learned, so none can be probed; the group
+        // being gone is what shows no listener of ours survives.
+        None => facts.group_gone,
+    };
+    facts.scratch_removed = std::fs::remove_dir_all(&w.scratch).is_ok() || !w.scratch.exists();
+    facts
+}
+
+/// Whether the executable at `binary` still has the digest it had at
+/// launch: rechecked before a run is sealed, so bytes replaced mid-run
+/// never stand behind a sealed record.
+pub fn unchanged(binary: &Path, launched_sha256: &str) -> bool {
+    std::fs::canonicalize(binary)
+        .and_then(std::fs::read)
+        .is_ok_and(|bytes| sha256_hex(&bytes) == launched_sha256)
+}
+
+/// Who holds the listening sockets that accept at `addr` (Linux: read from
+/// `/proc`). Wildcard and v4-mapped listeners on the same port accept
+/// there too, so they count.
+pub fn binds(pgid: i32, addr: SocketAddr) -> Bind {
+    #[cfg(target_os = "linux")]
+    {
+        linux_binds(pgid, addr)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (pgid, addr);
+        Bind::Unknown
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_binds(pgid: i32, addr: SocketAddr) -> Bind {
+    use std::collections::BTreeSet;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    const LISTEN: &str = "0A";
+    let accepts = |ip: IpAddr| -> bool {
+        let mapped = match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+            v4 => v4,
+        };
+        ip.is_unspecified() || mapped == addr.ip()
+    };
+    let mut wanted = BTreeSet::new();
+    for (table, v6) in [("/proc/net/tcp", false), ("/proc/net/tcp6", true)] {
+        let Ok(text) = std::fs::read_to_string(table) else {
+            if v6 {
+                continue; // no IPv6 stack, so no v6 listener
+            }
+            return Bind::Unknown;
+        };
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let (Some(local), Some(state), Some(inode)) = (f.get(1), f.get(3), f.get(9)) else {
+                return Bind::Unknown;
+            };
+            let Some((ip_hex, port_hex)) = local.split_once(':') else {
+                return Bind::Unknown;
+            };
+            if *state != LISTEN || u16::from_str_radix(port_hex, 16) != Ok(addr.port()) {
+                continue;
+            }
+            // The kernel prints the address as host-order 32-bit words.
+            let mut bytes = Vec::with_capacity(16);
+            for at in (0..ip_hex.len()).step_by(8) {
+                let Some(Ok(word)) = ip_hex.get(at..at + 8).map(|h| u32::from_str_radix(h, 16))
+                else {
+                    return Bind::Unknown;
+                };
+                bytes.extend_from_slice(&word.to_ne_bytes());
+            }
+            let ip = match (v6, bytes.len()) {
+                (false, 4) => IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3])),
+                (true, 16) => {
+                    let b: [u8; 16] = bytes.try_into().expect("sixteen bytes");
+                    IpAddr::V6(Ipv6Addr::from(b))
+                }
+                _ => return Bind::Unknown,
+            };
+            if accepts(ip) {
+                wanted.insert(format!("socket:[{inode}]"));
+            }
+        }
+    }
+    if wanted.is_empty() {
+        return Bind::Absent;
+    }
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return Bind::Unknown;
+    };
+    let mut held = BTreeSet::new();
+    for entry in procs.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .filter(|n| n.bytes().all(|b| b.is_ascii_digit()))
+        else {
+            continue;
+        };
+        // A process that exits mid-walk has stopped being a member.
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let pgrp = stat
+            .rsplit(')')
+            .next()
+            .and_then(|rest| rest.split_whitespace().nth(2))
+            .and_then(|g| g.parse::<i32>().ok());
+        if pgrp != Some(pgid) {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            return Bind::Unknown; // a member whose descriptors cannot be read
+        };
+        for fd in fds.flatten() {
+            if let Ok(link) = std::fs::read_link(fd.path())
+                && let Some(link) = link.to_str()
+                && wanted.contains(link)
+            {
+                held.insert(link.to_owned());
+            }
+        }
+    }
+    match held.len() {
+        0 => Bind::Foreign,
+        n if n == wanted.len() => Bind::Owned,
+        _ => Bind::Ambiguous,
     }
 }
 
@@ -578,14 +942,13 @@ fn group_exists(pgid: i32) -> bool {
     pgid > 1 && unsafe { libc::kill(-pgid, 0) } == 0
 }
 
-/// A listener counts as closed when a connect is refused — a bound port
-/// someone else grabbed in the meantime reads as still open, which fails
-/// cleanup rather than passing it.
-async fn refused(addr: SocketAddr) -> bool {
+/// A listener counts as closed when a connect is refused by `until` — a
+/// bound port someone else grabbed in the meantime reads as still open,
+/// which fails cleanup rather than passing it.
+async fn refused(addr: SocketAddr, until: tokio::time::Instant) -> bool {
     addr.port() == 0
         || matches!(
-            tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(addr))
-                .await,
+            tokio::time::timeout_at(until, tokio::net::TcpStream::connect(addr)).await,
             Ok(Err(_))
         )
 }

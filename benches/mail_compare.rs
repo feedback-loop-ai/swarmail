@@ -374,6 +374,7 @@ fn prepare(args: &[String]) -> Result<(runner::Config, PathBuf), String> {
         specs,
         output,
         scratch: scratch.clone(),
+        keepers: targets::Keepers::default(),
     };
     Ok((cfg, scratch))
 }
@@ -391,6 +392,8 @@ fn execute(cfg: runner::Config, scratch: PathBuf) -> i32 {
     };
     let clock = wire::Clock(std::time::Instant::now());
     let output = cfg.output.clone();
+    let keepers = cfg.keepers.clone();
+    let cleanup_bound = runner::limits(&cfg.protocol).cleanup;
     let outcome = rt.block_on(async {
         let mut term =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
@@ -402,16 +405,23 @@ fn execute(cfg: runner::Config, scratch: PathBuf) -> i32 {
         };
         tokio::select! {
             r = runner::run(cfg, clock) => Some(r),
-            // Interrupted: dropping the run kills every owned group, but
-            // nothing proves the reap, so the output stays unsealed.
+            // Interrupted: dropping the run tells every owner's cleanup
+            // worker to finish on its own; they are awaited below. The
+            // output stays unsealed whatever they prove.
             _ = tokio::signal::ctrl_c() => None,
             _ = term => None,
         }
     });
+    // Every worker, interrupted or not, is settled before exit; a runtime
+    // dropped with one still running would be forced death.
+    let settled = rt.block_on(keepers.settle(cleanup_bound * 2));
     let Some((verdict, life, sealed)) = outcome else {
+        let proved = settled.iter().all(targets::CleanupFacts::proved);
         eprintln!(
-            "mail_compare run: interrupted; {} stays incomplete and unsealed",
-            output.display()
+            "mail_compare run: interrupted; {} stays incomplete and unsealed; cleanup of {} launch(es) {}",
+            output.display(),
+            settled.len(),
+            if proved { "proved" } else { "NOT proved" }
         );
         return 2;
     };
