@@ -2,8 +2,8 @@
   "brokkr": {
     "sha": "a9893b4dfb67417edc99d91f941a9bac3856f138",
     "version": "0.12.0",
-    "binary_sha256": "4873928c94f2677ef552c9e3ed04785a732851b89e8a413c13ce1434d6066be6",
-    "binary_provenance": "Published Linux x86_64 GNU artifact built with rustc 1.98.0 from source base a9893b4dfb67417edc99d91f941a9bac3856f138 plus the three checksum-pinned patches below, in order. Release: https://github.com/feedback-loop-ai/brokkr/releases/tag/swarmail-engine-a9893b4-p3 (includes patches and build receipt). binary_sha256 identifies the published bytes; it does not independently prove source provenance or build reproducibility. CI downloads binary_url; operator setup provisions the same digest-checked artifact for offline verification.",
+    "binary_sha256": "29dc3309925a2556b9713b7a9b5fb8089b8e4610e86215fc89554e75634e7cad",
+    "binary_provenance": "Published Linux x86_64 GNU artifact built with rustc 1.98.0 from source base a9893b4dfb67417edc99d91f941a9bac3856f138 plus the four checksum-pinned patches below, in order. Release: https://github.com/feedback-loop-ai/brokkr/releases/tag/swarmail-engine-a9893b4-p4 (includes patches and build receipt). binary_sha256 identifies the published bytes; it does not independently prove source provenance or build reproducibility. CI downloads binary_url; operator setup provisions the same digest-checked artifact for offline verification.",
     "patches": [
       {
         "path": "tooling-patches/0001-preserve-review-residual-facts.patch",
@@ -16,8 +16,12 @@
       {
         "path": "tooling-patches/0003-bind-verified-candidate.patch",
         "sha256": "4098228e7649d1bda8961bb491aa29d982b462c420470e265f8b9acf0a148d96"
+      },
+      {
+        "path": "tooling-patches/0004-raise-hands-command-timeout.patch",
+        "sha256": "73bea06793febaed05edb23338e8963087ef6227888fe28cdd29337a418c15d6"
       }
     ],
-    "binary_url": "https://github.com/feedback-loop-ai/brokkr/releases/download/swarmail-engine-a9893b4-p3/brokkr-0.12.0-a9893b4-p3-x86_64-unknown-linux-gnu"
+    "binary_url": "https://github.com/feedback-loop-ai/brokkr/releases/download/swarmail-engine-a9893b4-p4/brokkr-0.12.0-a9893b4-p4-x86_64-unknown-linux-gnu"
   }
 }

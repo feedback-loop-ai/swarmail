@@ -841,11 +841,10 @@ fn ship_closeout_refuses_missing_empty_and_mismatched_ledgers() {
     ]);
     let head = git(&["rev-parse", "HEAD"]);
     let state = repo.path().join(".brokkr/state");
-    std::fs::create_dir_all(state.join("ledger")).unwrap();
     std::fs::create_dir_all(state.join("results")).unwrap();
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join(".brokkr/recipes/self/scripts/ship-seat.sh");
-    let ledger = state.join("ledger/probe.md");
+    let ledger = state.join("results/probe.ledger.md");
     for case in ["valid", "missing", "empty", "mismatch"] {
         match case {
             "valid" => std::fs::write(&ledger, format!("Repository head: `{head}`.\n")).unwrap(),

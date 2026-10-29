@@ -73,3 +73,13 @@ engine refuses the folder while a root `.forge/` stands beside it.
 - Candidate branches cut before this change carry the library layout and
   compile as a library; once they merge this change, any engine-written
   `.forge/` in their worktree must be cleared before a run uses the folder.
+
+## Dated addendum — 2026-10-29: the ship ledger
+
+Ruling 3's ledger path could not be written: the ship seat's box mounts the
+repository's state folder read-only, so every review-passed run stopped at
+ship with `mkdir: Read-only file system` and was closed by the operator
+with `brokkr ledger --repo`. `ship-seat.sh` now writes the ledger beside the
+engine's result files for the run, `<results dir>/<run>.ledger.md`, the one
+directory every ship attempt can write and read back. `brokkr ledger --repo`
+still renders `.brokkr/state/ledger/<run>.md` for the operator.
