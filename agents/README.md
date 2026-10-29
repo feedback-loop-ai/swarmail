@@ -62,7 +62,7 @@ All reviewer chains are single-model except dedicated fast-feature correctness:
 Qwen Max then Sonnet 5.5 on pre-session dispatch failure only. No completed
 verdict or malformed facts trigger substitution. DeepSeek Pro is forbidden.
 
-Proposed [0099](../docs/decisions/0099-claude-careful-recipe.md) adds the
+Accepted [0099](../docs/decisions/0099-claude-careful-recipe.md) adds the
 zero-Codex `claude-careful` offices, each an overlay of one base office that
 keeps its charter: `claude-intake` (Haiku 5.5), `claude-position-simplicity`
 (Opus 5.5), `dsh-position-robustness` (official DeepSeek Flash through dsh,
