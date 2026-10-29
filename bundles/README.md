@@ -83,7 +83,7 @@ families: three of them now share official DeepSeek Flash. See accepted
 [0058](../docs/decisions/0058-codex-review-routing.md) for the operator-directed
 review matrix, with the revised 2026-10-26 tests-only direction recorded in
 proposed [0081](../docs/decisions/0081-glm-flash-seats.md) and the 2026-10-28
-direction recorded in proposed
+direction recorded in accepted
 [0098](../docs/decisions/0098-review-panel-flash-and-deadline.md): the full-panel
 correctness and guarantees members (office names
 `codex-review-astra-correctness` and `codex-review-guarantees`, kept for
