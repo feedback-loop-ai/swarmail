@@ -1,6 +1,7 @@
 # 0100 — Everything brokkr owns lives in `.brokkr/`
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-29 — "yes, accepted", given in
+  chat).
 - **Date:** 2026-10-29 (operator direction given 2026-10-29: "can we
   organize everything under .brokkr?"; default recipe and state timing
   chosen the same day)
@@ -9,8 +10,9 @@
   recipe compiles to the same seats it compiled to before.
 - **Adopts:** brokkr's accepted decision 0083 (an adopter's brokkr lives in
   one folder) with its shelf amendment (#696) and the personal-shelf
-  composition of #697, all present in the pinned engine
-  (`731189f`, binary `ab93555…`).
+  composition of #697, all present in the engine pinned when this was
+  written (`731189f`, binary `ab93555…`) and in its successor pin
+  (`a9893b4`, binary `4873928…`).
 
 ## Context
 
