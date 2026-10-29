@@ -1,0 +1,9 @@
+{
+  "extends": "position-robustness",
+  "models": [
+    "flash"
+  ],
+  "efforts": {
+    "flash": "high"
+  }
+}

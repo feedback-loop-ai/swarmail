@@ -2,14 +2,21 @@
 
 This realm is a single Rust crate. Production code is Rust under `src/`; the
 integration tests under `tests/` speak the real protocol against real servers.
-The delivery constitution lives in `bundles/self/` (`bundle.json` +
-`policy.json`) and is compiled by brokkr (`brokkr compile --bundle
-bundles/self`); the journal is `.brokkr/state/forge.db` (append-only, gitignored).
-New recipe runs use `.forge/forge.db` (0057); the earlier journal path
-remains historical evidence and must not be fabricated. The constitution is a bundle directory and not the repo root so the run's
-own journal writes and git objects stay outside the pinned manifest — a
-root-level bundle pins its whole directory and could never survive a
-resume.
+Everything brokkr reads or writes lives in one folder, `.brokkr/`
+(decision 0100, brokkr's decision 0083): the recipes on its shelf
+`.brokkr/recipes/<name>/`, the agents, adapters, dialects and realm map
+beside them, and the folder's own `bundle.json`, which extends
+`claude-careful`. The delivery constitution is the shelf recipe
+`.brokkr/recipes/self/` (`bundle.json` + `policy.json`), compiled with
+`brokkr compile --bundle .brokkr/recipes/self`. Runtime state stands under
+`.brokkr/state/` and is ignored by `.brokkr/.gitignore`: the journal
+`.brokkr/state/forge.db` (append-only), results, ledgers and run worktrees.
+Earlier journals (`.brokkr/state/forge.db` before 2026-10-23, then
+`.forge/forge.db` under 0057) remain historical evidence and must not be
+fabricated. The constitution is a shelf directory and not the repo root so
+the run's own journal writes and git objects stay outside the pinned
+manifest — a root-level bundle pins its whole directory and could never
+survive a resume.
 
 ## The frozen guarantees
 
@@ -48,7 +55,7 @@ Leave all of these clean before reporting success:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-brokkr compile --bundle bundles/self   # the brokkr pinned in bundles/self/tooling.json
+brokkr compile --bundle .brokkr/recipes/self   # the brokkr pinned in .brokkr/recipes/self/tooling.json
 bash scripts/coverage-gate.sh          # the floor may rise, never fall
 bash scripts/coverage-gate.sh selftest # the gate's verdict is untrusted without it
 bash scripts/publish-guard-test.sh     # the publish guard's proof
@@ -93,7 +100,7 @@ Tests are part of every change. Extend the suite that proves the code —
 `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` or the unit tests — and run
 the suite against real servers; no mocks in the loop.
 
-The coverage floor lives in `bundles/self/scripts/coverage-gate.sh` (run it
+The coverage floor lives in `.brokkr/recipes/self/scripts/coverage-gate.sh` (run it
 through `scripts/coverage-gate.sh`) — currently **100% of
 lines, branches and functions, exact** (missed == 0, not a rounded 99.95).
 The full lcov report and summary land under `target/coverage/`. Raising it is an ordinary
@@ -151,10 +158,10 @@ test lives; the axis is **cold-path presence**, not seam access:
    workspace member or any local path package refuses.
 
 The gate scripts themselves are the pinned bundle's
-(`bundles/self/scripts/`, decision 0050 §1): `scripts/coverage-gate.sh`,
+(`.brokkr/recipes/self/scripts/`, decision 0050 §1): `scripts/coverage-gate.sh`,
 `scripts/publish-guard*.sh`, `scripts/design-check.sh`, `scripts/seal-branch*.sh` and
 `.specify/scripts/bash/check-prerequisites.sh` are fixed dispatch shims the
-verify seat checks against `bundles/self/scripts/shims.sha256` and never
+verify seat checks against `.brokkr/recipes/self/scripts/shims.sha256` and never
 executes; it runs the pinned copies against the candidate.
 
 ## Dependencies
@@ -233,7 +240,7 @@ seats — a shell proves what a model claims. Decision
 [0058](decisions/0058-codex-review-routing.md) define the operator-directed
 Codex recipes. Standard uses Fable 5.1 correctness, official DeepSeek Flash
 security and GLM Flash tests. Careful and the fast design/engine lanes require
-five separate results: Astra correctness, Flash security, GLM Flash tests, Astra
+five separate results: Flash correctness, Flash security, GLM Flash tests, Flash
 guarantees and independent Fable. `codex-fast` uses GPT-6 Luna at xhigh for
 implementation and triages first on Claude Opus 5.5 (`opus`) at medium effort
 with no fallback: isolated bugs get one combined Flash
@@ -243,7 +250,18 @@ work keeps the five-role panel. The revised 2026-10-26 operator ruling,
 recorded in proposed
 [0081](decisions/0081-glm-flash-seats.md), changes only tests review to local
 Spark `glm-flash` through dsh, with reasoning effort not applicable; intake
-keeps its current models and workspace hands.
+keeps its current models and workspace hands. The 2026-10-28 operator
+direction, recorded in accepted
+[0098](decisions/0098-review-panel-flash-and-deadline.md), moves the
+full-panel correctness and guarantees members from Codex Astra to official
+DeepSeek Flash through dsh at high effort (security's route; offices and
+results stay separate) and gives the `codex`, `codex-careful` and `codex-fast`
+review seat a 14400 s deadline instead of 3600 s.
+Accepted [0099](decisions/0099-claude-careful-recipe.md) records the
+2026-10-28/29 direction for `claude-careful`, a zero-Codex careful lane:
+Haiku 5.5 intake, an Opus 5.5 / official Flash / Fable 5.1 design council,
+Sonnet 5.5 implementation, and Fable correctness, Flash security and
+guarantees, GLM tests and Opus independent review, with careful's gates.
 DeepSeek Pro is forbidden; other reviewers
 have no fallback. Every lane retains all shell gates, protected review and the
 hard security hold. The `self` bundle

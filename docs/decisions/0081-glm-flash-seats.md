@@ -91,6 +91,18 @@ of refusing; subsequent cases do not execute. Preserve that assertion and
 report the actual outcome. No engine repair, re-pin, gate waiver or claim
 of dispatcher-wide safety follows from focused routing success.
 
+**Engine re-pin result (2026-10-29).** The engine is now re-pinned to brokkr
+`a9893b4` + three patches (binary `4873928c…`, which includes brokkr's
+attempt-correlation fix, decision 0096; see `.brokkr/recipes/self/tooling.json`).
+Run against that engine at `2c000e8`, the full routing proof
+`python3 tests/codex_review_routing.py --engine <brokkr 4873928c…> --out <dir>`
+exits 0. Every `cross-attempt`, `cross-effect`, `missing` and `edit` case
+(panels of 1, 2, 3 and 5) parks `awaiting_operator` instead of completing.
+The `1-cross-attempt` failure described above was the old engine's
+(`731189f`, `ab93555…`). The script now refuses that engine as unrecorded,
+so that failure can no longer be reproduced at this pin. A candidate cut
+before the re-pin still pins the old engine until it merges this change.
+
 This design adopts one shared office and stronger local comparisons instead
 of another routing abstraction. Costs are additional exact assertions, paid
 intake retained, no new provider-quality evidence and possible Spark-outage
