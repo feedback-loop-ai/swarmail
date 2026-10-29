@@ -158,7 +158,7 @@ its whole proof, including inherited refinements.
 Ordered. Each refines the inherited task it names and is proved by the test beside
 it; the inherited checkbox stays open until its whole proof, including these, holds.
 
-- [ ] **T5.a — One frame law and a reachable `late` (AC-C1–AC-C3; Q3).** Add
+- [x] **T5.a — One frame law and a reachable `late` (AC-C1–AC-C3; Q3).** Add
   `max_wait = operation − request` to `Bounds`, read it from the schema and argument
   validation, assert the full-allowance invariant in `Frame::new`, delete the
   hand-built frame in `runner::observe` and pass declared bounds. Update the README
@@ -167,11 +167,11 @@ it; the inherited checkbox stays open until its whole proof, including these, ho
   `timeout_ms = 20 001` refused with a fixed reason; `tools/list` snapshot carries
   20 000; `grep -c "Frame {"` outside the constructor is zero in `benches/`.
 
-- [ ] **T3.a — Injected drain-join failure (AC-C7; Q5).** Through the existing test
+- [x] **T3.a — Injected drain-join failure (AC-C7; Q5).** Through the existing test
   hook, make the drain task panic during cleanup. **Test:** `reaped == false`,
   `proved() == false`, admission stops, no `index.json`; real child, no new seam.
 
-- [ ] **T2.a — Protocol v2 frozen (AC-C4; Q8).** Bump to version 2, archive draft-3
+- [x] **T2.a — Protocol v2 frozen (AC-C4; Q8).** Bump to version 2, archive draft-3
   bytes, declare per-target storage/cap/enforcement, the driver wait operation bound,
   the adapter bounds and the named unmatched/unenforced profile; empty `unresolved`
   for the declared profiles only where the fact is established. **Test:** one refusal
@@ -179,7 +179,7 @@ it; the inherited checkbox stays open until its whole proof, including these, ho
   overflow); byte-identical history file; finite-cap probes in the ignored
   real-binary tests; `collection_ready` passes on the frozen file.
 
-- [ ] **T4.a — Accounting split and denominator (AC-C5–AC-C6; Q6, Q8).** Separate
+- [x] **T4.a — Accounting split and denominator (AC-C5–AC-C6; Q6, Q8).** Separate
   `unstarted` from connect/terminator failure; stress reports scheduled/admitted/
   refused; `admit` recomputes the plan and refuses strict prefixes and early
   indexes. **Test:** independent recomputation of both sums from rows; a killed run
@@ -191,7 +191,7 @@ it; the inherited checkbox stays open until its whole proof, including these, ho
   report cites denominators; if T2.a is not green the ledger row reads "collection
   not started" and no smoke is relabelled.
 
-- [ ] **T6.a / T10.a — Named prerequisite refusals (AC-C8; Q8).** Replace the generic
+- [x] **T6.a / T10.a — Named prerequisite refusals (AC-C8; Q8).** Replace the generic
   refusal with ordered named checks and a dry-run that prints the order. **Test:**
   one negative shell-driven test per prerequisite, each reading its name; an inert
   witness proving dry-run opens no credential and launches nothing.
