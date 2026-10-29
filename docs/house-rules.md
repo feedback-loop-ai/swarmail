@@ -244,7 +244,7 @@ recorded in proposed
 [0081](decisions/0081-glm-flash-seats.md), changes only tests review to local
 Spark `glm-flash` through dsh, with reasoning effort not applicable; intake
 keeps its current models and workspace hands. The 2026-10-28 operator
-direction, recorded in proposed
+direction, recorded in accepted
 [0098](decisions/0098-review-panel-flash-and-deadline.md), moves the
 full-panel correctness and guarantees members from Codex Astra to official
 DeepSeek Flash through dsh at high effort (security's route; offices and
