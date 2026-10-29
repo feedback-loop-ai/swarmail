@@ -156,3 +156,88 @@ impl SourceContext {
         }
     }
 }
+
+/// The comparison variant's schema number. Native rows are schema 2, the
+/// legacy row is 1, and no reader accepts a number it does not own.
+pub const COMPARISON_SCHEMA: u32 = 3;
+const COMPARISON_KIND: &str = "comparison";
+/// The agent targets that exist. MailHog has no agent adapter, so its cells
+/// are refused by name and never invented.
+const COMPARISON_TARGETS: [(&str, &str); 2] = [
+    ("swarmail-mcp", "native-mcp"),
+    ("mailpit-mcp", "stdio-adapter"),
+];
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComparisonSettings {
+    /// How the agent reaches the target; it must be the one the target has.
+    pub connection: String,
+    /// SHA-256 of the tool list the agent was offered.
+    pub tools_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComparisonCoordinate {
+    pub task: String,
+    pub attempt: u32,
+}
+
+/// One agent-side comparison trial: identity (target and measured
+/// executable), settings, coordinate and a hash over all of them. It is a
+/// distinct schema, so the native reader refuses it and this reader refuses
+/// every native or legacy row.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComparisonRow {
+    pub schema_version: u32,
+    pub kind: String,
+    pub protocol_sha256: String,
+    pub target: String,
+    pub executable_sha256: String,
+    pub settings: ComparisonSettings,
+    pub coordinate: ComparisonCoordinate,
+    pub outcome: crate::tasks::Outcome,
+    pub hash: String,
+}
+impl ComparisonRow {
+    /// The hash is over the canonical serialization with the hash field empty.
+    pub fn digest(&self) -> String {
+        let mut body = self.clone();
+        body.hash = String::new();
+        sha256(&serde_json::to_vec(&body).expect("comparison row"))
+    }
+    pub fn seal(mut self) -> Self {
+        self.hash = self.digest();
+        self
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != COMPARISON_SCHEMA || self.kind != COMPARISON_KIND {
+            return Err(format!("not a schema {COMPARISON_SCHEMA} comparison row"));
+        }
+        if self.target == "mailhog" {
+            return Err("mailhog agent cells are unsupported".into());
+        }
+        let Some((_, connection)) = COMPARISON_TARGETS.iter().find(|(t, _)| *t == self.target)
+        else {
+            return Err("unknown comparison target".into());
+        };
+        if self.settings.connection != *connection {
+            return Err("settings connection does not match the target".into());
+        }
+        if !is_hash(&self.protocol_sha256)
+            || !is_hash(&self.executable_sha256)
+            || !is_hash(&self.settings.tools_sha256)
+        {
+            return Err("identity or settings digest is not a SHA-256".into());
+        }
+        if self.coordinate.task.is_empty() || self.coordinate.attempt == 0 {
+            return Err("coordinate needs a task and an attempt from 1".into());
+        }
+        if self.hash != self.digest() {
+            return Err("row hash does not match its contents".into());
+        }
+        Ok(())
+    }
+}

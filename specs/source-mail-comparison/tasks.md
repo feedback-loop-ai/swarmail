@@ -196,7 +196,7 @@ it; the inherited checkbox stays open until its whole proof, including these, ho
   one negative shell-driven test per prerequisite, each reading its name; an inert
   witness proving dry-run opens no credential and launches nothing.
 
-- [ ] **T8.a — Comparison variant in existing eval owners (AC-C9; Q8).** One
+- [x] **T8.a — Comparison variant in existing eval owners (AC-C9; Q8).** One
   variant with identity/settings/hash validation; native readers reject comparison,
   legacy and mixed rows; no `evals/src/comparison.rs`. **Test:** standalone eval
   suite whole and default-threaded, including the new rejection cases.
@@ -206,7 +206,7 @@ it; the inherited checkbox stays open until its whole proof, including these, ho
   `unsupported`. **Test:** oracles pass and nulls fail their idle class on both; or
   the ledger names the missing runner piece and T9 reads unstarted.
 
-- [ ] **T12.a — Citation arithmetic (AC14; Q8).** Every reported number cites
+- [ ] **T12.a — Citation arithmetic (AC14; Q8). (built and proved on synthetic rows only; the admitted-run arithmetic is open)** Every reported number cites
   run/coordinate/denominator; dossier numbers refuse without T11 inputs. **Test:**
   independent arithmetic over an admitted run; refusal test with baseline/finals/costs
   absent.
