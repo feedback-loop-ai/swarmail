@@ -2,7 +2,7 @@
 
 The seat library (decision 0009): one definition per agent — description,
 charter, model chain, tool allowance, limits. `brokkr agents show <name>`
-reads one back; `brokkr compile --bundle bundles/self` refuses a bundle
+reads one back; `brokkr compile --bundle .brokkr/recipes/self` refuses a bundle
 that references a seat the library cannot resolve.
 
 The machine is the hybrid (decision 0009, *accepted*): a contrarian
@@ -26,30 +26,30 @@ operator's alone.
 | `review-tests` | review:tests | [charters/review-tests.md](charters/review-tests.md) |
 | `muninn` | standing overseer (no phase) | [charters/muninn.md](charters/muninn.md) |
 
-The phase machine is [`bundles/self/policy.json`](../bundles/self/policy.json); the `design`
+The phase machine is [`.brokkr/recipes/self/policy.json`](../../.brokkr/recipes/self/policy.json); the `design`
 sequence's deterministic check is its final exec step, the pinned
-[`bundles/self/scripts/design-check.sh`](../bundles/self/scripts/design-check.sh)
+[`.brokkr/recipes/self/scripts/design-check.sh`](../../.brokkr/recipes/self/scripts/design-check.sh)
 (only its `designed` advances; a phase-level `drafted` stops);
-the seat wiring is [`bundles/self/bundle.json`](../bundles/self/bundle.json). Panel members and
+the seat wiring is [`.brokkr/recipes/self/bundle.json`](../../.brokkr/recipes/self/bundle.json). Panel members and
 sequence steps carry no `limits` of their own — the seat above them owns
 the budget, and the compiler refuses a declaration it would discard.
 The single-seat reviewer (`reviewer.json` + its charter) remains unwired
-in `bundles/self/bundle.json`. It now supplies the base checks for the
+in `.brokkr/recipes/self/bundle.json`. It now supplies the base checks for the
 `codex-bug-reviewer` overlay on the fast recipe's small-bug route, with
 an explicit read-only/result contract and scope-defect reporting.
 
-Decision [0057](../docs/decisions/0057-codex-delivery-recipes.md) adds
+Decision [0057](../../docs/decisions/0057-codex-delivery-recipes.md) adds
 `codex-*` office overlays, preserving these charters while selecting the
 operator's Codex work models and independent external reviewers. The shared
 design council now uses those Codex offices. See the
-[recipe tables](../bundles/README.md) for exact chains, efforts and launch
+[recipe tables](../../.brokkr/recipes/README.md) for exact chains, efforts and launch
 commands. The `self` intake/implement and review offices above retain their
-original chains. Accepted [0058](../docs/decisions/0058-codex-review-routing.md), with the
+original chains. Accepted [0058](../../docs/decisions/0058-codex-review-routing.md), with the
 operator's revised 2026-10-26 tests assignment recorded in proposed
-[0081](../docs/decisions/0081-glm-flash-seats.md), assigns Fable correctness,
+[0081](../../docs/decisions/0081-glm-flash-seats.md), assigns Fable correctness,
 Flash security and GLM Flash tests to Standard; Careful and fast full-risk lanes
 add distinct correctness/guarantees and independent Fable offices. Accepted
-[0098](../docs/decisions/0098-review-panel-flash-and-deadline.md) records the
+[0098](../../docs/decisions/0098-review-panel-flash-and-deadline.md) records the
 operator's 2026-10-28 direction that `codex-review-astra-correctness` and
 `codex-review-guarantees` select dsh `flash` (official DeepSeek Flash) at high
 effort; the first office keeps its historical name.
@@ -62,7 +62,7 @@ All reviewer chains are single-model except dedicated fast-feature correctness:
 Qwen Max then Sonnet 5.5 on pre-session dispatch failure only. No completed
 verdict or malformed facts trigger substitution. DeepSeek Pro is forbidden.
 
-Accepted [0099](../docs/decisions/0099-claude-careful-recipe.md) adds the
+Accepted [0099](../../docs/decisions/0099-claude-careful-recipe.md) adds the
 zero-Codex `claude-careful` offices, each an overlay of one base office that
 keeps its charter: `claude-intake` (Haiku 5.5), `claude-position-simplicity`
 (Opus 5.5), `dsh-position-robustness` (official DeepSeek Flash through dsh,
@@ -83,28 +83,28 @@ Only the security member (or combined chore reviewer) owns security hold.
 
 ## Correctness charter resolution for Codex recipes
 
-The tracked library uses `agents/codex-review-correctness.json` as the
-Codex overlay. It extends `agents/review-correctness.json`, selects the
+The tracked library uses `.brokkr/agents/codex-review-correctness.json` as the
+Codex overlay. It extends `.brokkr/agents/review-correctness.json`, selects the
 singleton `fable` route that accepted 0058 assigns to standard correctness, and
-resolves `agents/charters/review-correctness.md`, whose tracked digest is
-`8785a54a83e88cf254213afe11f230e8e10c70a18f2f147df197e40cfe59a0cb`.
+resolves `.brokkr/agents/charters/review-correctness.md`, whose tracked digest is
+`dd8aa0a7f45b4553dd7606ae7dcab5ea2c650e3e1e3614434311a7793e6cb7ec`.
 Before 0058 the overlay selected `qwen-max`, and the charter digest in the
 #172 candidate of 2026-10-24 was
 `215d6e38a66cbaf16ed7b76f1742a68b48a8e42bb2deeb1e57ec53a099ddb2fa`.
 The required compile target for this realm is
-`brokkr compile --bundle bundles/self`.
+`brokkr compile --bundle .brokkr/recipes/self`.
 
 Reproduce the candidate-local resolution and digest check with:
 
 ~~~bash
-.forge/bin/brokkr agents show codex-review-correctness
-sha256sum agents/charters/review-correctness.md
-.forge/bin/brokkr compile --bundle bundles/self
+.brokkr/state/bin/brokkr agents show codex-review-correctness
+sha256sum .brokkr/agents/charters/review-correctness.md
+.brokkr/state/bin/brokkr compile --bundle .brokkr/recipes/self
 ~~~
 
 At that candidate, `.brokkr/agents` was absent and the recorded engine help
 documented `.brokkr/agents` as the preferred local library, falling back to
-the tracked `agents/` library. The agents show output's charter digest
+the tracked `.brokkr/agents/` library. The agents show output's charter digest
 matched the tracked file. This is evidence for that candidate's resolution;
 it does not establish which historical host copy was loaded or prove a live
 review dispatch.

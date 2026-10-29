@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Offline proofs through the recorded CLI, never a live provider.
 
-Run: python3 tests/codex_review_routing.py --engine .forge/bin/brokkr --out <new-directory>
+Run: python3 tests/codex_review_routing.py --engine .brokkr/state/bin/brokkr --out <new-directory>
 Controlled forge-driver/v1 participants exercise the production dispatcher,
 aggregator, candidate fence and evaluator. Real recipe resolution is separate
 from controlled dispatch: no claim about installed provider compatibility.
@@ -132,7 +132,7 @@ def resolved_matrix(engine, out):
                           out / (recipe + '-tests-office'))
             assert result.returncode == 0, result.stderr
             office = json.loads(result.stdout)
-            adapter_path = ROOT / 'adapters/dsh.json'
+            adapter_path = ROOT / '.brokkr/adapters/dsh.json'
             adapter = json.loads(adapter_path.read_text())
             wanted = dict(agent='codex-review-tests', provider='dsh',
                 chain=['glm-flash'], model='glm-flash', chosen_index=0,
@@ -227,7 +227,7 @@ def resolved_matrix(engine, out):
             result = call([engine, 'agents', 'show', selected['agent']], ROOT, out / 'triage-office')
             assert result.returncode == 0, result.stderr
             office = json.loads(result.stdout)
-            adapter = json.loads((ROOT / 'adapters/claude.json').read_text())
+            adapter = json.loads((ROOT / '.brokkr/adapters/claude.json').read_text())
             triage = dict(agent=selected['agent'], provider=selected['provider'],
                 chain=selected['chain'], models=office['models'], efforts=office['efforts'],
                 concrete=[adapter['models'][model] for model in office['models']],
@@ -307,9 +307,9 @@ MIXED_ROUTE = {
 
 def mixed_route(engine, out, manifests):
     mixed, careful = manifests['mixed-opus-terra'], manifests['codex-careful']
-    adapters = {name: json.loads((ROOT / f'adapters/{name}.json').read_text())
+    adapters = {name: json.loads((ROOT / f'.brokkr/adapters/{name}.json').read_text())
                 for name in ['codex', 'claude', 'dsh']}
-    source = json.loads((ROOT / 'bundles/mixed-opus-terra/bundle.json').read_text())
+    source = json.loads((ROOT / '.brokkr/recipes/mixed-opus-terra/bundle.json').read_text())
     observed = {}
     for key in MIXED_ROUTE:
         selected = mixed['agents'].get(key)
@@ -336,9 +336,9 @@ def mixed_route(engine, out, manifests):
     observed['aliases'] = {a: adapters['codex']['models'][a] for a in ['terra', 'terra61']}
 
     def charter(agent):
-        office = json.loads((ROOT / f'agents/{agent}.json').read_text())
+        office = json.loads((ROOT / f'.brokkr/agents/{agent}.json').read_text())
         while 'charter' not in office:
-            office = json.loads((ROOT / f"agents/{office['extends']}.json").read_text())
+            office = json.loads((ROOT / f".brokkr/agents/{office['extends']}.json").read_text())
         return office['charter']
     wanted = {}
     for key, (agent, provider, model, concrete, route, effort) in MIXED_ROUTE.items():
@@ -350,7 +350,7 @@ def mixed_route(engine, out, manifests):
             resolution=[(model, provider, 'ok')],
             chosen={'index': 0, 'model': model, 'provider': provider},
             concrete=[concrete], route=[route] if route else [], charter=charter(agent),
-            limits=json.loads((ROOT / f'agents/{base}.json').read_text())['limits'] if work else None,
+            limits=json.loads((ROOT / f'.brokkr/agents/{base}.json').read_text())['limits'] if work else None,
             hands=careful['hands'].get(key), boundary=careful['boundary'].get(key))
     wanted['source'] = dict(extends='codex-careful', seats=['implement', 'intake'],
         override={'bundle': ['description'], 'seats': ['intake', 'implement']})
@@ -453,9 +453,9 @@ VALIDATOR = ['scripts/design-check.sh', 'scripts/speckit/check-prerequisites.sh'
 
 def claude_careful_route(engine, out, manifests):
     cc, careful = manifests['claude-careful'], manifests['codex-careful']
-    adapters = {name: json.loads((ROOT / f'adapters/{name}.json').read_text())
+    adapters = {name: json.loads((ROOT / f'.brokkr/adapters/{name}.json').read_text())
                 for name in ['codex', 'claude', 'dsh']}
-    source = json.loads((ROOT / 'bundles/claude-careful/bundle.json').read_text())
+    source = json.loads((ROOT / '.brokkr/recipes/claude-careful/bundle.json').read_text())
     observed = {}
     for key in CLAUDE_CAREFUL_ROUTE:
         selected = cc['agents'].get(key)
@@ -491,11 +491,11 @@ def claude_careful_route(engine, out, manifests):
     observed['aliases'] = {a: adapters['claude']['models'][a] for a in ['haiku', 'haiku55']}
 
     def charter(agent):
-        office = json.loads((ROOT / f'agents/{agent}.json').read_text())
+        office = json.loads((ROOT / f'.brokkr/agents/{agent}.json').read_text())
         while 'charter' not in office:
-            office = json.loads((ROOT / f"agents/{office['extends']}.json").read_text())
+            office = json.loads((ROOT / f".brokkr/agents/{office['extends']}.json").read_text())
         return office['charter']
-    base_limits = {key: json.loads((ROOT / f'agents/{base}.json').read_text())['limits']
+    base_limits = {key: json.loads((ROOT / f'.brokkr/agents/{base}.json').read_text())['limits']
                    for key, base in [('intake', 'intake'), ('implement', 'implementer')]}
     wanted = {}
     for key, (agent, provider, model, concrete, route, effort, hands) in CLAUDE_CAREFUL_ROUTE.items():
@@ -621,7 +621,7 @@ def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
         dict(name='probe', path='.', default_branch='main', house='house.txt', boundary='harness')],
         'journal': '.forge/probe.db'})
     # Existing policies are used verbatim for review rules, including all hard stops.
-    policy = json.loads((ROOT / 'bundles/self/policy.json').read_text())
+    policy = json.loads((ROOT / '.brokkr/recipes/self/policy.json').read_text())
     review_rules = [r for r in policy['rules'] if r['from'] == 'review']
     table = dict(schema='forge.phase-machine/v1', phases=['prepare','verify','review','ship','done','stop'],
                  initial='prepare', terminal=['done','stop'], shippable_from=['review'], rules=[
@@ -637,7 +637,7 @@ def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
     bundle_dir = case / 'recipes/probe'
     bundle_dir.mkdir(parents=True)
     (bundle_dir / 'exec.py').write_text(EXEC)
-    exec_adapter = json.loads((ROOT/'adapters/exec.json').read_text())
+    exec_adapter = json.loads((ROOT/'.brokkr/adapters/exec.json').read_text())
     dump(case/'adapters/exec.json', exec_adapter)
     models = {role: role for role in roles}
     if fallback:
@@ -689,7 +689,7 @@ def main():
     parser.add_argument('--out',required=True,type=Path)
     args=parser.parse_args()
     engine=args.engine.resolve();out=args.out.resolve();out.mkdir(parents=True,exist_ok=False)
-    record=json.loads((ROOT/'bundles/self/tooling.json').read_text())['brokkr']
+    record=json.loads((ROOT/'.brokkr/recipes/self/tooling.json').read_text())['brokkr']
     digest=hashlib.sha256(engine.read_bytes()).hexdigest()
     assert digest==record['binary_sha256'], 'Refuse an unrecorded engine'
     resolved_matrix(engine,out)

@@ -31,7 +31,7 @@ never push). The position files stay uncommitted — `.brokkr/state/` is
 gitignored run-local evidence.
 
 A deterministic validation script — the sequence's final `check` step,
-`bundles/self/scripts/design-check.sh` run from the pinned bundle — runs
+`.brokkr/recipes/self/scripts/design-check.sh` run from the pinned bundle — runs
 immediately after you and rules the design attempt on the artifacts
 alone. It identifies the design by your commit: HEAD must touch exactly
 one `specs/<slug>/` directory (never selected by mtime), whose spec.md,

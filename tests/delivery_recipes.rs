@@ -13,12 +13,12 @@ fn read_json(path: &str) -> Value {
 }
 
 fn office(name: &str) -> Value {
-    read_json(&format!("agents/{name}.json"))
+    read_json(&format!(".brokkr/agents/{name}.json"))
 }
 
 fn work_offices(recipe: &Value) -> Vec<(String, &'static str)> {
     let seats = &recipe["seats"];
-    let base = read_json("bundles/self/bundle.json");
+    let base = read_json(".brokkr/recipes/self/bundle.json");
     let design = base["seats"]["design"]["sequence"].clone();
     vec![
         (
@@ -51,12 +51,26 @@ fn work_offices(recipe: &Value) -> Vec<(String, &'static str)> {
 }
 
 #[test]
-fn recipe_discovery_uses_the_existing_bundles_without_copied_definitions() {
+fn every_recipe_stands_on_the_brokkr_folder_shelf() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let folder = root.join(".brokkr");
+    for stray in [
+        "recipes",
+        "bundles",
+        "agents",
+        "adapters",
+        "dialects",
+        "realms.json",
+    ] {
+        assert!(
+            std::fs::symlink_metadata(root.join(stray)).is_err(),
+            "{stray}: the engine's configuration lives in .brokkr/ alone (decision 0100)"
+        );
+    }
     assert_eq!(
-        std::fs::read_link(root.join("recipes")).unwrap(),
-        Path::new("bundles"),
-        "the relative library alias survives clones and worktrees"
+        std::fs::read_to_string(folder.join(".gitignore")).unwrap(),
+        "state/\n",
+        "only the folder's runtime state is ignored"
     );
     for name in [
         "self",
@@ -66,12 +80,28 @@ fn recipe_discovery_uses_the_existing_bundles_without_copied_definitions() {
         "mixed-opus-terra",
         "claude-careful",
     ] {
-        assert_eq!(
-            root.join("recipes").join(name).canonicalize().unwrap(),
-            root.join("bundles").join(name).canonicalize().unwrap(),
-            "{name}: default discovery and explicit compilation must read the same bundle"
+        let bundle = folder.join("recipes").join(name).join("bundle.json");
+        assert!(
+            !std::fs::symlink_metadata(folder.join("recipes").join(name))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{name}: a shelf recipe is a real directory, never an alias"
+        );
+        assert!(
+            bundle.is_file(),
+            "{name}: no bundle at {}",
+            bundle.display()
         );
     }
+    let default: Value =
+        serde_json::from_str(&std::fs::read_to_string(folder.join("bundle.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        default,
+        serde_json::json!({"name": "swarmail", "extends": "claude-careful"}),
+        "the folder's own bundle is claude-careful by name and adds nothing"
+    );
 }
 
 #[test]
@@ -81,7 +111,7 @@ fn recipes_cannot_replace_the_protected_policy_or_the_exec_gates() {
         ("codex-careful", "codex"),
         ("mixed-opus-terra", "codex-careful"),
     ] {
-        let recipe = read_json(&format!("bundles/{name}/bundle.json"));
+        let recipe = read_json(&format!(".brokkr/recipes/{name}/bundle.json"));
         assert_eq!(recipe["extends"], parent);
         for forbidden in ["policy", "protected_phase", "remove"] {
             assert!(recipe.get(forbidden).is_none(), "{name}: {forbidden}");
@@ -110,7 +140,7 @@ fn recipes_cannot_replace_the_protected_policy_or_the_exec_gates() {
 
 #[test]
 fn both_designs_end_in_a_model_free_offline_validator() {
-    let base = read_json("bundles/self/bundle.json");
+    let base = read_json(".brokkr/recipes/self/bundle.json");
     let design = base["seats"]["design"]["sequence"].as_array().unwrap();
     assert_eq!(design.len(), 3, "positions, chief, validator");
     assert_eq!(design[0]["aggregate"], "unanimous-pass");
@@ -134,7 +164,7 @@ fn both_designs_end_in_a_model_free_offline_validator() {
         ])
     );
     for name in ["codex", "codex-careful", "mixed-opus-terra"] {
-        let recipe = read_json(&format!("bundles/{name}/bundle.json"));
+        let recipe = read_json(&format!(".brokkr/recipes/{name}/bundle.json"));
         assert!(
             recipe["seats"].get("design").is_none(),
             "{name}: inherit the complete design seat so the exec script retains self's origin"
@@ -145,7 +175,7 @@ fn both_designs_end_in_a_model_free_offline_validator() {
 #[test]
 fn codex_authors_keep_their_base_charters_and_get_boxed_workspace_tools() {
     for name in ["codex", "codex-careful"] {
-        let recipe = read_json(&format!("bundles/{name}/bundle.json"));
+        let recipe = read_json(&format!(".brokkr/recipes/{name}/bundle.json"));
         for (agent, base) in work_offices(&recipe) {
             let overlay = office(&agent);
             assert_eq!(overlay["extends"], base, "{agent}");
@@ -216,11 +246,11 @@ fn standard_and_careful_keep_intake_without_triage() {
         ("codex-careful", "codex-careful-intake"),
         ("mixed-opus-terra", "mixed-terra-intake"),
     ] {
-        let bundle = read_json(&format!("bundles/{recipe}/bundle.json"));
+        let bundle = read_json(&format!(".brokkr/recipes/{recipe}/bundle.json"));
         assert_eq!(bundle["seats"]["intake"]["agent"], intake, "{recipe}");
         assert!(bundle["seats"].get("triage").is_none(), "{recipe}");
     }
-    let base = read_json("bundles/self/bundle.json");
+    let base = read_json(".brokkr/recipes/self/bundle.json");
     assert!(base["seats"].get("triage").is_none());
 }
 
@@ -278,7 +308,7 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
             format!("charters/review-{base}.md")
         );
     }
-    let dsh = read_json("adapters/dsh.json");
+    let dsh = read_json(".brokkr/adapters/dsh.json");
     assert_eq!(dsh["models"]["glm-flash"], "spark-glm/GLM-5.3-Flash-EXL3");
     assert_eq!(dsh["routes"]["spark-glm"], "local");
     assert!(
@@ -307,7 +337,7 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
         let route = v.as_str().unwrap();
         !(route.contains("deepseek") && route.contains("pro"))
     }));
-    let claude = read_json("adapters/claude.json");
+    let claude = read_json(".brokkr/adapters/claude.json");
     for (model, route) in [
         ("fable", "claude-fable-5-1"),
         ("sonnet", "claude-sonnet-5-5"),
@@ -316,7 +346,7 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
         assert!(claude["judges"].as_array().unwrap().contains(&json!(model)));
     }
     assert_eq!(
-        read_json("adapters/codex.json")["models"]["astra"],
+        read_json(".brokkr/adapters/codex.json")["models"]["astra"],
         "gpt-6-astra"
     );
 }
@@ -327,7 +357,7 @@ fn reviewers_keep_exact_models_charters_efforts_and_the_only_fallback() {
 fn flash_panel_member_violations(office: &dyn Fn(&str) -> Value) -> Vec<String> {
     let mut bad = Vec::new();
     let security = office("codex-review-security");
-    let dsh = read_json("adapters/dsh.json");
+    let dsh = read_json(".brokkr/adapters/dsh.json");
     if dsh["models"]["flash"] != "deepseek-flash"
         || dsh["routes"]["deepseek-official"] != "uncontracted"
         || dsh["tool_permissions"] != "unsupported"
@@ -421,23 +451,23 @@ fn codex_review_seats_allow_four_hours_and_other_limits_stay() {
     let review = json!({"max_attempts": 3, "timeout_seconds": 14400});
     let implement = json!({"max_attempts": 3, "timeout_seconds": 7200});
     for recipe in ["codex", "codex-careful", "codex-fast"] {
-        let bundle = read_json(&format!("bundles/{recipe}/bundle.json"));
+        let bundle = read_json(&format!(".brokkr/recipes/{recipe}/bundle.json"));
         assert_eq!(bundle["seats"]["review"]["limits"], review, "{recipe}");
         assert_eq!(
             bundle["seats"]["implement"]["limits"], implement,
             "{recipe}"
         );
     }
-    let fast = read_json("bundles/codex-fast/bundle.json");
+    let fast = read_json(".brokkr/recipes/codex-fast/bundle.json");
     assert_eq!(
         fast["seats"]["triage"]["limits"],
         json!({"max_attempts": 1, "timeout_seconds": 1800})
     );
     // mixed-opus-terra inherits careful's review seat rather than copying it.
-    let mixed = read_json("bundles/mixed-opus-terra/bundle.json");
+    let mixed = read_json(".brokkr/recipes/mixed-opus-terra/bundle.json");
     assert!(mixed["seats"].get("review").is_none());
     // The legacy self constitution keeps its original review deadline.
-    let base = read_json("bundles/self/bundle.json");
+    let base = read_json(".brokkr/recipes/self/bundle.json");
     assert_eq!(
         base["seats"]["review"]["limits"],
         json!({"max_attempts": 3, "timeout_seconds": 3600})
@@ -450,8 +480,8 @@ fn codex_review_seats_allow_four_hours_and_other_limits_stay() {
 
 #[test]
 fn standard_and_careful_keep_exact_roles_and_identical_review_contracts() {
-    let standard = read_json("bundles/codex/bundle.json");
-    let careful = read_json("bundles/codex-careful/bundle.json");
+    let standard = read_json(".brokkr/recipes/codex/bundle.json");
+    let careful = read_json(".brokkr/recipes/codex-careful/bundle.json");
     let mut review = standard["seats"]["review"].clone();
     assert_eq!(review["panel"], standard_panel());
     assert_eq!(review["aggregate"], "review-panel");
@@ -467,8 +497,8 @@ fn standard_and_careful_keep_exact_roles_and_identical_review_contracts() {
 
 #[test]
 fn fast_triage_routes_only_bounded_bugs_directly_to_implementation() {
-    let recipe = read_json("bundles/codex-fast/bundle.json");
-    let policy = read_json("bundles/codex-fast/policy.json");
+    let recipe = read_json(".brokkr/recipes/codex-fast/bundle.json");
+    let policy = read_json(".brokkr/recipes/codex-fast/policy.json");
     assert_eq!(recipe["extends"], "codex");
     assert_eq!(policy["initial"], "triage");
     assert_eq!(recipe["seats"]["triage"]["agent"], "codex-triage");
@@ -489,7 +519,7 @@ fn fast_triage_routes_only_bounded_bugs_directly_to_implementation() {
             {"path": "~/.rustup", "mode": "ro"}
         ]})
     );
-    let claude = read_json("adapters/claude.json");
+    let claude = read_json(".brokkr/adapters/claude.json");
     assert_eq!(claude["provider"], "claude");
     assert_eq!(claude["models"]["opus"], "claude-opus-5-5");
     assert!(
@@ -525,7 +555,7 @@ fn fast_triage_routes_only_bounded_bugs_directly_to_implementation() {
 
 #[test]
 fn fast_strategy_selectors_have_no_default_and_keep_one_two_or_five_reviewers() {
-    let recipe = read_json("bundles/codex-fast/bundle.json");
+    let recipe = read_json(".brokkr/recipes/codex-fast/bundle.json");
     let expected: BTreeSet<_> = ["chore", "feature", "design", "engine"]
         .into_iter()
         .collect();
@@ -586,18 +616,18 @@ fn fast_implementation_uses_luna_at_xhigh_without_provider_fallback() {
     assert_eq!(implementer["models"], json!(["luna"]));
     assert_eq!(implementer["efforts"]["luna"], "xhigh");
     assert_eq!(
-        read_json("adapters/codex.json")["models"]["luna"],
+        read_json(".brokkr/adapters/codex.json")["models"]["luna"],
         "gpt-6-luna"
     );
     assert_eq!(
-        read_json("adapters/codex.json")["efforts"],
+        read_json(".brokkr/adapters/codex.json")["efforts"],
         json!(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
     );
 }
 
 #[test]
 fn fast_recipe_preserves_shell_proofs_design_origin_and_hard_review_refusals() {
-    let recipe = read_json("bundles/codex-fast/bundle.json");
+    let recipe = read_json(".brokkr/recipes/codex-fast/bundle.json");
     for seat in ["design", "verify", "ship"] {
         assert!(recipe["seats"].get(seat).is_none(), "inherit {seat}");
     }
@@ -606,7 +636,7 @@ fn fast_recipe_preserves_shell_proofs_design_origin_and_hard_review_refusals() {
     assert_eq!(recipe["remove"]["phases"], json!(["intake"]));
     assert_eq!(recipe["remove"]["rules"], json!(["INTAKE-OK"]));
     let overridden = recipe["override"]["rules"].as_array().unwrap();
-    let policy = read_json("bundles/codex-fast/policy.json");
+    let policy = read_json(".brokkr/recipes/codex-fast/policy.json");
     let rules = policy["rules"].as_array().unwrap();
     for hard_stop in [
         "REVIEW-SECURITY-HOLD",
@@ -645,7 +675,7 @@ fn fast_recipe_preserves_shell_proofs_design_origin_and_hard_review_refusals() {
 
 #[test]
 fn fast_reclassification_has_a_finite_budget_and_explicit_scope_facts() {
-    let policy = read_json("bundles/codex-fast/policy.json");
+    let policy = read_json(".brokkr/recipes/codex-fast/policy.json");
     let rules = policy["rules"].as_array().unwrap();
     for class in ["chore", "feature", "design", "engine"] {
         let cap = rules
@@ -720,7 +750,7 @@ fn fast_reclassification_has_a_finite_budget_and_explicit_scope_facts() {
 
 #[test]
 fn full_review_reverification_requires_known_scope_and_unknown_clean_facts_stop() {
-    let base = read_json("bundles/self/policy.json");
+    let base = read_json(".brokkr/recipes/self/policy.json");
     let base_rules = base["rules"].as_array().unwrap();
     for id in ["REVIEW-CLEAN-NO-FIXES", "REVIEW-RESIDUAL-OK"] {
         let rule = base_rules.iter().find(|rule| rule["id"] == id).unwrap();
@@ -747,7 +777,7 @@ fn full_review_reverification_requires_known_scope_and_unknown_clean_facts_stop(
         .unwrap();
     assert_eq!(base_unknown["next"], "stop");
     assert!(base_unknown.get("when").is_none());
-    let policy = read_json("bundles/codex-fast/policy.json");
+    let policy = read_json(".brokkr/recipes/codex-fast/policy.json");
     let rules = policy["rules"].as_array().unwrap();
     let reverify = rules
         .iter()
@@ -795,8 +825,9 @@ fn ship_closeout_refuses_missing_empty_and_mismatched_ledgers() {
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     };
     git(&["init", "-q"]);
-    std::fs::write(repo.path().join(".gitignore"), ".forge/\n").unwrap();
-    git(&["add", ".gitignore"]);
+    std::fs::create_dir_all(repo.path().join(".brokkr")).unwrap();
+    std::fs::write(repo.path().join(".brokkr/.gitignore"), "state/\n").unwrap();
+    git(&["add", ".brokkr/.gitignore"]);
     git(&[
         "-c",
         "user.name=Ship proof",
@@ -809,10 +840,11 @@ fn ship_closeout_refuses_missing_empty_and_mismatched_ledgers() {
         "Record a clean close-out candidate",
     ]);
     let head = git(&["rev-parse", "HEAD"]);
-    let state = repo.path().join(".forge");
+    let state = repo.path().join(".brokkr/state");
     std::fs::create_dir_all(state.join("ledger")).unwrap();
     std::fs::create_dir_all(state.join("results")).unwrap();
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("bundles/self/scripts/ship-seat.sh");
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".brokkr/recipes/self/scripts/ship-seat.sh");
     let ledger = state.join("ledger/probe.md");
     for case in ["valid", "missing", "empty", "mismatch"] {
         match case {
@@ -932,7 +964,7 @@ fn mixed_work_route_violations(
             bad.push(format!("{agent}: hands differ from careful"));
         }
         let adapter = if model == "opus" {
-            read_json("adapters/claude.json")
+            read_json(".brokkr/adapters/claude.json")
         } else {
             codex.clone()
         };
@@ -948,9 +980,9 @@ fn mixed_work_route_violations(
 
 #[test]
 fn operator_mixed_recipe_overrides_only_its_two_work_seats() {
-    let recipe = read_json("bundles/mixed-opus-terra/bundle.json");
-    let careful = read_json("bundles/codex-careful/bundle.json");
-    let codex = read_json("adapters/codex.json");
+    let recipe = read_json(".brokkr/recipes/mixed-opus-terra/bundle.json");
+    let careful = read_json(".brokkr/recipes/codex-careful/bundle.json");
+    let codex = read_json(".brokkr/adapters/codex.json");
     let on_disk = |name: &str| office(name);
     assert_eq!(
         mixed_work_route_violations(&recipe, &careful, &codex, &on_disk),
@@ -1045,8 +1077,8 @@ fn operator_mixed_recipe_overrides_only_its_two_work_seats() {
 
 #[test]
 fn operator_mixed_recipe_inherits_the_careful_panel_unchanged() {
-    let recipe = read_json("bundles/mixed-opus-terra/bundle.json");
-    let careful = read_json("bundles/codex-careful/bundle.json");
+    let recipe = read_json(".brokkr/recipes/mixed-opus-terra/bundle.json");
+    let careful = read_json(".brokkr/recipes/codex-careful/bundle.json");
     assert!(recipe["seats"].get("review").is_none());
     assert_eq!(careful["seats"]["review"]["panel"], full_panel());
     for (role, model) in [
@@ -1062,7 +1094,7 @@ fn operator_mixed_recipe_inherits_the_careful_panel_unchanged() {
         );
     }
     assert_eq!(
-        read_json("adapters/dsh.json")["models"]["glm-flash"],
+        read_json(".brokkr/adapters/dsh.json")["models"]["glm-flash"],
         "spark-glm/GLM-5.3-Flash-EXL3"
     );
 }
@@ -1233,7 +1265,7 @@ fn composed_offices(leaf: &Value) -> Vec<String> {
             seats.entry(name.clone()).or_insert_with(|| seat.clone());
         }
         match layer["extends"].as_str() {
-            Some(parent) => layer = read_json(&format!("bundles/{parent}/bundle.json")),
+            Some(parent) => layer = read_json(&format!(".brokkr/recipes/{parent}/bundle.json")),
             None => break,
         }
     }
@@ -1284,8 +1316,8 @@ fn claude_careful_violations(
 
     // Outside the offices, each seat is the record it replaces: careful's
     // intake, implement and review, self's design with its exec check.
-    let careful = read_json("bundles/codex-careful/bundle.json");
-    let base = read_json("bundles/self/bundle.json");
+    let careful = read_json(".brokkr/recipes/codex-careful/bundle.json");
+    let base = read_json(".brokkr/recipes/self/bundle.json");
     let mut intake = careful["seats"]["intake"].clone();
     intake["agent"] = json!("claude-intake");
     let mut implement = careful["seats"]["implement"].clone();
@@ -1404,9 +1436,9 @@ fn claude_careful_violations(
 
 #[test]
 fn claude_careful_routes_every_model_seat_without_codex() {
-    let recipe = read_json("bundles/claude-careful/bundle.json");
+    let recipe = read_json(".brokkr/recipes/claude-careful/bundle.json");
     let on_disk = |name: &str| office(name);
-    let adapters = |name: &str| read_json(&format!("adapters/{name}.json"));
+    let adapters = |name: &str| read_json(&format!(".brokkr/adapters/{name}.json"));
     assert_eq!(
         claude_careful_violations(&recipe, &on_disk, &adapters),
         Vec::<String>::new()
@@ -1536,7 +1568,7 @@ fn claude_careful_routes_every_model_seat_without_codex() {
     ];
     for (target, mutant, drift) in adapter_drifts {
         let drifted = |name: &str| {
-            let mut value = read_json(&format!("adapters/{name}.json"));
+            let mut value = read_json(&format!(".brokkr/adapters/{name}.json"));
             if name == target {
                 drift(&mut value);
             }
@@ -1555,7 +1587,7 @@ fn claude_careful_routes_every_model_seat_without_codex() {
 #[test]
 fn claude_careful_design_check_is_self_validator_byte_for_byte() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let leaf = root.join("bundles/claude-careful");
+    let leaf = root.join(".brokkr/recipes/claude-careful");
     let mut files = Vec::new();
     let mut pending = vec![leaf.clone()];
     while let Some(dir) = pending.pop() {
@@ -1588,15 +1620,15 @@ fn claude_careful_design_check_is_self_validator_byte_for_byte() {
         assert_eq!(
             std::fs::read(leaf.join(script)).unwrap(),
             std::fs::read(
-                root.join("bundles/self/scripts")
+                root.join(".brokkr/recipes/self/scripts")
                     .join(script.trim_start_matches("scripts/"))
             )
             .unwrap(),
             "{script} drifted from self's pinned copy"
         );
     }
-    let recipe = read_json("bundles/claude-careful/bundle.json");
-    let base = read_json("bundles/self/bundle.json");
+    let recipe = read_json(".brokkr/recipes/claude-careful/bundle.json");
+    let base = read_json(".brokkr/recipes/self/bundle.json");
     assert_eq!(
         recipe["seats"]["design"]["sequence"][2], base["seats"]["design"]["sequence"][2],
         "the model-free validator step is self's, field for field"

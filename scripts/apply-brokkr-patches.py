@@ -81,7 +81,7 @@ def recorded_patches(bundle, entries):
 
 
 def apply(source):
-    bundle = Path(__file__).resolve().parent.parent / "bundles" / "self"
+    bundle = Path(__file__).resolve().parent.parent / ".brokkr" / "recipes" / "self"
     record = json.loads(
         (bundle / "tooling.json").read_bytes(),
         object_pairs_hook=strict_object,
