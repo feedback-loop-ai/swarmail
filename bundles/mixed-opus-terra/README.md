@@ -3,7 +3,7 @@
 For runs requested under the operator's later direction, this recipe selects
 Codex `gpt-6.1-terra` for intake and Claude `claude-opus-5-5` for implementation.
 It inherits the careful lane's five-member review: official DSH Flash
-correctness and guarantees (separate offices, proposed
+correctness and guarantees (separate offices, accepted
 [0098](../../docs/decisions/0098-review-panel-flash-and-deadline.md)), Claude
 Fable independent review, official DSH Flash security, and DSH
 `GLM-5.3-Flash-EXL3` on Spark for tests, under careful's 4-hour review
