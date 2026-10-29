@@ -9,8 +9,10 @@ proposed [0093](../decisions/0093-source-mail-comparison.md)
 ([source-attributed continuation](../../specs/source-mail-comparison/spec.md));
 none is accepted.
 
-**Status, 2026-10-29: no results.** This directory holds no baseline, final
-run, comparison, cost or loss record, because none of those exists yet.
+**Status, 2026-10-30: no results.** This directory holds no baseline, final
+run, comparison, cost or loss record, because none of those exists yet. One
+frozen collection is now sealed and admitted as raw measurement (*Collection
+(2026-10-30)* below); no figure from it is quoted or read as a result.
 Nothing in it, or in the top-level README, may be read as a measured claim
 about Swarmail, Mailpit, MailHog or any agent. The official competitor
 artifacts are pinned, and each tag's source chain is now bound to captured
@@ -22,7 +24,7 @@ untimed checks and labelled smoke runs, not collection.
 | Deliverable (spec) | State |
 |---|---|
 | Source pins: [`sources.lock.json`](sources.lock.json) (lock v3) | **Artifacts pinned and tagged sources bound; build provenance unknown.** Mailpit v1.32.0 and MailHog v1.0.1 are pinned by asset and executable digest. Each tag's captured ref → annotated tag → commit chain and the commit's untruncated tree listing are committed under [`sources/`](sources/). Every repository document (licence, API, setup README, reviewed source) is bound by size, SHA-256 and git blob id to its path in that tree, and rechecked whenever the lock is used. Nothing ties either executable to its tagged commit, so `binary_build_provenance` stays unresolved and the lock makes no built-from claim. |
-| Method: [`protocol.json`](protocol.json) | **Frozen as protocol v2** (`fair-mail-comparison-v2`, superseding draft-3; the draft-2 and draft-3 bytes are kept under [`history/`](history/) and still read as version 1). It declares the limited official-artifact claim (no built-from claim), per-target backend, cap, prune and compression facts under the explicitly **unmatched** storage profile, the **unenforced local** resource profile, the common 100 ms poll, the driver's 40 s wait operation bound and the adapter's derived bounds and schema digest. `wait-best` is not a declared profile: it stays blocked. Frozen is not collected: no admitted run exists (see *Collection attempt* below). |
+| Method: [`protocol.json`](protocol.json) | **Frozen as protocol v2** (`fair-mail-comparison-v2`, superseding draft-3; the draft-2 and draft-3 bytes are kept under [`history/`](history/) and still read as version 1). It declares the limited official-artifact claim (no built-from claim), per-target backend, cap, prune and compression facts under the explicitly **unmatched** storage profile, the **unenforced local** resource profile, the common 100 ms poll, the driver's 40 s wait operation bound and the adapter's derived bounds and schema digest. `wait-best` is not a declared profile: it stays blocked. One frozen collection is admitted as raw measurement (see *Collection (2026-10-30)* below); it is not evidence, and no baseline, control or final contract exists. |
 | Wire driver: `benches/mail_compare.rs` | Built. Its polls now use the adapter's tested wait rule, and its scans refuse short nonfinal pages. A three-target smoke run against real Swarmail, Mailpit and MailHog seals and admits (`tests/mail_compare.rs`, ignored tests below). This is a smoke run, not evidence. Owned-bind corroboration and a cleanup worker that survives cancellation (T3), including the failed-drain-join arm, are **built and proved locally on Linux** (see *Method, as built*). Admission now recomputes the plan from the protocol, requires a proved cleanup receipt per launch and refuses a report that is not the arithmetic of its rows. The launch-level refusal of a foreign bind is proved through the kernel reading it rests on, not by forcing the reservation race, which needs no seam and has none. |
 | Mailpit MCP adapter: `mail_compare mailpit-mcp` | **Built and proved locally.** It speaks MCP 2025-03-26 over stdio. Its tools are list, search, read and a labelled client-side poll, each a translation of the captured Mailpit API. It was tested against real Mailpit over real SMTP. Each call's time frame starts at admission (see below). Final client negotiation (#151/#152/#153) is not proved by these tests. JSON-RPC batches are refused, which falls short of 2025-03-26 (receivers must accept batches); that stays open with the final contracts. |
 | One command: `scripts/compare-mail.sh` | Built. `local` runs the driver as a labelled smoke run; `collect` runs the frozen protocol after the driver's own readiness check and admits it against that protocol. `controls`, `evidence` and `measure` refuse by the name of the first missing prerequisite (baseline, final contracts, controls, coordination receipts, cost basis, identity, full product), and past those still at `comparison-integration`. No mode starts an agent. |
@@ -44,11 +46,11 @@ Every criterion is open. "Proof so far" names local tests in
 
 | AC | Proof so far | Missing | Owner |
 |---|---|---|---|
-| AC1 method | protocol v2 frozen; one refusal test each for a changed method, schema, product, false parity and cumulative cap overflow; draft-2 and draft-3 archived byte-identical | an admitted frozen collection | implementer / operator |
+| AC1 method | protocol v2 frozen; one refusal test each for a changed method, schema, product, false parity and cumulative cap overflow; draft-2 and draft-3 archived byte-identical | the admitted 2026-10-30 collection exists as raw measurement only (the method is not yet used for any claim) | implementer / operator |
 | AC2 competitors | `the_tag_chain_and_every_blob_are_rechecked_against_the_captures`, real-binary tests | build provenance (upstream); finalization-time executable recheck | upstream / implementer |
 | AC3 adapter | wait-frame and poll proofs on a paused clock; real SMTP → Mailpit → MCP | final client contracts (#151/#152/#153), batches | #151 / implementer |
 | AC4 controls | none (T9.a unstarted: the runner's MCP client is HTTP-only and the Mailpit adapter is stdio-only) | a stdio transport or bridge in the runner, a Mailpit-backed fixture, external oracle/null controls | implementer |
-| AC5–AC7 throughput, waits, limits | smoke runs; scan and censoring tests; accounting recomputed from raw rows; storage facts probed against the real binaries; one frozen collection attempted and interrupted (below) | an admitted full frozen run (about 14 minutes, beyond this seat's 10-minute command bound; a background launch did not survive its command either, and a run is never resumed), best wait | operator |
+| AC5–AC7 throughput, waits, limits | smoke runs; scan and censoring tests; accounting recomputed from raw rows; storage facts probed against the real binaries; one frozen collection interrupted on 2026-10-29, then one completed, sealed and admitted on 2026-10-30 as raw measurement with Mailpit's own 421 refusals recorded (*Collection (2026-10-30)*) | best wait; a collection under a matched storage and enforced resource profile; any claim beyond raw measurement | operator |
 | AC8–AC9 lifecycle, privacy | launch/cleanup/privacy tests; T3 worker, hold, cancellation, forced-death, TERM-resistant, output-pressure and bind-ownership tests; real-competitor launches corroborated | CI (Linux and macOS) receipts; a forced reservation race | CI / implementer |
 | AC10 schema/replay | eval suites pass on the repaired sources; comparison variant validated and refused by native readers | retained replay of comparison rows | implementer |
 | AC11 one command | delivery modes refuse with their phase; one negative test per named prerequisite; an inert dry-run witness | working controls/evidence/measure delegation | implementer |
@@ -62,8 +64,8 @@ Every criterion is open. "Proof so far" names local tests in
 
 | Row | Examined | Not examined | State |
 |---|---|---|---|
-| Roster and engine (clarification Q1) | Accepted decision 0099 (claude-careful, operator, 2026-10-29, recorded with 0098 on `repair/claude-careful-recipe`) governs this delivery: Haiku 5.5 intake, Sonnet 5.5 implementation, five protected reviews (Fable correctness, Flash security, Flash guarantees, local Spark GLM-5.3-Flash tests, Opus independent), no Codex seat; the T14 Terra/Astra roster is historical. The run executes on host engine brokkr a9893b4 (brokkr decision 0096). The candidate keeps its pin to 731189f-p3: `bundles/self/tooling.json` binary SHA-256 `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`, equal to `.forge/bin/brokkr` as hashed in this checkout. | The a9893b4 engine itself, brokkr decision 0096 and the 0098/0099 texts: no a9893b4 bytes, build receipt or decision text exist in this worktree, and neither 0098 nor 0099 exists on this branch or is imported here. | Not re-pinned. `brokkr compile` proves the pinned engine; every record names which engine it means. |
-| Inherited HIGH review-integrity residual and #219 | The stop event mentions the residual without original finding IDs; #219 is a separate open item; the pinned engine's identity and digest as above. | The a9893b4 engine and decision 0096 against the residual; the original HIGH finding references, which are absent here. | **Open**, with no verdict, no closure, no upstream-merge repair and no re-pin recorded. It goes to the five-member protected review. |
+| Roster and engine (clarification Q1) | Accepted decision 0099 (claude-careful, operator, 2026-10-29, recorded with 0098 on `repair/claude-careful-recipe`) governs this delivery: Haiku 5.5 intake, Sonnet 5.5 implementation, five protected reviews (Fable correctness, Flash security, Flash guarantees, local Spark GLM-5.3-Flash tests, Opus independent), no Codex seat; the T14 Terra/Astra roster is historical. The run executes on host engine brokkr a9893b4 (brokkr decision 0096). The candidate keeps its pin to 731189f-p3: `bundles/self/tooling.json` binary SHA-256 `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`, equal to `.forge/bin/brokkr` as hashed in this checkout. | The a9893b4 engine itself, brokkr decision 0096 and the 0098/0099 texts: no a9893b4 bytes, build receipt or decision text exist in this worktree, and neither 0098 nor 0099 exists on this branch or is imported here. | Not re-pinned. `brokkr compile` proves the pinned engine; every record names which engine it means. **Superseded 2026-10-30:** main's #279/#280 re-pinned the candidate to `swarmail-engine-a9893b4-p4` (`.brokkr/recipes/self/tooling.json`, binary SHA-256 `29dc3309…`); the `.brokkr/state/bin/brokkr` in this checkout hashes to `ab935558…`, which is *not* that pin, so the implement seat's `brokkr compile` ran on an unpinned binary and is not the pinned proof. |
+| Inherited HIGH review-integrity residual and #219 | The stop event mentions the residual without original finding IDs; #219 is a separate open item; the pinned engine's identity and digest as above. | The a9893b4 engine and decision 0096 against the residual; the original HIGH finding references, which are absent here. | **Open**, with no verdict, no closure and no upstream-merge repair. It goes to the five-member protected review. Pointer, 2026-10-30: accepted 0081's dated note records the routing proof on the earlier a9893b4 + three patches pin; see *Still open after this record*. |
 
 ## Competitor sources and observed behavior
 
@@ -262,7 +264,15 @@ Measurements use the controller's monotonic clock in nanoseconds:
   Every message gets exactly one row: `accepted`, `rejected`,
   `failed_before_terminator`, `ambiguous` (anything after the final dot
   left the client) or `unstarted` (cut off by the send deadline). Nothing
-  is retried. *Accepted per second* = accepts divided by the send window
+  is retried. A competitor's own refusal of a session (a reply code before the
+  terminator, such as Mailpit's `421 4.3.2 Too many connections`) is a
+  measured `failed_before_terminator` row that keeps its code and reads
+  `connect: refused`. It is counted in `refused`, makes the cell inexact and
+  is never retried, throttled or tuned away. No documented Mailpit flag or
+  `MP_*` variable governs that limit in the pinned release (binary
+  observation only: the SMTP server source is not in the source capture, so
+  the cap's value and semantics are unsourced), so no equivalent setting was
+  applied: that would be an undocumented fairness change. *Accepted per second* = accepts divided by the send window
   (first start to the last worker's end). *Verified per second* = accepted
   ids observed on the server divided by the window from the first start to
   verification completion. After both windows close, every visible id is
@@ -291,7 +301,8 @@ unplanned row, and a row count that differs from the plan. A run counts
 only through `mail_compare admit DIR PROTOCOL`, which also recomputes the
 plan from the protocol (a strict prefix declared by the manifest never
 admits), needs a proved cleanup receipt for every launch and checks the
-report's cells against the rows. Each throughput cell reports requested
+report's cells against the rows, refusing a report of another version by
+name and a differing cell by its first differing path. Each throughput cell reports requested
 (`attempted + unstarted`), unstarted, the scheduled sessions, the retention
 cap, admitted (accepts) and refused (rejected plus failed before the
 terminator), and every report states its claim scope and storage and
@@ -329,7 +340,9 @@ reports whether the protocol and lock admit collection. `collect --output
 DIR --mailpit BIN --mailhog BIN` runs the frozen protocol once (never
 resumed or overwritten) and then admits it against that protocol; it takes
 about 14 minutes on the box this was developed on, so run it somewhere that
-is not bounded to 10 minutes.
+is not bounded to 10 minutes. `collect` exits 1 when the run is sealed and
+admitted but a workload failed somewhere (for example a competitor's refusal);
+only exit 2 means the run did not complete.
 `controls`, `evidence` and `measure` exit 2 naming the first missing
 prerequisite, then at `comparison-integration` until tasks T8–T10 land.
 `measure --dry-run` prints the prerequisite order, opens no wrapper
@@ -346,6 +359,66 @@ incomplete and unsealed, has no index and was never admitted, so none of its
 rows is data and none is quoted. Two earlier attempts were killed when
 their command ended and were deleted unread. The ledger row for the frozen
 collection therefore reads **not completed**; nothing was relabelled.
+
+### Collection (2026-10-30)
+
+One `collect` ran the frozen protocol (`fair-mail-comparison-v2`) to
+completion in the implement seat, on the tree of this change (base `62c6a47`),
+with `swarmail --max-sessions 1000` and the
+4096-connection backlog.
+
+- Run `collect-20261029T232943Z-5` (the driver's own clock-stamped id; it
+  was started 2026-10-29 23:29 UTC by the box's clock), 126 throughput
+  cells, 760,077 rows, report version 2, every launch's cleanup proved.
+- `scripts/compare-mail.sh collect` exited **1** (`WorkloadFailures`: Mailpit
+  `stress-c1000-fresh` reps 1, 2 and 5 are not exact counts). Exit 2 did not
+  occur. The script's own admission passed, and an explicit
+  `mail_compare admit <dir> docs/evals/protocol.json` exited **0**.
+- `index.json` SHA-256 `eb8db6b129ff86ea6861f476bd384a2e121e8a738b42a1c4000c5219f6a928ba`
+  (manifest `b0ac6f41…`, report `230e5e6d…`, samples `24fb2508…`). The run
+  directory (about 270 MiB) stays under `target/mail-compare/` and is not
+  committed.
+- Mailpit `stress-c1000-fresh`, 3,000 requested per repetition: rep 0, 3 and 4
+  admitted 3,000 with 0 refused; rep 1 admitted 2,996 and refused 4; rep 2
+  admitted 2,999 and refused 1; rep 5 admitted 2,996 and refused 4. All 9
+  refusals are rows with `failed_before_terminator`, code 421 and reason
+  `connect: refused`; none is ambiguous or unstarted. They were not retried.
+  Swarmail and MailHog were exact in all six repetitions of that profile. No
+  other cell of the 126 is inexact.
+- Executables, checked before launch: Mailpit
+  `262cfa28fae4554be198d1fea5ef83c0f8299317876d658623711c629a8edec8` (equal
+  to `sources.lock.json`) and MailHog
+  `e2ed634ded49929f089b20045581955ed217672078fd86082dd7a6c67c5d09c7`
+  (**locally observed only**; its digest is the lock's executable pin, but no
+  upstream receipt ties that file to the tag).
+- The earlier refusal, "the report disagrees with the rows it was derived
+  from", was not caused by workload failures. `admit` compared an in-memory
+  report with one parsed from disk, and serde_json's default float parser
+  does not round-trip every f64 rate; the dependency's `float_roundtrip`
+  feature (no new crate, `Cargo.lock` unchanged) makes the comparison exact
+  again. The refusal now names its first differing path.
+
+This is raw measurement: `evidence` is false, the storage profile is
+explicitly unmatched, the resource profile is unenforced local, and the
+claim scope is the official artifacts as shipped. It establishes no
+equivalence between the products, no best wait and no result worth quoting.
+The Mailpit 421 refusals are the artifact's observed behavior under 1,000
+fresh sessions on this box, recorded as measured data; their cause (a
+connection limit, a backlog) is not established here.
+
+### Still open after this record
+
+#148/#201 cross-checkout coordination (unproved); the #151 paid baseline and
+final MCP contracts; operator acceptance of 0091–0093; CI; the five-member
+protected review; the T7–T12 controls and dossier (no oracle or null control
+has run, no paid trial is authorized); a best-available wait; binary build
+provenance for both executables; source review establishes no equivalence.
+The inherited HIGH cross-attempt review-integrity residual is carried
+unchanged: accepted 0081's dated note (2026-10-29) records that the full
+routing proof exited 0 on a re-pinned engine with every cross-attempt case
+parked `awaiting_operator`; that note describes the earlier a9893b4 + three
+patches pin, the candidate now pins a9893b4 + four patches, and this change
+neither re-ran that proof nor claims the pin repairs the residual.
 
 ## What closes the remaining rows
 

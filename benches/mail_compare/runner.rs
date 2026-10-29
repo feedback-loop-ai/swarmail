@@ -9,7 +9,7 @@ use crate::protocol::{
 };
 use crate::records::{Manifest, Phase, Planned, ROW_VERSION, Row, RunDir};
 use crate::targets::{CleanupFacts, Keepers, LaunchError, LaunchFacts, LaunchSpec, Limits, Owned};
-use crate::wire::{Clock, Disposition, Message, Smtp, authored, same_body};
+use crate::wire::{Clock, Disposition, Message, Smtp, WireError, authored, same_body};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -430,9 +430,7 @@ async fn throughput(
                     match Smtp::open(addr, step).await {
                         Ok(s) => session = Some(s),
                         Err((code, e)) => {
-                            r.outcome = "failed_before_terminator".into();
-                            r.reason = Some(format!("connect: {}", e.reason()));
-                            r.code = (code > 0).then_some(code);
+                            connect_failure(&mut r, code, e);
                             emit(&sink, &r)?;
                             continue;
                         }
@@ -750,6 +748,19 @@ async fn send_one(
             false
         }
     }
+}
+
+/// Record a session that could not be opened: a failure before the
+/// terminator. A peer that answered with a reply code refused the session
+/// itself, and the code is kept as measured; anything else names the wire
+/// failure.
+pub fn connect_failure(r: &mut Row, code: u16, e: WireError) {
+    r.outcome = "failed_before_terminator".into();
+    r.code = (code > 0).then_some(code);
+    r.reason = Some(match r.code {
+        Some(_) => "connect: refused".to_owned(),
+        None => format!("connect: {}", e.reason()),
+    });
 }
 
 /// Observe `token` within `deadline` of now; sets outcome, observed_ns and

@@ -185,11 +185,14 @@ it; the inherited checkbox stays open until its whole proof, including these, ho
   indexes. **Test:** independent recomputation of both sums from rows; a killed run
   leaves missing coordinates and no index; one fake responder per malformed class.
 
-- [ ] **T4.b — First frozen collection, or its honest absence (AC5–AC7; Q8).** Only
+- [x] **T4.b — First frozen collection, or its honest absence (AC5–AC7; Q8).** Only
   after T2.a is green, run the full three-target frozen profile once through the one
   entry point and admit it. **Test:** the admitted run's rows satisfy AC-C5 and its
   report cites denominators; if T2.a is not green the ledger row reads "collection
   not started" and no smoke is relabelled.
+  *Proof (2026-10-30):* run `collect-20261029T232943Z-5` admitted by
+  `mail_compare admit` (exit 0), `collect` exit 1 for Mailpit's own refusals;
+  see `docs/evals/README.md` § Collection (2026-10-30).
 
 - [x] **T6.a / T10.a — Named prerequisite refusals (AC-C8; Q8).** Replace the generic
   refusal with ordered named checks and a dry-run that prints the order. **Test:**

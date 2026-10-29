@@ -288,6 +288,12 @@ pub fn admit_run(
     let bytes = std::fs::read(dir.join("report.json")).map_err(|e| format!("report: {e}"))?;
     let on_disk: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| format!("report: {e}"))?;
+    if on_disk["report_version"] != REPORT_VERSION {
+        return Err(format!(
+            "the report is version {}, this driver admits version {REPORT_VERSION}: re-collect with the admitting driver",
+            on_disk["report_version"]
+        ));
+    }
     let listed = |key: &str| on_disk[key].as_array().cloned().unwrap_or_default();
     let (launches, cleanups) = (listed("launches"), listed("cleanups"));
     let proved = |c: &serde_json::Value| {
@@ -311,8 +317,32 @@ pub fn admit_run(
     };
     let fresh = serde_json::to_value(report(&p, m, &admitted.rows, &life))
         .map_err(|e| format!("report: {e}"))?;
-    if fresh["throughput"] != on_disk["throughput"] || fresh["waits"] != on_disk["waits"] {
-        return Err("the report disagrees with the rows it was derived from".into());
+    for key in ["throughput", "waits"] {
+        if let Some((at, report, rows)) = first_difference(key, &on_disk[key], &fresh[key]) {
+            return Err(format!(
+                "the report disagrees with the rows it was derived from at {at}: report {report}, rows {rows}"
+            ));
+        }
     }
     Ok(admitted)
+}
+
+/// The first place two JSON values differ, as a path with both sides.
+fn first_difference(
+    at: &str,
+    a: &serde_json::Value,
+    b: &serde_json::Value,
+) -> Option<(String, serde_json::Value, serde_json::Value)> {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => x
+            .iter()
+            .zip(y)
+            .enumerate()
+            .find_map(|(i, (x, y))| first_difference(&format!("{at}[{i}]"), x, y)),
+        (Value::Object(x), Value::Object(y)) if x.len() == y.len() && x.keys().eq(y.keys()) => x
+            .iter()
+            .find_map(|(k, x)| first_difference(&format!("{at}.{k}"), x, &y[k])),
+        _ => (a != b).then(|| (at.to_owned(), a.clone(), b.clone())),
+    }
 }

@@ -2361,6 +2361,26 @@ async fn admission_recomputes_the_plan_the_receipts_and_the_report() {
     lying["throughput"][0]["reconciliation"]["accepted"] = 999.into();
     let why = report::admit_run(&forge("lying", full, &lying), &bytes).unwrap_err();
     assert!(why.contains("disagrees with the rows"), "{why}");
+    assert!(
+        why.contains("throughput[0].reconciliation.accepted")
+            && why.contains("report 999")
+            && why.contains("rows 4"),
+        "the refusal names the first difference: {why}"
+    );
+
+    // A report from another version of the driver is refused by name,
+    // before any of its cells are compared.
+    let mut other_version = on_disk.clone();
+    other_version["report_version"] = 999.into();
+    other_version["throughput"][0]["reconciliation"]["accepted"] = 999.into();
+    let why = report::admit_run(&forge("version", full, &other_version), &bytes).unwrap_err();
+    assert!(
+        why.contains("999")
+            && why.contains(&format!("version {}", report::REPORT_VERSION))
+            && why.contains("re-collect with the admitting driver")
+            && !why.contains("disagrees"),
+        "{why}"
+    );
 
     // Another protocol's bytes, or none at all, never admit.
     let other = serde_json::to_vec(&smoke()).unwrap();
@@ -2377,6 +2397,192 @@ async fn admission_recomputes_the_plan_the_receipts_and_the_report() {
     assert!(!killed.join("index.json").exists());
     let why = report::admit_run(&killed, &bytes).unwrap_err();
     assert!(why.contains("incomplete"), "{why}");
+}
+
+/// A sealed copy of a real run with edited rows: the report is regenerated
+/// from them by the driver's own arithmetic and serializer, the real run's
+/// proved launch and cleanup receipts are kept, and storage accepts the
+/// directory, so only the admission arithmetic can refuse it.
+fn sew(
+    root: &Path,
+    name: &str,
+    real: &Path,
+    p: &Protocol,
+    edit: impl FnOnce(&mut Vec<Row>),
+) -> PathBuf {
+    let m = records::read_manifest(real).unwrap();
+    let mut all = rows(real);
+    edit(&mut all);
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(real.join("report.json")).unwrap()).unwrap();
+    let life = runner::Lifecycle {
+        launches: Vec::new(),
+        cleanups: Vec::new(),
+    };
+    let mut fresh = serde_json::to_value(report::report(p, &m, &all, &life)).unwrap();
+    fresh["launches"] = on_disk["launches"].clone();
+    fresh["cleanups"] = on_disk["cleanups"].clone();
+    let mut dir = records::RunDir::create(&root.join(name), &m).unwrap();
+    for r in &all {
+        dir.append(r).unwrap();
+    }
+    dir.write_artifact("report.json", &serde_json::to_vec_pretty(&fresh).unwrap())
+        .unwrap();
+    dir.finalize(true).expect("storage accepts the sewn run")
+}
+
+#[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn admission_survives_rates_that_do_not_round_trip() {
+    // 4 accepted sends over a 1 000 000 002 ns window: 4e9 / 1 000 000 002 is
+    // 3.9999999920000002, one of the values serde_json's default float
+    // parser reads back one unit in the last place away.
+    let rate = 4.0 * 1e9 / 1_000_000_002.0;
+
+    let root = tempfile::tempdir().unwrap();
+    let p = tiny();
+    let bytes = serde_json::to_vec(&p).unwrap();
+    let (verdict, _, sealed) = run(p.clone(), root.path(), "float-run").await;
+    assert_eq!(verdict, runner::Verdict::Clean);
+    let real = sealed.unwrap();
+    let sewn = sew(root.path(), "float-sewn", &real, &p, |all| {
+        let v = all.iter_mut().find(|r| r.phase == Phase::Verified).unwrap();
+        v.start_ns = Some(0);
+        v.ack_ns = Some(1_000_000_002);
+    });
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(sewn.join("report.json")).unwrap()).unwrap();
+    assert_eq!(
+        written["throughput"][0]["reconciliation"]["accepted"], 4,
+        "the sewn cell holds the fixture's four accepted sends"
+    );
+    report::admit_run(&sewn, &bytes).expect("a rate that does not misparse admits");
+    // The property admission relies on: a finite f64 survives the report's
+    // own serialize-then-parse.
+    let echoed: serde_json::Value =
+        serde_json::from_slice(&serde_json::to_vec(&serde_json::json!({ "r": rate })).unwrap())
+            .unwrap();
+    assert_eq!(
+        echoed["r"].as_f64(),
+        Some(rate),
+        "floats round-trip exactly"
+    );
+}
+
+#[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn a_run_with_competitor_refusals_admits() {
+    let root = tempfile::tempdir().unwrap();
+    let p = tiny();
+    let bytes = serde_json::to_vec(&p).unwrap();
+    let (verdict, _, sealed) = run(p.clone(), root.path(), "refusal-run").await;
+    assert_eq!(verdict, runner::Verdict::Clean);
+    let real = sealed.unwrap();
+    let sewn = sew(root.path(), "refusal-sewn", &real, &p, |all| {
+        let sends: Vec<usize> = (0..all.len())
+            .filter(|i| all[*i].phase == Phase::Send)
+            .collect();
+        let tokens: Vec<_> = sends[..2].iter().map(|i| all[*i].token.clone()).collect();
+        // One connect refusal with its reply code, as the runner writes it,
+        // and one send whose outcome the client could not establish.
+        let refused = &mut all[sends[0]];
+        refused.outcome = "failed_before_terminator".into();
+        refused.reason = Some("connect: refused".into());
+        refused.code = Some(421);
+        refused.start_ns = None;
+        refused.ack_ns = None;
+        let unknown = &mut all[sends[1]];
+        unknown.outcome = "ambiguous".into();
+        unknown.ack_ns = None;
+        // A refused or unknown send is not an accepted one: whatever of it
+        // is visible afterwards is unexpected, never a delivery.
+        for r in all.iter_mut().filter(|r| r.phase == Phase::Visible) {
+            if tokens.contains(&r.token) {
+                r.outcome = "unexpected".into();
+            }
+        }
+    });
+    report::admit_run(&sewn, &bytes).expect("a run carrying refusals and ambiguity admits");
+    assert_cells_match_rows(&sewn);
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(sewn.join("report.json")).unwrap()).unwrap();
+    let cell = &written["throughput"][0];
+    assert_eq!(cell["refused"], 1, "{cell}");
+    assert_eq!(cell["exact"], false, "{cell}");
+    assert_eq!(cell["reconciliation"]["failed_before_terminator"], 1);
+    assert_eq!(cell["reconciliation"]["ambiguous"], 1);
+    let n = |k: &str| cell[k].as_u64().unwrap();
+    let rec = |k: &str| cell["reconciliation"][k].as_u64().unwrap();
+    assert_eq!(
+        n("requested"),
+        n("admitted") + n("refused") + rec("ambiguous") + n("unstarted")
+    );
+    assert_eq!(
+        rec("attempted"),
+        rec("accepted") + rec("rejected") + rec("failed_before_terminator") + rec("ambiguous")
+    );
+}
+
+#[test]
+fn connect_refusal_is_a_coded_failed_before_terminator_row() {
+    let blank = || Row {
+        row_version: records::ROW_VERSION,
+        run_id: "r".into(),
+        target: TargetKind::Mailpit,
+        profile: "p".into(),
+        repetition: 0,
+        phase: Phase::Send,
+        sample: 0,
+        token: None,
+        outcome: "unstarted".into(),
+        reason: None,
+        code: None,
+        invoked_ns: None,
+        start_ns: None,
+        ack_ns: None,
+        observed_ns: None,
+        occurrences: None,
+        fidelity_ok: None,
+        requests: None,
+    };
+    // A peer that answers with a reply code refused the session itself.
+    let mut refused = blank();
+    runner::connect_failure(&mut refused, 421, wire::WireError::Malformed);
+    assert_eq!(refused.outcome, "failed_before_terminator");
+    assert_eq!(refused.code, Some(421));
+    assert_eq!(refused.reason.as_deref(), Some("connect: refused"));
+    // A failure with no reply keeps the wire's own reason and no code.
+    let mut silent = blank();
+    runner::connect_failure(&mut silent, 0, wire::WireError::Timeout);
+    assert_eq!(silent.outcome, "failed_before_terminator");
+    assert_eq!(silent.code, None);
+    assert_eq!(silent.reason.as_deref(), Some("connect: deadline"));
+}
+
+#[tokio::test]
+async fn a_421_greeting_is_a_coded_connect_refusal() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let (mut s, _) = listener.accept().await.unwrap();
+        s.write_all(b"421 4.3.2 Too many connections, please try again later\r\n")
+            .await
+            .unwrap();
+    });
+    let refused = wire::Smtp::open(addr, Duration::from_secs(5)).await;
+    peer.await.unwrap();
+    match refused {
+        Err((421, wire::WireError::Malformed)) => {}
+        Err((code, e)) => panic!("expected a coded refusal, got {code} {}", e.reason()),
+        Ok(_) => panic!("a 421 greeting must not open a session"),
+    }
 }
 
 fn rows_prefix(dir: &Path) -> usize {
