@@ -101,3 +101,10 @@ the `codex`, `codex-careful` and `codex-fast` review deadline from 3600 s to
 14400 s. Proposed [0098](0098-review-panel-flash-and-deadline.md) records
 the exact direction and evidence. This accepted historical body is
 preserved; 0098 remains proposed, and this pointer accepts no decision.
+
+## Dated acceptance addendum — 2026-10-29
+
+The operator accepted [0098](0098-review-panel-flash-and-deadline.md) in
+chat on 2026-10-29. The pointer above, written while 0098 was proposed, is
+kept as recorded; 0098 now amends this record's correctness and guarantees
+assignments and the review deadline as it states.

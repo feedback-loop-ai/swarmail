@@ -48,7 +48,7 @@ original chains. Accepted [0058](../docs/decisions/0058-codex-review-routing.md)
 operator's revised 2026-10-26 tests assignment recorded in proposed
 [0081](../docs/decisions/0081-glm-flash-seats.md), assigns Fable correctness,
 Flash security and GLM Flash tests to Standard; Careful and fast full-risk lanes
-add distinct correctness/guarantees and independent Fable offices. Proposed
+add distinct correctness/guarantees and independent Fable offices. Accepted
 [0098](../docs/decisions/0098-review-panel-flash-and-deadline.md) records the
 operator's 2026-10-28 direction that `codex-review-astra-correctness` and
 `codex-review-guarantees` select dsh `flash` (official DeepSeek Flash) at high

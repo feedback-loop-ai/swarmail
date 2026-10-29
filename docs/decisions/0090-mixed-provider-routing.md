@@ -88,7 +88,7 @@ author-commit discipline under 0056.
 
 ## Dated inherited-panel pointer — 2026-10-29
 
-Proposed [0098](0098-review-panel-flash-and-deadline.md) records the
+Accepted [0098](0098-review-panel-flash-and-deadline.md) records the
 operator's 2026-10-28 direction that careful's correctness and guarantees
 members select official DeepSeek Flash through dsh (`deepseek-flash`,
 `deepseek-official`, high) instead of `gpt-6-astra`, and that careful's review
