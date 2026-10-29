@@ -2,14 +2,14 @@
 //! recompute it from `samples.jsonl` and the protocol. Losses, timeouts,
 //! failures and unstarted work are counted beside every rate.
 
-use crate::protocol::{Protocol, TargetKind};
+use crate::protocol::{Claim, Protocol, ResourceProfile, StorageProfile, TargetKind};
 use crate::records::{Manifest, Phase, Row};
 use crate::runner::Lifecycle;
 use crate::stats::{Quantiles, Reconciliation, quantiles};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-pub const REPORT_VERSION: u32 = 1;
+pub const REPORT_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize)]
 pub struct Report {
@@ -22,6 +22,12 @@ pub struct Report {
     pub evidence: bool,
     pub protocol_id: String,
     pub protocol_sha256: String,
+    /// What the measurement claims and the profiles it ran under, copied
+    /// from the protocol so no report is read without its limits. Absent
+    /// only for a version 1 draft, which can never be evidence.
+    pub claim: Option<Claim>,
+    pub storage_profile: Option<StorageProfile>,
+    pub resource_profile: Option<ResourceProfile>,
     pub units: Units,
     pub throughput: Vec<ThroughputCell>,
     pub waits: Vec<WaitCell>,
@@ -41,7 +47,21 @@ pub struct ThroughputCell {
     pub target: TargetKind,
     pub profile: String,
     pub repetition: u32,
+    /// Messages the profile scheduled: `attempted + unstarted`.
+    pub requested: u64,
+    /// Rows the send deadline cut off before any connection was tried;
+    /// never merged with a connect or terminator failure.
     pub unstarted: u64,
+    /// Sessions the profile scheduled, and the retention cap this target
+    /// ran under (`None` = none declared).
+    pub sessions: u32,
+    pub retention_cap: Option<u64>,
+    /// Accepted by the server: the `250`s received.
+    pub admitted: u64,
+    /// Refused at a command (`rejected`) or never completed before the
+    /// terminator (`failed_before_terminator`); ambiguous sends are
+    /// neither admitted nor refused.
+    pub refused: u64,
     pub reconciliation: Reconciliation,
     pub exact: bool,
     pub accepted_per_second: Option<f64>,
@@ -92,7 +112,18 @@ pub fn report(p: &Protocol, m: &Manifest, rows: &[Row], life: &Lifecycle) -> Rep
     let throughput = cells
         .into_iter()
         .map(|((target, profile, repetition), rs)| {
-            throughput_cell(target, profile, repetition, &rs, qs)
+            let sessions = p
+                .throughput
+                .iter()
+                .find(|t| t.name == profile)
+                .map_or(0, |t| t.sessions);
+            let cap = p
+                .storage
+                .retention
+                .iter()
+                .find(|r| r.target == target)
+                .and_then(|r| r.max_messages);
+            throughput_cell(target, profile, repetition, (sessions, cap), &rs, qs)
         })
         .collect();
     let waits = wcells
@@ -106,6 +137,9 @@ pub fn report(p: &Protocol, m: &Manifest, rows: &[Row], life: &Lifecycle) -> Rep
         evidence: false,
         protocol_id: m.protocol_id.clone(),
         protocol_sha256: m.protocol_sha256.clone(),
+        claim: p.claim.clone(),
+        storage_profile: p.storage.profile,
+        resource_profile: p.resources.profile,
         units: Units {
             time: "nanoseconds of the controller's monotonic clock",
             rates: "messages per second of the stated window",
@@ -122,6 +156,7 @@ fn throughput_cell(
     target: TargetKind,
     profile: String,
     repetition: u32,
+    (sessions, retention_cap): (u32, Option<u64>),
     rs: &[&Row],
     qs: &[u32],
 ) -> ThroughputCell {
@@ -167,7 +202,12 @@ fn throughput_cell(
         target,
         profile,
         repetition,
+        requested: rec.attempted + unstarted,
         unstarted,
+        sessions,
+        retention_cap,
+        admitted: rec.accepted,
+        refused: rec.rejected + rec.failed_before_terminator,
         exact: unstarted == 0 && rec.exact(),
         accepted_per_second: rec.accepted_per_second(),
         verified_per_second: rec.verified_per_second(),
@@ -220,4 +260,59 @@ fn wait_cell(target: TargetKind, profile: String, rs: &[&Row], qs: &[u32]) -> Wa
         outcomes,
         requests,
     }
+}
+
+/// Admit a sealed run against the protocol that claims to have produced
+/// it (spec clarification Q6). Beyond [`crate::records::admit`]'s checks of
+/// the directory itself, the plan is recomputed from the protocol, so a
+/// manifest that declares a smaller denominator cannot admit; every launch
+/// has a proved cleanup receipt in the report; and the report's cells are
+/// the arithmetic of the rows, not a separate claim.
+pub fn admit_run(
+    dir: &std::path::Path,
+    protocol_bytes: &[u8],
+) -> Result<crate::records::Admitted, String> {
+    let p = Protocol::parse(protocol_bytes).map_err(|r| r.to_string())?;
+    p.validate().map_err(|r| r.to_string())?;
+    let admitted = crate::records::admit(dir)?;
+    let m = &admitted.manifest;
+    if m.protocol_sha256 != crate::targets::sha256_hex(protocol_bytes) {
+        return Err("the manifest names a different protocol".into());
+    }
+    if m.planned != crate::runner::plan(&p) {
+        return Err(
+            "the manifest's plan is not the protocol's full plan: a smaller denominator never admits"
+                .into(),
+        );
+    }
+    let bytes = std::fs::read(dir.join("report.json")).map_err(|e| format!("report: {e}"))?;
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("report: {e}"))?;
+    let listed = |key: &str| on_disk[key].as_array().cloned().unwrap_or_default();
+    let (launches, cleanups) = (listed("launches"), listed("cleanups"));
+    let proved = |c: &serde_json::Value| {
+        [
+            "reaped",
+            "group_gone",
+            "listeners_closed",
+            "scratch_removed",
+        ]
+        .iter()
+        .all(|k| c[*k] == true)
+    };
+    if launches.is_empty() || cleanups.len() != launches.len() || !cleanups.iter().all(proved) {
+        return Err(
+            "every launch needs a proved cleanup receipt before the run can be admitted".into(),
+        );
+    }
+    let life = Lifecycle {
+        launches: Vec::new(),
+        cleanups: Vec::new(),
+    };
+    let fresh = serde_json::to_value(report(&p, m, &admitted.rows, &life))
+        .map_err(|e| format!("report: {e}"))?;
+    if fresh["throughput"] != on_disk["throughput"] || fresh["waits"] != on_disk["waits"] {
+        return Err("the report disagrees with the rows it was derived from".into());
+    }
+    Ok(admitted)
 }

@@ -145,11 +145,14 @@ fn check(args: &[String]) -> i32 {
 }
 
 fn admit(args: &[String]) -> i32 {
-    let Some(dir) = args.first().filter(|_| args.len() == 1) else {
-        eprintln!("usage: mail_compare admit DIR");
+    let [dir, protocol] = args else {
+        eprintln!("usage: mail_compare admit DIR PROTOCOL");
         return 2;
     };
-    match records::admit(Path::new(dir)) {
+    let admitted = std::fs::read(protocol)
+        .map_err(|e| format!("protocol: {e}"))
+        .and_then(|bytes| report::admit_run(Path::new(dir), &bytes));
+    match admitted {
         Ok(a) => {
             println!(
                 "mail_compare admit: run {} ({}) admitted with {} rows",

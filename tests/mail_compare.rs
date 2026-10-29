@@ -125,6 +125,60 @@ fn rows(dir: &Path) -> Vec<Row> {
     records::read_rows(dir, &m).unwrap()
 }
 
+/// Recompute every throughput cell's accounting from the raw rows alone,
+/// independently of report.rs, and compare it with the report: the two
+/// sums `requested = attempted + unstarted` and `attempted = accepted +
+/// rejected + failed_before_terminator + ambiguous`, with each disposition
+/// exclusive and `unstarted` never merged with a connect failure.
+fn assert_cells_match_rows(dir: &Path) {
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("report.json")).unwrap()).unwrap();
+    let all = rows(dir);
+    let cells = report["throughput"].as_array().unwrap();
+    assert!(!cells.is_empty());
+    for cell in cells {
+        let mine: Vec<&Row> = all
+            .iter()
+            .filter(|r| {
+                r.phase == Phase::Send
+                    && serde_json::json!(r.target) == cell["target"]
+                    && r.profile == cell["profile"].as_str().unwrap()
+                    && u64::from(r.repetition) == cell["repetition"].as_u64().unwrap()
+            })
+            .collect();
+        let count = |o: &str| mine.iter().filter(|r| r.outcome == o).count() as u64;
+        let (accepted, rejected, failed, unstarted) = (
+            count("accepted"),
+            count("rejected"),
+            count("failed_before_terminator"),
+            count("unstarted"),
+        );
+        let ambiguous = mine.len() as u64 - accepted - rejected - failed - unstarted;
+        let attempted = accepted + rejected + failed + ambiguous;
+        let rec = &cell["reconciliation"];
+        let reported = |v: &serde_json::Value| v.as_u64().unwrap();
+        assert_eq!(
+            reported(&cell["requested"]),
+            attempted + unstarted,
+            "{cell}"
+        );
+        assert_eq!(reported(&cell["requested"]), mine.len() as u64, "{cell}");
+        assert_eq!(reported(&cell["unstarted"]), unstarted, "{cell}");
+        assert_eq!(reported(&rec["attempted"]), attempted, "{cell}");
+        assert_eq!(reported(&rec["accepted"]), accepted, "{cell}");
+        assert_eq!(reported(&rec["rejected"]), rejected, "{cell}");
+        assert_eq!(reported(&rec["failed_before_terminator"]), failed, "{cell}");
+        assert_eq!(reported(&rec["ambiguous"]), ambiguous, "{cell}");
+        assert_eq!(reported(&cell["admitted"]), accepted, "{cell}");
+        assert_eq!(reported(&cell["refused"]), rejected + failed, "{cell}");
+        let session_cap = cell["sessions"].as_u64().unwrap();
+        assert!(
+            session_cap >= 1,
+            "the scheduled sessions are reported: {cell}"
+        );
+    }
+}
+
 // ---- arithmetic, against hand-computed vectors -------------------------
 
 #[test]
@@ -1264,6 +1318,7 @@ async fn a_real_smoke_run_reconciles_every_message_and_wait_and_seals() {
         assert_eq!(mode, 0o600, "{f}");
     }
     let admitted = records::admit(&dir).expect("the sealed run admits");
+    assert_cells_match_rows(&dir);
 
     // Recompute the accounting from the raw rows, independently of report.rs.
     let rows = admitted.rows;
@@ -1395,7 +1450,13 @@ async fn the_bounded_thousand_session_profile_accounts_for_every_attempt() {
     let dir = sealed.expect("sealed");
     let report: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.join("report.json")).unwrap()).unwrap();
+    assert_cells_match_rows(&dir);
     let cell = &report["throughput"][0];
+    assert_eq!(
+        cell["sessions"], 1000,
+        "the scheduled sessions are reported"
+    );
+    assert_eq!(cell["requested"], 1000);
     let rec = &cell["reconciliation"];
     let n = |k: &str| rec[k].as_u64().unwrap();
     assert_eq!(n("attempted") + cell["unstarted"].as_u64().unwrap(), 1000);
@@ -2236,6 +2297,86 @@ fn an_unproved_or_colliding_run_is_never_sealed_or_overwritten() {
     dir.write_artifact("report.json", b"{}").unwrap();
     assert!(dir.finalize(true).unwrap_err().contains("planned"));
     assert!(!root.path().join("short/index.json").exists());
+}
+
+#[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn admission_recomputes_the_plan_the_receipts_and_the_report() {
+    let root = tempfile::tempdir().unwrap();
+    let p = tiny();
+    let bytes = serde_json::to_vec(&p).unwrap();
+    let (verdict, _, sealed) = run(p.clone(), root.path(), "plan-run").await;
+    assert_eq!(verdict, runner::Verdict::Clean);
+    let good = sealed.unwrap();
+    report::admit_run(&good, &bytes).expect("the real run admits against its protocol");
+    let m = records::read_manifest(&good).unwrap();
+    let all = rows(&good);
+    let on_disk: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(good.join("report.json")).unwrap()).unwrap();
+
+    // A sealed copy with chosen planned coordinates, rows and report: a
+    // directory the storage layer accepts, so only the protocol can refuse.
+    let forge = |name: &str, keep: usize, report: &serde_json::Value| {
+        let mut manifest = m.clone();
+        manifest.planned.truncate(keep);
+        let mut dir = records::RunDir::create(&root.path().join(name), &manifest).unwrap();
+        for r in &all {
+            if manifest
+                .planned
+                .iter()
+                .any(|p| p.target == r.target && p.profile == r.profile && p.phase == r.phase)
+            {
+                dir.append(r).unwrap();
+            }
+        }
+        dir.write_artifact("report.json", &serde_json::to_vec(report).unwrap())
+            .unwrap();
+        let path = dir.finalize(true).expect("storage accepts it");
+        records::admit(&path).expect("and so does the directory-level admission");
+        path
+    };
+    let full = m.planned.len();
+    assert!(full >= 2);
+
+    // A strict prefix of the plan is a smaller denominator, never a run.
+    let why = report::admit_run(&forge("prefix", full - 1, &on_disk), &bytes).unwrap_err();
+    assert!(why.contains("a smaller denominator never admits"), "{why}");
+
+    // An index that arrived while a cleanup was unproved, or with a launch
+    // that has no receipt, never admits.
+    let mut unproved = on_disk.clone();
+    unproved["cleanups"][0]["reaped"] = false.into();
+    let why = report::admit_run(&forge("unproved", full, &unproved), &bytes).unwrap_err();
+    assert!(why.contains("proved cleanup receipt"), "{why}");
+    let mut missing = on_disk.clone();
+    missing["cleanups"] = serde_json::json!([]);
+    let why = report::admit_run(&forge("missing", full, &missing), &bytes).unwrap_err();
+    assert!(why.contains("proved cleanup receipt"), "{why}");
+
+    // A report that is not the arithmetic of its rows never admits.
+    let mut lying = on_disk.clone();
+    lying["throughput"][0]["reconciliation"]["accepted"] = 999.into();
+    let why = report::admit_run(&forge("lying", full, &lying), &bytes).unwrap_err();
+    assert!(why.contains("disagrees with the rows"), "{why}");
+
+    // Another protocol's bytes, or none at all, never admit.
+    let other = serde_json::to_vec(&smoke()).unwrap();
+    let why = report::admit_run(&good, &other).unwrap_err();
+    assert!(why.contains("different protocol"), "{why}");
+    assert!(report::admit_run(&good, b"{").is_err());
+
+    // A killed run: the first leaves exist, nothing seals, and the plan
+    // stays the full denominator with no index.
+    let killed = root.path().join("killed");
+    let mut dir = records::RunDir::create(&killed, &m).unwrap();
+    dir.append(&all[0]).unwrap();
+    drop(dir);
+    assert!(!killed.join("index.json").exists());
+    let why = report::admit_run(&killed, &bytes).unwrap_err();
+    assert!(why.contains("incomplete"), "{why}");
 }
 
 fn rows_prefix(dir: &Path) -> usize {
@@ -3830,6 +3971,9 @@ async fn a_real_three_target_smoke_run_reconciles_every_message_and_wait_and_sea
     assert_eq!(launched, TargetKind::ALL.into());
     let dir = sealed.expect("a clean run is sealed");
     records::admit(&dir).expect("the sealed run is admitted");
+    report::admit_run(&dir, &serde_json::to_vec(&p).unwrap())
+        .expect("it admits against the protocol that planned it");
+    assert_cells_match_rows(&dir);
     let rows = rows(&dir);
     for t in TargetKind::ALL {
         let mine = |phase: Phase| {
