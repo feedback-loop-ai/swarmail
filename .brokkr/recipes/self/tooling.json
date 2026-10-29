@@ -1,9 +1,9 @@
 {
   "brokkr": {
-    "sha": "731189f9097308c01ae4f2b4c9caea5f41224844",
+    "sha": "a9893b4dfb67417edc99d91f941a9bac3856f138",
     "version": "0.12.0",
-    "binary_sha256": "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f",
-    "binary_provenance": "Published Linux x86_64 GNU artifact built with rustc 1.98.0 from source base 731189f9097308c01ae4f2b4c9caea5f41224844 plus the three checksum-pinned patches below, in order. Release: https://github.com/feedback-loop-ai/brokkr/releases/tag/swarmail-engine-731189f-p3 (includes patches and build receipt). binary_sha256 identifies the published bytes; it does not independently prove source provenance or build reproducibility. CI downloads binary_url; operator setup provisions the same digest-checked artifact for offline verification.",
+    "binary_sha256": "4873928c94f2677ef552c9e3ed04785a732851b89e8a413c13ce1434d6066be6",
+    "binary_provenance": "Published Linux x86_64 GNU artifact built with rustc 1.98.0 from source base a9893b4dfb67417edc99d91f941a9bac3856f138 plus the three checksum-pinned patches below, in order. Release: https://github.com/feedback-loop-ai/brokkr/releases/tag/swarmail-engine-a9893b4-p3 (includes patches and build receipt). binary_sha256 identifies the published bytes; it does not independently prove source provenance or build reproducibility. CI downloads binary_url; operator setup provisions the same digest-checked artifact for offline verification.",
     "patches": [
       {
         "path": "tooling-patches/0001-preserve-review-residual-facts.patch",
@@ -18,6 +18,6 @@
         "sha256": "4098228e7649d1bda8961bb491aa29d982b462c420470e265f8b9acf0a148d96"
       }
     ],
-    "binary_url": "https://github.com/feedback-loop-ai/brokkr/releases/download/swarmail-engine-731189f-p3/brokkr-0.12.0-731189f-p3-x86_64-unknown-linux-gnu"
+    "binary_url": "https://github.com/feedback-loop-ai/brokkr/releases/download/swarmail-engine-a9893b4-p3/brokkr-0.12.0-a9893b4-p3-x86_64-unknown-linux-gnu"
   }
 }
