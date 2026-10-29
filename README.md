@@ -1310,13 +1310,13 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/persistence.rs` | restart restores exact state; a racing clear never loses 250-answered mail |
 | `tests/sqlite_locks.rs` | a refused second server reaching the data file through an alias leaves the owner's SQLite locks intact — observed from a separate raw-SQLite child process (0047 §1) |
 | `tests/store_contract_docs.rs` | the store, maildrop and compat contracts as documented — README, llms.txt, the chart comment and the served schema, their numbers built from the running constants — and every decision index row agreeing with its record's status |
-| `tests/delivery_constitution.rs` | structural pins on `bundles/self/` (0050): the review-residual stops, the design sequence ending in the pinned check, the verify seat's pinned gates and shim check; and the documented install examples and CI's chart-history and docker-smoke wiring (#141) |
-| `tests/delivery_recipes.rs` | Codex recipe discovery, triage routing and single/double/full review, inherited shell gates, work-seat tools, exact routes and independent review without Pro or author-model fallback (0057); [recipe tables and launch commands](bundles/README.md) |
+| `tests/delivery_constitution.rs` | structural pins on `.brokkr/recipes/self/` (0050): the review-residual stops, the design sequence ending in the pinned check, the verify seat's pinned gates and shim check; and the documented install examples and CI's chart-history and docker-smoke wiring (#141) |
+| `tests/delivery_recipes.rs` | Codex recipe discovery, triage routing and single/double/full review, inherited shell gates, work-seat tools, exact routes and independent review without Pro or author-model fallback (0057); [recipe tables and launch commands](.brokkr/recipes/README.md) |
 | `tests/tooling_patches.rs` | the actual tooling-patch helper against real Git repositories: source identity, clean state, strict records, safe paths, all checksums before mutation and ordered patch application |
 | unit | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |
 
-For triage-first bug delivery, use the [Codex recipe guide](bundles/README.md).
-Normal `brokkr tui` reads the canonical `.forge/forge.db`; isolated deliveries
+For triage-first bug delivery, use the [Codex recipe guide](.brokkr/recipes/README.md).
+Normal `brokkr tui` reads the canonical `.brokkr/state/forge.db`; isolated deliveries
 name that shared journal explicitly. Each lane needs its own Git store,
 branch, results, build and coverage outputs, and private cache overlays.
 The prepared eight-lane layout reserves 16 CPUs per lane; throttle heavy

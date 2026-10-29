@@ -41,9 +41,9 @@ Proposed [0079](../../docs/decisions/0079-mcp-version-negotiation.md),
 [0080](../../docs/decisions/0080-mcp-source-reconciliation.md),
 [0081](../../docs/decisions/0081-glm-flash-seats.md),
 [0085](../../docs/decisions/0085-deliverability-report.md),
-[0090](../../docs/decisions/0090-mcp-options-admission.md) and
+[0101](../../docs/decisions/0101-mcp-options-admission.md) and
 [0091](../../docs/decisions/0091-mixed-work-seats.md) retain their statuses.
-0090/0091 collide with independent candidates; their final allocation and every
+0101 (formerly 0090) and 0091 collided with independent candidates; their final allocation and every
 acceptance belong to the operator. 0092 is the next unused local number above
 0091 for this new correction, provisionally, not a reassignment of either one
 or a claim of a host-wide reservation. The operator reconciles it at integration.
@@ -58,7 +58,7 @@ an opposing recommendation.
 | Question | Ruling and adopted position | Rejected alternative and cost of the ruling |
 | --- | --- | --- |
 | Implementation scope | Adopt simplicity's zero-runtime-delta default and existing test owners. Adopt robustness's causal and transient-effect evidence requirements. | Reject speculative hardening and redundant suites. A demonstrated defect can still force a small repair and fresh proof cycle. |
-| Correction owner | Adopt robustness's explicit dated home for catalogue, OPTIONS and W9 corrections. Reconcile simplicity's preference for existing 0090 by referencing it from one new locally provisional correction for this design's semantic claims. | Reject a disclaimer alone and rewriting history. Pay one extra proposal and operator numbering reconciliation; do not duplicate the full clause ledger. |
+| Correction owner | Adopt robustness's explicit dated home for catalogue, OPTIONS and W9 corrections. Reconcile simplicity's preference for existing 0101 by referencing it from one new locally provisional correction for this design's semantic claims. | Reject a disclaimer alone and rewriting history. Pay one extra proposal and operator numbering reconciliation; do not duplicate the full clause ledger. |
 | Method precedence | Preserve accepted 0043 guard-first OPTIONS 405 over universal modern invalid-header 400. Keep the existing handler branch. | The source's modern header MUST remains unmet for OPTIONS. It is additional to C1–C6 and is not operator-approved C7. Universal version middleware loses because it contradicts accepted precedence. |
 | Limiter and annotations | Adopt both positions' single catalogue, per-router fixed window and report-as-read classification. | Reject per-peer fairness, global counters and report redesign. Clients share contention; adjacent windows can burst; cache work still consumes resources. |
 | Proof and review | Adopt robustness's exact-tree evidence and five separate protected results; adopt simplicity's existing receipt/proof machinery. | Reject historical-green substitution and another panel framework. Tool/provider failures or high residuals can stop delivery despite a small diff. |

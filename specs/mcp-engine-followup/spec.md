@@ -27,7 +27,7 @@ commissioned. The existing proposed [0092 correction](../../docs/decisions/0092-
 owns the thirteen-tool, OPTIONS and shared-budget qualifications. It supplements
 [0079 negotiation](../../docs/decisions/0079-mcp-version-negotiation.md),
 [0080 reconciliation](../../docs/decisions/0080-mcp-source-reconciliation.md) and
-[0090 OPTIONS](../../docs/decisions/0090-mcp-options-admission.md), without
+[0101 OPTIONS](../../docs/decisions/0101-mcp-options-admission.md), without
 accepting them or rewriting the [historical register](../mcp-version-negotiation/reconciliation.md).
 The route is already recorded in proposed [0091](../../docs/decisions/0091-mixed-work-seats.md)
 and [0081](../../docs/decisions/0081-glm-flash-seats.md). Lazy report analysis

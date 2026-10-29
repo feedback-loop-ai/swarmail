@@ -103,9 +103,9 @@ fn sequential_contracts_and_decision_links_are_honest() {
         std::fs::read_to_string(root().join("docs/decisions/0076-sequential-eval-trials.md"))
             .unwrap();
     assert!(decision.contains("**Status:** accepted (operator, 2026-10-26)"));
-    assert!(index.lines().any(|line| {
-        line.starts_with("| [0063]") && line.contains("accepted (operator, 2026-10-26)")
-    }));
+    assert!(index.lines().any(
+        |line| line.starts_with("| [0063]") && line.contains("accepted (operator, 2026-10-26)")
+    ));
     assert!(
         index
             .lines()

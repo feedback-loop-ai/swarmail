@@ -49,7 +49,7 @@ declared. Existing proposed [0079](../../docs/decisions/0079-mcp-version-negotia
 [0080](../../docs/decisions/0080-mcp-source-reconciliation.md),
 [0081](../../docs/decisions/0081-glm-flash-seats.md),
 [0085](../../docs/decisions/0085-deliverability-report.md),
-[0090](../../docs/decisions/0090-mcp-options-admission.md),
+[0101](../../docs/decisions/0101-mcp-options-admission.md),
 [0091](../../docs/decisions/0091-mixed-work-seats.md) and
 [0092](../../docs/decisions/0092-mcp-candidate-proof.md) retain their meaning
 and status. The historical specs and reconciliation ledger remain unmodified.

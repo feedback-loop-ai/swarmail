@@ -561,10 +561,11 @@ fn the_inventory_refuses_missing_dangling_duplicate_and_malformed_entries() {
         ]
     );
 
-    let dangling = format!("{index}| [0099](0099-ghost.md) | ghost | proposed | |\n");
+    // The ghost takes a number no record will reach (0099 became a real record).
+    let dangling = format!("{index}| [9999](9999-ghost.md) | ghost | proposed | |\n");
     assert_eq!(
         inventory_problems(&dangling, &names),
-        ["0099-ghost.md: an index row with no file"]
+        ["9999-ghost.md: an index row with no file"]
     );
 
     let r34 = row_of("0034");
@@ -1424,7 +1425,7 @@ fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
             "cargo fmt --all -- --check",
             "cargo clippy --workspace --all-targets --locked -- -D warnings",
             "cargo test --workspace --locked",
-            "brokkr compile --bundle bundles/self",
+            "brokkr compile --bundle .brokkr/recipes/self",
             "bash scripts/coverage-gate.sh selftest",
             "bash scripts/publish-guard-test.sh",
             "cargo deny check licenses",
@@ -1436,9 +1437,9 @@ fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
         ("README.md", ""),
         ("CONTRIBUTING.md", ""),
         ("AGENTS.md", ""),
-        ("agents/charters/implementer.md", "../../"),
-        ("agents/charters/review-correctness.md", "../../"),
-        ("agents/charters/reviewer.md", "../../"),
+        (".brokkr/agents/charters/implementer.md", "../../../"),
+        (".brokkr/agents/charters/review-correctness.md", "../../../"),
+        (".brokkr/agents/charters/reviewer.md", "../../../"),
     ] {
         let text = raw(path);
         let wanted = format!("({prefix}{link})");
@@ -1457,8 +1458,8 @@ fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
         );
     }
     refuses(
-        &doc("agents/README.md"),
-        "agents/README.md",
+        &doc(".brokkr/agents/README.md"),
+        ".brokkr/agents/README.md",
         &["--bundle .`"],
     );
 }
