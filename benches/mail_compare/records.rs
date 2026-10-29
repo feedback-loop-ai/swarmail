@@ -19,7 +19,9 @@ pub const MANIFEST_VERSION: u32 = 1;
 pub const INDEX_VERSION: u32 = 1;
 /// A sample row longer than this is malformed on read.
 pub const MAX_ROW_BYTES: usize = 4096;
-pub const MAX_ARTIFACT_BYTES: u64 = 256 << 20;
+/// The frozen protocol's full collection writes about 270 MiB of samples
+/// (757,464 rows on 2026-10-29), so the bound leaves room above that.
+pub const MAX_ARTIFACT_BYTES: u64 = 512 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
