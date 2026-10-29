@@ -1,6 +1,7 @@
 # 0098 — Flash correctness and guarantees members; a four-hour review deadline
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-29 — "accept the decisions",
+  given in chat).
 - **Date:** 2026-10-29 (operator direction given 2026-10-28)
 - **Amends:** [0058](0058-codex-review-routing.md), only the correctness and
   guarantees model assignments of Careful (`codex-careful`) and High-risk
