@@ -280,7 +280,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         ),
         (
             ".brokkr/recipes/self/tooling.json",
-            "44b2933b17b700aab71078752f562b82ff1e6e231195f8e00e910f1b18376f89",
+            "d2a439323f133cd10907c2744d88a814e29e850c4fe3faedfc2fe6095af89c0b",
         ),
         (
             ".brokkr/recipes/self/scripts/shims.sha256",
@@ -947,9 +947,9 @@ fn verify_seat_refuses_missing_or_mismatched_engine_identity_before_gates() {
     std::fs::write(script, original).unwrap();
 }
 
-const PUBLISHED_ENGINE_URL: &str = "https://github.com/feedback-loop-ai/brokkr/releases/download/swarmail-engine-731189f-p3/brokkr-0.12.0-731189f-p3-x86_64-unknown-linux-gnu";
+const PUBLISHED_ENGINE_URL: &str = "https://github.com/feedback-loop-ai/brokkr/releases/download/swarmail-engine-a9893b4-p3/brokkr-0.12.0-a9893b4-p3-x86_64-unknown-linux-gnu";
 const PUBLISHED_ENGINE_DIGEST: &str =
-    "ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f";
+    "4873928c94f2677ef552c9e3ed04785a732851b89e8a413c13ce1434d6066be6";
 const READ_TOOLING_STEP: &str = "Read the pinned brokkr record (fail closed)";
 const ADMIT_ENGINE_STEP: &str = "Admit the published brokkr and compile every recipe";
 
@@ -957,7 +957,7 @@ const ADMIT_ENGINE_STEP: &str = "Admit the published brokkr and compile every re
 fn published_engine_record_matches_the_operator_release() {
     let record = read_json(".brokkr/recipes/self/tooling.json");
     let engine = &record["brokkr"];
-    assert_eq!(engine["sha"], "731189f9097308c01ae4f2b4c9caea5f41224844");
+    assert_eq!(engine["sha"], "a9893b4dfb67417edc99d91f941a9bac3856f138");
     assert_eq!(engine["version"], "0.12.0");
     assert_eq!(engine["binary_url"], PUBLISHED_ENGINE_URL);
     assert_eq!(engine["binary_sha256"], PUBLISHED_ENGINE_DIGEST);
@@ -979,10 +979,10 @@ fn published_engine_record_matches_the_operator_release() {
         );
     }
     let provenance = engine["binary_provenance"].as_str().unwrap();
-    assert!(provenance.contains("source base 731189f9097308c01ae4f2b4c9caea5f41224844 plus"));
+    assert!(provenance.contains("source base a9893b4dfb67417edc99d91f941a9bac3856f138 plus"));
     assert!(provenance.contains("three checksum-pinned patches"));
     assert!(provenance.contains(
-        "https://github.com/feedback-loop-ai/brokkr/releases/tag/swarmail-engine-731189f-p3"
+        "https://github.com/feedback-loop-ai/brokkr/releases/tag/swarmail-engine-a9893b4-p3"
     ));
     assert!(!provenance.contains(".forge/"));
 }
@@ -1272,7 +1272,7 @@ fn ci_record_reader_refuses_bad_fields_before_exporting_any_output() {
     assert_eq!(
         std::fs::read_to_string(&fixture.github_output).unwrap(),
         format!(
-            "sha=731189f9097308c01ae4f2b4c9caea5f41224844\nversion=0.12.0\nbinary_sha256={PUBLISHED_ENGINE_DIGEST}\nbinary_url={PUBLISHED_ENGINE_URL}\n"
+            "sha=a9893b4dfb67417edc99d91f941a9bac3856f138\nversion=0.12.0\nbinary_sha256={PUBLISHED_ENGINE_DIGEST}\nbinary_url={PUBLISHED_ENGINE_URL}\n"
         )
     );
     assert!(!fixture.marker.exists());
