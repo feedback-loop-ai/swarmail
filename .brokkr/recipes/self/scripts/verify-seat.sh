@@ -108,11 +108,11 @@ pin_q="$(printf '%q' "$pin_dir")"
 run "cargo fmt --all -- --check"  'cargo fmt --all -- --check'
 run "cargo clippy -D warnings"    'cargo clippy --workspace --all-targets --locked -- -D warnings'
 run "cargo test"                  'cargo test --workspace --locked'
-run "brokkr compile --bundle bundles/self"   "$launched_q compile --bundle bundles/self"
+run "brokkr compile --bundle .brokkr/recipes/self"   "$launched_q compile --bundle .brokkr/recipes/self"
 # A compile that exits 0 but sweeps a rule as reading past a hard rule's facts
 # (#125's residual warning) is not a clean constitution: refuse it by name.
 if grep -q 'lets the run go on without reading' "$output"; then
-  { printf 'brokkr compile --bundle bundles/self emitted a policy-sweep warning:\n'; grep 'lets the run go on without reading' "$output"; } >> "$notes"
+  { printf 'brokkr compile --bundle .brokkr/recipes/self emitted a policy-sweep warning:\n'; grep 'lets the run go on without reading' "$output"; } >> "$notes"
   write_result fail; exit 0
 fi
 run "coverage gate (exact 100% lines+branches+functions)"  "bash $pin_q/coverage-gate.sh"

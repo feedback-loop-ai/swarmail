@@ -50,7 +50,7 @@ impl Fixture {
     fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let helper = temporary.path().join("scripts/apply-brokkr-patches.py");
-        let bundle = temporary.path().join("bundles/self");
+        let bundle = temporary.path().join(".brokkr/recipes/self");
         let source = temporary.path().join("engine");
         std::fs::create_dir_all(helper.parent().unwrap()).unwrap();
         std::fs::create_dir_all(&bundle).unwrap();

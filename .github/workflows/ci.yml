@@ -86,7 +86,7 @@ jobs:
       # scripts are fixed shims whose bytes must match the pinned digests,
       # and the design validator's refusal arms run as the verify seat runs
       # them.
-      - run: sha256sum --check --strict bundles/self/scripts/shims.sha256
+      - run: sha256sum --check --strict .brokkr/recipes/self/scripts/shims.sha256
       - run: bash scripts/design-check.sh selftest
       # The operator's seal tool, proved keyless (decision 0056): no key is
       # provisioned and its signing path never runs in CI.
@@ -155,12 +155,12 @@ jobs:
       # network CI has, and the gate itself stays offline.
       - run: |
           cargo fetch --locked
-          cargo fetch --locked --manifest-path bundles/self/scripts/coverage-fn-scan/Cargo.toml
+          cargo fetch --locked --manifest-path .brokkr/recipes/self/scripts/coverage-fn-scan/Cargo.toml
       - run: bash scripts/coverage-gate.sh selftest
       - run: bash scripts/coverage-gate.sh
       # #123's tamper boundary by execution: an `exit 0` public gate beside an
       # uncovered line still refuses through the pinned gate (decision 0050).
-      - run: bash bundles/self/scripts/delivery-proof-test.sh
+      - run: bash .brokkr/recipes/self/scripts/delivery-proof-test.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -226,7 +226,7 @@ jobs:
   # The delivery constitution is compiled by the *recorded* brokkr, not by
   # whatever `cargo install` would resolve today — two 0.12.0 binaries have
   # already disagreed (the bundle grammar moved). The pin lives in
-  # `bundles/self/tooling.json`, an operator-owned source-and-artifact record;
+  # `.brokkr/recipes/self/tooling.json`, an operator-owned source-and-artifact record;
   # the published binary digest, not a version string, admits execution.
   # Absent or malformed, this job refuses with the name
   # of what is wrong — fail closed, never silently skipped (AC52.1).
@@ -245,7 +245,7 @@ jobs:
         id: tooling
         run: |
           set -euo pipefail
-          record=bundles/self/tooling.json
+          record=.brokkr/recipes/self/tooling.json
           if [ ! -f "$record" ]; then
             echo "REFUSAL: $record is absent — the brokkr pin is an operator-owned record (docs/decisions/0045-delivery-repairs.md); the bundle cannot be compiled against a known toolchain without it, so this job refuses" >&2
             exit 1
@@ -318,16 +318,16 @@ jobs:
           fi
           for recipe in self codex codex-careful codex-fast mixed-opus-terra claude-careful; do
             output="$engine_dir/$recipe.log"
-            if "$artifact" compile --bundle "bundles/$recipe" > "$output" 2>&1; then
+            if "$artifact" compile --bundle ".brokkr/recipes/$recipe" > "$output" 2>&1; then
               cat "$output"
             else
               status=$?
               cat "$output"
-              echo "REFUSAL: brokkr compile --bundle bundles/$recipe failed (exit $status)" >&2
+              echo "REFUSAL: brokkr compile --bundle .brokkr/recipes/$recipe failed (exit $status)" >&2
               exit "$status"
             fi
             if grep -q 'lets the run go on without reading' "$output"; then
-              echo "REFUSAL: brokkr compile --bundle bundles/$recipe emitted a policy-sweep warning" >&2
+              echo "REFUSAL: brokkr compile --bundle .brokkr/recipes/$recipe emitted a policy-sweep warning" >&2
               exit 1
             fi
           done

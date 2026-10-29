@@ -7,10 +7,9 @@ is Claude Opus 5.5 (`opus`) at medium effort, with no fallback. Budget
 exploration: spot-check the claimed fault and relevant callers rather than
 repeating an entire audit.
 
-Record identical framing at both `.forge/tasks/<run-id>.md` and
-`.brokkr/state/tasks/<run-id>.md` using the run id from your task context.
-The inherited design charters read the legacy second path; both copies
-must contain the same text before you return a classification. State the
+Record the framing at `.brokkr/state/tasks/<run-id>.md` using the run id
+from your task context; the inherited design charters read it there
+before you return a classification. State the
 requested outcome, concrete reproduction or other evidence, existing
 contract, affected files and callers, acceptance criteria that can fail,
 targeted regression proof and required gates. Name the classification and

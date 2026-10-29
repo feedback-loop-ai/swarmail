@@ -1,6 +1,6 @@
 # Codex fast implementer — keep the ruled scope honest
 
-Read and obey `agents/charters/implementer.md`: its frozen guarantees,
+Read and obey `.brokkr/agents/charters/implementer.md`: its frozen guarantees,
 required tests and full gate inventory, unsigned commits, no pushes and
 mandatory result-file delivery all apply. Read triage's framing and
 classification before changing code. On `design` or `engine`, implement

@@ -1425,7 +1425,7 @@ fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
             "cargo fmt --all -- --check",
             "cargo clippy --workspace --all-targets --locked -- -D warnings",
             "cargo test --workspace --locked",
-            "brokkr compile --bundle bundles/self",
+            "brokkr compile --bundle .brokkr/recipes/self",
             "bash scripts/coverage-gate.sh selftest",
             "bash scripts/publish-guard-test.sh",
             "cargo deny check licenses",
@@ -1437,9 +1437,9 @@ fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
         ("README.md", ""),
         ("CONTRIBUTING.md", ""),
         ("AGENTS.md", ""),
-        ("agents/charters/implementer.md", "../../"),
-        ("agents/charters/review-correctness.md", "../../"),
-        ("agents/charters/reviewer.md", "../../"),
+        (".brokkr/agents/charters/implementer.md", "../../../"),
+        (".brokkr/agents/charters/review-correctness.md", "../../../"),
+        (".brokkr/agents/charters/reviewer.md", "../../../"),
     ] {
         let text = raw(path);
         let wanted = format!("({prefix}{link})");
@@ -1458,8 +1458,8 @@ fn the_gate_inventory_has_one_home_and_everyone_points_at_it() {
         );
     }
     refuses(
-        &doc("agents/README.md"),
-        "agents/README.md",
+        &doc(".brokkr/agents/README.md"),
+        ".brokkr/agents/README.md",
         &["--bundle .`"],
     );
 }

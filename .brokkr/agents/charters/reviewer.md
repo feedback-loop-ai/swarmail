@@ -21,8 +21,8 @@ Check, in order:
    unbounded memory, the webhook secret path, panic paths on hostile
    input (`DATA` bodies are untrusted bytes).
 5. **Gates**: every command in the one inventory,
-   [`docs/house-rules.md` § Gates](../../docs/house-rules.md#gates--part-of-every-change) —
-   fmt, clippy `-D warnings`, `brokkr compile --bundle bundles/self`,
+   [`docs/house-rules.md` § Gates](../../../docs/house-rules.md#gates--part-of-every-change) —
+   fmt, clippy `-D warnings`, `brokkr compile --bundle .brokkr/recipes/self`,
    `scripts/coverage-gate.sh` and its selftest (the floor may rise, never
    fall), the publish guard's proof, `cargo deny check licenses`.
 
