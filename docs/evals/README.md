@@ -139,7 +139,7 @@ Results are Mailpit's own JSON in one text content block.
 | `mailpit_list` | one page of `GET /api/v1/messages` | `start` 0..100000 (0), `limit` 1..250 (50) |
 | `mailpit_search` | one page of `GET /api/v1/search` | `query` 1..4096 bytes, `start`, `limit` |
 | `mailpit_read` | `GET /api/v1/message/{ID}`, which **marks the message read** | `id` 1..512 bytes, path-encoded |
-| `mailpit_wait` | a **client-side poll**, not a Mailpit facility: a complete paged search at once, then one 100 ms after each completed scan, until `timeout_ms` from admission; `found` (a scan that ended in time matched), `late` (first matched by a scan that ended after the cutoff; censored) or `timeout` (answered at or after the cutoff: no scan saw a match, not proof of continuous absence) | `query`, `timeout_ms` 1..30000 |
+| `mailpit_wait` | a **client-side poll**, not a Mailpit facility: a complete paged search at once, then one 100 ms after each completed scan, until `timeout_ms` from admission; `found` (a scan that ended in time matched), `late` (first matched by a scan that ended after the cutoff; censored) or `timeout` (answered at or after the cutoff: no scan saw a match, not proof of continuous absence) | `query`, `timeout_ms` 1..20000 (the 30 s operation ceiling less one 10 s request bound) |
 
 The adapter has no admin, send, delete, release, tag, chaos, screenshot or
 link-check tool. It adds no task hints, extraction, cache, index or
@@ -153,9 +153,11 @@ not upstream limits:
 - 10 s and 16 MiB per HTTP request, and 16 MiB for a whole operation;
 - 100 pages per scan and 1,000 requests per operation;
 - a 30 s operation ceiling counted from admission, queue time included, and
-  never extended: a wait's last scan may finish one request bound after its
-  cutoff only while that stays within the ceiling, so a 30 s wait gets no
-  extra time; a call whose ceiling passed in the queue sends nothing;
+  never extended: a wait's last scan may finish one full request bound after
+  its cutoff, so the admitted `timeout_ms` maximum is derived as the ceiling
+  less that bound (20 s) and a longer wait is refused, never clamped; a
+  client that wants more observation makes a second call; a call whose
+  ceiling passed in the queue sends nothing;
 - a 10 s output and cleanup bound.
 
 A repeated ID, a moving count, a short or empty page before the count, or a

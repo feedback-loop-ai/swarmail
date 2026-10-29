@@ -3,7 +3,7 @@
 //! instance. Rows stream as they happen; cleanup that is not proved stops
 //! all later work.
 
-use crate::mailpit_mcp::{Frame, Scan, ToolError, poll_wait};
+use crate::mailpit_mcp::{Bounds, Frame, Scan, ToolError, poll_wait};
 use crate::protocol::{
     Connection, Observation, Protocol, TargetKind, ThroughputProfile, WaitProfile,
 };
@@ -766,7 +766,6 @@ async fn observe(
     r: &mut Row,
 ) {
     let before = owned.http.requests();
-    let until = Instant::now() + deadline;
     let judge = |tokens: &[String]| {
         if tokens.iter().any(|t| t != token) {
             Some("unrelated")
@@ -788,12 +787,15 @@ async fn observe(
         // observe in time, a later match is late (censored), and a scan
         // still running one request bound past the cutoff is an error.
         Observation::Poll => {
-            let cutoff = tokio::time::Instant::from_std(until);
-            let frame = Frame {
-                ceiling: cutoff + step,
-                cutoff,
-                response: cutoff + step,
+            // The driver's operation is its wait plus one request bound,
+            // declared in the protocol; the one constructor composes it.
+            let bounds = Bounds {
+                operation: deadline + step,
+                request: step,
+                poll_interval: interval,
+                ..Bounds::default()
             };
+            let frame = Frame::new(tokio::time::Instant::now(), &bounds, deadline);
             let mut s = FindScan {
                 owned,
                 token,

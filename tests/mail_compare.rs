@@ -2411,6 +2411,54 @@ async fn the_adapter_speaks_closed_bounded_jsonrpc_and_refuses_safely() {
 }
 
 #[tokio::test]
+async fn the_advertised_wait_maximum_is_the_derived_one_and_nothing_longer_is_admitted() {
+    let addr = responder(Box::new(|_| Some((200, page_json(0, 0, &[]))))).await;
+    let bounds = mailpit_mcp::Bounds::default();
+    let max = bounds.max_wait().as_millis() as u64;
+    assert_eq!(max, 20_000);
+    let mut c = Mcp::start(addr, bounds, 1 << 20);
+    let r = c
+        .request(
+            1,
+            "initialize",
+            serde_json::json!({"protocolVersion": "2025-03-26"}),
+        )
+        .await;
+    assert!(r.get("result").is_some(), "{r}");
+    let r = c.request(2, "tools/list", serde_json::json!({})).await;
+    let wait = &r["result"]["tools"][3];
+    assert_eq!(wait["name"], "mailpit_wait");
+    assert_eq!(
+        wait["inputSchema"]["properties"]["timeout_ms"]["maximum"], 20_000,
+        "the schema carries the derived maximum"
+    );
+    let refused = c
+        .request(
+            3,
+            "tools/call",
+            serde_json::json!({"name": "mailpit_wait",
+                "arguments": {"query": "q", "timeout_ms": max + 1}}),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    assert_eq!(
+        refused["error"]["message"],
+        "invalid tool name or arguments"
+    );
+    let admitted = c
+        .request(
+            4,
+            "tools/call",
+            serde_json::json!({"name": "mailpit_wait",
+                "arguments": {"query": "q", "timeout_ms": 1}}),
+        )
+        .await;
+    assert!(admitted.get("result").is_some(), "{admitted}");
+    drop(c.w.take());
+    assert_eq!(c.served.await.unwrap(), mailpit_mcp::End::Eof);
+}
+
+#[tokio::test]
 async fn the_adapter_refuses_incomplete_malformed_and_overbudget_upstream_answers() {
     let addr = responder(Box::new(|t: &str| {
         let q = |s: &str| t.contains(&format!("query={s}&"));
@@ -2733,6 +2781,7 @@ async fn full_pages_isolate_duplicate_moving_short_and_overlong_scans() {
 async fn a_call_that_outlived_its_ceiling_in_the_queue_sends_nothing() {
     let bounds = mailpit_mcp::Bounds {
         operation: Duration::from_secs(1),
+        request: Duration::from_millis(200),
         ..small_bounds()
     };
     // Nothing listens here: the refusal must come before any request.
@@ -2748,7 +2797,7 @@ async fn a_call_that_outlived_its_ceiling_in_the_queue_sends_nothing() {
         mailpit_mcp::Call::Read { id: "x".into() },
         mailpit_mcp::Call::Wait {
             query: "q".into(),
-            timeout_ms: 30_000,
+            timeout_ms: 500,
         },
     ] {
         let got = mailpit_mcp::run_call(&http, &bounds, &call, admitted).await;
@@ -2817,18 +2866,52 @@ async fn the_wait_frame_composes_one_ceiling_cutoff_and_response_allowance() {
     let t0 = tokio::time::Instant::now();
     let s = Duration::from_secs;
     let frame = |w| mailpit_mcp::Frame::new(t0, &b, s(w));
-    // A 30 s wait under the 30 s ceiling gets no extra 10 s.
+    // The derived maximum is operation - request: the last scan always
+    // gets the full request bound, and the ceiling is exactly met.
+    assert_eq!(b.max_wait(), s(20));
     assert_eq!(
-        frame(30),
+        frame(20),
         mailpit_mcp::Frame {
             ceiling: t0 + s(30),
-            cutoff: t0 + s(30),
+            cutoff: t0 + s(20),
             response: t0 + s(30)
         }
     );
     assert_eq!(frame(1).response, t0 + s(11));
-    assert_eq!(frame(25).response, t0 + s(30));
     assert_eq!(frame(0).ceiling, t0 + b.operation);
+    // Every admitted millisecond keeps the full allowance, never a clamp.
+    for ms in 1..=b.max_wait().as_millis() as u64 {
+        let f = mailpit_mcp::Frame::new(t0, &b, Duration::from_millis(ms));
+        assert!(f.cutoff <= f.ceiling && f.response <= f.ceiling, "{ms}");
+        assert_eq!(f.response, f.cutoff + b.request, "{ms}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "cannot keep a 10s response allowance inside 30s")]
+async fn a_wait_beyond_the_derived_maximum_has_no_frame() {
+    let b = mailpit_mcp::Bounds::default();
+    let past = b.max_wait() + Duration::from_millis(1);
+    mailpit_mcp::Frame::new(tokio::time::Instant::now(), &b, past);
+}
+
+#[test]
+fn the_wire_driver_builds_no_frame_of_its_own() {
+    // One constructor: `Frame::new` is the only place a frame's instants
+    // are composed (spec clarification Q3), driver and adapter alike.
+    for src in [
+        "runner.rs",
+        "stats.rs",
+        "targets.rs",
+        "wire.rs",
+        "records.rs",
+    ] {
+        let text = std::fs::read_to_string(format!("benches/mail_compare/{src}")).unwrap();
+        assert!(!text.contains("Frame {"), "{src} builds a frame by hand");
+    }
+    let text = std::fs::read_to_string("benches/mail_compare/mailpit_mcp.rs").unwrap();
+    // The struct, its impl, the constructor's signature and its body.
+    assert_eq!(text.matches("Frame {").count(), 4);
 }
 
 #[tokio::test(start_paused = true)]
@@ -2891,15 +2974,21 @@ async fn the_poll_observes_until_the_exact_cutoff_and_never_past_the_ceiling() {
         (Err(ToolError::Budget("operation deadline")), 11_000)
     );
 
-    // Under a 30 s wait the 30 s ceiling is the response bound: a scan
-    // in flight then ends the call at 30 s, never 40 s.
-    let (r, at, starts) = scripted_wait(30_000, &[(29_850, Ok(0)), (20_000, Ok(1))]).await;
+    // At the derived 20 s maximum the last scan still gets its full
+    // request bound: a match first seen after the cutoff is `late`, and
+    // a scan still running at the 30 s ceiling is an incomplete error.
+    let (r, at, starts) = scripted_wait(20_000, &[(0, Ok(0)), (19_950, Ok(1))]).await;
+    assert_eq!(
+        (status(&r), at, starts),
+        ("late".into(), 20_050, vec![0, 100])
+    );
+    let (r, at, starts) = scripted_wait(20_000, &[(0, Ok(0)), (30_000, Ok(1))]).await;
     assert_eq!(
         (r, at, starts),
         (
             Err(ToolError::Budget("operation deadline")),
             30_000,
-            vec![0, 29_950]
+            vec![0, 100]
         )
     );
 

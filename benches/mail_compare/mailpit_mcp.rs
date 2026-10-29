@@ -42,6 +42,19 @@ pub struct Bounds {
     pub poll_interval: Duration,
 }
 
+impl Bounds {
+    /// The longest `timeout_ms` the adapter admits, derived once from the
+    /// bounds: a wait's last scan may run one full request bound past its
+    /// cutoff, and that must still end inside the operation ceiling.
+    pub fn max_wait(&self) -> Duration {
+        self.operation.saturating_sub(self.request)
+    }
+
+    fn max_wait_ms(&self) -> u64 {
+        self.max_wait().as_millis() as u64
+    }
+}
+
 impl Default for Bounds {
     fn default() -> Bounds {
         Bounds {
@@ -65,7 +78,6 @@ pub const MAX_LIMIT: u64 = 250;
 pub const DEFAULT_LIMIT: u64 = 50;
 pub const MAX_QUERY_BYTES: usize = 4096;
 pub const MAX_ID_BYTES: usize = 512;
-pub const MAX_TIMEOUT_MS: u64 = 30_000;
 const SCAN_PAGE: u64 = 250;
 
 /// `http://127.0.0.1:PORT` or `http://[::1]:PORT`, nothing else: no
@@ -149,7 +161,7 @@ pub enum Call {
     },
 }
 
-pub fn tools() -> Value {
+pub fn tools(bounds: &Bounds) -> Value {
     let start = json!({"type": "integer", "minimum": 0, "maximum": MAX_START, "default": 0,
         "description": "Pagination offset, newest first."});
     let limit = json!({"type": "integer", "minimum": 1, "maximum": MAX_LIMIT, "default": DEFAULT_LIMIT,
@@ -191,7 +203,8 @@ pub fn tools() -> Value {
             "inputSchema": {"type": "object", "additionalProperties": false,
                 "required": ["query", "timeout_ms"],
                 "properties": {"query": query,
-                    "timeout_ms": {"type": "integer", "minimum": 1, "maximum": MAX_TIMEOUT_MS}}}
+                    "timeout_ms": {"type": "integer", "minimum": 1,
+                        "maximum": bounds.max_wait_ms()}}}
         }
     ])
 }
@@ -217,7 +230,7 @@ fn text(args: &Map<String, Value>, key: &str, max: usize) -> Option<String> {
 }
 
 /// Validate `tools/call` params; `None` refuses with invalid params.
-pub fn parse_call(params: &Value) -> Option<Call> {
+pub fn parse_call(params: &Value, bounds: &Bounds) -> Option<Call> {
     let p = params.as_object()?;
     if p.keys()
         .any(|k| !matches!(k.as_str(), "name" | "arguments" | "_meta"))
@@ -256,7 +269,7 @@ pub fn parse_call(params: &Value) -> Option<Call> {
         },
         _ => Call::Wait {
             query: text(args, "query", MAX_QUERY_BYTES)?,
-            timeout_ms: uint(args, "timeout_ms", None, 1, MAX_TIMEOUT_MS)?,
+            timeout_ms: uint(args, "timeout_ms", None, 1, bounds.max_wait_ms())?,
         },
     })
 }
@@ -388,6 +401,9 @@ async fn complete_search(b: &mut Budget<'_>, query: &str) -> Result<(u64, Vec<Va
 /// included, spec C2): `ceiling` ends the whole operation and is never
 /// replaced; a wait's observations count only up to `cutoff`, and its
 /// last scan may finish by `response`, which never passes the ceiling.
+/// This is the only constructor of a frame, for the adapter and for the
+/// wire driver alike: it holds `cutoff + request <= ceiling`, so the
+/// response allowance is always the full request bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Frame {
     pub ceiling: Instant,
@@ -396,13 +412,21 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// A `wait` beyond `bounds.max_wait()` is a caller error: argument
+    /// validation refuses it before a frame exists, so it is never clamped.
     pub fn new(admitted: Instant, bounds: &Bounds, wait: Duration) -> Frame {
+        assert!(
+            wait <= bounds.max_wait(),
+            "a wait of {wait:?} cannot keep a {:?} response allowance inside {:?}",
+            bounds.request,
+            bounds.operation
+        );
         let ceiling = admitted + bounds.operation;
         let cutoff = admitted + wait;
         Frame {
             ceiling,
             cutoff,
-            response: ceiling.min(cutoff + bounds.request),
+            response: cutoff + bounds.request,
         }
     }
 }
@@ -786,12 +810,12 @@ fn handle(
         }
         "ping" => Some(result(id, json!({}))),
         _ if !*initialized => Some(error(id, -32600, "not initialized")),
-        "tools/list" => Some(result(id, json!({"tools": tools()}))),
+        "tools/list" => Some(result(id, json!({"tools": tools(bounds)}))),
         "tools/call" => {
             if in_flight(&id) {
                 return Some(error(id, -32600, "a request with this id is in flight"));
             }
-            let Some(call) = parse_call(&params) else {
+            let Some(call) = parse_call(&params, bounds) else {
                 return Some(error(id, -32602, "invalid tool name or arguments"));
             };
             if busy >= bounds.max_pending {
