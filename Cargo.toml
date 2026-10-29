@@ -19,7 +19,7 @@ categories = ["email", "development-tools::testing"]
 # `readme` field points at) and must NOT be listed: a `./name` pattern
 # matches nothing — cargo matches patterns against paths without the `./`
 # prefix, so `./LICENSE-MIT` silently packaged no license text at all —
-# while a bare `README.md` would also sweep in agents/README.md.
+# while a bare `README.md` would also sweep in .brokkr/agents/README.md.
 # Explicit root anchors state the boundary for every include; basename
 # anchors also keep nested cache license/NOTICE decoys out of the package.
 # NOTICE identifies the separately licensed WHATWG data and derived table.

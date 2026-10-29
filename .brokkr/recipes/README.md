@@ -81,11 +81,11 @@ five required role assignments as Careful. The correctness and guarantees
 roles retain distinct offices, charters and results; independent Fable is a
 separately required correctness reading. Five roles do not mean five model
 families: three of them now share official DeepSeek Flash. See accepted
-[0058](../docs/decisions/0058-codex-review-routing.md) for the operator-directed
+[0058](../../docs/decisions/0058-codex-review-routing.md) for the operator-directed
 review matrix, with the revised 2026-10-26 tests-only direction recorded in
-proposed [0081](../docs/decisions/0081-glm-flash-seats.md) and the 2026-10-28
+proposed [0081](../../docs/decisions/0081-glm-flash-seats.md) and the 2026-10-28
 direction recorded in accepted
-[0098](../docs/decisions/0098-review-panel-flash-and-deadline.md): the full-panel
+[0098](../../docs/decisions/0098-review-panel-flash-and-deadline.md): the full-panel
 correctness and guarantees members (office names
 `codex-review-astra-correctness` and `codex-review-guarantees`, kept for
 continuity) select dsh `flash` at high effort exactly as security does, and the
@@ -117,7 +117,7 @@ triage seat uses Claude Opus 5.5 (`opus`) at medium effort with no fallback;
 strategy selection and reviewer routes are unchanged.
 
 `claude-careful` is the zero-Codex careful lane recorded in accepted
-[0099](../docs/decisions/0099-claude-careful-recipe.md), for use while Codex
+[0099](../../docs/decisions/0099-claude-careful-recipe.md), for use while Codex
 credits are exhausted. It extends `codex-careful` and replaces the intake,
 design, implement and review seats; policy, verify, ship, protected review
 and security hold are careful's. No Codex model appears anywhere in its
@@ -146,7 +146,7 @@ composed route, and every chain is a single model:
 
 The engine has no agent-only override of a sequence, so this recipe
 redefines the whole design seat. Its `./scripts/design-check.sh` then
-resolves against `bundles/claude-careful/`, the only root its exec box
+resolves against `.brokkr/recipes/claude-careful/`, the only root its exec box
 binds, so that directory carries byte-identical copies of `self`'s
 validator and its two speckit helpers; `tests/delivery_recipes.rs` refuses
 any drift. The dsh robustness position has no hands (dsh declares none);
@@ -161,20 +161,21 @@ files masked, and rustup is mounted read-only. Work hands permit network
 access; verification remains offline. Provider credentials belong to the
 host's existing login or secret configuration, never to a recipe or journal.
 
-The tracked relative alias `recipes -> bundles` exposes these same directories
-through the engine's default recipe shelf. It also identifies this checkout
-as a recipe library, so modern engines discover the existing top-level
-`agents/` and `adapters/` without moving or copying definitions. The canonical
-files and scripts remain under `bundles/`.
+These recipes stand on the shelf of the repository's one brokkr folder,
+`.brokkr/recipes/<name>/` (decision 0100, brokkr's 0083), beside the
+`.brokkr/agents/`, `.brokkr/adapters/` and `.brokkr/dialects/` they resolve
+against. A recipe's `extends` names another recipe on the same shelf. The
+folder's own `.brokkr/bundle.json` extends `claude-careful`, so a plain
+`brokkr run` with no `--recipe` delivers on that lane.
 
 Use the recorded brokkr build from `self/tooling.json`, with the required
 Rust toolchains, cached locked dependencies and provider credentials already
-available. The local recorded build is staged at `.forge/bin/brokkr`; put that
+available. The local recorded build is staged at `.brokkr/state/bin/brokkr`; put that
 directory first on `PATH` rather than selecting another executable merely
 because it reports the same version. Compile the recipes before delivery:
 
 Before each isolated run, stage the digest-matched binary in that candidate's
-own `.forge/bin/brokkr` and verify it against `bundles/self/tooling.json`.
+own `.brokkr/state/bin/brokkr` and verify it against `.brokkr/recipes/self/tooling.json`.
 Pass its absolute path to boxed checks; a sibling worktree's binary or the
 launcher `PATH` is not visible inside the candidate. Treat a missing or
 mismatched binary as a setup block and resolve it before provider dispatch.
@@ -189,21 +190,21 @@ untracked source regardless of Git's display settings. These are declared
 dependency fixes with regression tests and checksummed source patches.
 
 ```bash
-export PATH="$PWD/.forge/bin:$PATH"
-brokkr compile --bundle bundles/codex
-brokkr compile --bundle bundles/codex-careful
-brokkr compile --bundle bundles/codex-fast
-brokkr compile --bundle bundles/claude-careful
+export PATH="$PWD/.brokkr/state/bin:$PATH"
+brokkr compile --bundle .brokkr/recipes/codex
+brokkr compile --bundle .brokkr/recipes/codex-careful
+brokkr compile --bundle .brokkr/recipes/codex-fast
+brokkr compile --bundle .brokkr/recipes/claude-careful
 brokkr recipes show codex-fast
-mkdir -p .forge
 brokkr run --recipe codex-fast \
   --feature 'Implement one scoped story from epic #192'
 ```
 
 Use `--recipe codex-careful` for higher intake and implementation reasoning
 efforts; both recipes use the same Astra robustness and chief design seats.
-The library's runtime state remains in gitignored `.forge/`. The realm map
-selects `.forge/forge.db` as the shared local journal. From this checkout,
+Runtime state stands in `.brokkr/state/`, which `.brokkr/.gitignore`
+keeps out of git. The realm map `.brokkr/realms.json` selects
+`.brokkr/state/forge.db` as the shared local journal. From this checkout,
 `brokkr tui` opens both imported history and new runs without extra arguments;
 press `a` to include all older runs. Use the compatible recorded executable on
 normal `PATH`. Import history through `brokkr export` / `brokkr import`, which
@@ -212,10 +213,11 @@ verify each event chain; keep the original source journal unchanged.
 Launch isolated concurrent checkouts with `--db` pointing to this checkout's
 absolute canonical journal path, so one TUI shows all eight runs. SQLite
 coordinates journal writes; each run keeps its own run ID and attempt records.
-Do not relocate or alias an open SQLite database or its WAL files. `.forge/` alone does not identify a recipe library for compilation:
-keep the tracked `recipes` alias. Do not create an empty root `.brokkr/` as a
-substitute configuration. Named launches use the default `recipes` alias;
-`--recipes-dir bundles` is an equivalent explicit shelf.
+Do not relocate or alias an open SQLite database or its WAL files. Nothing
+brokkr-owned stands at the repository root: the engine refuses the folder
+while a root `.forge/` (or any other old-layout entry, brokkr 0083) remains beside
+it, so a candidate worktree carrying an engine-written `.forge/` from an
+older layout must clear it before running from this one.
 
 The operator permits up to **eight concurrent delivery runs** on this host.
 Give each run its own Git worktree, branch, result directory and

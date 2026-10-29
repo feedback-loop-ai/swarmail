@@ -2,14 +2,21 @@
 
 This realm is a single Rust crate. Production code is Rust under `src/`; the
 integration tests under `tests/` speak the real protocol against real servers.
-The delivery constitution lives in `bundles/self/` (`bundle.json` +
-`policy.json`) and is compiled by brokkr (`brokkr compile --bundle
-bundles/self`); the journal is `.brokkr/state/forge.db` (append-only, gitignored).
-New recipe runs use `.forge/forge.db` (0057); the earlier journal path
-remains historical evidence and must not be fabricated. The constitution is a bundle directory and not the repo root so the run's
-own journal writes and git objects stay outside the pinned manifest — a
-root-level bundle pins its whole directory and could never survive a
-resume.
+Everything brokkr reads or writes lives in one folder, `.brokkr/`
+(decision 0100, brokkr's decision 0083): the recipes on its shelf
+`.brokkr/recipes/<name>/`, the agents, adapters, dialects and realm map
+beside them, and the folder's own `bundle.json`, which extends
+`claude-careful`. The delivery constitution is the shelf recipe
+`.brokkr/recipes/self/` (`bundle.json` + `policy.json`), compiled with
+`brokkr compile --bundle .brokkr/recipes/self`. Runtime state stands under
+`.brokkr/state/` and is ignored by `.brokkr/.gitignore`: the journal
+`.brokkr/state/forge.db` (append-only), results, ledgers and run worktrees.
+Earlier journals (`.brokkr/state/forge.db` before 2026-10-23, then
+`.forge/forge.db` under 0057) remain historical evidence and must not be
+fabricated. The constitution is a shelf directory and not the repo root so
+the run's own journal writes and git objects stay outside the pinned
+manifest — a root-level bundle pins its whole directory and could never
+survive a resume.
 
 ## The frozen guarantees
 
@@ -48,7 +55,7 @@ Leave all of these clean before reporting success:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-brokkr compile --bundle bundles/self   # the brokkr pinned in bundles/self/tooling.json
+brokkr compile --bundle .brokkr/recipes/self   # the brokkr pinned in .brokkr/recipes/self/tooling.json
 bash scripts/coverage-gate.sh          # the floor may rise, never fall
 bash scripts/coverage-gate.sh selftest # the gate's verdict is untrusted without it
 bash scripts/publish-guard-test.sh     # the publish guard's proof
@@ -93,7 +100,7 @@ Tests are part of every change. Extend the suite that proves the code —
 `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs` or the unit tests — and run
 the suite against real servers; no mocks in the loop.
 
-The coverage floor lives in `bundles/self/scripts/coverage-gate.sh` (run it
+The coverage floor lives in `.brokkr/recipes/self/scripts/coverage-gate.sh` (run it
 through `scripts/coverage-gate.sh`) — currently **100% of
 lines, branches and functions, exact** (missed == 0, not a rounded 99.95).
 The full lcov report and summary land under `target/coverage/`. Raising it is an ordinary
@@ -151,10 +158,10 @@ test lives; the axis is **cold-path presence**, not seam access:
    workspace member or any local path package refuses.
 
 The gate scripts themselves are the pinned bundle's
-(`bundles/self/scripts/`, decision 0050 §1): `scripts/coverage-gate.sh`,
+(`.brokkr/recipes/self/scripts/`, decision 0050 §1): `scripts/coverage-gate.sh`,
 `scripts/publish-guard*.sh`, `scripts/design-check.sh`, `scripts/seal-branch*.sh` and
 `.specify/scripts/bash/check-prerequisites.sh` are fixed dispatch shims the
-verify seat checks against `bundles/self/scripts/shims.sha256` and never
+verify seat checks against `.brokkr/recipes/self/scripts/shims.sha256` and never
 executes; it runs the pinned copies against the candidate.
 
 ## Dependencies
