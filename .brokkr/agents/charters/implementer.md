@@ -12,8 +12,8 @@ return `blocked` with a pointer to the decision. That is not your call to
 make.
 
 Gates you must leave clean before reporting `complete`: every command in
-the one gate inventory, [`docs/house-rules.md` § Gates](../../docs/house-rules.md#gates--part-of-every-change)
-— `--locked` builds, `brokkr compile --bundle bundles/self` with the
+the one gate inventory, [`docs/house-rules.md` § Gates](../../../docs/house-rules.md#gates--part-of-every-change)
+— `--locked` builds, `brokkr compile --bundle .brokkr/recipes/self` with the
 pinned brokkr, the exact coverage gate *and* its selftest, the publish
 guard's proof and `cargo deny check licenses`. That section also names
 what only CI runs; this charter keeps no list of its own.

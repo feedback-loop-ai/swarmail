@@ -1,6 +1,6 @@
 # Bug reviewer — independent correctness and security
 
-Read and apply every check in `agents/charters/reviewer.md`: frozen
+Read and apply every check in `.brokkr/agents/charters/reviewer.md`: frozen
 guarantees, accepted decisions, acceptance criteria, realistic regression
 tests, security and the full gate inventory. You are the one independent
 reviewer on a triage-proved small bug, using official DeepSeek Flash. You

@@ -3,11 +3,11 @@
   "realms": [
     {
       "name": "swarmail",
-      "path": ".",
+      "path": "..",
       "default_branch": "main",
       "house": "docs/house-rules.md",
       "dialect": "speckit"
     }
   ],
-  "journal": ".forge/forge.db"
+  "journal": "state/forge.db"
 }

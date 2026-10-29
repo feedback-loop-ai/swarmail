@@ -32,6 +32,6 @@ without a defensible reason.
 | `docs/house-rules.md` | the realm charter (start here) |
 | `docs/decisions/` | accepted rulings and proposals awaiting the operator (ADR discipline; only the operator accepts) |
 | `docs/releases/` | release notes per version |
-| `bundles/self/` | the delivery constitution — compiled by brokkr |
-| `agents/` + `adapters/` | seat charters and the pinned model adapter |
+| `.brokkr/recipes/self/` | the delivery constitution — compiled by brokkr |
+| `.brokkr/agents/` + `.brokkr/adapters/` | seat charters and the pinned model adapter |
 | `tests/` | real-protocol integration suites (`burst`, `p2`, `rate`) |

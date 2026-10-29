@@ -146,7 +146,7 @@
           "unsupported": "no native transport for a restriction on Claude Code's WebSearch has been established"
         },
         "evidence": {
-          "source": "adapters/claude.json and the installed 2.1.266 help: --tools, --allowedTools and --disallowedTools each take tool names",
+          "source": ".brokkr/adapters/claude.json and the installed 2.1.266 help: --tools, --allowedTools and --disallowedTools each take tool names",
           "scope": "adapter data and argv composition only; no live denial or enablement of WebSearch has been measured",
           "limitations": [
             "that a boxed seat's empty --tools list under --strict-mcp-config leaves no native tool is adapter data, not a live measurement",
@@ -197,7 +197,7 @@
           "unsupported": "no native transport for a restriction on Claude Code's WebFetch has been established; a WebFetch(domain:\u2026) permission pattern was not measured as a host allowlist"
         },
         "evidence": {
-          "source": "adapters/claude.json and the installed 2.1.266 help: --tools, --allowedTools and --disallowedTools each take tool names",
+          "source": ".brokkr/adapters/claude.json and the installed 2.1.266 help: --tools, --allowedTools and --disallowedTools each take tool names",
           "scope": "adapter data and argv composition only; no live denial or enablement of WebFetch has been measured",
           "limitations": [
             "that a boxed seat's empty --tools list under --strict-mcp-config leaves no native tool is adapter data, not a live measurement",
