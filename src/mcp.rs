@@ -936,25 +936,39 @@ mod tests {
 
     #[test]
     fn tool_rate_uses_exact_monotonic_windows() {
+        // Literal contract, deliberately not derived from the production
+        // constants: 1024 attempts per fixed one-second window.
         let rate = ToolRate::default();
-        let now = std::time::Instant::now();
-        rate.set_window(now, 0);
-        for _ in 0..ToolRate::CAP {
-            assert!(rate.take_at(now));
+        let t = std::time::Instant::now();
+        rate.set_window(t, 0);
+        for _ in 0..1024 {
+            assert!(rate.take_at(t));
         }
-        assert!(!rate.take_at(now + ToolRate::WINDOW - std::time::Duration::from_nanos(1)));
-        assert!(rate.take_at(now + ToolRate::WINDOW));
-        assert!(rate.take_at(now + ToolRate::WINDOW));
+        assert!(!rate.take_at(t), "attempt 1025 is the first refusal");
+        assert_eq!(rate.taken(), 1024);
+        assert!(!rate.take_at(t + std::time::Duration::from_nanos(999_999_999)));
+        assert_eq!(rate.taken(), 1024, "a refusal neither consumes nor refills");
+        let t1 = t + std::time::Duration::from_secs(1);
+        assert!(rate.take_at(t1), "one second opens a fresh window");
+        for _ in 0..1023 {
+            assert!(rate.take_at(t1));
+        }
+        assert!(
+            !rate.take_at(t1),
+            "the fresh window also holds exactly 1024"
+        );
+        assert_eq!(rate.taken(), 1024);
     }
 
     #[tokio::test]
     async fn exhausted_tool_rate_refuses_before_effects_and_keeps_control_available() {
         let (_stop, ctx) = context();
         // A generated future start keeps this dispatch proof independent of
-        // scheduling; the preceding test proves refill with explicit instants.
+        // scheduling; the preceding test proves the literal 1024-per-second
+        // contract with explicit instants.
         ctx.tool_rate.set_window(
             std::time::Instant::now() + std::time::Duration::from_secs(3600),
-            ToolRate::CAP,
+            1024,
         );
         ctx.store
             .insert(crate::store::email("kept", "kept", "a@x.io"))
