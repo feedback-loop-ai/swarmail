@@ -85,3 +85,13 @@ check proves artifact structure, not route completion. No push, merge,
 publication, tag, issue closure, paid trial or acceptance follows. Any later
 ship remains subject to the existing policy, complete evidence and unsigned
 author-commit discipline under 0056.
+
+## Dated inherited-panel pointer — 2026-10-29
+
+Accepted [0098](0098-review-panel-flash-and-deadline.md) records the
+operator's 2026-10-28 direction that careful's correctness and guarantees
+members select official DeepSeek Flash through dsh (`deepseek-flash`,
+`deepseek-official`, high) instead of `gpt-6-astra`, and that careful's review
+seat allows 14400 s. `mixed-opus-terra` inherits both without an override;
+ruling 2's Astra wording above describes the route as of 2026-10-28. This
+pointer accepts no decision.

@@ -18,7 +18,7 @@ choosing the path:
 +----------------+----------------------+------------------------------+
 | chore          | Implement -> verify  | DeepSeek Flash               |
 | feature        | Implement -> verify  | Qwen Max + official Flash       |
-| design/engine  | Design -> implement  | Astra (2) + Flash + GLM + Fable  |
+| design/engine  | Design -> implement  | Flash (3) + GLM + Fable      |
 | escalate       | Stop                 | Operator ruling needed       |
 +----------------+----------------------+------------------------------+
 ```
@@ -50,11 +50,12 @@ they are useful when the operator has already ruled that path necessary:
 | Design: check       | Offline exec gate     | Offline exec gate     |
 | Implement           | Sol / high            | Sol / xhigh           |
 | Verify              | Pinned offline gates  | Pinned offline gates  |
-| Review: correctness | Claude Fable 5.1 / high | Codex Astra / high |
+| Review: correctness | Fable 5.1 / high      | Official Flash / high |
 | Review: security    | Official Flash / high | Official Flash / high |
-| Review: guarantees  | absent                | Codex Astra / high    |
+| Review: guarantees  | absent                | Official Flash / high |
 | Review: tests       | GLM Flash / N/A       | GLM Flash / N/A       |
 | Review: independent | absent                | Fable 5.1 / high      |
+| Review: deadline    | 14400 s, 3 attempts   | 14400 s, 3 attempts   |
 | Ship                | Pinned exec gate      | Pinned exec gate      |
 +---------------------+-----------------------+-----------------------+
 ```
@@ -75,12 +76,22 @@ they are useful when the operator has already ruled that path necessary:
 ```
 
 Standard means `codex`; High-risk means fast `design`/`engine`, with the same
-five required role assignments as Careful. Both Astra roles retain distinct
-offices, charters and results; independent Fable is a separately required
-correctness reading. Five roles do not mean five model families. See accepted
+five required role assignments as Careful. The correctness and guarantees
+roles retain distinct offices, charters and results; independent Fable is a
+separately required correctness reading. Five roles do not mean five model
+families: three of them now share official DeepSeek Flash. See accepted
 [0058](../docs/decisions/0058-codex-review-routing.md) for the operator-directed
 review matrix, with the revised 2026-10-26 tests-only direction recorded in
-proposed [0081](../docs/decisions/0081-glm-flash-seats.md). The tests member
+proposed [0081](../docs/decisions/0081-glm-flash-seats.md) and the 2026-10-28
+direction recorded in accepted
+[0098](../docs/decisions/0098-review-panel-flash-and-deadline.md): the full-panel
+correctness and guarantees members (office names
+`codex-review-astra-correctness` and `codex-review-guarantees`, kept for
+continuity) select dsh `flash` at high effort exactly as security does, and the
+review seat of `codex`, `codex-careful` and `codex-fast` (inherited by
+`mixed-opus-terra`) allows 14400 s instead of 3600 s. The panel shares that one
+deadline; intake, triage, implementation and the legacy `self` review keep their
+limits. The tests member
 selects only `glm-flash`: dsh routes it to local
 `spark-glm/GLM-5.3-Flash-EXL3`. Reasoning effort is not applicable, represented
 by an explicit empty office effort map and absent compiled effort. Intake
