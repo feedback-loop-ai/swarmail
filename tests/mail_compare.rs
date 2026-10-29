@@ -1654,6 +1654,50 @@ async fn a_worker_that_fails_proves_nothing_and_still_kills_its_group() {
 }
 
 #[tokio::test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "bind ownership is read from /proc (Linux)"
+)]
+async fn a_drain_that_fails_to_join_leaves_cleanup_unproved_and_the_run_unindexed() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = root.path().join("leaf");
+    let keepers = targets::Keepers::default();
+    let mut owned = targets::Owned::launch(
+        &swarmail_spec(targets::swarmail_template(0)),
+        &scratch,
+        &limits(),
+        &wire::Clock(Instant::now()),
+        &keepers,
+    )
+    .await
+    .unwrap();
+    let pid = owned.pid();
+    // The worker itself survives: the nested join of the drain fails, and
+    // that alone leaves its disposal unproved.
+    owned.fail_drain().await;
+    let facts = owned.shutdown().await;
+    assert!(!facts.reaped, "a failed drain join is not a reaped child");
+    assert!(!facts.proved(), "{facts:?}");
+    assert!(
+        facts.group_gone && facts.listeners_closed && facts.scratch_removed,
+        "every other step still ran and was observed: {facts:?}"
+    );
+    assert!(stops_running(pid).await);
+    assert_eq!(keepers.settle(limits().cleanup).await, vec![facts.clone()]);
+    // Admission stops there: the run directory takes no index.
+    let p = tiny();
+    let dir =
+        records::RunDir::create(&root.path().join("run"), &manifest(&p, "drain-run")).unwrap();
+    dir.write_artifact("report.json", b"{}").unwrap();
+    assert!(
+        dir.finalize(facts.proved())
+            .unwrap_err()
+            .contains("cleanup is not proved")
+    );
+    assert!(!root.path().join("run/index.json").exists());
+}
+
+#[tokio::test]
 #[cfg(target_os = "linux")]
 async fn bind_ownership_is_read_from_the_kernel_and_refuses_foreign_or_ambiguous_listeners() {
     use std::os::fd::AsRawFd;

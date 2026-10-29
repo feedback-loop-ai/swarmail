@@ -421,6 +421,23 @@ impl Owned {
         self.shared.lock().expect("shared lock").hook = Some(Box::pin(hook));
     }
 
+    /// Swap the output drain for a task that panics, so the worker's join
+    /// of it fails during cleanup. The real drain is aborted and awaited
+    /// first: only the nested failure is injected, never a leaked task.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub async fn fail_drain(&self) {
+        let real = {
+            let mut shared = self.shared.lock().expect("shared lock");
+            let failing = tokio::spawn(async { panic!("injected drain failure (expected)") });
+            shared.drain.replace(failing)
+        };
+        if let Some(real) = real {
+            real.abort();
+            let _ = real.await;
+        }
+    }
+
     /// Protocol readiness: the owned child still runs, the SMTP banner is
     /// `220` and the HTTP listing answers `200`, all before `deadline`.
     async fn ready(&mut self, deadline: Instant) -> Result<(), &'static str> {
