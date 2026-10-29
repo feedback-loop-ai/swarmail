@@ -1,6 +1,14 @@
 # Current-main implementation — issue #200
 
-<<<<<<< HEAD
+This record was committed with unresolved conflict markers. The first text below
+matches the v2-only direction in accepted 0071 and decision 0063; it is
+retained as the integration account. The second text is the conflicting
+alternative retained as historical evidence, not a current contract or
+independent verification. In particular, its v1-reader claims are
+superseded by 0071. No gate receipt is inferred from either text.
+
+## Integration account preserved from the first side
+
 The port integrates shipped patches 03–06 into current #194/#196 owners,
 preserving accepted #198/0071 business behavior. Framing/design patches 01–02
 supply historical context; this run's committed design governs implementation.
@@ -94,7 +102,9 @@ Public declarations must not contain secrets. Provenance/hashes show measured,
 declared or explicitly unavailable facts and consistency, not authenticity,
 compilation reproducibility, exact model replay or historical privacy. Incomplete
 and conflicting retained evidence is deliberately not repaired.
-=======
+
+## Conflicting alternative preserved for history
+
 The port restores the shipped #200 public contracts inside the existing #194
 and #196 owners. Decision 0063 remains proposed. The only accepted-record edit
 is the exact scoped 0055 addendum from verified patch 0003; its prior bytes and
@@ -198,4 +208,3 @@ The phase result records that actual verdict. House CI retains chart/history,
 Docker, network audit, release and privileged port-80 proofs. macOS eval proof
 belongs to #201; namespaces to #221. Current bundles/0058 own protected review
 and security hold; this implementer supplies no independent review result.
->>>>>>> 0c71b8c (Bind eval evidence to reproducible provenance on current main)
