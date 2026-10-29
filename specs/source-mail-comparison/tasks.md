@@ -60,7 +60,8 @@ its whole proof, including inherited refinements.
   matches/nonmatches, matching versus total count, read side effect, independent
   plain/HTML/multipart expectations, raw fidelity, competing AUTH/address identities
   and present/future/empty polls. Controlled-clock/finite-response tests cover last
-  partial interval, exact cutoff, late completion, 30 s ceiling, incomplete scans,
+  partial interval, exact cutoff, late completion at the derived 20 000 ms maximum
+  under the 30 s ceiling (clarification Q3), incomplete scans,
   byte/page/request exhaustion, queued expiry without HTTP, cancellation/EOF/output
   blockage and closed schemas.
   No hints/admin/extraction/cache/emulation. Final clients remain T8 evidence.
@@ -139,12 +140,84 @@ its whole proof, including inherited refinements.
   receipts. Missing tools, syntax errors, timeouts and failures remain open, never
   skipped passes. Structural design validation is a separate check.
 
-- [ ] **T14 — Protected review and truthful delivery state (AC16).** Preserve Terra
-  6.1 intake, Opus 5.5 implementation and five independent protected roles: Astra
-  correctness, Astra guarantees, independent Fable, official Flash security and
-  Spark GLM-5.3-Flash tests through the configured Claude/Codex/DSH route. Carry
+- [ ] **T14 — Protected review and truthful delivery state (AC16).** The roster of
+  accepted 0099 governs (clarification Q1, 2026-10-29): Haiku 5.5 intake, Sonnet 5.5
+  implementation and five independent protected roles: Fable correctness, Flash
+  security, Flash guarantees, local Spark GLM-5.3-Flash tests and Opus independent;
+  no Codex seat. (Historical, 2026-10-29 draft: Terra 6.1 intake, Opus 5.5
+  implementation, Astra correctness/guarantees, independent Fable, Flash security,
+  Spark GLM-5.3-Flash tests through the Claude/Codex/DSH route.) Carry
   original HIGH references and #219 separately; no attack reproduction/invented
   clearance. **Test:** actual candidate-bound independent results, worst verdict/
   hard security hold, engine/proof receipts, clean unsigned implementation commits
   and per-AC ledger. Operator alone accepts/reconciles/seals. No push/merge/publication/
   tag/closure; open T11/T12 or any other requirement prevents full completion.
+
+## Continuation refinements — 2026-10-29 (clarification Q1–Q10)
+
+Ordered. Each refines the inherited task it names and is proved by the test beside
+it; the inherited checkbox stays open until its whole proof, including these, holds.
+
+- [ ] **T5.a — One frame law and a reachable `late` (AC-C1–AC-C3; Q3).** Add
+  `max_wait = operation − request` to `Bounds`, read it from the schema and argument
+  validation, assert the full-allowance invariant in `Frame::new`, delete the
+  hand-built frame in `runner::observe` and pass declared bounds. Update the README
+  row and the obsolete 30 s test arm. **Test:** paused-clock frame test asserting
+  driver and adapter frames agree; scripted scan producing `late` at 20 000 ms;
+  `timeout_ms = 20 001` refused with a fixed reason; `tools/list` snapshot carries
+  20 000; `grep -c "Frame {"` outside the constructor is zero in `benches/`.
+
+- [ ] **T3.a — Injected drain-join failure (AC-C7; Q5).** Through the existing test
+  hook, make the drain task panic during cleanup. **Test:** `reaped == false`,
+  `proved() == false`, admission stops, no `index.json`; real child, no new seam.
+
+- [ ] **T2.a — Protocol v2 frozen (AC-C4; Q8).** Bump to version 2, archive draft-3
+  bytes, declare per-target storage/cap/enforcement, the driver wait operation bound,
+  the adapter bounds and the named unmatched/unenforced profile; empty `unresolved`
+  for the declared profiles only where the fact is established. **Test:** one refusal
+  test per class (method, schema, product, false parity, mutable pin, cumulative cap
+  overflow); byte-identical history file; finite-cap probes in the ignored
+  real-binary tests; `collection_ready` passes on the frozen file.
+
+- [ ] **T4.a — Accounting split and denominator (AC-C5–AC-C6; Q6, Q8).** Separate
+  `unstarted` from connect/terminator failure; stress reports scheduled/admitted/
+  refused; `admit` recomputes the plan and refuses strict prefixes and early
+  indexes. **Test:** independent recomputation of both sums from rows; a killed run
+  leaves missing coordinates and no index; one fake responder per malformed class.
+
+- [ ] **T4.b — First frozen collection, or its honest absence (AC5–AC7; Q8).** Only
+  after T2.a is green, run the full three-target frozen profile once through the one
+  entry point and admit it. **Test:** the admitted run's rows satisfy AC-C5 and its
+  report cites denominators; if T2.a is not green the ledger row reads "collection
+  not started" and no smoke is relabelled.
+
+- [ ] **T6.a / T10.a — Named prerequisite refusals (AC-C8; Q8).** Replace the generic
+  refusal with ordered named checks and a dry-run that prints the order. **Test:**
+  one negative shell-driven test per prerequisite, each reading its name; an inert
+  witness proving dry-run opens no credential and launches nothing.
+
+- [ ] **T8.a — Comparison variant in existing eval owners (AC-C9; Q8).** One
+  variant with identity/settings/hash validation; native readers reject comparison,
+  legacy and mixed rows; no `evals/src/comparison.rs`. **Test:** standalone eval
+  suite whole and default-threaded, including the new rejection cases.
+
+- [ ] **T9.a — Free controls on the two agent targets (AC4, AC-C9; Q8).** Oracle and
+  null through Swarmail native MCP and the Mailpit adapter; MailHog agent cells
+  `unsupported`. **Test:** oracles pass and nulls fail their idle class on both; or
+  the ledger names the missing runner piece and T9 reads unstarted.
+
+- [ ] **T12.a — Citation arithmetic (AC14; Q8).** Every reported number cites
+  run/coordinate/denominator; dossier numbers refuse without T11 inputs. **Test:**
+  independent arithmetic over an admitted run; refusal test with baseline/finals/costs
+  absent.
+
+- [ ] **T1.a — Roster, engine and residual rows (AC-C10; Q1, Q2, Q9).** Add the two
+  ledger rows; record no absence row. **Test:** review of the rows against Q1/Q9
+  wording; decision inventory and link tests green; `git grep a9893b4` outside
+  `.forge/` finds only the ledger row.
+
+- [ ] **T13.a — Candidate gates with the mail_compare filters (AC15, AC-C11).** The
+  whole inventory `--locked`, `cargo test --locked --test mail_compare` with and
+  without `--ignored` under the two digest-checked `MAIL_COMPARE_*` executables,
+  `cargo bench --locked`, standalone eval fmt/clippy/full tests. **Test:** candidate-
+  bound logs; AC-C11's empty diff; `git log -1 --format=%G?` is `N`.

@@ -143,7 +143,9 @@ Retain local MCP 2025-03-26 and JSON text blocks; final #151/#152/#153 clients s
 prove negotiation/output/batch requirements. Preserve native batch behavior. Keep
 closed list/search/read/wait, ordinary bodies, marks-read effect, IDs and notification
 silence. Page default 50/range 1..250, start 0..100000, query 1..4096 UTF-8 bytes,
-id 1..512 bytes, timeout 1..30000 ms are adapter bounds, not upstream maxima.
+id 1..512 bytes, timeout 1..(operation − request) ms, derived in one place and
+20 000 ms with the frozen bounds (clarification Q3, 2026-10-29), are adapter bounds,
+not upstream maxima.
 
 Freeze 64 KiB input lines, eight pending/one active tool call, 1 MiB replies, 10 s HTTP
 request bound, 16 MiB per-response and aggregate operation bytes, 100 pages per scan,
@@ -161,8 +163,10 @@ late/censored, never on-time successes. Bounded adapter timeout is returned only
 at/after D after valid completed scans, and means no match observed under this method.
 Incomplete in-flight scan, exhausted budget, cancellation or transport failure is
 error/incomplete. No scans start at/after D; allowance cannot extend observation
-eligibility. For 30 s wait and 30 s ceiling, R=O, so there is no extra 10 s. Bind
-actual schema/bounds to the method. Controlled clocks/local finite responders prove
+eligibility. Admission refuses any wait with D+request_limit>O, so R=D+request_limit at every
+admitted wait and `late` is reachable at the maximum (clarification Q3). The driver
+builds the same frame through the same constructor with its declared operation
+bound deadline+request. Bind actual schema/bounds to the method. Controlled clocks/local finite responders prove
 arithmetic; real servers prove acceptance paths. No tight latency pass threshold.
 
 ### Integration and modes
@@ -276,3 +280,47 @@ CI and protected review remain unperformed by this chief. The root timeout and
 benchmark timeout do not lower required test/workload bounds. Several over-size
 workspace write requests were refused before execution; split bounded writes
 succeeded. All writes, commits and the engine result use the workspace tool.
+
+## Continuation plan — 2026-10-29 (clarification Q1–Q10)
+
+Implements the dated clarification in [spec.md](spec.md). Same owners, no new
+file except where named; nothing under `src/`.
+
+| Task | Files | Approach |
+|---|---|---|
+| T5.a frame law | `benches/mail_compare/mailpit_mcp.rs`, `benches/mail_compare/runner.rs`, `tests/mail_compare.rs`, `docs/evals/README.md` | `pub const fn max_wait(&Bounds) -> Duration { operation − request }`; schema and `uint(.., MAX)` read it; `Frame::new` debug-asserts and a validation path refuses `wait > max_wait`; delete the hand-built frame in `observe`, pass `Bounds { operation: deadline + step, request: step, poll_interval: interval, .. }`. Rewrite the frame test's 30 s arm to the refusal and add the `late`-at-maximum scripted case. |
+| T3.a drain-join arm | `benches/mail_compare/targets.rs`, `tests/mail_compare.rs` | Through the existing `shared.hook`, install a drain task that panics; assert `reaped == false`, `proved() == false`, admission stopped, no `index.json`. No new seam. |
+| T2 protocol v2 | `benches/mail_compare/protocol.rs`, `docs/evals/protocol.json`, `docs/evals/history/2026-10-29-protocol.draft-3.json`, `tests/mail_compare.rs` | `PROTOCOL_VERSION = 2`; new typed fields for per-target storage/cap/enforcement facts, driver wait operation bound, adapter bounds table, named unmatched/unenforced profile; `collection_ready` drops the v1 "cannot declare" arm and gains cumulative-residency refusal; finite-cap probes in the ignored real-binary tests. |
+| T4 accounting | `benches/mail_compare/{runner,records,report,stats}.rs`, `tests/mail_compare.rs` | Separate `unstarted` from connect/terminator failure columns; stress profile records scheduled/admitted/refused; admit recomputes plan and refuses strict prefixes; fake responders per malformed class; then, only if frozen, one full three-target collection through `scripts/compare-mail.sh local` relabelled as frozen collection (document the changed default). |
+| T6/T10 refusals | `scripts/compare-mail.sh`, `tests/mail_compare.rs` (shell-driving tests) | Replace `eval_prerequisite`'s unconditional `comparison-integration` with ordered named checks; dry-run prints the order; negative test per prerequisite. |
+| T8/T9 agent side | `evals/src/identity.rs`, `evals/src/results.rs`, `evals/src/runner.rs`, existing `evals/tests/*` | One comparison variant with identity/settings/hash validation; native readers reject it; drive oracle/null controls against the adapter as a stdio MCP server if the runner's MCP client path can, else record unstarted with the missing piece. |
+| T12 arithmetic | `benches/mail_compare/{report,stats}.rs`, `docs/evals/README.md` | Cite run/coordinate/denominator per number; refuse dossier numbers without T11 inputs. |
+| T1 ledger rows | `docs/evals/README.md` | Roster/engine row (Q1) and residual row (Q9); correct no absence row (Q2). |
+| T13 | gates | The whole inventory, `--locked`, on the candidate, plus the mail_compare filter with and without `--ignored` and the two `MAIL_COMPARE_*` variables, `cargo bench --locked`, standalone eval fmt/clippy/full tests. |
+
+Order: T5.a and T3.a first (small, unblock nothing else, pin the regressions), then
+T2, T4, T6/T10, T8/T9, T12, T1 rows, T13. T7 needs no code change at 47c1599 (the
+eval sources build); its standalone suites are re-run under T13 because 47c1599 did
+not re-run them.
+
+## Continuation risks — 2026-10-29
+
+| Risk | Mitigation and accepted cost |
+|---|---|
+| Lowering the adapter maximum breaks an existing test or README claim silently | AC-C2/AC-C3 change schema, validation, test and README in one commit; the obsolete "no extra 10 s" text is replaced here, not left to contradict. Cost: a 30 s agent wait is two calls. |
+| One-constructor refactor changes the driver's instants | AC-C1 asserts equality of driver and adapter frames for equal inputs on a paused clock before any collection. |
+| Protocol v2 freeze is not clean in this run | Collection is then "not started" by name; the smoke stays labelled smoke. No relabelling. |
+| Cumulative-residency refusal blocks the reused-session profiles on Mailpit's `--max 10000` | Compute residency from the launch plan as actually reused (warmup, measured and wait sends per instance, per repetition), not from a single profile's count; a refused profile is a recorded cell, not a smaller denominator. |
+| The eval runner cannot drive the stdio adapter without new machinery | T9 records unstarted with the missing piece; no stub, no orchestrator. |
+| Ledger wording drifts into a verdict on the residual or the engine | Q9 fixes the row's shape: examined / not examined / open. Review reads it. |
+| Roster text cites a decision that is not on this branch | 0099 is cited as prose with branch and date, never as a link; the link/inventory tests stay green. |
+| Exact coverage gate on new bench/test lines | Benches and tests are outside the root crate's denominator; `src/` is untouched (AC-C11). The gate and selftest still run. |
+
+## Design-stage checks — 2026-10-29 continuation
+
+This chief read both positions, the intake framing, the prior results, the
+committed spec family, 0093, `design-check.sh`, `Frame`/`run_call`/`observe`,
+`keep`/`cleanup`, `plan`, `collection_ready`, the protocol and README excerpts and
+the wrapper. It ran `git` and `grep` only: no cargo, no gate, no binary, no hash
+beyond what the positions report. The worktree was clean at 47c1599 and the eval
+sources carry no conflict markers. Nothing here is a gate receipt; T13 owns them.
