@@ -22,12 +22,12 @@ untimed checks and labelled smoke runs, not collection.
 | Deliverable (spec) | State |
 |---|---|
 | Source pins: [`sources.lock.json`](sources.lock.json) (lock v3) | **Artifacts pinned and tagged sources bound; build provenance unknown.** Mailpit v1.32.0 and MailHog v1.0.1 are pinned by asset and executable digest. Each tag's captured ref → annotated tag → commit chain and the commit's untruncated tree listing are committed under [`sources/`](sources/). Every repository document (licence, API, setup README, reviewed source) is bound by size, SHA-256 and git blob id to its path in that tree, and rechecked whenever the lock is used. Nothing ties either executable to its tagged commit, so `binary_build_provenance` stays unresolved and the lock makes no built-from claim. |
-| Method: [`protocol.json`](protocol.json) | **Draft** (`fair-mail-comparison-draft-3`, superseding draft-2, whose bytes are kept under [`history/`](history/)). The labelled common-client poll is selected for wait-common; wait-best stays blocked. Collection is refused while `unresolved` lists anything, and protocol v2 (actual storage, enforcement, budgets and the official-artifact claim scope) is not built. |
-| Wire driver: `benches/mail_compare.rs` | Built. Its polls now use the adapter's tested wait rule, and its scans refuse short nonfinal pages. A three-target smoke run against real Swarmail, Mailpit and MailHog seals and admits (`tests/mail_compare.rs`, ignored tests below). This is a smoke run, not evidence. Owned-bind corroboration and a cleanup worker that survives cancellation (T3) are **built and proved locally on Linux** (see *Method, as built*). The launch-level refusal of a foreign bind is proved through the kernel reading it rests on, not by forcing the reservation race, which needs no seam and has none. |
+| Method: [`protocol.json`](protocol.json) | **Frozen as protocol v2** (`fair-mail-comparison-v2`, superseding draft-3; the draft-2 and draft-3 bytes are kept under [`history/`](history/) and still read as version 1). It declares the limited official-artifact claim (no built-from claim), per-target backend, cap, prune and compression facts under the explicitly **unmatched** storage profile, the **unenforced local** resource profile, the common 100 ms poll, the driver's 40 s wait operation bound and the adapter's derived bounds and schema digest. `wait-best` is not a declared profile: it stays blocked. Frozen is not collected: no admitted run exists (see *Collection attempt* below). |
+| Wire driver: `benches/mail_compare.rs` | Built. Its polls now use the adapter's tested wait rule, and its scans refuse short nonfinal pages. A three-target smoke run against real Swarmail, Mailpit and MailHog seals and admits (`tests/mail_compare.rs`, ignored tests below). This is a smoke run, not evidence. Owned-bind corroboration and a cleanup worker that survives cancellation (T3), including the failed-drain-join arm, are **built and proved locally on Linux** (see *Method, as built*). Admission now recomputes the plan from the protocol, requires a proved cleanup receipt per launch and refuses a report that is not the arithmetic of its rows. The launch-level refusal of a foreign bind is proved through the kernel reading it rests on, not by forcing the reservation race, which needs no seam and has none. |
 | Mailpit MCP adapter: `mail_compare mailpit-mcp` | **Built and proved locally.** It speaks MCP 2025-03-26 over stdio. Its tools are list, search, read and a labelled client-side poll, each a translation of the captured Mailpit API. It was tested against real Mailpit over real SMTP. Each call's time frame starts at admission (see below). Final client negotiation (#151/#152/#153) is not proved by these tests. JSON-RPC batches are refused, which falls short of 2025-03-26 (receivers must accept batches); that stays open with the final contracts. |
-| One command: `scripts/compare-mail.sh` | Built. `local` runs the driver as a labelled smoke run. `controls`, `evidence` and `measure` refuse at `comparison-integration`. No mode starts an agent. |
+| One command: `scripts/compare-mail.sh` | Built. `local` runs the driver as a labelled smoke run; `collect` runs the frozen protocol after the driver's own readiness check and admits it against that protocol. `controls`, `evidence` and `measure` refuse by the name of the first missing prerequisite (baseline, final contracts, controls, coordination receipts, cost basis, identity, full product), and past those still at `comparison-integration`. No mode starts an agent. |
 | Eval integration: comparison target, envelope and controls (T7–T9) | **Eval sources repaired; comparison not built.** The conflict syntax #269 committed is resolved to the accepted side. Standalone fmt, locked all-target clippy and every test binary pass, each run whole and default-threaded. No comparison target, envelope or same-suite control exists. Cross-checkout #148/#201 shared-admission and CI receipts are unproved. |
-| Evidence admission (T10) and the dossier (T11–T12) | **Not built, and no inputs exist.** There is no genuine #151 baseline, no reconciled final MCP contract, no final trial and no cost record. No paid trial is authorized. |
+| Evidence admission (T10) and the dossier (T11–T12) | **Not built, and no inputs exist.** The named prerequisite refusals are built and proved by stat alone; no verifier of a prerequisite's contents exists, so a supplied path is necessary and never sufficient. There is no genuine #151 baseline, no reconciled final MCP contract, no final trial and no cost record. No paid trial is authorized. |
 
 These rows are open, not waived. The story is incomplete until genuine
 evidence is admitted (spec AC12–AC14). Passing local tests does not count
@@ -44,19 +44,26 @@ Every criterion is open. "Proof so far" names local tests in
 
 | AC | Proof so far | Missing | Owner |
 |---|---|---|---|
-| AC1 method | protocol/lock validators and refusal tests; draft-2 archived | protocol v2 actual profiles, a frozen method | implementer |
+| AC1 method | protocol v2 frozen; one refusal test each for a changed method, schema, product, false parity and cumulative cap overflow; draft-2 and draft-3 archived byte-identical | an admitted frozen collection | implementer / operator |
 | AC2 competitors | `the_tag_chain_and_every_blob_are_rechecked_against_the_captures`, real-binary tests | build provenance (upstream); finalization-time executable recheck | upstream / implementer |
 | AC3 adapter | wait-frame and poll proofs on a paused clock; real SMTP → Mailpit → MCP | final client contracts (#151/#152/#153), batches | #151 / implementer |
 | AC4 controls | none | comparison target and envelope, external oracle/null controls | implementer after T8 |
-| AC5–AC7 throughput, waits, limits | smoke runs; scan and censoring tests | full frozen runs, actual storage/enforcement profiles, best wait | implementer / operator |
+| AC5–AC7 throughput, waits, limits | smoke runs; scan and censoring tests; accounting recomputed from raw rows; storage facts probed against the real binaries; one frozen collection attempted and interrupted (below) | an admitted full frozen run (about 14 minutes, beyond this seat's 10-minute command bound), best wait | operator |
 | AC8–AC9 lifecycle, privacy | launch/cleanup/privacy tests; T3 worker, hold, cancellation, forced-death, TERM-resistant, output-pressure and bind-ownership tests; real-competitor launches corroborated | CI (Linux and macOS) receipts; a forced reservation race | CI / implementer |
 | AC10 schema/replay | eval suites pass on the repaired sources | comparison typing and replay | implementer |
-| AC11 one command | delivery modes refuse with their phase | working controls/evidence/measure delegation | implementer |
+| AC11 one command | delivery modes refuse with their phase; one negative test per named prerequisite; an inert dry-run witness | working controls/evidence/measure delegation | implementer |
 | AC12 eval readiness | standalone fmt, clippy and full default-threaded suite | #148/#201 cross-checkout coordination; CI receipts | #148/#201, CI |
 | AC13 dossier | none | genuine #151 baseline, finals and costs | operator (T11) |
 | AC14 honest claims | report censoring/denominator tests | admitted data | implementer after T11 |
 | AC15 gates | local house gates on the candidate | CI-owned jobs, engine verification | verify seat, CI |
 | AC16 delivery integrity | none | inherited HIGH review-integrity residual with its original references, #219, five protected reviews, operator acceptance of 0090–0093 | operator, panel |
+
+### Roster, engine and residual rows (2026-10-29)
+
+| Row | Examined | Not examined | State |
+|---|---|---|---|
+| Roster and engine (clarification Q1) | Accepted decision 0099 (claude-careful, operator, 2026-10-29, recorded with 0098 on `repair/claude-careful-recipe`) governs this delivery: Haiku 5.5 intake, Sonnet 5.5 implementation, five protected reviews (Fable correctness, Flash security, Flash guarantees, local Spark GLM-5.3-Flash tests, Opus independent), no Codex seat; the T14 Terra/Astra roster is historical. The run executes on host engine brokkr a9893b4 (brokkr decision 0096). The candidate keeps its pin to 731189f-p3: `bundles/self/tooling.json` binary SHA-256 `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`, equal to `.forge/bin/brokkr` as hashed in this checkout. | The a9893b4 engine itself, brokkr decision 0096 and the 0098/0099 texts: no a9893b4 bytes, build receipt or decision text exist in this worktree, and neither 0098 nor 0099 exists on this branch or is imported here. | Not re-pinned. `brokkr compile` proves the pinned engine; every record names which engine it means. |
+| Inherited HIGH review-integrity residual and #219 | The stop event mentions the residual without original finding IDs; #219 is a separate open item; the pinned engine's identity and digest as above. | The a9893b4 engine and decision 0096 against the residual; the original HIGH finding references, which are absent here. | **Open**, with no verdict, no closure, no upstream-merge repair and no re-pin recorded. It goes to the five-member protected review. |
 
 ## Competitor sources and observed behavior
 
@@ -195,6 +202,30 @@ tag; a permissive licence; captured documents confined to `sources/<target>/`
 and rechecked by digest; and a launch template whose cap flag equals the
 stated retention. Any missing fact is a named gap, never a placeholder.
 
+Protocol v2 adds the sections version 1 never carried, and the validator
+holds each to what the code is built with: the claim scope (official
+artifact, or built-from, which refuses while binary build provenance is
+unresolved), a storage profile (`matched_memory` refuses unless every target
+uses the memory backend and one cap), per-target backend, cap, prune
+behavior and compression, a resource profile (an unenforced budget collects
+only as `unenforced_local`), the common poll every poll observation uses,
+the driver's wait operation bound (the longest wait plus one request bound),
+the adapter's bounds, wait method and `tools/list` digest, and one product
+per target that must equal the lock's release tag and executable digest. A
+wait instance's present and future sends count against every declared cap,
+beside each throughput instance's warmup and measured mail. Version 1 drafts
+carry none of these and can never collect.
+
+Facts the protocol states that a probe of the pinned executables supports,
+and what it does not: Mailpit's `--max` flag sets its cap, and with a cap of
+5 and 8 messages sent it did not evict within 20 s, so eviction is not
+synchronous with acceptance, its order and timing are not established
+(`prune: unestablished`), and the workload never reaches the 10,000 cap.
+MailHog's help lists no cap flag, and 1,200 messages all stayed listed; that
+bounds what was observed (`no_cap_observed`), not unlimited storage. Mailpit's
+compression is its default level 1, read from its help and not set by the
+launch.
+
 Every profile runs on a fresh instance the driver owns. The child gets its own
 process group and a closed environment: `PATH`, `LANG`, a private `HOME`,
 `TMPDIR` and `XDG_*`, and nothing inherited. stdin and stderr are `/dev/null`,
@@ -256,7 +287,15 @@ A run directory is created new (0700) and every file in it is created once
 is proved and every row has passed validation against the manifest's plan.
 Admission refuses any of the following: a directory with no index, an
 altered, extra or missing artifact, a truncated, foreign, duplicate or
-unplanned row, and a row count that differs from the plan. Hashes show that
+unplanned row, and a row count that differs from the plan. A run counts
+only through `mail_compare admit DIR PROTOCOL`, which also recomputes the
+plan from the protocol (a strict prefix declared by the manifest never
+admits), needs a proved cleanup receipt for every launch and checks the
+report's cells against the rows. Each throughput cell reports requested
+(`attempted + unstarted`), unstarted, the scheduled sessions, the retention
+cap, admitted (accepts) and refused (rejected plus failed before the
+terminator), and every report states its claim scope and storage and
+resource profiles. Hashes show that
 the files agree with each other. They do not authenticate the files against
 a hostile user on the same uid.
 
@@ -284,12 +323,29 @@ MAIL_COMPARE_MAILPIT=/path/to/pinned/mailpit MAIL_COMPARE_MAILHOG=/path/to/pinne
   cargo test --locked --test mail_compare -- --ignored
 ```
 
-Pointing `local` at the committed draft protocol launches the full draft
-workload as a smoke run, which is hours of work and still not evidence.
-The driver's `check` lists every reason the draft cannot be collected.
-`controls`, `evidence` and `measure` exit 2 at `comparison-integration`
-until tasks T8–T10 land. `measure --dry-run` opens no wrapper configuration and launches
-nothing.
+Pointing `local` at the committed protocol launches the full frozen
+workload as a smoke run, which is still not evidence. The driver's `check`
+reports whether the protocol and lock admit collection. `collect --output
+DIR --mailpit BIN --mailhog BIN` runs the frozen protocol once (never
+resumed or overwritten) and then admits it against that protocol; it takes
+about 14 minutes on the box this was developed on, so run it somewhere that
+is not bounded to 10 minutes.
+`controls`, `evidence` and `measure` exit 2 naming the first missing
+prerequisite, then at `comparison-integration` until tasks T8–T10 land.
+`measure --dry-run` prints the prerequisite order, opens no wrapper
+configuration and launches nothing.
+
+### Collection attempt (2026-10-29)
+
+One `collect` run was started on candidate 5971ae2 (clean tree) with the two
+digest-checked executables, and was interrupted by SIGINT at the seat's
+10-minute command bound: 501,941 rows written of about 760,000 (382,086
+fixed-count send, wait and verification rows plus one visible row per id),
+through repetition 3 of 6, with all 179 launches' cleanup proved. It stayed
+incomplete and unsealed, has no index and was never admitted, so none of its
+rows is data and none is quoted. Two earlier attempts were killed when
+their command ended and were deleted unread. The ledger row for the frozen
+collection therefore reads **not completed**; nothing was relabelled.
 
 ## What closes the remaining rows
 
@@ -300,11 +356,16 @@ nothing.
    `/api/v1/messages/{id}` read still needs a primary source.
 2. A best-available wait needs route, producer, registration and gap
    evidence, plus real-binary observation, before `wait-best` can run.
-   MailHog's EventSource body is not captured. Protocol v2 must freeze
-   Mailpit's scratch SQLite as an explicitly unmatched storage profile (or
-   a matched one), and either a runtime that enforces the resource budget
-   or a separately labelled unenforced profile. That revision is committed
-   before any collection.
+   MailHog's EventSource body is not captured. The reviewed websocket
+   sources show notification hubs only: Mailpit's `Broadcast` returns at
+   once with no client registered and otherwise hands the message to the hub
+   from a new goroutine, and each client's 256-slot queue drops a client
+   that falls behind; MailHog's hub blocks its caller until its loop takes a
+   broadcast and unregisters a connection whose queue is full. A dropped
+   notification is a lost notification, not lost stored mail, and no replay
+   after a gap is shown. Source review does not establish equivalence or a
+   lossless wait. A runtime that enforces the 2 CPU / 2 GiB budget would
+   replace the declared `unenforced_local` profile.
 3. The comparison target, envelope and same-suite
    controls (T8–T9) and evidence admission (T10) are built in the eval
    owners. #148/#201 receive their cross-checkout shared-admission and CI
