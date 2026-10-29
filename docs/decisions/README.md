@@ -86,10 +86,13 @@ them. What may land while a decision is still proposed is stated in
 | [0083](0083-cli-wrapper-launch.md) | Evidence-based CLI launches and declared tool surfaces | proposed — awaiting the operator | (Epic #164, issue #151 part 1; operator allocation 2026-10-26) |
 | [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0089](0089-bulk-sender-checklist.md) | Source-citing bulk-sender checklist through the report contract | proposed — awaiting the operator | (Epic #251, issue #257) |
-| [0090](0090-mixed-work-seats.md) | Mixed work seats and protected review | proposed — awaiting the operator | (Epic #164, issue #163; provisional number) |
+| [0090](0090-mixed-provider-routing.md) | Separate operator-directed mixed-provider route: Terra 6.1 intake, Opus 5.5 implementation, careful's five-member panel | proposed — awaiting the operator | (Operator directive, 2026-10-28; run `verify-and-independently-review--53f33089`) |
 | [0091](0091-fair-mail-comparison.md) | Fair comparison evidence and target-aware experiment records | proposed — awaiting the operator | (Epic #164, issue #163; provisional number) |
 | [0092](0092-official-mail-comparison.md) | Official comparison provenance and bounded translation | proposed — awaiting the operator | (Epic #164, issue #163; provisional number) |
 | [0093](0093-source-mail-comparison.md) | Source attribution and observation contracts | proposed — awaiting the operator | (Epic #164, issue #163; provisional number) |
+| [0098](0098-review-panel-flash-and-deadline.md) | Full-panel correctness and guarantees on official DeepSeek Flash through dsh; 14400 s review deadline for `codex`, `codex-careful`, `codex-fast` (amends 0058; mixed inherits) | **accepted** (operator, 2026-10-29) | (Operator directions, 2026-10-28: dsh Flash correctness/guarantees; four-times review timeout) |
+| [0099](0099-claude-careful-recipe.md) | Zero-Codex `claude-careful` recipe: Haiku 5.5 intake; Opus 5.5 / official Flash / Fable 5.1 design; Sonnet 5.5 implementation; Fable, Flash (2), GLM and Opus reviewers; the leaf carries self's design validator byte for byte | **accepted** (operator, 2026-10-29) | (Operator directions, 2026-10-28/29: claude-centric recipe without Codex) |
+| [0100](0100-one-brokkr-folder.md) | Everything brokkr owns lives in `.brokkr/`: recipes on its shelf, agents, adapters, dialects and the realm map tracked beside them, runtime state in ignored `.brokkr/state/`; the folder's bundle extends `claude-careful` (adopts brokkr 0083) | **accepted** (operator, 2026-10-29) | (Operator direction, 2026-10-29: organize everything under .brokkr) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

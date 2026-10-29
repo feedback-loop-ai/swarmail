@@ -98,19 +98,14 @@ fn sequential_contracts_and_decision_links_are_honest() {
         .filter(|line| line.starts_with("| [0076]"))
         .collect();
     assert_eq!(rows.len(), 1);
-    // The operator accepted 0063 and 0076 (#250); the record, not this
-    // test, is the authority on status.
-    let accepted = "accepted (operator, 2026-10-26)";
-    assert!(rows[0].contains(accepted));
+    assert!(rows[0].contains("accepted (operator, 2026-10-26)"));
     let decision =
         std::fs::read_to_string(root().join("docs/decisions/0076-sequential-eval-trials.md"))
             .unwrap();
-    assert!(decision.contains(&format!("**Status:** {accepted}")));
-    assert!(
-        index
-            .lines()
-            .any(|line| line.starts_with("| [0063]") && line.contains(accepted))
-    );
+    assert!(decision.contains("**Status:** accepted (operator, 2026-10-26)"));
+    assert!(index.lines().any(
+        |line| line.starts_with("| [0063]") && line.contains("accepted (operator, 2026-10-26)")
+    ));
     assert!(
         index
             .lines()

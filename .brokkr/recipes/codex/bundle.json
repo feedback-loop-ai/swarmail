@@ -1,0 +1,69 @@
+{
+  "name": "codex",
+  "description": "Codex leads intake, design and implementation; Standard review uses Claude Fable 5.1 correctness, official DeepSeek Flash security and GLM-5.3-Flash tests through dsh (effort not applicable), under a 4-hour review deadline. Inherits the pinned proof chain and protected policy.",
+  "extends": "self",
+  "override": {
+    "bundle": [
+      "description"
+    ],
+    "seats": [
+      "intake",
+      "implement",
+      "review"
+    ]
+  },
+  "seats": {
+    "intake": {
+      "agent": "codex-intake",
+      "class": "work",
+      "results": [
+        "resolved"
+      ]
+    },
+    "implement": {
+      "agent": "codex-implementer",
+      "class": "work",
+      "results": [
+        "complete",
+        "broken",
+        "blocked"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 7200
+      }
+    },
+    "review": {
+      "results": [
+        "clean",
+        "residual",
+        "security-hold"
+      ],
+      "inputs": [
+        "fixes_applied",
+        "has_security_residual",
+        "max_residual_severity",
+        "spec_defect"
+      ],
+      "limits": {
+        "max_attempts": 3,
+        "timeout_seconds": 14400
+      },
+      "aggregate": "review-panel",
+      "panel": {
+        "correctness": {
+          "agent": "codex-review-correctness",
+          "class": "gate"
+        },
+        "security": {
+          "agent": "codex-review-security",
+          "class": "gate"
+        },
+        "tests": {
+          "agent": "codex-review-tests",
+          "class": "gate"
+        }
+      }
+    }
+  }
+}
