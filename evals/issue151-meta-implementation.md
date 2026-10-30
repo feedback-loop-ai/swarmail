@@ -182,3 +182,46 @@ commits. Integration commit `76678c3` records its later allocation to the dsh
 fresh-home decision, renumbers this proposal to 0087 and adds its index row.
 That integration does not retroactively change the earlier failures or accept
 the proposal; the later verify and ship results have their own evidence.
+
+## Standalone eval proof at 841ac40 — 2026-10-30
+
+Review return (decision 0102) of run issue-151-operator-continuation--c45a11bd
+at 841ac403c42ffa7da4f466ca56ddcfce5731c062 (tree
+55612de1b1c24631cca6b96856e2d17018723f46). Two panel findings were repaired,
+both inside evals/:
+
+- `evals/Cargo.toml` again says "Until issue #201 wires CI and pinned verify,
+  run the standalone formatting, lint and full tests separately" (the
+  09852d8 wording). Merge 6d4fc4c had taken main's text, which claimed CI and
+  pinned verify run these checks; neither does (`.github/workflows` has no
+  evals job and `verify-seat.sh` runs the root inventory only). This matches
+  `evals/README.md`.
+- The standalone suite was run at this head. Any later commit touches only
+  this record and that comment.
+
+Provenance: no other eval suite was active (no `swarmail-evals` or `cargo test`
+process, no `/tmp/swarmail-evals-tests-*.lock` holder) before the run. The root
+binary was built with `cargo build --locked --bin swarmail` (fresh, from this
+tree), copied to a private read-only path and passed as an absolute
+`SWARMAIL_BIN`. Its SHA-256 was
+`e08783233f3e48e17dfee0a07f078abc020c0482e7c587bbdefde6fa8a8b6db4` before the
+first command and unchanged after the last. All commands used
+`CARGO_NET_OFFLINE=true` and `--locked`.
+
+| Command | Exit |
+|---|---:|
+| `cargo fmt --manifest-path evals/Cargo.toml --all -- --check` | 0 |
+| `cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings` | 0 |
+| `cargo test --manifest-path evals/Cargo.toml --locked` — run as separate target invocations (`--lib`, `--bins`, each of the ten `--test` files, `--doc`) because this seat's tool bounds one silent call | 0 each |
+
+Passed tests per target: lib 52, bin 19, baseline 3, boundary 15, fixture 17,
+identity 5, proof 6, provenance 27, report 18, runner 37, scoring 18,
+wrappers 19, doc 0 — 236 in all, none failed or ignored. The tool never held
+one uninterrupted full-suite command: a first attempt was cut off when its
+call ended and counts for nothing; the per-target runs above are the proof.
+
+Root: `cargo fmt --all -- --check` exits 0. The root inventory (tests, bundle,
+exact coverage and selftest, publish guard, seal proof, licenses, native-tls
+absence) is the verify seat's receipt at this head; this change touches no
+root file. CI-owned checks, the paid baseline and external publication are not
+claimed.
