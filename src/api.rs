@@ -5,7 +5,7 @@ use crate::compat;
 use crate::deliverability::{AnalysisError, Severity};
 use crate::feed;
 use crate::mcp::{self, McpContext};
-use crate::model::Email;
+use crate::model::{Email, EmailAddress};
 use crate::smtp;
 use crate::store::{Filter, Store, WaitOutcome};
 use crate::threads;
@@ -900,6 +900,25 @@ pub struct ListQuery {
     pub since_ms: Option<i64>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub view: Option<View>,
+}
+
+/// The one list view a caller can ask for (decision 0092 §4). The reader is
+/// by hand so a refused value names the key — a derived enum would answer
+/// only "unknown variant" — and so the single admitted spelling is the
+/// whole domain: `full` and the empty value refuse like any other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Compact,
+}
+
+impl<'de> Deserialize<'de> for View {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        match String::deserialize(de)?.as_str() {
+            "compact" => Ok(Self::Compact),
+            _ => Err(de::Error::custom("view must be compact")),
+        }
+    }
 }
 
 impl ListQuery {
@@ -1082,6 +1101,554 @@ pub struct EmailList {
     /// deep-copy bytes (potentially many megabytes of them) that
     /// serialization provably never reads. The wire is byte-identical.
     pub emails: Vec<Arc<Email>>,
+}
+
+// ---------- the compact agent view (decision 0092) ----------
+//
+// Every member is built from a stored field; nothing here parses `raw`. Every
+// plane writes an item through a `serde_json::Value` (a BTreeMap here, so
+// members come in alphabetical order, nested addresses included): the REST
+// list, the MCP text block and `structuredContent` agree byte for byte.
+
+/// Most entries `anchors` and `attachments` show; a longer list carries its
+/// exact count beside it as `anchors_total` / `attachments_total`.
+pub(crate) const PRESENTATION_CAP: usize = 250;
+
+/// One link occurrence as the agent sees it: where it goes and what it says.
+#[derive(Debug, Serialize)]
+pub(crate) struct Anchor<'a> {
+    anchor_text: Option<&'a str>,
+    url: &'a str,
+}
+
+/// One attachment as the agent sees it.
+#[derive(Debug, Serialize)]
+pub(crate) struct AttachmentEntry<'a> {
+    content_type: Option<&'a str>,
+    filename: Option<&'a str>,
+    size: u64,
+}
+
+/// A known-empty attachment list is omitted; an unknown one (`None`, a row
+/// from before the column) is served as `null`.
+fn known_empty(list: &Option<Vec<AttachmentEntry<'_>>>) -> bool {
+    matches!(list, Some(list) if list.is_empty())
+}
+
+/// The compact email: a handle, the headers an assertion needs, the bounded
+/// text rendering, the labelled links, the attachment list and the stored
+/// codes. Full bodies come from `swarmail_get_email`.
+#[derive(Debug, Serialize)]
+pub(crate) struct CompactEmail<'a> {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    anchors: Vec<Anchor<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anchors_total: Option<usize>,
+    #[serde(skip_serializing_if = "known_empty")]
+    attachments: Option<Vec<AttachmentEntry<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attachments_total: Option<usize>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    codes: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<&'a EmailAddress>,
+    id: &'a str,
+    /// Only a row stored before link metadata (decision 0094) has no anchors
+    /// to show, so only it falls back to the bare URLs.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    links: &'a [String],
+    received_ms: i64,
+    snippet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subject: Option<&'a str>,
+    to: &'a [EmailAddress],
+}
+
+impl<'a> From<&'a Email> for CompactEmail<'a> {
+    fn from(email: &'a Email) -> Self {
+        let metadata = email.link_metadata.as_deref().unwrap_or_default();
+        let attachments = email.attachments.as_deref();
+        CompactEmail {
+            anchors: metadata
+                .iter()
+                .take(PRESENTATION_CAP)
+                .map(|link| Anchor {
+                    anchor_text: link.anchor_text.as_deref(),
+                    url: &link.url,
+                })
+                .collect(),
+            anchors_total: Some(metadata.len()).filter(|n| *n > PRESENTATION_CAP),
+            attachments: attachments.map(|list| {
+                list.iter()
+                    .take(PRESENTATION_CAP)
+                    .map(|a| AttachmentEntry {
+                        content_type: a.content_type.as_deref(),
+                        filename: a.filename.as_deref(),
+                        size: a.size,
+                    })
+                    .collect()
+            }),
+            attachments_total: attachments
+                .map(<[_]>::len)
+                .filter(|n| *n > PRESENTATION_CAP),
+            codes: &email.codes,
+            from: email.from.as_ref(),
+            id: &email.id,
+            links: if email.link_metadata.is_some() {
+                &[]
+            } else {
+                &email.links
+            },
+            received_ms: email.received_ms,
+            snippet: compat::snippet(email),
+            subject: email.subject.as_deref(),
+            to: &email.to,
+        }
+    }
+}
+
+/// The REST list envelope with compact items (`view=compact`): the unchanged
+/// `total, emails` order, each item written as every other plane writes it.
+#[derive(Debug, Serialize)]
+struct CompactList {
+    total: usize,
+    emails: Vec<serde_json::Value>,
+}
+
+/// The one table of names `fields` accepts: the eighteen serialized `Email`
+/// members and the three derived ones. The MCP descriptors publish it as the
+/// argument's `enum` and the refusal reads it, so there is no second list.
+/// `raw` is not a name, and a `_total` rides with its list.
+pub(crate) const FIELD_NAMES: [&str; 21] = [
+    "id",
+    "inbox",
+    "from",
+    "envelope_from",
+    "to",
+    "cc",
+    "recipients",
+    "subject",
+    "received_at",
+    "received_ms",
+    "size",
+    "text",
+    "html",
+    "links",
+    "codes",
+    "message_id",
+    "in_reply_to",
+    "references",
+    "snippet",
+    "anchors",
+    "attachments",
+];
+
+pub(crate) const FIELDS_TYPE_REFUSAL: &str = "fields must be an array of strings";
+
+/// Stage a `fields` value: an array of strings, each one of
+/// [`FIELD_NAMES`]. The type check precedes the name check, and the first
+/// unknown spelling is named.
+pub(crate) fn parse_fields(value: &serde_json::Value) -> Result<Vec<&'static str>, String> {
+    let names: Vec<&str> = value
+        .as_array()
+        .and_then(|items| items.iter().map(serde_json::Value::as_str).collect())
+        .ok_or_else(|| FIELDS_TYPE_REFUSAL.to_string())?;
+    names
+        .into_iter()
+        .map(|name| {
+            FIELD_NAMES
+                .iter()
+                .find(|known| **known == name)
+                .copied()
+                .ok_or_else(|| {
+                    format!("fields must be an array of known field names (unknown: {name})")
+                })
+        })
+        .collect()
+}
+
+/// The email projected to the requested names plus `id` (decision 0092 §3):
+/// the full `Email` value merged with the three derived members, retained
+/// to what was asked. A member the mail lacks stays absent, as in the full
+/// view, and keys come in the server's one canonical order.
+pub(crate) fn project(email: &Email, fields: &[&str]) -> serde_json::Value {
+    let mut full = serde_json::to_value(email).unwrap();
+    let derived = serde_json::to_value(CompactEmail::from(email)).unwrap();
+    let members = full.as_object_mut().unwrap();
+    for key in [
+        "snippet",
+        "anchors",
+        "anchors_total",
+        "attachments",
+        "attachments_total",
+    ] {
+        if let Some(value) = derived.get(key) {
+            members.insert(key.into(), value.clone());
+        }
+    }
+    members.retain(|key, _| {
+        key == "id"
+            || fields
+                .iter()
+                .any(|field| key == field || key.strip_suffix("_total") == Some(*field))
+    });
+    full
+}
+
+/// Decision 0092: byte pins on the compact view and the projection.
+#[cfg(test)]
+mod compact_view {
+    use super::*;
+
+    /// A real parse of `raw` with the two volatile members fixed, so the
+    /// pinned bytes are exact: ingest builds everything else.
+    fn mail(id: &str, raw: &str) -> Email {
+        let mut email = smtp::build_email(
+            raw.as_bytes(),
+            "box",
+            &["bob@x.io".to_string()],
+            "ann@x.io".into(),
+        );
+        email.id = id.into();
+        email.received_ms = 1_700_000_000_000;
+        email
+    }
+
+    /// A seeded-shape mail around one text body.
+    fn text_mail(id: &str, text: &str) -> Email {
+        let mut email = crate::store::email(id, "box", "bob@x.io");
+        email.text = Some(text.into());
+        email
+    }
+
+    /// The compact bytes of `email` as every plane writes them (a `Value`),
+    /// with the snippet member checked to be `compat::snippet` byte for byte.
+    fn compact(email: &Email) -> String {
+        let value = serde_json::to_value(CompactEmail::from(email)).unwrap();
+        assert_eq!(value["snippet"], compat::snippet(email));
+        value.to_string()
+    }
+
+    /// A text-only mail: no anchors, no attachments, the collapsed text as
+    /// the snippet and the stored code.
+    #[test]
+    fn a_text_only_mail() {
+        let email = mail(
+            "t1",
+            "From: Ann <ann@x.io>\r\nTo: bob@x.io\r\nSubject: Hi\r\n\r\nHello   world\r\nCode 123456\r\n",
+        );
+        assert_eq!(
+            compact(&email),
+            r#"{"codes":["123456"],"from":{"address":"ann@x.io","name":"Ann"},"id":"t1","received_ms":1700000000000,"snippet":"Hello world Code 123456","subject":"Hi","to":[{"address":"bob@x.io"}]}"#
+        );
+    }
+
+    /// An html-only mail: the snippet is the bounded html rendered to text,
+    /// and the one link keeps its anchor text.
+    #[test]
+    fn an_html_only_mail() {
+        let email = mail(
+            "h1",
+            "From: ann@x.io\r\nTo: bob@x.io\r\nSubject: Rich\r\nMIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n<p>Hi <b>there</b>,</p><p>Verify: <a href=\"https://x.io/v?t=1\">Verify now</a></p>\r\n",
+        );
+        assert_eq!(
+            compact(&email),
+            r#"{"anchors":[{"anchor_text":"Verify now","url":"https://x.io/v?t=1"}],"from":{"address":"ann@x.io"},"id":"h1","received_ms":1700000000000,"snippet":"Hi there, Verify: Verify now","subject":"Rich","to":[{"address":"bob@x.io"}]}"#
+        );
+    }
+
+    /// A multipart mail with text, html, two anchors and an attachment; two
+    /// recipients, one named.
+    #[test]
+    fn a_multipart_mail_with_anchors_and_an_attachment() {
+        let email = mail(
+            "m1",
+            "From: ann@x.io\r\nTo: bob@x.io, Cy <cy@x.io>\r\nSubject: Mixed\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
+             --b\r\nContent-Type: multipart/alternative; boundary=a\r\n\r\n\
+             --a\r\nContent-Type: text/plain\r\n\r\nSee the links, code 482913\r\n\
+             --a\r\nContent-Type: text/html\r\n\r\n<a href=\"https://x.io/one\">One</a> <a href=\"https://x.io/two\">Two</a>\r\n--a--\r\n\
+             --b\r\nContent-Type: application/pdf; name=\"q3.pdf\"\r\nContent-Disposition: attachment; filename=\"q3.pdf\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\nJVBERi0=\r\n--b--\r\n",
+        );
+        assert_eq!(
+            compact(&email),
+            r#"{"anchors":[{"anchor_text":"One","url":"https://x.io/one"},{"anchor_text":"Two","url":"https://x.io/two"}],"attachments":[{"content_type":"application/pdf","filename":"q3.pdf","size":5}],"codes":["482913"],"from":{"address":"ann@x.io"},"id":"m1","received_ms":1700000000000,"snippet":"See the links, code 482913","subject":"Mixed","to":[{"address":"bob@x.io"},{"address":"cy@x.io","name":"Cy"}]}"#
+        );
+    }
+
+    /// The cut at exactly 200 collapsed scalars keeps every one and adds no
+    /// suffix; at 201 it keeps 200 and appends `...`. The scalars at the cut
+    /// are 2-, 3- and 4-byte UTF-8, and the whitespace run collapses first.
+    #[test]
+    fn the_snippet_cut_at_200_and_201_scalars() {
+        let head = "a".repeat(197);
+        let exact = text_mail("s200", &format!("{head}é雪😀"));
+        assert_eq!(
+            compact(&exact),
+            format!(
+                r#"{{"attachments":null,"id":"s200","received_ms":0,"snippet":"{head}é雪😀","subject":"hi","to":[{{"address":"bob@x.io"}}]}}"#
+            )
+        );
+        let over = text_mail("s201", &format!("{head}é雪😀 \t\r\n b"));
+        assert_eq!(
+            compact(&over),
+            format!(
+                r#"{{"attachments":null,"id":"s201","received_ms":0,"snippet":"{head}é雪😀...","subject":"hi","to":[{{"address":"bob@x.io"}}]}}"#
+            )
+        );
+        // Whitespace alone never counts toward the cut.
+        let spaced = text_mail("sp", &format!("  {}  ", ["w"; 100].join("  \n ")));
+        let value = serde_json::to_value(CompactEmail::from(&spaced)).unwrap();
+        assert_eq!(value["snippet"], ["w"; 100].join(" "));
+    }
+
+    /// A row stored before link metadata and before the attachment column:
+    /// the bare stored links stand in for anchors, the attachment list is
+    /// unknown (`null`, never an empty list), and a stored code is kept.
+    #[test]
+    fn a_historical_row_serves_links_and_unknown_attachments() {
+        let mut email = text_mail("old", "see https://old.test/a");
+        email.links = vec!["https://old.test/a".into(), "https://old.test/b".into()];
+        email.codes = vec!["000111".into()];
+        email.subject = None;
+        email.from = Some(EmailAddress {
+            name: None,
+            address: "old@x.io".into(),
+        });
+        assert!(email.link_metadata.is_none());
+        assert!(email.attachments.is_none());
+        assert_eq!(
+            compact(&email),
+            r#"{"attachments":null,"codes":["000111"],"from":{"address":"old@x.io"},"id":"old","links":["https://old.test/a","https://old.test/b"],"received_ms":0,"snippet":"see https://old.test/a","to":[{"address":"bob@x.io"}]}"#
+        );
+    }
+
+    /// Known-empty lists are omitted: fresh metadata with no links and an
+    /// attachment list that is known empty add no member at all, and the
+    /// stored links (served only for a historical row) stay out.
+    #[test]
+    fn known_empty_lists_are_omitted() {
+        let mut email = text_mail("empty", "");
+        email.link_metadata = Some(vec![]);
+        email.attachments = Some(vec![]);
+        email.links = vec!["https://never.test/served".into()];
+        email.to.clear();
+        assert_eq!(
+            compact(&email),
+            r#"{"id":"empty","received_ms":0,"snippet":"","subject":"hi","to":[]}"#
+        );
+    }
+
+    fn occurrences(count: usize) -> Vec<crate::model::LinkMetadata> {
+        (0..count)
+            .map(|i| crate::model::LinkMetadata {
+                url: format!("https://x.io/{i}"),
+                anchor_text: (i.is_multiple_of(2)).then(|| format!("a{i}")),
+                rel: None,
+                source: crate::model::LinkSource::Html,
+            })
+            .collect()
+    }
+
+    fn files(count: usize) -> Vec<crate::model::Attachment> {
+        (0..count)
+            .map(|i| crate::model::Attachment {
+                filename: Some(format!("f{i}.bin")),
+                content_type: (i.is_multiple_of(2)).then(|| "application/octet-stream".into()),
+                size: i as u64,
+            })
+            .collect()
+    }
+
+    /// 250 anchors are all shown with no total; 251 show 250 and the exact
+    /// count. Occurrences repeat nothing here, so the 251st is the one cut.
+    #[test]
+    fn anchors_are_capped_at_250_with_an_exact_total() {
+        let entry = |i: usize| {
+            if i.is_multiple_of(2) {
+                format!(r#"{{"anchor_text":"a{i}","url":"https://x.io/{i}"}}"#)
+            } else {
+                format!(r#"{{"anchor_text":null,"url":"https://x.io/{i}"}}"#)
+            }
+        };
+        let list = |n: usize| (0..n).map(entry).collect::<Vec<_>>().join(",");
+        for (count, total) in [(250, ""), (251, r#""anchors_total":251,"#)] {
+            let mut email = text_mail("n", "x");
+            email.attachments = Some(vec![]);
+            email.link_metadata = Some(occurrences(count));
+            assert_eq!(
+                compact(&email),
+                format!(
+                    r#"{{"anchors":[{}],{total}"id":"n","received_ms":0,"snippet":"x","subject":"hi","to":[{{"address":"bob@x.io"}}]}}"#,
+                    list(250)
+                )
+            );
+        }
+    }
+
+    /// The same cap for attachments, with the nullable content type.
+    #[test]
+    fn attachments_are_capped_at_250_with_an_exact_total() {
+        let entry = |i: usize| {
+            let kind = if i.is_multiple_of(2) {
+                r#""application/octet-stream""#
+            } else {
+                "null"
+            };
+            format!(r#"{{"content_type":{kind},"filename":"f{i}.bin","size":{i}}}"#)
+        };
+        let list = (0..250).map(entry).collect::<Vec<_>>().join(",");
+        for (count, total) in [(250, ""), (251, r#""attachments_total":251,"#)] {
+            let mut email = text_mail("n", "x");
+            email.link_metadata = Some(vec![]);
+            email.attachments = Some(files(count));
+            assert_eq!(
+                compact(&email),
+                format!(
+                    r#"{{"attachments":[{list}],{total}"id":"n","received_ms":0,"snippet":"x","subject":"hi","to":[{{"address":"bob@x.io"}}]}}"#
+                )
+            );
+        }
+    }
+
+    /// The `fields` table is the 18 `Email` members and the 3 derived
+    /// members: 21 distinct names, `raw` none of them, every `Email` member
+    /// a serialized one.
+    #[test]
+    fn the_field_table_is_the_email_members_and_the_derived_three() {
+        let distinct: std::collections::BTreeSet<_> = FIELD_NAMES.iter().collect();
+        assert_eq!(distinct.len(), 21);
+        assert!(!FIELD_NAMES.contains(&"raw"));
+        let mut full = crate::store::email("f", "box", "bob@x.io");
+        full.from = Some(EmailAddress {
+            name: None,
+            address: "ann@x.io".into(),
+        });
+        full.cc = full.to.clone();
+        full.text = Some("t".into());
+        full.html = Some("h".into());
+        full.links = vec!["l".into()];
+        full.codes = vec!["c".into()];
+        full.message_id = Some("m".into());
+        full.in_reply_to = Some("p".into());
+        full.references = vec!["r".into()];
+        full.envelope_from = Some("e".into());
+        let value = serde_json::to_value(&full).unwrap();
+        let mut members: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        members.sort_unstable();
+        let mut names: Vec<&str> = FIELD_NAMES[..18].to_vec();
+        names.sort_unstable();
+        assert_eq!(members, names);
+        assert_eq!(FIELD_NAMES[18..], ["snippet", "anchors", "attachments"]);
+    }
+
+    /// `parse_fields`: absence is the caller's; a non-array or a non-string
+    /// element is the type sentence; an unknown spelling (case counts) is
+    /// named, the first one, and only after the types check out.
+    #[test]
+    fn fields_are_staged_by_type_then_by_name() {
+        use serde_json::json;
+        assert_eq!(parse_fields(&json!([])), Ok(vec![]));
+        assert_eq!(
+            parse_fields(&json!(["subject", "id", "subject"])),
+            Ok(vec!["subject", "id", "subject"])
+        );
+        for bad in [
+            json!("subject"),
+            json!(null),
+            json!({"0": "subject"}),
+            json!(7),
+            json!(["subject", 7]),
+            json!([null]),
+            json!(["nope", 1]),
+        ] {
+            assert_eq!(
+                parse_fields(&bad),
+                Err("fields must be an array of strings".to_string()),
+                "{bad}"
+            );
+        }
+        for (bad, name) in [
+            (json!(["ID"]), "ID"),
+            (json!(["raw"]), "raw"),
+            (json!(["anchors_total"]), "anchors_total"),
+            (json!(["id", "nope", "worse"]), "nope"),
+            (json!([""]), ""),
+        ] {
+            assert_eq!(
+                parse_fields(&bad),
+                Err(format!(
+                    "fields must be an array of known field names (unknown: {name})"
+                )),
+                "{bad}"
+            );
+        }
+    }
+
+    /// The projection keeps the requested names plus `id`, takes the three
+    /// derived members from the compact rules, rides a `_total` with its
+    /// list, and leaves an absent member absent.
+    #[test]
+    fn the_projection_keeps_requested_names_plus_id() {
+        let keys = |email: &Email, fields: &[&str]| -> Vec<String> {
+            project(email, fields)
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let mut email = text_mail("p", "Body text");
+        email.html = Some("<p>Body html</p>".into());
+        email.link_metadata = Some(occurrences(251));
+        email.attachments = Some(files(251));
+        assert_eq!(keys(&email, &[]), ["id"]);
+        assert_eq!(
+            keys(&email, &["subject", "id", "subject"]),
+            ["id", "subject"]
+        );
+        assert_eq!(keys(&email, &["text"]), ["id", "text"]);
+        assert_eq!(
+            keys(&email, &["anchors", "attachments", "snippet"]),
+            [
+                "anchors",
+                "anchors_total",
+                "attachments",
+                "attachments_total",
+                "id",
+                "snippet"
+            ]
+        );
+        // `from`, `message_id` and the like are absent on this mail, so
+        // naming them adds no key.
+        assert_eq!(keys(&email, &["from", "message_id", "cc", "links"]), ["id"]);
+        let value = project(&email, &["snippet", "anchors", "attachments"]);
+        assert_eq!(value["snippet"], "Body text");
+        assert_eq!(value["anchors"].as_array().unwrap().len(), 250);
+        assert_eq!(value["anchors_total"], 251);
+        assert_eq!(value["attachments"].as_array().unwrap().len(), 250);
+        assert_eq!(value["attachments_total"], 251);
+        // Named alone, a list's total does not ride without it, and a list
+        // within the cap carries none.
+        email.link_metadata = Some(occurrences(2));
+        email.attachments = None;
+        let value = project(&email, &["anchors", "attachments", "links"]);
+        assert_eq!(value["anchors"].as_array().unwrap().len(), 2);
+        assert!(value.get("anchors_total").is_none());
+        assert!(value["attachments"].is_null());
+        assert!(value.get("attachments_total").is_none());
+        // The full view's own members keep their shapes.
+        let value = project(&email, &["to", "received_ms", "size", "inbox"]);
+        assert_eq!(
+            value,
+            serde_json::json!({"id":"p","inbox":"box","received_ms":0,"size":1,"to":[{"address":"bob@x.io"}]})
+        );
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1306,7 +1873,7 @@ async fn list_messages(
     State(state): State<AppState>,
     Path(inbox): Path<String>,
     raw: axum::extract::RawQuery,
-) -> ApiResult<Json<EmailList>> {
+) -> ApiResult<Response> {
     admit(&inbox)?;
     let q: ListQuery = parse_query(raw.0.as_deref().unwrap_or(""), "list")?;
     // The page cap is the shared refusal (decision 0030 §3), answered
@@ -1317,7 +1884,15 @@ async fn list_messages(
     let total = all.len();
     let offset = q.offset.unwrap_or(0);
     let emails: Vec<Arc<Email>> = all.into_iter().skip(offset).take(limit).collect();
-    Ok(Json(EmailList { total, emails }))
+    // Decision 0092 §4: without `view` the response is the unchanged list.
+    if q.view.is_some() {
+        let emails = emails
+            .iter()
+            .map(|e| serde_json::to_value(CompactEmail::from(&**e)).unwrap())
+            .collect();
+        return Ok(Json(CompactList { total, emails }).into_response());
+    }
+    Ok(Json(EmailList { total, emails }).into_response())
 }
 
 async fn count_messages(

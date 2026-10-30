@@ -4,14 +4,14 @@ Each task is checked only with its paired proof. Every test runs against real
 servers (0004); inline modules stay measured (0020). Nothing is `complete`
 while a box is open.
 
-- [ ] **T0 — Prove the stacked base before any edit (AC6).** On the untouched
+- [x] **T0 — Prove the stacked base before any edit (AC6).** On the untouched
   tree run the inherited suites and record the `assert_appended` reading from
   the spec in `implementation.md`; inventory the modern-revision test sites
   that read `text`/`html` from search or latest.
   **Test:** `cargo test --locked --test mcp_revisions --test focused_waits`
   exits 0 at `f663c44`; `legacy_bytes`, `modern_all_tools_http_and_stdio` and
   `served_openapi_pins_and_negative_controls` are named green in the story.
-- [ ] **T1 — Capture attachments at ingest (AC4).** `model::Attachment`,
+- [x] **T1 — Capture attachments at ingest (AC4).** `model::Attachment`,
   `Email.attachments` (`#[serde(skip)]`), `build_email` fills it from the
   outer parser list; every construction site gains the member; existing
   serialization bytes unchanged.
@@ -20,7 +20,7 @@ while a box is open.
   order with the message counted once; a text-only mail yields `Some([])`;
   an unparsable body yields `None`; `serde_json::to_value(email)` carries no
   `attachments` key.
-- [ ] **T2 — Store and restore the column strictly (AC4).** `attachments_json`
+- [x] **T2 — Store and restore the column strictly (AC4).** `attachments_json`
   in `COLUMNS`, `SCHEMA`, `ADDED_COLUMNS` and the insert; a generic strict
   reader shared with `link_metadata`; `row_to_email` restores tuples.
   **Test:** inline `src/persist.rs` tests: round trip of `Some(list)`,
@@ -29,7 +29,7 @@ while a box is open.
   restore with `FromSqlConversionFailure` at the column index; `cargo test
   --locked --test persistence` and the burst prune tests stay green with no
   orphan row.
-- [ ] **T3 — The compact view and its byte pins (AC1).** `api::CompactEmail`
+- [x] **T3 — The compact view and its byte pins (AC1).** `api::CompactEmail`
   from `&Email`; `compat::snippet` becomes `pub(crate)`; capped `anchors` and
   `attachments` with `_total` members.
   **Test:** inline `src/api.rs` pins, byte-exact JSON strings, for text-only,
@@ -38,7 +38,7 @@ while a box is open.
   (`links`, `attachments: null`), 250 and 251 anchors, 250 and 251
   attachments; and `compact.snippet == compat::snippet(email)` on every
   fixture, which carries the existing prefix-bound proof.
-- [ ] **T4 — MCP compact default and `fields` (AC2, AC5).** `MODERN_TOOLS`;
+- [x] **T4 — MCP compact default and `fields` (AC2, AC5).** `MODERN_TOOLS`;
   revision-aware `unknown_argument`; `fields` staged before lookup and before
   `park_await`; search and latest serve `CompactEmail` on June/November; the
   four reads project; modern descriptions, `fields` property with the 21-name
@@ -53,28 +53,28 @@ while a box is open.
   against its schema; `{}` still invalid; catalogue 15; March: `unknown
   argument: fields` and `legacy_bytes` unmodified; pin tests pass with the
   four named exceptions.
-- [ ] **T5 — REST `view=compact` (AC3).** `ListQuery.view`, `View::Compact`,
+- [x] **T5 — REST `view=compact` (AC3).** `ListQuery.view`, `View::Compact`,
   the handler branch, OpenAPI `view` parameter and `CompactEmail` component.
   **Test:** `tests/api.rs`: `view=compact` returns `{total, emails:[compact]}`
   byte-pinned against T3's fixtures; the no-key list is byte-identical to the
   existing pin; `view=full` and `view=` answer 400 naming `view`; the inline
   served-parameters test lists `view` on the list route only; the single
   message, thread and feed routes still take no query.
-- [ ] **T6 — Documents and the index row.** README MCP section, `llms.txt`,
+- [x] **T6 — Documents and the index row.** README MCP section, `llms.txt`,
   `docs/decisions/README.md` row for 0092 (status proposed), release notes if
   the release process asks.
   **Test:** `cargo test --locked --test listener_contract_docs --test
   store_contract_docs` and the OpenAPI pin tests stay green; the README and
   `llms.txt` name `fields`, `view=compact` and the compact default on modern
   revisions.
-- [ ] **T7 — The story and the metric (AC6, AC7).** Write
+- [x] **T7 — The story and the metric (AC6, AC7).** Write
   `specs/compact-email-view/implementation.md`: T0's reading and exits, the
   byte table (March full item, November compact item, modern reply with both
   representations) labelled as bytes, and the literal "not measured: no paid
   trial".
   **Test:** the byte figures come from T3/T4's pinned fixtures (`len()` of
   the pinned strings asserted in the tests), not from prose.
-- [ ] **T8 — Every gate, locked (AC8).** `cargo fmt --all -- --check`;
+- [ ] **T8 — Every gate, locked (AC8).** (Every gate ran green in the implement seat except `brokkr compile`, whose pinned binary is not installed in that sandbox; see `implementation.md`. Left open for the verify seat.) `cargo fmt --all -- --check`;
   `cargo clippy --workspace --all-targets --locked -- -D warnings`;
   `cargo test --workspace --locked`; `cargo test --manifest-path
   evals/Cargo.toml --locked`; `brokkr compile --bundle .brokkr/recipes/self`;

@@ -22,9 +22,10 @@
           { "name": "subject", "in": "query", "schema": { "type": "string" } },
           { "name": "since_ms", "in": "query", "schema": { "type": "integer" } },
           { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 100, "maximum": 250 } },
-          { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } }
+          { "name": "offset", "in": "query", "schema": { "type": "integer", "default": 0 } },
+          { "name": "view", "in": "query", "schema": { "type": "string", "enum": [ "compact" ] }, "description": "Without it the list is unchanged. `view=compact` answers the same `{total, emails}` envelope with the compact agent view of each email (the CompactEmail component): a handle, the headers, a snippet of at most 200 characters, codes, anchors with their text and an attachment list, and no bodies. `compact` is the only value; any other, the empty one included, is refused with 400 naming `view` (decision 0092 §4)" }
         ],
-        "responses": { "403": { "$ref": "#/components/responses/GuardRefused" }, "200":{ "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EmailList" } } } }, "400": { "description": "A blank inbox, an over-cap limit, a malformed value or an unknown query key (named). GET /api/v1/inboxes/{inbox}/messages accepts only the query keys to, from, subject, since_ms, limit and offset (decision 0048 §5)" } }
+        "responses": { "403": { "$ref": "#/components/responses/GuardRefused" }, "200":{ "description": "OK — the full list, or with `view=compact` the compact list", "content": { "application/json": { "schema": { "oneOf": [ { "$ref": "#/components/schemas/EmailList" }, { "$ref": "#/components/schemas/CompactEmailList" } ] } } } }, "400": { "description": "A blank inbox, an over-cap limit, a malformed value or an unknown query key (named). GET /api/v1/inboxes/{inbox}/messages accepts only the query keys to, from, subject, since_ms, limit and offset, plus view=compact (decisions 0048 §5, 0092 §4)" } }
       },
       "delete": { "summary": "Clear an inbox", "description": "DELETE /api/v1/inboxes/{inbox}/messages takes no query keys. Unsupported selectors are refused with a native JSON 400 before clearing; no query or a literal empty query keeps the current behavior.", "parameters": [ { "name": "inbox", "in": "path", "required": true, "schema": { "type": "string" } } ], "responses": { "403": { "$ref": "#/components/responses/GuardRefused" }, "200":{ "description": "`{\"removed\": n}`" }, "400": { "description": "A blank or control-bearing inbox — refused before anything is cleared (decision 0044 §3); any decoded query key is named in the native JSON error, after inbox admission" }, "503": { "description": "`storage commit failed` — the clear did not commit, nothing was removed (decision 0014); during shutdown the boundary refuses before any commit with the same text (decision 0024)" } } }
     },
@@ -245,6 +246,26 @@
           "emails": { "type": "array", "items": { "$ref": "#/components/schemas/Email" }, "description": "The conversation, oldest first" }
         }
       },
+      "CompactEmail": {
+        "type": "object",
+        "description": "The compact agent view of one email (decision 0092): what an assertion needs and no body. Fetch the whole email by `id` with GET /api/v1/messages/{id}. Optional members are omitted, never null, except `attachments`, which is null for mail stored before attachments were captured.",
+        "properties": {
+          "id": { "type": "string", "description": "The handle: the id of GET /api/v1/messages/{id}" },
+          "from": { "$ref": "#/components/schemas/EmailAddress" },
+          "to": { "type": "array", "items": { "$ref": "#/components/schemas/EmailAddress" } },
+          "subject": { "type": "string" },
+          "received_ms": { "type": "integer" },
+          "snippet": { "type": "string", "description": "The text part, else the HTML rendered to text, from at most the first 8192 bytes of the body, whitespace runs collapsed, at most 200 characters, `...` appended when the output or the source was cut" },
+          "codes": { "type": "array", "items": { "type": "string" }, "description": "The stored codes, uncapped; omitted when empty" },
+          "anchors": { "type": "array", "items": { "type": "object", "properties": { "url": { "type": "string" }, "anchor_text": { "type": [ "string", "null" ], "description": "null when the label is unknown" } }, "required": [ "url", "anchor_text" ] }, "description": "Every link occurrence in ingest order, at most 250; omitted when empty and for mail stored before link occurrences were kept (those carry `links`)" },
+          "anchors_total": { "type": "integer", "description": "The exact occurrence count, present only when `anchors` was cut at 250" },
+          "links": { "type": "array", "items": { "type": "string" }, "description": "The stored URLs of mail stored before link occurrences were kept; omitted otherwise" },
+          "attachments": { "type": [ "array", "null" ], "items": { "type": "object", "properties": { "filename": { "type": [ "string", "null" ] }, "content_type": { "type": [ "string", "null" ] }, "size": { "type": "integer", "description": "The decoded part length in bytes" } }, "required": [ "filename", "content_type", "size" ] }, "description": "The attachment parts of the message in parser order, at most 250; omitted when the mail has none; null when unknown" },
+          "attachments_total": { "type": "integer", "description": "The exact attachment count, present only when `attachments` was cut at 250" }
+        },
+        "required": [ "id", "to", "received_ms", "snippet" ]
+      },
+      "CompactEmailList": { "type": "object", "properties": { "total": { "type": "integer" }, "emails": { "type": "array", "items": { "$ref": "#/components/schemas/CompactEmail" } } } },
       "EmailList": { "type": "object", "properties": { "total": { "type": "integer" }, "emails": { "type": "array", "items": { "$ref": "#/components/schemas/Email" } } } },
       "AwaitResponse": { "type": "object", "properties": { "matched": { "type": "integer" }, "total": { "type": "integer" }, "emails": { "type": "array", "items": { "$ref": "#/components/schemas/Email" } } } },
       "InboxSummary": { "type": "object", "properties": { "name": { "type": "string" }, "count": { "type": "integer" } } },
