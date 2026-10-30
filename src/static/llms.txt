@@ -151,8 +151,9 @@ email by default: id (the handle for swarmail_get_email), from, to, subject,
 received_ms, a snippet of at most 200 characters, codes, anchors (url,
 anchor_text) and attachments (filename, content_type, size), no bodies. Lists
 of anchors and attachments are cut at 250 with the exact anchors_total or
-attachments_total. A "attachments": null is mail stored before attachments were
-captured. get_email and wait_for_email stay whole. The four reads (search,
+attachments_total. A "attachments": null means unknown: mail stored before attachments were
+captured, or a body the parser could not read. Mail stored before link
+occurrences were kept serves its stored links instead of anchors. get_email and wait_for_email stay whole. The four reads (search,
 latest, get, wait) take fields: an array of names from the published enum; each
 email then carries the named members it has plus id, in the server's fixed key
 order; [] is ids only; text and html appear only when named; an unknown name or

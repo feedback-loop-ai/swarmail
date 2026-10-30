@@ -44,9 +44,11 @@
 5. **Attachments are captured at ingest.** `build_email` records filename,
    content type and decoded size for every part of the outer parser list, in
    parser order, into `Email.attachments` and the nullable column
-   `attachments_json`, committed in the insert's transaction. SQL `NULL` is a
-   row from before the column: unknown, served as `attachments: null`, never
-   backfilled. Any other stored value restores strictly or refuses the
+   `attachments_json`, committed in the insert's transaction. SQL `NULL` is
+   unknown, served as `attachments: null`, never backfilled: a row from before
+   the column, or a fresh mail the parser could not read (`build_email` stores
+   `None`). The two are not told apart on the wire. `content_type` is
+   `type/subtype`, or the bare type when the header has no subtype. Any other stored value restores strictly or refuses the
    restore. No read parses `raw`.
 6. **Presentation lists are bounded with exact totals.** `anchors` and
    `attachments` show at most 250 entries; a cut list carries its exact

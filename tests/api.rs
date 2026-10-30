@@ -5666,7 +5666,7 @@ async fn view_admits_only_compact_and_only_on_the_list() {
     let schemas = &doc["components"]["schemas"];
     assert_eq!(
         doc["paths"]["/api/v1/inboxes/{inbox}/messages"]["get"]["responses"]["200"]["content"]["application/json"]
-            ["schema"]["oneOf"],
+            ["schema"]["anyOf"],
         serde_json::json!([
             {"$ref": "#/components/schemas/EmailList"},
             {"$ref": "#/components/schemas/CompactEmailList"}

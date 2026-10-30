@@ -122,8 +122,8 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     // Decision 0094 §2: NULL is a row from before ingest kept link
     // occurrences — unknown, never backfilled.
     ("link_metadata_json", "TEXT"),
-    // Decision 0092 §5: NULL is a row from before ingest kept the attachment
-    // list — unknown, never backfilled.
+    // Decision 0092 §5: NULL is unknown — a row from before ingest kept the
+    // attachment list, or a mail the parser could not read; never backfilled.
     ("attachments_json", "TEXT"),
 ];
 

@@ -282,6 +282,8 @@ async fn modern_compact_default_and_fields_over_http_and_stdio() {
                 ("wait_for_code", json!({"inbox":"box","timeout_ms":0})),
                 ("wait_for_link", json!({"inbox":"box","timeout_ms":0})),
                 ("clear_inbox", json!({"inbox":"idle"})),
+                ("clear_all", json!({})),
+                ("clear_chaos", json!({})),
             ] {
                 let mut args = args;
                 args["fields"] = json!(["id"]);
@@ -291,6 +293,18 @@ async fn modern_compact_default_and_fields_over_http_and_stdio() {
                     "{tool}"
                 );
             }
+            // set_chaos names its own vocabulary after the refused key.
+            assert_eq!(
+                s.refused(
+                    "set_chaos",
+                    json!({"event":"data","probability":0,"fields":["id"]})
+                )
+                .await,
+                (
+                    -32602,
+                    "unknown argument: fields (use event|probability|error|delay_ms)".to_string()
+                )
+            );
             // Nothing above stored, removed or changed a mail.
             assert_eq!(s.ok("get_email", json!({"id":id})).await, full);
             s.wire.finish().await;

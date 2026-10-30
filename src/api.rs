@@ -1389,13 +1389,17 @@ mod compact_view {
                 r#"{{"attachments":null,"id":"s200","received_ms":0,"snippet":"{head}é雪😀","subject":"hi","to":[{{"address":"bob@x.io"}}]}}"#
             )
         );
-        let over = text_mail("s201", &format!("{head}é雪😀 \t\r\n b"));
+        // Exactly 201 scalars, the 201st a plain letter after the 4-byte cut.
+        let over = text_mail("s201", &format!("{head}é雪😀b"));
         assert_eq!(
             compact(&over),
             format!(
                 r#"{{"attachments":null,"id":"s201","received_ms":0,"snippet":"{head}é雪😀...","subject":"hi","to":[{{"address":"bob@x.io"}}]}}"#
             )
         );
+        // A whitespace run collapses to one space before counting (202 here).
+        let runs = text_mail("s202", &format!("{head}é雪😀 \t\r\n b"));
+        assert_eq!(compact(&runs), compact(&over).replace("s201", "s202"));
         // Whitespace alone never counts toward the cut.
         let spaced = text_mail("sp", &format!("  {}  ", ["w"; 100].join("  \n ")));
         let value = serde_json::to_value(CompactEmail::from(&spaced)).unwrap();

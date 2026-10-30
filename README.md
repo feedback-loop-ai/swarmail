@@ -694,7 +694,8 @@ including arrays containing only notifications. Modern tool descriptors add
 `readOnlyHint: true` on reads, and `readOnlyHint: false, destructiveHint: true`
 on all mutations (including seed, which can evict old mail, and chaos changes).
 Input schemas, the thirteen existing March catalogue entries and existing
-result bytes are unchanged; discovery appends the two focused waits after them
+result bytes are unchanged for March (the modern revisions add `fields` to
+four reads, below); discovery appends the two focused waits after them
 (decision 0094, proposed), fifteen entries in all. For `2025-06-18` and
 `2025-11-25`, every tool declares an object-root `outputSchema`; successful
 results include `structuredContent` and the same JSON in the existing text block.
@@ -714,10 +715,11 @@ HTML rendered to text, from at most the first 8192 bytes of the body),
 `content_type`, decoded `size`). `anchors` and `attachments` show at most 250
 entries and carry the exact `anchors_total` / `attachments_total` when cut.
 Mail stored before link occurrences were kept serves its stored `links` instead
-of anchors, and mail stored before attachments were captured serves
-`"attachments": null` (unknown, never guessed from the raw bytes). Attachments
+of anchors, and mail stored before attachments were captured, or whose body the parser
+could not read, serves `"attachments": null` (unknown, never guessed from the
+raw bytes). Attachments
 are listed at ingest, in the same transaction as the mail. `swarmail_get_email`
-and `swarmail_wait_for_email` keep answering whole emails. Their four reads
+and `swarmail_wait_for_email` keep answering whole emails. The four reads
 (search, latest, get, wait) also take `fields`, an array of names from the
 published enum (the serialized email members plus `snippet`, `anchors` and
 `attachments`): each email then carries those members that it has, plus `id`,
