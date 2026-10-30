@@ -43,7 +43,7 @@ Proposed [0079](../../docs/decisions/0079-mcp-version-negotiation.md),
 [0085](../../docs/decisions/0085-deliverability-report.md),
 [0090](../../docs/decisions/0101-mcp-options-admission.md) and
 [0103](../../docs/decisions/0103-mixed-work-seats.md) retain their statuses.
-0090/0103 collide with independent candidates; their final allocation and every
+0101/0103 collide with independent candidates; their final allocation and every
 acceptance belong to the operator. 0104 is the next unused local number above
 0103 for this new correction, provisionally, not a reassignment of either one
 or a claim of a host-wide reservation. The operator reconciles it at integration.
