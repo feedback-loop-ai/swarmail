@@ -3540,6 +3540,7 @@ while :; do :; done
 
     #[test]
     fn source_observation_cancellation_stays_latched_before_cargo_admission() {
+        let _trial_scope = crate::test_support::trial_scope();
         for signal in [libc::SIGTERM, libc::SIGINT] {
             let dir = tempfile::tempdir().unwrap();
             let mut probe = matrix_probe_config(
@@ -3584,6 +3585,7 @@ while :; do :; done
 
     #[test]
     fn retained_child_conflicts_with_cancellation_winning_commit_without_mutation() {
+        let _trial_scope = crate::test_support::trial_scope();
         for signal in [libc::SIGTERM, libc::SIGINT] {
             let dir = tempfile::tempdir().unwrap();
             let mut probe = matrix_probe_config(
@@ -3653,6 +3655,7 @@ while :; do :; done
 
     #[test]
     fn envelope_stop_observes_the_same_pending_cleanup_and_bypass_negative_control() {
+        let _trial_scope = crate::test_support::trial_scope();
         for bypass in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let mut probe = matrix_probe_config(
@@ -4150,6 +4153,9 @@ mod baseline_tests {
             assert!(baseline_transition(&mut resources).await.is_err());
             return;
         }
+        // The parent holds the scope; the re-executed child above must not
+        // take it again, or it would wait on its own parent.
+        let _trial_scope = crate::test_support::trial_scope();
         for signal in [libc::SIGTERM, libc::SIGINT] {
             let dir = tempfile::tempdir().unwrap();
             let hold = dir.path().join("gap");
