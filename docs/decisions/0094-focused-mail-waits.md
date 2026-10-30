@@ -7,7 +7,7 @@
 - **Plan and proofs:** [plan](../../specs/focused-mail-waits/plan.md),
   [tasks](../../specs/focused-mail-waits/tasks.md).
 - **Supplements:** the public tool inventories of proposed
-  [0082](0082-mcp-structured-output.md) and [0091](0091-mcp-report-output.md);
+  [0082](0082-mcp-structured-output.md) and [0105](0105-mcp-report-output.md);
   extends ingest-owned extraction under [0005](0005-extraction-at-ingest.md)
   compatibly, without changing existing stored fields or historical restore.
 - **Preserves:** 0001–0005, 0010, 0030/0031, 0048/0049/0061, 0074 and the

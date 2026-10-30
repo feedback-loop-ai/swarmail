@@ -16,7 +16,7 @@ public contract or ruling. No new decision is declared. Proposed
 [0079](../../docs/decisions/0079-mcp-version-negotiation.md),
 [0080](../../docs/decisions/0080-mcp-source-reconciliation.md),
 [0082](../../docs/decisions/0082-mcp-structured-output.md) and
-[0091](../../docs/decisions/0091-mcp-report-output.md) retain their statuses and
+[0105](../../docs/decisions/0105-mcp-report-output.md) retain their statuses and
 historical text. Compatibility under [0045 §8](../../docs/decisions/0045-delivery-repairs.md)
 is not acceptance. Integration owns provisional-number collisions.
 
