@@ -123,14 +123,18 @@ Clients send Content-Type: application/json and Accept: application/json,
 text/event-stream, then MCP-Protocol-Version: <returned revision> after init.
 HTTP is stateless: missing version header means 2025-03-26; one supported
 header selects its revision. Invalid/duplicate/unsupported headers refuse
-400/-32600/null after POST body/parse checks, also on other methods. Media-header leniency is retained.
+400/-32600/null after POST body/parse checks, also on other methods except
+OPTIONS: a guard-admitted OPTIONS is 405 with Allow: POST and no CORS (decision
+0043 §4). Media-header leniency is retained.
 No sessions or SSE; GET /mcp is 405 with valid or absent version headers.
 
 Only 2025-03-26 supports batches; every batch description below refers to
 that revision. Modern arrays refuse one -32600/null before all effects,
 including notification-only arrays. Legacy batch initialize stays legacy.
-Modern tools annotate reads readOnlyHint:true and mutations readOnlyHint:false,
-destructiveHint:true (seed can prune, chaos changes replace configuration).
+Modern tools annotate the seven reads (search, get, latest, wait, both extracts
+and the deliverability report, whose cache fill changes no mail) readOnlyHint:true
+and the six mutations readOnlyHint:false, destructiveHint:true (delete, both
+clears, seed, which can prune, and both chaos changes).
 For 2025-06-18 and 2025-11-25 every tool declares an object-root outputSchema.
 Every success returns structuredContent plus the same JSON in its existing text
 block; text-only consumers can keep reading content. Errors keep their text/RPC
@@ -153,7 +157,9 @@ arrays refuse locally without dialing, oversized ones with one null-ID size
 error. Independent operational lines still run concurrently after initialization.
 This delivery claims version negotiation; full revision conformance is not claimed.
 The operator chose to retain documented C1–C6 deviations on 2026-10-26; see the
-[per-revision deviation register](https://github.com/feedback-loop-ai/swarmail/blob/main/specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register).
+[per-revision deviation register](https://github.com/feedback-loop-ai/swarmail/blob/main/specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register),
+qualified by the proposed [dated candidate corrections](https://github.com/feedback-loop-ai/swarmail/blob/main/docs/decisions/0104-mcp-candidate-proof.md)
+for its thirteen tools, OPTIONS exception and shared-limiter witness.
 This bridge targets the paired stateless JSON server with identity HTTP parsing;
 it advertises JSON/SSE but has no general SSE/session client support.
 Tool calls share 1024 attempts per server per monotonic second, including

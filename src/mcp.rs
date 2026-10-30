@@ -102,8 +102,8 @@ impl Default for ToolRate {
 }
 
 impl ToolRate {
-    const CAP: usize = 1024;
-    const WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+    pub(crate) const CAP: usize = 1024;
+    pub(crate) const WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
     fn take_at(&self, now: std::time::Instant) -> bool {
         let mut window = self.0.lock().unwrap();
@@ -116,6 +116,19 @@ impl ToolRate {
             window.1 += 1;
             true
         }
+    }
+}
+
+/// Test-owned window state for one limiter instance — the router's own,
+/// handed out by `api::observe_next_router_tool_rate`. No clock framework.
+#[cfg(test)]
+impl ToolRate {
+    pub(crate) fn set_window(&self, start: std::time::Instant, taken: usize) {
+        *self.0.lock().unwrap() = (start, taken);
+    }
+
+    pub(crate) fn taken(&self) -> usize {
+        self.0.lock().unwrap().1
     }
 }
 
@@ -390,7 +403,7 @@ async fn handle_revision(
 
 fn tool_descriptors(revision: Revision) -> Value {
     let mut tools = TOOLS.clone();
-    if matches!(revision, Revision::June | Revision::November) {
+    if revision != Revision::March {
         for tool in tools.as_array_mut().unwrap() {
             if tool["name"] == "swarmail_wait_for_email" {
                 tool["description"] = json!(tool["description"].as_str().unwrap().replace(
@@ -404,6 +417,8 @@ fn tool_descriptors(revision: Revision) -> Value {
                 tool["description"] = json!(MODERN_REPORT_DESCRIPTION);
             }
             tool["outputSchema"] = OUTPUT_SCHEMAS[tool["name"].as_str().unwrap()].clone();
+            // Reads never change stored mail or extraction; the report's
+            // lazy cache fill is not a mail mutation (0085).
             let read_only = matches!(
                 tool["name"].as_str().unwrap(),
                 "swarmail_search_emails"
@@ -977,7 +992,7 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
             "limit": { "type": "integer", "minimum": 0, "maximum": 250, "default": 100 },
             "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Matches to skip, newest first; total is counted before paging" } },
             "additionalProperties": false } },
-        { "name": "swarmail_get_deliverability_report", "description": "Lazy versioned report from stored bytes. Only the synthetic demo rule ships; empty findings do not imply deliverability. Returns report JSON in a text block (2025-03-26).",
+        { "name": "swarmail_get_deliverability_report", "description": "Lazy versioned report from stored bytes with demo and bulk-sender checks. Empty findings do not imply deliverability. Returns report JSON in a text block (2025-03-26).",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_get_email", "description": "Fetch one captured email in full by id.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
@@ -1060,25 +1075,39 @@ mod tests {
 
     #[test]
     fn tool_rate_uses_exact_monotonic_windows() {
+        // Literal contract, deliberately not derived from the production
+        // constants: 1024 attempts per fixed one-second window.
         let rate = ToolRate::default();
-        let now = std::time::Instant::now();
-        *rate.0.lock().unwrap() = (now, 0);
-        for _ in 0..ToolRate::CAP {
-            assert!(rate.take_at(now));
+        let t = std::time::Instant::now();
+        rate.set_window(t, 0);
+        for _ in 0..1024 {
+            assert!(rate.take_at(t));
         }
-        assert!(!rate.take_at(now + ToolRate::WINDOW - std::time::Duration::from_nanos(1)));
-        assert!(rate.take_at(now + ToolRate::WINDOW));
-        assert!(rate.take_at(now + ToolRate::WINDOW));
+        assert!(!rate.take_at(t), "attempt 1025 is the first refusal");
+        assert_eq!(rate.taken(), 1024);
+        assert!(!rate.take_at(t + std::time::Duration::from_nanos(999_999_999)));
+        assert_eq!(rate.taken(), 1024, "a refusal neither consumes nor refills");
+        let t1 = t + std::time::Duration::from_secs(1);
+        assert!(rate.take_at(t1), "one second opens a fresh window");
+        for _ in 0..1023 {
+            assert!(rate.take_at(t1));
+        }
+        assert!(
+            !rate.take_at(t1),
+            "the fresh window also holds exactly 1024"
+        );
+        assert_eq!(rate.taken(), 1024);
     }
 
     #[tokio::test]
     async fn exhausted_tool_rate_refuses_before_effects_and_keeps_control_available() {
         let (_stop, ctx) = context();
         // A generated future start keeps this dispatch proof independent of
-        // scheduling; the preceding test proves refill with explicit instants.
-        *ctx.tool_rate.0.lock().unwrap() = (
+        // scheduling; the preceding test proves the literal 1024-per-second
+        // contract with explicit instants.
+        ctx.tool_rate.set_window(
             std::time::Instant::now() + std::time::Duration::from_secs(3600),
-            ToolRate::CAP,
+            1024,
         );
         ctx.store
             .insert(crate::store::email("kept", "kept", "a@x.io"))
@@ -1145,7 +1174,7 @@ mod tests {
             serde_json::to_value(ctx.chaos.current()).unwrap(),
             chaos_before
         );
-        *ctx.tool_rate.0.lock().unwrap() = (std::time::Instant::now(), 0);
+        ctx.tool_rate.set_window(std::time::Instant::now(), 0);
         assert_eq!(
             call(&ctx, "swarmail_seed_email", json!({"to":"a@x.io"})).await["result"]["isError"],
             false

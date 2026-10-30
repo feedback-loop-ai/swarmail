@@ -1,0 +1,228 @@
+{
+  "protocol_version": 1,
+  "id": "fair-mail-comparison-draft-3",
+  "status": "draft",
+  "supersedes": "fair-mail-comparison-draft-2",
+  "change_reason": "Source lock v3 (proposed decision 0093) binds each competitor's tag chain, setup document and reviewed websocket source; build provenance and the best-available wait stay open. The common-client poll is selected as the labelled common method with a cutoff that is never cut short, not as a best wait. Draft-2 was never frozen or collected; its bytes are kept under docs/evals/history/.",
+  "targets": [
+    "swarmail",
+    "mailpit",
+    "mailhog"
+  ],
+  "corpus": {
+    "seed": 163,
+    "kinds": [
+      "plain",
+      "html",
+      "multipart"
+    ]
+  },
+  "throughput": [
+    {
+      "name": "throughput-c1-fresh",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 1,
+      "connection": "fresh",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c10-fresh",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 10,
+      "connection": "fresh",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c100-fresh",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 100,
+      "connection": "fresh",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c1-reused",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 1,
+      "connection": "reused",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c10-reused",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 10,
+      "connection": "reused",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "throughput-c100-reused",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 100,
+      "connection": "reused",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    },
+    {
+      "name": "stress-c1000-fresh",
+      "repetitions": 6,
+      "warmup_messages": 100,
+      "messages": 3000,
+      "sessions": 1000,
+      "connection": "fresh",
+      "send_deadline_ms": 300000,
+      "verify_deadline_ms": 60000
+    }
+  ],
+  "waits": [
+    {
+      "name": "wait-best",
+      "repetitions": 6,
+      "present": 100,
+      "future": 100,
+      "empty": 20,
+      "deadline_ms": 30000,
+      "empty_deadline_ms": 1000,
+      "observation": [
+        {
+          "target": "swarmail",
+          "mode": "native",
+          "interval_ms": null,
+          "justification": "Swarmail's own long-poll await (decision 0002): it subscribes before it scans."
+        },
+        {
+          "target": "mailpit",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v1/search): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
+        },
+        {
+          "target": "mailhog",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
+        }
+      ]
+    },
+    {
+      "name": "wait-common",
+      "repetitions": 6,
+      "present": 100,
+      "future": 100,
+      "empty": 20,
+      "deadline_ms": 30000,
+      "empty_deadline_ms": 1000,
+      "observation": [
+        {
+          "target": "swarmail",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "The common client path: the same search poll every target gets, at the interval frozen for the competitors."
+        },
+        {
+          "target": "mailpit",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v1/search): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
+        },
+        {
+          "target": "mailhog",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client polling over the captured API's search endpoint (/api/v2/search?kind=containing): a complete scan at once, then one 100 ms after each completed scan, until the cutoff; a match first seen after the cutoff is late (censored). Selected as the labelled common method (proposed decision 0093 §4), not the best available: the reviewed websocket source (sources.lock.json) establishes no lossless wait."
+        }
+      ]
+    }
+  ],
+  "resources": {
+    "enforced": false,
+    "cpus": 2,
+    "memory_mib": 2048,
+    "open_files": 4096,
+    "startup_deadline_ms": 30000,
+    "cleanup_deadline_ms": 10000,
+    "request_deadline_ms": 10000,
+    "max_response_bytes": 16777216
+  },
+  "storage": {
+    "mode": "memory",
+    "retention": [
+      {
+        "target": "swarmail",
+        "max_messages": null
+      },
+      {
+        "target": "mailpit",
+        "max_messages": 10000
+      },
+      {
+        "target": "mailhog",
+        "max_messages": null
+      }
+    ]
+  },
+  "statistics": {
+    "quantile_method": "nearest-rank",
+    "quantiles": [
+      50,
+      95,
+      99
+    ],
+    "orders": [
+      [
+        "swarmail",
+        "mailpit",
+        "mailhog"
+      ],
+      [
+        "swarmail",
+        "mailhog",
+        "mailpit"
+      ],
+      [
+        "mailpit",
+        "swarmail",
+        "mailhog"
+      ],
+      [
+        "mailpit",
+        "mailhog",
+        "swarmail"
+      ],
+      [
+        "mailhog",
+        "swarmail",
+        "mailpit"
+      ],
+      [
+        "mailhog",
+        "mailpit",
+        "swarmail"
+      ]
+    ]
+  },
+  "unresolved": [
+    "binary build provenance for mailpit and mailhog: nothing ties either executable to its tagged commit, so a measurement needs a protocol that declares the official-artifact claim scope (protocol version 2, proposed decision 0093 §2)",
+    "the best-available wait for mailpit and mailhog (wait-best): the reviewed websocket sources establish no lossless subscribe-before-scan wait, and route, producer, registration and gap evidence is missing; wait-common's poll is the selected common method, not a best wait",
+    "mailpit stores in a scratch SQLite file, not memory: the matched memory profile cannot run it, and an explicitly unmatched storage profile is not yet frozen",
+    "a runtime that enforces the 2 CPU / 2 GiB service budget, and its recorded enforcement evidence; otherwise a separately frozen unenforced local profile",
+    "primary attribution of MailHog's /api/v1/messages/{id} read, which no captured document describes",
+    "the MailHog v2 Swagger documents 'messages'/'id' and a search 'total' of stored messages, while the pinned executable answers 'items'/'ID' with a matching total; the decoder follows the executable and the discrepancy stays recorded",
+    "protocol v2 fields for per-target storage, resource enforcement and operation budgets (decision 0092 §2)"
+  ]
+}

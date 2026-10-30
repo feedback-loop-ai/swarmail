@@ -793,11 +793,34 @@ pub async fn serve(
     }
 }
 
+// The one tool limiter a router allocates, handed to the test that installed
+// the slot on this thread before building it. Taken at allocation; no global.
+#[cfg(test)]
+thread_local! {
+    static ROUTER_TOOL_RATE: core::cell::Cell<Option<tokio::sync::oneshot::Sender<Arc<mcp::ToolRate>>>> =
+        const { core::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn observe_next_router_tool_rate() -> tokio::sync::oneshot::Receiver<Arc<mcp::ToolRate>> {
+    let (sent, received) = tokio::sync::oneshot::channel();
+    ROUTER_TOOL_RATE.with(|slot| slot.set(Some(sent)));
+    received
+}
+
 pub fn router(state: AppState) -> Router {
     #[cfg(test)]
     use webhook_handler_tests::{
         cancellable_get_webhooks as get_webhooks, cancellable_set_webhooks as set_webhooks,
     };
+    // One limiter per router: every connection's clone, revision and batch
+    // member draws on this Arc through the MCP route's Extension.
+    let tool_rate = Arc::new(mcp::ToolRate::default());
+    #[cfg(test)]
+    let _ = ROUTER_TOOL_RATE
+        .with(|slot| slot.take())
+        .unwrap_or_else(|| tokio::sync::oneshot::channel().0)
+        .send(tool_rate.clone());
     Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
@@ -839,7 +862,7 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/mcp",
             post(mcp_endpoint)
-                .layer(axum::Extension(Arc::new(mcp::ToolRate::default())))
+                .layer(axum::Extension(tool_rate))
                 .fallback(mcp_method_not_allowed)
                 .layer(axum::extract::DefaultBodyLimit::max(MCP_BODY_LIMIT)),
         )
@@ -1899,16 +1922,22 @@ pub(crate) fn mcp_body_refusal(cause: &str) -> String {
 }
 
 /// Version admission also applies to non-POST methods (modern Transports,
-/// Protocol Version Header). The whole-plane Origin guard still runs first;
-/// POST keeps its bounded-body/parse precedence inside dispatch.
-async fn mcp_method_not_allowed(headers: axum::http::HeaderMap) -> Response {
+/// Protocol Version Header), except OPTIONS: a guard-admitted OPTIONS stays
+/// 405 with no CORS whatever the header says (accepted 0043 §4), which leaves
+/// the modern header-400 MUST unmet for that method alone. The whole-plane
+/// Origin guard still runs first; POST keeps its bounded-body/parse
+/// precedence inside dispatch.
+async fn mcp_method_not_allowed(
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+) -> Response {
     match mcp::header_revision(&headers) {
-        Err(reason) => (
+        Err(reason) if method != axum::http::Method::OPTIONS => (
             StatusCode::BAD_REQUEST,
             Json(mcp::error_object(-32600, reason, serde_json::Value::Null)),
         )
             .into_response(),
-        Ok(_) => (StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response(),
+        _ => (StatusCode::METHOD_NOT_ALLOWED, [("allow", "POST")]).into_response(),
     }
 }
 
@@ -3248,6 +3277,194 @@ mod tests {
         ] {
             assert_eq!(inbox_of_path(path).as_deref(), expected, "{path}");
         }
+    }
+
+    /// One MCP POST on a fresh connection; axum serves each connection with
+    /// its own clone of the router. An empty 202 body reads as null.
+    async fn mcp_post(
+        addr: std::net::SocketAddr,
+        version: Option<&str>,
+        body: &serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let body = body.to_string();
+        let header = version.map_or(String::new(), |v| format!("MCP-Protocol-Version: {v}\r\n"));
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(
+            format!(
+                "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n{header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        let mut buf = Vec::new();
+        c.read_to_end(&mut buf).await.unwrap();
+        let text = String::from_utf8(buf).expect("an ASCII answer");
+        let (head, body) = text.split_once("\r\n\r\n").expect("a complete answer");
+        let status = head[9..12].parse().expect("status is a number");
+        (status, serde_json::from_str(body).unwrap_or_default())
+    }
+
+    /// The production router owns one tool limiter (#152, proposed decision 0080
+    /// implementation clarification): attempts on independent connections, under every revision,
+    /// March batch members and silent notifications all draw on the Arc
+    /// `router` allocated, observed through its seam. An endpoint or
+    /// revision that built its own limiter leaves the count short and
+    /// admits the exhausted calls; refusal precedes staging and effects,
+    /// controls stay available, and live admitted calls keep the
+    /// observers honest. A future window start never refills, so no count
+    /// depends on the scheduler.
+    #[tokio::test]
+    async fn the_router_owns_one_tool_rate_across_connections_revisions_and_members() {
+        use serde_json::json;
+        const REFUSED: &str = "tool invocation rate exceeds 1024 per second; retry later";
+        const REVISIONS: [Option<&str>; 3] = [None, Some("2025-06-18"), Some("2025-11-25")];
+        let call = |id: i64, name: &str, arguments: serde_json::Value| json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+        let silent = |name: &str| json!({"jsonrpc":"2.0","method":"tools/call","params":{"name":name,"arguments":{}}});
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // The live sender keeps the stop unfired: a dropped one reads as a
+        // stop, and the wait below would race it to "shutting down".
+        let (_stop, stop_rx) = tokio::sync::watch::channel(false);
+        let state = AppState {
+            store: Arc::new(Store::new(0)),
+            chaos: Arc::new(Chaos::default()),
+            webhooks: Arc::new(Webhooks::default()),
+            started: Instant::now(),
+            shutdown: stop_rx,
+            smtp_degraded: Arc::new(AtomicBool::new(false)),
+            pop3_degraded: Arc::new(AtomicBool::new(false)),
+            http_origin_guard: Some(addr.port()),
+        };
+        let (store, chaos) = (state.store.clone(), state.chaos.clone());
+        let observed = observe_next_router_tool_rate();
+        let server = tokio::spawn(serve(listener, state, std::future::pending()));
+        let rate = observed.await.expect("serve builds the router");
+        let never = Instant::now() + Duration::from_secs(3600);
+
+        rate.set_window(never, 0);
+        for version in REVISIONS {
+            let (_, reply) =
+                mcp_post(addr, version, &call(1, "swarmail_search_emails", json!({}))).await;
+            assert_eq!(reply["result"]["isError"], false, "{version:?}");
+            assert_eq!(
+                mcp_post(addr, version, &silent("swarmail_search_emails"))
+                    .await
+                    .0,
+                202
+            );
+            // An attempt counts before staging: an unknown key still draws.
+            let (_, reply) = mcp_post(
+                addr,
+                version,
+                &call(2, "swarmail_search_emails", json!({"bogus":1})),
+            )
+            .await;
+            assert_eq!(reply["error"]["code"], -32602, "{version:?}");
+            for method in ["ping", "initialize", "tools/list"] {
+                let (_, reply) = mcp_post(
+                    addr,
+                    version,
+                    &json!({"jsonrpc":"2.0","id":3,"method":method}),
+                )
+                .await;
+                assert!(reply.get("result").is_some(), "{version:?} {method}");
+            }
+        }
+        let members = json!([
+            call(4, "swarmail_search_emails", json!({})),
+            silent("swarmail_search_emails"),
+            call(5, "swarmail_search_emails", json!({}))
+        ]);
+        let (_, replies) = mcp_post(addr, None, &members).await;
+        assert_eq!(replies.as_array().unwrap().len(), 2);
+        assert_eq!(rate.taken(), REVISIONS.len() * 3 + 3, "one budget");
+
+        store
+            .insert(crate::store::email("kept", "kept", "a@x.io"))
+            .unwrap();
+        let mutations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = mutations.clone();
+        store.set_pre_mirror_gate(Some(Arc::new(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        })));
+        let subscriptions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = subscriptions.clone();
+        store.set_post_subscribe_gate(Some(Arc::new(move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+        })));
+        let chaos_before = serde_json::to_value(chaos.current()).unwrap();
+        let effects = [
+            call(6, "swarmail_seed_email", json!({"to":"a@x.io"})),
+            call(6, "swarmail_clear_all", json!({})),
+            call(6, "swarmail_wait_for_email", json!({"timeout_ms":0})),
+            call(
+                6,
+                "swarmail_set_chaos",
+                json!({"event":"data","probability":100}),
+            ),
+            // Refused before staging: the rate text, never -32602.
+            call(6, "swarmail_seed_email", json!({"bogus":1})),
+        ];
+        rate.set_window(never, 1024);
+        for version in REVISIONS {
+            for request in &effects {
+                let (_, reply) = mcp_post(addr, version, request).await;
+                assert_eq!(reply["result"]["isError"], true, "{version:?} {request}");
+                assert_eq!(reply["result"]["content"][0]["text"], REFUSED);
+            }
+            assert_eq!(
+                mcp_post(addr, version, &silent("swarmail_clear_all"))
+                    .await
+                    .0,
+                202
+            );
+            for method in ["ping", "initialize", "tools/list"] {
+                let (_, reply) = mcp_post(
+                    addr,
+                    version,
+                    &json!({"jsonrpc":"2.0","id":7,"method":method}),
+                )
+                .await;
+                assert!(reply.get("result").is_some(), "{version:?} {method}");
+            }
+        }
+        let mut members = effects.to_vec();
+        members.push(silent("swarmail_clear_all"));
+        let (_, replies) = mcp_post(addr, None, &serde_json::Value::Array(members)).await;
+        let replies = replies.as_array().unwrap();
+        assert_eq!(replies.len(), effects.len());
+        assert!(
+            replies
+                .iter()
+                .all(|r| r["result"]["content"][0]["text"] == REFUSED)
+        );
+        assert_eq!(store.list_all(&Filter::default()).len(), 1);
+        assert_eq!(store.watcher_count(), 0);
+        assert_eq!(mutations.load(Ordering::SeqCst), 0);
+        assert_eq!(subscriptions.load(Ordering::SeqCst), 0);
+        assert_eq!(serde_json::to_value(chaos.current()).unwrap(), chaos_before);
+        assert_eq!(rate.taken(), 1024);
+
+        // A window that began a full second ago refills on the next attempt
+        // (the owner test pins the exact boundary instant); the admitted
+        // seed and wait prove both observers live.
+        let elapsed = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        rate.set_window(elapsed, 1024);
+        let (_, reply) = mcp_post(addr, REVISIONS[2], &effects[0]).await;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        assert_eq!(mutations.load(Ordering::SeqCst), 1);
+        assert_eq!(rate.taken(), 1);
+        rate.set_window(never, 0);
+        let (_, reply) = mcp_post(addr, REVISIONS[1], &effects[2]).await;
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        assert_eq!(subscriptions.load(Ordering::SeqCst), 1);
+        assert_eq!(rate.taken(), 1);
+        store.set_pre_mirror_gate(None);
+        store.set_post_subscribe_gate(None);
+        server.abort();
     }
 }
 

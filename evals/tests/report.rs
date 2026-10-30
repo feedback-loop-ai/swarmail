@@ -1277,3 +1277,104 @@ fn sequential_matrix_refuses_overlap_and_unsupported_concurrency() {
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert_eq!(rows(&out.stdout)[0].outcome, Outcome::Fail);
 }
+
+fn comparison_row(
+    target: &str,
+    task: &str,
+    attempt: u32,
+    outcome: swarmail_evals::tasks::Outcome,
+) -> swarmail_evals::identity::ComparisonRow {
+    use swarmail_evals::identity::*;
+    ComparisonRow {
+        schema_version: COMPARISON_SCHEMA,
+        kind: "comparison".into(),
+        protocol_sha256: "a".repeat(64),
+        target: target.into(),
+        executable_sha256: "b".repeat(64),
+        settings: ComparisonSettings {
+            connection: if target == "swarmail-mcp" {
+                "native-mcp"
+            } else {
+                "stdio-adapter"
+            }
+            .into(),
+            tools_sha256: "c".repeat(64),
+        },
+        coordinate: ComparisonCoordinate {
+            task: task.into(),
+            attempt,
+        },
+        outcome,
+        hash: String::new(),
+    }
+    .seal()
+}
+#[test]
+fn comparison_citations_state_protocol_coordinates_and_the_whole_denominator() {
+    use swarmail_evals::{report, tasks::Outcome::*};
+    let rows = [
+        comparison_row("mailpit-mcp", "signup", 2, Fail),
+        comparison_row("mailpit-mcp", "signup", 1, Pass),
+        comparison_row("mailpit-mcp", "signup", 3, HarnessError),
+        comparison_row("mailpit-mcp", "signup", 4, Pass),
+        comparison_row("swarmail-mcp", "signup", 1, Pass),
+    ];
+    let cited = report::cite_comparison(&rows).unwrap();
+    assert_eq!(cited["protocol_sha256"], "a".repeat(64));
+    let cells = cited["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 2);
+    // Counted by hand: 2 passes of 4 attempts, the harness error kept in the denominator.
+    assert_eq!(cells[0]["target"], "mailpit-mcp");
+    assert_eq!(cells[0]["denominator"], 4);
+    assert_eq!(cells[0]["passes"], 2);
+    assert_eq!(cells[0]["fails"], 1);
+    assert_eq!(cells[0]["harness_errors"], 1);
+    assert_eq!(cells[0]["pass_rate"], 0.5);
+    assert_eq!(cells[0]["attempts"], serde_json::json!([1, 2, 3, 4]));
+    assert_eq!(cells[1]["denominator"], 1);
+    assert_eq!(cells[1]["pass_rate"], 1.0);
+    // Refusals: empty, duplicate coordinate, mixed protocol.
+    assert!(report::cite_comparison(&[]).is_err());
+    let dup = [rows[0].clone(), rows[0].clone()];
+    assert!(report::cite_comparison(&dup).unwrap_err().contains("twice"));
+    let mut other = rows[4].clone();
+    other.protocol_sha256 = "d".repeat(64);
+    let mixed = [rows[0].clone(), other.seal()];
+    assert!(
+        report::cite_comparison(&mixed)
+            .unwrap_err()
+            .contains("different protocols")
+    );
+}
+#[test]
+fn the_dossier_refuses_without_baseline_finals_and_costs_in_that_order() {
+    use swarmail_evals::{report, report::DossierInputs, tasks::Outcome::Pass};
+    let rows = [comparison_row("mailpit-mcp", "signup", 1, Pass)];
+    let digest = || Some("e".repeat(64));
+    let refused = |i: DossierInputs| report::dossier(&rows, &i).unwrap_err();
+    assert!(refused(DossierInputs::default()).contains("baseline"));
+    assert!(
+        refused(DossierInputs {
+            baseline_sha256: digest(),
+            ..Default::default()
+        })
+        .contains("final-contracts")
+    );
+    assert!(
+        refused(DossierInputs {
+            baseline_sha256: digest(),
+            final_contracts_sha256: digest(),
+            cost_sha256: Some("not-a-digest".into()),
+        })
+        .contains("cost-basis")
+    );
+    let all = DossierInputs {
+        baseline_sha256: digest(),
+        final_contracts_sha256: digest(),
+        cost_sha256: digest(),
+    };
+    let out = report::dossier(&rows, &all).unwrap();
+    assert_eq!(out["cells"][0]["denominator"], 1);
+    assert_eq!(out["inputs"]["cost_sha256"], "e".repeat(64));
+    assert!(report::dossier(&[], &all).is_err());
+}

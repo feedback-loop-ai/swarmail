@@ -1,0 +1,26 @@
+# Tasks — Independent rate and subprocess proof
+
+Amended 2026-10-29 and 2026-10-30. Ordered downstream obligations; each names its proof. Boxes
+stay unchecked at design. All predecessor AC1–AC11 remain required. The engine
+alone advances phases.
+
+> 2026-10-30 supersession: T1, T8 and T10 below were written before main was
+> merged. In this tree the engine is the a9893b4 + patches 0001–0004 pin in
+> `.brokkr/recipes/self/tooling.json` (digest `29dc3309…`), the compile command
+> is `brokkr compile --bundle .brokkr/recipes/self`, a9893b4 is present and not
+> an unmet precondition, and decision 0081's 2026-10-30 four-patch note is the
+> independent record for the cross-attempt residual at this pin. T2's mutation
+> run was executed (CAP 2048 and WINDOW 2 s both red, reverted); see
+> [spec.md](spec.md) § Clarifications 2026-10-30. The HIGH is never
+> reclassified or released by this design; the review rules on it.
+
+- [ ] T1 — Recheck identity and evidence: HEAD, tree, clean tracked state, `src/`/`tests/` equal to baseline 7f2e212, both manifests via `sha256sum -c --strict` from the repo root, the tooling.json digest against `.forge/bin/brokkr`, and that a9893b4 is absent from the tree. Proof: recorded hashes and git ids; the HIGH stays OPEN in the record (AC5–AC8).
+- [ ] T2 — Rewrite `tool_rate_uses_exact_monotonic_windows` with literal 1024 admissions, 1025th refusal, 999,999,999 ns refusal, one-second admission, 1023 further admissions, next refusal, `taken() == 1024` after each refusal. Proof: `cargo test --locked --lib tool_rate_uses_exact_monotonic_windows` passes; temporary CAP 2048 and WINDOW 2 s mutations go red and are reverted, or reported not executed; grep shows no `CAP`/`WINDOW` in the test (AC1).
+- [ ] T3 — Replace the exhausted seed and the router seed/assertion/refill with `1024` and `Duration::from_secs(1)`; adjust the two comments; change nothing else. Proof: the three named `--lib` filters and `revision_admission_has_no_transient_mutations_or_waiters` pass; diff review shows only literal and comment edits (AC2).
+- [ ] T4 — Add `ScriptedPeer` beside `McpChild` in `tests/binary.rs`: ephemeral loopback, head/Content-Length parsing, ordered trace with method/id/version header, scripted 200/202 replies, valid error for unexpected traffic, bounded accept/read/write, bounded stop/join with abort. Proof: new tests use it; `cargo test --locked --test binary` stays green including `tests/binary/*` helper-reliability cases; inspection confirms deadlines and kill/reap/abort on failure (AC3–AC4).
+- [ ] T5 — Add `mcp_binary_relays_malformed_modern_initialize_and_recovers` over both defect fixtures: verbatim malformed initialize value, local refusals, silent notification, unversioned ping, valid recovery, admitted versioned tools/call, exit 0, exact trace after stop/join. Proof: `cargo test --locked --test binary mcp_binary_relays_malformed` runs both launches and passes (AC3).
+- [ ] T6 — Add `mcp_binary_relays_malformed_ordinary_replies` over both defects in implicit March and negotiated modern sessions, checking the version header in the trace and one stdout line per owed reply. Proof: the same filter and the full `--test binary`, `--test stdio` and `--test mcp_revisions` suites pass with nonzero counts; existing C6, revision and wait/seed/ping tests unchanged (AC4).
+- [ ] T7 — Audit the final diff: zero production lines, no Cargo/deny/bundle/shim/decision/historical-spec change, proposed statuses intact, thirteen-tool catalogue and OPTIONS admission untouched. Proof: `git diff --stat` names only `src/mcp.rs`, `src/api.rs` and `tests/binary.rs`; served-contract, revision and SMTP-visibility tests pass under `cargo test --workspace --locked` (AC5).
+- [ ] T8 — Commit unsigned, freeze identity, run the full house inventory with the digest-bound absolute engine and every focused filter in plan.md. Proof: candidate-bound command/exit receipts; exact zero-miss coverage and selftest; publish-guard, seal and licenses; a9893b4 recorded unmet if expected; any tracked edit afterwards triggers a fresh run (AC6).
+- [ ] T9 — Obtain the five separate final-candidate protected review results of the 0099 roster (Fable correctness, Flash security, Flash guarantees, Spark GLM-5.3-Flash tests, Opus independent). Proof: candidate-bound invocation and result identities from the engine; worst verdict and hard security hold apply; no ad hoc reviewer, no Codex, no attack reproduction (AC7).
+- [ ] T10 — Record disposition honestly: HIGH protected-review-integrity finding OPEN with the executable digest the re-examination used; client receipts or explicit missing cells for all four clients; full eval unavailable/not run unless real nonoverlap and binding exist; CI-only, #151 hold, sequencing, acceptance and seal left to their owners; no push, merge, tag, publication, closure or acceptance (AC7–AC8).
