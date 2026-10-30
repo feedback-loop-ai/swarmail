@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn read_json(path: &str) -> Value {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -847,7 +847,13 @@ fn ship_closeout_refuses_missing_empty_and_mismatched_ledgers() {
     std::fs::create_dir_all(state.join("results")).unwrap();
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join(".brokkr/recipes/self/scripts/ship-seat.sh");
-    let ledger = state.join("results/probe.ledger.md");
+    let ledger = PathBuf::from(git(&[
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "brokkr-ledger/probe.md",
+    ]));
+    std::fs::create_dir_all(ledger.parent().unwrap()).unwrap();
     for case in ["valid", "missing", "empty", "mismatch"] {
         match case {
             "valid" => std::fs::write(&ledger, format!("Repository head: `{head}`.\n")).unwrap(),
@@ -860,19 +866,24 @@ fn ship_closeout_refuses_missing_empty_and_mismatched_ledgers() {
             .unwrap(),
             _ => unreachable!(),
         }
+        // As in the seat box: the engine's result file is the one writable
+        // path under the read-only state folder (#153, 2026-10-30).
         let result = state.join("results").join(format!("{case}.json"));
+        std::fs::write(&result, "").unwrap();
         let prompt = state.join(format!("{case}.md"));
         let context = format!(
             "    {}\n\n```json\n{{\n  \"run_id\": \"probe\",\n  \"last_decision\": {{\n    \"rule_id\": \"SHIP-READY\"\n  }}\n}}\n```\n",
             result.display()
         );
         std::fs::write(&prompt, context).unwrap();
+        set_mode(&state.join("results"), 0o555);
         let output = Command::new("bash")
             .arg(&script)
             .arg(&prompt)
             .current_dir(repo.path())
             .output()
             .unwrap();
+        set_mode(&state.join("results"), 0o755);
         if case == "valid" {
             assert!(
                 output.status.success(),
@@ -886,8 +897,9 @@ fn ship_closeout_refuses_missing_empty_and_mismatched_ledgers() {
                 !output.status.success(),
                 "{case}: a discrepancy must refuse, not report shipped"
             );
-            assert!(
-                !result.exists(),
+            assert_eq!(
+                std::fs::read(&result).unwrap(),
+                b"",
                 "{case}: no shippable result may be delivered"
             );
             let diagnostic = String::from_utf8(output.stderr).unwrap();
@@ -897,6 +909,11 @@ fn ship_closeout_refuses_missing_empty_and_mismatched_ledgers() {
             );
         }
     }
+}
+
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
 fn mixed_work_route_violations(
