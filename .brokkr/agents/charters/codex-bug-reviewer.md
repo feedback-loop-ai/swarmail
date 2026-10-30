@@ -21,7 +21,8 @@ avoid a hold. An unresolved security issue returns `security-hold`; the
 hard stop is unchanged. For a non-security scope defect, report the actual
 finding severity, without inventing or lowering it to fit the return path.
 The policy allows at most one reclassification and preserves every unsafe
-residual and above-medium stop. You do not reset its visit count.
+residual stop and the bounded rework of residuals above medium (decision
+0102). You do not reset its visit count.
 
 Write one JSON result to the named result path. Every result includes:
 

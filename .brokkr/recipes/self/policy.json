@@ -1,6 +1,6 @@
 {
-  "schema": "forge.phase-machine/v1",
-  "description": "The realm's phase machine: intake frames, a contrarian design panel argues before any code, implement builds, hermetic gates verify, a four-member review panel judges (correctness, security, guarantees and tests, decision 0013; the protected phase), ship records the ledger. Design and review are model seats; verify, ship and the design check are deterministic exec drivers \u2014 the hybrid. security-hold is a hard stop, security residuals never take the tracked-debt path.",
+  "schema": "forge.phase-machine/v2",
+  "description": "The realm's phase machine: intake frames, a contrarian design panel argues before any code, implement builds, hermetic gates verify, a four-member review panel judges (correctness, security, guarantees and tests, decision 0013; the protected phase), ship records the ledger. Design and review are model seats; verify, ship and the design check are deterministic exec drivers \u2014 the hybrid. security-hold is a hard stop, security residuals never take the tracked-debt path. A residual above low, or any security residual, returns to implement with the findings; the sixth review that still holds one parks for the operator (decision 0102).",
   "phases": [
     "intake",
     "design",
@@ -117,15 +117,50 @@
       "reason": "Unresolved security findings. NEVER ship; risk acceptance is the operator's."
     },
     {
-      "id": "REVIEW-RESIDUAL-ABOVE-MEDIUM",
+      "id": "REVIEW-RESIDUAL-EXHAUSTED",
       "from": "review",
       "result": "residual",
       "when": {
-        "max_residual_severity_above": "medium"
+        "visits_review_gte": 6,
+        "max_residual_severity_above": "low",
+        "spec_defect": false
       },
-      "next": "stop",
-      "severity": "hard",
-      "reason": "Residual severity above medium; not shippable."
+      "park": true,
+      "reason": "Five rework rounds spent and a residual above low remains: the operator rules on it (decision 0102). A park is no clearance; nothing ships."
+    },
+    {
+      "id": "REVIEW-RESIDUAL-SECURITY-EXHAUSTED",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "visits_review_gte": 6,
+        "has_security_residual": true,
+        "spec_defect": false
+      },
+      "park": true,
+      "reason": "Five rework rounds spent and a security residual remains: risk acceptance is the operator's (decision 0102)."
+    },
+    {
+      "id": "REVIEW-RESIDUAL-REWORK",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "max_residual_severity_above": "low",
+        "spec_defect": false
+      },
+      "next": "implement",
+      "reason": "A medium or higher residual returns to implement with the panel's findings, at most five times (decision 0102)."
+    },
+    {
+      "id": "REVIEW-RESIDUAL-SECURITY-REWORK",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "has_security_residual": true,
+        "spec_defect": false
+      },
+      "next": "implement",
+      "reason": "A security residual never takes the tracked-debt path; it returns to implement, at most five times (decision 0102)."
     },
     {
       "id": "REVIEW-RESIDUAL-OK",
@@ -133,13 +168,26 @@
       "result": "residual",
       "when": {
         "has_security_residual": false,
-        "max_residual_severity_at_most": "medium",
+        "max_residual_severity_at_most": "low",
         "spec_defect": false,
         "fixes_applied": false
       },
       "next": "ship",
       "severity": "flagged",
-      "reason": "Explicitly non-security residuals of an explicit severity at or below medium proceed as tracked debt."
+      "reason": "Explicitly non-security residuals of an explicit severity at or below low proceed as tracked debt (decision 0102)."
+    },
+    {
+      "id": "REVIEW-RESIDUAL-LOW-FIXED",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "has_security_residual": false,
+        "max_residual_severity_at_most": "low",
+        "spec_defect": false,
+        "fixes_applied": true
+      },
+      "next": "verify",
+      "reason": "Low residuals with fixes applied re-verify before shipping."
     },
     {
       "id": "REVIEW-RESIDUAL-UNSAFE",
