@@ -4166,6 +4166,22 @@ mod baseline_tests {
             // The child has acknowledged installed signal ownership and the
             // actual between-matrices boundary. No timing guess is involved.
             assert_eq!(unsafe { libc::kill(child.0.id() as i32, signal) }, 0);
+            // Release only once the child has observed the signal: delivery
+            // is asynchronous, and a release seen first under load would let
+            // the boundary's non-blocking check miss it.
+            let seen = hold.join(if signal == libc::SIGTERM {
+                "signal-term"
+            } else {
+                "signal-int"
+            });
+            while !seen.is_file() {
+                assert!(
+                    Instant::now() < deadline,
+                    "child did not observe the signal"
+                );
+                assert!(child.0.try_wait().unwrap().is_none());
+                std::thread::yield_now();
+            }
             std::fs::write(hold.join("release"), b"release").unwrap();
             assert!(child.0.wait().unwrap().success());
             assert!(!dir.path().join("paid.jsonl").exists());
