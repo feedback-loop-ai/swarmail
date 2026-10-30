@@ -103,6 +103,15 @@ The `1-cross-attempt` failure described above was the old engine's
 so that failure can no longer be reproduced at this pin. A candidate cut
 before the re-pin still pins the old engine until it merges this change.
 
+**Four-patch pin result (2026-10-30).** The pin is now `a9893b4` + four
+patches (binary `29dc3309…`; patch 0004 raises only the hands command
+timeout). The same full routing proof, run with that exact binary at swarmail
+main `9785f81`, exits 0, and every `cross-attempt`, `cross-effect`, `missing`
+and `edit` case (panels of 1, 2, 3 and 5) parks `awaiting_operator`. The
+cross-attempt review-integrity residual inherited from the `731189f` engine
+is therefore closed for this pin by a re-run on these bytes, not by digest
+match.
+
 This design adopts one shared office and stronger local comparisons instead
 of another routing abstraction. Costs are additional exact assertions, paid
 intake retained, no new provider-quality evidence and possible Spark-outage
