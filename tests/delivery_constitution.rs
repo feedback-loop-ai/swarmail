@@ -88,16 +88,17 @@ fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
         assert_eq!(&residual[rework]["when"], facts);
         assert_eq!(residual[rework]["next"], "implement");
     }
-    let low = |fixes: bool| {
-        json!({"has_security_residual": false, "max_residual_severity_at_most": "low", "spec_defect": false, "fixes_applied": fixes})
-    };
+    let low = |fixes: bool| json!({"has_security_residual": false, "max_residual_severity_at_most": "low", "spec_defect": false, "fixes_applied": fixes});
     assert_eq!(residual[4]["when"], low(false));
     assert_eq!(residual[4]["next"], "ship");
     assert_eq!(residual[5]["when"], low(true));
     assert_eq!(residual[5]["next"], "verify");
     assert_eq!(residual[6].get("when"), None);
     assert_eq!(
-        (residual[6]["next"].as_str(), residual[6]["severity"].as_str()),
+        (
+            residual[6]["next"].as_str(),
+            residual[6]["severity"].as_str()
+        ),
         (Some("stop"), Some("hard"))
     );
     let hold = rules_from(&policy, "review", "security-hold");
