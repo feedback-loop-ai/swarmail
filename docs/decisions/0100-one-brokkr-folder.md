@@ -83,3 +83,14 @@ with `brokkr ledger --repo`. `ship-seat.sh` now writes the ledger beside the
 engine's result files for the run, `<results dir>/<run>.ledger.md`, the one
 directory every ship attempt can write and read back. `brokkr ledger --repo`
 still renders `.brokkr/state/ledger/<run>.md` for the operator.
+
+## Dated addendum — 2026-10-30: the ship ledger, again
+
+The 2026-10-29 addendum put the ledger in the results directory. In the
+seat box that directory is read-only like the rest of the state folder;
+only the engine's result file is writable, so run
+`issue-153-operator-continuation--323fdc1b` parked at ship on it. The ledger
+now lives in the worktree's own git directory
+(`git rev-parse --git-path brokkr-ledger/<run>.md`), which the box mounts
+read-write and which no tracked-tree check sees. The seat's notes stage in
+the box's private temporary directory.
