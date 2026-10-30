@@ -267,6 +267,15 @@ default: a cap above about 340 needs a raised `ulimit -n`, which the README
 now says. This pointer records the story; it is not an acceptance, and
 whether the flag stands as §9's follow-up is the operator's ruling.
 
+## Operator ruling — 2026-10-30 (`--max-sessions` stands)
+
+The operator ruled on 2026-10-30, in chat, that `--max-sessions`
+(`SWARMAIL_MAX_SESSIONS`) stands as §9's "one-`#[arg]` follow-up" for the
+operator story the pointer above records. The compiled default stays `256`;
+the `421` refusal and every other rule of this decision are unchanged, and
+§9 still refuses any other knob. This answers the pointer's open question;
+nothing above is rewritten.
+
 ## Later-decision markers — 2026-10-19 (issue #144)
 
 Appended 2026-10-19 by the issue #144 provenance audit, after the operator's
