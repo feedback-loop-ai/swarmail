@@ -1471,8 +1471,8 @@ coordinates, at most 256 findings (the 65536-byte bound, order and deduplication
 stay producer rules).
 Missing mail and failed/unavailable analysis use isError=true without structured
 content; malformed arguments use -32602. The March descriptor keeps main's
-"with demo and bulk-sender checks" wording and its (2025-03-26) suffix; modern
-descriptors state the full current scope and the structured output (proposed 0105).
+"with demo and bulk-sender checks" wording as its historical text, with its
+(2025-03-26) suffix; modern descriptors state the full current scope and the structured output (proposed 0105).
 
 REST assert/await and MCP wait_for_email admit optional no_findings_at_or_above
 (info|warning|error). It qualifies ordinary-filter candidates before paging;
