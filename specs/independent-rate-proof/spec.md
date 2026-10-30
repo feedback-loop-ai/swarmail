@@ -50,8 +50,8 @@ declared. Existing proposed [0079](../../docs/decisions/0079-mcp-version-negotia
 [0081](../../docs/decisions/0081-glm-flash-seats.md),
 [0085](../../docs/decisions/0085-deliverability-report.md),
 [0101](../../docs/decisions/0101-mcp-options-admission.md),
-[0091](../../docs/decisions/0091-mixed-work-seats.md) and
-[0092](../../docs/decisions/0092-mcp-candidate-proof.md) retain their meaning
+[0103](../../docs/decisions/0103-mixed-work-seats.md) and
+[0104](../../docs/decisions/0104-mcp-candidate-proof.md) retain their meaning
 and status. The historical specs and reconciliation ledger remain unmodified.
 Should a semantic need appear, the then-next free number must not collide with
 0098 and 0099 on `repair/claude-careful-recipe`; only the operator accepts, and

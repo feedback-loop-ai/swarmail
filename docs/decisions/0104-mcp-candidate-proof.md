@@ -1,10 +1,10 @@
-# 0092 — Dated corrections for the integrated MCP candidate
+# 0104 — Dated corrections for the integrated MCP candidate
 
 - **Status:** proposed
 - **Date:** 2026-10-28
 - **Scope:** epic #164 issue #152 candidate ab807436aa9bab8ebe21c49f6dea3481bb74eebe; documentation and proof attribution.
 - **Design:** [spec](../../specs/mcp-candidate-proof/spec.md), [plan](../../specs/mcp-candidate-proof/plan.md), [tasks](../../specs/mcp-candidate-proof/tasks.md).
-- **Number:** next unused local number above 0091, provisional only. 0091 collides with other candidates and the OPTIONS record was renumbered from 0090 to 0101 against main; this record neither replaces them nor allocates final numbers. The operator reconciles numbering and alone accepts decisions.
+- **Number:** next unused local number above 0103, provisional only. 0103 collides with other candidates and the OPTIONS record was renumbered from 0090 to 0101 against main; this record neither replaces them nor allocates final numbers. The operator reconciles numbering and alone accepts decisions.
 - **Authority:** accepted [0043 §4](0043-mcp-origin-boundary.md), [0045 §8](0045-delivery-repairs.md), [0057](0057-codex-delivery-recipes.md) and [0058](0058-codex-review-routing.md); current operator-directed independent assessment. No accepted ruling is amended.
 
 ## Why this record exists
@@ -73,7 +73,7 @@ Every proof must identify commit/tree and execution outcome. A design or doc
 successor is a different candidate. Require all current house gates and five
 protected results: Astra correctness, official DSH Flash security, Spark GLM
 Flash tests, Astra guarantees and independent Fable. The requested Terra 6.1 /
-Opus 5.5 work route is recorded in proposed [0091](0091-mixed-work-seats.md);
+Opus 5.5 work route is recorded in proposed [0103](0103-mixed-work-seats.md);
 [0081](0081-glm-flash-seats.md) records tests routing. Neither is accepted here.
 Compile success is not dispatch, review approval or evidence of protection.
 

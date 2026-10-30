@@ -98,6 +98,8 @@ them. What may land while a decision is still proposed is stated in
 | [0100](0100-one-brokkr-folder.md) | Everything brokkr owns lives in `.brokkr/`: recipes on its shelf, agents, adapters, dialects and the realm map tracked beside them, runtime state in ignored `.brokkr/state/`; the folder's bundle extends `claude-careful` (adopts brokkr 0083) | **accepted** (operator, 2026-10-29) | (Operator direction, 2026-10-29: organize everything under .brokkr) |
 | [0101](0101-mcp-options-admission.md) | MCP OPTIONS admission and modern version headers | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0102](0102-review-residuals-rework.md) | A review residual above low, or any security residual, returns to implement with the findings up to five times, then parks for the operator; lows ship as tracked debt (amends 0050 §4) | **accepted** (operator, 2026-10-30) | (Operator direction, 2026-10-30: rework up to 5 retries, then ask the operator) |
+| [0103](0103-mixed-work-seats.md) | Mixed work seats and protected review | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
+| [0104](0104-mcp-candidate-proof.md) | Dated corrections for the integrated MCP candidate | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

@@ -21,7 +21,7 @@ overrule accepted policy (0045 §8). The report is derived analysis under 0085,
 not query-time link/code extraction. Preserve 0020 test placement, mutation/wait
 owners, per-test inboxes, exact coverage and license allowlist. Retain 0057/0058
 protected review, bounded hands and the explicit mixed route. Keep
-0079/0080/0081/0085/0090/0091 and this correction proposed. No engine/adapter
+0079/0080/0081/0085/0090/0103 and this correction proposed. No engine/adapter
 capability change, protection bypass or full-eval workaround is commissioned.
 Commits are unsigned; only the operator seals and merges.
 
@@ -31,7 +31,7 @@ Commits are unsigned; only the operator seals and merges.
    each proof group. Preserve historical specs and ignored position/intake
    evidence. Use existing run-local logs/receipts rather than inventing a journal
    or another permanent evidence schema.
-2. Use decision 0092 for three observed ledger gaps: thirteen versus twelve
+2. Use decision 0104 for three observed ledger gaps: thirteen versus twelve
    tools, the OPTIONS header exception and the new real-connection limiter
    witness. It records presence, not a passing result. Add discoverable links in
    current served descriptions and the decision index during implementation.
@@ -67,7 +67,7 @@ Commits are unsigned; only the operator seals and merges.
 | Files | Planned treatment |
 | --- | --- |
 | `specs/mcp-candidate-proof/{spec,plan,tasks}.md` | Chief commits only this new design directory. |
-| `docs/decisions/0092-mcp-candidate-proof.md` | Chief's new provisional dated correction; no accepted text rewrite. |
+| `docs/decisions/0104-mcp-candidate-proof.md` | Chief's new provisional dated correction; no accepted text rewrite. |
 | `src/static/openapi.json`, `src/static/llms.txt` | Implementation adds current correction pointers and retains accurate bounded claims. |
 | `docs/decisions/README.md` | Implementation indexes the new proposal without accepting or reallocating decisions. |
 | `tests/mcp_revisions.rs` | Extend existing served-contract assertion for correction pointer; run method, catalogue, lifecycle and SMTP witnesses. |
@@ -91,7 +91,7 @@ identity and limitation, using existing formats. Missing safety/result facts
 remain unknown, never synthesized as success.
 
 Spec AC2–AC5 own observable method, version, hint and budget contracts. Decision
-0092 owns dated qualifications of old claims. Keep C1–C6's full actor/strength
+0104 owns dated qualifications of old claims. Keep C1–C6's full actor/strength
 ledger and record OPTIONS separately. No new API, transport promise, retry
 semantics, full source conformance or model safety claim follows.
 
@@ -143,6 +143,6 @@ linked, clean proposed decision. Do not write a `designed` result as chief.
 | New tests introduce timing/coverage flakiness | Reuse causal seams and suites; 0020 placement; no sleeps, mid-band chaos, global resets or static calendar-dependent TLS success fixtures. |
 | Integrity remains HIGH or provider unavailable | Independent evidence and hard stops; no inference from source merge, alias or compile. Delivery may remain blocked. |
 | Missing pinned engine or unavailable proof | Record exact path, expected digest/command and outcome; no installs, substitutions or weakened assertions by verify. |
-| Provisional numbers collide | 0092 is local only; do not renumber 0090/0091 or reuse reserved holes. Operator reconciles final numbers. |
+| Provisional numbers collide | 0104 is local only; do not renumber 0090/0103 or reuse reserved holes. Operator reconciles final numbers. |
 | Eval is locally serial but host scope unknown | Do not launch/claim full eval. Require authorized host-wide participation and cleanup-scope proof separately; #201 remains unresolved. |
 | Scope expands during repair | Minimal existing owner and complete gates; return blocker for accepted-contract contradictions instead of enlarging authority. |

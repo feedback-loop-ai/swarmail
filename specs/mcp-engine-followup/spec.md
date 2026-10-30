@@ -23,13 +23,13 @@ Historical specs and prior missing-engine reports retain their original meaning.
 This design commit creates a successor to the baseline, requiring new proof.
 
 No semantic contract or ruling changes in this follow-up, so no new decision is
-commissioned. The existing proposed [0092 correction](../../docs/decisions/0092-mcp-candidate-proof.md)
+commissioned. The existing proposed [0104 correction](../../docs/decisions/0104-mcp-candidate-proof.md)
 owns the thirteen-tool, OPTIONS and shared-budget qualifications. It supplements
 [0079 negotiation](../../docs/decisions/0079-mcp-version-negotiation.md),
 [0080 reconciliation](../../docs/decisions/0080-mcp-source-reconciliation.md) and
 [0090 OPTIONS](../../docs/decisions/0101-mcp-options-admission.md), without
 accepting them or rewriting the [historical register](../mcp-version-negotiation/reconciliation.md).
-The route is already recorded in proposed [0091](../../docs/decisions/0091-mixed-work-seats.md)
+The route is already recorded in proposed [0103](../../docs/decisions/0103-mixed-work-seats.md)
 and [0081](../../docs/decisions/0081-glm-flash-seats.md). Lazy report analysis
 remains scoped by proposed [0085](../../docs/decisions/0085-deliverability-report.md).
 A newly discovered semantic change requires a separate proposed decision and
@@ -97,9 +97,9 @@ these unchecked obligations or a protected verdict.
    no timing-dependent 1024-request exhaustion loop. Refusal yields no transient
    mutation, subscription or chaos effect; control/discovery remain available.
 6. **AC6 — Honest current contract.** Served OpenAPI and llms.txt retain links to
-   both the historical register and proposed 0092, and match current wire tests.
+   both the historical register and proposed 0104, and match current wire tests.
    Preserve C1–C6 and distinguish the additional OPTIONS source MUST mismatch.
-   0092 qualifies historical W7, header and W9 assertions without turning source
+   0104 qualifies historical W7, header and W9 assertions without turning source
    presence into passed tests. Preserve all proposal statuses and provisional
    numbering; operator alone resolves collisions and accepts decisions.
 7. **AC7 — Guarantees and repairs.** Workspace real-protocol/deterministic proofs

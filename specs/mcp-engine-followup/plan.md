@@ -21,7 +21,7 @@ boundaries, 0057/0058 protected delivery and 0056 unsigned authorship. Keep 0020
 placement and deterministic test disciplines: real protocols, isolated inboxes,
 no mocks, no sleep-as-sync or mid-band chaos, generated TLS success fixtures.
 Retain every house gate, exact coverage and permissive license policy. Proposed
-0079/0080/0081/0085/0090–0092 stay proposed with operator-owned numbering.
+0079/0080/0081/0085/0101, 0103 and 0104 stay proposed with operator-owned numbering.
 This follow-up defines proof work without a new semantic ruling or ADR.
 
 ## Research and implementation approach
@@ -35,7 +35,7 @@ This follow-up defines proof work without a new semantic ruling or ADR.
    with positive controls, the exact-time limiter proof and its router wiring
    witness. Read a failure in its owning path before considering any change.
 3. Localize a demonstrated compatible defect and its regression; otherwise leave
-   source unchanged. Existing 0092 and served pointers already reconcile this
+   source unchanged. Existing 0104 and served pointers already reconcile this
    candidate. Do not repeat that edit, copy the historical ledger or allocate
    another decision to narrate successful engine provisioning. New semantic work
    needs scope/authority reconciliation, not an incidental repair.
@@ -65,7 +65,7 @@ This follow-up defines proof work without a new semantic ruling or ADR.
 | `src/api.rs`, `src/mcp.rs`, `src/stdio.rs` | Preserve router/dispatch/lifecycle owners and inline/harness tests; no speculative production edits. |
 | `src/store.rs`, `src/smtp.rs`, `src/extract.rs`, `src/webhook.rs`, storage/burst/wait suites | Prove guarantees via existing workspace suites; retain commit, extraction and nonblocking fan-out ownership. |
 | `tests/delivery_recipes.rs`, `tests/delivery_constitution.rs`, mixed recipe and inherited offices | Inspect/test routing; no provider, permission or fallback changes. |
-| Served OpenAPI/llms.txt, historical specs, decision index and 0092 | Current correction already integrated; preserve, check existing served-contract assertions. |
+| Served OpenAPI/llms.txt, historical specs, decision index and 0104 | Current correction already integrated; preserve, check existing served-contract assertions. |
 | Canonical gate scripts, public shims, tooling record and dependency files | Verify with existing policy; no planned modifications or allowlist widening. |
 
 ## Data model and contracts
@@ -80,7 +80,7 @@ retains insertion ordering and does not select an in-flight parse.
 
 Evidence uses existing run-local formats: command/invocation, actual commit/tree,
 exit/verdict, relevant artifact hashes and explicit limits. Missing facts remain
-unknown. Historical source corrections stay in 0092; AC2–AC6 restate required
+unknown. Historical source corrections stay in 0104; AC2–AC6 restate required
 observations without changing the negotiated protocol or operator-retained C1–C6.
 
 ## Quickstart and validation
@@ -137,6 +137,6 @@ No extra tracked evidence commit follows the design commit.
 | Catalogue silently drops report hints | Independent exact thirteen-name oracle over HTTP and binary stdio; cache work is bounded derived analysis, not mail mutation. |
 | Robustness review expands into unrelated hardening | Repair only a demonstrated compatible defect in its current owner; no new services, retries, dependencies or guarantees. |
 | Provider outage or correlated review | Exact singleton routes, separate invocation IDs/charters and no unauthorized fallback; five roles still share model families. |
-| Proposal collision or implied acceptance | Keep 0090–0092 provisional and existing proposals unchanged; operator reconciliation remains necessary. |
+| Proposal collision or implied acceptance | Keep 0101, 0103 and 0104 provisional and existing proposals unchanged; operator reconciliation remains necessary. |
 | Private serialization mistaken for #201 host scope | No full eval claim or launch; require participation through cleanup outside this design. |
 | Documentation successor inherits baseline evidence | Record successor identity and rerun final proofs/reviews even when only documentation changed. |

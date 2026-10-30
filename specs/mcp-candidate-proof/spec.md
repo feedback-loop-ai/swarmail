@@ -1,6 +1,6 @@
 # Independently verify the integrated MCP candidate
 
-Decision: 0092 — [Dated candidate corrections](../../docs/decisions/0092-mcp-candidate-proof.md).
+Decision: 0104 — [Dated candidate corrections](../../docs/decisions/0104-mcp-candidate-proof.md).
 
 ## Feature and rationale
 
@@ -42,10 +42,10 @@ Proposed [0079](../../docs/decisions/0079-mcp-version-negotiation.md),
 [0081](../../docs/decisions/0081-glm-flash-seats.md),
 [0085](../../docs/decisions/0085-deliverability-report.md),
 [0090](../../docs/decisions/0101-mcp-options-admission.md) and
-[0091](../../docs/decisions/0091-mixed-work-seats.md) retain their statuses.
-0090/0091 collide with independent candidates; their final allocation and every
-acceptance belong to the operator. 0092 is the next unused local number above
-0091 for this new correction, provisionally, not a reassignment of either one
+[0103](../../docs/decisions/0103-mixed-work-seats.md) retain their statuses.
+0090/0103 collide with independent candidates; their final allocation and every
+acceptance belong to the operator. 0104 is the next unused local number above
+0103 for this new correction, provisionally, not a reassignment of either one
 or a claim of a host-wide reservation. The operator reconciles it at integration.
 
 ## Panel adjudication
@@ -128,7 +128,7 @@ host-wide exclusion, a global resource bound or an SMTP/REST limiter.
 6. **AC6 — Descriptions and corrections.** Served OpenAPI and llms.txt agree with
    observed wire behavior and link both the historical per-revision register and
    the new correction. Retain C1–C6 by actor/source strength and separately identify
-   OPTIONS' modern header-400 MUST mismatch. Decision 0092 qualifies historical
+   OPTIONS' modern header-400 MUST mismatch. Decision 0104 qualifies historical
    W7 counts, header claims and W9 proof limits with old locations/current witness
    names. Historical `specs/mcp-version-negotiation/` files remain unchanged.
 7. **AC7 — Guarantees.** Fresh SMTP visibility, workspace persistence/burst,

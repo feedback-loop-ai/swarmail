@@ -147,7 +147,7 @@ error. Independent operational lines still run concurrently after initialization
 This delivery claims version negotiation; full revision conformance is not claimed.
 The operator chose to retain documented C1–C6 deviations on 2026-10-26; see the
 [per-revision deviation register](https://github.com/feedback-loop-ai/swarmail/blob/main/specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register),
-qualified by the proposed [dated candidate corrections](https://github.com/feedback-loop-ai/swarmail/blob/main/docs/decisions/0092-mcp-candidate-proof.md)
+qualified by the proposed [dated candidate corrections](https://github.com/feedback-loop-ai/swarmail/blob/main/docs/decisions/0104-mcp-candidate-proof.md)
 for its thirteen tools, OPTIONS exception and shared-limiter witness.
 This bridge targets the paired stateless JSON server with identity HTTP parsing;
 it advertises JSON/SSE but has no general SSE/session client support.
