@@ -43,9 +43,9 @@ for line in sys.stdin:
   subprocess.run(['git','-c','commit.gpgsign=false','commit','-qm','Change reviewed candidate'],check=True,capture_output=True)
  inputs={'fixes_applied':False,'spec_defect':False,'has_security_residual':False,'max_residual_severity':'none'}
  verdict='clean'
- if mode in ['hold','medium','high','security','scope','null','string','absent']:
+ if mode in ['hold','low','medium','high','security','scope','null','string','absent']:
   verdict='security-hold' if mode=='hold' else 'residual'
-  inputs['max_residual_severity']='high' if mode=='high' else 'medium'
+  inputs['max_residual_severity']=mode if mode in ['high','low'] else 'medium'
  if mode=='security':inputs['has_security_residual']=True
  if mode=='scope':inputs['spec_defect']=True
  if mode=='null':inputs['has_security_residual']=None
@@ -623,7 +623,7 @@ def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
     # Existing policies are used verbatim for review rules, including all hard stops.
     policy = json.loads((ROOT / '.brokkr/recipes/self/policy.json').read_text())
     review_rules = [r for r in policy['rules'] if r['from'] == 'review']
-    table = dict(schema='forge.phase-machine/v1', phases=['prepare','verify','review','ship','done','stop'],
+    table = dict(schema=policy['schema'], phases=['prepare','verify','review','ship','done','stop'],
                  initial='prepare', terminal=['done','stop'], shippable_from=['review'], rules=[
         dict(id='PREPARE', **{'from':'prepare'}, result='complete', next='verify', reason='Fixture setup.'),
         dict(id='VERIFIED', **{'from':'verify'}, result='verified', next='review', reason='Candidate witness.'),
@@ -631,8 +631,9 @@ def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
         dict(id='SHIPPED', **{'from':'ship'}, result='shipped', next='done', reason='Local terminal only.')])
     # Return targets exist but are terminal in this fixture: policy full traces are
     # separately covered by the source-linked policy sweep, not guessed here.
+    # A parking rule names no next phase and stays a park.
     for rule in table['rules']:
-        if rule['next'] not in table['phases']:
+        if 'next' in rule and rule['next'] not in table['phases']:
             rule['next'] = 'stop'
     bundle_dir = case / 'recipes/probe'
     bundle_dir.mkdir(parents=True)
@@ -718,7 +719,10 @@ def main():
             if mode=='missing':
                 assert not any(e['type']=='effect/succeeded' and e['payload'].get('result',{}).get('result')=='clean' for e in row['journal'])
         if n==5:
-            row=check('independent-medium',roles,{'independent':'medium'},True)
+            # Decision 0102: a medium returns to implement (terminal here); a low ships.
+            row=check('independent-medium',roles,{'independent':'medium'},False)
+            assert any(e['type']=='transition/decided' and e['payload'].get('rule_id')=='REVIEW-RESIDUAL-REWORK' for e in row['journal']),row['journal']
+            row=check('independent-low',roles,{'independent':'low'},True)
             assert any(e['type']=='transition/decided' and e['payload']['from']=='review' and e['payload']['result']=='residual' for e in row['journal'])
     dump(out/'receipt.json',dict(engine_sha256=digest,providers_called=False,
         limitations=['Controlled protocol participants do not prove live-provider compatibility.',

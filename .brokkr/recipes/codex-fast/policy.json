@@ -1,5 +1,5 @@
 {
-  "schema": "forge.phase-machine/v1",
+  "schema": "forge.phase-machine/v2",
   "description": "Codex triage routes bounded bug fixes directly and preserves the complete design path for risky work; verification and protected review remain mandatory on every shipping route.",
   "phases": [
     "triage"
