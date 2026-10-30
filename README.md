@@ -337,7 +337,10 @@ posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
 `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
 `SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`,
 `SWARMAIL_MAX_SESSIONS` (`256` concurrent sessions per SMTP and POP3
-listener, at least `1`; one more is answered `421`).
+listener, at least `1`; one more is answered `421`; the flag is
+`--max-sessions`. Each session holds a file descriptor, and the default is
+sized so that three times the cap stays under the usual 1024 soft limit
+(decision 0027 §3): above about 340, raise `ulimit -n` first).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and
@@ -499,7 +502,7 @@ so: `200 {"status":"ok"}` when no listener is flagged, `503
 surfaces, and `503 {"status":"stopping"}` for a request that reaches the
 handler after the stop has fired — that state wins over everything else.
 Sessions are bounded where the wire admits them: more than 256 concurrent
-SMTP or POP3 sessions is refused before any greeting (`421 4.7.0 Too many
+SMTP or POP3 sessions (the default of `--max-sessions`) is refused before any greeting (`421 4.7.0 Too many
 connections, closing transmission channel` / `-ERR too many connections`);
 completed sessions are reaped right after each accept, before the cap is
 checked, so a slot freed while the listener waited is offered to the very

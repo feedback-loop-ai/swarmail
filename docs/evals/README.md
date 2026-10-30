@@ -64,8 +64,8 @@ Every criterion is open. "Proof so far" names local tests in
 
 | Row | Examined | Not examined | State |
 |---|---|---|---|
-| Roster and engine (clarification Q1) | Accepted decision 0099 (claude-careful, operator, 2026-10-29, recorded with 0098 on `repair/claude-careful-recipe`) governs this delivery: Haiku 5.5 intake, Sonnet 5.5 implementation, five protected reviews (Fable correctness, Flash security, Flash guarantees, local Spark GLM-5.3-Flash tests, Opus independent), no Codex seat; the T14 Terra/Astra roster is historical. The run executes on host engine brokkr a9893b4 (brokkr decision 0096). The candidate keeps its pin to 731189f-p3: `bundles/self/tooling.json` binary SHA-256 `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`, equal to `.forge/bin/brokkr` as hashed in this checkout. | The a9893b4 engine itself, brokkr decision 0096 and the 0098/0099 texts: no a9893b4 bytes, build receipt or decision text exist in this worktree, and neither 0098 nor 0099 exists on this branch or is imported here. | Not re-pinned. `brokkr compile` proves the pinned engine; every record names which engine it means. **Superseded 2026-10-30:** main's #279/#280 re-pinned the candidate to `swarmail-engine-a9893b4-p4` (`.brokkr/recipes/self/tooling.json`, binary SHA-256 `29dc3309…`); the `.brokkr/state/bin/brokkr` in this checkout hashes to `ab935558…`, which is *not* that pin, so the implement seat's `brokkr compile` ran on an unpinned binary and is not the pinned proof. |
-| Inherited HIGH review-integrity residual and #219 | The stop event mentions the residual without original finding IDs; #219 is a separate open item; the pinned engine's identity and digest as above. | The a9893b4 engine and decision 0096 against the residual; the original HIGH finding references, which are absent here. | **Open**, with no verdict, no closure and no upstream-merge repair. It goes to the five-member protected review. Pointer, 2026-10-30: accepted 0081's dated note records the routing proof on the earlier a9893b4 + three patches pin; see *Still open after this record*. |
+| Roster and engine (clarification Q1) | Accepted decision 0099 (claude-careful, operator, 2026-10-29, recorded with 0098 on `repair/claude-careful-recipe`) governs this delivery: Haiku 5.5 intake, Sonnet 5.5 implementation, five protected reviews (Fable correctness, Flash security, Flash guarantees, local Spark GLM-5.3-Flash tests, Opus independent), no Codex seat; the T14 Terra/Astra roster is historical. The run executes on host engine brokkr a9893b4 (brokkr decision 0096). The candidate keeps its pin to 731189f-p3: `bundles/self/tooling.json` binary SHA-256 `ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f`, equal to `.forge/bin/brokkr` as hashed in this checkout. | The a9893b4 engine itself, brokkr decision 0096 and the 0098/0099 texts: no a9893b4 bytes, build receipt or decision text exist in this worktree, and neither 0098 nor 0099 exists on this branch or is imported here. | Not re-pinned. `brokkr compile` proves the pinned engine; every record names which engine it means. **Superseded 2026-10-30:** main's #279/#280 re-pinned the candidate to `swarmail-engine-a9893b4-p4` (`.brokkr/recipes/self/tooling.json`, binary SHA-256 `29dc3309…`); the `.brokkr/state/bin/brokkr` the earlier implement seat hashed was `ab935558…`, which was *not* that pin, so that seat's `brokkr compile` ran on an unpinned binary and is not the pinned proof. **Corrected 2026-10-30:** in this checkout `.brokkr/state/bin/brokkr` now hashes to `29dc3309…`, equal to `tooling.json`, and the verify seat's compile for head `25c0854` ran that pinned binary. Likewise 0098 and 0099 now exist on this branch as accepted decisions, the folder layout is `.brokkr/` (0100), and the `bundles/self` and `.forge` paths in this row are historical. |
+| Inherited HIGH review-integrity residual and #219 | The stop event mentions the residual without original finding IDs; #219 is a separate open item; the pinned engine's identity and digest as above. | The a9893b4 engine and decision 0096 against the residual; the original HIGH finding references, which are absent here. | **Open**, with no verdict, no closure and no upstream-merge repair. It goes to the five-member protected review. Pointer, 2026-10-30: the dated notes in *proposed* 0081 (0081 is not accepted) record the routing proof on the three-patch pin and then on the four-patch pin the candidate carries; see *Still open after this record*. |
 
 ## Competitor sources and observed behavior
 
@@ -272,7 +272,12 @@ Measurements use the controller's monotonic clock in nanoseconds:
   `MP_*` variable governs that limit in the pinned release (binary
   observation only: the SMTP server source is not in the source capture, so
   the cap's value and semantics are unsourced), so no equivalent setting was
-  applied: that would be an undocumented fairness change. *Accepted per second* = accepts divided by the send window
+  applied: that would be an undocumented fairness change. The launches are
+  therefore asymmetric, and the argv in each launch receipt shows it: the
+  candidate is started off its default, `--max-sessions 1000` (its compiled
+  cap of 256 would refuse the 1,000-session profile), while Mailpit and
+  MailHog run as shipped with no session setting. The comparison does not
+  claim the refusals' cause. *Accepted per second* = accepts divided by the send window
   (first start to the last worker's end). *Verified per second* = accepted
   ids observed on the server divided by the window from the first start to
   verification completion. After both windows close, every visible id is
@@ -363,8 +368,11 @@ collection therefore reads **not completed**; nothing was relabelled.
 ### Collection (2026-10-30)
 
 One `collect` ran the frozen protocol (`fair-mail-comparison-v2`) to
-completion in the implement seat, on the tree of this change (base `62c6a47`),
-with `swarmail --max-sessions 1000` and the
+completion in the implement seat, on the implement seat's *uncommitted* tree
+(the manifest records `candidate_commit` `62c6a47` and `candidate_dirty`
+true, so the run is not bound to committed bytes and the verify seat did not
+re-collect; it is not the committed-tree collection proposed 0091 §1 calls
+for), with `swarmail --max-sessions 1000` and the
 4096-connection backlog.
 
 - Run `collect-20261029T232943Z-5` (the driver's own clock-stamped id; it
@@ -413,12 +421,16 @@ final MCP contracts; operator acceptance of 0091–0093; CI; the five-member
 protected review; the T7–T12 controls and dossier (no oracle or null control
 has run, no paid trial is authorized); a best-available wait; binary build
 provenance for both executables; source review establishes no equivalence.
-The inherited HIGH cross-attempt review-integrity residual is carried
-unchanged: accepted 0081's dated note (2026-10-29) records that the full
-routing proof exited 0 on a re-pinned engine with every cross-attempt case
-parked `awaiting_operator`; that note describes the earlier a9893b4 + three
-patches pin, the candidate now pins a9893b4 + four patches, and this change
-neither re-ran that proof nor claims the pin repairs the residual.
+The inherited HIGH cross-attempt review-integrity residual stays on the
+board for the protected review to rule. The dated notes in *proposed* 0081
+(0081 is not accepted) record the full routing proof exiting 0 with every
+cross-attempt case parked `awaiting_operator`: first (2026-10-29) on the
+a9893b4 + three patches pin, then (2026-10-30) on the pinned a9893b4 + four
+patches binary `29dc3309…` at main `9785f81`, which closes the residual for
+this pin by a re-run on these bytes. The verify seat's compile for `25c0854`
+used that same pinned binary. This change neither re-ran the proof nor claims
+a merge repairs the engine; it cites the committed record, and #219 and the
+other rows above stay open.
 
 ## What closes the remaining rows
 

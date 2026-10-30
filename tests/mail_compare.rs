@@ -2459,6 +2459,11 @@ async fn admission_survives_rates_that_do_not_round_trip() {
         written["throughput"][0]["reconciliation"]["accepted"], 4,
         "the sewn cell holds the fixture's four accepted sends"
     );
+    assert_eq!(
+        written["throughput"][0]["accepted_per_second"].as_f64(),
+        Some(rate),
+        "the sewn cell carries the rate that does not round-trip by default"
+    );
     report::admit_run(&sewn, &bytes).expect("a rate that does not misparse admits");
     // The property admission relies on: a finite f64 survives the report's
     // own serialize-then-parse.

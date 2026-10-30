@@ -1038,8 +1038,10 @@ pub struct Fetched {
 /// The fixed candidate launch: memory store, OS-assigned loopback ports,
 /// the protocol's cap (`0` = unlimited), and a session cap as high as the
 /// protocol's largest concurrency, so the stress profile measures the store
-/// rather than the default 256-session refusal (Mailpit and MailHog have no
-/// such cap).
+/// rather than the default 256-session refusal. The cap is asymmetric by
+/// necessity: Mailpit and MailHog document no session setting, and Mailpit
+/// answered `421` to a few of the 1000 fresh sessions on its own, so those
+/// executables run as shipped and the refusals are recorded as measured data.
 pub fn swarmail_template(cap: u64) -> Vec<String> {
     [
         "serve",
