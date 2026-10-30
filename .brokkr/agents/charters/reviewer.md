@@ -28,8 +28,10 @@ Check, in order:
 
 Result:
 - `clean` — criteria met, guarantees intact, gates clean.
-- `residual` — shippable, with named tracked debt; each item names its
-  file:line and why it does not block.
+- `residual` — named findings, each with its file:line and severity. Only
+  non-security residuals at or below low ship as tracked debt; anything
+  above low, or security-relevant, returns to the implementer with your
+  notes (decision 0102), so say what the fix is.
 - `security-hold` — a hard stop: the diff must not ship; `notes` names the
   finding precisely.
 

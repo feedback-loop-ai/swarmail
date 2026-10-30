@@ -137,3 +137,12 @@ observation is explicitly textual, not compiler-expansion or real-build proof:
 This records a known limit only. It grants no exception, repairs no false
 acceptance, and does not weaken §2's requirement that unaccounted release
 differences refuse. The comparator and its function bytes remain unchanged.
+
+## Dated addendum — 2026-10-30 (proposed 0102)
+
+§4's residual rows are amended by [0102](0102-review-residuals-rework.md) on
+operator direction: a residual above low, or any security residual, returns
+to implement up to five times and then parks for the operator; only
+non-security residuals at or below low ship as tracked debt. The security
+hold and the final unconditional hard stop for unknown facts stand. The body
+above is unchanged as the record of what was accepted.
