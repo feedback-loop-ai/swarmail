@@ -103,3 +103,17 @@ Missing proof is an obligation, not a pass.
 The chief commits exactly this record and three linked design files. Implementation
 adds the proposed index row and passes inventory/status tests; the four-file
 constraint grants no gate waiver. The chief returns drafted only.
+
+## Addendum — 2026-10-30: the carried residual and the current pin
+
+Dated note; the text above is not edited. The residual under
+"Residuals and ownership" was written against the `731189f` engine. The pin is
+now `a9893b4` plus four patches (binary `29dc3309…`), and
+[0081](0081-glm-flash-seats.md) records, dated 2026-10-30, the full routing
+proof re-run with that exact binary at main `9785f81`: exit 0, every
+cross-attempt, cross-effect, missing and edit case parking `awaiting_operator`.
+A reviewer judges the residual against that record and this engine; for this
+pin the "completes instead of refusing" predicate no longer holds, so
+`has_security_residual=true` / `high` need not be retained on it. The protected
+security member still owns any verdict; this note is not a clearance, and
+nothing else in this decision changes.

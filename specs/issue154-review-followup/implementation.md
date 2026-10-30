@@ -106,3 +106,45 @@ availability residual.
 ## Result
 
 Returned `complete` for the implementation only; the story is open.
+
+## Addendum — 2026-10-30, after the operator's two merges
+
+Dated note; the text above is history and is not edited. It describes the tree
+at `1979c8e`. The branch head is now
+`c8c90e92b878056d1e6958c277ad8d07a9b5269d` (tree
+`2a71fb8ef621e8bf0bc3723d33d9dd3e99b04426`), which adds the operator's merges
+of main `9785f81` and main `ad8d6c9` (#281). No `src/` line moved since
+`1979c8e`; the merges carry only main's recipe, charter, decision and
+delivery-test changes.
+
+- **Layout.** brokkr's files live under `.brokkr/` (decision 0100, accepted):
+  `bundles/self/...` above is now `.brokkr/recipes/self/...`, and the pinned
+  engine is the one `.brokkr/recipes/self/tooling.json` names, not
+  `.forge/bin/brokkr`.
+- **Engine pin.** `a9893b4` plus four patches
+  (`swarmail-engine-a9893b4-p4`), binary SHA-256 `29dc3309…`. The Pinned-engine
+  row above (`ab935558…`, `731189f`) names the earlier pin.
+- **Diff claims.** "`git diff 1979c8e HEAD` is empty" for `docs/decisions/`
+  held at `1979c8e` and is not literally true at this head: main's decisions
+  0098–0102 and the 0081 addendum arrived by merge. The `src/` claim still
+  holds.
+- **Verify and panel.** The engine's verify pass and the first protected panel
+  ran on `c8c90e9`; the panel's verdicts are its own and are not transferred
+  here. Gate receipts under `target/receipts/` bind the heads they name only.
+- **Residual in AC8.** The predicate "the pinned engine completes instead of
+  refusing the cross-attempt case" was the `731189f` engine's. Decision 0081
+  records, dated 2026-10-30, the full routing proof re-run with the exact
+  binary `29dc3309…` at main `9785f81`: exit 0, every `cross-attempt`,
+  `cross-effect`, `missing` and `edit` case parks `awaiting_operator`. For
+  this pin the predicate no longer holds, so this record no longer carries
+  `has_security_residual: true` / `high` for it. Nothing here is a security
+  clearance: the protected security member owns that verdict; no attack was
+  reproduced, no access widened, no engine re-pinned by this feature. The
+  unbounded per-mail occurrence and snapshot cost stays a documented
+  availability residual (0094).
+- **Still outstanding, unchanged.** Coordinated standalone eval and #201
+  (including macOS), #152/#153 reviewed heads, #151 paid baseline and actual
+  clients, CI-owned proofs, operator seal (0056), and the decision-number
+  collisions (including the OPTIONS proposal renumbered 0090 → 0101 by an
+  earlier merge; `specs/focused-review-repair/` keeps citing 0090 as
+  history). `tasks.md` T1–T8 stay unticked; this record stands in for them.
