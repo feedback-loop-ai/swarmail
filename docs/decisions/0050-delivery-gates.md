@@ -138,7 +138,7 @@ This records a known limit only. It grants no exception, repairs no false
 acceptance, and does not weaken §2's requirement that unaccounted release
 differences refuse. The comparator and its function bytes remain unchanged.
 
-## Dated addendum — 2026-10-30 (proposed 0102)
+## Dated addendum — 2026-10-30 (0102, accepted 2026-10-30)
 
 §4's residual rows are amended by [0102](0102-review-residuals-rework.md) on
 operator direction: a residual above low, or any security residual, returns
