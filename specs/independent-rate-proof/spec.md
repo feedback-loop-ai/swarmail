@@ -1,6 +1,6 @@
 # Independent rate and subprocess proof
 
-Created: 2026-10-28. Amended: 2026-10-29 (operator continuation). Status: draft
+Created: 2026-10-28. Amended: 2026-10-29, 2026-10-30 (operator continuations). Status: draft
 design. Epic #164, issue #152.
 Baseline under proof: `7f2e2129e36577f4c65703c70e20d35a484e6baf`.
 Design commit parent: `ca3ad63418c7915f8f5f92208599d056be10d5ad` (tree
@@ -89,6 +89,49 @@ accepted-ruling conflicts wait under
   branch of the intake's AC6 applies.
 - **AC3/AC4 narrowed.** The binary witness no longer holds initialization while
   queuing stdin; see the adjudication below.
+
+### 2026-10-30 — supersession after the merges of main (operator continuation)
+
+This entry supersedes, for the current tree, the dated 2026-10-29 **Roster**
+and **Engine** bullets above and every statement elsewhere in this design that
+the tree pins 731189f-p3, that a9893b4 is absent or an unmet precondition, that
+`bundles/self` or `.forge/bin/brokkr` is the compile path, or that the HIGH
+remains open for want of a record. The 2026-10-29 text is kept as written; it
+described the tree before main was merged.
+
+- **Roster.** Decisions 0098, 0099 and 0100 are accepted and present in this
+  tree; the `claude-careful` recipe is on main. The 2026-10-29 roster stands.
+- **Engine.** `.brokkr/recipes/self/tooling.json` pins brokkr a9893b4 plus
+  patches 0001–0004 (`swarmail-engine-a9893b4-p4`), `binary_sha256`
+  `29dc3309925a2556b9713b7a9b5fb8089b8e4610e86215fc89554e75634e7cad`. The
+  compile command is `brokkr compile --bundle .brokkr/recipes/self`. Verify
+  receipts for this run record that digest as the executable that ran. The
+  earlier pin digest `ab93555806ee…` is historical only.
+- **Cross-attempt residual.** Decision 0081's dated four-patch note
+  (`docs/decisions/0081-glm-flash-seats.md`, 2026-10-30) records the full
+  routing proof re-run with the exact binary `29dc3309…` at main `9785f81`:
+  exit 0, every cross-attempt, cross-effect, missing and edit case parked. That
+  re-run, not this design, not a digest match and not panel completion, is the
+  independent record that closes the inherited cross-attempt review-integrity
+  residual **for this pin**. Decision 0081 stays proposed; whether the
+  inherited HIGH is released is the review's and the operator's to rule, and
+  this design neither reclassifies nor releases it. Decision 0102 governs a
+  residual above low or any security residual: it returns to the implementer up
+  to five times, then parks for the operator.
+- **Mutation record (AC1).** Executed on this tree after the first review
+  return, one mutant at a time, each reverted and `src/` verified clean:
+  `ToolRate::CAP = 2048` fails `tool_rate_uses_exact_monotonic_windows` at
+  `src/mcp.rs:947` (`taken() == 1024`); `ToolRate::WINDOW = 2 s` fails it at
+  `src/mcp.rs:952` (the one-second boundary admission). The unmutated test
+  passes.
+- **Predecessor specs.** Merge 093589b had rewritten recorded prose in
+  `specs/mcp-candidate-proof/{spec,plan}.md` and
+  `specs/mcp-engine-followup/{spec,plan}.md` while renumbering decision
+  0090 → 0101 (`0101-mcp-options-admission.md`, "renumbered 0101 against
+  main"; `0090` on main is now `0090-mixed-provider-routing.md`). Those four
+  files are restored to their original wording, as AC5 requires; only the link
+  targets keep pointing at the renumbered file. In those files "0090" in the
+  OPTIONS-admission sense means today's 0101.
 
 ## Panel adjudication
 

@@ -1,6 +1,6 @@
 # Plan — Independent rate and subprocess proof
 
-Amended 2026-10-29 for the operator continuation; the rulings are in
+Amended 2026-10-29 for the operator continuation; 2026-10-30 supersession note in the Quickstart; the rulings are in
 [spec.md](spec.md) § Panel adjudication.
 
 ## Technical context
@@ -122,6 +122,18 @@ cargo test --locked --test mcp_revisions
 cargo test --locked --test delivery_recipes
 cargo test --locked --test delivery_constitution
 ```
+
+### 2026-10-30 supersession of the engine binding
+
+The block below was written before main was merged. For the current tree read
+`.forge/bin/brokkr` as the pinned brokkr binary whose `sha256sum` equals
+`binary_sha256` in `.brokkr/recipes/self/tooling.json` (a9893b4 + patches
+0001–0004, `29dc3309925a2556b9713b7a9b5fb8089b8e4610e86215fc89554e75634e7cad`),
+`bundles/self` as `.brokkr/recipes/self`, and "a9893b4 is absent / unmet
+precondition" as satisfied by that pin. The cross-attempt residual is recorded
+by decision 0081's 2026-10-30 four-patch note; see
+[spec.md](spec.md) § Clarifications 2026-10-30. The original block is kept
+for history.
 
 Then the full house inventory, not a reduced copy:
 

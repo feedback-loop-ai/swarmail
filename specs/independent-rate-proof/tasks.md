@@ -1,8 +1,18 @@
 # Tasks — Independent rate and subprocess proof
 
-Amended 2026-10-29. Ordered downstream obligations; each names its proof. Boxes
+Amended 2026-10-29 and 2026-10-30. Ordered downstream obligations; each names its proof. Boxes
 stay unchecked at design. All predecessor AC1–AC11 remain required. The engine
 alone advances phases.
+
+> 2026-10-30 supersession: T1, T8 and T10 below were written before main was
+> merged. In this tree the engine is the a9893b4 + patches 0001–0004 pin in
+> `.brokkr/recipes/self/tooling.json` (digest `29dc3309…`), the compile command
+> is `brokkr compile --bundle .brokkr/recipes/self`, a9893b4 is present and not
+> an unmet precondition, and decision 0081's 2026-10-30 four-patch note is the
+> independent record for the cross-attempt residual at this pin. T2's mutation
+> run was executed (CAP 2048 and WINDOW 2 s both red, reverted); see
+> [spec.md](spec.md) § Clarifications 2026-10-30. The HIGH is never
+> reclassified or released by this design; the review rules on it.
 
 - [ ] T1 — Recheck identity and evidence: HEAD, tree, clean tracked state, `src/`/`tests/` equal to baseline 7f2e212, both manifests via `sha256sum -c --strict` from the repo root, the tooling.json digest against `.forge/bin/brokkr`, and that a9893b4 is absent from the tree. Proof: recorded hashes and git ids; the HIGH stays OPEN in the record (AC5–AC8).
 - [ ] T2 — Rewrite `tool_rate_uses_exact_monotonic_windows` with literal 1024 admissions, 1025th refusal, 999,999,999 ns refusal, one-second admission, 1023 further admissions, next refusal, `taken() == 1024` after each refusal. Proof: `cargo test --locked --lib tool_rate_uses_exact_monotonic_windows` passes; temporary CAP 2048 and WINDOW 2 s mutations go red and are reverted, or reported not executed; grep shows no `CAP`/`WINDOW` in the test (AC1).

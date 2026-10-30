@@ -21,7 +21,7 @@ overrule accepted policy (0045 §8). The report is derived analysis under 0085,
 not query-time link/code extraction. Preserve 0020 test placement, mutation/wait
 owners, per-test inboxes, exact coverage and license allowlist. Retain 0057/0058
 protected review, bounded hands and the explicit mixed route. Keep
-0079/0080/0081/0085/0091/0101 and this correction proposed. No engine/adapter
+0079/0080/0081/0085/0090/0091 and this correction proposed. No engine/adapter
 capability change, protection bypass or full-eval workaround is commissioned.
 Commits are unsigned; only the operator seals and merges.
 
@@ -143,6 +143,6 @@ linked, clean proposed decision. Do not write a `designed` result as chief.
 | New tests introduce timing/coverage flakiness | Reuse causal seams and suites; 0020 placement; no sleeps, mid-band chaos, global resets or static calendar-dependent TLS success fixtures. |
 | Integrity remains HIGH or provider unavailable | Independent evidence and hard stops; no inference from source merge, alias or compile. Delivery may remain blocked. |
 | Missing pinned engine or unavailable proof | Record exact path, expected digest/command and outcome; no installs, substitutions or weakened assertions by verify. |
-| Provisional numbers collide | 0092 is local only; do not renumber 0091/0101 or reuse reserved holes. Operator reconciles final numbers. |
+| Provisional numbers collide | 0092 is local only; do not renumber 0090/0091 or reuse reserved holes. Operator reconciles final numbers. |
 | Eval is locally serial but host scope unknown | Do not launch/claim full eval. Require authorized host-wide participation and cleanup-scope proof separately; #201 remains unresolved. |
 | Scope expands during repair | Minimal existing owner and complete gates; return blocker for accepted-contract contradictions instead of enlarging authority. |

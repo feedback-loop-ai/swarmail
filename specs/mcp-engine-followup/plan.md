@@ -21,7 +21,7 @@ boundaries, 0057/0058 protected delivery and 0056 unsigned authorship. Keep 0020
 placement and deterministic test disciplines: real protocols, isolated inboxes,
 no mocks, no sleep-as-sync or mid-band chaos, generated TLS success fixtures.
 Retain every house gate, exact coverage and permissive license policy. Proposed
-0079/0080/0081/0085/0091, 0092 and 0101 stay proposed with operator-owned numbering.
+0079/0080/0081/0085/0090–0092 stay proposed with operator-owned numbering.
 This follow-up defines proof work without a new semantic ruling or ADR.
 
 ## Research and implementation approach
@@ -137,6 +137,6 @@ No extra tracked evidence commit follows the design commit.
 | Catalogue silently drops report hints | Independent exact thirteen-name oracle over HTTP and binary stdio; cache work is bounded derived analysis, not mail mutation. |
 | Robustness review expands into unrelated hardening | Repair only a demonstrated compatible defect in its current owner; no new services, retries, dependencies or guarantees. |
 | Provider outage or correlated review | Exact singleton routes, separate invocation IDs/charters and no unauthorized fallback; five roles still share model families. |
-| Proposal collision or implied acceptance | Keep 0091, 0092 and 0101 provisional and existing proposals unchanged; operator reconciliation remains necessary. |
+| Proposal collision or implied acceptance | Keep 0090–0092 provisional and existing proposals unchanged; operator reconciliation remains necessary. |
 | Private serialization mistaken for #201 host scope | No full eval claim or launch; require participation through cleanup outside this design. |
 | Documentation successor inherits baseline evidence | Record successor identity and rerun final proofs/reviews even when only documentation changed. |
