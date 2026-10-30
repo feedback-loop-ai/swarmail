@@ -18,6 +18,13 @@ pinned brokkr, the exact coverage gate *and* its selftest, the publish
 guard's proof and `cargo deny check licenses`. That section also names
 what only CI runs; this charter keeps no list of its own.
 
+When your input carries `context.returned_from` with phase `review`, the
+review panel sent the change back (decision 0102): its result names the
+findings. Fix every finding above low and every security finding on this
+branch, or answer it with evidence in your notes when it is not a defect;
+leave lows as tracked debt. The run gets five such returns before the
+operator rules.
+
 Commit unsigned (`commit.gpgsign=false` is set repo-locally); never push
 and never stop for a signing key — the operator seals the branch before
 merge (decision 0056); write messages in the repository's imperative style
