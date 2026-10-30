@@ -1518,7 +1518,7 @@ Missing mail and failed/unavailable analysis use isError=true without structured
 content; malformed arguments use -32602. The March descriptor keeps its historical
 "Only the synthetic demo rule ships" wording byte-for-byte; it predates the bulk
 checklist and is not a current rule inventory. Modern descriptors state the
-current scope (proposed 0091).
+current scope (proposed 0105).
 
 REST assert/await and MCP wait_for_email admit optional no_findings_at_or_above
 (info|warning|error). It qualifies ordinary-filter candidates before paging;

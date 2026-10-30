@@ -24,7 +24,7 @@ and ingest extraction (0001–0005). Parsing stays outside mutation/map locks on
 the existing offload path (0030); seed shares build_email (0010). Keep honest
 bodies, text-first links, conditional comments, MIME code preference and historical
 arrays (0031/0049/0061). Retain closed inputs/errors (0048/0074), 0079/0080's
-operator-retained deviations, 0082/0091 output and current report behavior.
+operator-retained deviations, 0082/0105 output and current report behavior.
 Proposed status grants no amendment to accepted rulings (0045 §8).
 
 Follow 0020: branch-stable tests remain inline/measured; concrete cold failure

@@ -1,6 +1,6 @@
 # Complete structured MCP report output
 
-Decision: 0091 — [Thirteen-tool structured output](../../docs/decisions/0091-mcp-report-output.md)
+Decision: 0105 — [Thirteen-tool structured output](../../docs/decisions/0105-mcp-report-output.md)
 
 ## Feature and rationale
 
@@ -43,7 +43,7 @@ rewriting history or accepting 0079, 0080, 0082, 0085 or any other decision.
 | Production architecture | Adopt both positions' existing OUTPUT_SCHEMAS, tool_descriptors and text_result owners. Adopt simplicity's finite fragments; reject a generator, schema registry, new report service, SDK or production validator. | Literal duplication and explicit drift proofs remain maintenance work; modern JSON duplication increases response size. |
 | Strict proof versus the smallest test change | Adopt robustness's exact name sets, independent expected payloads, all-branch schema checks and constraint mutations. Reject count-only repairs or updating goldens from this candidate. | More test code and independent baseline preparation are mandatory even though production changes are small. |
 | All typed forms on the wire | Rule for simplicity's distinction: every tool needs real HTTP/binary-stdio success, while currently reserved Link coordinates and empty reports need independent typed serialization/schema witnesses. Reject robustness's suggestion that today's production collector can naturally emit every location/empty form. | There will be no production-binary receipt for unreachable forms. Label those cases typed-only; any later demand for such a receipt stays unmet, never silently waived. No production rule/flag/provider is added to manufacture it. |
-| Historical documents | Reject robustness's request to repair the old #153 spec/plan/tasks and 0082 inventory in place. Preserve the operator's historical record; place the current normative obligations here and in 0091. | Readers follow a new scoped supplement. Implementation indexes it and updates current product descriptions without rewriting historical evidence. |
+| Historical documents | Reject robustness's request to repair the old #153 spec/plan/tasks and 0082 inventory in place. Preserve the operator's historical record; place the current normative obligations here and in 0105. | Readers follow a new scoped supplement. Implementation indexes it and updates current product descriptions without rewriting historical evidence. |
 | OpenAPI and numeric fidelity | Adopt robustness's independent source pins and exact arithmetic, with simplicity's finite pattern vocabulary and existing facilities. Reject stripping an unsupported assertion or using f64 for both integer operands. | The finite evaluator gains deliberate, tested support for the emitted constraints; it still is not a general JSON Schema implementation. |
 | Delivery evidence | Adopt both positions' independent baseline and protected review requirements. Reject treating a compile, local shipment, other candidate's settled member or upstream closure as this candidate's verdict. | Missing evidence and inherited HIGH security-relevant residuals can still prevent delivery after application tests pass. |
 
@@ -245,7 +245,7 @@ defect only within these owners and contracts; otherwise record it explicitly.
   semantics is weakened.
 - **AC9 — Documentation and local delivery:** Modern report descriptions state
   current rule scope and revision-qualified output accurately; legacy bytes
-  remain unchanged. Implementation indexes 0091 as proposed, records each
+  remain unchanged. Implementation indexes 0105 as proposed, records each
   acceptance witness/gap, commits unsigned, and passes every local house gate
   on the clean candidate, exact coverage/selftest and fail-closed native-tls
   absence included. A pinned-layer edit requires a freshly compiled run.

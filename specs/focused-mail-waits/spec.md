@@ -56,7 +56,7 @@ old specs. Packet acceptance provenance for 0079/0080/0082 and their locally
 proposed headers remain distinct; this design changes neither statuses nor
 accepted history. 0094 supplements
 [0082](../../docs/decisions/0082-mcp-structured-output.md) and
-[0091](../../docs/decisions/0091-mcp-report-output.md)'s older tool inventories.
+[0105](../../docs/decisions/0105-mcp-report-output.md)'s older tool inventories.
 
 Local branch-tip decision inventories were checked. #155 owns proposed
 0092-compact-email-view on `epic192/next-155`; `repair/issue152-options-mixed`
@@ -258,7 +258,7 @@ fresh mail carrying metadata. tools/list changes only through additive discovery
 compare the original thirteen-entry subsequence, not full fifteen-tool byte
 identity. Preserve both existing March captures and provenance; add independent
 new-tool expectations. Never rewrite old goldens to manufacture compatibility.
-Keep 0091 report unions, numeric bounds, OpenAPI pins and finite evaluator
+Keep 0105 report unions, numeric bounds, OpenAPI pins and finite evaluator
 unknown-assertion refusals. Negotiation is not full MCP conformance or actual
 client validation.
 
