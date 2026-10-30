@@ -638,13 +638,16 @@ fn fast_recipe_preserves_shell_proofs_design_origin_and_hard_review_refusals() {
     let overridden = recipe["override"]["rules"].as_array().unwrap();
     let policy = read_json(".brokkr/recipes/codex-fast/policy.json");
     let rules = policy["rules"].as_array().unwrap();
-    for hard_stop in [
+    for protected in [
         "REVIEW-SECURITY-HOLD",
-        "REVIEW-RESIDUAL-ABOVE-MEDIUM",
+        "REVIEW-RESIDUAL-EXHAUSTED",
+        "REVIEW-RESIDUAL-SECURITY-EXHAUSTED",
+        "REVIEW-RESIDUAL-REWORK",
+        "REVIEW-RESIDUAL-SECURITY-REWORK",
         "REVIEW-RESIDUAL-UNSAFE",
     ] {
-        assert!(!overridden.contains(&json!(hard_stop)), "{hard_stop}");
-        assert!(rules.iter().all(|rule| rule["id"] != hard_stop));
+        assert!(!overridden.contains(&json!(protected)), "{protected}");
+        assert!(rules.iter().all(|rule| rule["id"] != protected));
     }
     assert!(
         rules
