@@ -192,6 +192,8 @@ it; the inherited checkbox stays open until its whole proof, including these, ho
   not started" and no smoke is relabelled.
   *Proof (2026-10-30):* run `collect-20261029T232943Z-5` admitted by
   `mail_compare admit` (exit 0), `collect` exit 1 for Mailpit's own refusals;
+  the run's manifest says `candidate_dirty` true, so it is not bound to
+  committed bytes and the committed-tree collection stays open;
   see `docs/evals/README.md` § Collection (2026-10-30).
 
 - [x] **T6.a / T10.a — Named prerequisite refusals (AC-C8; Q8).** Replace the generic

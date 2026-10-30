@@ -253,8 +253,12 @@ Appended 2026-10-30 by the issue #163 delivery; nothing above is rewritten.
 §9 ("No knobs") allows "a one-`#[arg]` follow-up if an operator story
 materializes". The story is the operator's own, in the #163 comparison: the
 fair-comparison stress profile opens 1000 concurrent sessions, and the
-compiled 256 refused 11% of swarmail's stress sends with `421` while the
-competitors ran uncapped. The operator directed `--max-sessions`
+compiled 256 refused swarmail's sessions past 256 with `421` (the operator's
+observation, recorded as about 11% of its stress sends in commit `2aa7daa`;
+no committed collection measures that figure). Mailpit and MailHog were
+launched as shipped, with no session setting, and Mailpit still answered
+`421` to a few sessions on its own (docs/evals/README.md, *Collection
+(2026-10-30)*). The operator directed `--max-sessions`
 (`SWARMAIL_MAX_SESSIONS`, default `256`, at least `1`), and the comparison
 launches swarmail with `--max-sessions 1000`. The default, the `421`
 refusal and every other rule of this decision are unchanged. The fd sizing
