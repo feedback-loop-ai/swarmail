@@ -19,14 +19,15 @@ while IFS= read -r line; do
 done < "$prompt_file"
 [ -n "$result_path" ] && [ -n "$run_id" ] || { echo "ship-seat: prompt lacks result path or run id" >&2; exit 2; }
 mkdir -p "$(dirname "$result_path")"
-notes="$(dirname "$result_path")/ship-notes.$$"; trap 'rm -f "$notes"' EXIT
+# The notes stage in the box's private temporary directory.
+notes="$(mktemp)" || exit 2; trap 'rm -f "$notes"' EXIT
 write_result() { awk -v result="$1" '
   function json(text,out,i,byte,c){for(i=1;i<=length(text);i++){c=substr(text,i,1);if(c=="\\")out=out "\\\\";else if(c=="\"")out=out "\\\"";else{for(byte=1;byte<32&&c!=sprintf("%c",byte);byte++){}out=out (byte<32?sprintf("\\u%04x",byte):c)}}return out}
   BEGIN{printf "{\"result\": \"%s\", \"notes\": \"",result}{if(NR>1)printf "\\n";printf "%s",json($0)}END{print "\"}"}' "$notes" > "$result_path"; }
-# The ledger stands beside the engine's result files: the seat box mounts the
-# repository's state folder read-only, and the results directory is the one
-# place every ship attempt of a run can both write and read back.
-ledger="$(dirname "$result_path")/$run_id.ledger.md"
+# The ledger lives in this worktree's own git directory, where every ship
+# attempt of a run can write it and read it back without dirtying the
+# tracked tree.
+ledger="$(git rev-parse --path-format=absolute --git-path "brokkr-ledger/$run_id.md")" || exit 2
 if [ "$rule_id" != "SHIP-READY" ]; then
   [ -n "$journal" ] || { echo "ship-seat: prompt lacks journal path" >&2; exit 2; }
   dirty="$(git status --porcelain 2>&1 || true)"

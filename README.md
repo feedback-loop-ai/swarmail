@@ -335,7 +335,12 @@ posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
 `SWARMAIL_URL` (the MCP stdio bridge's upstream, default
 `http://127.0.0.1:8025`),
 `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
-`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
+`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`,
+`SWARMAIL_MAX_SESSIONS` (`256` concurrent sessions per SMTP and POP3
+listener, at least `1`; one more is answered `421`; the flag is
+`--max-sessions`. Each session holds a file descriptor, and the default is
+sized so that three times the cap stays under the usual 1024 soft limit
+(decision 0027 §3): above about 340, raise `ulimit -n` first).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and
@@ -497,7 +502,7 @@ so: `200 {"status":"ok"}` when no listener is flagged, `503
 surfaces, and `503 {"status":"stopping"}` for a request that reaches the
 handler after the stop has fired — that state wins over everything else.
 Sessions are bounded where the wire admits them: more than 256 concurrent
-SMTP or POP3 sessions is refused before any greeting (`421 4.7.0 Too many
+SMTP or POP3 sessions (the default of `--max-sessions`) is refused before any greeting (`421 4.7.0 Too many
 connections, closing transmission channel` / `-ERR too many connections`);
 completed sessions are reaped right after each accept, before the cap is
 checked, so a slot freed while the listener waited is offered to the very
@@ -1212,6 +1217,13 @@ parse, was the cost. The capped query paths publish in the same run
 (`ingest/threads/view@cap`, `ingest/store/count@cap`,
 `ingest/store/count@cap-filtered`).
 
+These are in-process ingest microbenchmarks. They are not network
+throughput, wait latency or agent results, and they compare nothing.
+The fair comparison against Mailpit and MailHog has its own method and
+driver, and so far no results: see [docs/evals](docs/evals/README.md)
+for what is built, what is still missing and why. This README states no
+comparative or agent numbers until admitted evidence exists to cite.
+
 ## Repo layout
 
 | Path | What it is |
@@ -1294,6 +1306,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/deliverability.rs` | Lazy typed report, REST/MCP parity, threshold assertions/waits, UI states, persistence, pruning and served contract documentation (proposed 0085) |
 | `tests/api.rs` | every REST route, happy + error branches |
 | `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
+| `tests/listen.rs` | every listener's bind: both address families, the bind error reported as-is, and (Linux) a burst of 600 fresh SMTP connections all greeted, past the platform default backlog of 128 |
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
@@ -1312,6 +1325,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/store_contract_docs.rs` | the store, maildrop and compat contracts as documented — README, llms.txt, the chart comment and the served schema, their numbers built from the running constants — and every decision index row agreeing with its record's status |
 | `tests/delivery_constitution.rs` | structural pins on `.brokkr/recipes/self/` (0050): the review-residual stops, the design sequence ending in the pinned check, the verify seat's pinned gates and shim check; and the documented install examples and CI's chart-history and docker-smoke wiring (#141) |
 | `tests/delivery_recipes.rs` | Codex recipe discovery, triage routing and single/double/full review, inherited shell gates, work-seat tools, exact routes and independent review without Pro or author-model fallback (0057); [recipe tables and launch commands](.brokkr/recipes/README.md) |
+| `tests/mail_compare.rs` | the fair wire comparison driver (proposed 0091) against the real binary it launches: method and source-pin refusals, hand-computed quantiles, exact throughput and present/future/empty wait reconciliation, a bounded 1,000-session run, closed-environment, private-output and reaped-group facts read from `/proc`, admission refusals, and every `scripts/compare-mail.sh` mode refusing without launching an agent |
 | `tests/tooling_patches.rs` | the actual tooling-patch helper against real Git repositories: source identity, clean state, strict records, safe paths, all checksums before mutation and ordered patch application |
 | unit | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |
 

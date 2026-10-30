@@ -1,0 +1,32 @@
+{
+  "lock_version": 1,
+  "entries": [
+    {
+      "target": "swarmail",
+      "status": "candidate",
+      "unverified_reason": null,
+      "source": null,
+      "artifact": null,
+      "supports_memory_storage": true,
+      "launch": null
+    },
+    {
+      "target": "mailpit",
+      "status": "unverified",
+      "unverified_reason": "Not captured: the delivering seat had no network access, no container runtime and no Mailpit artifact, so no official repository revision, release, license, API or setup document, or artifact digest has been observed. Nothing about Mailpit is asserted.",
+      "source": null,
+      "artifact": null,
+      "supports_memory_storage": null,
+      "launch": null
+    },
+    {
+      "target": "mailhog",
+      "status": "unverified",
+      "unverified_reason": "Not captured: the delivering seat had no network access, no container runtime and no MailHog artifact, so no official repository revision, release, license, API or setup document, or artifact digest has been observed. Nothing about MailHog is asserted.",
+      "source": null,
+      "artifact": null,
+      "supports_memory_storage": null,
+      "launch": null
+    }
+  ]
+}

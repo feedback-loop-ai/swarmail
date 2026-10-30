@@ -54,6 +54,16 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 100_000, env = "SWARMAIL_MAX_PER_INBOX")]
     pub max_per_inbox: usize,
 
+    /// Maximum concurrent sessions on each of the SMTP and POP3 listeners;
+    /// one more is answered `421` and closed. At least 1.
+    #[arg(
+        long,
+        default_value_t = crate::smtp::DEFAULT_MAX_SESSIONS,
+        env = "SWARMAIL_MAX_SESSIONS",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
+    )]
+    pub max_sessions: usize,
+
     /// SQLite file that persists every insert, delete and clear, and from
     /// which the full state is restored on startup. Omit for the default
     /// in-memory store.
@@ -144,6 +154,7 @@ impl From<&ServeArgs> for Config {
             tls_key: args.tls_key.clone(),
             smtp: SmtpConfig {
                 tls_handshake_timeout: Duration::from_millis(args.tls_handshake_timeout_ms),
+                max_sessions: args.max_sessions,
                 ..SmtpConfig::default()
             },
             pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,

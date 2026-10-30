@@ -886,7 +886,7 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
             "limit": { "type": "integer", "minimum": 0, "maximum": 250, "default": 100 },
             "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Matches to skip, newest first; total is counted before paging" } },
             "additionalProperties": false } },
-        { "name": "swarmail_get_deliverability_report", "description": "Lazy versioned report from stored bytes. Only the synthetic demo rule ships; empty findings do not imply deliverability. Returns report JSON in a text block (2025-03-26).",
+        { "name": "swarmail_get_deliverability_report", "description": "Lazy versioned report from stored bytes with demo and bulk-sender checks. Empty findings do not imply deliverability. Returns report JSON in a text block (2025-03-26).",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_get_email", "description": "Fetch one captured email in full by id.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
