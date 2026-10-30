@@ -33,10 +33,28 @@ impl<'de> Deserialize<'de> for Version {
         d.deserialize_map(Probe)
     }
 }
-pub fn read(bytes: &[u8]) -> Result<TrialResult, String> {
+fn select(bytes: &[u8]) -> Result<u32, String> {
     crate::provenance::depth(bytes)?;
     let Version(version) =
         serde_json::from_slice::<Version>(bytes).map_err(|_| "invalid result record")?;
+    Ok(version)
+}
+/// Read one comparison row: schema 3 only, validated. Native, legacy and
+/// unknown versions are refused here exactly as `read` refuses schema 3.
+pub fn read_comparison(bytes: &[u8]) -> Result<crate::identity::ComparisonRow, String> {
+    if select(bytes)? != crate::identity::COMPARISON_SCHEMA {
+        return Err(format!(
+            "schema_version unsupported; expected {}",
+            crate::identity::COMPARISON_SCHEMA
+        ));
+    }
+    let row: crate::identity::ComparisonRow =
+        serde_json::from_slice(bytes).map_err(|_| "invalid result record")?;
+    row.validate()?;
+    Ok(row)
+}
+pub fn read(bytes: &[u8]) -> Result<TrialResult, String> {
+    let version = select(bytes)?;
     match version {
         2 => {
             if bytes

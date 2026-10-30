@@ -19,7 +19,7 @@ categories = ["email", "development-tools::testing"]
 # `readme` field points at) and must NOT be listed: a `./name` pattern
 # matches nothing — cargo matches patterns against paths without the `./`
 # prefix, so `./LICENSE-MIT` silently packaged no license text at all —
-# while a bare `README.md` would also sweep in agents/README.md.
+# while a bare `README.md` would also sweep in .brokkr/agents/README.md.
 # Explicit root anchors state the boundary for every include; basename
 # anchors also keep nested cache license/NOTICE decoys out of the package.
 # NOTICE identifies the separately licensed WHATWG data and derived table.
@@ -43,7 +43,7 @@ axum = "0.8"
 # `rc` lets the thread view serialize the store's `Arc<Email>`s as they are —
 # no per-request clone of every body.
 serde = { version = "1", features = ["derive", "rc"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 dashmap = "6"
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -92,6 +92,15 @@ harness = false
 name = "read_stall"
 harness = false
 
+# The fair wire comparison driver (issue #163, proposed decision 0091):
+# real Swarmail, Mailpit and MailHog servers under one frozen protocol.
+# Its own harness: it launches and owns server processes and measures
+# nothing without a mode; `scripts/compare-mail.sh` is the entry point.
+# Independent of the eval crate by construction.
+[[bench]]
+name = "mail_compare"
+harness = false
+
 [dev-dependencies]
 criterion = "0.7"
 base64 = "0.22"
@@ -100,7 +109,9 @@ libc = "0.2"
 # binary tests, which spawn the shipped `serve` process and read its startup
 # line back. Already a main dependency — this only makes the features
 # visible to the test/bench targets; no new crate enters the tree.
-tokio = { version = "1", features = ["rt", "time", "process"] }
+# test-util pauses the clock for the comparison adapter's wait-frame
+# proofs (exact cutoffs without sleeping as synchronization, 0020 §5).
+tokio = { version = "1", features = ["rt", "time", "process", "test-util"] }
 # Panic-safe scratch cleanup at the persist/tls fixture helpers (issue #101):
 # TempDir drop guards held for the test's whole life, so `-wal`/`-shm`
 # sidecars and the tls pair die with the directory by construction and

@@ -29,7 +29,7 @@ the framing.
   branch-stable, into the declared `concurrency_tests.rs` harness only for a
   cold path, and into `tests/deliverability.rs` for wire shape. No seam becomes
   a feature flag; no `coverage(off)`.
-- 0045 §8: compatible work under proposed 0085/0089/0090/0091 may land; a
+- 0045 §8: compatible work under proposed 0085/0089/0106/0107 may land; a
   semantic defect returns to design.
 - 0056: commits are unsigned; nothing signs mid-run; nothing is pushed.
 - 0050 §1 and §3: gates run from the pinned bundle; the design is identified
@@ -42,7 +42,7 @@ the framing.
 The chief confirmed on tree `8750196`: the patch hash equality; a clean
 worktree; `RULE_SET_ID = "swarmail-html/3"`; eleven `html/2` occurrences in
 seven files, all historical or labelled historical; the decision index rows
-0081–0091 contiguous with the 0091 row present; 0081's record, index row and
+0081–0107 contiguous with the 0107 row present; 0081's record, index row and
 0058 pointer saying proposed; `evals/Cargo.toml` assigning standalone gates to
 #201; README, llms.txt and OpenAPI describing the current empty-message
 failure; every test named in the spec present at the cited lines. These are
@@ -60,7 +60,7 @@ Settled approach: **re-prove, control, classify, repair-on-reproduction.**
 Rejected: a permanent fault seam or rescan hook; a runtime work quota; a
 tighter fitted `C`; a CSS tokenizer crate or variable resolution; an aggregate
 empty-success shortcut, SMTP rejection or synthesized headers for empty mail;
-a second empty matrix or a fourth set of CSS pairs; edits to 0081, the 0085/0090
+a second empty matrix or a fourth set of CSS pairs; edits to 0081, the 0085/0106
 pointers, historical specs or the appended implementation note; new
 coordination tooling for #260 or the eval window.
 
@@ -74,7 +74,7 @@ coordination tooling for #260 or the eval window.
 | `src/deliverability.rs`, `src/deliverability/html-rules.json`, `tests/fixtures/html-compatibility.json` | Identity and catalogue owners; read-only unless a test fails. |
 | `src/store.rs`, `src/smtp.rs`, `src/persist.rs`, `src/model.rs`, `src/extract.rs` | Must be byte-identical to `61320c6`. |
 | `README.md`, `src/static/llms.txt`, `src/static/openapi.json` | Served-docs owners; read-only. The html/2 historical sentence stays. |
-| `docs/decisions/0081, 0085, 0089, 0090, 0091`, `docs/decisions/README.md`, `specs/html-review-repair/implementation.md`, `.forge/issue259-review/*` | Byte-unchanged; quoted in the notes. |
+| `docs/decisions/0081, 0085, 0089, 0106, 0107`, `docs/decisions/README.md`, `specs/html-review-repair/implementation.md`, `.forge/issue259-review/*` | Byte-unchanged; quoted in the notes. |
 | `evals/` | Standalone suite only inside an evidenced nonoverlap window with a captured, hashed executable. |
 | `tests/burst.rs`, `tests/p2.rs`, `tests/rate.rs`, remaining suites | Run unchanged under the full gate. |
 

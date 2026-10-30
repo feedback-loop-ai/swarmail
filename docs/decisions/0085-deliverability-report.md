@@ -132,9 +132,9 @@ the current text-block contract and the bounded lazy behavior. The report's
 structuredContent/outputSchema remains the later small follow-up when #153
 lands; no part of this implementation depends on 0079/0080/0082.
 
-## Repair implementation pointer — 2026-10-28 (proposed 0091)
+## Repair implementation pointer — 2026-10-28 (proposed 0107)
 
-[0091](0091-html-review-repair.md), still **proposed**, records the compatible
+[0107](0107-html-review-repair.md), still **proposed**, records the compatible
 review repair: swarmail-html/2 preserves CSS component ownership and literal URL
 data, treats exact-empty raw only as no HTML parts (other collectors/limits
 still run), and proves counted helper inspections separately from progress.

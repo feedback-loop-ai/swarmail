@@ -25,7 +25,7 @@ cold diagnostics in declared sibling harnesses, wire contracts in integration
 tests. Use barriers/deadlines, chaos poles, fresh inboxes and generated certificate
 fixtures; no sleep synchronization, mocked protocols or coverage exclusions.
 
-Proposed 0085/0089/0090/0091 already describe the behavior. No new semantic ruling
+Proposed 0085/0089/0106/0107 already describe the behavior. No new semantic ruling
 or ADR is selected. Report 0081 provenance without changing status. Preserve
 0058 protection and 0050 candidate binding. The explicit chief instruction permits
 exactly three unsigned design files before ship despite the general ship-only
@@ -37,7 +37,7 @@ owns the design verdict; downstream protected phases own verification/review/shi
 
 Read both full positions, intake result, checksummed original packet, complete
 stopped-run audit, decision index, 0001–0005, 0058, 0081 and proposed
-0085/0089/0090/0091. Inspected full change inventories and selected collector/cache,
+0085/0089/0106/0107. Inspected full change inventories and selected collector/cache,
 CSS/work, decoder-census, report/empty/CSS tests, mixed overlay and eval owners.
 Direct comparisons establish historical restoration and index structure at the
 starting candidate. The engine digest matches tooling.json. These observations
@@ -61,7 +61,7 @@ hermetic proof and actual independent results remain downstream obligations.
 | src/store.rs; src/smtp.rs; src/persist.rs; src/model.rs; webhook modules | Review accepted invariants, cancellation, post-storage fan-out and shutdown; run existing proofs. |
 | tests/burst.rs; tests/p2.rs; tests/rate.rs; remaining root suites | Run full regression scope; default ignored rate execution is no tag-rate proof. |
 | evals/src/{artifacts,provenance,results,wrappers}.rs; evals/tests/{boundary,identity,provenance}.rs; evals/Cargo.toml; evals/README.md | Review both merge sides, deletions, v2 readers, privacy/tool/trial semantics and comments; full suite after coordination. |
-| README.md; src/static/{llms.txt,openapi.json}; docs/decisions/README.md and 0081/0085/0089/0090/0091 | Verify served wording, identity/status provenance; preserve history/status. Current-doc repairs only for actual contradictions. |
+| README.md; src/static/{llms.txt,openapi.json}; docs/decisions/README.md and 0081/0085/0089/0106/0107 | Verify served wording, identity/status provenance; preserve history/status. Current-doc repairs only for actual contradictions. |
 | agents/mixed-{terra-intake,opus-implementer}.json; adapters/codex.json; bundles/mixed-opus-terra/ and inherited offices | Assess effective identities/protection; no route or fallback change. |
 | tests/delivery_recipes.rs; tests/delivery_constitution.rs; .github/workflows/ci.yml; bundles/self/; scripts/; Cargo.toml; Cargo.lock; deny.toml | Prove routing, workflow comments, pin/shim/gate/dependency integrity; never weaken gates. |
 | Ignored evidence and designated phase result | Existing genuine records only; no synthetic journal/reviewer/verified-candidate/ship events. |

@@ -1805,3 +1805,115 @@ fn retained_agent_input_accepts_the_exact_bound_and_refuses_one_extra_byte_befor
     assert!(out.stdout.is_empty());
     assert!(!untouched.exists());
 }
+
+fn comparison_row() -> swarmail_evals::identity::ComparisonRow {
+    use swarmail_evals::identity::*;
+    ComparisonRow {
+        schema_version: COMPARISON_SCHEMA,
+        kind: "comparison".into(),
+        protocol_sha256: "a".repeat(64),
+        target: "mailpit-mcp".into(),
+        executable_sha256: "b".repeat(64),
+        settings: ComparisonSettings {
+            connection: "stdio-adapter".into(),
+            tools_sha256: "c".repeat(64),
+        },
+        coordinate: ComparisonCoordinate {
+            task: "signup".into(),
+            attempt: 1,
+        },
+        outcome: Outcome::Pass,
+        hash: String::new(),
+    }
+    .seal()
+}
+fn comparison_line(row: &swarmail_evals::identity::ComparisonRow) -> String {
+    serde_json::to_string(row).unwrap()
+}
+#[test]
+fn comparison_rows_validate_identity_settings_coordinate_and_hash() {
+    let row = comparison_row();
+    assert_eq!(
+        results::read_comparison(comparison_line(&row).as_bytes()).unwrap(),
+        row
+    );
+    let native = comparison_row();
+    let mut native = native;
+    native.target = "swarmail-mcp".into();
+    native.settings.connection = "native-mcp".into();
+    let native = native.seal();
+    assert!(results::read_comparison(comparison_line(&native).as_bytes()).is_ok());
+    let tampered = |edit: &dyn Fn(&mut swarmail_evals::identity::ComparisonRow), seal: bool| {
+        let mut r = comparison_row();
+        edit(&mut r);
+        let r = if seal { r.seal() } else { r };
+        results::read_comparison(comparison_line(&r).as_bytes()).unwrap_err()
+    };
+    // Any edit that is not resealed breaks the hash.
+    assert!(tampered(&|r| r.coordinate.attempt = 2, false).contains("hash"));
+    assert!(tampered(&|r| r.outcome = Outcome::Fail, false).contains("hash"));
+    // Resealed edits meet the identity, settings and coordinate checks.
+    assert!(tampered(&|r| r.target = "mailhog".into(), true).contains("unsupported"));
+    assert!(tampered(&|r| r.target = "other".into(), true).contains("unknown"));
+    assert!(
+        tampered(&|r| r.settings.connection = "native-mcp".into(), true).contains("connection")
+    );
+    assert!(tampered(&|r| r.executable_sha256 = "B".repeat(64), true).contains("SHA-256"));
+    assert!(tampered(&|r| r.protocol_sha256 = "a".repeat(63), true).contains("SHA-256"));
+    assert!(tampered(&|r| r.settings.tools_sha256 = String::new(), true).contains("SHA-256"));
+    assert!(tampered(&|r| r.coordinate.attempt = 0, true).contains("coordinate"));
+    assert!(tampered(&|r| r.coordinate.task = String::new(), true).contains("coordinate"));
+    assert!(tampered(&|r| r.kind = "native".into(), true).contains("comparison row"));
+    assert!(tampered(&|r| r.schema_version = 2, true).contains("unsupported"));
+    let text = comparison_line(&row);
+    for bad in [
+        text.replacen("\"kind\"", "\"extra\":1,\"kind\"", 1),
+        text.replacen(
+            "\"kind\":\"comparison\"",
+            "\"kind\":\"comparison\",\"kind\":\"comparison\"",
+            1,
+        ),
+        text.replacen("\"hash\"", "\"hash\":\"x\",\"hash\"", 1),
+    ] {
+        assert_ne!(bad, text);
+        assert!(results::read_comparison(bad.as_bytes()).is_err(), "{bad}");
+    }
+    assert!(results::read_comparison(b"{\"kind\":\"comparison\"}").is_err());
+    assert!(results::read_comparison(b"not json").is_err());
+}
+#[test]
+fn native_readers_reject_comparison_and_comparison_rejects_native_legacy_and_mixed() {
+    let comparison = comparison_line(&comparison_row());
+    assert!(results::read(comparison.as_bytes()).is_err());
+    assert!(swarmail_evals::report::parse_rows(&comparison).is_err());
+    let req = runner::TrialRequest {
+        task: Some("signup".into()),
+        agent: Some("null".into()),
+        fixture: inputs(),
+        ..Default::default()
+    };
+    let native = serde_json::to_string(&runner::refused_row(&req, &"0".repeat(32))).unwrap();
+    assert!(results::read(native.as_bytes()).is_ok());
+    assert!(results::read_comparison(native.as_bytes()).is_err());
+    let legacy = include_str!("data/results-v1.jsonl")
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(results::read_comparison(legacy.as_bytes()).is_err());
+    let report = swarmail_evals::report::parse_comparison_rows;
+    assert_eq!(
+        report(&format!("{comparison}\n\n{comparison}\n"))
+            .unwrap()
+            .len(),
+        2
+    );
+    for mixed in [
+        format!("{comparison}\n{native}\n"),
+        format!("{native}\n{comparison}\n"),
+        format!("{comparison}\n{legacy}\n"),
+    ] {
+        assert!(swarmail_evals::report::parse_rows(&mixed).is_err());
+        assert!(report(&mixed).unwrap_err().starts_with("line "));
+    }
+}

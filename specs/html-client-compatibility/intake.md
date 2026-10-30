@@ -30,9 +30,9 @@ canonical sorting/deduplication, Weak identity/config/version cache, four jobs,
 128 slots, 256 findings and 65,536 serialized report bytes. Extend these owners;
 no second analyzer surface, cache, predicate implementation or routing change.
 
-0085 remains proposed. Reserve **0090** as explicitly assigned by this task,
+0085 remains proposed. Reserve **0106** as explicitly assigned by this task,
 even though the historical operator packet's ledger stops earlier. Design must
-record new rule/parser/size/location semantics in proposed 0090 and its index
+record new rule/parser/size/location semantics in proposed 0106 and its index
 row; no seat accepts it or edits an accepted ruling. Additive analysis is
 compatible with accepted ingest extraction: do not derive or replace stored
 links/codes/bodies or broaden 0031's display carve-out. No missing workspace
@@ -67,7 +67,7 @@ input currently prevents framing.
    behavior and source-relative locations without rewriting stored fields.
 4. **Oversized messages:** a sourced rule (including Gmail clipping) declares
    the byte unit, measured content scope and exact comparator/threshold in data
-   and proposed 0090. Fixtures immediately below, at and above each threshold
+   and proposed 0106. Fixtures immediately below, at and above each threshold
    assert whether the size finding appears. A reportable size warning remains
    distinct from an evaluator resource-limit failure; failures cannot be
    returned as empty, clean or silently truncated reports.
@@ -94,7 +94,7 @@ input currently prevents framing.
    New HTML analysis executes lazily offloaded through the existing worker
    admission and cache; tests prove reuse rather than reanalysis per adapter.
 8. **Delivery and dependencies:** living documentation names the rule version,
-   client/source matrix, heuristics and limits; proposed 0090/index describe
+   client/source matrix, heuristics and limits; proposed 0106/index describe
    new rulings. Default to existing dependencies (`mail-parser` is present);
    any new dependency has a specific design justification and permissive
    license under house policy. Keep candidate bundles/recipe routing intact.

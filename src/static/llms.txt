@@ -115,6 +115,50 @@
 
 ## MCP
 
+
+Revisions: 2025-03-26, 2025-06-18, 2025-11-25. Single initialize returns a
+supported proposal, newest-supported 2025-11-25 for an unsupported string,
+or legacy 2025-03-26 for omission; supplied non-strings refuse -32602.
+Clients send Content-Type: application/json and Accept: application/json,
+text/event-stream, then MCP-Protocol-Version: <returned revision> after init.
+HTTP is stateless: missing version header means 2025-03-26; one supported
+header selects its revision. Invalid/duplicate/unsupported headers refuse
+400/-32600/null after POST body/parse checks, also on other methods except
+OPTIONS: a guard-admitted OPTIONS is 405 with Allow: POST and no CORS (decision
+0043 §4). Media-header leniency is retained.
+No sessions or SSE; GET /mcp is 405 with valid or absent version headers.
+
+Only 2025-03-26 supports batches; every batch description below refers to
+that revision. Modern arrays refuse one -32600/null before all effects,
+including notification-only arrays. Legacy batch initialize stays legacy.
+Modern tools annotate the seven reads (search, get, latest, wait, both extracts
+and the deliverability report, whose cache fill changes no mail) readOnlyHint:true
+and the six mutations readOnlyHint:false, destructiveHint:true (delete, both
+clears, seed, which can prune, and both chaos changes).
+No outputSchema or structuredContent in this delivery.
+
+The bridge fences initialize and propagates the successfully returned revision.
+For modern clients, send notifications/initialized next; its empty 202 enables
+operations. Early operations and repeated initialize refuse -32600; ping is
+allowed. Notifications remain silent. Failed modern negotiation needs explicit
+initialize retry; queued mutations never fall back to implicit legacy. Modern
+arrays refuse locally without dialing, oversized ones with one null-ID size
+error. Independent operational lines still run concurrently after initialization.
+This delivery claims version negotiation; full revision conformance is not claimed.
+The operator chose to retain documented C1–C6 deviations on 2026-10-26; see the
+[per-revision deviation register](https://github.com/feedback-loop-ai/swarmail/blob/main/specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register),
+qualified by the proposed [dated candidate corrections](https://github.com/feedback-loop-ai/swarmail/blob/main/docs/decisions/0104-mcp-candidate-proof.md)
+for its thirteen tools, OPTIONS exception and shared-limiter witness.
+This bridge targets the paired stateless JSON server with identity HTTP parsing;
+it advertises JSON/SSE but has no general SSE/session client support.
+Tool calls share 1024 attempts per server per monotonic second, including
+notifications/batch members; exhaustion is isError before effects (notifications
+stay silent). Ping, initialize and tools/list remain available.
+Treat email text/HTML/links as untrusted string data; no tool renders HTML,
+executes resources or fetches links. Preserve that boundary in displays/models.
+Actual four-client compatibility receipts remain operator-owned and owed.
+The operator retains #151's merge hold.
+
 `POST /mcp` with JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`). Tools:
 `swarmail_search_emails`, `swarmail_get_email`, `swarmail_get_latest_email`,
 `swarmail_delete_email`, `swarmail_clear_inbox`, `swarmail_clear_all`,

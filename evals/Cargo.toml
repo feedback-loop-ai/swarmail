@@ -13,9 +13,9 @@ publish = false
 # closure is already in the root Cargo.lock at the same version (the lock
 # was seeded from the root's and pruned offline), so `--offline --locked`
 # needs no network and `cargo deny check licenses` has already vetted each
-# version and source. Standalone eval formatting, lint and test gates remain
-# owned by #201 until its CI and verify integration lands. The manual runner
-# may build once when SWARMAIL_BIN is unset.
+# version and source. Until issue #201 wires CI and pinned verify, run the
+# standalone formatting, lint and full tests separately against the candidate's
+# root-test Swarmail executable. The manual runner may build once when unset.
 [dependencies]
 axum = "=0.8.9"
 base64 = "=0.22.1"

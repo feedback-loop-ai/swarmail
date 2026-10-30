@@ -2,7 +2,7 @@
 
 Date: 2026-10-28. Epic #251, issue #259; prerequisite to PR #268.
 
-Decision: 0091 — [proposed repair contract](../../docs/decisions/0091-html-review-repair.md).
+Decision: 0107 — [proposed repair contract](../../docs/decisions/0107-html-review-repair.md).
 
 ## Purpose and authority
 
@@ -17,8 +17,8 @@ run-local tasks directory is absent. Both positions and the full supplied review
 packet were read; all four SHA256SUMS pass. Run-local evidence is not a tracked
 link authority; the intake preserves its provenance and eight obligations.
 [0085](../../docs/decisions/0085-deliverability-report.md) and
-[0090](../../docs/decisions/0090-html-client-compatibility.md) remain proposed.
-0091 records repair semantics, accepting neither proposal. Compatible work follows
+[0106](../../docs/decisions/0106-html-client-compatibility.md) remain proposed.
+0107 records repair semantics, accepting neither proposal. Compatible work follows
 accepted [0045 §8](../../docs/decisions/0045-delivery-repairs.md) and the operator's
 #251 lazy-analysis direction. Historical specs remain records. Preserve accepted
 0001–0005, including ingest extraction as amended by 0031/0040/0049.
@@ -35,7 +35,7 @@ Adopt their shared local-collector approach and settle remaining choices:
 | Work proof | Adopt robustness's operation accounting and original-source denominator, with simplicity's small counters. Reject cursor-only proof, generic tracing and permanent sabotage mode. Pay local arithmetic and a reproducible temporary mutation experiment. |
 | Empty message | Adopt both positions' HTML-only exact-empty exception. Reject documentation-only failure and aggregate early success. Pay a version transition and composition/wire proofs; future authentication still reports unknown or failure honestly. |
 | Breadth | Adopt simplicity's existing owners. Robustness's lifecycle envelope becomes preservation tests and explicit limits, not new cache/executor/webhook/persistence work. Shared-pool contention and selected snapshots remain. |
-| Records | Use short slug html-review-repair and new proposed 0091 as this task requires, rather than reusing only the long intake directory as the positions preferred. Link intake, preserve old specs, add dated proposed pointers during implementation. Pay an additional decision/index entry. |
+| Records | Use short slug html-review-repair and new proposed 0107 as this task requires, rather than reusing only the long intake directory as the positions preferred. Link intake, preserve old specs, add dated proposed pointers during implementation. Pay an additional decision/index entry. |
 
 Reject a CSS engine, DOM/AST renderer, variable/cascade evaluation, new dependency,
 generic cost framework, public schema change and runtime work quota. No rule is
@@ -145,7 +145,7 @@ verification and review.
 
 Advance to swarmail-html/2 across constant/catalogue/config/cache/fixtures/living
 docs. Keep seven HTML IDs, severities, hints, locations, thresholds, demo rule and
-public schema. Add dated proposed repair pointers to 0085/0090; accept neither.
+public schema. Add dated proposed repair pointers to 0085/0106; accept neither.
 Retain authored provenance/date validation and negatives.
 
 Keep raw 8 MiB, eligible decoded aggregate 4 MiB, 256 outer parts, MIME depth 32,
@@ -200,7 +200,7 @@ reviews are historical, not fresh clearance.
    malformed controls/delimiters/EOF. Outside unclosed comments and ordinary
    function comments preserve behavior; failures are atomic and uncached.
 5. **AC5 — all findings.** Implementation ledger names tests/receipts for every
-   row. 0090/0091 are contiguous table members marked proposed. Fixed provenance
+   row. 0106/0107 are contiguous table members marked proposed. Fixed provenance
    and strict lexical negatives remain. Distinct header-overflow and malformed
    HTML wire tests prove sanitized failure, failure-not-clean and retry; retain
    owner-local coverage. Documentation cannot close AC1–4 defects.

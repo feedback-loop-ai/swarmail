@@ -22,9 +22,9 @@ repairs of demonstrated defects; it does not introduce new product semantics.
 
 The applicable contracts remain [0085](../../docs/decisions/0085-deliverability-report.md),
 [0089](../../docs/decisions/0089-bulk-sender-checklist.md),
-[0090](../../docs/decisions/0090-html-client-compatibility.md) and
-[0091](../../docs/decisions/0091-html-review-repair.md), all still proposed.
-The combined html/3 note already exists in 0091. No new ruling, public contract
+[0106](../../docs/decisions/0106-html-client-compatibility.md) and
+[0107](../../docs/decisions/0107-html-review-repair.md), all still proposed.
+The combined html/3 note already exists in 0107. No new ruling, public contract
 or route is selected here, so this design declares no new decision. A necessary
 semantic change must return for a proposed decision; contradiction of an accepted
 ruling waits for operator acceptance, and frozen weakening is refused.
@@ -96,7 +96,7 @@ These are design observations and obligations, not protected dispositions.
 
 | Item | Current observation and required independent disposition |
 |---|---|
-| R1: history/index | Chief byte comparison confirms original repair spec/plan/tasks equal a306543, and 0091 retains its historical bytes as a prefix with the combined note appended. Index has one contiguous table, 78 unique numbered rows and complete targets. Preserve originals and proposed statuses; recheck links and review the note. |
+| R1: history/index | Chief byte comparison confirms original repair spec/plan/tasks equal a306543, and 0107 retains its historical bytes as a prefix with the combined note appended. Index has one contiguous table, 78 unique numbered rows and complete targets. Preserve originals and proposed statuses; recheck links and review the note. |
 | R2: served empty semantics | Current README/llms/OpenAPI describe accepted empty mail and combined failure. Verify served bytes, exact-zero's failed-analysis exception and UI/raw retention; correct only a demonstrated remaining contradiction. |
 | R3: identity | Combined constant, catalogue and tests name swarmail-html/3; historical html/2 stays meaningful. Audit every cache/config/fixture/doc/wire owner; no global replacement in historical records. |
 | R4: durable proof | Tracked complete 15-finding oracle and positive-deadline three-threshold/count matrix exist. CSS pairs independently fix only HTML; full-response parity is weaker. Apply the adjudication above and map cold-zero/empty controls and sanitized MCP/stdio payloads. |

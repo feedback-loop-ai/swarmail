@@ -37,7 +37,7 @@ Both run-local positions in full; the intake results `d3b32236` and `1ffcbe72`
 (SHA256SUMS pass); `.forge/evidence/earlier-stopped-audit.json` (R1–R6, the
 original-finding dispositions, AC1–AC12 of the stopped run); the dirty-run
 journal's implement and verify events; house rules; the decision index; 0081,
-0085, 0090, 0091; `specs/combined-report-review/*`; and the source anchors named
+0085, 0106, 0107; `specs/combined-report-review/*`; and the source anchors named
 below, each confirmed on this tree. The chief ran no gate and no test. Every
 "observed" cell below is a reading of the tree, not verification.
 
@@ -51,8 +51,8 @@ below, each confirmed on this tree. The chief ran no gate and no test. Every
 | Whole-report comparison | **Adopted** (robustness). Already present in `61320c6`: `bulk_findings()` is a literal oracle and the CSS pairs compare the full `{"rule_set_id":"swarmail-html/3","findings":...}` object. The implementer confirms this by reading and extends only an adapter that still compares a subset. | None beyond reading time. |
 | Empty-message matrix | **Adopted** (robustness) as cells; **mapped, not duplicated** (simplicity). Each cell names the exact existing assertion; only an unmapped cell gets a new durable assertion in the owning suite. | A second matrix is refused: it duplicates an oracle review must read. |
 | html/2 in README and llms.txt | **Leave as recorded** (reject simplicity's optional deletion). The sentence is labelled historical and followed by the current combined behaviour. Deleting it changes served bytes pinned by `report_served_docs_match_contract` for no criterion. | A reader meets one historical identity in living docs; the audit table below flags it for the operator. |
-| 0081, 0085/0090 pointers, appended note, old spec headers | **Unresolved, unedited** (both positions). Classified below; nothing is rewritten or accepted. | Stale-looking text persists until the operator rules. |
-| New decision | **None declared.** No ruling, contract or route changes. Compatible work under proposed 0085/0089/0090/0091 is permitted by accepted [0045](../../docs/decisions/0045-delivery-repairs.md) §8. | If implementation finds a semantic defect, it returns to design for a proposed decision rather than fixing it under this spec. |
+| 0081, 0085/0106 pointers, appended note, old spec headers | **Unresolved, unedited** (both positions). Classified below; nothing is rewritten or accepted. | Stale-looking text persists until the operator rules. |
+| New decision | **None declared.** No ruling, contract or route changes. Compatible work under proposed 0085/0089/0106/0107 is permitted by accepted [0045](../../docs/decisions/0045-delivery-repairs.md) §8. | If implementation finds a semantic defect, it returns to design for a proposed decision rather than fixing it under this spec. |
 | Eval suite and #260 | **Both positions agree.** Evals run only in an evidenced same-user nonoverlap window with a captured, hashed executable; #260 and this tree certify nothing about each other. | Honest deferral when the window or the #260 identity is unavailable. |
 
 ## Restated intake criteria
@@ -87,8 +87,8 @@ adopted as written.
 |---|---|---|
 | `src/deliverability.rs:12` `RULE_SET_ID`, `src/deliverability/html-rules.json`, `tests/fixtures/html-compatibility.json`, `src/static/openapi.json` example | Live, say `swarmail-html/3` | Correct; pinned by tests. |
 | `README.md:1414`, `src/static/llms.txt:373` | Living docs, labelled "historical", followed by the current html/3 combined failure | Leave; flag to the operator. |
-| `docs/decisions/0085-deliverability-report.md:138`, `0090-html-client-compatibility.md:76` | Dated 2026-10-28 pointers to proposed 0091, describing the HTML-only repair | Historical. 0091's appended integration note already reconciles html/2 with html/3. Unresolved for the operator; not edited. |
-| `docs/decisions/0091-html-review-repair.md:26` and `:91` | Original ruling text plus the appended "Combined bulk and HTML identity — proposed integration note" | Historical plus a proposed note; neither is acceptance. Unedited. |
+| `docs/decisions/0085-deliverability-report.md:138`, `0106-html-client-compatibility.md:76` | Dated 2026-10-28 pointers to proposed 0107, describing the HTML-only repair | Historical. 0107's appended integration note already reconciles html/2 with html/3. Unresolved for the operator; not edited. |
+| `docs/decisions/0107-html-review-repair.md:26` and `:91` | Original ruling text plus the appended "Combined bulk and HTML identity — proposed integration note" | Historical plus a proposed note; neither is acceptance. Unedited. |
 | `specs/html-review-repair/{spec,tasks}.md`, `specs/html-integration-proof/{spec,plan}.md`, `specs/combined-report-review/{spec,plan}.md` | Historical specs | Unedited (operator ruling 2026-10-26: specs are historical; corrections go through decisions). |
 
 ## Disposition of every earlier finding
@@ -100,7 +100,7 @@ Observed = read on tree 8750196 by the chief; the implementer re-executes.
 | Review MEDIUM / independent 2: custom-property braces create `html.css.position.v1` | `Context::{Rules, Declarations, Component}` in `html.rs`; inline pairs and wire pairs present | Re-run; mutation control (restated criterion 1). |
 | Review LOW / independent 5: progress-only work proof | `Work::{byte, prefix, charge, decode}`; bound test with four sizes, accepting and failing bodies | Re-run; counted repeated-read control (criterion 2); state exclusions. |
 | Independent 1: zero-byte message | `collect_with` returns `Ok(())` on empty raw; combined admission fails first; `empty_smtp_message_has_an_exact_composable_report` and the stdio witness pin 250, zero raw, repeated 503, `isError`, UI | Map every matrix cell; add only unmapped cells. |
-| Independent 3 / R1: 0090 index row, missing 0091 | Index rows 0081–0091 contiguous in one table; 0091 row and record present | Confirm by rendering the table; no edit expected. |
+| Independent 3 / R1: 0106 index row, missing 0107 | Index rows 0081–0107 contiguous in one table; 0107 row and record present | Confirm by rendering the table; no edit expected. |
 | Independent 4: slash-star in literal `url(...)` | `url_start`/`url_end`; inline and wire pairs | Re-run. |
 | Independent 6: hard-coded provenance | Retained cost; negative tests exist | No change; record. |
 | Independent 7: strict malformed input | Retained, documented cost | No change; record. |
@@ -119,7 +119,7 @@ Observed = read on tree 8750196 by the chief; the implementer re-executes.
 - **Appended note in `specs/html-review-repair/implementation.md`.** Historical
   ledger with a dated combined-behaviour paragraph appended. Preserved; it is
   not fresh proof and is not byte-identical historical evidence.
-- **html/2 pointers** in 0085, 0090, README and llms.txt, classified above.
+- **html/2 pointers** in 0085, 0106, README and llms.txt, classified above.
 - **Spec header drift.** `specs/combined-report-review/` names `c793401` as its
   start; this run starts at `61320c6`. Historical; this spec names the base.
 - **#260.** The combined #260 integration is live elsewhere; its identity is not
@@ -130,8 +130,8 @@ Observed = read on tree 8750196 by the chief; the implementer re-executes.
 No decision is declared. The governing records stay proposed:
 [0085](../../docs/decisions/0085-deliverability-report.md),
 [0089](../../docs/decisions/0089-bulk-sender-checklist.md),
-[0090](../../docs/decisions/0090-html-client-compatibility.md),
-[0091](../../docs/decisions/0091-html-review-repair.md). Accepted
+[0106](../../docs/decisions/0106-html-client-compatibility.md),
+[0107](../../docs/decisions/0107-html-review-repair.md). Accepted
 [0045](../../docs/decisions/0045-delivery-repairs.md) §8 permits compatible work
 beneath them. Frozen 0001–0003 and 0005 are untouched: no analysis enters
 `Store::insert`, the SMTP `250` path, the watcher, pruning or ingest extraction.
@@ -195,7 +195,7 @@ and a repair the criteria themselves demand.
    is classified historical or living-labelled-historical; none is edited.
    **Proof:** `report_served_docs_match_contract`, `reviewed_version_snapshot_and_every_rule_pair`,
    the grep output.
-9. **AC9 — Status honesty.** The status lines of 0081, 0085, 0089, 0090 and 0091,
+9. **AC9 — Status honesty.** The status lines of 0081, 0085, 0089, 0106 and 0107,
    their index rows, the 0058 pointer, `operator-rulings.md` (SHA256SUMS still
    pass) and `specs/html-review-repair/implementation.md` are byte-unchanged.
    The notes quote both 0081 statements with attribution and call the item

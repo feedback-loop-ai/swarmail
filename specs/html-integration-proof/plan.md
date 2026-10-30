@@ -43,7 +43,7 @@ Settled: preserve collector/finish/Service/wait owners, stronger combined proof,
 strict failure, authentication Unknown and no product repair in this run.
 Open evidence questions: full empty-input predicate matrix; counted-work negative
 control applicability; preserved eval semantics after deletions; cross-build v2
-semantics; missing 0091/index/current docs; actual suite-wide eval availability.
+semantics; missing 0107/index/current docs; actual suite-wide eval availability.
 The [spec adjudication](spec.md#panel-adjudication) rules alternatives and costs.
 
 ## Project structure and files
@@ -56,7 +56,7 @@ The [spec adjudication](spec.md#panel-adjudication) rules alternatives and costs
 | tests/deliverability.rs; tests/bulk_sender.rs; tests/stdio.rs; tests/fixtures/html-compatibility.json | Map exact assertions and run complete-report and empty/failure witnesses. |
 | tests/burst.rs; tests/p2.rs; tests/rate.rs; remaining workspace tests | Preserve full regression scope and frozen guarantees. |
 | evals/Cargo.toml; evals/src/{artifacts,provenance,results,wrappers}.rs; evals/tests/{boundary,identity,provenance}.rs; evals/README.md | Review both conflict sides, retained/deleted evidence, v2 readers, tool surfaces, privacy and admission; run only after coordination. |
-| README.md; src/static/{llms.txt,openapi.json}; docs/decisions/README.md; 0085/0089/0090; specs/html-review-repair/implementation.md | Audit live descriptions versus historical claims; record residuals without editing these files. |
+| README.md; src/static/{llms.txt,openapi.json}; docs/decisions/README.md; 0085/0089/0106; specs/html-review-repair/implementation.md | Audit live descriptions versus historical claims; record residuals without editing these files. |
 | bundles/self/; scripts/; Cargo.toml; Cargo.lock; deny.toml | Verify pin/shim/inventory/dependency integrity, not change proof policy. |
 | .forge/issue259-review/; ignored run evidence and designated result | Read original evidence, write authentic records through authorized owners; never handwrite engine journal/reviewer/ship events. |
 

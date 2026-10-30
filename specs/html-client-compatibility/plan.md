@@ -1,6 +1,6 @@
 # Implementation plan — HTML client compatibility
 
-[Specification](spec.md), [proposed 0090](../../docs/decisions/0090-html-client-compatibility.md).
+[Specification](spec.md), [proposed 0106](../../docs/decisions/0106-html-client-compatibility.md).
 This is design, not evidence of implemented findings.
 
 ## Technical context
@@ -24,7 +24,7 @@ paths in owner-declared cfg(test) harnesses, real servers for protocol proof.
 No coverage exclusions, allowlist widening, routing edits or new service owner.
 
 The final chief commit contains exactly spec.md, plan.md, tasks.md and proposed
-0090. A separate prerequisite commit supplies 0090's proposed index row: the
+0106. A separate prerequisite commit supplies 0106's proposed index row: the
 repository inventory tests require it immediately, so deferral to implementation
 is invalid. Do not edit historical specs or
 accepted records. Run-local receipts stay outside specs, so HEAD remains the
@@ -61,7 +61,7 @@ filename/disposition and encoding-error flags before implementing the walker.
 | `tests/deliverability.rs`, `tests/stdio.rs` | Extend real-server parity, predicates, restart and failure witnesses with HTML. |
 | Existing deliverability/store owner tests | Keep cache/cancellation/ready-only/watcher/prune/ingest invariants; use HTML input in relevant cases. Cold-path harness only if 0020 requires it. |
 | `README.md`, `src/static/llms.txt`, report descriptions in `src/static/openapi.json` | Replace demo-only explanations with versioned finite HTML rules, known gaps, limits and quickstart; schema stays unchanged. |
-| `docs/decisions/README.md` | Verify the already-added proposed 0090 index row; do not change 0085 or accepted statuses. |
+| `docs/decisions/README.md` | Verify the already-added proposed 0106 index row; do not change 0085 or accepted statuses. |
 | SMTP, persistence, model, webhook, routing, Cargo.toml/Cargo.lock/deny.toml | Preservation owners; no planned production edits. |
 
 ## Data model and implementation approach

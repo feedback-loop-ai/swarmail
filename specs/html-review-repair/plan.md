@@ -1,6 +1,6 @@
 # Implementation plan — HTML review repair
 
-[Specification](spec.md), [proposed 0091](../../docs/decisions/0091-html-review-repair.md).
+[Specification](spec.md), [proposed 0107](../../docs/decisions/0107-html-review-repair.md).
 
 ## Technical context
 
@@ -15,14 +15,14 @@ contracts, quickstart and risks directly.
 0001 storage before 250, 0002 subscribe-before-scan, 0003 oldest-only pruning,
 0004 isolated inboxes and 0005 ingest extraction remain constraints. No SMTP,
 Store mutation, persistence or fan-out production repair is planned. The #251
-direction/0045 §8 allow compatible work; 0085/0090/0091 remain proposed. Accepted
+direction/0045 §8 allow compatible work; 0085/0106/0107 remain proposed. Accepted
 records and historical specs stay unchanged. Exact coverage/0020 apply to work
 instrumentation too.
 
-The prerequisite index-only commit repairs 0090 table membership and reserves
-0091. The last chief commit contains exactly this plan, spec.md, tasks.md and
-0091, touching one spec directory. Run-local receipts/results stay ignored.
-Implementation adds dated proposed pointers to 0085/0090 without accepting them.
+The prerequisite index-only commit repairs 0106 table membership and reserves
+0107. The last chief commit contains exactly this plan, spec.md, tasks.md and
+0107, touching one spec directory. Run-local receipts/results stay ignored.
+Implementation adds dated proposed pointers to 0085/0106 without accepting them.
 
 ## Research and resolved choices
 
@@ -53,7 +53,7 @@ research or new library is needed.
 | Existing deliverability owner/concurrency tests | Preserve retry/identity/config/permits/cancellation/wait/deadline/snapshot proofs using existing barriers. |
 | `README.md`, `src/static/llms.txt`, `src/static/openapi.json` | Current version, exact-empty exception, finite lexical behavior and honest proof limits. |
 | `docs/decisions/README.md` | Prerequisite table/index repair, then verify both rows and proposed statuses. |
-| `docs/decisions/0085-deliverability-report.md`, `docs/decisions/0090-html-client-compatibility.md` | Dated implementation pointers to proposed 0091 explaining v2; preserve historical text/status. |
+| `docs/decisions/0085-deliverability-report.md`, `docs/decisions/0106-html-client-compatibility.md` | Dated implementation pointers to proposed 0107 explaining v2; preserve historical text/status. |
 | `specs/html-review-repair/implementation.md` (later phase) | Operation census/C/K derivation, complete finding-to-test ledger, proof identities and outstanding CI/operator obligations. |
 | Run-local evidence | Defect red/green logs, temporary mutation diff/hash, restored-source hash, gate commands/exits/hashes and HEAD/tree/engine binding; never fabricate journal rows. |
 

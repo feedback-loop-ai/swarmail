@@ -2139,6 +2139,414 @@ async fn mcp_answers_a_malformed_object_with_one_invalid_request_line() {
     kill_serve(&mut serve).await;
 }
 
+/// One request the scripted peer received: what the real executable sent.
+#[derive(Debug, PartialEq)]
+struct Recorded {
+    method: String,
+    id: Option<serde_json::Value>,
+    version: Option<String>,
+}
+
+fn recorded(method: &str, id: Option<i64>, version: Option<&str>) -> Recorded {
+    Recorded {
+        method: method.to_string(),
+        id: id.map(serde_json::Value::from),
+        version: version.map(str::to_string),
+    }
+}
+
+/// What the scripted peer answers: a 200 JSON body, or an empty 202.
+enum Reply {
+    Json(serde_json::Value),
+    Accepted,
+}
+
+/// A loopback peer that plays one fixed script, one request per connection,
+/// and records every request in arrival order. A request that is not the
+/// next scripted method is answered with a valid JSON-RPC error and recorded,
+/// so a regression ends in a trace mismatch rather than a hang. Dropping it
+/// aborts the task: a failing assertion never leaks a listener.
+struct ScriptedPeer {
+    addr: SocketAddr,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+    trace: std::sync::Arc<std::sync::Mutex<Vec<Recorded>>>,
+}
+
+impl ScriptedPeer {
+    async fn start(script: Vec<(&'static str, Reply)>) -> ScriptedPeer {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the scripted peer");
+        let addr = listener.local_addr().expect("scripted peer address");
+        let trace = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(play_script(listener, script.into(), trace.clone(), stopped));
+        ScriptedPeer {
+            addr,
+            stop: Some(stop),
+            task: Some(task),
+            trace,
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+
+    /// Stop accepting, join the task under the helper deadline (aborting on
+    /// expiry), and hand back the complete trace.
+    async fn stop(mut self) -> Vec<Recorded> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        let mut task = self.task.take().expect("the peer task is joined once");
+        match tokio::time::timeout(common::HELPER_DEADLINE, &mut task).await {
+            Ok(joined) => joined.expect("the scripted peer task ended cleanly"),
+            Err(e) => {
+                task.abort();
+                panic!("the scripted peer did not stop: {e}");
+            }
+        }
+        std::mem::take(&mut *self.trace.lock().unwrap())
+    }
+}
+
+impl Drop for ScriptedPeer {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+async fn play_script(
+    listener: tokio::net::TcpListener,
+    mut script: std::collections::VecDeque<(&'static str, Reply)>,
+    trace: std::sync::Arc<std::sync::Mutex<Vec<Recorded>>>,
+    mut stopped: tokio::sync::oneshot::Receiver<()>,
+) {
+    loop {
+        let mut stream = tokio::select! {
+            _ = &mut stopped => return,
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => stream,
+                Err(_) => return,
+            },
+        };
+        // A connection that stalls or breaks is dropped; the trace then
+        // lacks its request and the test's comparison names the gap.
+        let _ = tokio::time::timeout(common::HELPER_DEADLINE, async {
+            let (head, body) = read_http_request(&mut stream).await?;
+            let request: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let method = request["method"].as_str().unwrap_or("<none>").to_string();
+            let id = request.get("id").cloned();
+            let version = head.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("mcp-protocol-version")
+                    .then(|| value.trim().to_string())
+            });
+            let reply = match script.front() {
+                Some((expected, _)) if *expected == method => script.pop_front().unwrap().1,
+                _ => Reply::Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id.clone().unwrap_or(serde_json::Value::Null),
+                    "error": {"code": -32603, "message": "unscripted request"},
+                })),
+            };
+            trace.lock().unwrap().push(Recorded {
+                method,
+                id,
+                version,
+            });
+            let response = match reply {
+                Reply::Json(value) => {
+                    let body = value.to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                }
+                Reply::Accepted => {
+                    "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_string()
+                }
+            };
+            stream.write_all(response.as_bytes()).await?;
+            stream.shutdown().await
+        })
+        .await;
+    }
+}
+
+/// The request head (without the blank line) and exactly `Content-Length`
+/// body bytes.
+async fn read_http_request(stream: &mut TcpStream) -> std::io::Result<(String, Vec<u8>)> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let sep = loop {
+        if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at;
+        }
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    };
+    let head = String::from_utf8_lossy(&buf[..sep]).into_owned();
+    let length = head
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().ok())
+                .flatten()
+        })
+        .unwrap_or(0);
+    while buf.len() < sep + 4 + length {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    Ok((head, buf[sep + 4..sep + 4 + length].to_vec()))
+}
+
+/// The two complete HTTP-200 envelope defects of the C6 witnesses: no
+/// `jsonrpc` member, and `result` beside `error`. The defect is the only
+/// defect — ids match and the `result` is whatever the caller supplies.
+#[derive(Clone, Copy, Debug)]
+enum Defect {
+    MissingJsonrpc,
+    ResultAndError,
+}
+
+impl Defect {
+    const ALL: [Defect; 2] = [Defect::MissingJsonrpc, Defect::ResultAndError];
+
+    fn reply(self, id: i64, result: serde_json::Value) -> serde_json::Value {
+        match self {
+            Defect::MissingJsonrpc => serde_json::json!({"id": id, "result": result}),
+            Defect::ResultAndError => serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "result": result,
+                "error": {"code": -32603, "message": "peer"},
+            }),
+        }
+    }
+}
+
+/// A valid November initialize result: only the envelope is ever defective.
+fn november_result() -> serde_json::Value {
+    serde_json::json!({
+        "protocolVersion": "2025-11-25",
+        "capabilities": {},
+        "serverInfo": {"name": "scripted", "version": "1"},
+    })
+}
+
+fn tool_result() -> serde_json::Value {
+    serde_json::json!({"content": [{"type": "text", "text": "scripted"}], "isError": false})
+}
+
+fn valid_reply(id: i64, result: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+fn request_line(id: i64, method: &str, params: serde_json::Value) -> Vec<u8> {
+    format!(
+        "{}\n",
+        serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+    )
+    .into_bytes()
+}
+
+fn november_initialize(id: i64) -> Vec<u8> {
+    request_line(
+        id,
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "scripted", "version": "1"},
+        }),
+    )
+}
+
+fn clear_all_call(id: i64) -> Vec<u8> {
+    request_line(
+        id,
+        "tools/call",
+        serde_json::json!({"name": "swarmail_clear_all", "arguments": {}}),
+    )
+}
+
+fn notification_line(method: &str, params: serde_json::Value) -> Vec<u8> {
+    format!(
+        "{}\n",
+        serde_json::json!({"jsonrpc": "2.0", "method": method, "params": params})
+    )
+    .into_bytes()
+}
+
+/// The shipped executable, pointed at the peer by `--url` alone.
+fn bridge_to(peer: &ScriptedPeer) -> McpChild {
+    let mut cmd = Command::new(binary());
+    cmd.args(["mcp", "--url", &peer.url()])
+        .env_remove("SWARMAIL_URL");
+    McpChild::spawn_command(cmd)
+}
+
+/// Close stdin, require EOF and exit 0 with nothing further on stdout, then
+/// stop and join the peer. Only then is the trace complete.
+async fn finish_and_trace(mcp: McpChild, peer: ScriptedPeer) -> Vec<Recorded> {
+    let (status, rest) = mcp.finish().await;
+    let trace = peer.stop().await;
+    assert!(status.success(), "mcp exit: {status:?}");
+    assert!(rest.is_empty(), "extra stdout lines: {rest:?}");
+    trace
+}
+
+/// C6 through the real executable (issue #152): a complete HTTP-200 envelope
+/// that is not a valid JSON-RPC response is relayed verbatim, never
+/// repaired, but it installs no revision — a modern negotiation that failed
+/// that way fences operations locally until a valid initialize and
+/// initialized recover them. The scripted peer's trace proves what the
+/// child did and did not send, with the version header it carried.
+#[tokio::test]
+async fn mcp_binary_relays_malformed_modern_initialize_and_recovers() {
+    const NOVEMBER: &str = "2025-11-25";
+    for defect in Defect::ALL {
+        let malformed = defect.reply(1, november_result());
+        let peer = ScriptedPeer::start(vec![
+            ("initialize", Reply::Json(malformed.clone())),
+            ("ping", Reply::Json(valid_reply(4, serde_json::json!({})))),
+            ("initialize", Reply::Json(valid_reply(5, november_result()))),
+            ("notifications/initialized", Reply::Accepted),
+            ("tools/call", Reply::Json(valid_reply(6, tool_result()))),
+        ])
+        .await;
+        let mut mcp = bridge_to(&peer);
+        let mut replies = Vec::new();
+
+        mcp.send(&november_initialize(1)).await;
+        replies.push(mcp.reply().await);
+        mcp.send(&clear_all_call(2)).await;
+        replies.push(mcp.reply().await);
+        mcp.send(&request_line(3, "tools/list", serde_json::json!({})))
+            .await;
+        replies.push(mcp.reply().await);
+        // An effectful notification owes nothing and must not be posted.
+        mcp.send(&notification_line(
+            "tools/call",
+            serde_json::json!({"name": "swarmail_clear_all", "arguments": {}}),
+        ))
+        .await;
+        mcp.send(&request_line(4, "ping", serde_json::json!({})))
+            .await;
+        replies.push(mcp.reply().await);
+        mcp.send(&november_initialize(5)).await;
+        replies.push(mcp.reply().await);
+        mcp.send(&notification_line(
+            "notifications/initialized",
+            serde_json::json!({}),
+        ))
+        .await;
+        mcp.send(&clear_all_call(6)).await;
+        replies.push(mcp.reply().await);
+
+        let trace = finish_and_trace(mcp, peer).await;
+
+        let refusal = |id: i64| {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": {
+                    "code": -32600,
+                    "message": "MCP initialization must complete before operations",
+                },
+            })
+        };
+        assert_eq!(
+            replies,
+            vec![
+                malformed,
+                refusal(2),
+                refusal(3),
+                valid_reply(4, serde_json::json!({})),
+                valid_reply(5, november_result()),
+                valid_reply(6, tool_result()),
+            ],
+            "{defect:?}"
+        );
+        assert_eq!(
+            trace,
+            vec![
+                recorded("initialize", Some(1), None),
+                recorded("ping", Some(4), None),
+                recorded("initialize", Some(5), None),
+                recorded("notifications/initialized", None, Some(NOVEMBER)),
+                recorded("tools/call", Some(6), Some(NOVEMBER)),
+            ],
+            "{defect:?}"
+        );
+    }
+}
+
+/// The same defects as ordinary replies: a malformed `tools/call` answer is
+/// forwarded verbatim under the implicit March session (no initialize, no
+/// version header) and under a negotiated November session (header carried).
+#[tokio::test]
+async fn mcp_binary_relays_malformed_ordinary_replies() {
+    const NOVEMBER: &str = "2025-11-25";
+    for defect in Defect::ALL {
+        let malformed = defect.reply(7, tool_result());
+        let peer = ScriptedPeer::start(vec![("tools/call", Reply::Json(malformed.clone()))]).await;
+        let mut mcp = bridge_to(&peer);
+        mcp.send(&clear_all_call(7)).await;
+        let reply = mcp.reply().await;
+        let trace = finish_and_trace(mcp, peer).await;
+        assert_eq!(reply, malformed, "{defect:?} under the implicit session");
+        assert_eq!(
+            trace,
+            vec![recorded("tools/call", Some(7), None)],
+            "{defect:?}"
+        );
+
+        let malformed = defect.reply(8, tool_result());
+        let peer = ScriptedPeer::start(vec![
+            ("initialize", Reply::Json(valid_reply(1, november_result()))),
+            ("notifications/initialized", Reply::Accepted),
+            ("tools/call", Reply::Json(malformed.clone())),
+        ])
+        .await;
+        let mut mcp = bridge_to(&peer);
+        mcp.send(&november_initialize(1)).await;
+        let negotiated = mcp.reply().await;
+        mcp.send(&notification_line(
+            "notifications/initialized",
+            serde_json::json!({}),
+        ))
+        .await;
+        mcp.send(&clear_all_call(8)).await;
+        let reply = mcp.reply().await;
+        let trace = finish_and_trace(mcp, peer).await;
+        assert_eq!(negotiated, valid_reply(1, november_result()));
+        assert_eq!(reply, malformed, "{defect:?} under the negotiated session");
+        assert_eq!(
+            trace,
+            vec![
+                recorded("initialize", Some(1), None),
+                recorded("notifications/initialized", None, Some(NOVEMBER)),
+                recorded("tools/call", Some(8), Some(NOVEMBER)),
+            ],
+            "{defect:?}"
+        );
+    }
+}
+
 /// A raw `POST /mcp` of `body` and the JSON the server answered — a
 /// refused body may be cut off mid-write, which is not a failure here.
 async fn post_mcp_raw(addr: SocketAddr, body: &[u8]) -> serde_json::Value {

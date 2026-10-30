@@ -41,7 +41,7 @@ Preserve the [house charter](../../docs/house-rules.md), accepted
 [0076](../../docs/decisions/0076-sequential-eval-trials.md).
 The proposed [0085](../../docs/decisions/0085-deliverability-report.md),
 [0089](../../docs/decisions/0089-bulk-sender-checklist.md) and
-[0090](../../docs/decisions/0090-html-client-compatibility.md), and historical
+[0106](../../docs/decisions/0106-html-client-compatibility.md), and historical
 [repair ledger](../html-review-repair/implementation.md), describe contracts
 and evidence to assess, not authority to accept proposals. Follow the supplied
 revised tests-seat direction recorded in
@@ -50,7 +50,7 @@ unchanged and report provenance discrepancies rather than resolving them by fiat
 
 This is a verification/review design, not a change to a frozen guarantee,
 public contract, rule set or delivery route. No new decision is declared.
-The missing 0091 repair record must not be reconstructed under a new proposal
+The missing 0107 repair record must not be reconstructed under a new proposal
 that pretends to be historical evidence. A semantic repair, if separately
 routed, needs its own proposed decision discipline and any necessary operator
 acceptance. Historical specs and accepted decision bodies remain untouched.
@@ -162,7 +162,7 @@ never turns a failed criterion into a passed one.
    catalogue, config/cache, complete fixtures and served README/llms/OpenAPI
    agreement, including cross-build v2 ambiguity. Map authored provenance/date,
    strict-malformation and header-wire residuals explicitly. Independently report
-   the index's blank separator before 0090, absent 0091 target in 0085/0090/ledger
+   the index's blank separator before 0106, absent 0107 target in 0085/0106/ledger
    pointers, and living text describing bulk as future while already present.
    Current guidance must plainly distinguish no HTML contribution from combined
    empty-input failure and authentication Unknown. Until corrected by an authorized
