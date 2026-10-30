@@ -850,7 +850,7 @@ async fn revision_served_contract() {
         "outputSchema",
         "structuredContent",
         "10 MiB",
-        "tokens-per-success",
+        "Tokens-per-success",
         "full revision conformance is not claimed",
         "specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register",
         "docs/decisions/0104-mcp-candidate-proof.md",
