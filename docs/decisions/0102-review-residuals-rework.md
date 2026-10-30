@@ -1,6 +1,7 @@
 # 0102 — Review residuals return to implement, five times
 
-- **Status:** proposed — acceptance is the operator's.
+- **Status:** accepted (operator, 2026-10-30 — "0102 accepted", given in
+  chat).
 - **Date:** 2026-10-30
 - **Source:** operator direction, 2026-10-30, given in chat: "make sure the
   graph can go back to implementation up to 5 retries on those runs, so we
@@ -69,5 +70,5 @@ pins the rows, their order, the threshold and the schema;
 keeps `codex-fast` from overriding them. Every recipe compiles with the
 pinned engine, and the policy sweep leaves no group unruled.
 
-The explicit operator direction authorizes this table change while this
-record remains proposed; acceptance is still the operator's.
+The operator directed this table change and accepted this record on
+2026-10-30.
