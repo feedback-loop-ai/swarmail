@@ -21,6 +21,42 @@ pub mod webhook;
 
 use std::sync::Arc;
 
+/// The listen backlog of every listener (the kernel caps it at its own
+/// `somaxconn`). The platform default of 128 overflowed under a burst of
+/// fresh SMTP connections: with SYN cookies the client believes it is
+/// connected, but SMTP waits for the server's greeting, so the dropped
+/// connection hangs until the client gives up.
+pub const LISTEN_BACKLOG: u32 = 4096;
+
+/// Bind `addr` (a `host:port` resolved like `TcpListener::bind`, trying each
+/// address in turn) and listen with [`LISTEN_BACKLOG`].
+pub async fn listen(addr: &str) -> std::io::Result<tokio::net::TcpListener> {
+    let mut last = std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "could not resolve to any address",
+    );
+    for addr in tokio::net::lookup_host(addr).await? {
+        match listen_on(addr) {
+            Ok(listener) => return Ok(listener),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+fn listen_on(addr: std::net::SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    let socket = if addr.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()?
+    } else {
+        tokio::net::TcpSocket::new_v6()?
+    };
+    // What `TcpListener::bind` sets on Unix: a restarted server rebinds a
+    // port whose old connections still sit in TIME_WAIT.
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    socket.listen(LISTEN_BACKLOG)
+}
+
 /// Log a server task's exit; only stopping with an error is noteworthy.
 fn log_stopped(what: &str, res: std::io::Result<()>) {
     if let Err(e) = res {
@@ -150,12 +186,12 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
         }
     };
 
-    let smtp_listener = tokio::net::TcpListener::bind(&cfg.smtp_listen).await?;
-    let http_listener = tokio::net::TcpListener::bind(&cfg.http_listen).await?;
+    let smtp_listener = listen(&cfg.smtp_listen).await?;
+    let http_listener = listen(&cfg.http_listen).await?;
     let smtp_addr = smtp_listener.local_addr()?;
     let http_addr = http_listener.local_addr()?;
     // Bound before any spawn: a bind failure fails the whole startup.
-    let pop3_listener = tokio::net::TcpListener::bind(&cfg.pop3_listen).await?;
+    let pop3_listener = listen(&cfg.pop3_listen).await?;
     let pop3_addr = pop3_listener.local_addr()?;
 
     {

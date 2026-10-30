@@ -335,7 +335,12 @@ posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
 `SWARMAIL_URL` (the MCP stdio bridge's upstream, default
 `http://127.0.0.1:8025`),
 `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
-`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
+`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`,
+`SWARMAIL_MAX_SESSIONS` (`256` concurrent sessions per SMTP and POP3
+listener, at least `1`; one more is answered `421`; the flag is
+`--max-sessions`. Each session holds a file descriptor, and the default is
+sized so that three times the cap stays under the usual 1024 soft limit
+(decision 0027 §3): above about 340, raise `ulimit -n` first).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and
@@ -497,7 +502,7 @@ so: `200 {"status":"ok"}` when no listener is flagged, `503
 surfaces, and `503 {"status":"stopping"}` for a request that reaches the
 handler after the stop has fired — that state wins over everything else.
 Sessions are bounded where the wire admits them: more than 256 concurrent
-SMTP or POP3 sessions is refused before any greeting (`421 4.7.0 Too many
+SMTP or POP3 sessions (the default of `--max-sessions`) is refused before any greeting (`421 4.7.0 Too many
 connections, closing transmission channel` / `-ERR too many connections`);
 completed sessions are reaped right after each accept, before the cap is
 checked, so a slot freed while the listener waited is offered to the very
@@ -669,6 +674,66 @@ and is removed by id (`DELETE /api/v1/messages/{id}`, or `DELETE
 out.
 
 ### MCP — agents drive the mail
+
+
+MCP negotiates `2025-03-26`, `2025-06-18` and `2025-11-25`. A single
+`initialize` returns a supported requested revision; an unsupported string
+receives `2025-11-25` so the client can decide whether to continue. Omission
+keeps `2025-03-26`; a supplied non-string version refuses `-32602`.
+Legacy batch initialize always returns `2025-03-26`.
+
+HTTP clients send `Content-Type: application/json`,
+`Accept: application/json, text/event-stream` and, after negotiation,
+`MCP-Protocol-Version: <negotiated revision>`. The JSON-only endpoint tolerates
+omitted media headers. It is stateless: a missing version header selects
+`2025-03-26`; exactly one supported header selects that revision, with no
+initialization-history enforcement or session IDs. Invalid, duplicate or
+unsupported version headers refuse HTTP 400 / `-32600` / null before effects,
+after POST body-limit and parse checks. Invalid headers also refuse on other
+methods; otherwise GET returns 405. SSE is not implemented.
+
+**Batches are available only under `2025-03-26`.** All batch descriptions
+below apply to that revision. Either modern revision refuses every array with
+one `-32600` / null error naming the revision, before any member executes,
+including arrays containing only notifications. Modern tool descriptors add
+`readOnlyHint: true` on reads, and `readOnlyHint: false, destructiveHint: true`
+on all mutations (including seed, which can evict old mail, and chaos changes).
+Input schemas and text results are unchanged; structured outputs belong to #153.
+
+The stdio bridge starts with legacy compatibility. Single initialize fences
+later input until a matching successful response with capabilities and server
+name/version selects the revision; it omits
+the version header for initialize and sends the returned version afterward.
+Modern clients then send `notifications/initialized`; operations wait for its
+empty HTTP 202 acknowledgment. Ping remains available. Early operations and
+repeated modern initialize refuse `-32600`; notifications stay silent without
+effects. Failed modern negotiation requires an explicit initialize retry and
+cannot release queued effects under legacy rules. Modern arrays refuse locally
+without a connection, including oversized arrays (one null-ID size refusal).
+Operational lines remain concurrent after the handshake.
+
+Tool invocations share a per-server budget of 1024 attempts per one-second
+monotonic window, including notifications and March batch members. Exhaustion
+returns a text `isError` result (notifications remain silent) before effects;
+initialize, ping and discovery remain available. This is independent of active
+wait counts and does not rate limit SMTP or REST.
+
+The bridge targets this stateless JSON server and parses identity HTTP bodies.
+It advertises the mandated JSON/SSE Accept tokens but does not implement an SSE
+client, sessions or general Streamable HTTP client conformance. These limits,
+unsolicited-response disposition, ID tolerance, legacy sender omissions, error
+taxonomy and malformed peer envelopes on stdout are documented deviations C1–C6,
+retained by the operator's 2026-10-26 choice. This delivery claims version negotiation; full
+revision conformance is not claimed. The [deviation register](specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register)
+records each revision's behavior and compatibility cost. Email
+content is untrusted data: tools return text containing JSON string fields,
+never active HTML, executable resources or fetched links. Consumers must retain
+that data boundary when displaying results or passing mail to a model.
+
+The metric is compatibility: actual Claude Code, Codex, MCP Inspector and
+Claude Desktop receipts remain operator-owned and owed (issue AC3). See the
+[implementation evidence](specs/mcp-version-negotiation/implementation.md).
+The operator holds this PR unmerged until #151's baseline exists.
 
 ```
 $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
@@ -1152,6 +1217,13 @@ parse, was the cost. The capped query paths publish in the same run
 (`ingest/threads/view@cap`, `ingest/store/count@cap`,
 `ingest/store/count@cap-filtered`).
 
+These are in-process ingest microbenchmarks. They are not network
+throughput, wait latency or agent results, and they compare nothing.
+The fair comparison against Mailpit and MailHog has its own method and
+driver, and so far no results: see [docs/evals](docs/evals/README.md)
+for what is built, what is still missing and why. This README states no
+comparative or agent numbers until admitted evidence exists to cite.
+
 ## Repo layout
 
 | Path | What it is |
@@ -1225,6 +1297,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 
 | Suite | What it proves |
 |---|---|
+| `tests/mcp_revisions.rs` | revision negotiation, headers, annotations, batch refusals, binary lifecycle/concurrency and immediate SMTP visibility |
 | `tests/p2.rs` | the P2 end-to-end: MCP JSON-RPC, the seed API's parse+extraction pipeline, webhook delivery with secret and retry targets |
 | `tests/smtp_edges.rs` | every protocol verb, refusal, AUTH form, DATA limit, dot-unstuffing, group addresses, chaos on connect/MAIL FROM/RCPT/DATA; the 0034 boundaries — mixed terminators, path and parameter matrices, greeting resets, validation before chaos, strict PLAIN and one AUTH per session |
 | `tests/rate.rs` | the 5k losslessness guarantee + burst |
@@ -1233,6 +1306,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/deliverability.rs` | Lazy typed report, REST/MCP parity, threshold assertions/waits, UI states, persistence, pruning and served contract documentation (proposed 0085) |
 | `tests/api.rs` | every REST route, happy + error branches |
 | `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
+| `tests/listen.rs` | every listener's bind: both address families, the bind error reported as-is, and (Linux) a burst of 600 fresh SMTP connections all greeted, past the platform default backlog of 128 |
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
@@ -1251,6 +1325,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/store_contract_docs.rs` | the store, maildrop and compat contracts as documented — README, llms.txt, the chart comment and the served schema, their numbers built from the running constants — and every decision index row agreeing with its record's status |
 | `tests/delivery_constitution.rs` | structural pins on `.brokkr/recipes/self/` (0050): the review-residual stops, the design sequence ending in the pinned check, the verify seat's pinned gates and shim check; and the documented install examples and CI's chart-history and docker-smoke wiring (#141) |
 | `tests/delivery_recipes.rs` | Codex recipe discovery, triage routing and single/double/full review, inherited shell gates, work-seat tools, exact routes and independent review without Pro or author-model fallback (0057); [recipe tables and launch commands](.brokkr/recipes/README.md) |
+| `tests/mail_compare.rs` | the fair wire comparison driver (proposed 0091) against the real binary it launches: method and source-pin refusals, hand-computed quantiles, exact throughput and present/future/empty wait reconciliation, a bounded 1,000-session run, closed-environment, private-output and reaped-group facts read from `/proc`, admission refusals, and every `scripts/compare-mail.sh` mode refusing without launching an agent |
 | `tests/tooling_patches.rs` | the actual tooling-patch helper against real Git repositories: source identity, clean state, strict records, safe paths, all checksums before mutation and ordered patch application |
 | unit | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |
 

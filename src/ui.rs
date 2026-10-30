@@ -198,7 +198,7 @@ fn report_section(
         }
     };
     format!(
-        "<h2>deliverability</h2><section>{body}<div class=\"muted\">Synthetic demo rule only. Empty findings do not imply deliverability.</div></section>"
+        "<h2>deliverability</h2><section>{body}<div class=\"muted\">Demo and bulk-sender checks only. Empty findings do not imply deliverability.</div></section>"
     )
 }
 

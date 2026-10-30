@@ -15,11 +15,11 @@ publish = false
 # dev-dependency exceptions of the dated 2026-10-30 amendment to decision
 # 0055 (pulldown-cmark and unicase, exact versions, checked by
 # tests/boundary.rs), so `--offline --locked` needs no network once the
-# local cargo cache holds them and `cargo deny check licenses` has already
-# vetted each license. The evals fmt, clippy and test checks are run by the
-# implement and review seats; CI and pinned verify do not run them until
-# #201 (decision 0055). The manual runner may still build once when the
-# candidate's root-test Swarmail executable is unset.
+# local cargo cache holds them, and `cargo deny check licenses` has already
+# vetted each version and source. Until issue #201 wires CI and pinned verify,
+# run the standalone formatting, lint and full tests separately against the
+# candidate's root-test Swarmail executable. The manual runner may build once
+# when unset.
 [dependencies]
 axum = "=0.8.9"
 base64 = "=0.22.1"

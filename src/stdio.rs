@@ -19,7 +19,12 @@
 //! wording, carrying the line's own ids — one per owed reply, the same
 //! shape a transport failure gets — so a stdio client can match it.
 //!
-//! Lines are independent (decision 0039): up to [`BRIDGE_CONCURRENCY`]
+//! Modern initialization fences future input and installs only a matching,
+//! successful supported revision. The initialized notification requires an
+//! empty 202 before operations; ordinary lines then remain independent.
+//! Modern arrays refuse before notification silence and never dial (0079).
+//!
+//! Operational lines are independent (decision 0039): up to [`BRIDGE_CONCURRENCY`]
 //! HTTP exchanges are outstanding at once, so a wait never parks the seed
 //! that would satisfy it (issue #90). Replies are written as their exchanges
 //! complete — order is promised only inside one batch; a client that needs
@@ -41,7 +46,7 @@
 use crate::api::{
     MAX_AWAIT_TIMEOUT_MS, MCP_BODY_LIMIT, MCP_BODY_TOO_LARGE, mcp_body_refusal, split_authority,
 };
-use crate::mcp::{Envelope, classify, error_object};
+use crate::mcp::{Envelope, Revision, classify_revision, error_object, reply_id, valid_id};
 use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
 use serde_json::Value;
@@ -103,9 +108,13 @@ fn dial_target(authority: &str) -> Result<String, String> {
 
 /// Build the request bytes sent by `rpc_post`. `authority` is the original
 /// URL spelling: only the dial target gets a synthesized default port.
-fn request_text(authority: &str, path: &str, body: &str) -> String {
+fn request_text(authority: &str, path: &str, body: &str, revision: Option<Revision>) -> String {
+    let version = match revision {
+        Some(revision) => format!("MCP-Protocol-Version: {}\r\n", revision.as_str()),
+        None => String::new(),
+    };
     format!(
-        "POST {}/mcp HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST {}/mcp HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n{version}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         path.trim_end_matches('/'),
         body.len()
     )
@@ -122,12 +131,20 @@ enum Outcome {
     Empty,
 }
 
+/// Retain status for lifecycle acknowledgments, alongside verbatim RPC data.
+#[derive(Debug)]
+struct Response {
+    status: u16,
+    outcome: Outcome,
+    empty_body: bool,
+}
+
 /// Parse the response: the status line first, then the body the headers
 /// declare (decision 0029 §4). A non-2xx carrying a JSON-RPC error object
 /// is forwarded verbatim — a server-declared error is a JSON-RPC error;
 /// any other non-2xx refuses with the status named. A non-JSON 2xx body
 /// refuses rather than fabricating `"{}"`.
-fn parse_response(raw: &[u8]) -> Result<Outcome, String> {
+fn parse_response(raw: &[u8]) -> Result<Response, String> {
     // The cap is judged on what was read: the caller's `take` stops at
     // RESPONSE_CAP, so a full buffer means the reply was at least that big.
     if raw.len() as u64 >= RESPONSE_CAP {
@@ -171,15 +188,27 @@ fn parse_response(raw: &[u8]) -> Result<Outcome, String> {
         // upstream's own refusal — forwarded, not rewrapped (issue #40).
         return value
             .filter(|v| v.get("error").is_some())
-            .map(Outcome::Json)
+            .map(|value| Response {
+                status,
+                outcome: Outcome::Json(value),
+                empty_body: false,
+            })
             .ok_or_else(|| format!("server answered {status}"));
     }
     let text = text.ok_or_else(|| "the reply is not valid UTF-8".to_string())?;
     if text.trim().is_empty() {
-        return Ok(Outcome::Empty);
+        return Ok(Response {
+            status,
+            outcome: Outcome::Empty,
+            empty_body: body.is_empty(),
+        });
     }
     value
-        .map(Outcome::Json)
+        .map(|value| Response {
+            status,
+            outcome: Outcome::Json(value),
+            empty_body: false,
+        })
         .ok_or_else(|| format!("the reply is not JSON: {}", text.trim()))
 }
 
@@ -203,7 +232,8 @@ async fn rpc_post(
     base: &str,
     body: &str,
     deadline: std::time::Duration,
-) -> Result<Outcome, String> {
+    revision: Option<Revision>,
+) -> Result<Response, String> {
     let rest = base
         .strip_prefix("http://")
         .ok_or_else(|| "SWARMAIL_URL must be http:// (the local server has no TLS)".to_string())?;
@@ -213,7 +243,7 @@ async fn rpc_post(
     };
     let mut stream = dial(&dial_target(authority)?, DIAL_TIMEOUT).await?;
 
-    let req = request_text(authority, path, body);
+    let req = request_text(authority, path, body, revision);
 
     // One owner for the transport failure: the request write and the response
     // read surface through the same io-error text, whatever the peer does.
@@ -241,7 +271,7 @@ enum Line {
     /// send — `None` when that oversized line owes no reply.
     Local(Option<String>),
     /// A JSON value to POST, and how its answer is owed.
-    Post(String, Envelope),
+    Post(String, Envelope, Role),
 }
 
 /// Read one line's bytes. Invalid UTF-8 is refused, never repaired with
@@ -251,7 +281,7 @@ enum Line {
 /// the exact bytes that would be posted — the trimmed line, delimiter
 /// excluded; equal is sent, one byte over is refused locally (decision
 /// 0047 §4) after the parse, so a malformed line keeps its `-32700`.
-fn read_line(bytes: &[u8]) -> Line {
+fn read_line(bytes: &[u8], lifecycle: &Lifecycle) -> Line {
     let text = match std::str::from_utf8(bytes) {
         Ok(text) => text.trim(),
         Err(_) => return Line::Local(Some(parse_error("the line is not valid UTF-8"))),
@@ -261,11 +291,20 @@ fn read_line(bytes: &[u8]) -> Line {
     }
     match serde_json::from_str::<Value>(text) {
         Ok(value) if text.len() > MCP_BODY_LIMIT => Line::Local(refuse(
-            &classify(&value),
+            &classify_revision(&value, lifecycle.selected()),
             -32600,
             &mcp_body_refusal(MCP_BODY_TOO_LARGE),
         )),
-        Ok(value) => Line::Post(text.to_string(), classify(&value)),
+        Ok(value) => {
+            let envelope = classify_revision(&value, lifecycle.selected());
+            if let Some(reason) = lifecycle.selected().batch_refusal(&value) {
+                return Line::Local(refuse(&envelope, -32600, &reason));
+            }
+            match lifecycle.admit(&value) {
+                Ok(role) => Line::Post(text.to_string(), envelope, role),
+                Err(reason) => Line::Local(refuse(&envelope, -32600, reason)),
+            }
+        }
         Err(e) => Line::Local(Some(parse_error(&e.to_string()))),
     }
 }
@@ -302,17 +341,149 @@ fn refuse(envelope: &Envelope, code: i64, why: &str) -> Option<String> {
     }
 }
 
-/// An outstanding exchange, boxed so the loop can name its collection.
-type Exchange<'a> = std::pin::Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>>;
+/// Only the bridge loop changes lifecycle. Exchanges hold immutable snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Legacy,
+    NegotiationFailed,
+    AwaitInitialized,
+    Ready,
+}
 
-/// One line's exchange: POST it and shape what is owed.
+struct Lifecycle {
+    phase: Phase,
+    revision: Option<Revision>,
+}
+
+#[derive(Debug, PartialEq)]
+enum Role {
+    Ordinary,
+    Initialize { id: Value, modern: bool },
+    Initialized,
+}
+
+impl Lifecycle {
+    fn selected(&self) -> Revision {
+        self.revision.unwrap_or(Revision::March)
+    }
+
+    fn admit(&self, value: &Value) -> Result<Role, &'static str> {
+        if value.is_array() && self.phase == Phase::NegotiationFailed {
+            return Err("MCP initialization must complete before operations");
+        }
+        // Malformed envelopes retain server validation precedence. Arrays have
+        // already passed revision admission and retain legacy batch semantics.
+        if !value.is_object() || value.get("id").is_some_and(|id| !valid_id(id)) {
+            return Ok(Role::Ordinary);
+        }
+        let Some(method) = value.get("method").and_then(Value::as_str) else {
+            return Ok(Role::Ordinary);
+        };
+        match method {
+            "initialize" => {
+                if matches!(self.phase, Phase::AwaitInitialized | Phase::Ready) {
+                    return Err("MCP is already initialized");
+                }
+                match reply_id(value) {
+                    Some(id) => Ok(Role::Initialize {
+                        id,
+                        modern: value
+                            .pointer("/params/protocolVersion")
+                            .and_then(Value::as_str)
+                            .is_some_and(|version| version != Revision::March.as_str()),
+                    }),
+                    None => Ok(Role::Ordinary),
+                }
+            }
+            "notifications/initialized" if value.get("id").is_some() => Ok(Role::Ordinary),
+            "notifications/initialized" if self.phase == Phase::AwaitInitialized => {
+                Ok(Role::Initialized)
+            }
+            "ping" => Ok(Role::Ordinary),
+            _ if matches!(
+                self.phase,
+                Phase::NegotiationFailed | Phase::AwaitInitialized
+            ) =>
+            {
+                Err("MCP initialization must complete before operations")
+            }
+            _ => Ok(Role::Ordinary),
+        }
+    }
+
+    fn complete(&mut self, role: &Role, response: &Result<Response, String>) {
+        match role {
+            Role::Initialize { id, modern } => {
+                let selected = match response {
+                    Ok(Response {
+                        status: 200..=299,
+                        outcome: Outcome::Json(value),
+                        ..
+                    }) if value.get("id") == Some(id)
+                        && value["jsonrpc"] == "2.0"
+                        && value.get("error").is_none()
+                        && value
+                            .pointer("/result/capabilities")
+                            .is_some_and(Value::is_object)
+                        && value
+                            .pointer("/result/serverInfo/name")
+                            .is_some_and(Value::is_string)
+                        && value
+                            .pointer("/result/serverInfo/version")
+                            .is_some_and(Value::is_string) =>
+                    {
+                        value
+                            .pointer("/result/protocolVersion")
+                            .and_then(Value::as_str)
+                            .and_then(Revision::parse)
+                    }
+                    _ => None,
+                };
+                if let Some(revision) = selected {
+                    self.revision = Some(revision);
+                    self.phase = if revision == Revision::March {
+                        Phase::Legacy
+                    } else {
+                        Phase::AwaitInitialized
+                    };
+                } else if *modern {
+                    self.phase = Phase::NegotiationFailed;
+                }
+            }
+            Role::Initialized => {
+                if matches!(
+                    response,
+                    Ok(Response {
+                        status: 202,
+                        outcome: Outcome::Empty,
+                        empty_body: true,
+                    })
+                ) {
+                    self.phase = Phase::Ready;
+                }
+            }
+            Role::Ordinary => {}
+        }
+    }
+}
+
+/// An outstanding exchange, boxed so the loop can name its collection.
+type Exchange<'a> =
+    std::pin::Pin<Box<dyn Future<Output = (Role, Result<Response, String>, Envelope)> + Send + 'a>>;
+
 async fn exchange(
     base_url: &str,
     body: String,
     envelope: Envelope,
     deadline: std::time::Duration,
-) -> Option<String> {
-    answer(&envelope, rpc_post(base_url, &body, deadline).await)
+    revision: Option<Revision>,
+    role: Role,
+) -> (Role, Result<Response, String>, Envelope) {
+    (
+        role,
+        rpc_post(base_url, &body, deadline, revision).await,
+        envelope,
+    )
 }
 
 /// The one write path (decision 0039 §5): the complete line and its
@@ -360,6 +531,11 @@ where
     R: tokio::io::AsyncBufRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
+    let mut lifecycle = Lifecycle {
+        phase: Phase::Legacy,
+        revision: None,
+    };
+    let mut fenced = false;
     let mut pending: FuturesUnordered<Exchange<'_>> = FuturesUnordered::new();
     let mut partial = Vec::new();
     let mut reading = true;
@@ -368,7 +544,11 @@ where
         let line = tokio::select! {
             biased;
             done = pending.next(), if !pending.is_empty() => {
-                if let Some(reply) = done.flatten()
+                // The nonempty select guard guarantees a completion.
+                let (role, outcome, envelope) = done.expect("a nonempty exchange set yields a completion");
+                lifecycle.complete(&role, &outcome);
+                if role != Role::Ordinary { fenced = false; }
+                if let Some(reply) = answer(&envelope, outcome.map(|response| response.outcome))
                     && emit(stdout, reply).await.is_err()
                 {
                     return 1;
@@ -376,7 +556,7 @@ where
                 continue;
             }
             read = input.read_until(b'\n', &mut partial),
-                if reading && pending.len() < BRIDGE_CONCURRENCY =>
+                if reading && !fenced && pending.len() < BRIDGE_CONCURRENCY =>
             {
                 match read {
                     Ok(_) if partial.ends_with(b"\n") => std::mem::take(&mut partial),
@@ -401,7 +581,7 @@ where
             }
             else => return status,
         };
-        match read_line(&line) {
+        match read_line(&line, &lifecycle) {
             Line::Blank => {}
             Line::Local(reply) => {
                 if let Some(reply) = reply
@@ -410,8 +590,16 @@ where
                     return 1;
                 }
             }
-            Line::Post(body, envelope) => {
-                pending.push(Box::pin(exchange(base_url, body, envelope, deadline)));
+            Line::Post(body, envelope, role) => {
+                fenced = role != Role::Ordinary;
+                let revision = if matches!(role, Role::Initialize { .. }) {
+                    None
+                } else {
+                    lifecycle.revision
+                };
+                pending.push(Box::pin(exchange(
+                    base_url, body, envelope, deadline, revision, role,
+                )));
             }
         }
     }
@@ -420,6 +608,116 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_response(raw: &[u8]) -> Result<Outcome, String> {
+        super::parse_response(raw).map(|response| response.outcome)
+    }
+
+    fn read_line(bytes: &[u8]) -> Line {
+        super::read_line(
+            bytes,
+            &Lifecycle {
+                phase: Phase::Legacy,
+                revision: None,
+            },
+        )
+    }
+
+    #[test]
+    fn lifecycle_failures_preserve_admission_and_require_explicit_recovery() {
+        use serde_json::json;
+        let mut state = Lifecycle {
+            phase: Phase::Legacy,
+            revision: None,
+        };
+        let role = Role::Initialize {
+            id: json!(1),
+            modern: true,
+        };
+        state.complete(&role, &Err("transport failed".into()));
+        assert_eq!(state.phase, Phase::NegotiationFailed);
+        for array in [
+            json!([]),
+            json!([{"id":2,"method":"tools/list"}]),
+            json!([{"method":"tools/call"}]),
+        ] {
+            assert!(
+                state.admit(&array).is_err(),
+                "failed negotiation must not release a legacy batch"
+            );
+        }
+        assert!(state.admit(&json!({"method":"tools/call"})).is_err());
+        for malformed in [
+            json!(42),
+            json!({}),
+            json!({"method":42}),
+            json!({"id":false,"method":"initialize"}),
+        ] {
+            assert_eq!(
+                state.admit(&malformed),
+                Ok(Role::Ordinary),
+                "malformed envelopes retain server validation precedence"
+            );
+        }
+        assert_eq!(
+            state.admit(&json!({"method":"initialize"})),
+            Ok(Role::Ordinary)
+        );
+        assert_eq!(
+            state.admit(&json!({"id":1,"method":"initialize"})),
+            Ok(Role::Initialize {
+                id: json!(1),
+                modern: false
+            })
+        );
+        let legacy = Role::Initialize {
+            id: json!(1),
+            modern: false,
+        };
+        state.complete(&legacy, &Err("still offline".into()));
+        assert_eq!(state.phase, Phase::NegotiationFailed);
+        state.complete(
+            &role,
+            &Ok(Response {
+                status: 202,
+                outcome: Outcome::Empty,
+                empty_body: true,
+            }),
+        );
+        assert_eq!(state.phase, Phase::NegotiationFailed);
+        state.complete(
+            &legacy,
+            &Ok(Response {
+                status: 200,
+                outcome: Outcome::Json(
+                    json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"peer","version":"1"}}}),
+                ),
+                empty_body: false,
+            }),
+        );
+        assert_eq!(state.phase, Phase::Legacy);
+        assert_eq!(state.revision, Some(Revision::March));
+        assert_eq!(
+            state.admit(&json!({"method":"initialize","params":{"protocolVersion":"2025-11-25"}})),
+            Ok(Role::Ordinary),
+            "notification initialize cannot install a revision"
+        );
+        state.phase = Phase::AwaitInitialized;
+        state.revision = Some(Revision::June);
+        assert!(state.admit(&json!({"id":2,"method":"initialize"})).is_err());
+        assert!(state.admit(&json!({"method":"initialize"})).is_err());
+        state.complete(&Role::Initialized, &Err("lost acknowledgment".into()));
+        assert_eq!(state.phase, Phase::AwaitInitialized);
+        state.complete(
+            &Role::Initialized,
+            &Ok(Response {
+                status: 202,
+                outcome: Outcome::Empty,
+                empty_body: true,
+            }),
+        );
+        assert_eq!(state.phase, Phase::Ready);
+    }
 
     #[test]
     fn the_bridge_deadline_is_the_await_ceiling_plus_the_slack() {
@@ -565,14 +863,19 @@ mod tests {
             read_line(b"  {\"id\":7,\"method\":\"ping\"}\r\n"),
             Line::Post(
                 r#"{"id":7,"method":"ping"}"#.to_string(),
-                Envelope::Single(json!(7))
+                Envelope::Single(json!(7)),
+                Role::Ordinary
             )
         );
         // A scalar is an invalid request, owed a null-id reply (decision
         // 0044 §1) — still posted, so the server's own answer is forwarded.
         assert_eq!(
             read_line(b"42"),
-            Line::Post("42".to_string(), Envelope::Single(Value::Null))
+            Line::Post(
+                "42".to_string(),
+                Envelope::Single(Value::Null),
+                Role::Ordinary
+            )
         );
     }
 
@@ -634,7 +937,7 @@ mod tests {
             ("127.0.0.1:8025", "Host: 127.0.0.1:8025\r\n"),
             ("[2001:db8::1]:9", "Host: [2001:db8::1]:9\r\n"),
         ] {
-            let request = request_text(authority, "/api/", "{}\n");
+            let request = request_text(authority, "/api/", "{}\n", None);
             assert!(request.contains(expected_host), "{authority}: {request:?}");
             assert!(
                 request.starts_with("POST /api/mcp HTTP/1.1\r\n"),
@@ -694,7 +997,11 @@ mod tests {
     fn bridge_body_limit_is_byte_exact() {
         let ping = r#"{"jsonrpc":"2.0","id":7,"method":"ping","pad":"PAD"}"#;
         let exact = sized(ping, "x", MCP_BODY_LIMIT);
-        let posted = Line::Post(exact.clone(), Envelope::Single(serde_json::json!(7)));
+        let posted = Line::Post(
+            exact.clone(),
+            Envelope::Single(serde_json::json!(7)),
+            Role::Ordinary,
+        );
         assert_eq!(read_line(exact.as_bytes()), posted, "equal is posted");
         let padded = format!("  {exact}\r\n");
         assert_eq!(

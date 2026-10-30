@@ -396,3 +396,13 @@ with that record's own verb and scope, and nothing above is rewritten by it.
   the native envelope. 0048 also clarifies and extends §5's delivery-stack
   CA validation: every `ca_pem` certificate is loaded through an uncached
   delivery-client build at `PUT`, before replacement (0048 §1).)*
+
+## Proposed reconciliation pointer — 2026-10-26
+
+The operator-directed #152 implementation is recorded in proposed
+[0079](0079-mcp-version-negotiation.md) and proposed
+[0080](0080-mcp-source-reconciliation.md). §2 initialization now negotiates three revisions and batching is March-only; §4 carries the negotiated header and a validated initialization fence. The unknown-tool code and argument/error taxonomy remain pinned.
+This dated pointer preserves the accepted historical body and status. It neither
+accepts a proposal nor claims an incompatible amendment has been accepted.
+See the [clause ledger](../../specs/mcp-version-negotiation/reconciliation.md)
+for source evidence, compatible repairs, remaining costs and external ownership.

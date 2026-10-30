@@ -110,3 +110,13 @@ marked in [0029](0029-supplied-values-are-validated-wherever-they-reach-a-wire.m
   members concurrently. This pointer was missing until 2026-10-19.)*
 - *(Updated by [0047](0047-storage-rpc.md) (accepted 2026-10-19): §§1/2/6,
   as the pointer above describes.)*
+
+## Proposed reconciliation pointer — 2026-10-26
+
+The operator-directed #152 implementation is recorded in proposed
+[0079](0079-mcp-version-negotiation.md) and proposed
+[0080](0080-mcp-source-reconciliation.md). §4 independent-line admission is fenced during initialization only; steady-state concurrency and §§2/6 complete-reply forwarding and identity-only parsing remain. The latter leaves the general HTTP client SSE obligation unresolved.
+This dated pointer preserves the accepted historical body and status. It neither
+accepts a proposal nor claims an incompatible amendment has been accepted.
+See the [clause ledger](../../specs/mcp-version-negotiation/reconciliation.md)
+for source evidence, compatible repairs, remaining costs and external ownership.

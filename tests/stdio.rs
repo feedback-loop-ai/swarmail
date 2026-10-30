@@ -771,6 +771,10 @@ async fn crlf_blank_and_unterminated_lines_frame_correctly() {
 
 /// Read one HTTP request off the wire and return its body.
 async fn read_request_body(stream: &mut tokio::net::TcpStream) -> String {
+    read_request_with_head(stream).await.1
+}
+
+async fn read_request_with_head(stream: &mut tokio::net::TcpStream) -> (String, String) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -783,7 +787,10 @@ async fn read_request_body(stream: &mut tokio::net::TcpStream) -> String {
                 .parse()
                 .unwrap();
             if buf.len() >= sep + 4 + len {
-                return String::from_utf8(buf[sep + 4..sep + 4 + len].to_vec()).unwrap();
+                return (
+                    head,
+                    String::from_utf8(buf[sep + 4..sep + 4 + len].to_vec()).unwrap(),
+                );
             }
         }
         let n = stream.read(&mut chunk).await.unwrap();
@@ -796,6 +803,7 @@ async fn read_request_body(stream: &mut tokio::net::TcpStream) -> String {
 /// accepted connection arrives with its request body.
 struct HeldPeer {
     addr: std::net::SocketAddr,
+    headers: Arc<Mutex<Vec<String>>>,
     exchanges: tokio::sync::mpsc::UnboundedReceiver<(String, tokio::net::TcpStream)>,
 }
 
@@ -804,17 +812,25 @@ impl HeldPeer {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (tx, exchanges) = tokio::sync::mpsc::unbounded_channel();
+        let headers = Arc::new(Mutex::new(Vec::new()));
+        let seen_headers = headers.clone();
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let tx = tx.clone();
+                let headers = seen_headers.clone();
                 tokio::spawn(async move {
-                    let body = read_request_body(&mut stream).await;
+                    let (head, body) = read_request_with_head(&mut stream).await;
+                    headers.lock().unwrap().push(head);
                     let _ = tx.send((body, stream));
                 });
             }
         });
-        HeldPeer { addr, exchanges }
+        HeldPeer {
+            addr,
+            exchanges,
+            headers,
+        }
     }
 
     /// The next held exchange, bounded so a bridge that never sends fails.
@@ -1274,4 +1290,439 @@ async fn report_stdio_text_contract() {
     let reply: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert_eq!(reply["result"]["isError"], true);
     srv.stop().await;
+}
+
+fn revision_init(id: i64, version: &str) -> String {
+    format!(
+        "{}\n",
+        serde_json::json!({"jsonrpc":"2.0","id":id,"method":"initialize","params":{"protocolVersion":version}})
+    )
+}
+
+async fn revision_result(stream: &mut tokio::net::TcpStream, id: i64, version: &str) {
+    return_after_write(
+        &serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"protocolVersion":version,"capabilities":{"tools":{}},"serverInfo":{"name":"peer","version":"1"}}})
+            .to_string(),
+        stream,
+    )
+    .await;
+}
+
+/// The input-consumption observer proves fences causally, even with an earlier
+/// exchange still held. Returned revision, rather than proposed revision, wins.
+#[tokio::test]
+async fn revision_exchange_fences_and_headers_follow_the_result() {
+    let mut peer = HeldPeer::start().await;
+    let mut bridge = Running::spawn(format!("http://{}", peer.addr));
+    bridge.send(&ping_line("0")).await;
+    let (earlier, earlier_stream) = peer.held().await;
+    let init = revision_init(1, "2025-06-18");
+    let late = ping_line("2");
+    bridge.send(&format!("{init}{late}")).await;
+    let (body, mut stream) = peer.held().await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"],
+        1
+    );
+    assert_eq!(*bridge.consumed.borrow(), ping_line("0").len() + init.len());
+    assert!(peer.headers.lock().unwrap().iter().all(|h| {
+        h.contains("Accept: application/json, text/event-stream")
+            && h.contains("Content-Type: application/json")
+            && !h.contains("MCP-Protocol-Version")
+    }));
+    revision_result(&mut stream, 1, "2025-11-25").await;
+    drop(stream);
+    assert_eq!(
+        bridge.reply().await["result"]["protocolVersion"],
+        "2025-11-25"
+    );
+    let (body, stream) = peer.held().await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"],
+        2
+    );
+    assert!(
+        peer.headers
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .contains("MCP-Protocol-Version: 2025-11-25\r\n")
+    );
+    release(&body, stream).await;
+    assert_eq!(bridge.reply().await["id"], 2);
+    release(&earlier, earlier_stream).await;
+    assert_eq!(bridge.reply().await["id"], 0);
+    let note = "{\"method\":\"notifications/initialized\"}\n";
+    let operation = "{\"id\":3,\"method\":\"tools/list\"}\n";
+    bridge.send(&format!("{note}{operation}")).await;
+    let (_, mut stream) = peer.held().await;
+    assert_eq!(
+        *bridge.consumed.borrow(),
+        ping_line("0").len() + init.len() + late.len() + note.len()
+    );
+    stream
+        .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n")
+        .await
+        .unwrap();
+    drop(stream);
+    let (body, stream) = peer.held().await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"],
+        3
+    );
+    release(&body, stream).await;
+    assert_eq!(bridge.reply().await["id"], 3);
+    let (code, replies) = bridge.finish().await;
+    assert_eq!(code, 0);
+    assert!(replies.is_empty());
+}
+
+#[tokio::test]
+async fn failed_modern_negotiation_never_releases_queued_effects_as_legacy() {
+    use serde_json::json;
+    for (status, result) in [
+        (
+            200,
+            json!({"jsonrpc":"2.0","id":99,"result":{"protocolVersion":"2025-06-18"}}),
+        ),
+        (
+            200,
+            json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"future"}}),
+        ),
+        (200, json!({"jsonrpc":"2.0","id":1,"result":{}})),
+        (
+            200,
+            json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":null}}),
+        ),
+        (
+            200,
+            json!({"id":1,"result":{"protocolVersion":"2025-06-18"}}),
+        ),
+        (200, json!({"jsonrpc":"2.0","id":1,"error":{"code":-32600}})),
+        // C6 witnesses with otherwise complete metadata: each isolates one
+        // envelope defect, forwarded verbatim yet never installed.
+        (
+            200,
+            json!({"id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"peer","version":"1"}}}),
+        ),
+        (
+            200,
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"peer"},"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"peer","version":"1"}}}),
+        ),
+        (
+            400,
+            json!({"jsonrpc":"2.0","id":1,"error":{"code":-32600},"result":{"protocolVersion":"2025-06-18"}}),
+        ),
+    ] {
+        let mut peer = HeldPeer::start().await;
+        let mut bridge = Running::spawn(format!("http://{}", peer.addr));
+        bridge
+            .send(&format!(
+                "{}{{\"id\":2,\"method\":\"tools/list\"}}\n{{\"method\":\"tools/call\"}}\n{}",
+                revision_init(1, "2025-06-18"),
+                ping_line("3")
+            ))
+            .await;
+        let (_, mut stream) = peer.held().await;
+        let data = result.to_string();
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 {status} Reply\r\nContent-Length: {}\r\n\r\n{data}",
+                    data.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        drop(stream);
+        assert_eq!(
+            bridge.reply().await,
+            result,
+            "upstream replies are forwarded verbatim"
+        );
+        assert_eq!(bridge.reply().await["error"]["code"], -32600);
+        let (body, stream) = peer.held().await;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"],
+            3,
+            "only ping was posted"
+        );
+        assert!(
+            !peer
+                .headers
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .contains("MCP-Protocol-Version"),
+            "failed initialize cannot install a revision"
+        );
+        release(&body, stream).await;
+        assert_eq!(bridge.reply().await["id"], 3);
+        assert!(peer.exchanges.try_recv().is_err());
+        // Explicit retry can recover into legacy and ordinary calls resume.
+        bridge.send(&revision_init(4, "2025-03-26")).await;
+        let (_, mut stream) = peer.held().await;
+        revision_result(&mut stream, 4, "2025-03-26").await;
+        drop(stream);
+        assert_eq!(
+            bridge.reply().await["result"]["protocolVersion"],
+            "2025-03-26"
+        );
+        bridge.send("{\"id\":5,\"method\":\"tools/list\"}\n").await;
+        let (body, stream) = peer.held().await;
+        assert!(
+            peer.headers
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .contains("MCP-Protocol-Version: 2025-03-26")
+        );
+        release(&body, stream).await;
+        assert_eq!(bridge.reply().await["id"], 5);
+        let (code, rest) = bridge.finish().await;
+        assert_eq!(code, 0);
+        assert!(rest.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn initialized_failure_stays_fenced_and_modern_arrays_never_dial() {
+    let mut peer = HeldPeer::start().await;
+    let mut bridge = Running::spawn(format!("http://{}", peer.addr));
+    bridge.send(&revision_init(1, "2025-11-25")).await;
+    let (_, mut stream) = peer.held().await;
+    revision_result(&mut stream, 1, "2025-11-25").await;
+    drop(stream);
+    assert_eq!(bridge.reply().await["id"], 1);
+    for response in [
+        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 202 Accepted\r\nContent-Length: 1\r\n\r\n ",
+        "HTTP/1.1 202 Accepted\r\nContent-Length: 2\r\n\r\n{}",
+        "HTTP/1.1 500 Error\r\nContent-Length: 0\r\n\r\n",
+    ] {
+        bridge.send("{\"method\":\"notifications/initialized\"}\n{\"id\":2,\"method\":\"tools/list\"}\n").await;
+        let (_, mut stream) = peer.held().await;
+        stream.write_all(response.as_bytes()).await.unwrap();
+        drop(stream);
+        assert_eq!(
+            bridge.reply().await["id"],
+            2,
+            "failed notification stays silent"
+        );
+        // The early operation is refused locally; it never reached the peer.
+        assert!(peer.exchanges.try_recv().is_err());
+    }
+    bridge
+        .send("{\"method\":\"notifications/initialized\"}\n")
+        .await;
+    let (body, stream) = peer.held().await;
+    release(&body, stream).await;
+    bridge.send("[{\"method\":\"tools/call\"}]\n").await;
+    let reply = bridge.reply().await;
+    assert_eq!(
+        reply["error"]["message"],
+        "MCP 2025-11-25 does not support batches"
+    );
+    bridge
+        .send(&format!(
+            "[{{\"method\":\"tools/call\",\"pad\":\"{}\"}}]\n",
+            "x".repeat(2_097_152)
+        ))
+        .await;
+    let oversized = bridge.reply().await;
+    assert_eq!(oversized["id"], serde_json::Value::Null);
+    assert!(
+        oversized["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("request body refused")
+    );
+    bridge.send(&ping_line("7")).await;
+    let (body, stream) = peer.held().await;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"],
+        7
+    );
+    release(&body, stream).await;
+    assert_eq!(bridge.reply().await["id"], 7);
+    assert!(peer.exchanges.try_recv().is_err());
+    let (code, rest) = bridge.finish().await;
+    assert_eq!(code, 0);
+    assert!(rest.is_empty());
+}
+
+#[tokio::test]
+async fn incomplete_initialize_results_cannot_enable_operations() {
+    use serde_json::json;
+    for version in ["2025-03-26", "2025-06-18", "2025-11-25"] {
+        let valid = json!({"protocolVersion":version,"capabilities":{"tools":{}},"serverInfo":{"name":"peer","version":"1"}});
+        let mut invalid = Vec::new();
+        for field in ["capabilities", "serverInfo"] {
+            let mut result = valid.clone();
+            result.as_object_mut().unwrap().remove(field);
+            invalid.push(result);
+            for value in [json!(null), json!(true), json!([]), json!("bad")] {
+                let mut result = valid.clone();
+                result[field] = value;
+                invalid.push(result);
+            }
+        }
+        for field in ["name", "version"] {
+            let mut result = valid.clone();
+            result["serverInfo"].as_object_mut().unwrap().remove(field);
+            invalid.push(result);
+            let mut result = valid.clone();
+            result["serverInfo"][field] = json!(42);
+            invalid.push(result);
+        }
+        for result in invalid {
+            let mut peer = HeldPeer::start().await;
+            let mut bridge = Running::spawn(format!("http://{}", peer.addr));
+            // A modern proposal answered with malformed March metadata must
+            // remain failed too: otherwise queued effects escape as legacy.
+            bridge
+                .send(&format!(
+                    "{}{{\"method\":\"notifications/initialized\"}}\n{{\"id\":2,\"method\":\"tools/list\"}}\n{}",
+                    revision_init(1, "2025-11-25"),
+                    ping_line("3")
+                ))
+                .await;
+            let (_, mut stream) = peer.held().await;
+            let reply = json!({"jsonrpc":"2.0","id":1,"result":result});
+            return_after_write(&reply.to_string(), &mut stream).await;
+            drop(stream);
+            assert_eq!(bridge.reply().await, reply, "forwarding remains verbatim");
+            let (body, stream) = peer.held().await;
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"],
+                3,
+                "causal next-exchange witness"
+            );
+            assert!(
+                !peer
+                    .headers
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .contains("MCP-Protocol-Version")
+            );
+            assert_eq!(
+                bridge.reply().await["error"]["code"],
+                -32600,
+                "incomplete {version} result enabled operations"
+            );
+            release(&body, stream).await;
+            assert_eq!(bridge.reply().await["id"], 3);
+            let (code, rest) = bridge.finish().await;
+            assert_eq!(code, 0);
+            assert!(rest.is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn lost_and_truncated_initialization_stay_failed_until_explicit_retry() {
+    for response in ["", "HTTP/1.1 200 OK\r\nContent-Length: 999\r\n\r\n{}"] {
+        let mut peer = HeldPeer::start().await;
+        let mut bridge = Running::spawn(format!("http://{}", peer.addr));
+        bridge
+            .send(&format!(
+                "{}{{\"id\":2,\"method\":\"tools/list\"}}\n{}",
+                revision_init(1, "2025-11-25"),
+                ping_line("3")
+            ))
+            .await;
+        let (_, mut stream) = peer.held().await;
+        stream.write_all(response.as_bytes()).await.unwrap();
+        drop(stream);
+        let failure = bridge.reply().await;
+        assert_eq!(failure["id"], 1);
+        assert_eq!(failure["error"]["code"], -32000);
+        assert_eq!(bridge.reply().await["error"]["code"], -32600);
+        let (body, stream) = peer.held().await;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"],
+            3
+        );
+        release(&body, stream).await;
+        assert_eq!(bridge.reply().await["id"], 3);
+        bridge.send(&revision_init(4, "2025-11-25")).await;
+        let (_, mut stream) = peer.held().await;
+        revision_result(&mut stream, 4, "2025-11-25").await;
+        drop(stream);
+        assert_eq!(bridge.reply().await["id"], 4);
+        bridge.send("{\"method\":\"notifications/initialized\"}\n{\"id\":5,\"method\":\"tools/list\"}\n").await;
+        let (body, stream) = peer.held().await;
+        release(&body, stream).await;
+        let (body, stream) = peer.held().await;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"],
+            5
+        );
+        release(&body, stream).await;
+        assert_eq!(bridge.reply().await["id"], 5);
+        let (code, rest) = bridge.finish().await;
+        assert_eq!(code, 0);
+        assert!(rest.is_empty());
+    }
+}
+
+/// C6 on ordinary exchanges: a complete JSON reply with a malformed MCP
+/// envelope — no jsonrpc member, or result and error together — is
+/// forwarded verbatim under the implicit legacy session and a negotiated
+/// modern one alike. The bridge relays; it does not repair a peer.
+#[tokio::test]
+async fn complete_malformed_peer_replies_are_forwarded_verbatim() {
+    use serde_json::json;
+    for version in [None, Some("2025-11-25")] {
+        let mut peer = HeldPeer::start().await;
+        let mut bridge = Running::spawn(format!("http://{}", peer.addr));
+        if let Some(version) = version {
+            bridge.send(&revision_init(1, version)).await;
+            let (_, mut stream) = peer.held().await;
+            revision_result(&mut stream, 1, version).await;
+            drop(stream);
+            assert_eq!(bridge.reply().await["result"]["protocolVersion"], version);
+            bridge
+                .send("{\"method\":\"notifications/initialized\"}\n")
+                .await;
+            let (body, stream) = peer.held().await;
+            release(&body, stream).await;
+        }
+        for (id, reply) in [
+            (7, json!({"id":7,"result":{}})),
+            (
+                8,
+                json!({"jsonrpc":"2.0","id":8,"result":{},"error":{"code":-32603,"message":"peer"}}),
+            ),
+        ] {
+            bridge.send(&ping_line(&id.to_string())).await;
+            let (_, mut stream) = peer.held().await;
+            if let Some(version) = version {
+                assert!(
+                    peer.headers
+                        .lock()
+                        .unwrap()
+                        .last()
+                        .unwrap()
+                        .contains(&format!("MCP-Protocol-Version: {version}\r\n"))
+                );
+            }
+            return_after_write(&reply.to_string(), &mut stream).await;
+            drop(stream);
+            assert_eq!(
+                bridge.reply().await,
+                reply,
+                "{version:?} forwarded verbatim"
+            );
+        }
+        let (code, rest) = bridge.finish().await;
+        assert_eq!(code, 0);
+        assert!(rest.is_empty());
+    }
 }
