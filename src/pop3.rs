@@ -1124,6 +1124,7 @@ mod tests {
             smtp_degraded: Arc::new(AtomicBool::new(false)),
             pop3_degraded: degraded.clone(),
             http_origin_guard: Some(http_addr.port()),
+            route_domain: None,
         };
         let mut pop3 = tokio::spawn(LISTENER_PROBE.scope(
             probe.clone(),

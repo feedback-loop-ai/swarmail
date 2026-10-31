@@ -101,6 +101,39 @@ pub struct ServeArgs {
         env = "SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS"
     )]
     pub tls_handshake_timeout_ms: u64,
+
+    /// Route mail by recipient (decision 0112): an SMTP envelope recipient
+    /// `<local>@<label>.<DOMAIN>` is stored in inbox `<label>`, outranking
+    /// the AUTH username, so parallel agents behind one sending identity
+    /// stay apart. One or more DNS labels joined by `.`. Off by default; the
+    /// `swarmail_create_inbox` tool mints addresses under it.
+    #[arg(
+        long,
+        value_name = "DOMAIN",
+        env = "SWARMAIL_ROUTE_DOMAIN",
+        value_parser = parse_route_domain
+    )]
+    pub route_domain: Option<String>,
+}
+
+/// Validate `--route-domain` and fold it to ASCII lowercase (decision 0112
+/// §1): one or more labels of `[A-Za-z0-9-]{1,63}` joined by single dots.
+/// An empty value, an empty label (which covers a leading, trailing or
+/// doubled dot), a character outside the alphabet or an over-long label is
+/// refused at startup, before any listener binds.
+pub fn parse_route_domain(value: &str) -> Result<String, String> {
+    for label in value.split('.') {
+        let ok = (1..=63).contains(&label.len())
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        if !ok {
+            return Err(format!(
+                "--route-domain must be DNS labels of 1-63 letters, digits or '-' joined by '.', got {value:?}"
+            ));
+        }
+    }
+    Ok(value.to_ascii_lowercase())
 }
 
 #[derive(Args, Debug, Clone)]
@@ -155,6 +188,7 @@ impl From<&ServeArgs> for Config {
             smtp: SmtpConfig {
                 tls_handshake_timeout: Duration::from_millis(args.tls_handshake_timeout_ms),
                 max_sessions: args.max_sessions,
+                route_domain: args.route_domain.clone(),
                 ..SmtpConfig::default()
             },
             pop3_idle_timeout: crate::pop3::DEFAULT_IDLE_TIMEOUT,
