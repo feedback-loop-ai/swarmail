@@ -28,7 +28,7 @@ const NAMES: [&str; 13] = [
 ];
 
 // Fixed restored-row shapes include fields that ingest no longer creates.
-fn historical() -> swarmail::model::Email {
+pub(super) fn historical() -> swarmail::model::Email {
     use swarmail::model::{Email, EmailAddress};
     Email {
         id: "historical".into(),
@@ -54,6 +54,7 @@ fn historical() -> swarmail::model::Email {
         text: Some("line\n\t\u{0}\u{1b} 雪 \\".into()),
         html: Some("<b>untrusted</b>".into()),
         link_metadata: None,
+        attachments: None,
         links: vec!["https://x.io/?q=雪".into()],
         codes: (0..65).map(|i| format!("{i:04}")).collect(),
         message_id: Some("message@x".into()),
@@ -83,7 +84,7 @@ fn minimal() -> swarmail::model::Email {
     minimal
 }
 
-// The swarmail-bulk/1 checklist restated from its published rule table, not
+// The bulk checklist inside swarmail-html/3 restated from its published rule table, not
 // from the formatter: every hint cites its RFC source and both provider pages.
 const GMAIL: &str = "https://support.google.com/mail/answer/81126";
 const YAHOO: &str = "https://senders.yahooinc.com/best-practices/";
@@ -144,7 +145,7 @@ fn checklist(from: Value) -> Vec<Value> {
     ]
 }
 fn report_of(findings: Vec<Value>) -> Value {
-    json!({"rule_set_id":"swarmail-bulk/1","findings":findings})
+    json!({"rule_set_id":"swarmail-html/3","findings":findings})
 }
 
 pub(super) enum Wire {
@@ -833,6 +834,25 @@ pub(super) fn march_view(tool: &Value, read_only: bool) -> Value {
     descriptor
 }
 
+/// The compact item (decision 0108 §1) of [`historical`], stated member by
+/// member: no body, no `cc`, no `inbox`; the unknown attachment list is
+/// `null` and the stored links stand in for the anchors a row from before
+/// link metadata never had. The snippet is the text with its whitespace runs
+/// collapsed, control characters kept.
+pub(super) fn compact_historical() -> Value {
+    json!({
+        "attachments": null,
+        "codes": (0..65).map(|i| format!("{i:04}")).collect::<Vec<_>>(),
+        "from": {"address": "from@x.io", "name": "Sender \"雪\""},
+        "id": "historical",
+        "links": ["https://x.io/?q=雪"],
+        "received_ms": -1000,
+        "snippet": "line \u{0}\u{1b} 雪 \\",
+        "subject": "quoted \"雪\" \\ subject",
+        "to": [{"address": "to@x.io"}],
+    })
+}
+
 #[tokio::test]
 async fn modern_all_tools_http_and_stdio() {
     let baseline: Vec<&str> = BASELINE.lines().collect();
@@ -848,21 +868,30 @@ async fn modern_all_tools_http_and_stdio() {
             let tools = list["result"]["tools"].as_array().unwrap();
             let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
             assert_eq!(names[..13], NAMES);
-            assert_eq!(names[13..], super::focused::FOCUSED);
-            for tool in &tools[13..] {
+            assert_eq!(names[13..15], super::focused::FOCUSED);
+            assert_eq!(names[15..], [super::focused::MINTER]);
+            for tool in &tools[13..15] {
                 super::focused::assert_march_descriptor(&march_view(tool, true));
             }
+            super::focused::assert_minter_descriptor(&march_view(&tools[15], true));
             for (i, (tool, original)) in tools
                 .iter()
                 .zip(march["result"]["tools"].as_array().unwrap())
                 .enumerate()
             {
                 let mut descriptor = march_view(tool, reads.contains(&i));
+                if [0, 2, 3, 7].contains(&i) {
+                    super::strip_fields(&mut descriptor);
+                }
                 let description = descriptor["description"].as_str().unwrap();
-                if i == 1 {
+                if i == 0 || i == 3 {
+                    super::assert_compact_description(&descriptor);
+                    descriptor["description"] = original["description"].clone();
+                } else if i == 1 {
                     for clause in [
-                        "swarmail-bulk/1",
+                        "swarmail-html/3",
                         "bulk-sender checklist",
+                        "HTML client-compatibility heuristics",
                         "demo marker",
                         "not_evaluated",
                         "256 findings",
@@ -872,6 +901,7 @@ async fn modern_all_tools_http_and_stdio() {
                         assert!(description.contains(clause), "{clause}: {description}");
                     }
                     assert!(!description.contains("Only the synthetic demo rule ships"));
+                    assert!(!description.contains("swarmail-bulk/1"));
                     assert!(!description.contains("2025-03-26"));
                     descriptor["description"] = original["description"].clone();
                 } else if i == 7 {
@@ -882,7 +912,7 @@ async fn modern_all_tools_http_and_stdio() {
             }
             // Errors keep March's bytes; a success is March's line plus the
             // same JSON as structuredContent, byte for byte.
-            for (raw, base) in run.lines.iter().zip(&baseline).skip(1) {
+            for (line, (raw, base)) in run.lines.iter().zip(&baseline).enumerate().skip(1) {
                 let expected: Value = serde_json::from_str(base).unwrap();
                 if expected.get("error").is_some() || expected["result"]["isError"] == true {
                     assert_eq!(raw, base);
@@ -890,6 +920,33 @@ async fn modern_all_tools_http_and_stdio() {
                 }
                 let text = expected["result"]["content"][0]["text"].as_str().unwrap();
                 let tail = base.strip_suffix("}}").unwrap();
+                let request: Value = serde_json::from_str(&run.requests[line]).unwrap();
+                let tool = request["params"]["name"].as_str();
+                if matches!(
+                    tool,
+                    Some("swarmail_search_emails" | "swarmail_get_latest_email")
+                ) {
+                    // Decision 0108 §1: the two list reads answer the compact
+                    // view on a modern revision. The expectation is the
+                    // March payload with each email replaced by the stated
+                    // compact item, serialized once into both representations.
+                    let mut payload: Value = serde_json::from_str(text).unwrap();
+                    if let Some(emails) = payload.get_mut("emails") {
+                        for email in emails.as_array_mut().unwrap() {
+                            assert_eq!(email["id"], "historical");
+                            *email = compact_historical();
+                        }
+                    }
+                    let payload = payload.to_string();
+                    assert_eq!(
+                        raw,
+                        &format!(
+                            "{{\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{{\"content\":[{{\"text\":{},\"type\":\"text\"}}],\"isError\":false,\"structuredContent\":{payload}}}}}",
+                            Value::String(payload.clone())
+                        )
+                    );
+                    continue;
+                }
                 assert_eq!(raw, &format!("{tail},\"structuredContent\":{text}}}}}"));
                 let actual: Value = serde_json::from_str(raw).unwrap();
                 assert_eq!(
@@ -974,7 +1031,7 @@ fn report_projection(c: &Value) -> Value {
             .as_object_mut()
             .unwrap()
             .remove("examples"),
-        Some(json!(["swarmail-bulk/1"]))
+        Some(json!(["swarmail-html/3"]))
     );
     let location = &mut report["properties"]["findings"]["items"]["properties"]["location"];
     // oneOf over exclusive const tags carries the whole dispatch.
@@ -989,6 +1046,44 @@ fn report_projection(c: &Value) -> Value {
     }
     report
 }
+/// The named exception to the `Email` derivation (decision 0108 §7): the
+/// four projecting reads publish one closed object whose only static
+/// requirement is `id` — a `fields` projection can omit every other member —
+/// and which adds the three derived members and their totals. The wire tests
+/// below compute each request's exact key set instead.
+fn projected_email(email: &Value) -> Value {
+    let mut projected = email.clone();
+    projected["required"] = json!(["id"]);
+    let nullable_string = json!({"type":["string","null"]});
+    let count = json!({"type":"integer","minimum":0});
+    let properties = projected["properties"].as_object_mut().unwrap();
+    properties.insert("snippet".into(), json!({"type":"string"}));
+    properties.insert(
+        "anchors".into(),
+        json!({"type":"array","items":{
+            "type":"object","additionalProperties":false,
+            "required":["anchor_text","url"],
+            "properties":{"anchor_text":nullable_string,"url":{"type":"string"}}
+        }}),
+    );
+    properties.insert("anchors_total".into(), count.clone());
+    properties.insert(
+        "attachments".into(),
+        json!({"anyOf":[
+            {"type":"array","items":{
+                "type":"object","additionalProperties":false,
+                "required":["content_type","filename","size"],
+                "properties":{
+                    "content_type":nullable_string,"filename":nullable_string,"size":count
+                }
+            }},
+            {"type":"null"}
+        ]}),
+    );
+    properties.insert("attachments_total".into(), count);
+    projected
+}
+
 fn projections(c: &Value) -> Value {
     let mut address = close(resolve(&c["EmailAddress"], c), json!(["address"]));
     address["properties"]["name"]["type"] = json!("string");
@@ -1011,9 +1106,10 @@ fn projections(c: &Value) -> Value {
         email["properties"][key]["type"] = json!("string");
     }
     email["properties"]["size"]["minimum"] = json!(0);
+    let projected = projected_email(&email);
     let mut list = close(resolve(&c["EmailList"], c), json!(["total", "emails"]));
     list["properties"]["total"]["minimum"] = json!(0);
-    list["properties"]["emails"]["items"] = email.clone();
+    list["properties"]["emails"]["items"] = projected.clone();
     let mut search = list.clone();
     search["properties"]["inbox"] = json!({"type":"string"});
     search["required"] = json!(["inbox", "total", "emails"]);
@@ -1034,6 +1130,9 @@ fn projections(c: &Value) -> Value {
         .remove("emails");
     timeout["properties"]["timed_out"] = json!({"type":"boolean","const":true});
     timeout["required"] = json!(["matched", "total", "timed_out"]);
+    let mut near_timeout = timeout.clone();
+    near_timeout["properties"]["near_misses"] = super::focused::near_misses_schema();
+    near_timeout["required"] = json!(["matched", "total", "timed_out", "near_misses"]);
     let mut chaos = close(
         resolve(&c["ChaosConfig"], c),
         json!(["connect", "mail_from", "rcpt", "data"]),
@@ -1044,9 +1143,9 @@ fn projections(c: &Value) -> Value {
     json!({
         "swarmail_search_emails": search,
         "swarmail_get_deliverability_report": report_projection(c),
-        "swarmail_get_email": email,
+        "swarmail_get_email": projected,
         "swarmail_get_latest_email":wrapper(json!({"emails":latest_emails}),json!(["emails"])),
-        "swarmail_wait_for_email":{"type":"object","oneOf":[found,timeout]},
+        "swarmail_wait_for_email":{"type":"object","oneOf":[found,timeout,near_timeout]},
         "swarmail_extract_links":wrapper(json!({"links":email["properties"]["links"]}),json!(["links"])),
         "swarmail_extract_codes":wrapper(json!({"codes":email["properties"]["codes"]}),json!(["codes"])),
         "swarmail_seed_email":wrapper(json!({"id":email["properties"]["id"],"links":email["properties"]["links"],"codes":email["properties"]["codes"]}),json!(["id","links","codes"])),
@@ -1174,8 +1273,12 @@ async fn served_openapi_pins_and_negative_controls() {
             .keys()
             .map(String::as_str)
             .collect();
-        let focused: std::collections::BTreeSet<&str> =
-            super::focused::FOCUSED.into_iter().collect();
+        // MCP-only tools have no REST counterpart: the focused waits and the
+        // inbox minter.
+        let focused: std::collections::BTreeSet<&str> = super::focused::FOCUSED
+            .into_iter()
+            .chain([super::focused::MINTER])
+            .collect();
         assert_eq!(served, projected.union(&focused).copied().collect());
         assert_eq!(
             served,
@@ -1188,7 +1291,9 @@ async fn served_openapi_pins_and_negative_controls() {
             assert_eq!(schema["type"], "object");
             // The focused waits have no REST counterpart to pin; their
             // independent expectation is decision 0094's stated contract.
-            let expected = if focused.contains(name) {
+            let expected = if name == super::focused::MINTER {
+                super::focused::expected_minter_output()
+            } else if focused.contains(name) {
                 super::focused::expected_output(name)
             } else {
                 expected[name].clone()
@@ -1516,7 +1621,7 @@ async fn report_stored_bytes_over_modern_wire() {
     for (raw, findings) in [
         (
             &b"From: s@x.io\r\nX-Swarmail-Demo: info\r\nContent-Type: text/html\r\n\r\n<p>x</p>\r\n"[..],
-            [checklist(json!(0)), vec![plain_text, demo("info")]].concat(),
+            [checklist(json!(0)), vec![plain_text.clone(), demo("info")]].concat(),
         ),
         (
             b"From: s@x.io\r\nX-Swarmail-Demo: warning\r\n\r\nbody\r\n",
@@ -1525,6 +1630,15 @@ async fn report_stored_bytes_over_modern_wire() {
         (
             b"X-Swarmail-Demo: error\r\n\r\nbody\r\n",
             [checklist(Value::Null), vec![demo("error")]].concat(),
+        ),
+        // The merge of #282 and #259 first met here: an HTML finding through
+        // the modern schema and the March text block.
+        (
+            b"From: s@x.io\r\nContent-Type: text/html\r\n\r\n<p>x</p><video></video>\r\n",
+            [checklist(json!(0)), vec![plain_text, json!({
+                "rule_id":"html.element.video.v1","severity":"warning",
+                "location":{"kind":"mime_part","path":[]},
+                "fix_hint":"Video may be removed in Gmail and classic Outlook for Windows; provide a linked image and text fallback."})]].concat(),
         ),
     ] {
         let id = common::smtp_raw(srv.smtp_addr, "report-wire", raw).await;
@@ -1565,15 +1679,17 @@ async fn report_stored_bytes_over_modern_wire() {
         }
     }
     let mut march = Wire::Http(srv.http_addr, None);
-    let reply = march
-        .request(&call(
-            json!(7),
-            "get_deliverability_report",
-            json!({"id":cases[0].0}),
-        ))
-        .await;
-    assert!(reply["result"].get("structuredContent").is_none());
-    assert_eq!(text(&reply), cases[0].1);
+    for (id, expected) in &cases {
+        let reply = march
+            .request(&call(
+                json!(7),
+                "get_deliverability_report",
+                json!({"id":id}),
+            ))
+            .await;
+        assert!(reply["result"].get("structuredContent").is_none());
+        assert_eq!(&text(&reply), expected);
+    }
     srv.stop().await;
 }
 
@@ -1598,11 +1714,27 @@ async fn real_bridge_dual_output_size_cost() {
         );
     }
     let query = call(json!("large"), "search_emails", json!({"inbox":"large"}));
+    // A modern reader names the bodies it wants (decision 0108 §3): the
+    // default is compact, so the size cost is measured through `fields`.
+    let bodies = call(
+        json!("large"),
+        "search_emails",
+        json!({"inbox":"large","fields":["text"]}),
+    );
     for version in &VERSIONS[1..] {
         let mut binary = Binary::start(srv.http_addr);
         binary.ready(version).await;
         let mut wire = Wire::Stdio(Box::new(binary));
-        let raw = wire.raw(&query).await;
+        // Six 600 KB mails answer far under 10 KB by default, both
+        // representations included — each snippet is 200 characters and `...`.
+        let compact = wire.raw(&query).await;
+        assert!(compact.len() < 10_000, "{}", compact.len());
+        let compact: Value = serde_json::from_str(&compact).unwrap();
+        assert_eq!(text(&compact), compact["result"]["structuredContent"]);
+        for email in text(&compact)["emails"].as_array().unwrap() {
+            assert_eq!(email["snippet"], format!("{}...", "x".repeat(200)));
+        }
+        let raw = wire.raw(&bodies).await;
         assert!(raw.len() < CAP && raw.len() > 7_000_000);
         let reply: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(text(&reply), reply["result"]["structuredContent"]);
@@ -1631,11 +1763,12 @@ async fn real_bridge_dual_output_size_cost() {
     legacy_binary.finish().await;
     for version in &VERSIONS[1..] {
         let mut http = Wire::Http(srv.http_addr, Some(version));
-        assert!(http.raw(&query).await.len() > CAP);
+        assert!(http.raw(&bodies).await.len() > CAP);
+        assert!(http.raw(&query).await.len() < 20_000);
         let mut binary = Binary::start(srv.http_addr);
         binary.ready(version).await;
         let mut wire = Wire::Stdio(Box::new(binary));
-        let refusal = wire.request(&query).await;
+        let refusal = wire.request(&bodies).await;
         assert_eq!(
             refusal,
             json!({"jsonrpc":"2.0","id":"large","error":{"code":-32000,"message":"response exceeds the 10 MiB cap"}})
@@ -1965,5 +2098,169 @@ async fn modern_seed_nonempty_arrays_validate() {
         assert!(valid(schema, &payload));
         assert_eq!(payload, reply["result"]["structuredContent"]);
     }
+    srv.stop().await;
+}
+
+/// Decision 0111 §4, issue #156: the near-miss object is part of the one
+/// captured Value. Over real SMTP, on every revision and both transports, a
+/// populated timed-out wait carries the same object in March text and in
+/// June/November text and `structuredContent`; the closed third variant
+/// validates it; an empty inbox answers today's bytes and the first variant.
+/// Each constraint refuses on its own.
+#[tokio::test]
+async fn near_misses_ride_the_one_captured_value_on_every_revision() {
+    let srv = start().await;
+    for (to, subject) in [
+        ("alice.team@example.test", "Confirm your account"),
+        ("alice@example.test", "Confirm you account"),
+    ] {
+        smtp_send(
+            srv.smtp_addr,
+            Some("nm-rev"),
+            "app@example.test",
+            to,
+            subject,
+            "body",
+        )
+        .await
+        .unwrap();
+    }
+    let wait = |inbox: &str| {
+        call(
+            json!(7),
+            "wait_for_email",
+            json!({"inbox":inbox,"to":"alice@example.test","subject":"Confirm your account","timeout_ms":0}),
+        )
+    };
+    let mut populated: Vec<Value> = vec![];
+    let mut schema_seen = None;
+    for version in VERSIONS {
+        for stdio in [false, true] {
+            let mut wire = Wire::start(srv.http_addr, version, stdio).await;
+            let modern = version != VERSIONS[0];
+            let list = wire.request(&json!({"id":1,"method":"tools/list"})).await;
+            let schema = list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == "swarmail_wait_for_email")
+                .unwrap()["outputSchema"]
+                .clone();
+            let raw = wire.raw(&wait("nm-rev")).await;
+            let reply: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(reply["result"]["isError"], false, "{raw}");
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            let payload: Value = serde_json::from_str(text).unwrap();
+            assert_eq!(payload["near_misses"]["arrivals_total"], 2, "{raw}");
+            if modern {
+                assert!(
+                    raw.ends_with(&format!(",\"structuredContent\":{text}}}}}")),
+                    "{raw}"
+                );
+                assert_eq!(reply["result"]["structuredContent"], payload);
+                assert!(valid(&schema, &payload), "{payload}");
+                schema_seen = Some(schema.clone());
+            } else {
+                assert!(reply["result"].get("structuredContent").is_none());
+                assert!(schema.is_null(), "March has no output schema");
+            }
+            populated.push(payload);
+            // An empty inbox: today's bytes, on the first closed variant.
+            let raw = wire.raw(&wait("nm-rev-empty")).await;
+            let reply: Value = serde_json::from_str(&raw).unwrap();
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            assert_eq!(text, r#"{"matched":0,"timed_out":true,"total":0}"#);
+            if modern {
+                assert!(valid(&schema, &serde_json::from_str(text).unwrap()));
+            }
+            wire.finish().await;
+        }
+    }
+    // One captured Value: March text equals the modern payload.
+    assert!(populated.windows(2).all(|pair| pair[0] == pair[1]));
+    let schema = schema_seen.unwrap();
+    let good = populated[0].clone();
+    assert!(valid(&schema, &good));
+    let mutate = |edit: &dyn Fn(&mut Value)| {
+        let mut bad = good.clone();
+        edit(&mut bad);
+        bad
+    };
+    for (name, bad) in [
+        (
+            "extra member",
+            mutate(&|v| v["near_misses"]["extra"] = json!(1)),
+        ),
+        (
+            "missing member",
+            mutate(&|v| {
+                v["near_misses"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("last_arrival_ms");
+            }),
+        ),
+        (
+            "unknown missed value",
+            mutate(&|v| v["near_misses"]["arrivals"][0]["missed"] = json!(["since_ms"])),
+        ),
+        (
+            "non-null non-object nearest",
+            mutate(&|v| v["near_misses"]["nearest_subject"] = json!("Confirm")),
+        ),
+        (
+            "null near_misses",
+            mutate(&|v| v["near_misses"] = Value::Null),
+        ),
+        (
+            "extra entry member",
+            mutate(&|v| v["near_misses"]["arrivals"][0]["inbox"] = json!("nm-rev")),
+        ),
+        (
+            "missing entry member",
+            mutate(&|v| {
+                v["near_misses"]["arrivals"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("to_total");
+            }),
+        ),
+        (
+            "eleven arrivals",
+            mutate(&|v| {
+                let entry = v["near_misses"]["arrivals"][0].clone();
+                v["near_misses"]["arrivals"] = json!(vec![entry; 11]);
+            }),
+        ),
+        (
+            "six addresses",
+            mutate(&|v| {
+                v["near_misses"]["arrivals"][0]["to"] = json!(["a", "b", "c", "d", "e", "f"]);
+            }),
+        ),
+        (
+            "negative total",
+            mutate(&|v| v["near_misses"]["arrivals_total"] = json!(-1)),
+        ),
+        (
+            "near misses beside emails",
+            mutate(&|v| {
+                v.as_object_mut().unwrap().remove("timed_out");
+                v["emails"] = json!([{"id":"e","inbox":"i","envelope_from":null,"to":[],
+                    "received_at":"t","received_ms":0,"size":1}]);
+            }),
+        ),
+        (
+            "timed_out false",
+            mutate(&|v| v["timed_out"] = json!(false)),
+        ),
+    ] {
+        assert!(!valid(&schema, &bad), "{name}: {bad}");
+    }
+    // A null nearest subject and an empty list are the other legal forms.
+    assert!(valid(
+        &schema,
+        &mutate(&|v| v["near_misses"]["nearest_subject"] = Value::Null)
+    ));
     srv.stop().await;
 }

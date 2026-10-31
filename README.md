@@ -85,7 +85,7 @@ swarmail mcp                   # the stdio MCP bridge
 swarmail gen-cert --domain localhost --out ./certs
 ```
 
-Fifteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
+Sixteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
 compatibility layer (MailHog/Mailpit), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies.
@@ -241,7 +241,10 @@ the tests are):
    (default 100k, `0` = unlimited) evicts the oldest mail only.
 4. **The AUTH username is the inbox**
    ([0004](docs/decisions/0004-per-test-inboxes-via-smtp-auth.md)). Free
-   parallel isolation for every test and agent; no config to route it.
+   parallel isolation for every test and agent; no config to route it. An
+   application that sends with one AUTH identity can opt in to
+   [recipient routing](#one-sending-identity-many-agents-recipient-routing)
+   instead (proposed [0112](docs/decisions/0112-recipient-inbox-routing.md)).
 5. **Extraction happens at ingest, not query time**
    ([0005](docs/decisions/0005-extraction-at-ingest.md)). Links, codes and
    thread headers are parsed once, when the mail is accepted; queries
@@ -320,6 +323,40 @@ $ curl "localhost:8025/api/v1/inboxes/quickstart/await?to=ada@x.io&count=1&timeo
 parse + extraction pipeline. Per-test isolation needs no config: the AUTH
 username names the inbox.
 
+### One sending identity, many agents: recipient routing
+
+The AUTH username only isolates parties that can each authenticate under
+their own name. An application configured with a single SMTP login fills one
+inbox however many agents drive it. Start the server with a route domain and
+the recipient chooses the inbox instead (proposed
+[0112](docs/decisions/0112-recipient-inbox-routing.md)):
+
+```
+swarmail serve --route-domain swarmail.test      # or SWARMAIL_ROUTE_DOMAIN
+```
+
+An envelope recipient `<local>@<label>.swarmail.test` is stored in inbox
+`<label>`, lowercased, whatever the AUTH username is. The precedence is the
+routed recipient, then the AUTH username, then `default`. Only `RCPT TO` is
+read — no header chooses an inbox — and the local part is free, so one inbox
+may own many addresses. A recipient under the domain that names no inbox
+(`agent@swarmail.test`, `a@x.y.swarmail.test`, a bad character or a label over
+63 characters) is refused `550 5.1.3` rather than silently merged into the AUTH
+inbox. One transaction delivers to one routed inbox: a `RCPT` naming a second
+one is answered `452 4.5.3`, the transaction stays open, and a sender that
+retries the deferred recipient in its own transaction reaches both inboxes.
+Recipients outside the domain have no vote and are recorded as before. A server
+started without the flag behaves exactly as above.
+
+An agent gets its private inbox from **`swarmail_create_inbox`** (no
+arguments): it returns `{"inbox": "<32 hex>", "address": "agent@<inbox>.<route-domain>"}`.
+Point the application's mail at that address, then wait on or search that
+inbox by name; mail for other addresses never appears there. Minting allocates
+nothing — an inbox exists once its first mail arrives, and a wait on the minted
+name before then works. On a server without `--route-domain` the tool answers an
+`isError` result naming the flag. This is addressing, not authentication: every
+read surface still accepts any inbox name (loopback posture, decision 0004).
+
 **One SMTP connection serves one inbox.** A session's first successful
 AUTH fixes its inbox; a second AUTH on the same connection answers `503`
 and changes nothing (decisions 0028 and 0034). Python's `smtplib` treats that `503`
@@ -341,7 +378,9 @@ posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
 listener, at least `1`; one more is answered `421`; the flag is
 `--max-sessions`. Each session holds a file descriptor, and the default is
 sized so that three times the cap stays under the usual 1024 soft limit
-(decision 0027 §3): above about 340, raise `ulimit -n` first).
+(decision 0027 §3): above about 340, raise `ulimit -n` first),
+`SWARMAIL_ROUTE_DOMAIN` (unset = off; the flag is `--route-domain`, see
+*One sending identity, many agents* above; proposed 0112).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and
@@ -583,7 +622,7 @@ $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 | Verb | What it does |
 |---|---|
 | `GET /api/v1/inboxes` | the live inbox list, sorted by name — `limit` (default 100, ≤ 250, refused above) and `offset` page it |
-| `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first; wipe the inbox |
+| `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first (add `view=compact` for the compact agent view without bodies — see below); wipe the inbox |
 | `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`/`from`/`subject`/`since_ms` filters, `count` (minimum one, even `count=0`), `limit`/`count` ≤ 250 (refused, never clamped), `timeout_ms` (≤ 60000: refused with 400 above, never clamped; a stopping server answers 503 `shutting down` instead of parking) |
 | `GET /api/v1/inboxes/{inbox}/assert` | exact-count assertion — `count=0` asserts an empty filter; never clamped — 200 or a named failure |
 | `GET /api/v1/inboxes/{inbox}/threads[/{key}]` | conversations, oldest first, stable keys |
@@ -718,8 +757,10 @@ including arrays containing only notifications. Modern tool descriptors add
 `readOnlyHint: true` on reads, and `readOnlyHint: false, destructiveHint: true`
 on all mutations (including seed, which can evict old mail, and chaos changes).
 Input schemas, the thirteen existing March catalogue entries and existing
-result bytes are unchanged; discovery appends the two focused waits after them
-(decision 0094, proposed), fifteen entries in all. For `2025-06-18` and
+result bytes are unchanged for March (the modern revisions add `fields` to
+four reads, below); discovery appends the two focused waits and
+swarmail_create_inbox after them (decisions 0094 and 0112, proposed), sixteen
+entries in all. For `2025-06-18` and
 `2025-11-25`, every tool declares an object-root `outputSchema`; successful
 results include `structuredContent` and the same JSON in the existing text block.
 Errors retain their existing text/RPC envelopes without structured success data.
@@ -727,6 +768,33 @@ The REST-backed tools' schemas are pinned to served OpenAPI through explicit
 output projections in tests; the two focused waits are MCP-only, with no REST
 projection, and their schemas are checked against independently stated
 expectations.
+
+**Compact reads and `fields` (decision 0108, proposed).** On `2025-06-18` and
+`2025-11-25`, `swarmail_search_emails` and `swarmail_get_latest_email` answer a
+compact view of each email by default: `id` (the handle — pass it to
+`swarmail_get_email` for the whole email), `from`, `to`, `subject`,
+`received_ms`, a `snippet` of at most 200 characters (the text part, else the
+HTML rendered to text, from at most the first 8192 bytes of the body),
+`codes`, `anchors` (`url` and `anchor_text`) and `attachments` (`filename`,
+`content_type`, decoded `size`). `anchors` and `attachments` show at most 250
+entries and carry the exact `anchors_total` / `attachments_total` when cut.
+Mail stored before link occurrences were kept serves its stored `links` instead
+of anchors, and mail stored before attachments were captured, or whose body the parser
+could not read, serves `"attachments": null` (unknown, never guessed from the
+raw bytes). Attachments
+are listed at ingest, in the same transaction as the mail. `swarmail_get_email`
+and `swarmail_wait_for_email` keep answering whole emails. The four reads
+(search, latest, get, wait) also take `fields`, an array of names from the
+published enum (the serialized email members plus `snippet`, `anchors` and
+`attachments`): each email then carries those members that it has, plus `id`,
+in the server's fixed key order — `fields: []` is ids only, and `text` and
+`html` appear only when named. An unknown name or a wrong type is `-32602`
+before any lookup or wait. March (`2025-03-26`, and a missing version) keeps
+whole emails and has no `fields`. REST is unchanged unless asked:
+`GET /api/v1/inboxes/{inbox}/messages?view=compact` answers the same
+`{total, emails}` envelope with compact items; `compact` is the only value of
+`view`, and no other route takes it. The token metric (median tokens per
+success) is not measured by this change: no paid trial was run.
 
 Duplicating JSON increases response size and token cost. The stdio bridge keeps
 its 10 MiB response cap: a query that fits as March text may exceed it with modern
@@ -785,13 +853,14 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   "content":[{"type":"text","text":"{\"emails\":[{…\"codes\":[\"424242\"]…}]}"}]}}
 ```
 
-Fifteen tools: `swarmail_search_emails`, `swarmail_get_email`,
+Sixteen tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
 `swarmail_set_chaos`, `swarmail_clear_chaos`, `swarmail_get_deliverability_report`,
-and the two focused waits appended after them, **`swarmail_wait_for_code`** and
-**`swarmail_wait_for_link`** (below). Except for malformed seed fixture
+the two focused waits appended after them, **`swarmail_wait_for_code`** and
+**`swarmail_wait_for_link`** (below), and last **`swarmail_create_inbox`**
+(mints a private inbox and its routed address; needs `--route-domain`). Except for malformed seed fixture
 content and the supplied
 `timeout_ms` refusal described below, every tool validates its supplied
 arguments at the envelope: a wrong-typed or malformed value — the
@@ -883,6 +952,29 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   candidates carry `null` label, `rel` and `source` and are never
   re-extracted. Email reads, feeds and webhooks are unchanged — occurrence
   metadata is reachable only through `swarmail_wait_for_link`.
+
+- **Near misses on a timeout (decision [0111](docs/decisions/0111-near-miss-timeouts.md), proposed):**
+  a timed-out `swarmail_wait_for_email`, `swarmail_wait_for_code` or
+  `swarmail_wait_for_link` over an inbox that holds mail also carries
+  `near_misses`, read from the store at the timeout with no extra retention:
+  `arrivals` (the retained mail the wait did not answer with, newest first,
+  at most 10, with exact `arrivals_total` and `arrivals_truncated`),
+  `nearest_subject` (an entry or `null`) and `last_arrival_ms` (the
+  `received_ms` of the newest retained mail, whatever `since_ms` says). An
+  entry is `email_id`, `received_ms`, `from`, `to` (at most 5 distinct
+  To/Cc/envelope addresses, exact `to_total`), `subject` and `missed` — the
+  supplied `to`, `from` and `subject` filters that mail fails, so a sibling
+  address reads `["to"]` and a typo `["subject"]`. Strings are clipped to
+  256 bytes. `swarmail_wait_for_email` lists only mail its filter refused;
+  the focused waits list every retained mail, `missed: []` meaning it passed
+  your filters but carried no code or no link the selectors leave. A
+  supplied `since_ms` limits `arrivals`. `nearest_subject` is a hint, not a
+  selection: it is the mail that missed the subject alone and shares the
+  most character pairs with it, and you still read its `to`. **No
+  `near_misses` key means the inbox holds nothing**, so an empty-inbox
+  timeout keeps its exact bytes. The read is of the wait's own inbox only;
+  it is not access control (MCP is unauthenticated, decision
+  [0004](docs/decisions/0004-per-test-inboxes-via-smtp-auth.md)).
 
 Wire it up:
 
@@ -1399,6 +1491,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/focused_waits.rs` | the focused code/link waits over real SMTP and MCP: each filter on each tool by counterexample, ingest occurrence metadata for SMTP and seed, post-park deliveries that never complete a wait, and local applications refusing stale codes and look-alike links (proposed 0094) |
+| `tests/inbox_routing.rs` | recipient inbox routing and `swarmail_create_inbox` over real SMTP and MCP: three concurrent agents behind one AUTH login never see each other's mail, the rule's case-fold, whole-label, 550 and 452 shapes and the RSET and chaos clears, routing ahead of the park (a wait on a never-mailed minted inbox; the in-flight row), the tool's modern projection and distinct concurrent mints, and the unconfigured server unchanged (proposed 0112) |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |
@@ -1441,7 +1534,7 @@ before publication or merge; agent runs never push or merge.
 - [x] SQLite persistence (`--data-file` / `SWARMAIL_DATA_FILE`)
 - [x] POP3 server; MailHog/Mailpit API compat shims
 - [x] Exact 100/100/100 coverage contract (lines, branches, functions) in the gate and CI
-- [x] MCP: HTTP + stdio, 15 tools
+- [x] MCP: HTTP + stdio, 16 tools
 - [x] Kubernetes: the Helm chart (OCI-published, decision 0008 *accepted*)
 - [ ] crates.io publish — the package is publish-ready (see *Publishing*);
   the operator runs `cargo publish --locked` with their token
@@ -1505,7 +1598,7 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-swarmail-bulk/1 adds seven source-citing bulk-sender checklist rules:
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/3):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
@@ -1513,7 +1606,8 @@ say "Not evaluated:" until trusted observations exist. Sender-written
 Authentication-Results and DKIM-Signature never supply evidence. #255 owns that
 verification and strict/relaxed alignment; #253/#255 own expiry and refresh.
 Production therefore excludes every message at every report predicate threshold;
-exact zero assertions still work, while waits still require a qualifying message.
+exact zero assertions count qualifying messages when every required analysis succeeds;
+an analysis failure aborts the assertion. Waits still require a qualifying message.
 
 Headers use original bytes and complete singleton values, with root lowercase
 names and occurrence null/0/1 for absent/invalid/duplicate. Message-ID and Date
@@ -1533,10 +1627,55 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-The synthetic demo.marker.v1 remains: the first root X-Swarmail-Demo field,
-unfolded and space/tab trimmed, selects info|warning|error and emits the fixed
-hint "Remove the X-Swarmail-Demo header." Disabling the demo leaves bulk rules
-active. Empty findings do not imply deliverability or authentication success.
+`swarmail-html/3` retains the synthetic demo.marker.v1: the first root
+X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
+and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
+html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
+html.img.alt-missing.v1, html.image-only.v1, html.gmail-clipping.v1 and
+html.tracking-pixel.v1. They warn on literal position CSS, display:flex/inline-flex,
+video, absent alt (empty alt passes), image-only HTML and clipping risk; a remote
+HTTP(S) img with explicit integer width/height each 0 or 1 gets an info disclosure.
+Each affected HTML MIME part contributes at most one finding per rule, at its
+structural child-index path (root []). Plain-text alternatives do not cure HTML.
+Attachment/filename-bearing subtrees and attached messages are excluded.
+
+Clipping means strictly more than 104448 decoded UTF-8 HTML bytes per part
+(102 KiB), after transfer/charset decoding and before entity decoding; this is
+an approximate Gmail risk heuristic, not its live boundary or an SMTP limit.
+The applicability matrix covers Gmail web/mobile, classic Outlook for Windows
+(Word renderer), and Apple Mail macOS/iOS. CSS rows target classic Outlook;
+video targets Gmail and classic Outlook. There is no Apple-specific unsupported
+feature row. New Outlook is different; unlisted features are unassessed.
+
+The embedded, versioned catalogue src/deliverability/html-rules.json names
+Can I email (CSS position/display:flex and HTML video), WHATWG alternative-text,
+Mailchimp Outlook/Gmail-clipping guidance, and MDN Tracking pixel. Its summaries
+are Swarmail-authored heuristics dated 2026-10-26, not an imported dataset or
+fresh client-version measurements; current empirical measurements were not
+supplied. Source URLs, client scopes, selectors, thresholds and fixed hints are
+tracked there. No runtime network access or new dependency is needed.
+
+This finite lexical model respects source quotes, comments, CSS strings/functions
+and nested media blocks. Hidden conditional comments and template content are
+inert; head style blocks are checked. CSS escaped identifiers, cascade, layout,
+CSS visibility and CSS-only pixel sizing are unassessed. Hidden text can defeat
+image-only detection, and decorative tiny remote images can trigger disclosure.
+A lone pixel can receive both image-only and tracking findings. Empty findings
+do not certify client compatibility. Empty findings do not imply deliverability
+or authentication success.
+CSS declaration values retain balanced braces, parentheses and brackets as
+opaque components; unused custom-property text cannot create declarations.
+Literal unquoted url(...) keeps slash-star as URL data, with bounded escape/
+whitespace validation. Malformed supported syntax still fails, including an
+unclosed head or recognized tag and stray CSS closers; there is no browser repair.
+Exactly zero stored raw bytes contribute no HTML findings before MIME parsing.
+The historical demo/HTML composition returns {"rule_set_id":"swarmail-html/2",
+"findings":[]} for that message; other collectors and report limits still run.
+This historical result makes no authentication claim. In the current combined
+report, SMTP accepts and stores an exactly empty message, but its missing MIME
+metadata makes analysis fail: REST returns 503 and MCP returns isError.
+Assertions and waits needing that report also fail rather than count it clean.
+Nonempty parse failures still fail.
 Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
 
@@ -1572,7 +1711,14 @@ Complete bounded MIME inspection includes closing boundaries and attached
 containers; missing separators, ambiguous/unsupported metadata, encoded multipart,
 truncation or exhausted budgets fail without partial success. Embedded messages
 stay opaque. No body transfer decoding, SMTP admission change or stored-field
-rewrite follows. REST: 404 missing, 503 "deliverability analysis unavailable" (capacity
+rewrite follows. HTML analysis refuses raw inputs over 8 MiB before MIME parsing,
+aggregate decoded HTML over 4 MiB, more than 256 outer MIME parts, depth above 32
+(root 0), or lexical nesting above 32. Detected eligible transfer-decode errors,
+MIME parse failure and incomplete supported lexical constructs fail the whole
+report, without a partial count or success cache entry. Charset replacement
+follows pinned mail-parser behavior. These workload limits do not bound prior
+parser allocations or total RSS. The lexical inspection proof counts helper reads and length-bounded operations, separately from cursor progress; it excludes MIME-parser internals, allocation, hash collisions and latency. Its fixed linear bound is tested with adversarial inputs and a real rescanning negative control. REST: 404 missing, 503 "deliverability
+analysis unavailable" (capacity
 or deadline) / "deliverability analysis failed" (analysis/size), native JSON error.
 Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
 Cache loss at restart costs recomputation. These are cache/job bounds, not total

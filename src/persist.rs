@@ -57,7 +57,7 @@
 //! owner's `-wal` file to another hard link's basename, and a restart never
 //! repairs loss an earlier multi-writer run already caused.
 
-use crate::model::{Email, LinkMetadata};
+use crate::model::{Attachment, Email};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -69,7 +69,7 @@ use std::sync::Mutex;
 const COLUMNS: &str = "id, inbox, from_json, to_json, cc_json, recipients_json, subject, \
                        received_at, received_ms, size, text, html, links_json, codes_json, \
                        message_id, in_reply_to, references_json, raw, envelope_from, \
-                       link_metadata_json";
+                       link_metadata_json, attachments_json";
 
 /// The whole schema, created idempotently on every open.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
@@ -93,7 +93,8 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
     references_json TEXT NOT NULL DEFAULT '[]',
     raw BLOB NOT NULL,
     envelope_from TEXT,
-    link_metadata_json TEXT
+    link_metadata_json TEXT,
+    attachments_json TEXT
 );
 -- Retired (issue #87): `emails_inbox` was maintained on every write and read
 -- by no query — the store answers per-inbox reads from memory, and restore
@@ -121,6 +122,9 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     // Decision 0094 §2: NULL is a row from before ingest kept link
     // occurrences — unknown, never backfilled.
     ("link_metadata_json", "TEXT"),
+    // Decision 0108 §5: NULL is unknown — a row from before ingest kept the
+    // attachment list, or a mail the parser could not read; never backfilled.
+    ("attachments_json", "TEXT"),
 ];
 
 /// The full restore scan `load` runs — one builder, so the plan test
@@ -457,11 +461,11 @@ impl Persist {
         state.next_seq += 1;
         let tx = state.conn.transaction()?;
         tx.execute(
-            // 21 columns: COLUMNS + the ordering seq.
+            // 22 columns: COLUMNS + the ordering seq.
             &format!(
                 "INSERT INTO emails ({COLUMNS}, seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-                         ?17, ?18, ?19, ?20, ?21)"
+                         ?17, ?18, ?19, ?20, ?21, ?22)"
             ),
             params![
                 email.id,
@@ -487,6 +491,8 @@ impl Persist {
                 email.envelope_from,
                 // NULL is unknown history; '[]' a known mail without links.
                 email.link_metadata.as_ref().map(json),
+                // NULL is unknown history; '[]' a known mail without any.
+                email.attachments.as_deref().map(stored_attachments),
                 seq,
             ],
         )?;
@@ -549,7 +555,8 @@ fn row_to_email(row: &rusqlite::Row<'_>) -> rusqlite::Result<Email> {
         text: row.get(10)?,
         html: row.get(11)?,
         links: from_json(row.get(12)?),
-        link_metadata: link_metadata(row.get(19)?)?,
+        link_metadata: strict_column(19, row.get(19)?)?,
+        attachments: attachments(row.get(20)?)?,
         codes: from_json(row.get(13)?),
         message_id: row.get(14)?,
         in_reply_to: row.get(15)?,
@@ -588,22 +595,53 @@ fn from_json<T: DeserializeOwned + Default>(raw: String) -> T {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-/// The occurrence column, strictly (decision 0094 §2): SQL NULL is unknown
-/// history, and anything else must be the exact closed array ingest wrote.
-/// Unlike [`from_json`]'s lenient default for the original columns, damage
-/// here refuses the restore — an empty fallback would turn a corrupt row
-/// into a confident "no links" and hide the ambiguity the link wait reports.
-fn link_metadata(raw: Option<String>) -> rusqlite::Result<Option<Vec<LinkMetadata>>> {
+/// A column that must restore exactly or refuse (decisions 0094 §2, 0108
+/// §5): SQL NULL is unknown history, and anything else must be the exact
+/// closed shape ingest wrote. Unlike [`from_json`]'s lenient default for the
+/// original columns, damage here refuses the restore — an empty fallback
+/// would turn a corrupt row into a confident "none" and hide the ambiguity
+/// the focused waits and the compact view report.
+fn strict_column<T: DeserializeOwned>(
+    index: usize,
+    raw: Option<String>,
+) -> rusqlite::Result<Option<T>> {
     raw.map(|raw| {
         serde_json::from_str(&raw).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                19,
+                index,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })
     })
     .transpose()
+}
+
+/// The attachment column is a list of `[filename, content_type, size]`
+/// tuples: serde refuses a wrong length, a wrong type or a top-level null.
+type StoredAttachment = (Option<String>, Option<String>, u64);
+
+fn stored_attachments(list: &[Attachment]) -> String {
+    let tuples: Vec<(&Option<String>, &Option<String>, u64)> = list
+        .iter()
+        .map(|a| (&a.filename, &a.content_type, a.size))
+        .collect();
+    json(&tuples)
+}
+
+fn attachments(raw: Option<String>) -> rusqlite::Result<Option<Vec<Attachment>>> {
+    Ok(
+        strict_column::<Vec<StoredAttachment>>(20, raw)?.map(|tuples| {
+            tuples
+                .into_iter()
+                .map(|(filename, content_type, size)| Attachment {
+                    filename,
+                    content_type,
+                    size,
+                })
+                .collect()
+        }),
+    )
 }
 
 fn write_counter(conn: &Connection, key: &str, value: u64) -> rusqlite::Result<()> {
@@ -756,6 +794,18 @@ mod tests {
         e.message_id = Some("m@x.io".into());
         e.in_reply_to = Some("parent@x.io".into());
         e.references = vec!["root@x.io".into(), "parent@x.io".into()];
+        e.attachments = Some(vec![
+            Attachment {
+                filename: Some("q3.pdf".into()),
+                content_type: Some("application/pdf".into()),
+                size: 4096,
+            },
+            Attachment {
+                filename: None,
+                content_type: None,
+                size: 0,
+            },
+        ]);
         // Deliberately not valid UTF-8: raw bytes must round-trip untouched.
         e.raw = vec![0xFF, 0xFE, b'a', b'\r', b'\n'];
         e
@@ -866,6 +916,74 @@ mod tests {
             )
             .unwrap();
         assert_eq!(persist.load().unwrap().0, [mail]);
+    }
+
+    /// Decision 0108 §5: SQL NULL (history), a known empty list and a
+    /// populated list restore as stored, in the strict tuple form, and every
+    /// other value — invalid JSON, JSON null, an object, a wrong tuple
+    /// length, a wrong member type, a negative size — refuses the restore by
+    /// its column (20) instead of reading as "no attachments".
+    #[test]
+    fn attachments_null_empty_present_and_corrupt_are_distinct() {
+        let (_guard, path) = db_path("attachments");
+        let persist = Persist::open(&path).unwrap();
+        let mut mail = full_email("attachments", "box");
+        let column = |persist: &Persist| -> Option<String> {
+            persist
+                .state
+                .lock()
+                .unwrap()
+                .conn
+                .query_row("SELECT attachments_json FROM emails", [], |row| row.get(0))
+                .unwrap()
+        };
+        let mut stored = Vec::new();
+        for attachments in [None, Some(vec![]), mail.attachments.clone()] {
+            mail.attachments = attachments;
+            persist.record_insert(&mail, &[], 1, 0).unwrap();
+            assert_eq!(persist.load().unwrap().0, [mail.clone()]);
+            stored.push(column(&persist));
+            persist.record_delete(&mail.id).unwrap();
+        }
+        assert_eq!(
+            stored,
+            [
+                None,
+                Some("[]".to_string()),
+                Some(r#"[["q3.pdf","application/pdf",4096],[null,null,0]]"#.to_string()),
+            ]
+        );
+        persist.record_insert(&mail, &[], 1, 0).unwrap();
+        for corrupt in [
+            "not json",
+            "null",
+            "{}",
+            "[null]",
+            r#"[["a"]]"#,
+            r#"[["a","b"]]"#,
+            r#"[["a","b",1,2]]"#,
+            r#"[[1,"b",1]]"#,
+            r#"[["a",2,1]]"#,
+            r#"[["a","b","1"]]"#,
+            r#"[["a","b",-1]]"#,
+            r#"[{"filename":"a","content_type":"b","size":1}]"#,
+        ] {
+            persist
+                .state
+                .lock()
+                .unwrap()
+                .conn
+                .execute("UPDATE emails SET attachments_json=?1", [corrupt])
+                .unwrap();
+            let error = persist.load().unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    rusqlite::Error::FromSqlConversionFailure(20, rusqlite::types::Type::Text, _)
+                ),
+                "{corrupt}: {error:?}"
+            );
+        }
     }
 
     /// Writes `corrupt` into the one row's occurrence column and returns the
