@@ -624,6 +624,61 @@ async fn helper(mode: &str) -> i32 {
             app.get(&link).await.unwrap();
             0
         }
+        "near_miss_sibling" | "near_miss_sibling_nearest" => {
+            // A mistyped subject times the wait out; the timed-out answer
+            // alone (decision 0111) names the mail it missed. The recovery
+            // control picks the entry addressed to the exact identity; the
+            // negative control presents `nearest_subject` as the match.
+            let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+            let missed = mcp
+                .wait(&env.inbox, Some("Confirm yur account"), 1, 1000)
+                .await
+                .unwrap();
+            assert_eq!(missed["timed_out"], json!(true), "{missed}");
+            assert_eq!(missed["matched"], json!(0), "{missed}");
+            let near = &missed["near_misses"];
+            assert_eq!(near["arrivals_total"], json!(2), "{missed}");
+            let chosen = if mode == "near_miss_sibling" {
+                near["arrivals"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry["to"] == json!([env.identity]))
+                    .unwrap()
+            } else {
+                &near["nearest_subject"]
+            };
+            let mail = mcp
+                .call("swarmail_get_email", json!({ "id": chosen["email_id"] }))
+                .await
+                .unwrap();
+            let link =
+                labelled_url(mail["text"].as_str().unwrap(), "Confirm your account:").unwrap();
+            app.get(&link).await.unwrap();
+            0
+        }
+        "near_miss_slow" => {
+            // Nothing has arrived: the timed-out answer says so by carrying
+            // no near misses at all. Release the held mail, wait, confirm.
+            let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+            let first = mcp
+                .wait(&env.inbox, Some("Confirm your account"), 1, 1000)
+                .await
+                .unwrap();
+            assert_eq!(first["timed_out"], json!(true), "{first}");
+            assert_eq!(first["total"], json!(0), "{first}");
+            assert!(first.get("near_misses").is_none(), "{first}");
+            let (status, body) = app.post("/deliveries/release", json!({})).await.unwrap();
+            assert_eq!(status, 200, "{body}");
+            let mail = mcp
+                .wait_emails(&env.inbox, Some("Confirm your account"), 1)
+                .await
+                .unwrap();
+            let link =
+                labelled_url(mail[0]["text"].as_str().unwrap(), "Confirm your account:").unwrap();
+            assert_eq!(app.get(&link).await.unwrap().0, 200);
+            0
+        }
         "stale_code" => {
             let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
             let mails = mcp

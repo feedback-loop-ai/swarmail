@@ -104,8 +104,11 @@ them. What may land while a decision is still proposed is stated in
 | [0103](0103-mixed-work-seats.md) | Mixed work seats and protected review | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0104](0104-mcp-candidate-proof.md) | Dated corrections for the integrated MCP candidate | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0105](0105-mcp-report-output.md) | Thirteen-tool structured MCP output, report schema included | proposed — awaiting the operator | (Epic #164, issue #153 follow-up on the current #152 integration; supplements 0082) |
+| [0106](0106-html-client-compatibility.md) | Versioned HTML client compatibility heuristics through the lazy report | proposed — awaiting the operator | (Epic #251, issue #259) |
+| [0107](0107-html-review-repair.md) | Repair HTML declaration context, inspected work and empty-message reports | proposed — awaiting the operator | (Epic #251, issue #259) |
 | [0108](0108-compact-email-view.md) | Compact email view and field projections: compact search/latest on modern MCP, `fields` on the four reads, REST `view=compact`, attachments captured at ingest | proposed — awaiting the operator | (Epic #164, issue #155 on #153 and #154; number 0108 because main's 0092 is official-mail-comparison and open PR #292 holds 0106–0107) |
 | [0109](0109-automated-delivery-bot.md) | A delivery bot seals and merges, under its own key | accepted (operator, 2026-10-31) | (Amends 0056 once the bot is live) |
+| [0111](0111-near-miss-timeouts.md) | Near misses on a timed-out wait: one own-inbox read after the wait, bounded entries with `missed`, nearest subject, last arrival; all revisions | proposed — awaiting the operator | (Epic #164, issue #156; 0094 reserved 0093, now taken; drafted as 0106, renumbered at integration; supplements 0082/0094/0105) |
 | [0112](0112-recipient-inbox-routing.md) | Recipient inbox routing under a configured route domain | proposed — awaiting the operator | (Epic #164, issue #157; amends 0004 §1 for configured servers and 0055 §6 for the isolation task) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that

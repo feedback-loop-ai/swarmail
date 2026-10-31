@@ -934,6 +934,29 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   re-extracted. Email reads, feeds and webhooks are unchanged — occurrence
   metadata is reachable only through `swarmail_wait_for_link`.
 
+- **Near misses on a timeout (decision [0111](docs/decisions/0111-near-miss-timeouts.md), proposed):**
+  a timed-out `swarmail_wait_for_email`, `swarmail_wait_for_code` or
+  `swarmail_wait_for_link` over an inbox that holds mail also carries
+  `near_misses`, read from the store at the timeout with no extra retention:
+  `arrivals` (the retained mail the wait did not answer with, newest first,
+  at most 10, with exact `arrivals_total` and `arrivals_truncated`),
+  `nearest_subject` (an entry or `null`) and `last_arrival_ms` (the
+  `received_ms` of the newest retained mail, whatever `since_ms` says). An
+  entry is `email_id`, `received_ms`, `from`, `to` (at most 5 distinct
+  To/Cc/envelope addresses, exact `to_total`), `subject` and `missed` — the
+  supplied `to`, `from` and `subject` filters that mail fails, so a sibling
+  address reads `["to"]` and a typo `["subject"]`. Strings are clipped to
+  256 bytes. `swarmail_wait_for_email` lists only mail its filter refused;
+  the focused waits list every retained mail, `missed: []` meaning it passed
+  your filters but carried no code or no link the selectors leave. A
+  supplied `since_ms` limits `arrivals`. `nearest_subject` is a hint, not a
+  selection: it is the mail that missed the subject alone and shares the
+  most character pairs with it, and you still read its `to`. **No
+  `near_misses` key means the inbox holds nothing**, so an empty-inbox
+  timeout keeps its exact bytes. The read is of the wait's own inbox only;
+  it is not access control (MCP is unauthenticated, decision
+  [0004](docs/decisions/0004-per-test-inboxes-via-smtp-auth.md)).
+
 Wire it up:
 
 ```jsonc
@@ -1555,7 +1578,7 @@ info < warning < error. Locations are tagged header {name,occurrence:null|u64},
 mime_part {path:[u64]} or link {part_path:[u64],byte_offset:u64}; link locators
 are transfer-decoded source-byte coordinates, not URLs. Reports are sorted by
 rule, typed location, severity and hint, with exact duplicates removed.
-swarmail-bulk/1 adds seven source-citing bulk-sender checklist rules:
+The bulk-sender checklist adds seven source-citing rules (first versioned swarmail-bulk/1, now part of swarmail-html/3):
 one_click, message_id and date are errors; plain_text is warning-level presence
 advice. DMARC policy presence, From alignment and passing aligned DKIM-or-SPF
 are independent checks. Their error-level *.not_evaluated.v1 findings explicitly
@@ -1563,7 +1586,8 @@ say "Not evaluated:" until trusted observations exist. Sender-written
 Authentication-Results and DKIM-Signature never supply evidence. #255 owns that
 verification and strict/relaxed alignment; #253/#255 own expiry and refresh.
 Production therefore excludes every message at every report predicate threshold;
-exact zero assertions still work, while waits still require a qualifying message.
+exact zero assertions count qualifying messages when every required analysis succeeds;
+an analysis failure aborts the assertion. Waits still require a qualifying message.
 
 Headers use original bytes and complete singleton values, with root lowercase
 names and occurrence null/0/1 for absent/invalid/duplicate. Message-ID and Date
@@ -1583,10 +1607,55 @@ https://senders.yahooinc.com/best-practices/ plus applicable RFC 8058, 5322, 204
 or 7489 sections. These are fixed published references, not live verification or
 provider certification. The proposed rule record is decision 0089.
 
-The synthetic demo.marker.v1 remains: the first root X-Swarmail-Demo field,
-unfolded and space/tab trimmed, selects info|warning|error and emits the fixed
-hint "Remove the X-Swarmail-Demo header." Disabling the demo leaves bulk rules
-active. Empty findings do not imply deliverability or authentication success.
+`swarmail-html/3` retains the synthetic demo.marker.v1: the first root
+X-Swarmail-Demo field, unfolded and space/tab trimmed, selects info|warning|error
+and emits "Remove the X-Swarmail-Demo header." The seven HTML rules are
+html.css.position.v1, html.css.display-flex.v1, html.element.video.v1,
+html.img.alt-missing.v1, html.image-only.v1, html.gmail-clipping.v1 and
+html.tracking-pixel.v1. They warn on literal position CSS, display:flex/inline-flex,
+video, absent alt (empty alt passes), image-only HTML and clipping risk; a remote
+HTTP(S) img with explicit integer width/height each 0 or 1 gets an info disclosure.
+Each affected HTML MIME part contributes at most one finding per rule, at its
+structural child-index path (root []). Plain-text alternatives do not cure HTML.
+Attachment/filename-bearing subtrees and attached messages are excluded.
+
+Clipping means strictly more than 104448 decoded UTF-8 HTML bytes per part
+(102 KiB), after transfer/charset decoding and before entity decoding; this is
+an approximate Gmail risk heuristic, not its live boundary or an SMTP limit.
+The applicability matrix covers Gmail web/mobile, classic Outlook for Windows
+(Word renderer), and Apple Mail macOS/iOS. CSS rows target classic Outlook;
+video targets Gmail and classic Outlook. There is no Apple-specific unsupported
+feature row. New Outlook is different; unlisted features are unassessed.
+
+The embedded, versioned catalogue src/deliverability/html-rules.json names
+Can I email (CSS position/display:flex and HTML video), WHATWG alternative-text,
+Mailchimp Outlook/Gmail-clipping guidance, and MDN Tracking pixel. Its summaries
+are Swarmail-authored heuristics dated 2026-10-26, not an imported dataset or
+fresh client-version measurements; current empirical measurements were not
+supplied. Source URLs, client scopes, selectors, thresholds and fixed hints are
+tracked there. No runtime network access or new dependency is needed.
+
+This finite lexical model respects source quotes, comments, CSS strings/functions
+and nested media blocks. Hidden conditional comments and template content are
+inert; head style blocks are checked. CSS escaped identifiers, cascade, layout,
+CSS visibility and CSS-only pixel sizing are unassessed. Hidden text can defeat
+image-only detection, and decorative tiny remote images can trigger disclosure.
+A lone pixel can receive both image-only and tracking findings. Empty findings
+do not certify client compatibility. Empty findings do not imply deliverability
+or authentication success.
+CSS declaration values retain balanced braces, parentheses and brackets as
+opaque components; unused custom-property text cannot create declarations.
+Literal unquoted url(...) keeps slash-star as URL data, with bounded escape/
+whitespace validation. Malformed supported syntax still fails, including an
+unclosed head or recognized tag and stray CSS closers; there is no browser repair.
+Exactly zero stored raw bytes contribute no HTML findings before MIME parsing.
+The historical demo/HTML composition returns {"rule_set_id":"swarmail-html/2",
+"findings":[]} for that message; other collectors and report limits still run.
+This historical result makes no authentication claim. In the current combined
+report, SMTP accepts and stores an exactly empty message, but its missing MIME
+metadata makes analysis fail: REST returns 503 and MCP returns isError.
+Assertions and waits needing that report also fail rather than count it clean.
+Nonempty parse failures still fail.
 Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
 
@@ -1622,7 +1691,14 @@ Complete bounded MIME inspection includes closing boundaries and attached
 containers; missing separators, ambiguous/unsupported metadata, encoded multipart,
 truncation or exhausted budgets fail without partial success. Embedded messages
 stay opaque. No body transfer decoding, SMTP admission change or stored-field
-rewrite follows. REST: 404 missing, 503 "deliverability analysis unavailable" (capacity
+rewrite follows. HTML analysis refuses raw inputs over 8 MiB before MIME parsing,
+aggregate decoded HTML over 4 MiB, more than 256 outer MIME parts, depth above 32
+(root 0), or lexical nesting above 32. Detected eligible transfer-decode errors,
+MIME parse failure and incomplete supported lexical constructs fail the whole
+report, without a partial count or success cache entry. Charset replacement
+follows pinned mail-parser behavior. These workload limits do not bound prior
+parser allocations or total RSS. The lexical inspection proof counts helper reads and length-bounded operations, separately from cursor progress; it excludes MIME-parser internals, allocation, hash collisions and latency. Its fixed linear bound is tested with adversarial inputs and a real rescanning negative control. REST: 404 missing, 503 "deliverability
+analysis unavailable" (capacity
 or deadline) / "deliverability analysis failed" (analysis/size), native JSON error.
 Selected pre-removal reads may finish; fresh lookups cannot resurrect removed mail.
 Cache loss at restart costs recomputation. These are cache/job bounds, not total

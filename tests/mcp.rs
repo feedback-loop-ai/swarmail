@@ -2866,3 +2866,235 @@ async fn zero_timeout_finishes_on_the_first_dispatch_poll() {
         }
     }
 }
+
+/// The retained ids of an inbox, newest first, straight from the store.
+fn nm_ids(srv: &swarmail::RunningServer, inbox: &str) -> Vec<String> {
+    srv.store
+        .list(inbox, &swarmail::store::Filter::default())
+        .iter()
+        .map(|e| e.id.clone())
+        .collect()
+}
+
+/// Decision 0111, issue #156: a timed-out wait over real SMTP-delivered mail
+/// names its near misses — the sibling address that did not match `to`, the
+/// typo that missed only the subject and is the nearest, and the last
+/// arrival — as exactly the five members, with seven per entry, and reads
+/// the store without changing it.
+#[tokio::test]
+async fn a_timed_out_wait_names_its_near_misses() {
+    let srv = start().await;
+    let inbox = "nm-shape";
+    for (to, subject) in [
+        ("alice.team@example.test", "Confirm your account"),
+        ("alice@example.test", "Confirm you account"),
+    ] {
+        smtp_send(
+            srv.smtp_addr,
+            Some(inbox),
+            "app@example.test",
+            to,
+            subject,
+            "body",
+        )
+        .await
+        .unwrap();
+    }
+    let ids = nm_ids(&srv, inbox);
+    let (typo, sibling) = (&ids[0], &ids[1]);
+    let stamp = |id: &str| srv.store.get(id).unwrap().received_ms;
+    let entry = |id: &str, to: &str, subject: &str, missed: serde_json::Value| {
+        serde_json::json!({"email_id":id,"received_ms":stamp(id),"from":"app@example.test",
+            "to":[to],"to_total":1,"subject":subject,"missed":missed})
+    };
+    let result = tool(
+        srv.http_addr,
+        "swarmail_wait_for_email",
+        &format!(
+            r#"{{"inbox":"{inbox}","to":"alice@example.test","subject":"Confirm your account","timeout_ms":0}}"#
+        ),
+    )
+    .await;
+    assert_eq!(result["isError"], false, "{result}");
+    let out = text(&result);
+    assert_eq!(
+        out,
+        serde_json::json!({
+            "matched": 0, "total": 2, "timed_out": true,
+            "near_misses": {
+                "arrivals": [
+                    entry(typo, "alice@example.test", "Confirm you account", serde_json::json!(["subject"])),
+                    entry(sibling, "alice.team@example.test", "Confirm your account", serde_json::json!(["to"])),
+                ],
+                "arrivals_total": 2,
+                "arrivals_truncated": false,
+                "nearest_subject": entry(typo, "alice@example.test", "Confirm you account", serde_json::json!(["subject"])),
+                "last_arrival_ms": stamp(typo),
+            }
+        })
+    );
+    // The wait read; it did not change the inbox.
+    assert_eq!(nm_ids(&srv, inbox), ids);
+    // Mail the filter admits is already `matched`, never a near miss.
+    let result = tool(
+        srv.http_addr,
+        "swarmail_wait_for_email",
+        &format!(r#"{{"inbox":"{inbox}","to":"alice@example.test","count":3,"timeout_ms":0}}"#),
+    )
+    .await;
+    let out = text(&result);
+    assert_eq!(out["matched"], 1, "{out}");
+    assert_eq!(out["near_misses"]["arrivals_total"], 1, "{out}");
+    assert_eq!(out["near_misses"]["arrivals"][0]["email_id"], *sibling);
+    assert_eq!(
+        out["near_misses"]["nearest_subject"],
+        serde_json::Value::Null
+    );
+    // `since_ms` is the caller's window: older mail leaves the list, while
+    // the last arrival still reports the inbox.
+    let after = stamp(typo) + 1;
+    let result = tool(
+        srv.http_addr,
+        "swarmail_wait_for_email",
+        &format!(r#"{{"inbox":"{inbox}","to":"nobody","since_ms":{after},"timeout_ms":0}}"#),
+    )
+    .await;
+    let near = text(&result)["near_misses"].clone();
+    assert_eq!(near["arrivals"], serde_json::json!([]), "{near}");
+    assert_eq!(near["arrivals_total"], 0);
+    assert_eq!(near["last_arrival_ms"], stamp(typo));
+    assert_eq!(nm_ids(&srv, inbox), ids);
+}
+
+/// Absent when the inbox holds nothing: an empty and a never-used inbox
+/// answer today's exact bytes, and a found answer carries no near misses.
+#[tokio::test]
+async fn an_empty_inbox_timeout_keeps_its_exact_bytes() {
+    let srv = start().await;
+    for inbox in ["nm-never-used", "nm-emptied"] {
+        let result = tool(
+            srv.http_addr,
+            "swarmail_wait_for_email",
+            &format!(r#"{{"inbox":"{inbox}","to":"x","timeout_ms":0}}"#),
+        )
+        .await;
+        assert_eq!(
+            result["content"][0]["text"],
+            r#"{"matched":0,"timed_out":true,"total":0}"#
+        );
+    }
+    smtp_send(
+        srv.smtp_addr,
+        Some("nm-emptied"),
+        "a@x.io",
+        "b@x.io",
+        "s",
+        "b",
+    )
+    .await
+    .unwrap();
+    tool(
+        srv.http_addr,
+        "swarmail_clear_inbox",
+        r#"{"inbox":"nm-emptied"}"#,
+    )
+    .await;
+    let result = tool(
+        srv.http_addr,
+        "swarmail_wait_for_email",
+        r#"{"inbox":"nm-emptied","to":"x","timeout_ms":0}"#,
+    )
+    .await;
+    assert_eq!(
+        result["content"][0]["text"],
+        r#"{"matched":0,"timed_out":true,"total":0}"#
+    );
+    smtp_send(
+        srv.smtp_addr,
+        Some("nm-found"),
+        "a@x.io",
+        "b@x.io",
+        "s",
+        "b",
+    )
+    .await
+    .unwrap();
+    let found = text(
+        &tool(
+            srv.http_addr,
+            "swarmail_wait_for_email",
+            r#"{"inbox":"nm-found","timeout_ms":0}"#,
+        )
+        .await,
+    );
+    assert_eq!(found["matched"], 1);
+    assert!(found.get("near_misses").is_none(), "{found}");
+}
+
+/// The AUTH-is-inbox boundary (decisions 0004, 0111 §3): while the waiter's
+/// wait is parked on the readiness gauge, a sibling inbox receives mail over
+/// SMTP AUTH; the waiter's timed-out answer names its own non-matching mail
+/// and nothing — id, subject or address — of the sibling's.
+#[tokio::test]
+async fn near_misses_never_cross_into_another_inbox() {
+    let srv = start().await;
+    let (mine, theirs) = ("nm-tenant-mine", "nm-tenant-theirs");
+    let addr = srv.http_addr;
+    let parked = tokio::spawn(async move {
+        tool(
+            addr,
+            "swarmail_wait_for_email",
+            &format!(r#"{{"inbox":"{mine}","to":"wanted@mine.example","timeout_ms":3000}}"#),
+        )
+        .await
+    });
+    wait_for_metric_row(
+        srv.http_addr,
+        &format!(r#"swarmail_awaits_active{{inbox="{mine}"}}"#),
+        1,
+    )
+    .await;
+    smtp_send(
+        srv.smtp_addr,
+        Some(theirs),
+        "leak@theirs.example",
+        "victim@theirs.example",
+        "Their private subject",
+        "secret",
+    )
+    .await
+    .unwrap();
+    smtp_send(
+        srv.smtp_addr,
+        Some(mine),
+        "app@mine.example",
+        "sibling@mine.example",
+        "My own subject",
+        "body",
+    )
+    .await
+    .unwrap();
+    let result = parked.await.unwrap();
+    let out = text(&result);
+    assert_eq!(out["timed_out"], true, "{out}");
+    let raw = out.to_string();
+    for foreign in [
+        nm_ids(&srv, theirs)[0].as_str(),
+        "Their private subject",
+        "victim@theirs.example",
+        "leak@theirs.example",
+        "theirs",
+    ] {
+        assert!(!raw.contains(foreign), "{foreign} leaked: {raw}");
+    }
+    assert_eq!(out["near_misses"]["arrivals_total"], 1, "{raw}");
+    assert_eq!(
+        out["near_misses"]["arrivals"][0]["subject"],
+        "My own subject"
+    );
+    assert_eq!(
+        out["near_misses"]["arrivals"][0]["to"][0],
+        "sibling@mine.example"
+    );
+    assert_eq!(nm_ids(&srv, theirs).len(), 1, "their mail is untouched");
+}

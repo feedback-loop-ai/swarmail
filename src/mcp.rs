@@ -864,9 +864,18 @@ async fn tool_call(
                         json!({ "matched": want, "total": total, "emails": emails }),
                     ))
                 }
-                Some(Ok(WaitOutcome::Timeout { matched })) => Ok(text_result(
-                    json!({ "matched": matched, "total": total, "timed_out": true }),
-                )),
+                Some(Ok(WaitOutcome::Timeout { matched })) => {
+                    // The inbox's near misses (decision 0111), read after
+                    // the wait resolved; mail the filter admits is already
+                    // in `matched`, so it is skipped. Absent when the inbox
+                    // holds nothing.
+                    let mut out = json!({ "matched": matched, "total": total, "timed_out": true });
+                    let near = near_miss::near_misses(store.clone(), inbox, filter, true).await;
+                    if let Some(near) = near {
+                        out["near_misses"] = near;
+                    }
+                    Ok(text_result(out))
+                }
                 None => Ok(error_result("shutting down".into())),
             }
         }
@@ -1068,7 +1077,8 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "swarmail_clear_all":output_object(json!({"removed":count}), json!(["removed"])),
         "swarmail_wait_for_email":{"type":"object","oneOf":[
             output_object(json!({"matched":count,"total":count,"emails":nonempty}), json!(["matched","total","emails"])),
-            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true}}), json!(["matched","total","timed_out"]))
+            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true}}), json!(["matched","total","timed_out"])),
+            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true},"near_misses":near_miss::schema()}), json!(["matched","total","timed_out","near_misses"]))
         ]},
         "swarmail_extract_links":output_object(json!({"links":strings}), json!(["links"])),
         "swarmail_extract_codes":output_object(json!({"codes":strings}), json!(["codes"])),
@@ -1082,7 +1092,7 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
 });
 
 /// Modern-only report description; March keeps the historical TOOLS literal.
-const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-bulk/1) from the stored bytes, off the SMTP path: the bulk-sender checklist plus the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
+const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-html/3) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics and the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
 
 /// MCP-compatible JSON input schemas. These are objects — the MCP spec
 /// requires an object, and a `&str` schema embedded in `json!` serialized as
@@ -1174,6 +1184,7 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
 });
 
 mod focused;
+mod near_miss;
 
 #[cfg(test)]
 mod batch_tests;

@@ -1,0 +1,122 @@
+{
+  "phase": "intake",
+  "scope": "documentation framing baseline; no HTML implementation",
+  "commit": "fcd4f811d9f12d2d56bbe58862ec35686a9f37b7",
+  "tree": "8e5e268d18be3df9bd3238093fd0cb8dd68e3b59",
+  "offline": true,
+  "gates": [
+    {
+      "gate": "engine-digest",
+      "command": "printf '%s  %s\\n' ab93555806ee4ac402457e40c18250f0eead8e6a0588eb8c508682fe0c6a885f .forge/bin/brokkr | sha256sum --check --strict",
+      "exit_code": 0,
+      "seconds": 0.11,
+      "log": ".forge/evidence/issue259-intake/engine-digest.log",
+      "sha256": "d59591f9d6f693cfccb0906c65ee27e7aa2a907ab4d85f90d8c8303abfee6c10"
+    },
+    {
+      "gate": "shim-integrity",
+      "command": "sha256sum --check --strict bundles/self/scripts/shims.sha256",
+      "exit_code": 0,
+      "seconds": 0.0,
+      "log": ".forge/evidence/issue259-intake/shim-integrity.log",
+      "sha256": "785e16dc6e9db3dcf3e2f94347f10c6c3508b97edc039d75e9676f3b0ea1b39c"
+    },
+    {
+      "gate": "format",
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0,
+      "seconds": 0.75,
+      "log": ".forge/evidence/issue259-intake/format.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "gate": "clippy",
+      "command": "cargo clippy --workspace --all-targets --locked -- -D warnings",
+      "exit_code": 0,
+      "seconds": 16.52,
+      "log": ".forge/evidence/issue259-intake/clippy.log",
+      "sha256": "b287dc9ca16211b1dac7a5c88af4b10ccc622b20d55c075266ea321592371215"
+    },
+    {
+      "gate": "test",
+      "command": "cargo test --workspace --locked",
+      "exit_code": 0,
+      "seconds": 164.45,
+      "log": ".forge/evidence/issue259-intake/test.log",
+      "sha256": "8062ddec9188500a032ce32ff9d1a6b96c08893633806aced2aab8176b6f3378"
+    },
+    {
+      "gate": "bundle",
+      "command": ".forge/bin/brokkr compile --bundle bundles/self",
+      "exit_code": 0,
+      "seconds": 0.02,
+      "log": ".forge/evidence/issue259-intake/bundle.log",
+      "sha256": "ad83b8df41a4b44f1d748cf6c6ef17dd8a7db503246c50e2ff0dab8e04b895ff"
+    },
+    {
+      "gate": "coverage",
+      "command": "bash bundles/self/scripts/coverage-gate.sh",
+      "exit_code": 0,
+      "seconds": 247.03,
+      "log": ".forge/evidence/issue259-intake/coverage.log",
+      "sha256": "b6d7786a636b0af96178459e2a8ec9a79f79e5178f5d703f40905165499c7f20"
+    },
+    {
+      "gate": "coverage-selftest",
+      "command": "bash bundles/self/scripts/coverage-gate.sh selftest",
+      "exit_code": 0,
+      "seconds": 19.42,
+      "log": ".forge/evidence/issue259-intake/coverage-selftest.log",
+      "sha256": "491bddca7f39625d7d53f7d7c15e0adb68da7195021988c93264b523cb416547"
+    },
+    {
+      "gate": "publish-guard",
+      "command": "bash bundles/self/scripts/publish-guard-test.sh",
+      "exit_code": 0,
+      "seconds": 6.18,
+      "log": ".forge/evidence/issue259-intake/publish-guard.log",
+      "sha256": "939ac40398ee171a956e8423b96d4a9c62b4b1c30250a6fa6146b585ddf0647f"
+    },
+    {
+      "gate": "seal-branch",
+      "command": "bash bundles/self/scripts/seal-branch-test.sh",
+      "exit_code": 0,
+      "seconds": 4.74,
+      "log": ".forge/evidence/issue259-intake/seal-branch.log",
+      "sha256": "e022b8e780d716cdbafdf4723515738c62bf480308724cfbb2051566d835b200"
+    },
+    {
+      "gate": "deny",
+      "command": "cargo deny check licenses",
+      "exit_code": 0,
+      "seconds": 0.65,
+      "log": ".forge/evidence/issue259-intake/deny.log",
+      "sha256": "71dadc8c8978da797b94dc581b666330c737551839c8fc820d7647130930c4b7"
+    },
+    {
+      "gate": "design-selftest",
+      "command": "bash bundles/self/scripts/design-check.sh selftest",
+      "exit_code": 0,
+      "seconds": 4.65,
+      "log": ".forge/evidence/issue259-intake/design-selftest.log",
+      "sha256": "1d5eb6cef8be9f99e87fa8b1394ed2df9172cf2c4da06f6d74cc03c95245735e"
+    },
+    {
+      "gate": "delivery-proof",
+      "command": "bash bundles/self/scripts/delivery-proof-test.sh",
+      "exit_code": 0,
+      "seconds": 9.03,
+      "log": ".forge/evidence/issue259-intake/delivery-proof.log",
+      "sha256": "2969d73ecccc45098e6907c604407b44967f3fe4669573a6cd4c5e8b82785d8c"
+    },
+    {
+      "gate": "native-tls-absence",
+      "command": "out=$(cargo tree --locked -i native-tls 2>&1); code=$?; if [ \"$code\" -eq 0 ]; then printf '%s\\n' \"$out\"; exit 1; elif printf '%s' \"$out\" | grep -q 'did not match any packages'; then exit 0; else printf '%s\\n' \"$out\"; exit 1; fi",
+      "exit_code": 0,
+      "seconds": 0.17,
+      "log": ".forge/evidence/issue259-intake/native-tls-absence.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "all_passed": true
+}
