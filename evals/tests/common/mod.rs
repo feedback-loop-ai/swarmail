@@ -314,6 +314,9 @@ async fn first_link(mcp: &mut McpClient, inbox: &str, subject: &str, label: &str
 }
 
 async fn helper(mode: &str) -> i32 {
+    if mode == "home_probe" {
+        return home_probe();
+    }
     let env = AgentEnv::from_env().expect("the agent environment");
     let app = App::new(&env.app_url, &env.identity).unwrap();
     match mode {
@@ -895,4 +898,61 @@ async fn naive_recovery(mode: &str, env: &AgentEnv, app: &App) -> i32 {
         std::future::pending::<()>().await;
     }
     0
+}
+
+// ---- trial isolation (proposed 0110) -------------------------------------
+
+/// A benign agent for the isolated-HOME proof: exit 0 when HOME is fresh
+/// (no sentinel from an earlier trial) and writable, else a named code.
+fn home_probe() -> i32 {
+    let Ok(home) = std::env::var("HOME") else {
+        return 20;
+    };
+    let sentinel = Path::new(&home).join("isolated-home-sentinel");
+    if sentinel.exists() {
+        return 21;
+    }
+    if std::fs::write(&sentinel, b"written by a real agent").is_err() {
+        return 22;
+    }
+    0
+}
+
+/// Why `trial --isolated` is unavailable here, read from a real null-agent
+/// run, or `None` when the boundary was built and the trial ran.
+/// The advisory `unshare -Urn true` is deliberately not consulted: only the
+/// launch itself is authoritative (0110, Current integration 5).
+pub fn boundary_unavailable() -> Option<String> {
+    let _scope = trial_scope();
+    let out = cli()
+        .args(["trial", "--isolated", "--task", "signup", "--agent", "null"])
+        .output()
+        .expect("the CLI runs");
+    let text = stderr(&out);
+    let start = text.find("boundary_unavailable:")?;
+    let reason: String = text[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+        .collect();
+    // A refusal is one harness-error row and no agent ever ran.
+    let row = one_row(&out);
+    assert_eq!(row.outcome, swarmail_evals::tasks::Outcome::HarnessError);
+    assert!(row.agent_exits.is_empty());
+    Some(reason)
+}
+
+/// Gate for every namespace-dependent proof. When the boundary cannot be
+/// built it prints a named SKIP line and FAILS: a proof that did not run
+/// must never read as one that passed, and never falls back to an
+/// unisolated run.
+pub fn require_boundary() {
+    if let Some(reason) = boundary_unavailable() {
+        eprintln!("SKIP trial-isolation: {reason}");
+        panic!("trial-isolation proof not run: {reason}");
+    }
+}
+
+/// The agent's exit codes recorded in a row.
+pub fn agent_codes(row: &TrialResult) -> Vec<Option<i32>> {
+    row.agent_exits.iter().map(|exit| exit.code).collect()
 }

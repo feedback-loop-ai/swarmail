@@ -219,3 +219,53 @@ asked for and unavailable, outstanding until the host proof above passes.
 
 No push, merge, tag, publication, issue closure or decision acceptance belongs
 to this work. Drafting this design is not implementation success.
+
+## Implementation status — 2026-10-31 (implement seat)
+
+Built and proven in the seat (all on every host):
+
+- AC-S2, AC-S3, AC-S4, AC-S5, AC-S6, AC-S8 (index row added; 0055 and 0076
+  untouched; `src/` untouched). `evals/src/isolation.rs` (pure parts, unit
+  tested), `evals/src/isolation/linux.rs` (syscall body, **never executed**),
+  the hidden `--isolated` / `--isolated-expose` flags and the injected-entry
+  seam in `evals/src/main.rs`, `evals/tests/trial_isolation.rs`.
+- Run explicitly with `--ignored` in the seat, every namespace-dependent test
+  printed `SKIP trial-isolation: boundary_unavailable:clone:ENOSPC` and
+  failed, as AC-S6 requires.
+
+**Not built — still outstanding, so this run is not `complete`:**
+
+- **AC-S1 (always-on leak baseline) and AC-L1 (hostile same-uid agent against
+  a live idle victim) are not implemented.** The implement seat declined to
+  author the attack tooling (an agent that reads another trial's `EVAL_*`
+  environment from `/proc` and finishes its signup) and was stopped by a
+  safety classifier when it tried. Someone with the operator's authorization
+  must write both tests; this is the proof the issue's second acceptance
+  criterion demands, and nothing else substitutes for it. T02 and T06 stay
+  open.
+- AC-L2 (fresh HOME, oracle passes inside) and AC-L3 (lifetime on both ends)
+  are written as `#[ignore]` tests but have **never run**; they need a capable
+  host.
+- AC-L4 (provider egress) and AC-O1 (operator ruling) are as before.
+
+**Design findings the live proof must resolve:**
+
+1. *Admission versus overlap.* The controller holds the per-uid host admission
+   (accepted 0076) until the trial is reaped, so a second `trial --isolated`
+   by the same uid refuses `concurrent_trials_refused` while the first runs.
+   AC-L1 as written needs two live trials. It cannot run without either a
+   documented, hidden admission bypass (which would contradict 0076 §1 while
+   0110 is proposed, accepted 0045 §8) or a test-side arrangement that gives
+   trial B's controller its own `/tmp` (a private mount namespace created in
+   the test before `exec`). Nothing in this run takes either step; the
+   operator should choose.
+2. *AC-L3 wording.* The controller mirrors the init's end (exit code for an
+   exit, re-raised signal for a signal). An interrupted unisolated trial exits
+   2 with the interrupted row, so the isolated interrupt test asserts the
+   row, exit 2 and no survivors, not "the controller ends with the same
+   signal".
+3. *Argument order of the raw `clone`* is proven only for x86_64, aarch64,
+   x86, arm and riscv64; other architectures refuse `clone:ENOSYS`.
+4. Bind mounts are non-recursive and read-only; a submount below an
+   allowlisted tree is absent inside. Zombie reaping of daemonised agents
+   inside the namespace remains the recorded known limit.

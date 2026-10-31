@@ -546,3 +546,38 @@ lexically, without depending on target existence. Raw HTML and renderer extensio
 are outside this bounded Markdown check. Git discovery, inventory and document
 read failures refuse. Root tests do not run this separate eval workspace; #201 owns
 its CI integration.
+
+## Trial isolation — prepared, not activated (#221, proposed 0110)
+
+Date: 2026-10-31. **Trials remain sequential.** Accepted 0076 still admits one
+trial per uid and refuses `--concurrency` other than 1; nothing here changes a
+row, a refusal or a guarantee, and no row claims isolation. Same-uid separation
+by fresh `0700` HOME directories is hygiene, not a boundary.
+
+A hidden `trial --isolated` flag (not in `--help`) runs the whole trial —
+runner, Swarmail, fixture and every agent — inside a fresh Linux user, mount,
+PID, network and IPC namespace, or refuses by name before any server or agent
+exists. There is no fallback to an unisolated run. It refuses, as a harness
+error row and exit 2, with: `concurrency_unsupported` (first),
+`isolation_requires_swarmail_bin`, `isolation_artifacts_unsupported`,
+`isolation_wrapper_unsupported` (provider egress is an open operator question
+in 0110, so no real driver runs isolated), `isolation_expose_invalid` and
+`isolation_source_invalid`, and `boundary_unavailable:<operation>:<ERRNO>` when
+the kernel or host policy denies a step (for example
+`boundary_unavailable:clone:ENOSPC`). `--isolated-expose <absolute regular
+file>` binds one more read-only file, for a test executable.
+
+The syscall body has never executed in a delivery seat (they cannot create
+namespaces). It is proven live only by the ignored suite, on a host that
+permits unprivileged user namespaces:
+
+```bash
+cargo build --locked --bin swarmail
+cd evals && SWARMAIL_BIN="$PWD/../target/debug/swarmail" \
+  cargo test --locked --test trial_isolation -- --ignored --nocapture --test-threads=1
+```
+
+Where the boundary cannot be built each of those tests prints
+`SKIP trial-isolation: boundary_unavailable:<op>:<ERRNO>` and fails; it never
+passes without the boundary. The cross-trial hostile proof and provider egress
+remain outstanding (specs/trial-isolation/spec.md, Outstanding).

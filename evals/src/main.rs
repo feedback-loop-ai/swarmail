@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use swarmail_evals::runner::{self, TrialRequest, TrialResult};
 use swarmail_evals::tasks::{self, Catalogue, Outcome};
 use swarmail_evals::{
-    artifacts, baseline, fixture, fixture_http, identity, oracle, provenance, report, state,
-    wrappers,
+    artifacts, baseline, fixture, fixture_http, identity, isolation, oracle, provenance, report,
+    state, wrappers,
 };
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -118,6 +118,14 @@ enum Cmd {
         wrapper_profile: Option<provenance::WrapperProfile>,
         #[arg(long, hide = true)]
         worker_context: Option<String>,
+        /// Prepared, not activated (proposed 0110): run the whole trial in a
+        /// fresh Linux namespace boundary or refuse by name. Never falls
+        /// back to an unisolated run.
+        #[arg(long, hide = true)]
+        isolated: bool,
+        /// One more absolute regular file bound read-only into the boundary.
+        #[arg(long, hide = true, requires = "isolated")]
+        isolated_expose: Vec<PathBuf>,
         /// The external agent's program and literal arguments (no shell).
         #[arg(last = true)]
         argv: Vec<OsString>,
@@ -175,6 +183,183 @@ fn fail(_msg: impl std::fmt::Display) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// What the `Trial` arm validated before the runtime existed: the fixture
+/// inputs, the declaration rules and the worker context. Any refusal here is
+/// the one `operation_failed` diagnostic, exactly as before the boundary.
+fn trial_request(cmd: &Cmd) -> Result<TrialRequest, ExitCode> {
+    let Cmd::Trial {
+        task,
+        agent,
+        deadline_ms,
+        concurrency,
+        artifacts_dir,
+        argv,
+        seed,
+        fixture_time,
+        agent_model,
+        agent_config_id,
+        public_argv,
+        wrapper_profile,
+        worker_context,
+        ..
+    } = cmd
+    else {
+        unreachable!("only a trial is prepared");
+    };
+    let fixture = match provenance::FixtureInputs::resolve(seed.as_deref(), fixture_time.as_deref())
+    {
+        Ok(v) => v,
+        Err(e) => return Err(fail(e)),
+    };
+    if *public_argv && argv.iter().any(|v| v.to_str().is_none()) {
+        return Err(fail("public_argv_requires_utf8"));
+    }
+    if agent
+        .as_deref()
+        .is_some_and(|s| runner::BUILTINS.contains(&s))
+        && (agent_model.is_some()
+            || agent_config_id.is_some()
+            || *public_argv
+            || wrapper_profile.is_some())
+    {
+        return Err(fail("builtin_declaration_invalid"));
+    }
+    let mut req = TrialRequest {
+        task: task.clone(),
+        agent: agent.clone(),
+        argv: argv.clone(),
+        deadline_ms: *deadline_ms,
+        concurrency: Some(*concurrency),
+        artifacts_dir: artifacts_dir.clone(),
+        fixture,
+        agent_model: agent_model.clone(),
+        agent_config_id: agent_config_id.clone(),
+        public_argv: *public_argv,
+        wrapper_profile: *wrapper_profile,
+        ..Default::default()
+    };
+    if let Some(context) = worker_context {
+        if context.len() > artifacts::SMALL_LIMIT {
+            return Err(fail("worker_context_invalid"));
+        }
+        let context: WorkerContext = match provenance::decode(context.as_bytes()) {
+            Ok(c) => c,
+            Err(_) => return Err(fail("worker_context_invalid")),
+        };
+        if context.apply(&mut req).is_err() {
+            return Err(fail("worker_context_invalid"));
+        }
+    }
+    Ok(req)
+}
+
+/// Validate the trial and, for `--isolated`, enter the boundary. `Err` is the
+/// exit code of a trial that must not run; `Ok` hands back the request the
+/// runtime will execute — inside the boundary when one was asked for.
+///
+/// The entry is a parameter so a test can inject a failing one: a refusal
+/// emits one harness-error row and exit code 2 before any server or agent
+/// exists, and nothing here falls back to an unisolated run.
+fn prepare_trial(
+    cmd: &Cmd,
+    enter: isolation::Enter,
+    swarmail_bin: Result<Option<PathBuf>, String>,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) -> Result<(TrialRequest, Option<PathBuf>), u8> {
+    let mut req = trial_request(cmd).map_err(|_| 2u8)?;
+    let Cmd::Trial {
+        isolated: true,
+        isolated_expose,
+        ..
+    } = cmd
+    else {
+        return Ok((req, None));
+    };
+    match isolate(&req, isolated_expose, swarmail_bin, enter) {
+        Ok(entered) => {
+            // The init's cwd, PATH and checkout differ from the caller's:
+            // hand it the paths the controller resolved.
+            adopt(&mut req, &entered);
+            Ok((req, Some(entered.swarmail_bin)))
+        }
+        Err(refusal) => {
+            let id = req.trial_id.clone().unwrap_or_else(runner::new_trial_id);
+            let _ = writeln!(err, "swarmail-evals: harness error: {refusal}");
+            // No writable host path enters or leaves the boundary: the
+            // refusal is the row on stdout, never a retained artifact.
+            let bare = TrialRequest {
+                artifacts_dir: None,
+                ..req.clone()
+            };
+            let row = runner::finalize(&bare, runner::refused_row(&bare, &id), None);
+            let _ = writeln!(out, "{}", serde_json::to_string(&row).expect("serializes"));
+            let _ = out.flush();
+            Err(row.exit_code() as u8)
+        }
+    }
+}
+
+/// A relative or bare agent program is replaced by the absolute path the
+/// controller resolved: inside the boundary the cwd and PATH are not the
+/// caller's. An absolute program is left exactly as given.
+fn adopt(req: &mut TrialRequest, entered: &isolation::Request) {
+    if let (Some(agent), Some(first)) = (&entered.agent, req.argv.first_mut())
+        && !std::path::Path::new(first).is_absolute()
+    {
+        *first = agent.clone().into_os_string();
+    }
+}
+
+/// The preconditions of an isolated trial, then the boundary itself.
+fn isolate(
+    req: &TrialRequest,
+    expose: &[PathBuf],
+    swarmail_bin: Result<Option<PathBuf>, String>,
+    enter: isolation::Enter,
+) -> Result<isolation::Request, isolation::Refusal> {
+    use isolation::Refusal;
+    if req.concurrency.unwrap_or(1) != 1 {
+        return Err(Refusal::Named("concurrency_unsupported"));
+    }
+    let source_invalid = || Refusal::Named(isolation::SOURCE_INVALID);
+    // The Swarmail selector and the agent program are resolved here, at the
+    // caller's cwd and PATH; their directories are made canonical so the
+    // bind names the real file (a symlinked final component still refuses).
+    let canonical = |path: PathBuf| -> Result<PathBuf, Refusal> {
+        let name = path.file_name().ok_or_else(source_invalid)?.to_owned();
+        let parent = path.parent().ok_or_else(source_invalid)?;
+        Ok(std::fs::canonicalize(parent)
+            .map_err(|_| source_invalid())?
+            .join(name))
+    };
+    let swarmail_bin = swarmail_bin
+        .map_err(|_| source_invalid())?
+        .map(canonical)
+        .transpose()?;
+    let builtin = req
+        .agent
+        .as_deref()
+        .is_some_and(|s| runner::BUILTINS.contains(&s));
+    let agent = match req.argv.first() {
+        Some(program) if !builtin => Some(canonical(
+            runner::selected_agent_program(program).map_err(|_| source_invalid())?,
+        )?),
+        _ => None,
+    };
+    let runner_exe = std::env::current_exe().map_err(|_| source_invalid())?;
+    let request = isolation::request(
+        swarmail_bin,
+        req.artifacts_dir.is_some(),
+        req.wrapper_profile.is_some(),
+        expose,
+        runner_exe,
+        agent,
+    )?;
+    enter(&request)?;
+    Ok(request)
+}
+
 fn main() -> ExitCode {
     std::panic::set_hook(Box::new(|_| {
         eprintln!("swarmail-evals: harness error: panicked");
@@ -196,6 +381,30 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // A trial's request is validated, and its boundary entered when asked
+    // for, before any runtime exists: the boundary clones the process, which
+    // is only sound while it is single-threaded (proposed 0110).
+    let mut prepared = None;
+    if let Cmd::Trial { .. } = &cli.command {
+        match prepare_trial(
+            &cli.command,
+            isolation::enter,
+            runner::selected_swarmail_bin(),
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        ) {
+            Ok((req, resolved)) => {
+                if let Some(bin) = resolved {
+                    // Inside the boundary the caller's cwd and PATH are gone:
+                    // run against the path the controller resolved.
+                    // SAFETY: still single-threaded; no runtime exists yet.
+                    unsafe { std::env::set_var(runner::SWARMAIL_BIN_ENV, bin) };
+                }
+                prepared = Some(req);
+            }
+            Err(code) => return ExitCode::from(code),
+        }
+    }
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -269,67 +478,8 @@ fn main() -> ExitCode {
             }
             other => fail(format!("no built-in agent named {other}")),
         },
-        Cmd::Trial {
-            task,
-            agent,
-            deadline_ms,
-            concurrency,
-            artifacts_dir,
-            argv,
-            seed,
-            fixture_time,
-            agent_model,
-            agent_config_id,
-            public_argv,
-            wrapper_profile,
-            worker_context,
-        } => {
-            let fixture = match provenance::FixtureInputs::resolve(
-                seed.as_deref(),
-                fixture_time.as_deref(),
-            ) {
-                Ok(v) => v,
-                Err(e) => return fail(e),
-            };
-            if public_argv && argv.iter().any(|v| v.to_str().is_none()) {
-                return fail("public_argv_requires_utf8");
-            }
-            if agent
-                .as_deref()
-                .is_some_and(|s| runner::BUILTINS.contains(&s))
-                && (agent_model.is_some()
-                    || agent_config_id.is_some()
-                    || public_argv
-                    || wrapper_profile.is_some())
-            {
-                return fail("builtin_declaration_invalid");
-            }
-            let mut req = TrialRequest {
-                task,
-                agent,
-                argv,
-                deadline_ms,
-                concurrency: Some(concurrency),
-                artifacts_dir,
-                fixture,
-                agent_model,
-                agent_config_id,
-                public_argv,
-                wrapper_profile,
-                ..Default::default()
-            };
-            if let Some(context) = worker_context {
-                if context.len() > artifacts::SMALL_LIMIT {
-                    return fail("worker_context_invalid");
-                }
-                let context: WorkerContext = match provenance::decode(context.as_bytes()) {
-                    Ok(c) => c,
-                    Err(_) => return fail("worker_context_invalid"),
-                };
-                if context.apply(&mut req).is_err() {
-                    return fail("worker_context_invalid");
-                }
-            }
+        Cmd::Trial { .. } => {
+            let req = prepared.take().expect("prepared before the runtime");
             let row = rt.block_on(runner::run_trial(req, None));
             print_line(&row);
             ExitCode::from(row.exit_code() as u8)
@@ -4192,5 +4342,218 @@ mod baseline_tests {
             assert!(child.0.wait().unwrap().success());
             assert!(!dir.path().join("paid.jsonl").exists());
         }
+    }
+}
+
+#[cfg(test)]
+mod isolation_entry_tests {
+    use super::*;
+    use swarmail_evals::runner::TrialResult;
+
+    fn parse(args: &[&str]) -> Cmd {
+        let mut all = vec!["swarmail-evals", "trial"];
+        all.extend_from_slice(args);
+        Cli::try_parse_from(all).expect("arguments parse").command
+    }
+
+    /// An entry that must never be reached: a refusal precedes it.
+    fn unreachable_entry(_: &isolation::Request) -> Result<(), isolation::Refusal> {
+        panic!("the boundary was entered although the request was refused");
+    }
+
+    fn refuse_with_clone_enospc(_: &isolation::Request) -> Result<(), isolation::Refusal> {
+        Err(isolation::Refusal::errno("clone", libc::ENOSPC))
+    }
+
+    fn succeed(_: &isolation::Request) -> Result<(), isolation::Refusal> {
+        Ok(())
+    }
+
+    struct Ran {
+        result: Result<(TrialRequest, Option<PathBuf>), u8>,
+        stdout: String,
+        stderr: String,
+    }
+
+    fn run(args: &[&str], bin: Result<Option<PathBuf>, String>, enter: isolation::Enter) -> Ran {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let result = prepare_trial(&parse(args), enter, bin, &mut out, &mut err);
+        Ran {
+            result,
+            stdout: String::from_utf8(out).unwrap(),
+            stderr: String::from_utf8(err).unwrap(),
+        }
+    }
+
+    fn row(ran: &Ran) -> TrialResult {
+        let lines: Vec<_> = ran.stdout.lines().collect();
+        assert_eq!(lines.len(), 1, "exactly one row: {:?}", ran.stdout);
+        let row: TrialResult = serde_json::from_str(lines[0]).unwrap();
+        row.validate().unwrap();
+        row
+    }
+
+    fn a_binary() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = std::fs::canonicalize(dir.path()).unwrap().join("swarmail");
+        std::fs::write(&path, b"not run").unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_failed_entry_is_a_harness_error_before_any_agent_launches() {
+        let (dir, bin) = a_binary();
+        let sentinel = dir.path().join("sentinel");
+        let ran = run(
+            &[
+                "--task",
+                "signup",
+                "--agent",
+                "probe",
+                "--isolated",
+                "--",
+                "/usr/bin/touch",
+                sentinel.to_str().unwrap(),
+            ],
+            Ok(Some(bin)),
+            refuse_with_clone_enospc,
+        );
+        assert_eq!(ran.result.as_ref().err(), Some(&2));
+        assert!(
+            ran.stderr
+                .contains("harness error: boundary_unavailable:clone:ENOSPC"),
+            "{}",
+            ran.stderr
+        );
+        let row = row(&ran);
+        assert_eq!(row.outcome, Outcome::HarnessError);
+        assert_eq!(row.task.as_deref(), Some("signup"));
+        assert_eq!(row.agent.as_deref(), Some("probe"));
+        assert_eq!(row.concurrency, 1);
+        assert!(row.agent_exits.is_empty());
+        assert!(!sentinel.exists(), "no agent was launched");
+    }
+
+    #[test]
+    fn a_succeeding_entry_hands_back_the_request_to_run() {
+        let (_dir, bin) = a_binary();
+        let ran = run(
+            &["--task", "signup", "--agent", "oracle", "--isolated"],
+            Ok(Some(bin.clone())),
+            succeed,
+        );
+        assert!(ran.stdout.is_empty() && ran.stderr.is_empty());
+        let (req, resolved) = ran.result.expect("the trial proceeds");
+        assert_eq!(req.concurrency, Some(1));
+        assert_eq!(resolved, Some(bin));
+    }
+
+    #[test]
+    fn each_precondition_refuses_by_name_without_entering() {
+        let (dir, bin) = a_binary();
+        let some = || Ok(Some(bin.clone()));
+        let artifacts = dir.path().join("artifacts");
+        type Case<'a> = (Vec<&'a str>, Result<Option<PathBuf>, String>, &'a str);
+        let cases: Vec<Case> = vec![
+            (
+                vec!["--isolated"],
+                Ok(None),
+                "isolation_requires_swarmail_bin",
+            ),
+            (
+                vec!["--isolated"],
+                Err("program_missing".into()),
+                "isolation_source_invalid",
+            ),
+            (
+                vec!["--isolated", "--artifacts-dir", artifacts.to_str().unwrap()],
+                some(),
+                "isolation_artifacts_unsupported",
+            ),
+            (
+                vec![
+                    "--isolated",
+                    "--agent",
+                    "claude",
+                    "--wrapper-profile",
+                    "claude_2_1_310",
+                ],
+                some(),
+                "isolation_wrapper_unsupported",
+            ),
+            (
+                vec!["--isolated", "--isolated-expose", "relative/file"],
+                some(),
+                "isolation_expose_invalid",
+            ),
+            (
+                vec!["--isolated", "--isolated-expose", "/definitely/not/here"],
+                some(),
+                "isolation_expose_invalid",
+            ),
+            (
+                vec!["--isolated", "--", "/definitely/not/an/agent"],
+                some(),
+                "isolation_source_invalid",
+            ),
+            // The public refusal keeps its meaning and comes first, even
+            // where a later precondition also fails.
+            (
+                vec!["--isolated", "--concurrency", "2"],
+                Ok(None),
+                "concurrency_unsupported",
+            ),
+        ];
+        for (args, bin, reason) in cases {
+            let ran = run(&args, bin, unreachable_entry);
+            assert_eq!(ran.result.as_ref().err(), Some(&2), "{args:?}");
+            assert!(
+                ran.stderr.contains(&format!("harness error: {reason}\n")),
+                "{args:?}: {}",
+                ran.stderr
+            );
+            assert_eq!(row(&ran).outcome, Outcome::HarnessError, "{args:?}");
+        }
+        assert!(!artifacts.exists());
+    }
+
+    #[test]
+    fn a_trial_without_the_flag_never_touches_the_boundary() {
+        let ran = run(
+            &["--task", "signup", "--agent", "null"],
+            Ok(None),
+            unreachable_entry,
+        );
+        assert_eq!(ran.result.map(|(_, bin)| bin), Ok(None));
+        assert!(ran.stdout.is_empty() && ran.stderr.is_empty());
+        // The expose flag means nothing without the boundary.
+        assert!(
+            Cli::try_parse_from(["swarmail-evals", "trial", "--isolated-expose", "/x"]).is_err()
+        );
+    }
+
+    #[test]
+    fn the_resolved_agent_replaces_only_a_relative_program() {
+        let entered = isolation::Request {
+            swarmail_bin: PathBuf::from("/b/swarmail"),
+            runner: PathBuf::from("/b/runner"),
+            agent: Some(PathBuf::from("/real/agent")),
+            expose: Vec::new(),
+        };
+        let mut req = TrialRequest {
+            argv: vec![OsString::from("agent"), OsString::from("--flag")],
+            ..Default::default()
+        };
+        adopt(&mut req, &entered);
+        assert_eq!(req.argv, [OsString::from("/real/agent"), "--flag".into()]);
+        let mut req = TrialRequest {
+            argv: vec![OsString::from("/given/agent")],
+            ..Default::default()
+        };
+        adopt(&mut req, &entered);
+        assert_eq!(req.argv, [OsString::from("/given/agent")]);
+        let mut req = TrialRequest::default();
+        adopt(&mut req, &entered);
+        assert!(req.argv.is_empty());
     }
 }

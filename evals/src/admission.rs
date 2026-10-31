@@ -21,7 +21,13 @@ impl Admission {
     pub(crate) fn acquire() -> Result<Self, &'static str> {
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
-        Self::at(&PathBuf::from(format!("/tmp/swarmail-evals-{uid}")), uid)
+        Self::at(&Self::root_for(uid), uid)
+    }
+
+    /// The private per-uid directory the lock lives in; the isolated
+    /// controller stages its mount points below it.
+    pub(crate) fn root_for(uid: u32) -> PathBuf {
+        PathBuf::from(format!("/tmp/swarmail-evals-{uid}"))
     }
 
     fn at(root: &Path, uid: u32) -> Result<Self, &'static str> {
