@@ -16,10 +16,10 @@ publish = false
 # 0055 (pulldown-cmark and unicase, exact versions, checked by
 # tests/boundary.rs), so `--offline --locked` needs no network once the
 # local cargo cache holds them, and `cargo deny check licenses` has already
-# vetted each version and source. Until issue #201 wires CI and pinned verify,
-# run the standalone formatting, lint and full tests separately against the
-# candidate's root-test Swarmail executable. The manual runner may build once
-# when unset.
+# vetted each version and source. CI (the `test` jobs, ubuntu and macOS) and
+# the pinned verify seat run the standalone formatting, lint and full tests
+# (issue #201) against the candidate's root Swarmail executable, which they
+# pass in SWARMAIL_BIN; only a manual run may build once when it is unset.
 [dependencies]
 axum = "=0.8.9"
 base64 = "=0.22.1"

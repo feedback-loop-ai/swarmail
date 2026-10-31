@@ -1,6 +1,7 @@
 # swarmail-evals — the agent eval harness
 
-Epic #164, Phase 0 run A: the fixture app (#149), the v2 task suite with
+Epic #164, Phase 0 run A: the fixture app (#149 — the `fixture` subcommand of
+this crate, `src/fixture.rs`, not a separate directory), the v2 task suite with
 oracle solutions (#150) and the agent-agnostic trial runner that #148's
 brokkr recipe will wrap. The original design is accepted decision
 [0055](../docs/decisions/0055-agent-eval-harness.md); the acceptance
@@ -53,8 +54,13 @@ root lock at the same version and source, except the named dev-dependency
 exceptions of the dated 2026-10-30 amendment to decision 0055 (`pulldown-cmark`
 and `unicase`, exact versions; `tests/boundary.rs` checks it).
 
-Until #201 adds evals CI gating, **evals is proven by its own suite, run by
-the implement seat and reproduced by reviewers**. From `evals/`:
+CI and the verify seat run these gates (#201, per the dated 2026-10-31
+addendum to decision 0055): the `test` jobs on ubuntu and macOS and the pinned
+verify seat run the three commands below, `--locked`, from `evals/`, with
+`SWARMAIL_BIN` set to the candidate's own root `swarmail` (resolved from
+Cargo's artifact record of `cargo build --locked --bin swarmail`, never the
+fallback build below). The same commands are the local reproduction, from
+`evals/`:
 
 ```bash
 cargo fmt --all -- --check
@@ -284,8 +290,8 @@ real MCP and fixture HTTP backed by SMTP DATA 250. Confirm enumerates all three
 links forward and reverse; digest opens forty distinct links with 39 decoys.
 Every command exits zero and truly recovers its goal, yet loses in the named
 class; the actual retained-state `check` agrees. Oracle/null and overlapping
-isolation controls remain required. Linux proof does not imply CI or macOS
-execution: #201 owns macOS eval gating, the operator owns sealing/live settings,
+isolation controls remain required. Linux proof does not imply macOS
+execution: #201's CI gating owns macOS eval proof, the operator owns sealing/live settings,
 and #221 owns namespace isolation.
 
 ## Honest limits
@@ -324,7 +330,8 @@ original HOME/.cargo and HOME/.rustup defaults. Optional nonempty toolchain and
 target selectors apply only to preparation; there is no inheritance fallback.
 Under the 2026-10-24 operator ruling, row **macOS evidence for `evals/`**, in
 [operator-rulings.md](../docs/rulings/epic-192.md), `evals/`
-is outside CI on every OS until #201. #201's CI gating owns macOS eval
+was outside CI on every OS until #201 wired it (2026-10-31: the macOS `test`
+job now runs the evals fmt, clippy and tests). #201's CI gating owns macOS eval
 preparation/toolchain, clippy/tests and artifact-primitive execution; those
 receipts are not a completion prerequisite for #196. Every Linux preparation,
 custom-target, artifact, mutation and gate proof remains required by
@@ -544,5 +551,5 @@ optional titles, escaped delimiters and balanced parentheses; it excludes inline
 code and backtick/tilde fenced code. It resolves dot components and percent escapes
 lexically, without depending on target existence. Raw HTML and renderer extensions
 are outside this bounded Markdown check. Git discovery, inventory and document
-read failures refuse. Root tests do not run this separate eval workspace; #201 owns
-its CI integration.
+read failures refuse. Root tests do not run this separate eval workspace; #201 wired its CI
+integration (the `test` jobs and the verify seat run this suite).
