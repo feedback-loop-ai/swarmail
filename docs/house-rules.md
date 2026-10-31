@@ -183,32 +183,35 @@ is CC-BY-4.0 data the crate packages for the entity table's proof
 
 ## Commits and history
 
-Author commits are unsigned until sealed (decision
-[0056](decisions/0056-signing-policy.md), *accepted*, operator, 2026-10-20).
-Seats and the operator's assistant commit unsigned (`commit.gpgsign=false`
-is set repo-locally), never push, and never stop because signing is
-unavailable — nothing signs mid-run. Write messages in the repository's
-style: imperative mood, a body that says why, not what the diff shows.
+Author commits are unsigned (decision
+[0056](decisions/0056-signing-policy.md), *accepted*, operator, 2026-10-20,
+with its 2026-11-01 addendum). Seats and the operator's assistant commit
+unsigned (`commit.gpgsign=false` is set repo-locally), never push, and never
+stop because signing is unavailable — nothing signs mid-run. Write messages
+in the repository's style: imperative mood, a body that says why, not what
+the diff shows.
 
-The operator seals every PR branch before merge with
-`scripts/seal-branch.sh` (`--check` first; it never fetches, so fetch
-before it): each commit of the branch is re-created and signed on its own
-parents, on the same merge-base — tree, message, author and parent edges
-unchanged, committer and signature new — and the branch moves only after
-every one is verified, with a leased force-push on `--push`. Never rebase
-or squash when sealing, and never onto a newer `main`. Seal before
-updating a branch from `main`, so the merge commit GitHub creates for that
-update stays GitHub-signed and is never re-signed as the operator's.
+PR branches are not sealed (0056's 2026-11-01 addendum). The operator's
+assistant merges a delivery run's PR by squash once every house gate passes
+on the final tree, after `main` is merged in, and every required CI check is
+green. It holds for the operator, and never merges on green, a PR that
+changes a decision's status to accepted; adds a package to `Cargo.lock` or
+`evals/Cargo.lock` or changes `deny.toml`; or changes `.github/`,
+`scripts/`, `.brokkr/` or the toolchain configuration. The operator may
+approve a held PR by name. `scripts/seal-branch.sh` stays available, and
+sealing is optional; when it is used, the rules above it still hold: never
+rebase or squash when sealing, never onto a newer `main`.
 
 Three kinds of signature are on record, and they mean different things:
 
 - **Sealed branch authorship** — the operator's signature added at the end
   by `scripts/seal-branch.sh`: the operator vouches for every author commit
-  of the PR branch. (Author commits signed at commit time before
-  2026-10-20 carry the same meaning and remain as recorded.)
+  of the PR branch. Required from 2026-10-20 to 2026-11-01, optional since.
+  (Author commits signed at commit time before 2026-10-20 carry the same
+  meaning and remain as recorded.)
 - **GitHub landing** — a squash merge, or a merge commit created on GitHub,
-  is signed by GitHub's key, not the operator's; the sealed author commits
-  remain on the PR branch.
+  is signed by GitHub's key, not the operator's; the author commits remain
+  on the PR branch.
 - **Release tags** — signed by the operator when cutting a release
   (`CONTRIBUTING.md`, Releases); sealing never touches a tag.
 
