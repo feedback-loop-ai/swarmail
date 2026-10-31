@@ -1667,7 +1667,7 @@ async fn a_refused_insert_under_the_cap_never_completes_a_focused_wait() {
     srv.stop().await;
 }
 
-// ---- attachments (decision 0092 §5) ----
+// ---- attachments (decision 0108 §5) ----
 
 /// A one-attachment mail: a named five-byte PDF beside the text body.
 const WITH_PDF: &[u8] = b"From: a@x.io\r\nTo: b@x.io\r\nSubject: pdf\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\

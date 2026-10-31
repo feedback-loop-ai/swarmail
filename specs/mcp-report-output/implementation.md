@@ -1,7 +1,7 @@
 # Implementation record — structured MCP report output
 
 Implements [spec.md](spec.md) under proposed
-[0091](../../docs/decisions/0091-mcp-report-output.md) on design commit 848aa65.
+[0105](../../docs/decisions/0105-mcp-report-output.md) on design commit 848aa65.
 Witness names below are the tests that prove each criterion on this candidate;
 gate receipts belong to the implement seat's result and engine verify.
 
@@ -27,7 +27,7 @@ untouched. No dependency, module, knob or bound changed.
 | AC6 | `legacy_bytes` (missing/explicit March over HTTP and the real bridge = `march-current-main.jsonl`, requests = recorded log); `historical_twelve_tool_fixture_is_preserved` (`march.jsonl` rows equal the shared baseline rows; catalogue differs only by the report tool and the wait threshold) | independent capture |
 | AC7 | workflow report refusals (not found, missing id, non-string id, unknown argument, analysis failed on restored bytes); existing storage/rate/shutdown/notification and `real_bridge_dual_output_size_cost` witnesses unchanged | real wire |
 | AC8 | unchanged suites: mcp, p2, stdio, deliverability, store and owner tests | existing |
-| AC9 | README / llms.txt report paragraphs; `report_served_docs_match_contract` expectation retargeted from the temporary "when #153 lands" clause; 0091 indexed as proposed | docs |
+| AC9 | README / llms.txt report paragraphs; `report_served_docs_match_contract` expectation retargeted from the temporary "when #153 lands" clause; 0105 indexed as proposed | docs |
 
 ## Baseline capture
 

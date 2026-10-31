@@ -1,7 +1,7 @@
 # Implementation plan — compact email view and field projections
 
 Implements [spec.md](spec.md) under proposed
-[0092](../../docs/decisions/0092-compact-email-view.md). Compatible work under
+[0108](../../docs/decisions/0108-compact-email-view.md). Compatible work under
 accepted 0045 §8: every accepted ruling is preserved; nothing here waits on
 acceptance.
 
@@ -119,7 +119,7 @@ and the report.
   pins keep deriving from it.
 - Documents: README's MCP section and `llms.txt` describe the compact
   default, `fields` and `view=compact`; `docs/decisions/README.md` gains the
-  0092 row.
+  0108 row.
 
 ## Project structure (files touched)
 
@@ -195,7 +195,5 @@ bash scripts/coverage-gate.sh && bash scripts/coverage-gate.sh selftest
 - **Token metric cannot be measured here.** Reported as "not measured: no
   paid trial" with a bytes proxy labelled as bytes; the harness's March
   client is the oracle's and stays.
-- **Decision number.** 0092 is free on this tree and reserved for #155 by the
-  index row of 0094; another candidate branch carries a different 0092.
-  Mitigation: the operator resolves collisions at integration, as the index
-  already records.
+- **Decision number.** Drafted as 0092, renumbered to 0108 at the merge of main:
+  main's 0092 is official-mail-comparison, and open PR #292 holds 0106 and 0107.

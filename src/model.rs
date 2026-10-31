@@ -128,7 +128,7 @@ impl<'de> Deserialize<'de> for LinkSource {
     }
 }
 
-/// One attachment part as ingest listed it (decision 0092 §5): the outer
+/// One attachment part as ingest listed it (decision 0108 §5): the outer
 /// parser list in parser order, with the labels the sender gave and the
 /// decoded part length. `None` is a label the mail did not carry.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -179,7 +179,7 @@ pub struct Email {
     /// focused link wait exposes it.
     #[serde(skip)]
     pub link_metadata: Option<Vec<LinkMetadata>>,
-    /// The ingest-time attachment list (decision 0092 §5): `Some([])` is a
+    /// The ingest-time attachment list (decision 0108 §5): `Some([])` is a
     /// known empty list, `None` a row from before the column or a mail the
     /// parser could not read — unknown, never backfilled. Internal like
     /// `link_metadata`: no Email serialization carries it, so every existing

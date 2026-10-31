@@ -1,4 +1,4 @@
-//! Decision 0092 over the real wire: the compact default of the two list
+//! Decision 0108 over the real wire: the compact default of the two list
 //! reads, the `fields` projection of the four reads, and March's frozen
 //! vocabulary. Every case runs on June and November, over HTTP and over the
 //! spawned stdio bridge, against a mail delivered through real SMTP.

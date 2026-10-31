@@ -145,7 +145,7 @@ discovery appends the two focused waits after them, fifteen in all. Tests pin
 the REST-backed schemas to served OpenAPI through explicit output projections,
 including omitted fields and nullable provenance; the focused waits are MCP-only
 and their schemas are checked against independently stated expectations.
-Compact reads (decision 0092, proposed): on 2025-06-18 and 2025-11-25,
+Compact reads (decision 0108, proposed): on 2025-06-18 and 2025-11-25,
 swarmail_search_emails and swarmail_get_latest_email answer a compact view per
 email by default: id (the handle for swarmail_get_email), from, to, subject,
 received_ms, a snippet of at most 200 characters, codes, anchors (url,
@@ -178,7 +178,9 @@ arrays refuse locally without dialing, oversized ones with one null-ID size
 error. Independent operational lines still run concurrently after initialization.
 This delivery claims version negotiation; full revision conformance is not claimed.
 The operator chose to retain documented C1–C6 deviations on 2026-10-26; see the
-[per-revision deviation register](https://github.com/feedback-loop-ai/swarmail/blob/main/specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register).
+[per-revision deviation register](https://github.com/feedback-loop-ai/swarmail/blob/main/specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register),
+qualified by the proposed [dated candidate corrections](https://github.com/feedback-loop-ai/swarmail/blob/main/docs/decisions/0104-mcp-candidate-proof.md)
+for its thirteen tools, OPTIONS exception and shared-limiter witness.
 This bridge targets the paired stateless JSON server with identity HTTP parsing;
 it advertises JSON/SSE but has no general SSE/session client support.
 Tool calls share 1024 attempts per server per monotonic second, including
@@ -433,10 +435,9 @@ DeliverabilityReport: severity enum, tagged header/mime_part/link locations, u64
 coordinates, at most 256 findings (the 65536-byte bound, order and deduplication
 stay producer rules).
 Missing mail and failed/unavailable analysis use isError=true without structured
-content; malformed arguments use -32602. The March descriptor keeps its historical
-"Only the synthetic demo rule ships" wording byte-for-byte; it predates the bulk
-checklist and is not a current rule inventory. Modern descriptors state the
-current scope (proposed 0091).
+content; malformed arguments use -32602. The March descriptor keeps main's
+"with demo and bulk-sender checks" wording as its historical text, with its
+(2025-03-26) suffix; modern descriptors state the full current scope and the structured output (proposed 0105).
 
 REST assert/await and MCP wait_for_email admit optional no_findings_at_or_above
 (info|warning|error). It qualifies ordinary-filter candidates before paging;

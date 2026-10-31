@@ -397,7 +397,7 @@ async fn revision_tool_annotations() {
     }
 }
 /// The twenty-one names `fields` accepts, restated here from the decision
-/// (0092 §3) rather than read back from the crate that serves them.
+/// (0108 §3) rather than read back from the crate that serves them.
 pub(crate) const FIELD_NAMES: [&str; 21] = [
     "id",
     "inbox",
@@ -449,7 +449,7 @@ pub(crate) fn strip_fields(descriptor: &mut Value) {
     );
 }
 
-/// The compact wording of the two list reads (decision 0092 §1): the
+/// The compact wording of the two list reads (decision 0108 §1): the
 /// handle, the 200-character snippet, the 250-entry caps and `fields`.
 pub(crate) fn assert_compact_description(descriptor: &Value) {
     let description = descriptor["description"].as_str().unwrap();
@@ -639,7 +639,7 @@ async fn revision_smtp_visibility() {
         if version == VERSIONS[0] {
             assert_eq!(got, data["emails"][0]);
         } else {
-            // Modern search is the compact view (decision 0092 §1): the
+            // Modern search is the compact view (decision 0108 §1): the
             // handle, the headers, a snippet and the labelled links; the
             // whole email stays behind get_email.
             assert_eq!(
@@ -947,6 +947,7 @@ async fn revision_served_contract() {
         "full revision conformance is not claimed",
         "operator-chosen C1-C6 deviations",
         "specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register",
+        "docs/decisions/0104-mcp-candidate-proof.md",
         "except OPTIONS",
     ] {
         assert!(
@@ -960,8 +961,13 @@ async fn revision_served_contract() {
         "except\nOPTIONS",
         "the nine reads",
         "the six mutations",
+        "outputSchema",
+        "structuredContent",
+        "10 MiB",
+        "Tokens-per-success",
         "full revision conformance is not claimed",
         "specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register",
+        "docs/decisions/0104-mcp-candidate-proof.md",
     ] {
         assert!(llms.contains(clause), "llms.txt missing {clause}");
     }

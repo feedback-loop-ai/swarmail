@@ -4,7 +4,7 @@ Date: 2026-10-30. Status: design draft. Epic #164, issue #155 (P1, metric:
 median tokens per success). Zero-Codex `claude-careful` lane (decisions 0098,
 0099; review residuals rework under accepted 0102).
 
-Decision: 0092 — [Compact email view and field projections](../../docs/decisions/0092-compact-email-view.md), proposed.
+Decision: 0108 — [Compact email view and field projections](../../docs/decisions/0108-compact-email-view.md), proposed.
 
 ## Feature and rationale
 
@@ -173,7 +173,7 @@ means the key is omitted, never `null`, unless the row says otherwise.
 | `attachments_total` | exact count | the list was not cut |
 
 `N` is 200 collapsed characters, the existing `SNIPPET_CHARS`; it is named in
-decision 0092 and a change to it is an amendment, not an edit. `inbox`, `cc`,
+decision 0108 and a change to it is an amendment, not an edit. `inbox`, `cc`,
 `recipients`, `envelope_from`, `received_at`, `size`, `text`, `html`,
 `message_id`, `in_reply_to`, `references` are reachable through `fields`.
 
@@ -240,7 +240,7 @@ gains a key.
   known on June/November and unknown on March.
 - `openapi.json` documents `view` on the list route and the compact item
   shape; README and `llms.txt` describe the compact default, `fields` and
-  `view=compact`. The decision index gains the 0092 row.
+  `view=compact`. The decision index gains the 0108 row.
 
 ## Frozen guarantees
 

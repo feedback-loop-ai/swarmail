@@ -1,6 +1,6 @@
 # Implementation story — compact email view and field projections
 
-Issue #155, decision 0092 (proposed). Zero-Codex `claude-careful` lane. This
+Issue #155, decision 0108 (proposed). Zero-Codex `claude-careful` lane. This
 records what was built, what was proved and what was not.
 
 ## T0 — the stacked base, before any edit (AC6)
@@ -58,7 +58,7 @@ untouched.
   inbox list only, `compact` the only value; the unchanged path is the
   unchanged code. `CompactEmail` / `CompactEmailList` are documented; `Email`
   and `EmailList` are untouched, so the OpenAPI pins still derive from them.
-- **Documents**: README, `llms.txt`, the decision index row for 0092.
+- **Documents**: README, `llms.txt`, the decision index row for 0108.
 
 One thing the design did not state, found while building: `EmailAddress` declares `name` before `address`, so a struct write and a
 `serde_json::Value` write of the same address differ. Every plane therefore
@@ -124,5 +124,5 @@ Commits are unsigned; nothing was pushed, merged, published or accepted.
   thread query domains are accepted-empty (0074 §1, 0048 §4).
 - A client that never negotiates a version stays on March and gets no compact
   view (0082 §1).
-- Decision 0092 is `proposed`; a collision of its number with another
-  candidate branch is the operator's to resolve at integration.
+- Decision 0108 is `proposed`; it was drafted as 0092 and renumbered at the
+  merge of main, where 0092 is official-mail-comparison.

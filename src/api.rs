@@ -903,7 +903,7 @@ pub struct ListQuery {
     pub view: Option<View>,
 }
 
-/// The one list view a caller can ask for (decision 0092 §4). The reader is
+/// The one list view a caller can ask for (decision 0108 §4). The reader is
 /// by hand so a refused value names the key — a derived enum would answer
 /// only "unknown variant" — and so the single admitted spelling is the
 /// whole domain: `full` and the empty value refuse like any other.
@@ -1103,7 +1103,7 @@ pub struct EmailList {
     pub emails: Vec<Arc<Email>>,
 }
 
-// ---------- the compact agent view (decision 0092) ----------
+// ---------- the compact agent view (decision 0108) ----------
 //
 // Every member is built from a stored field; nothing here parses `raw`. Every
 // plane writes an item through a `serde_json::Value` (a BTreeMap here, so
@@ -1267,7 +1267,7 @@ pub(crate) fn parse_fields(value: &serde_json::Value) -> Result<Vec<&'static str
         .collect()
 }
 
-/// The email projected to the requested names plus `id` (decision 0092 §3):
+/// The email projected to the requested names plus `id` (decision 0108 §3):
 /// the full `Email` value merged with the three derived members, retained
 /// to what was asked. A member the mail lacks stays absent, as in the full
 /// view, and keys come in the server's one canonical order.
@@ -1295,7 +1295,7 @@ pub(crate) fn project(email: &Email, fields: &[&str]) -> serde_json::Value {
     full
 }
 
-/// Decision 0092: byte pins on the compact view and the projection.
+/// Decision 0108: byte pins on the compact view and the projection.
 #[cfg(test)]
 mod compact_view {
     use super::*;
@@ -1888,7 +1888,7 @@ async fn list_messages(
     let total = all.len();
     let offset = q.offset.unwrap_or(0);
     let emails: Vec<Arc<Email>> = all.into_iter().skip(offset).take(limit).collect();
-    // Decision 0092 §4: without `view` the response is the unchanged list.
+    // Decision 0108 §4: without `view` the response is the unchanged list.
     if q.view.is_some() {
         let emails = emails
             .iter()
@@ -3990,7 +3990,7 @@ mod tests {
             // Refused before staging: the rate text, never -32602.
             call(6, "swarmail_seed_email", json!({"bogus":1})),
         ];
-        rate.set_window(never, mcp::ToolRate::CAP);
+        rate.set_window(never, 1024);
         for version in REVISIONS {
             for request in &effects {
                 let (_, reply) = mcp_post(addr, version, request).await;
@@ -4028,13 +4028,13 @@ mod tests {
         assert_eq!(mutations.load(Ordering::SeqCst), 0);
         assert_eq!(subscriptions.load(Ordering::SeqCst), 0);
         assert_eq!(serde_json::to_value(chaos.current()).unwrap(), chaos_before);
-        assert_eq!(rate.taken(), mcp::ToolRate::CAP);
+        assert_eq!(rate.taken(), 1024);
 
-        // A window that began a full WINDOW ago refills on the next attempt
+        // A window that began a full second ago refills on the next attempt
         // (the owner test pins the exact boundary instant); the admitted
         // seed and wait prove both observers live.
-        let elapsed = Instant::now().checked_sub(mcp::ToolRate::WINDOW).unwrap();
-        rate.set_window(elapsed, mcp::ToolRate::CAP);
+        let elapsed = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        rate.set_window(elapsed, 1024);
         let (_, reply) = mcp_post(addr, REVISIONS[2], &effects[0]).await;
         assert_eq!(reply["result"]["isError"], false, "{reply}");
         assert_eq!(mutations.load(Ordering::SeqCst), 1);

@@ -335,7 +335,12 @@ posture above), `SWARMAIL_MAX_PER_INBOX` (`100000`, `0` = unlimited),
 `SWARMAIL_URL` (the MCP stdio bridge's upstream, default
 `http://127.0.0.1:8025`),
 `SWARMAIL_TLS_CERT`/`SWARMAIL_TLS_KEY`,
-`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`.
+`SWARMAIL_TLS_HANDSHAKE_TIMEOUT_MS` (`10000`), `SWARMAIL_DATA_FILE`,
+`SWARMAIL_MAX_SESSIONS` (`256` concurrent sessions per SMTP and POP3
+listener, at least `1`; one more is answered `421`; the flag is
+`--max-sessions`. Each session holds a file descriptor, and the default is
+sized so that three times the cap stays under the usual 1024 soft limit
+(decision 0027 §3): above about 340, raise `ulimit -n` first).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and
@@ -497,7 +502,7 @@ so: `200 {"status":"ok"}` when no listener is flagged, `503
 surfaces, and `503 {"status":"stopping"}` for a request that reaches the
 handler after the stop has fired — that state wins over everything else.
 Sessions are bounded where the wire admits them: more than 256 concurrent
-SMTP or POP3 sessions is refused before any greeting (`421 4.7.0 Too many
+SMTP or POP3 sessions (the default of `--max-sessions`) is refused before any greeting (`421 4.7.0 Too many
 connections, closing transmission channel` / `-ERR too many connections`);
 completed sessions are reaped right after each accept, before the cap is
 checked, so a slot freed while the listener waited is offered to the very
@@ -705,7 +710,7 @@ output projections in tests; the two focused waits are MCP-only, with no REST
 projection, and their schemas are checked against independently stated
 expectations.
 
-**Compact reads and `fields` (decision 0092, proposed).** On `2025-06-18` and
+**Compact reads and `fields` (decision 0108, proposed).** On `2025-06-18` and
 `2025-11-25`, `swarmail_search_emails` and `swarmail_get_latest_email` answer a
 compact view of each email by default: `id` (the handle — pass it to
 `swarmail_get_email` for the whole email), `from`, `to`, `subject`,
@@ -739,7 +744,6 @@ exceed the cap. Lost replies can follow committed mutations; do not replay them
 assuming rollback. The epic measures tokens-per-success and invalid-argument/
 tool-misuse rates; local tests prove representation and text compatibility, while
 the operator's #151 baseline and client matrix own measurement and client receipts.
-The #152/#153 PRs remain unmerged until that baseline exists.
 
 The stdio bridge starts with legacy compatibility. Single initialize fences
 later input until a matching successful response with capabilities and server
@@ -1310,6 +1314,13 @@ parse, was the cost. The capped query paths publish in the same run
 (`ingest/threads/view@cap`, `ingest/store/count@cap`,
 `ingest/store/count@cap-filtered`).
 
+These are in-process ingest microbenchmarks. They are not network
+throughput, wait latency or agent results, and they compare nothing.
+The fair comparison against Mailpit and MailHog has its own method and
+driver, and so far no results: see [docs/evals](docs/evals/README.md)
+for what is built, what is still missing and why. This README states no
+comparative or agent numbers until admitted evidence exists to cite.
+
 ## Repo layout
 
 | Path | What it is |
@@ -1392,6 +1403,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/deliverability.rs` | Lazy typed report, REST/MCP parity, threshold assertions/waits, UI states, persistence, pruning and served contract documentation (proposed 0085) |
 | `tests/api.rs` | every REST route, happy + error branches |
 | `tests/config_cli.rs` | the CLI/env config surface, the independent SMTP/POP3 idle defaults, the rendered `serve --help` |
+| `tests/listen.rs` | every listener's bind: both address families, the bind error reported as-is, and (Linux) a burst of 600 fresh SMTP connections all greeted, past the platform default backlog of 128 |
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/focused_waits.rs` | the focused code/link waits over real SMTP and MCP: each filter on each tool by counterexample, ingest occurrence metadata for SMTP and seed, post-park deliveries that never complete a wait, and local applications refusing stale codes and look-alike links (proposed 0094) |
@@ -1411,6 +1423,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/store_contract_docs.rs` | the store, maildrop and compat contracts as documented — README, llms.txt, the chart comment and the served schema, their numbers built from the running constants — and every decision index row agreeing with its record's status |
 | `tests/delivery_constitution.rs` | structural pins on `.brokkr/recipes/self/` (0050): the review-residual stops, the design sequence ending in the pinned check, the verify seat's pinned gates and shim check; and the documented install examples and CI's chart-history and docker-smoke wiring (#141) |
 | `tests/delivery_recipes.rs` | Codex recipe discovery, triage routing and single/double/full review, inherited shell gates, work-seat tools, exact routes and independent review without Pro or author-model fallback (0057); [recipe tables and launch commands](.brokkr/recipes/README.md) |
+| `tests/mail_compare.rs` | the fair wire comparison driver (proposed 0091) against the real binary it launches: method and source-pin refusals, hand-computed quantiles, exact throughput and present/future/empty wait reconciliation, a bounded 1,000-session run, closed-environment, private-output and reaped-group facts read from `/proc`, admission refusals, and every `scripts/compare-mail.sh` mode refusing without launching an agent |
 | `tests/tooling_patches.rs` | the actual tooling-patch helper against real Git repositories: source identity, clean state, strict records, safe paths, all checksums before mutation and ordered patch application |
 | unit | extraction, filters, chaos gating, model plumbing, POP3 line protocol, compat shapes |
 
@@ -1543,10 +1556,9 @@ DeliverabilityReport: severity enum, tagged header/mime_part/link locations, u64
 coordinates, at most 256 findings (the 65536-byte bound, order and deduplication
 stay producer rules).
 Missing mail and failed/unavailable analysis use isError=true without structured
-content; malformed arguments use -32602. The March descriptor keeps its historical
-"Only the synthetic demo rule ships" wording byte-for-byte; it predates the bulk
-checklist and is not a current rule inventory. Modern descriptors state the
-current scope (proposed 0091).
+content; malformed arguments use -32602. The March descriptor keeps main's
+"with demo and bulk-sender checks" wording as its historical text, with its
+(2025-03-26) suffix; modern descriptors state the full current scope and the structured output (proposed 0105).
 
 REST assert/await and MCP wait_for_email admit optional no_findings_at_or_above
 (info|warning|error). It qualifies ordinary-filter candidates before paging;

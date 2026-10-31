@@ -122,7 +122,7 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     // Decision 0094 §2: NULL is a row from before ingest kept link
     // occurrences — unknown, never backfilled.
     ("link_metadata_json", "TEXT"),
-    // Decision 0092 §5: NULL is unknown — a row from before ingest kept the
+    // Decision 0108 §5: NULL is unknown — a row from before ingest kept the
     // attachment list, or a mail the parser could not read; never backfilled.
     ("attachments_json", "TEXT"),
 ];
@@ -595,7 +595,7 @@ fn from_json<T: DeserializeOwned + Default>(raw: String) -> T {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-/// A column that must restore exactly or refuse (decisions 0094 §2, 0092
+/// A column that must restore exactly or refuse (decisions 0094 §2, 0108
 /// §5): SQL NULL is unknown history, and anything else must be the exact
 /// closed shape ingest wrote. Unlike [`from_json`]'s lenient default for the
 /// original columns, damage here refuses the restore — an empty fallback
@@ -918,7 +918,7 @@ mod tests {
         assert_eq!(persist.load().unwrap().0, [mail]);
     }
 
-    /// Decision 0092 §5: SQL NULL (history), a known empty list and a
+    /// Decision 0108 §5: SQL NULL (history), a known empty list and a
     /// populated list restore as stored, in the strict tuple form, and every
     /// other value — invalid JSON, JSON null, an object, a wrong tuple
     /// length, a wrong member type, a negative size — refuses the restore by

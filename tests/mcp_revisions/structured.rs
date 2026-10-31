@@ -834,7 +834,7 @@ pub(super) fn march_view(tool: &Value, read_only: bool) -> Value {
     descriptor
 }
 
-/// The compact item (decision 0092 §1) of [`historical`], stated member by
+/// The compact item (decision 0108 §1) of [`historical`], stated member by
 /// member: no body, no `cc`, no `inbox`; the unknown attachment list is
 /// `null` and the stored links stand in for the anchors a row from before
 /// link metadata never had. The snippet is the text with its whitespace runs
@@ -922,7 +922,7 @@ async fn modern_all_tools_http_and_stdio() {
                     tool,
                     Some("swarmail_search_emails" | "swarmail_get_latest_email")
                 ) {
-                    // Decision 0092 §1: the two list reads answer the compact
+                    // Decision 0108 §1: the two list reads answer the compact
                     // view on a modern revision. The expectation is the
                     // March payload with each email replaced by the stated
                     // compact item, serialized once into both representations.
@@ -1042,7 +1042,7 @@ fn report_projection(c: &Value) -> Value {
     }
     report
 }
-/// The named exception to the `Email` derivation (decision 0092 §7): the
+/// The named exception to the `Email` derivation (decision 0108 §7): the
 /// four projecting reads publish one closed object whose only static
 /// requirement is `id` — a `fields` projection can omit every other member —
 /// and which adds the three derived members and their totals. The wire tests
@@ -1690,7 +1690,7 @@ async fn real_bridge_dual_output_size_cost() {
         );
     }
     let query = call(json!("large"), "search_emails", json!({"inbox":"large"}));
-    // A modern reader names the bodies it wants (decision 0092 §3): the
+    // A modern reader names the bodies it wants (decision 0108 §3): the
     // default is compact, so the size cost is measured through `fields`.
     let bodies = call(
         json!("large"),

@@ -2,7 +2,7 @@
 
 These are implementation/proof obligations, not completed work. Check a task only
 after its paired witness is recorded against the actual candidate. The chief
-commits the design and proposed 0091; the engine's deterministic check owns the
+commits the design and proposed 0105; the engine's deterministic check owns the
 design verdict. Dependencies follow this order.
 
 - [x] **T1 — Freeze provenance and record current failures (AC6, AC10).**
@@ -71,7 +71,7 @@ design verdict. Dependencies follow this order.
   deliverability, burst/rate and owner tests preserve 0001–0005, cache/job/byte
   bounds, cancellation/deadlines, pruning, chaos and webhook/TLS behavior.
 - [x] **T10 — Align current documentation and evidence (AC9, AC10).**
-  Index 0091 as proposed, correct current modern report/rule/size descriptions,
+  Index 0105 as proposed, correct current modern report/rule/size descriptions,
   append separately attributed fixture provenance, and record this feature's
   witness names/gaps. Preserve old specs and all prior member notes/severities.
   **Proof:** descriptor/default legacy byte checks plus structural OpenAPI

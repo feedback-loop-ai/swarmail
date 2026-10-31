@@ -1,12 +1,12 @@
-# 0092 — Compact email view and field projections
+# 0108 — Compact email view and field projections
 
 - **Status:** proposed — awaiting the operator
 - **Date:** 2026-10-30
-- **Scope:** Epic #164, issue #155, stacked on #153 (PR #282) and #154 (PR #284).
+- **Scope:** Epic #164, issue #155, on #153 (PR #282) and #154 (PR #284), both now on main.
 - **Specification:** [Compact email view](../../specs/compact-email-view/spec.md);
   [plan](../../specs/compact-email-view/plan.md), [tasks](../../specs/compact-email-view/tasks.md).
 - **Supplements:** proposed [0082](0082-mcp-structured-output.md),
-  [0091](0091-mcp-report-output.md) and [0094](0094-focused-mail-waits.md)
+  [0105](0105-mcp-report-output.md) and [0094](0094-focused-mail-waits.md)
   (the modern tool inventory and its output schemas); extends ingest-owned
   extraction under accepted [0005](0005-extraction-at-ingest.md) compatibly.
 - **Authority relied on:** accepted [0031 §3](0031-sender-honest-stored-bodies.md)
@@ -16,10 +16,8 @@
   [0048 §4](0048-rest-webhook-validation.md) (empty native query domains).
 - **Preserves:** 0001–0005, 0010, 0014, 0020, 0030, 0056, the 0082 §1 March
   byte freeze and every existing REST response without `view`.
-- **Number:** 0092 is free on this tree and reserved for #155 by the index row
-  of 0094; another candidate branch carries a different 0092. The operator
-  resolves collisions at integration; this record claims nothing until
-  accepted.
+- **Number:** drafted as 0092, renumbered to 0108 at the merge of main: main's 0092 is
+  official-mail-comparison, and open PR #292 holds 0106 and 0107.
 
 ## Proposed ruling
 

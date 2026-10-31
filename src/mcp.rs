@@ -414,7 +414,7 @@ fn catalogue(revision: Revision) -> &'static Value {
     }
 }
 
-/// The modern projection of [`TOOLS`] (decisions 0082 §1, 0092 §1): output
+/// The modern projection of [`TOOLS`] (decisions 0082 §1, 0108 §1): output
 /// schemas and annotations, the compact wording of the two list reads, and
 /// the `fields` argument on the four reads that project.
 static MODERN_TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
@@ -473,7 +473,7 @@ static MODERN_TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     tools
 });
 
-/// The four reads that accept `fields` on a modern revision (decision 0092
+/// The four reads that accept `fields` on a modern revision (decision 0108
 /// §3). The focused waits, the extractors, the seed and the report keep
 /// their own shapes.
 const PROJECTING_READS: [&str; 4] = [
@@ -589,7 +589,7 @@ fn unknown_argument<'a>(tool: &str, args: &'a Value, revision: Revision) -> Opti
         .find(|key| known.and_then(|p| p.get(*key)).is_none())
 }
 
-/// Stage the `fields` argument (decision 0092 §3): `None` is absence, a
+/// Stage the `fields` argument (decision 0108 §3): `None` is absence, a
 /// present value must be an array of known names. Staged before any store
 /// read and before a wait parks, so a refusal leaves no trace.
 fn arg_fields(args: &Value) -> Result<Option<Vec<&'static str>>, (i64, String)> {
@@ -968,7 +968,7 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
     );
     let strings = json!({"type":"array", "items":{"type":"string"}});
     let count = json!({"type":"integer", "minimum":0});
-    // One closed object serves the four reads (decision 0092 §7): a `fields`
+    // One closed object serves the four reads (decision 0108 §7): a `fields`
     // projection can omit every member but `id`, so `id` is the only one
     // required statically; the wire tests compute each request's exact key
     // set. The eighteen `Email` members keep their shapes and the three
@@ -1097,7 +1097,7 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
             "limit": { "type": "integer", "minimum": 0, "maximum": 250, "default": 100 },
             "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "Matches to skip, newest first; total is counted before paging" } },
             "additionalProperties": false } },
-        { "name": "swarmail_get_deliverability_report", "description": "Lazy versioned report from stored bytes. Only the synthetic demo rule ships; empty findings do not imply deliverability. Returns report JSON in a text block (2025-03-26).",
+        { "name": "swarmail_get_deliverability_report", "description": "Lazy versioned report from stored bytes with demo and bulk-sender checks. Empty findings do not imply deliverability. Returns report JSON in a text block (2025-03-26).",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
         { "name": "swarmail_get_email", "description": "Fetch one captured email in full by id.",
           "inputSchema": SCHEMA_EMAIL_ID.clone() },
@@ -1185,25 +1185,39 @@ mod tests {
 
     #[test]
     fn tool_rate_uses_exact_monotonic_windows() {
+        // Literal contract, deliberately not derived from the production
+        // constants: 1024 attempts per fixed one-second window.
         let rate = ToolRate::default();
-        let now = std::time::Instant::now();
-        rate.set_window(now, 0);
-        for _ in 0..ToolRate::CAP {
-            assert!(rate.take_at(now));
+        let t = std::time::Instant::now();
+        rate.set_window(t, 0);
+        for _ in 0..1024 {
+            assert!(rate.take_at(t));
         }
-        assert!(!rate.take_at(now + ToolRate::WINDOW - std::time::Duration::from_nanos(1)));
-        assert!(rate.take_at(now + ToolRate::WINDOW));
-        assert!(rate.take_at(now + ToolRate::WINDOW));
+        assert!(!rate.take_at(t), "attempt 1025 is the first refusal");
+        assert_eq!(rate.taken(), 1024);
+        assert!(!rate.take_at(t + std::time::Duration::from_nanos(999_999_999)));
+        assert_eq!(rate.taken(), 1024, "a refusal neither consumes nor refills");
+        let t1 = t + std::time::Duration::from_secs(1);
+        assert!(rate.take_at(t1), "one second opens a fresh window");
+        for _ in 0..1023 {
+            assert!(rate.take_at(t1));
+        }
+        assert!(
+            !rate.take_at(t1),
+            "the fresh window also holds exactly 1024"
+        );
+        assert_eq!(rate.taken(), 1024);
     }
 
     #[tokio::test]
     async fn exhausted_tool_rate_refuses_before_effects_and_keeps_control_available() {
         let (_stop, ctx) = context();
         // A generated future start keeps this dispatch proof independent of
-        // scheduling; the preceding test proves refill with explicit instants.
+        // scheduling; the preceding test proves the literal 1024-per-second
+        // contract with explicit instants.
         ctx.tool_rate.set_window(
             std::time::Instant::now() + std::time::Duration::from_secs(3600),
-            ToolRate::CAP,
+            1024,
         );
         ctx.store
             .insert(crate::store::email("kept", "kept", "a@x.io"))

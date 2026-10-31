@@ -5500,7 +5500,7 @@ async fn openapi_webhook_ca_admission_statuses() {
     srv.stop().await;
 }
 
-// ---- view=compact (decision 0092 §4) ----
+// ---- view=compact (decision 0108 §4) ----
 
 /// A multipart mail with two anchors, a code and a named PDF, and a plain
 /// one: the same fixtures the MCP wire proofs read.
@@ -5706,7 +5706,7 @@ async fn view_admits_only_compact_and_only_on_the_list() {
 
 /// The README and the served `llms.txt` describe the compact default, the
 /// `fields` argument and `view=compact`, and say the token metric was not
-/// measured (decision 0092 §8).
+/// measured (decision 0108 §8).
 #[tokio::test]
 async fn the_documents_describe_the_compact_view_and_fields() {
     let srv = start().await;

@@ -61,7 +61,7 @@ while a box is open.
   served-parameters test lists `view` on the list route only; the single
   message, thread and feed routes still take no query.
 - [x] **T6 — Documents and the index row.** README MCP section, `llms.txt`,
-  `docs/decisions/README.md` row for 0092 (status proposed), release notes if
+  `docs/decisions/README.md` row for 0108 (status proposed), release notes if
   the release process asks.
   **Test:** `cargo test --locked --test listener_contract_docs --test
   store_contract_docs` and the OpenAPI pin tests stay green; the README and

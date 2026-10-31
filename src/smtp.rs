@@ -87,7 +87,7 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Concurrent sessions per listener (decision 0027): three listeners at the
 /// cap plus the listeners and stdio stay under the common 1024 soft-fd
 /// floor — the repro axis issue #36 itself names.
-const DEFAULT_MAX_SESSIONS: usize = 256;
+pub const DEFAULT_MAX_SESSIONS: usize = 256;
 
 /// The recipient ceiling per transaction (decision 0027): the 101st `RCPT`
 /// is refused `452 4.5.3` before it is appended. A plain constant, not a
@@ -1848,7 +1848,7 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
     }
 }
 
-/// The outer message's attachment parts in parser order (decision 0092 §5):
+/// The outer message's attachment parts in parser order (decision 0108 §5):
 /// the labels the sender gave and the part's decoded length. An attached
 /// message is one entry; its inner parts are not in the outer list. The
 /// classification is the parser's; nothing is decoded beyond what the parse
@@ -1950,7 +1950,7 @@ mod tests {
         assert!(bodyless.html.is_none());
     }
 
-    /// Decision 0092 §5: the attachment list is the outer parser list in
+    /// Decision 0108 §5: the attachment list is the outer parser list in
     /// parser order — a named PDF, an inline image and an attached message
     /// (counted once, its inner parts unlisted) — with the sender's labels
     /// and the decoded part length; a mail without attachments is a known

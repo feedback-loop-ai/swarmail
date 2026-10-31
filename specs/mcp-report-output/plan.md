@@ -1,7 +1,7 @@
 # Implementation plan — structured MCP report output
 
 Implements [spec.md](spec.md) under proposed
-[0091](../../docs/decisions/0091-mcp-report-output.md).
+[0105](../../docs/decisions/0105-mcp-report-output.md).
 
 ## Technical context
 
@@ -20,7 +20,7 @@ the design artifacts; implementation, verify and protected review remain owed.
 Preserve 0001–0005 and accepted 0029/0039/0044/0047 error, notification and
 transport contracts; retain the operator's 0079/0080 C1–C6 disposition and
 0082 historical clarification. Lazy report analysis authorized separately under
-0085 never replaces ingest extraction. 0091 adds a modern output promise, not an
+0085 never replaces ingest extraction. 0105 adds a modern output promise, not an
 amendment weakening accepted guarantees; all proposals remain proposed under
 0045 §8. Frozen weakening is refused even with a proposal.
 
@@ -54,10 +54,10 @@ modern description, and current public docs explain retained legacy text.
 The old #152/#153 artifacts and 0082 are historical. New plan instructions
 supersede prospective edits to them for this follow-up only.
 
-Decision numbering uses 0091: tracked records extend through 0089, while the
+Decision numbering uses 0105: tracked records extend through 0089, while the
 supplied prior mixed-routing review attributes 0090 to its separate route
 design. Do not reuse that known allocation or lower reserved gaps. Implementation
-adds the 0091 index row; the chief's commit is exactly the three design files
+adds the 0105 index row; the chief's commit is exactly the three design files
 and this new proposal.
 
 ## Implementation sequence
@@ -118,7 +118,7 @@ and this new proposal.
    chaos and webhook regression suites. Do not introduce runtime retry, second
    analysis, stronger snapshot semantics or general conformance repairs.
 9. Update current README/llms/OpenAPI descriptions without changing OpenAPI
-   assertions or March descriptors. Index 0091 as proposed. Add baseline
+   assertions or March descriptors. Index 0105 as proposed. Add baseline
    provenance to the fixture README without replacing its historical paragraphs.
    Record implementation witness names and remaining limitations in this
    feature's artifacts; keep all earlier specs/receipts and 0082 byte-identical.
@@ -134,7 +134,7 @@ and this new proposal.
 | Path | Responsibility |
 | --- | --- |
 | specs/mcp-report-output/{spec,plan,tasks}.md | This current design and later actual implementation status |
-| docs/decisions/0091-mcp-report-output.md | New proposed modern report contract supplement |
+| docs/decisions/0105-mcp-report-output.md | New proposed modern report contract supplement |
 | src/mcp.rs | Missing report schema fragments; modern-only description and catalogue assertions |
 | tests/mcp_revisions.rs | Exact inventory/annotations and existing revision isolation witnesses |
 | tests/mcp_revisions/structured.rs | Finite evaluator, four source pins/projection, real workflows, independent expected values and legacy comparison |
@@ -142,7 +142,7 @@ and this new proposal.
 | src/deliverability.rs; src/deliverability/concurrency_tests.rs | Existing cfg(test) owners for typed report/seam proofs only where necessary; no production evaluator change |
 | src/mcp/batch_tests.rs; tests/mcp.rs; tests/p2.rs; tests/stdio.rs; tests/deliverability.rs | Extend only concrete uncovered refusal/adapter cases in their existing owners |
 | README.md; src/static/llms.txt; src/static/openapi.json | Current revision/rule/size/evidence descriptions; OpenAPI assertions unchanged |
-| docs/decisions/README.md | Index 0091 as proposed during implementation |
+| docs/decisions/README.md | Index 0105 as proposed during implementation |
 
 The original march.jsonl, historical specs/mcp-version-negotiation/ and
 specs/mcp-structured-output/, existing decisions including 0082, and prior
