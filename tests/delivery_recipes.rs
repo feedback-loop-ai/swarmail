@@ -634,12 +634,29 @@ fn fast_recipe_preserves_shell_proofs_design_origin_and_hard_review_refusals() {
     assert!(recipe.get("protected_phase").is_none());
     assert_eq!(recipe["remove"]["seats"], json!(["intake"]));
     assert_eq!(recipe["remove"]["phases"], json!(["intake"]));
-    assert_eq!(recipe["remove"]["rules"], json!(["INTAKE-OK"]));
+    // Decision 0102's 2026-10-31 addendum: codex-fast's own clean rows rule
+    // every clean verdict (a read-only spec defect reclassifies through
+    // triage, anything else unknown stops) and precede self's, so self's
+    // clean design returns could never fire here and are removed, not left
+    // dead. Its residual design returns compose after codex-fast's own rows.
+    assert_eq!(
+        recipe["remove"]["rules"],
+        json!([
+            "INTAKE-OK",
+            "REVIEW-CLEAN-SPEC-EXHAUSTED",
+            "REVIEW-CLEAN-SPEC-REDESIGN"
+        ])
+    );
+    let removed = recipe["remove"]["rules"].as_array().unwrap();
     let overridden = recipe["override"]["rules"].as_array().unwrap();
     let policy = read_json(".brokkr/recipes/codex-fast/policy.json");
     let rules = policy["rules"].as_array().unwrap();
     for protected in [
         "REVIEW-SECURITY-HOLD",
+        "REVIEW-RESIDUAL-SPEC-EXHAUSTED",
+        "REVIEW-RESIDUAL-SPEC-SECURITY-EXHAUSTED",
+        "REVIEW-RESIDUAL-SPEC-REDESIGN",
+        "REVIEW-RESIDUAL-SPEC-SECURITY-REDESIGN",
         "REVIEW-RESIDUAL-EXHAUSTED",
         "REVIEW-RESIDUAL-SECURITY-EXHAUSTED",
         "REVIEW-RESIDUAL-REWORK",
@@ -647,6 +664,7 @@ fn fast_recipe_preserves_shell_proofs_design_origin_and_hard_review_refusals() {
         "REVIEW-RESIDUAL-UNSAFE",
     ] {
         assert!(!overridden.contains(&json!(protected)), "{protected}");
+        assert!(!removed.contains(&json!(protected)), "{protected}");
         assert!(rules.iter().all(|rule| rule["id"] != protected));
     }
     assert!(
