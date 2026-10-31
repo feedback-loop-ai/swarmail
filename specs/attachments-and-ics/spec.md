@@ -6,6 +6,9 @@ work of #152, #153 and #154), on the zero-Codex `claude-careful` recipe
 
 Decision: 0110 — [Attachments listed and fetched from stored bytes, ICS fields at ingest](../../docs/decisions/0110-attachments-and-ics.md), proposed.
 
+The restore and compact-view contract below was reconciled with #155 on
+2026-11-01 after review (0110's dated note); no behaviour changed.
+
 ## Feature and rationale
 
 An agent handling mail needs to know what a message carries before it pays
@@ -86,8 +89,9 @@ budget is stored. All arithmetic is on octet counts with no allocation from a
 claimed length.
 
 `Email.attachments` is `Some(list)` for every parsed mail, `Some([])` when
-there are no candidates, and `None` when the parser could not read the mail;
-it and the bytes are `#[serde(skip)]`. Seeded mail shares `build_email`
+there are no candidates, and `None` when the parser could not read the mail
+(restore adds the labels-only list of "Persistence"); it and the bytes are
+`#[serde(skip)]`. Seeded mail shares `build_email`
 (0010) and so gets the same treatment.
 
 ### ICS fields
@@ -130,14 +134,15 @@ entries whose compact JSON fits `MAX_LIST_JSON_BYTES` (3 MiB; 0110 §3), so
 labels spelled to escape can list fewer than 250; labels that need no escaping
 never do, and an entry cut this way keeps its index for
 `swarmail_get_attachment`. An unknown mail answers `message {id} not found`;
-a mail whose list is unknown (0110 §6) answers a named refusal.
+a mail whose list is unknown or labels-only (0110 §6) answers the named
+refusal `the attachments of message {id} are unknown: …`.
 
 **`swarmail_get_attachment {id, index}`** answers
 `{"index", "filename", "content_type", "size", "sha256", "encoding",
 "content"}`. `encoding` is `utf-8` and `content` the text when the bytes are
 valid UTF-8 containing no control byte other than TAB, LF and CR; otherwise
 `encoding` is `base64` and `content` the standard base64 of the bytes. Refusals,
-in order: unknown mail; unknown list; `index` past the list; a part not stored
+in order: unknown mail; unknown or labels-only list; `index` past the list; a part not stored
 — the sentence names the part's size, the 1 MiB budget and the
 `GET /api/v1/messages/{id}/raw` route. Bytes are never truncated.
 
@@ -148,16 +153,45 @@ Two nullable columns are added through `ADDED_COLUMNS` and written in
 `{"total": n, "parts": [ {filename, content_type, size, sha256, stored, ics} … ]}`
 with every member required (nullable members present as null, 0097 §2's
 rule), and `attachment_bytes BLOB`, the concatenation of the stored parts' bytes
-in list order (empty, not NULL, when nothing is stored). Both are NULL exactly
-when `attachments` is `None`. Restore is strict: a NULL in one column only, a
-malformed or open object, or a blob whose length is not the sum of the stored
-parts' sizes refuses the restore with the column named. Old rows restore
-`None` and are never backfilled.
+in list order (empty, not NULL, when nothing is stored). Ingest writes both as
+NULL exactly when `attachments` is `None`.
+
+Restore is strict and accepts exactly three shapes (0110 §6); none is ever
+backfilled:
+
+| `attachments_json` | `attachment_bytes` | Restores as | Compact view | Both tools |
+|---|---|---|---|---|
+| NULL | NULL | `None`, unknown: a row from before the columns, or a mail the parser could not read | `"attachments": null` | the unknown refusal |
+| begins `[`: an array of `[filename, content_type, size]` three-tuples, both labels nullable (0108 §5's first listing) | NULL | a labels-only list: `total` is the tuple count; no hash, bytes or ICS fields | the labels, as #155 served them; `[]` is known empty and omitted | the unknown refusal |
+| the closed object above, at most 250 parts and no more than `total` | a blob exactly as long as the stored parts' sizes sum | the list, each stored part's bytes split from the blob in list order | the recorded labels | list and fetch |
+
+Every other pair refuses the restore with the column named: a malformed
+tuple array, a tuple array beside a blob, a malformed or open object, too many
+parts, or a NULL `attachments_json` beside a blob names `attachments_json`;
+any value not beginning `[` beside a NULL blob, or a blob whose length is not
+the stored sizes' sum, names `attachment_bytes`.
+
+### The compact view's attachments (reconciliation with #155)
+
+The compact view of 0108 — modern MCP search and latest, `fields` naming
+`attachments` on the four modern reads, and REST `view=compact` — reads its
+`attachments` and `attachments_total` from this list (0110, reconciliation
+with #155). Relative to #155, for mail ingested from this change on, its
+entries also include bare calendar parts (`text/calendar`, `application/ics`
+or a `.ics` filename, in part order), and `filename` and `content_type` are
+cut to `MAX_LABEL_BYTES` at a character boundary. `content_type` is now
+ASCII-lowercased by ingest, which moves no byte at the locked mail-parser
+0.11.9 because the parser already lowercases the type and subtype. `size` is
+the same decoded length, at most 250 entries show, and `attachments_total` is
+still the exact count. Rows restored as unknown or labels-only serve exactly
+what #155 served them.
 
 ### What does not change
 
-Every existing Email serialization, REST response, SSE feed item, webhook
-payload, compat page, March descriptor and result byte. The DATA path, the
+Every existing full Email serialization, every REST response without `view`
+(0108 §4), SSE feed item, webhook payload, compat page, March descriptor and
+result byte; the one existing output that moves is the compact view's
+attachments, as the section above states. The DATA path, the
 50 MiB message cap, the watchers, the prune rule and the restore order. No
 dependency, feature flag or configuration knob is added; `Cargo.lock` is
 unchanged.
@@ -209,9 +243,16 @@ unchanged.
   mail is queryable. Unit tests in the scanner's module cover every branch.
 - **AC6 — no query-time reparse.** `tests/persistence.rs` restarts the server
   and reads the list and a fetched part back byte for byte from the restored
-  row; a row with `NULL` columns restores and answers the unknown refusal; a
-  damaged `attachments_json`, a blob of the wrong length and a NULL in only
-  one column refuse the restore naming the column. The fetch handler holds no
+  row; a row with both columns `NULL` restores, serves `"attachments": null`
+  in the compact view and answers the unknown refusal; a tuple-array row of
+  0108's first listing with `attachment_bytes` `NULL`, populated or `[]`,
+  restores labels-only, serves its labels in the compact view as #155 did and
+  answers the unknown refusal from both tools; a damaged `attachments_json`,
+  a malformed tuple array, a tuple array beside a blob, a NULL
+  `attachments_json` beside a blob, an `attachments_json` not beginning `[`
+  beside a NULL blob and a blob of the wrong length refuse the restore naming
+  the column (across `tests/persistence.rs` and `src/persist.rs`'s tests).
+  The fetch handler holds no
   parser call and no `raw` read — a source-level assertion in the handler's
   tests, as `compat`'s renderer carve-out is pinned.
 - **AC7 — frozen guarantees.** `tests/burst.rs`, `tests/p2.rs`,

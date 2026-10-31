@@ -32,10 +32,14 @@ seat as each is proved locally; T12's gates that this environment cannot run
   `Some([])` for a plain mail (AC1, AC3, AC5).
 - [x] T5 — Persist: `attachments_json` and `attachment_bytes` in `COLUMNS`,
   `SCHEMA` and `ADDED_COLUMNS`; bind in `record_insert`; strict restore with
-  the length cross-check. **Test:** `src/persist.rs` tests open a genuine
-  old-schema file and migrate; restore `None`, `Some([])` and a stored list
-  byte for byte; a damaged object, a wrong-length blob and a NULL in only one
-  column refuse naming the column (AC6).
+  the length cross-check, and 0108's tuple rows (`attachment_bytes` NULL)
+  restored labels-only (0110 §6). **Test:** `src/persist.rs` tests open a
+  genuine old-schema file and migrate; restore `None`, `Some([])` and a
+  stored list byte for byte; restore a populated and an empty tuple row
+  labels-only; a damaged object, a malformed tuple array, a tuple array
+  beside a blob, a NULL `attachments_json` beside a blob, a value not
+  beginning `[` beside a NULL blob and a wrong-length blob refuse naming the
+  column (AC6).
 - [x] T6 — Add `src/mcp/attachments.rs`: descriptors, closed output schemas,
   argument staging (`id` string, `index` non-negative integer, unknown keys
   refused) and the ordered refusals; route the names in `src/mcp.rs`, mark
@@ -56,7 +60,8 @@ seat as each is proved locally; T12's gates that this environment cannot run
   3 MiB JSON bound, with its edge pinned inline in `src/mcp/attachments.rs`
   (AC3, AC8).
 - [x] T9 — Restart proofs in `tests/persistence.rs`: list and fetch byte for
-  byte after a restart, the unknown refusal for pre-column rows, cap eviction
+  byte after a restart, the unknown refusal for pre-column rows and for
+  0108's tuple rows (whose compact labels still serve), cap eviction
   taking the columns with the row (AC6, AC7).
 - [x] T10 — Evals: add the two names to `SWARMAIL_TOOLS`; add the invite rig
   test that lists, matches `ics.uid`/`ics.dtstart` to `ics_property`, fetches

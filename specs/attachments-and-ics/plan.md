@@ -100,14 +100,20 @@ Attachment { filename: Option<String>, content_type: Option<String>, size: u64,
              sha256: String, stored: bool, ics: Option<IcsEvent>,
              content: Option<Vec<u8>> }      // Some iff stored; skipped by serde
 IcsEvent   { dtstart, dtstart_tzid, dtend, dtend_tzid, summary, uid: Option<String> }
-Email.attachments: Option<Vec<Attachment>>   // Some([]) known empty, None unknown
+AttachmentList { total: u64, parts: Vec<Attachment>, labels_only: bool }  // labels_only: restore-only, skipped by serde
+Email.attachments: Option<AttachmentList>    // Some(empty) known empty, None unknown
 attachments_json: {"total": u64, "parts": [ {filename, content_type, size, sha256, stored, ics} ]}
 attachment_bytes: BLOB = concat(parts[i].content for stored i, in order)
+restored only:    attachments_json = [[filename, content_type, size], …], attachment_bytes NULL  // 0108's rows → labels_only
 ```
 
 `total` is at least `parts.len()`, `parts.len()` is at most 250, the sum of
 stored sizes is at most 1 048 576 and equals the blob length. The persisted
 object omits `content`; restore splits the blob by the stored parts' sizes.
+The tuple shape is never written; restore reads it labels-only, which the
+compact view serves and both tools answer as unknown (0110 §6). (The
+`AttachmentList` line was reconciled with the code on 2026-11-01; see the
+implementation notes in tasks.md.)
 
 ## Contracts
 

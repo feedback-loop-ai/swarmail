@@ -22,7 +22,9 @@
   the body), accepted [0045 §8](0045-delivery-repairs.md) (compatible work may
   land while this record is proposed).
 - **Preserves:** 0001–0005, 0010, 0014, 0020, 0030, 0056, the 0082 §1 March
-  byte freeze, every existing Email serialization and every REST response.
+  byte freeze, every existing full Email serialization and every REST
+  response without `view` (0108 §4). The compact view's `attachments` change
+  as the reconciliation with #155 below states.
 - **Number:** 0106 and 0107 are held by open PR #292, 0108 and 0109 by
   `origin/main`; 0110 was the next number no checked tip held and the operator
   kept it at integration on 2026-10-31.
@@ -112,16 +114,35 @@
    manifest only, adds no crate, and is not needed for this change.
 
 6. **Persistence is two nullable columns in the insert's transaction.**
-   `attachments_json` holds a closed object `{total, parts}` and
-   `attachment_bytes` the concatenation of the stored parts' bytes in list
-   order; both ride `record_insert` with the mail row, the prune deletes and
-   the counters, and both are added through `ADDED_COLUMNS` so a data file
-   written by an older release opens. SQL `NULL` in both is unknown — a row
-   from before the columns, or a mail the parser could not read — served as
-   a named refusal and never backfilled. Any other value restores strictly
-   or refuses the restore: a damaged object, an unknown or missing member,
-   a `NULL` in one column but not the other, or stored sizes that do not sum
-   to the blob's length is corruption, never "no attachments".
+   Ingest writes `attachments_json` as the closed object `{total, parts}` and
+   `attachment_bytes` as the concatenation of the stored parts' bytes in list
+   order (empty, not `NULL`, when nothing is stored), or `NULL` in both for a
+   mail the parser could not read; both ride `record_insert` with the mail
+   row, the prune deletes and the counters, and both are added through
+   `ADDED_COLUMNS` so a data file written by an older release opens. Restore
+   accepts exactly three shapes, and none is ever backfilled:
+
+   - **`NULL` in both** — unknown: a row from before the columns, or a mail
+     the parser could not read. The compact view serves `attachments: null`;
+     both tools answer the named unknown refusal.
+   - **An `attachments_json` beginning `[` with `attachment_bytes` `NULL`** —
+     a row of 0108 §5's first listing, read strictly as
+     `[filename|null, content_type|null, size]` three-tuples and restored
+     labels-only (see the reconciliation below): `total` is the tuple count,
+     and no part has a hash, bytes or ICS fields. The compact view serves its
+     labels as #155 did (`[]` is known empty and omitted); both tools answer
+     the named unknown refusal.
+   - **The closed object beside a blob** — every member required, at most
+     `MAX_ATTACHMENTS` parts and no more than `total`, and the stored parts'
+     sizes summing to exactly the blob's length, which is split back into
+     those parts in list order.
+
+   Anything else refuses the restore by its column, never "no attachments":
+   a malformed tuple array, a tuple array beside a blob, a damaged object
+   (an unknown or missing member, a wrong type, too many parts) or `NULL`
+   beside a blob names `attachments_json`; any value not beginning `[` beside
+   a `NULL` blob, or a blob whose length is not the stored sizes' sum, names
+   `attachment_bytes`.
 
 7. **Two read-only MCP tools, appended.** `swarmail_list_attachments {id}`
    answers `{id, total, truncated, attachments}`; `swarmail_get_attachment
@@ -133,9 +154,12 @@
    descriptors text-only (0082 §1, 0094 §7). Malformed arguments refuse
    `-32602` by name before any store read; an unknown mail, an unknown
    attachment list, an index past the list and an unstored part are
-   `isError` text results. No REST route, no compat field, no webhook
-   change: `Email.attachments` and the bytes are `#[serde(skip)]`, so every
-   existing read, feed, webhook and March capture keeps its bytes.
+   `isError` text results; a labels-only list (§6) answers as unknown. No
+   REST route, no compat field, no webhook change: `Email.attachments` and
+   the bytes are `#[serde(skip)]`, so every full Email read, feed, webhook
+   and March capture keeps its bytes. The one existing output that moves is
+   the compact view's `attachments` and `attachments_total` (0108), which
+   now read this record's list; the reconciliation below states how.
 
 8. **Memory exposure, stated.** Each stored mail may retain up to 1 MiB of
    decoded attachment bytes beside its raw bytes, in memory and in the data
@@ -202,11 +226,21 @@ three-tuples and `attachment_list` in `smtp.rs`. This record, second to land,
 reconciles as its first draft said it would: one list, one column.
 
 - `Email.attachments` is this record's `AttachmentList`, and the compact view
-  and `fields` read their `attachments` and `attachments_total` from it. So
-  that view now also shows bare calendar parts, carries labels cut to
-  `MAX_LABEL_BYTES` and a lowercased type, and keeps its exact total beyond the
-  250 entries ingest now records; 0108 §5's "outer parser list" gains the
-  calendar arm in effect, and 0108's text is the operator's to amend.
+  and `fields` read their `attachments` and `attachments_total` from it —
+  on modern MCP search and latest, `fields` naming `attachments` on the four
+  modern reads, and REST `view=compact`. So for mail ingested from this
+  change on, that view's entries also include bare calendar parts
+  (`text/calendar`, `application/ics` or a `.ics` filename, in part order),
+  and carry `filename` and `content_type` cut to `MAX_LABEL_BYTES` at a
+  character boundary. Ingest now ASCII-lowercases `content_type` itself;
+  the locked mail-parser 0.11.9 already lowercases the type and subtype #155
+  read, so that moves no byte today. `size` is the same decoded length, the
+  view still shows at most 250 entries, and `attachments_total` is still the
+  exact count, now from the recorded `total` beyond the 250 entries ingest
+  keeps. Rows restored as unknown or labels-only serve exactly what #155
+  served them.
+  0108 §5's "outer parser list" gains the calendar arm in effect, and 0108's
+  text is the operator's to amend.
 - `attachments_json` restores every shape ingest wrote and nothing else. A
   tuple array with `attachment_bytes` NULL is a row of 0108's first listing,
   restored as labels only: the compact view serves its labels as before, and
@@ -217,3 +251,18 @@ reconciles as its first draft said it would: one list, one column.
 - Ingest writes only the `{total, parts}` object. `attachment_list` is gone.
 
 Neither change is authority over the other; the operator rules on both.
+
+## Dated note — 2026-11-01
+
+Review run `issue-159-list-and-fetch-attachm-bbfa90f5` found that §6, §7, the
+Preserves line and the specification's Persistence, "What does not change",
+AC6 and task T5 still stated the contract from before #155 landed — only the
+closed object restores, a `NULL` in one column always refuses, old rows
+restore unknown, every REST response is unchanged — while the code, its tests
+and the reconciliation above accept 0108's tuple rows as labels-only and move
+the compact view's attachments. That text was reconciled with #155 and with
+the code on this date, and the reconciliation's first bullet now names each
+plane and each change exactly — its earlier "a lowercased type" was no change
+on the wire, since the parser already lowercases. No ruling, code or test
+changed; the earlier wording
+stays in the branch history, and this record is still proposed.
