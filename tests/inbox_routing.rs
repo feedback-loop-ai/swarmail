@@ -1,4 +1,4 @@
-//! Recipient inbox routing (decision 0106) and `swarmail_create_inbox`,
+//! Recipient inbox routing (decision 0112) and `swarmail_create_inbox`,
 //! against real servers over real SMTP and real MCP — no mocks. Three agents
 //! behind one SMTP AUTH identity stay apart because each is given its own
 //! address; the rule, its refusals, its precedence over the park and the

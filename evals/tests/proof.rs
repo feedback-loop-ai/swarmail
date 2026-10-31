@@ -114,7 +114,7 @@ fn every_task_passes_with_the_oracle() {
         iso.iter().map(|i| i["inbox"].as_str().unwrap()).collect();
     assert_eq!(inboxes.len(), 3, "three inboxes on one server");
     // The oracle passed only because each routed address reached its own
-    // inbox under the one shared login (decision 0106 §7): the recipient of
+    // inbox under the one shared login (decision 0112 §7): the recipient of
     // every account names its inbox under the runner's route domain.
     for account in iso {
         let identity = account["identity"].as_str().unwrap();

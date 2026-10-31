@@ -1,9 +1,9 @@
 # Implementation plan — recipient inbox routing
 
 Implements [spec.md](spec.md) under proposed
-[0106](../../docs/decisions/0106-recipient-inbox-routing.md). This is a
+[0112](../../docs/decisions/0112-recipient-inbox-routing.md). This is a
 design commit: it implements nothing and attests no gate. Merge of the
-implementation waits for the operator's acceptance of 0106 (house rules,
+implementation waits for the operator's acceptance of 0112 (house rules,
 "code under a proposed decision").
 
 ## Technical context
@@ -53,13 +53,13 @@ model, contracts, quickstart and risks.
 | `src/mcp/focused.rs`, `src/mcp/batch_tests.rs` | `route_domain: None` in `McpContext` test literals. |
 | wherever `run_on` builds `AppState` | thread the route domain. |
 | `src/static/llms.txt`, `src/static/openapi.json`, `README.md` | the sixteen-tool wording, the flag, the rule. |
-| `docs/decisions/README.md` | the 0106 index row. |
+| `docs/decisions/README.md` | the 0112 index row. |
 | `tests/inbox_routing.rs` | new: the wire suite (AC1, AC4, AC5, AC6 in part). |
 | `tests/config_cli.rs` | the flag's startup validation (AC7). |
 | `tests/mcp.rs`, `tests/p2.rs`, `tests/mcp_revisions/focused.rs` | 15 → 16; focused indices `13 + i` stay. |
 | `evals/src/runner.rs` | `--route-domain swarmail.test` in the serve argv; `Identity.smtp_identity`; the `identities()` branch; the provision payload. |
 | `evals/src/fixture.rs` | `ProvisionIdentity.smtp_identity` (required), stored on the account and used as the AUTH username in `deliver`. |
-| `evals/src/mail.rs` | header sentence: the AUTH username is the configured sending identity; a routed recipient selects the inbox (0106). |
+| `evals/src/mail.rs` | header sentence: the AUTH username is the configured sending identity; a routed recipient selects the inbox (0112). |
 | `evals/src/wrappers.rs` | `swarmail_create_inbox` in `SWARMAIL_TOOLS`. |
 | `evals/README.md`, `evals/tests/proof.rs` | the isolation sentence; the `fixture-app` emptiness assertion. |
 
@@ -136,12 +136,12 @@ curl -s localhost:8025/mcp -H 'content-type: application/json' \
 | --- | --- |
 | Routing computed after the park reopens the 0002 window per inbox. | The inbox expression at `DATA` is the single source for `park_delivery`, `build_email` and the in-flight row; AC5 observes the row's name during a parked delivery and a wait registered before the send. |
 | A derived inbox no read surface can name (`250` lies). | The admitted alphabet is a strict subset of `validate_inbox`; a unit test enumerates the alphabet through `validate_inbox`. |
-| Silent re-merge when a recipient under the domain is malformed or the domain is rewritten by the sender. | Malformed-under-domain is a `550`, never a fallback (AC4). Domain rewriting is out of the server's reach; 0106 names it and the eval proof asserts `fixture-app` stays empty. |
-| A CC to two agents loses one copy. | `452` per conflicting recipient with the transaction kept open: RFC 5321 senders deliver to the accepted set and retry the rest; AC4 proves the retry. A sender treating 452 as fatal is named as the accepted cost in 0106. |
+| Silent re-merge when a recipient under the domain is malformed or the domain is rewritten by the sender. | Malformed-under-domain is a `550`, never a fallback (AC4). Domain rewriting is out of the server's reach; 0112 names it and the eval proof asserts `fixture-app` stays empty. |
+| A CC to two agents loses one copy. | `452` per conflicting recipient with the transaction kept open: RFC 5321 senders deliver to the accepted set and retry the rest; AC4 proves the retry. A sender treating 452 as fatal is named as the accepted cost in 0112. |
 | March catalogue bytes drift by appending a sixteenth tool. | Append after the focused pair; the thirteen pinned entries and the focused indices (`13 + i`) are unchanged; the structured and focused fixtures keep passing without regeneration. |
 | Minted-name collision after restart. | UUID v7 (timestamp plus 74 random bits) from the crate already in the tree; no process counter, no store state. |
 | The exact coverage gate refuses a cold arm. | Every branch is deterministic on the wire or inline: each refusal shape, the unset-domain `isError`, the flag parser's refusals, the `RSET` clear. No sibling harness is expected; if a concrete cold path appears, 0020 §2 names its home. |
 | The eval change alters the metric's comparability. | Only the isolation task's wire shape changes; the other fifteen tasks' recipients are `@example.test`, for which the flag is inert. The isolation goal text is unchanged. |
 | The isolation inbox label falls outside the alphabet. | `eval-<short>-<name>` is lowercased and checked against the label rule in the runner's own test; the trial id's tail is alphanumeric. |
 | Agent success rate cannot be measured here. | Reported as unmeasured; oracle and null controls are the measured evidence (AC10). No paid trials. |
-| Operator never accepts 0106. | The flag defaults off and the tool refuses without it; the branch is reviewable and shippable only on acceptance, which the delivery states rather than assumes. |
+| Operator never accepts 0112. | The flag defaults off and the tool refuses without it; the branch is reviewable and shippable only on acceptance, which the delivery states rather than assumes. |

@@ -1,6 +1,6 @@
 # Recipient inbox routing and `swarmail_create_inbox`
 
-Decision: 0106 — [Recipient inbox routing under a configured route domain](../../docs/decisions/0106-recipient-inbox-routing.md)
+Decision: 0112 — [Recipient inbox routing under a configured route domain](../../docs/decisions/0112-recipient-inbox-routing.md)
 
 ## Feature and rationale
 
@@ -22,14 +22,14 @@ that account's inbox as the AUTH username (`evals/src/mail.rs` says so in
 its header), so today's `inbox-isolation` task passes because the app was
 provisioned with every agent's inbox. Routing alone would leave the metric
 untouched. The isolation task therefore moves to a single AUTH identity in
-the same delivery, and proposed 0106 amends accepted
+the same delivery, and proposed 0112 amends accepted
 [0055](../../docs/decisions/0055-agent-eval-harness.md) §6 for that task
 alone.
 
 The change amends accepted 0004 for configured servers. Under the house
 rules a change that contradicts an accepted ruling waits for operator
 acceptance of the decision that amends it: the work is built, reviewed and
-gated, and **merge waits for the operator's acceptance of 0106**. Nothing
+gated, and **merge waits for the operator's acceptance of 0112**. Nothing
 here accepts it.
 
 ## Panel adjudication
@@ -70,7 +70,7 @@ for every deployment, and the issue says "configured").
 - `SmtpConfig` gains `route_domain: Option<String>`; `Default` is `None`.
   An unset server is byte-identical to today on every plane.
 
-### The routing rule (0106 §1–§4)
+### The routing rule (0112 §1–§4)
 
 - Input is the `RCPT TO` envelope path only. No header chooses an inbox.
 - A recipient is **under the route domain** when its host, ASCII-lowercased,
@@ -106,7 +106,7 @@ for every deployment, and the issue says "configured").
   per-inbox oldest-only pruning (0003), ingest extraction (0005), the
   commit-failure 451 (0012), persistence and restore.
 
-### `swarmail_create_inbox` (0106 §5)
+### `swarmail_create_inbox` (0112 §5)
 
 - Name `swarmail_create_inbox`; no arguments; `inputSchema` is the closed
   empty object (`additionalProperties: false`), so a sentinel key refuses
@@ -132,7 +132,7 @@ for every deployment, and the issue says "configured").
   the HTTP endpoint; the stdio bridge needs nothing, it speaks to that
   endpoint.
 
-### The eval harness (0106 §7)
+### The eval harness (0112 §7)
 
 - The runner starts Swarmail with `--route-domain swarmail.test` for every
   trial. It is inert for `@example.test` identities, so the fifteen other
@@ -160,7 +160,7 @@ for every deployment, and the issue says "configured").
 README (the AUTH-is-the-inbox sections and the "15 tools" line),
 `src/static/llms.txt` and the `/mcp` description in `src/static/openapi.json`
 (the "fifteen in all" sentences) describe the route domain, the tool and the
-new count. `docs/decisions/README.md` gains the 0106 index row, status
+new count. `docs/decisions/README.md` gains the 0112 index row, status
 proposed. No release note is cut here.
 
 ## Acceptance Criteria
@@ -172,7 +172,7 @@ proposed. No release note is cut here.
   inbox's search returns exactly its own message ids while the AUTH
   username's inbox does not exist. No mocks.
 - [ ] AC2 — **The routing rule is recorded.**
-  `docs/decisions/0106-recipient-inbox-routing.md` exists with status
+  `docs/decisions/0112-recipient-inbox-routing.md` exists with status
   `proposed`, names the 0004 §1 and 0055 §6 amendments, and records that
   0001–0003 and 0005 are preserved. Its index row is in
   `docs/decisions/README.md`.

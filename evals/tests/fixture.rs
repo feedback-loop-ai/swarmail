@@ -30,7 +30,7 @@ impl Drop for Swarmail {
     }
 }
 
-/// The route domain the runner starts Swarmail with (decision 0106 §7).
+/// The route domain the runner starts Swarmail with (decision 0112 §7).
 const ROUTE_DOMAIN: &str = "swarmail.test";
 /// The one application login every inbox-isolation account sends under.
 const APP_LOGIN: &str = "fixture-app";
@@ -96,7 +96,7 @@ impl Rig {
         .await
         .unwrap();
         let tag = sw.http.port();
-        // Inbox-isolation mirrors the runner (decision 0106 §7): one shared
+        // Inbox-isolation mirrors the runner (decision 0112 §7): one shared
         // application login, a routed recipient per account. Every other
         // task authenticates as the inbox, as before.
         let isolation = count > 1;
@@ -361,7 +361,7 @@ async fn every_action_is_bound_to_its_identity() {
         ]
     );
     // Each inbox holds exactly its own mail: the routed recipient named the
-    // inbox, and the one shared application login owns none (decision 0106
+    // inbox, and the one shared application login owns none (decision 0112
     // §7) — otherwise the task could not tell routing from an AUTH fallback.
     for i in 0..3 {
         let mail = mcp.wait_emails(rig.inbox(i), None, 1).await.unwrap();

@@ -6,10 +6,10 @@ use super::structured::{Wire, march_view, schema_ok, structural, valid};
 use super::*;
 
 pub(super) const FOCUSED: [&str; 2] = ["swarmail_wait_for_code", "swarmail_wait_for_link"];
-/// The inbox minter appended after the focused pair (decision 0106 §5).
+/// The inbox minter appended after the focused pair (decision 0112 §5).
 pub(super) const MINTER: &str = "swarmail_create_inbox";
 
-/// Decision 0106 §5's descriptor body, stated independently of the source.
+/// Decision 0112 §5's descriptor body, stated independently of the source.
 pub(super) fn assert_minter_descriptor(descriptor: &Value) {
     let o = descriptor.as_object().unwrap();
     assert_eq!(

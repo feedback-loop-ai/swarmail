@@ -64,7 +64,7 @@ pub struct AppState {
     /// so a non-loopback Host is the rebind itself) and `Origin` (a
     /// browser cannot forge it, so a cross-site drive is named).
     pub http_origin_guard: Option<u16>,
-    /// The SMTP route domain (decision 0106), lowercased, when the server
+    /// The SMTP route domain (decision 0112), lowercased, when the server
     /// routes by recipient: `swarmail_create_inbox` mints addresses under it.
     pub route_domain: Option<String>,
 }

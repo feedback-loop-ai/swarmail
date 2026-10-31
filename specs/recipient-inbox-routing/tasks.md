@@ -1,7 +1,7 @@
 # Ordered tasks — recipient inbox routing
 
 Implementation obligations under [spec.md](spec.md) and proposed
-[0106](../../docs/decisions/0106-recipient-inbox-routing.md). Check a task
+[0112](../../docs/decisions/0112-recipient-inbox-routing.md). Check a task
 only after its paired test is green against the candidate. Dependencies
 follow this order.
 
@@ -65,7 +65,7 @@ follow this order.
   sections gain the route-domain rule and the tool; the "15 tools" line,
   `src/static/llms.txt` and the `/mcp` description in
   `src/static/openapi.json` say sixteen; `docs/decisions/README.md` gains
-  the 0106 row, status proposed. **Test:** the doc-pinning tests
+  the 0112 row, status proposed. **Test:** the doc-pinning tests
   (`tests/listener_contract_docs.rs`, `tests/store_contract_docs.rs`, the
   openapi pins) stay green; `grep -c swarmail_create_inbox` on each file is
   non-zero.
@@ -85,6 +85,6 @@ follow this order.
   gate locked, the evals crate standalone (fmt, clippy, tests), and record
   the oracle/null results; state that agent success rate is unmeasured.
   Commit unsigned, never push; the delivery names operator acceptance of
-  0106 as the merge prerequisite. **Test:** the gate commands in
+  0112 as the merge prerequisite. **Test:** the gate commands in
   `docs/house-rules.md` § Gates exit zero; `cargo deny check licenses`
   shows no new crate.

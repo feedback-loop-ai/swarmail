@@ -102,7 +102,7 @@ pub struct ServeArgs {
     )]
     pub tls_handshake_timeout_ms: u64,
 
-    /// Route mail by recipient (decision 0106): an SMTP envelope recipient
+    /// Route mail by recipient (decision 0112): an SMTP envelope recipient
     /// `<local>@<label>.<DOMAIN>` is stored in inbox `<label>`, outranking
     /// the AUTH username, so parallel agents behind one sending identity
     /// stay apart. One or more DNS labels joined by `.`. Off by default; the
@@ -116,7 +116,7 @@ pub struct ServeArgs {
     pub route_domain: Option<String>,
 }
 
-/// Validate `--route-domain` and fold it to ASCII lowercase (decision 0106
+/// Validate `--route-domain` and fold it to ASCII lowercase (decision 0112
 /// §1): one or more labels of `[A-Za-z0-9-]{1,63}` joined by single dots.
 /// An empty value, an empty label (which covers a leading, trailing or
 /// doubled dot), a character outside the alphabet or an over-long label is

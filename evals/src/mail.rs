@@ -8,7 +8,7 @@
 //! identity as the username. For every task but inbox-isolation that identity
 //! is the account's inbox (decision 0004); inbox-isolation sends under one
 //! shared application login and a routed recipient selects the inbox
-//! (decision 0106, which amends 0055 §6 for that task alone).
+//! (decision 0112, which amends 0055 §6 for that task alone).
 
 use crate::state::Attempt;
 use base64::Engine;

@@ -84,7 +84,7 @@ struct Account {
     identity: String,
     inbox: String,
     /// The SMTP AUTH username this account's deliveries authenticate with
-    /// (decision 0106 §7). The inbox-isolation task gives every account the
+    /// (decision 0112 §7). The inbox-isolation task gives every account the
     /// one application login; the other tasks use the inbox.
     smtp_identity: String,
     role: Role,
@@ -1459,7 +1459,7 @@ fn unauthorized() -> Response {
 pub struct ProvisionIdentity {
     pub identity: String,
     pub inbox: String,
-    /// The SMTP AUTH username for this account's deliveries (decision 0106
+    /// The SMTP AUTH username for this account's deliveries (decision 0112
     /// §7): required, so a caller states whether the account authenticates
     /// as its inbox or as the one shared application login.
     pub smtp_identity: String,

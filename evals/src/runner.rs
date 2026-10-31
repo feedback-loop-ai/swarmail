@@ -1935,9 +1935,9 @@ struct Identity {
 }
 
 /// The one application login every inbox-isolation account sends under
-/// (decision 0106 §7).
+/// (decision 0112 §7).
 const ISOLATION_SMTP_IDENTITY: &str = "fixture-app";
-/// The route domain the runner starts Swarmail with (decision 0106 §7). It
+/// The route domain the runner starts Swarmail with (decision 0112 §7). It
 /// is inert for the `@example.test` identities of every other task.
 const ROUTE_DOMAIN: &str = "swarmail.test";
 
@@ -1952,7 +1952,7 @@ fn identities(trial_id: &str, count: u8) -> Vec<Identity> {
         .into_iter()
         .rev()
         .collect::<String>()
-        // A routed label is folded to lowercase by the server (decision 0106
+        // A routed label is folded to lowercase by the server (decision 0112
         // §1), so the inbox the agent reads must already be lowercase.
         .to_ascii_lowercase();
     (0..count as usize)
@@ -1961,7 +1961,7 @@ fn identities(trial_id: &str, count: u8) -> Vec<Identity> {
             let inbox = format!("eval-{short}-{}", names[i]);
             if count > 1 {
                 // Inbox-isolation: three accounts, one application login; the
-                // routed recipient names the inbox (decision 0106 §7).
+                // routed recipient names the inbox (decision 0112 §7).
                 Identity {
                     identity: format!("{}.{n:x}@{inbox}.{ROUTE_DOMAIN}", names[i]),
                     smtp_identity: ISOLATION_SMTP_IDENTITY.to_string(),
@@ -5244,7 +5244,7 @@ mod privacy_tests {
 mod identity_tests {
     use super::{ISOLATION_SMTP_IDENTITY, ROUTE_DOMAIN, identities};
 
-    /// The routed label rule of decision 0106 §1: one label of
+    /// The routed label rule of decision 0112 §1: one label of
     /// `[a-z0-9-]{1,63}`.
     fn is_routed_label(label: &str) -> bool {
         (1..=63).contains(&label.len())
@@ -5270,7 +5270,7 @@ mod identity_tests {
         assert_eq!(inboxes.len(), 3);
     }
 
-    /// Every other task keeps its pre-0106 wire shape: an `@example.test`
+    /// Every other task keeps its pre-0112 wire shape: an `@example.test`
     /// identity, which the route domain never touches, authenticating as its
     /// inbox.
     #[test]

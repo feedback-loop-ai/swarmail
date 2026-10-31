@@ -11,7 +11,7 @@
 - SMTP: point any client (Ory Kratos, Nodemailer, curl) at `localhost:1025`. No
   auth required; if the client authenticates, the **username names the inbox**
   (per-test isolation). A server started with `--route-domain <domain>`
-  (SWARMAIL_ROUTE_DOMAIN; decision 0106, proposed) routes by recipient instead:
+  (SWARMAIL_ROUTE_DOMAIN; decision 0112, proposed) routes by recipient instead:
   `<local>@<label>.<domain>` is stored in inbox `<label>`, outranking the AUTH
   username, so parallel agents behind one sending identity stay apart. Mint a
   private address with the `swarmail_create_inbox` tool. A recipient under the
@@ -187,7 +187,7 @@ The operator retains #151's merge hold.
 `swarmail_seed_email`, `swarmail_set_chaos`, `swarmail_clear_chaos`,
 `swarmail_get_deliverability_report`, then `swarmail_wait_for_code` and
 `swarmail_wait_for_link` (decision 0094, proposed; read-only), then
-`swarmail_create_inbox` (decision 0106, proposed; no arguments; returns
+`swarmail_create_inbox` (decision 0112, proposed; no arguments; returns
 {inbox, address}, or isError naming --route-domain when the server routes
 nothing). The focused waits
 take the wait's inbox/to/from/subject/inclusive since_ms filters and timeout_ms

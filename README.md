@@ -243,7 +243,7 @@ the tests are):
    parallel isolation for every test and agent; no config to route it. An
    application that sends with one AUTH identity can opt in to
    [recipient routing](#one-sending-identity-many-agents-recipient-routing)
-   instead (proposed [0106](docs/decisions/0106-recipient-inbox-routing.md)).
+   instead (proposed [0112](docs/decisions/0112-recipient-inbox-routing.md)).
 5. **Extraction happens at ingest, not query time**
    ([0005](docs/decisions/0005-extraction-at-ingest.md)). Links, codes and
    thread headers are parsed once, when the mail is accepted; queries
@@ -328,7 +328,7 @@ The AUTH username only isolates parties that can each authenticate under
 their own name. An application configured with a single SMTP login fills one
 inbox however many agents drive it. Start the server with a route domain and
 the recipient chooses the inbox instead (proposed
-[0106](docs/decisions/0106-recipient-inbox-routing.md)):
+[0112](docs/decisions/0112-recipient-inbox-routing.md)):
 
 ```
 swarmail serve --route-domain swarmail.test      # or SWARMAIL_ROUTE_DOMAIN
@@ -379,7 +379,7 @@ listener, at least `1`; one more is answered `421`; the flag is
 sized so that three times the cap stays under the usual 1024 soft limit
 (decision 0027 §3): above about 340, raise `ulimit -n` first),
 `SWARMAIL_ROUTE_DOMAIN` (unset = off; the flag is `--route-domain`, see
-*One sending identity, many agents* above; proposed 0106).
+*One sending identity, many agents* above; proposed 0112).
 Logging: `RUST_LOG` (env-filter syntax; default
 `swarmail=info,tower_http=off`). `serve` and `gen-cert` log to stdout —
 `gen-cert` also prints its `wrote <cert> and <key>` line there — and
@@ -739,7 +739,7 @@ including arrays containing only notifications. Modern tool descriptors add
 on all mutations (including seed, which can evict old mail, and chaos changes).
 Input schemas, the thirteen existing March catalogue entries and existing
 result bytes are unchanged; discovery appends the two focused waits and swarmail_create_inbox after them
-(decisions 0094 and 0106, proposed), sixteen entries in all. For `2025-06-18` and
+(decisions 0094 and 0112, proposed), sixteen entries in all. For `2025-06-18` and
 `2025-11-25`, every tool declares an object-root `outputSchema`; successful
 results include `structuredContent` and the same JSON in the existing text block.
 Errors retain their existing text/RPC envelopes without structured success data.
@@ -1419,7 +1419,7 @@ bash scripts/coverage-gate.sh                                 # the floor gate
 | `tests/listener_contract_docs.rs` | the listener contract as documented: README, the controlling 0027 clarification and 0036 state the per-I/O bounds, the unbounded complete-line trickle residual and its costs, and the conditional `stopping` answer |
 | `tests/mcp.rs` | every tool, JSON-RPC protocol errors, `isError` results |
 | `tests/focused_waits.rs` | the focused code/link waits over real SMTP and MCP: each filter on each tool by counterexample, ingest occurrence metadata for SMTP and seed, post-park deliveries that never complete a wait, and local applications refusing stale codes and look-alike links (proposed 0094) |
-| `tests/inbox_routing.rs` | recipient inbox routing and `swarmail_create_inbox` over real SMTP and MCP: three concurrent agents behind one AUTH login never see each other's mail, the rule's case-fold, whole-label, 550 and 452 shapes and the RSET and chaos clears, routing ahead of the park (a wait on a never-mailed minted inbox; the in-flight row), the tool's modern projection and distinct concurrent mints, and the unconfigured server unchanged (proposed 0106) |
+| `tests/inbox_routing.rs` | recipient inbox routing and `swarmail_create_inbox` over real SMTP and MCP: three concurrent agents behind one AUTH login never see each other's mail, the rule's case-fold, whole-label, 550 and 452 shapes and the RSET and chaos clears, routing ahead of the park (a wait on a never-mailed minted inbox; the in-flight row), the tool's modern projection and distinct concurrent mints, and the unconfigured server unchanged (proposed 0112) |
 | `tests/ui.rs` | every page, escaped (injection-proof) rendering |
 | `tests/webhook.rs` | delivery with secret, pathless target, the retry budget, https over a real TLS server, the CA client cache bound |
 | `tests/stdio.rs` | the stdio JSON-RPC bridge over in-process duplex pipes |

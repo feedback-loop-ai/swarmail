@@ -271,7 +271,7 @@ async fn revision_headers_and_isolation() {
 /// copied from the production allowlist, so a new tool or a misclassified
 /// hint fails instead of being blessed: ten reads (the deliverability
 /// report's cache fill never changes stored mail or extraction, 0085; the
-/// two focused waits appended by 0094; the inbox minter appended by 0106,
+/// two focused waits appended by 0094; the inbox minter appended by 0112,
 /// which allocates nothing) and six mutations.
 const CATALOGUE: [(&str, bool); 16] = [
     ("swarmail_search_emails", true),

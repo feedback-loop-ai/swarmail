@@ -334,7 +334,7 @@ fn top_level_help_states_the_positioning() {
     assert!(!help.to_ascii_lowercase().contains("fastest"));
 }
 
-// ---------- decision 0106: the route domain is validated at startup ----------
+// ---------- decision 0112: the route domain is validated at startup ----------
 
 /// AC7: every malformed shape refuses at parse time, naming the flag, and a
 /// mixed-case value is accepted lowercased.

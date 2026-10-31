@@ -119,7 +119,7 @@ pub struct SmtpConfig {
     /// the refusal is wire-honest (`421 4.7.0 …`) and retryable, written
     /// before any session state exists.
     pub max_sessions: usize,
-    /// The route domain (decision 0106): when set, an envelope recipient
+    /// The route domain (decision 0112): when set, an envelope recipient
     /// `<local>@<label>.<domain>` names the inbox `<label>` and outranks the
     /// AUTH identity. `None` — the default — leaves every plane byte-identical
     /// to a server that never heard of routing. Stored ASCII-lowercased and
@@ -663,7 +663,7 @@ const RCPT_PARAM_UNKNOWN: &str = "555 5.5.4 RCPT parameters not supported";
 struct Envelope {
     from: String,
     rcpts: Vec<String>,
-    /// The inbox the first routed recipient named (decision 0106 §3): set
+    /// The inbox the first routed recipient named (decision 0112 §3): set
     /// only on the successful append of that recipient, so a refused or
     /// chaos-failed `RCPT` leaves it untouched, and cleared with the rest of
     /// the envelope by `RSET` and by the take at `DATA`.
@@ -671,7 +671,7 @@ struct Envelope {
 }
 
 /// What a recipient says about routing under the route domain (decision
-/// 0106 §1–§2).
+/// 0112 §1–§2).
 #[derive(Debug, PartialEq, Eq)]
 enum Route {
     /// Not under the route domain (or no domain is configured): no vote.
@@ -688,7 +688,7 @@ const ROUTE_NO_INBOX: &str = "550 5.1.3 Recipient names no inbox under the route
 /// `452` for a second routed inbox in one transaction.
 const ROUTE_ONE_INBOX: &str = "452 4.5.3 One routed inbox per transaction";
 
-/// Classify one `RCPT TO` path against the route domain (decision 0106 §1–§2).
+/// Classify one `RCPT TO` path against the route domain (decision 0112 §1–§2).
 /// `domain` is already lowercased. The host is the text after the last `@`,
 /// ASCII-lowercased and compared whole-label: `notswarmail.test` is not under
 /// `swarmail.test`. Under the domain, the part before `.<domain>` must be one
@@ -719,7 +719,7 @@ fn route_of(domain: &str, rcpt: &str) -> Route {
 }
 
 /// The reply refusing a recipient on routing grounds, or `None` when it may
-/// proceed to chaos and the append (decision 0106 §2–§3). `current` is the
+/// proceed to chaos and the append (decision 0112 §2–§3). `current` is the
 /// transaction's routed inbox so far.
 fn route_refusal(route: &Route, current: Option<&str>) -> Option<&'static str> {
     match route {
@@ -1374,7 +1374,7 @@ async fn session(
                     .await?;
                     continue;
                 }
-                // Routing admission (decision 0106 §2–§3): after the ceiling,
+                // Routing admission (decision 0112 §2–§3): after the ceiling,
                 // before chaos (0034 §3). A recipient under the route domain
                 // names an inbox or is refused, and a second routed inbox in
                 // one transaction is deferred so the sender retries it as its
@@ -1550,7 +1550,7 @@ async fn session(
                 // the row on resolve or unwind. Parked with the session's
                 // inbox name: the Email that carries it does not exist yet.
                 // The inbox is named once, here, before the park and the
-                // parse (decision 0106 §4): the routed recipient, else the
+                // parse (decision 0112 §4): the routed recipient, else the
                 // AUTH identity, else `default`. The park, `build_email` and
                 // the stored row all take this one name.
                 let inbox = routed
@@ -2289,7 +2289,7 @@ mod tests {
         assert_eq!(read_line_capped(&mut reader, 8).await.unwrap(), Line::Eof);
     }
 
-    /// Decision 0106 §1–§2: the recipient's host decides, whole-label and
+    /// Decision 0112 §1–§2: the recipient's host decides, whole-label and
     /// case-folded; under the domain exactly one admitted label names the
     /// inbox and everything else is refused.
     #[test]
@@ -2344,7 +2344,7 @@ mod tests {
         }
     }
 
-    /// Decision 0106 §3: the refusals' precedence and text.
+    /// Decision 0112 §3: the refusals' precedence and text.
     #[test]
     fn route_refusals_follow_the_decision() {
         let ada = Route::Inbox("ada".into());

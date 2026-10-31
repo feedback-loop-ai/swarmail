@@ -141,7 +141,7 @@ pub struct McpContext {
     /// (decision 0018). The same receiver the SSE feed consumes — one
     /// source of "stopping", never a second channel.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
-    /// The SMTP route domain (decision 0106): `swarmail_create_inbox` mints
+    /// The SMTP route domain (decision 0112): `swarmail_create_inbox` mints
     /// `agent@<inbox>.<domain>` under it and refuses without it.
     pub route_domain: Option<String>,
 }
@@ -404,13 +404,13 @@ async fn handle_revision(
     })
 }
 
-/// The minting tool (decision 0106 §5).
+/// The minting tool (decision 0112 §5).
 const CREATE_INBOX: &str = "swarmail_create_inbox";
 
 /// The refusal on a server that routes nothing.
 const CREATE_INBOX_UNCONFIGURED: &str = "recipient routing is not configured: start the server with --route-domain <domain> (SWARMAIL_ROUTE_DOMAIN) to mint inbox addresses";
 
-/// A fresh inbox name and its address under the route domain (decision 0106
+/// A fresh inbox name and its address under the route domain (decision 0112
 /// §5). A UUID v7 as 32 lowercase hex characters is inside the routing
 /// alphabet and the shared inbox rule. Nothing is stored, locked, registered
 /// or expired: an inbox with no mail does not exist (decision 0032), and the
@@ -1063,7 +1063,7 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     ]);
     // Appended (decision 0094 §7): every earlier entry keeps its place.
     tools.as_array_mut().unwrap().extend(focused::descriptors());
-    // Appended after the focused pair (decision 0106 §5): the earlier
+    // Appended after the focused pair (decision 0112 §5): the earlier
     // indices keep their places.
     tools.as_array_mut().unwrap().push(json!({
         "name": CREATE_INBOX,
@@ -1634,7 +1634,7 @@ mod tests {
         handle(ctx, &req).await.expect("a request is answered")
     }
 
-    /// Decision 0106 §5: with a route domain the tool mints a fresh lowercase
+    /// Decision 0112 §5: with a route domain the tool mints a fresh lowercase
     /// hex inbox and its address and stores nothing; without one it refuses
     /// in an `isError` result naming the flag. Both revisions' bytes.
     #[tokio::test]

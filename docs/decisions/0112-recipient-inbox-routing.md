@@ -1,4 +1,4 @@
-# 0106 — Recipient inbox routing under a configured route domain
+# 0112 — Recipient inbox routing under a configured route domain
 
 - **Status:** proposed
 - **Date:** 2026-10-31
@@ -25,6 +25,9 @@
   inbox rule: every routed name is admissible by it), proposed 0082 and
   0094 §7 (appended descriptor, object-root `outputSchema`, modern
   annotations).
+- **Number:** drafted as 0106; renumbered to 0112 at integration on 2026-10-31,
+  after open PR #292 held 0106–0107, main held up to 0109, #159 held 0110 and
+  #156 took 0111.
 
 ## Context
 
