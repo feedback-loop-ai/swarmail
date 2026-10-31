@@ -87,7 +87,7 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Concurrent sessions per listener (decision 0027): three listeners at the
 /// cap plus the listeners and stdio stay under the common 1024 soft-fd
 /// floor — the repro axis issue #36 itself names.
-const DEFAULT_MAX_SESSIONS: usize = 256;
+pub const DEFAULT_MAX_SESSIONS: usize = 256;
 
 /// The recipient ceiling per transaction (decision 0027): the 101st `RCPT`
 /// is refused `452 4.5.3` before it is appended. A plain constant, not a

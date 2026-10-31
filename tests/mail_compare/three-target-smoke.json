@@ -1,0 +1,147 @@
+{
+  "protocol_version": 1,
+  "id": "three-target-smoke-fixture",
+  "status": "draft",
+  "supersedes": null,
+  "change_reason": null,
+  "targets": [
+    "swarmail",
+    "mailpit",
+    "mailhog"
+  ],
+  "corpus": {
+    "seed": 163,
+    "kinds": [
+      "plain",
+      "html",
+      "multipart"
+    ]
+  },
+  "throughput": [
+    {
+      "name": "smoke-c5-reused",
+      "repetitions": 1,
+      "warmup_messages": 3,
+      "messages": 300,
+      "sessions": 5,
+      "connection": "reused",
+      "send_deadline_ms": 120000,
+      "verify_deadline_ms": 30000
+    },
+    {
+      "name": "smoke-c4-fresh",
+      "repetitions": 1,
+      "warmup_messages": 0,
+      "messages": 12,
+      "sessions": 4,
+      "connection": "fresh",
+      "send_deadline_ms": 60000,
+      "verify_deadline_ms": 30000
+    }
+  ],
+  "waits": [
+    {
+      "name": "smoke-wait-best",
+      "repetitions": 1,
+      "present": 3,
+      "future": 3,
+      "empty": 2,
+      "deadline_ms": 10000,
+      "empty_deadline_ms": 300,
+      "observation": [
+        {
+          "target": "swarmail",
+          "mode": "native",
+          "interval_ms": null,
+          "justification": "Swarmail's own await (decision 0002)."
+        },
+        {
+          "target": "mailpit",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client poll of the captured search endpoint; provisional (no wait source reviewed)."
+        },
+        {
+          "target": "mailhog",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client poll of the captured search endpoint; provisional (no wait source reviewed)."
+        }
+      ]
+    },
+    {
+      "name": "smoke-wait-common",
+      "repetitions": 1,
+      "present": 3,
+      "future": 3,
+      "empty": 2,
+      "deadline_ms": 10000,
+      "empty_deadline_ms": 300,
+      "observation": [
+        {
+          "target": "swarmail",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "The common client path on the candidate."
+        },
+        {
+          "target": "mailpit",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client poll of the captured search endpoint; provisional (no wait source reviewed)."
+        },
+        {
+          "target": "mailhog",
+          "mode": "poll",
+          "interval_ms": 100,
+          "justification": "Common-client poll of the captured search endpoint; provisional (no wait source reviewed)."
+        }
+      ]
+    }
+  ],
+  "resources": {
+    "enforced": false,
+    "cpus": null,
+    "memory_mib": null,
+    "open_files": 4096,
+    "startup_deadline_ms": 30000,
+    "cleanup_deadline_ms": 10000,
+    "request_deadline_ms": 10000,
+    "max_response_bytes": 16777216
+  },
+  "storage": {
+    "mode": "memory",
+    "retention": [
+      {
+        "target": "swarmail",
+        "max_messages": null
+      },
+      {
+        "target": "mailpit",
+        "max_messages": 10000
+      },
+      {
+        "target": "mailhog",
+        "max_messages": null
+      }
+    ]
+  },
+  "statistics": {
+    "quantile_method": "nearest-rank",
+    "quantiles": [
+      50,
+      95,
+      99
+    ],
+    "orders": [
+      [
+        "mailhog",
+        "swarmail",
+        "mailpit"
+      ]
+    ]
+  },
+  "unresolved": [
+    "a smoke fixture: never collection"
+  ]
+}

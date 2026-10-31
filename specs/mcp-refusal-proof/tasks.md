@@ -40,7 +40,7 @@ prerequisites remain explicit even when the bounded assessment is finished.
   diff/hash checks show no historical, runtime, dependency or bound change.
   Binary-unavailable and shared-router exhaustion stay explicitly unproved;
   this task assesses those gaps and does not mark historical T8 complete.
-- [ ] **T7 — Commit unsigned and run all local gates (AC7).** Complete the
+- [x] **T7 — Commit unsigned and run all local gates (AC7).** Complete the
   implementation commit and execute the entire house inventory plus framed
   design/delivery proofs, even after any failure. Preserve evidence, fix only
   scoped failures, and bind reruns to the actual clean candidate.

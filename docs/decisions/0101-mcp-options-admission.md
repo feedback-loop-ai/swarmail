@@ -4,7 +4,7 @@
 - **Date:** 2026-10-28
 - **Scope:** Epic #164, issue #152; correction to current contract documentation.
 - **Related:** accepted [0043 §4](0043-mcp-origin-boundary.md); proposed [0079](0079-mcp-version-negotiation.md) and [0080](0080-mcp-source-reconciliation.md).
-- **Number:** next free on this candidate base; reconcile independently developed proposals before integration.
+- **Number:** next free on this candidate base; reconcile independently developed proposals before integration. Renumbered from provisional 0090 at the merge of main, where 0090 is the mixed-provider-routing proposal.
 
 ## Proposed clarification
 

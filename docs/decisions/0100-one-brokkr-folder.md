@@ -83,3 +83,25 @@ with `brokkr ledger --repo`. `ship-seat.sh` now writes the ledger beside the
 engine's result files for the run, `<results dir>/<run>.ledger.md`, the one
 directory every ship attempt can write and read back. `brokkr ledger --repo`
 still renders `.brokkr/state/ledger/<run>.md` for the operator.
+
+## Dated addendum — 2026-10-30: the ship ledger, again
+
+The 2026-10-29 addendum put the ledger in the results directory. In the
+seat box that directory is read-only like the rest of the state folder;
+only the engine's result file is writable, so run
+`issue-153-operator-continuation--323fdc1b` parked at ship on it. The ledger
+now lives in the worktree's own git directory
+(`git rev-parse --git-path brokkr-ledger/<run>.md`), which the box mounts
+read-write and which no tracked-tree check sees. The seat's notes stage in
+the box's private temporary directory.
+
+## Dated correction — 2026-10-30: why ship could not write
+
+Both ledger addenda above name the wrong cause. The engine binds the
+journal's directory read-only for the ship seat when the journal lies
+outside the worktree (brokkr `engine/boxed.rs`, `runtime_hands`). The
+operator's journal is `.forge/forge.db` in the main checkout, and the
+candidate worktrees lived under `.forge/landing/`, so at ship the whole
+candidate became read-only, the engine's result file included. A candidate
+outside the journal's directory ships normally. Candidates now live outside
+`.forge/`. The ledger stays in the git directory, which is harmless.

@@ -3540,6 +3540,7 @@ while :; do :; done
 
     #[test]
     fn source_observation_cancellation_stays_latched_before_cargo_admission() {
+        let _trial_scope = crate::test_support::trial_scope();
         for signal in [libc::SIGTERM, libc::SIGINT] {
             let dir = tempfile::tempdir().unwrap();
             let mut probe = matrix_probe_config(
@@ -3584,6 +3585,7 @@ while :; do :; done
 
     #[test]
     fn retained_child_conflicts_with_cancellation_winning_commit_without_mutation() {
+        let _trial_scope = crate::test_support::trial_scope();
         for signal in [libc::SIGTERM, libc::SIGINT] {
             let dir = tempfile::tempdir().unwrap();
             let mut probe = matrix_probe_config(
@@ -3653,6 +3655,7 @@ while :; do :; done
 
     #[test]
     fn envelope_stop_observes_the_same_pending_cleanup_and_bypass_negative_control() {
+        let _trial_scope = crate::test_support::trial_scope();
         for bypass in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let mut probe = matrix_probe_config(
@@ -4150,6 +4153,9 @@ mod baseline_tests {
             assert!(baseline_transition(&mut resources).await.is_err());
             return;
         }
+        // The parent holds the scope; the re-executed child above must not
+        // take it again, or it would wait on its own parent.
+        let _trial_scope = crate::test_support::trial_scope();
         for signal in [libc::SIGTERM, libc::SIGINT] {
             let dir = tempfile::tempdir().unwrap();
             let hold = dir.path().join("gap");
@@ -4166,6 +4172,22 @@ mod baseline_tests {
             // The child has acknowledged installed signal ownership and the
             // actual between-matrices boundary. No timing guess is involved.
             assert_eq!(unsafe { libc::kill(child.0.id() as i32, signal) }, 0);
+            // Release only once the child has observed the signal: delivery
+            // is asynchronous, and a release seen first under load would let
+            // the boundary's non-blocking check miss it.
+            let seen = hold.join(if signal == libc::SIGTERM {
+                "signal-term"
+            } else {
+                "signal-int"
+            });
+            while !seen.is_file() {
+                assert!(
+                    Instant::now() < deadline,
+                    "child did not observe the signal"
+                );
+                assert!(child.0.try_wait().unwrap().is_none());
+                std::thread::yield_now();
+            }
             std::fs::write(hold.join("release"), b"release").unwrap();
             assert!(child.0.wait().unwrap().success());
             assert!(!dir.path().join("paid.jsonl").exists());
