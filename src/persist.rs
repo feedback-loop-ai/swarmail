@@ -58,7 +58,7 @@
 //! repairs loss an earlier multi-writer run already caused.
 
 use crate::attachments::MAX_ATTACHMENTS;
-use crate::model::{AttachmentList, Email, LinkMetadata};
+use crate::model::{Attachment, AttachmentList, Email};
 use rusqlite::types::Type;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
@@ -125,10 +125,10 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     // Decision 0094 §2: NULL is a row from before ingest kept link
     // occurrences — unknown, never backfilled.
     ("link_metadata_json", "TEXT"),
-    // Decision 0110 §6: both NULL is an unknown list — a row from before
-    // ingest listed attachments, or a mail the parser could not read —
-    // never backfilled; both set is a list and the concatenated bytes of
-    // its stored parts.
+    // Decisions 0108 §5 and 0110 §6: both NULL is an unknown list — a row from
+    // before ingest listed attachments, or a mail the parser could not read —
+    // never backfilled. A list beside the concatenated bytes of its stored
+    // parts is the current shape; a tuple array with no bytes is 0108's.
     ("attachments_json", "TEXT"),
     ("attachment_bytes", "BLOB"),
 ];
@@ -563,7 +563,7 @@ fn row_to_email(row: &rusqlite::Row<'_>) -> rusqlite::Result<Email> {
         text: row.get(10)?,
         html: row.get(11)?,
         links: from_json(row.get(12)?),
-        link_metadata: link_metadata(row.get(19)?)?,
+        link_metadata: strict_column(19, row.get(19)?)?,
         attachments: attachments(row.get(20)?, row.get(21)?)?,
         codes: from_json(row.get(13)?),
         message_id: row.get(14)?,
@@ -603,16 +603,20 @@ fn from_json<T: DeserializeOwned + Default>(raw: String) -> T {
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-/// The occurrence column, strictly (decision 0094 §2): SQL NULL is unknown
-/// history, and anything else must be the exact closed array ingest wrote.
-/// Unlike [`from_json`]'s lenient default for the original columns, damage
-/// here refuses the restore — an empty fallback would turn a corrupt row
-/// into a confident "no links" and hide the ambiguity the link wait reports.
-fn link_metadata(raw: Option<String>) -> rusqlite::Result<Option<Vec<LinkMetadata>>> {
+/// A column that must restore exactly or refuse (decisions 0094 §2, 0108
+/// §5): SQL NULL is unknown history, and anything else must be the exact
+/// closed shape ingest wrote. Unlike [`from_json`]'s lenient default for the
+/// original columns, damage here refuses the restore — an empty fallback
+/// would turn a corrupt row into a confident "none" and hide the ambiguity
+/// the focused waits and the compact view report.
+fn strict_column<T: DeserializeOwned>(
+    index: usize,
+    raw: Option<String>,
+) -> rusqlite::Result<Option<T>> {
     raw.map(|raw| {
         serde_json::from_str(&raw).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                19,
+                index,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
@@ -663,18 +667,47 @@ fn damaged(
     )
 }
 
-/// The attachment columns, strictly (decision 0110 §6): NULL in both is an
-/// unknown list; otherwise the closed `{total, parts}` object ingest wrote,
-/// with a blob exactly as long as the stored parts' sizes. A NULL in only
-/// one column, a damaged object or a blob of the wrong length refuses the
-/// restore by its column — an empty fallback would read as a confident "no
-/// attachments".
+/// A row of 0108 §5's first listing: `[filename, content_type, size]` tuples.
+/// Serde refuses a wrong length, a wrong type or a top-level null.
+type LabelsOnlyPart = (Option<String>, Option<String>, u64);
+
+fn labels_only(json: &str) -> rusqlite::Result<AttachmentList> {
+    let tuples: Vec<LabelsOnlyPart> = serde_json::from_str(json)
+        .map_err(|error| damaged("attachments_json", 20, Type::Text, error.to_string()))?;
+    let parts: Vec<Attachment> = tuples
+        .into_iter()
+        .map(|(filename, content_type, size)| Attachment {
+            filename,
+            content_type,
+            size,
+            sha256: String::new(),
+            stored: false,
+            ics: None,
+            content: None,
+        })
+        .collect();
+    Ok(AttachmentList {
+        total: parts.len() as u64,
+        parts,
+        labels_only: true,
+    })
+}
+
+/// The attachment columns, strictly (decisions 0108 §5, 0110 §6): NULL in both
+/// is an unknown list; a tuple array with no bytes is a row of the first
+/// listing; otherwise the closed `{total, parts}` object ingest wrote, with a
+/// blob exactly as long as the stored parts' sizes. A NULL in only one column
+/// of any other value, a damaged value or a blob of the wrong length refuses
+/// the restore by its column — an empty fallback would read as a confident
+/// "no attachments".
 fn attachments(
     json: Option<String>,
     bytes: Option<Vec<u8>>,
 ) -> rusqlite::Result<Option<AttachmentList>> {
     let (json, bytes) = match (json, bytes) {
         (None, None) => return Ok(None),
+        // The tuple array of 0108 §5 was written with no bytes column.
+        (Some(json), None) if json.starts_with('[') => return labels_only(&json).map(Some),
         (Some(json), Some(bytes)) => (json, bytes),
         (None, Some(_)) => {
             return Err(damaged(
@@ -880,6 +913,15 @@ mod tests {
         e.message_id = Some("m@x.io".into());
         e.in_reply_to = Some("parent@x.io".into());
         e.references = vec!["root@x.io".into(), "parent@x.io".into()];
+        let mut labelled = attachment("q3.pdf", None, 4096);
+        labelled.content_type = Some("application/pdf".into());
+        let mut bare = attachment("", None, 0);
+        (bare.filename, bare.content_type) = (None, None);
+        e.attachments = Some(AttachmentList {
+            total: 2,
+            parts: vec![labelled, bare],
+            ..Default::default()
+        });
         // Deliberately not valid UTF-8: raw bytes must round-trip untouched.
         e.raw = vec![0xFF, 0xFE, b'a', b'\r', b'\n'];
         e
@@ -1029,6 +1071,7 @@ mod tests {
                     attachment("empty.bin", Some(b""), 0),
                     calendar,
                 ],
+                ..Default::default()
             }),
         ] {
             mail.attachments = list;
@@ -1081,6 +1124,7 @@ mod tests {
         mail.attachments = Some(AttachmentList {
             total: 1,
             parts: vec![attachment("a.bin", Some(b"abc"), 3)],
+            ..Default::default()
         });
         persist.record_insert(&mail, &[], 1, 0).unwrap();
         let good: String = persist
@@ -1210,6 +1254,80 @@ mod tests {
         );
     }
 
+    /// Decisions 0108 §5 and 0110: the tuple array the first listing wrote,
+    /// with no bytes, restores as labels only — populated or known empty — and
+    /// every malformed tuple row refuses by its column. A tuple array beside
+    /// bytes, and anything else without them, is damage and never "none".
+    #[test]
+    fn a_labels_only_row_restores_and_malformed_ones_refuse() {
+        let (_guard, path) = db_path("attachments-tuples");
+        let persist = Persist::open(&path).unwrap();
+        persist
+            .record_insert(&full_email("tuples", "box"), &[], 1, 0)
+            .unwrap();
+        set_attachments(
+            &persist,
+            Some(r#"[["q3.pdf","application/pdf",4096],[null,null,0]]"#),
+            None,
+        );
+        let list = persist.load().unwrap().0[0].attachments.clone().unwrap();
+        assert!(list.labels_only);
+        assert_eq!(list.total, 2);
+        let labels: Vec<_> = list
+            .parts
+            .iter()
+            .map(|p| (p.filename.as_deref(), p.content_type.as_deref(), p.size))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                (Some("q3.pdf"), Some("application/pdf"), 4096),
+                (None, None, 0)
+            ]
+        );
+        for part in &list.parts {
+            assert_eq!(
+                (part.stored, &part.content, &part.ics, part.sha256.as_str()),
+                (false, &None, &None, "")
+            );
+        }
+        set_attachments(&persist, Some("[]"), None);
+        let list = persist.load().unwrap().0[0].attachments.clone().unwrap();
+        assert_eq!(
+            (list.labels_only, list.total, list.parts),
+            (true, 0, vec![])
+        );
+        for (corrupt, bytes, column, kind) in [
+            ("[null]", None, 20, Type::Text),
+            (r#"[["a"]]"#, None, 20, Type::Text),
+            (r#"[["a","b"]]"#, None, 20, Type::Text),
+            (r#"[["a","b",1,2]]"#, None, 20, Type::Text),
+            (r#"[[1,"b",1]]"#, None, 20, Type::Text),
+            (r#"[["a",2,1]]"#, None, 20, Type::Text),
+            (r#"[["a","b","1"]]"#, None, 20, Type::Text),
+            (r#"[["a","b",-1]]"#, None, 20, Type::Text),
+            (
+                r#"[{"filename":"a","content_type":"b","size":1}]"#,
+                None,
+                20,
+                Type::Text,
+            ),
+            ("[", None, 20, Type::Text),
+            (r#"[["a","b",1]]"#, Some(&b""[..]), 20, Type::Text),
+            ("not json", None, 21, Type::Blob),
+            ("null", None, 21, Type::Blob),
+            ("{}", None, 21, Type::Blob),
+            ("not json", Some(&b""[..]), 20, Type::Text),
+            ("null", Some(&b""[..]), 20, Type::Text),
+            ("{}", Some(&b""[..]), 20, Type::Text),
+        ] {
+            set_attachments(&persist, Some(corrupt), bytes);
+            let debug = format!("{:?}", persist.load().unwrap_err());
+            let expected = format!("FromSqlConversionFailure({column}, {kind:?}, ");
+            assert!(debug.starts_with(&expected), "{corrupt}: {debug}");
+        }
+    }
+
     /// A data file written before the attachment columns existed — the
     /// previous explicit schema, so the migration really runs — keeps its
     /// mail, restores its attachments as unknown (never backfilled) and
@@ -1238,6 +1356,7 @@ mod tests {
         fresh.attachments = Some(AttachmentList {
             total: 1,
             parts: vec![attachment("n.bin", Some(b"xyz"), 3)],
+            ..Default::default()
         });
         {
             let persist = Persist::open(&path).unwrap();

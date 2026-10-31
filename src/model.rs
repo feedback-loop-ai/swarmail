@@ -184,6 +184,12 @@ struct AttachmentMembers {
 pub struct AttachmentList {
     pub total: u64,
     pub parts: Vec<Attachment>,
+    /// A row of decision 0108's first listing: its labels and sizes serve the
+    /// compact view, but it holds no hash and no bytes and its candidate set
+    /// lacked bare calendar parts, so the attachment tools answer unknown.
+    /// Never written: only the restore sets it (decision 0110).
+    #[serde(skip)]
+    pub labels_only: bool,
 }
 
 #[derive(Deserialize)]
@@ -247,6 +253,7 @@ map_only!(
     |m| AttachmentList {
         total: m.total,
         parts: m.parts,
+        labels_only: false,
     }
 );
 
@@ -475,6 +482,7 @@ mod tests {
                 ics: Some(IcsEvent::default()),
                 content: Some(vec![1]),
             }],
+            ..Default::default()
         });
         assert_eq!(serde_json::to_string(&mail).unwrap(), without);
         assert!(!without.contains("attachments"));

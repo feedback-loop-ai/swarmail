@@ -68,11 +68,10 @@ data model, contracts, quickstart and risks the dialect asks for.
   1024-byte control-byte labels), so its entries stop at 3 MiB of compact
   JSON, at most 9 MiB on the wire once doubled in the text block and repeated
   as `structuredContent`; the measured worst is 8.93 MiB (backslash labels).
-- *#155 collision.* The unmerged `repair/issue155-compact-view` adds
-  `model::Attachment`, `Email.attachments`, `attachments_json` (three-tuples)
-  and `attachment_list`. This plan reuses those four names so a later merge
-  is additive; the stored shape differs and is reconciled by whichever lands
-  second (0110, reconciliation section).
+- *#155 reconciliation.* #155 landed first with `model::Attachment`,
+  `Email.attachments`, `attachments_json` (three-tuples) and `attachment_list`.
+  This delivery widened the first three and removed the fourth; the strict
+  reader accepts both stored shapes as 0110's reconciliation section states.
 
 ## Project structure and files touched
 
@@ -178,9 +177,9 @@ git diff --exit-code Cargo.lock deny.toml
 - **Restore refusals on real files.** A strict reader turns a damaged row
   into a refused start. Mitigation: the same posture 0094/0097 chose, with
   the column named in the error; tests cover each refusal.
-- **Collision with #155.** Same names, different stored shape. Mitigation:
-  names aligned now; the reconciliation rule is written in 0110; whichever
-  lands second widens the strict reader to every shape ingest ever wrote.
+- **Reconciled with #155.** Same names, different stored shape. Mitigation:
+  the reconciliation is written in 0110 and both shapes restore, proved by
+  `src/persist.rs` and `tests/persistence.rs`.
 - **Bridge cap on the largest fetch.** Mitigation: the arithmetic is in the
   decision and `tests/stdio.rs` delivers a 1 MiB part in both encodings.
 - **Bridge cap on the largest list.** Mitigation: `MAX_LIST_JSON_BYTES`, proved

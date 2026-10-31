@@ -194,13 +194,26 @@ memory bound; the JSON bound keeps a list answer inside the bridge cap.
   its sharing; fetch returns the part's own bytes.
 - *Timezone resolution for `DTSTART`.* Rejected; see §4.
 
-## Reconciliation with the unmerged #155 (proposed 0108 §5)
+## Reconciliation with #155 (proposed 0108 §5)
 
-#155 adds `model::Attachment { filename, content_type, size }`,
-`Email.attachments`, `attachments_json` as an array of three-tuples and
-`attachment_list` in `smtp.rs`. This record keeps those names and widens the
-entry with `sha256`, `stored` and `ics`, and the candidate set with bare
-calendar parts. Whichever lands second reconciles the stored shape: a
-strict reader must accept every shape ingest ever wrote and nothing else,
-and 0108 §5's "outer parser list" wording gains the calendar arm. Neither
-change is authority over the other; the operator rules on both.
+#155 landed first on `origin/main`, with `model::Attachment { filename,
+content_type, size }`, `Email.attachments`, `attachments_json` as an array of
+three-tuples and `attachment_list` in `smtp.rs`. This record, second to land,
+reconciles as its first draft said it would: one list, one column.
+
+- `Email.attachments` is this record's `AttachmentList`, and the compact view
+  and `fields` read their `attachments` and `attachments_total` from it. So
+  that view now also shows bare calendar parts, carries labels cut to
+  `MAX_LABEL_BYTES` and a lowercased type, and keeps its exact total beyond the
+  250 entries ingest now records; 0108 §5's "outer parser list" gains the
+  calendar arm in effect, and 0108's text is the operator's to amend.
+- `attachments_json` restores every shape ingest wrote and nothing else. A
+  tuple array with `attachment_bytes` NULL is a row of 0108's first listing,
+  restored as labels only: the compact view serves its labels as before, and
+  both attachment tools answer the named unknown refusal, because it holds no
+  hash and no bytes and its list, even an empty one, could not see a bare
+  calendar part. It is never backfilled. A tuple array beside bytes, or any
+  other value without them, refuses the restore by its column.
+- Ingest writes only the `{total, parts}` object. `attachment_list` is gone.
+
+Neither change is authority over the other; the operator rules on both.

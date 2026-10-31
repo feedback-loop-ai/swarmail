@@ -1943,3 +1943,258 @@ async fn damaged_attachment_columns_refuse_to_serve_by_name() {
     assert_eq!(listed["isError"], false);
     srv.stop().await;
 }
+
+// ---- attachments (decision 0108 §5) ----
+
+/// A one-attachment mail: a named five-byte PDF beside the text body.
+const WITH_PDF: &[u8] = b"From: a@x.io\r\nTo: b@x.io\r\nSubject: pdf\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
+--b\r\nContent-Type: text/plain\r\n\r\nattached\r\n\
+--b\r\nContent-Type: application/pdf; name=\"q3.pdf\"\r\nContent-Disposition: attachment; filename=\"q3.pdf\"\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0=\r\n--b--\r\n";
+
+/// The `attachments` member of each compact item a modern search of the
+/// inbox serves, newest first: the wire's view of the stored list.
+async fn compact_attachments(
+    addr: std::net::SocketAddr,
+    inbox: &str,
+) -> Vec<(String, Option<serde_json::Value>)> {
+    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"swarmail_search_emails","arguments":{"inbox":inbox}}});
+    let (status, reply) = common::http_send_text_with_headers(
+        addr,
+        "POST",
+        "/mcp",
+        &[("MCP-Protocol-Version", "2025-11-25")],
+        Some(&body.to_string()),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+    reply["result"]["structuredContent"]["emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["id"].as_str().unwrap().to_string(),
+                e.get("attachments").cloned(),
+            )
+        })
+        .collect()
+}
+
+fn pdf_entry() -> serde_json::Value {
+    serde_json::json!([{"content_type":"application/pdf","filename":"q3.pdf","size":5}])
+}
+
+/// A real SMTP delivery with a named attachment is queryable with its list
+/// the moment the `250` returns, the same list is served after two restarts,
+/// a mail without attachments is a known empty list (no member), and the
+/// columns hold exactly the closed object and the stored bytes.
+#[tokio::test]
+async fn an_attachment_is_listed_at_250_and_survives_restarts() {
+    let (_dir, db) = data_file("attachments");
+    let srv = serve_data_file(&db).await;
+    let pdf = common::smtp_raw(srv.smtp_addr, "att", WITH_PDF).await;
+    assert_eq!(
+        compact_attachments(srv.http_addr, "att").await,
+        [(pdf.clone(), Some(pdf_entry()))]
+    );
+    let plain = common::smtp_raw(srv.smtp_addr, "att", b"Subject: p\r\n\r\nplain\r\n").await;
+    srv.stop().await;
+    for _ in 0..2 {
+        let srv = serve_data_file(&db).await;
+        assert_eq!(
+            compact_attachments(srv.http_addr, "att").await,
+            [(plain.clone(), None), (pdf.clone(), Some(pdf_entry()))]
+        );
+        srv.stop().await;
+    }
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let stored: Vec<(String, Option<String>, Option<Vec<u8>>)> = conn
+        .prepare("SELECT id, attachments_json, attachment_bytes FROM emails ORDER BY seq")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let bytes = stored[0].2.clone().unwrap();
+    assert_eq!(bytes.len(), 5);
+    let sha256 = swarmail::attachments::sha256_hex(&bytes);
+    assert_eq!(
+        stored,
+        [
+            (
+                pdf,
+                Some(format!(
+                    r#"{{"total":1,"parts":[{{"filename":"q3.pdf","content_type":"application/pdf","size":5,"sha256":"{sha256}","stored":true,"ics":null}}]}}"#
+                )),
+                Some(bytes),
+            ),
+            (
+                plain,
+                Some(r#"{"total":0,"parts":[]}"#.into()),
+                Some(vec![]),
+            ),
+        ]
+    );
+}
+
+/// A file written before the column migrates on open: its mail keeps an
+/// unknown list (SQL NULL, served as `null`, never backfilled from the raw
+/// bytes it still holds) through two restarts, and fresh mail beside it
+/// records its own.
+#[tokio::test]
+async fn a_file_from_before_the_column_serves_null_attachments() {
+    let (_dir, db) = data_file("pre-attachments");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(PRE_METADATA_SCHEMA).unwrap();
+        // Raw bytes that do carry an attachment: the read must not look.
+        conn.execute(
+            "INSERT INTO emails (id, inbox, seq, from_json, to_json, cc_json, recipients_json, subject,
+                received_at, received_ms, size, text, html, links_json, codes_json, raw)
+             VALUES ('legacy-row', 'legacy', 0, '{\"address\":\"old@x.io\"}', '[]', '[]', '[]', 'Old',
+                '1970-01-01T00:00:01Z', 1000, 3, 'old', NULL, '[]', '[]', ?1)",
+            [WITH_PDF],
+        )
+        .unwrap();
+    }
+    let mut fresh = String::new();
+    for restart in 0..3 {
+        let srv = serve_data_file(&db).await;
+        if restart == 0 {
+            fresh = common::smtp_raw(srv.smtp_addr, "legacy", WITH_PDF).await;
+        }
+        assert_eq!(
+            compact_attachments(srv.http_addr, "legacy").await,
+            [
+                (fresh.clone(), Some(pdf_entry())),
+                ("legacy-row".to_string(), Some(serde_json::Value::Null)),
+            ],
+            "restart {restart}"
+        );
+        srv.stop().await;
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        let old: Option<String> = conn
+            .query_row(
+                "SELECT attachments_json FROM emails WHERE id = 'legacy-row'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old, None, "never backfilled");
+    }
+}
+
+/// Damage to the attachment column refuses the restore by its column
+/// instead of reading as "no attachments"; NULL and the tuple rows of the
+/// first listing, `[]` included, serve the compact view, and the attachment
+/// tools answer unknown for them.
+#[tokio::test]
+async fn a_corrupt_attachment_column_refuses_to_serve() {
+    let (_dir, db) = data_file("corrupt-attachments");
+    let srv = serve_data_file(&db).await;
+    let id = common::smtp_raw(srv.smtp_addr, "corrupt", WITH_PDF).await;
+    srv.stop().await;
+    let set = |value: Option<&str>, bytes: Option<&[u8]>| {
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute(
+                "UPDATE emails SET attachments_json = ?1, attachment_bytes = ?2 WHERE id = ?3",
+                rusqlite::params![value, bytes, id],
+            )
+            .unwrap();
+    };
+    for (corrupt, bytes, cause) in [
+        ("{", Some(&b""[..]), "EOF while parsing"),
+        ("null", Some(&b""[..]), "invalid type: null"),
+        (
+            r#"[["q3.pdf","application/pdf"]]"#,
+            None,
+            "invalid length 2",
+        ),
+        (r#"[["q3.pdf","application/pdf",5,6]]"#, None, "trailing"),
+        (r#"[["q3.pdf",7,5]]"#, None, "invalid type: integer"),
+        (
+            r#"[["q3.pdf","application/pdf",-5]]"#,
+            None,
+            "invalid value: integer `-5`",
+        ),
+        (r#"[{"filename":"q3.pdf"}]"#, None, "invalid type: map"),
+    ] {
+        set(Some(corrupt), bytes);
+        let cfg = swarmail::config::Config {
+            smtp_listen: "127.0.0.1:0".into(),
+            http_listen: "127.0.0.1:0".into(),
+            pop3_listen: "127.0.0.1:0".into(),
+            max_per_inbox: 0,
+            data_file: Some(db.clone()),
+            tls_cert: None,
+            tls_key: None,
+            smtp: Default::default(),
+            pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        };
+        let err = match swarmail::run_on(&cfg).await {
+            Ok(_) => panic!("a corrupt attachment column must refuse to serve: {corrupt}"),
+            Err(e) => e,
+        };
+        let err = err.to_string();
+        assert!(
+            err.contains("Text at index: 20") && err.contains(cause),
+            "{corrupt}: {err}"
+        );
+    }
+    for (valid, want) in [
+        (None, Some(serde_json::Value::Null)),
+        (Some("[]"), None),
+        (
+            Some(r#"[["q3.pdf","application/pdf",5]]"#),
+            Some(pdf_entry()),
+        ),
+    ] {
+        set(valid, None);
+        let srv = serve_data_file(&db).await;
+        assert_eq!(
+            compact_attachments(srv.http_addr, "corrupt").await,
+            [(id.clone(), want)]
+        );
+        let listed = att_call(
+            &srv,
+            "swarmail_list_attachments",
+            serde_json::json!({"id": id}),
+        )
+        .await;
+        assert_eq!(listed["isError"], true, "{listed}");
+        srv.stop().await;
+    }
+}
+
+/// The inbox cap prunes the oldest mail and its attachment list with it:
+/// no row, and so no list, outlives the eviction.
+#[tokio::test]
+async fn a_pruned_mail_leaves_no_attachment_row() {
+    let (_dir, db) = data_file("pruned-attachments");
+    let srv = common::start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c.max_per_inbox = 1;
+        c
+    })
+    .await;
+    let first = common::smtp_raw(srv.smtp_addr, "cap", WITH_PDF).await;
+    let second = common::smtp_raw(srv.smtp_addr, "cap", WITH_PDF).await;
+    assert_eq!(
+        compact_attachments(srv.http_addr, "cap").await,
+        [(second.clone(), Some(pdf_entry()))]
+    );
+    srv.stop().await;
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM emails WHERE attachments_json IS NOT NULL")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(ids, [second]);
+    assert!(!ids.contains(&first));
+}

@@ -346,6 +346,32 @@ async fn revision_tool_annotations() {
                     actual["name"]
                 );
             }
+            if version != VERSIONS[0]
+                && [
+                    "swarmail_search_emails",
+                    "swarmail_get_email",
+                    "swarmail_get_latest_email",
+                    "swarmail_wait_for_email",
+                ]
+                .contains(&actual["name"].as_str().unwrap())
+            {
+                strip_fields(&mut descriptor);
+            } else {
+                assert!(
+                    descriptor["inputSchema"]["properties"]
+                        .get("fields")
+                        .is_none(),
+                    "{version} {}",
+                    actual["name"]
+                );
+            }
+            if version != VERSIONS[0]
+                && ["swarmail_search_emails", "swarmail_get_latest_email"]
+                    .contains(&actual["name"].as_str().unwrap())
+            {
+                assert_compact_description(&descriptor);
+                descriptor["description"] = original["description"].clone();
+            }
             if version != VERSIONS[0] && actual["name"] == "swarmail_wait_for_email" {
                 let description = descriptor["description"].as_str().unwrap();
                 assert!(
@@ -373,6 +399,76 @@ async fn revision_tool_annotations() {
         binary.finish().await;
     }
 }
+/// The twenty-one names `fields` accepts, restated here from the decision
+/// (0108 §3) rather than read back from the crate that serves them.
+pub(crate) const FIELD_NAMES: [&str; 21] = [
+    "id",
+    "inbox",
+    "from",
+    "envelope_from",
+    "to",
+    "cc",
+    "recipients",
+    "subject",
+    "received_at",
+    "received_ms",
+    "size",
+    "text",
+    "html",
+    "links",
+    "codes",
+    "message_id",
+    "in_reply_to",
+    "references",
+    "snippet",
+    "anchors",
+    "attachments",
+];
+
+/// Check and remove the modern-only `fields` argument of a projecting read:
+/// an array of strings from exactly the published table, with a description,
+/// and nothing else.
+pub(crate) fn strip_fields(descriptor: &mut Value) {
+    let name = descriptor["name"].clone();
+    let property = descriptor["inputSchema"]["properties"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fields")
+        .unwrap_or_else(|| panic!("{name} publishes no fields"));
+    let mut keys: Vec<&String> = property.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["description", "items", "type"], "{name}");
+    assert_eq!(property["type"], "array", "{name}");
+    assert_eq!(
+        property["items"],
+        json!({"type":"string","enum":FIELD_NAMES}),
+        "{name}"
+    );
+    assert!(
+        property["description"]
+            .as_str()
+            .unwrap()
+            .contains("plus id")
+    );
+}
+
+/// The compact wording of the two list reads (decision 0108 §1): the
+/// handle, the 200-character snippet, the 250-entry caps and `fields`.
+pub(crate) fn assert_compact_description(descriptor: &Value) {
+    let description = descriptor["description"].as_str().unwrap();
+    for clause in [
+        "compact",
+        "swarmail_get_email",
+        "snippet",
+        "anchors",
+        "attachments",
+        "fields",
+    ] {
+        assert!(description.contains(clause), "{clause}: {description}");
+    }
+    assert!(!description.contains("full emails"), "{description}");
+}
+
 fn batches() -> Vec<Value> {
     let mut note = call(
         json!(1),
@@ -542,7 +638,28 @@ async fn revision_smtp_visibility() {
             &call(json!(2), "get_email", json!({"id":data["emails"][0]["id"]})),
         )
         .await;
-        assert_eq!(text(&got), data["emails"][0]);
+        let got = text(&got);
+        if version == VERSIONS[0] {
+            assert_eq!(got, data["emails"][0]);
+        } else {
+            // Modern search is the compact view (decision 0108 §1): the
+            // handle, the headers, a snippet and the labelled links; the
+            // whole email stays behind get_email.
+            assert_eq!(
+                data["emails"][0],
+                json!({
+                    "anchors": [{"anchor_text": null, "url": "https://x.io"}],
+                    "codes": ["424242"],
+                    "from": {"address": "a@x.io"},
+                    "id": got["id"],
+                    "received_ms": got["received_ms"],
+                    "snippet": "424242 https://x.io",
+                    "subject": version,
+                    "to": [{"address": "b@x.io"}],
+                })
+            );
+            assert_eq!(got["text"], "424242 https://x.io\r\n");
+        }
     }
 }
 #[tokio::test]
@@ -921,6 +1038,21 @@ async fn revision_tool_schemas_and_text_safety() {
             }
             if let Some(properties) = schema["properties"].as_object() {
                 for property in properties.values() {
+                    if property["type"] == "array" {
+                        // Only the modern `fields` argument: strings from a
+                        // closed enum, checked by name in the descriptor pins.
+                        assert_eq!(property["items"]["type"], "string");
+                        assert!(
+                            property["items"]["enum"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .all(Value::is_string)
+                        );
+                        assert_eq!(property["type"], "array");
+                        assert_ne!(version, VERSIONS[0]);
+                        continue;
+                    }
                     let kind = property["type"].as_str().unwrap();
                     assert!(["string", "integer"].contains(&kind));
                     for key in property.as_object().unwrap().keys() {
@@ -1006,6 +1138,8 @@ async fn revision_tool_schemas_and_text_safety() {
 
 #[path = "mcp_revisions/attachments.rs"]
 mod attachments;
+#[path = "mcp_revisions/compact.rs"]
+mod compact;
 #[path = "mcp_revisions/focused.rs"]
 mod focused;
 #[path = "mcp_revisions/structured.rs"]

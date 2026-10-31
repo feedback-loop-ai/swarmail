@@ -1126,7 +1126,7 @@ fn collapse(source: &str, source_cut: bool) -> String {
 /// prefers the text part the sender actually sent). Large leading markup or
 /// whitespace can leave it short; the stored bodies and the full plain and
 /// raw views are untouched.
-fn snippet(email: &Email) -> String {
+pub(crate) fn snippet(email: &Email) -> String {
     let (source, cut) = snippet_source(email);
     collapse(&source, cut)
 }

@@ -36,7 +36,7 @@ pub(super) fn call(
     let Some(email) = ctx.store.get(&id) else {
         return Ok(error_result(format!("message {id} not found")));
     };
-    let Some(list) = &email.attachments else {
+    let Some(list) = email.attachments.as_ref().filter(|list| !list.labels_only) else {
         return Ok(error_result(format!(
             "the attachments of message {id} are unknown: it was stored before \
              attachments were listed, or its MIME could not be read"
@@ -296,7 +296,7 @@ mod tests {
         let mut email = crate::store::email("long", "box", "a@x.io");
         email.attachments = Some(crate::model::AttachmentList {
             total: 300,
-            parts: vec![],
+            ..Default::default()
         });
         ctx.store.insert(email).unwrap();
         let list = payload(&answer(&ctx, LIST, json!({"id": "long"})).await);
@@ -330,7 +330,11 @@ mod tests {
         for (name_len, cut) in [(exact, false), (exact + 1, true)] {
             let mut email = crate::store::email(&format!("edge-{name_len}"), "box", "b@x.io");
             let parts = vec![part("n".repeat(name_len), b"a")];
-            email.attachments = Some(crate::model::AttachmentList { total: 1, parts });
+            email.attachments = Some(crate::model::AttachmentList {
+                total: 1,
+                parts,
+                ..Default::default()
+            });
             let id = email.id.clone();
             ctx.store.insert(email).unwrap();
             let list = payload(&answer(&ctx, LIST, json!({"id": id})).await);
@@ -344,6 +348,27 @@ mod tests {
                 let fetched = answer(&ctx, GET, json!({"id": id, "index": 0})).await;
                 assert_eq!(payload(&fetched)["content"], "a");
             }
+        }
+    }
+
+    /// A restored row of decision 0108's first listing keeps its labels for
+    /// the compact view, but neither tool can answer it: it holds no hash and
+    /// no bytes, and its empty list may hide a bare calendar part.
+    #[tokio::test]
+    async fn a_labels_only_list_answers_unknown() {
+        let (_stop, ctx) = context();
+        let mut email = crate::store::email("labels", "box", "a@x.io");
+        email.attachments = Some(crate::model::AttachmentList {
+            labels_only: true,
+            ..Default::default()
+        });
+        ctx.store.insert(email).unwrap();
+        for (tool, arguments) in [
+            (LIST, json!({"id": "labels"})),
+            (GET, json!({"id": "labels", "index": 0})),
+        ] {
+            let reply = answer(&ctx, tool, arguments).await;
+            assert!(error_text(&reply).contains("are unknown"), "{reply}");
         }
     }
 
