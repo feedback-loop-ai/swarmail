@@ -25,6 +25,7 @@ fn config_maps_the_cli_args() {
         http_listen: "127.0.0.1:8080".into(),
         pop3_listen: "127.0.0.1:1110".into(),
         max_per_inbox: 42,
+        max_sessions: 7,
         data_file: Some("/tmp/mail.db".into()),
         tls_cert: None,
         tls_key: None,
@@ -48,6 +49,7 @@ fn config_maps_the_cli_args() {
     // The handshake deadline rides the same posture config as the rest
     // of the SMTP knobs, in its CLI unit (milliseconds).
     assert_eq!(cfg.smtp.tls_handshake_timeout, Duration::from_millis(2500));
+    assert_eq!(cfg.smtp.max_sessions, 7);
 }
 
 #[test]
@@ -64,6 +66,7 @@ fn cli_parses_env_defaults_and_subcommands() {
     assert!(args.data_file.is_none());
     assert!(args.tls_cert.is_none());
     assert_eq!(args.tls_handshake_timeout_ms, 10_000);
+    assert_eq!(args.max_sessions, swarmail::smtp::DEFAULT_MAX_SESSIONS);
 
     // Every bind is still operator-tunable, in the flag's explicit shape —
     // the container contract (`0.0.0.0`) is spelled there, not defaulted
@@ -89,6 +92,13 @@ fn cli_parses_env_defaults_and_subcommands() {
         Cli::try_parse_from(["swarmail", "serve", "--tls-handshake-timeout-ms", "1234"]).unwrap();
     let args = serve_args_or_panic(cli);
     assert_eq!(args.tls_handshake_timeout_ms, 1234);
+
+    // The session cap is operator-tunable and never zero: a server that
+    // refuses every session is a misconfiguration, refused at parse time.
+    let cli = Cli::try_parse_from(["swarmail", "serve", "--max-sessions", "1000"]).unwrap();
+    let args = serve_args_or_panic(cli);
+    assert_eq!(args.max_sessions, 1000);
+    assert!(Cli::try_parse_from(["swarmail", "serve", "--max-sessions", "0"]).is_err());
 
     let cli = Cli::try_parse_from(["swarmail", "serve", "--data-file", "/tmp/mail.db"]).unwrap();
     let args = serve_args_or_panic(cli);

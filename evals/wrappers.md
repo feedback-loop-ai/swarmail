@@ -107,6 +107,18 @@ bounds inputs/responses and applies its request budget. This is independent of
 Swarmail MCP. Unix exec keeps CLI/helper descendants in the runner's group;
 the existing runner alone owns the deadline, TERM/KILL/reap/drain and admission.
 
+The helper accepts and discards MCP `params._meta` on initialize, ping,
+`tools/list`, `tools/call` and initialized notifications for 2025-03-26,
+2025-06-18 and 2025-11-25. It never echoes or forwards metadata or emits
+progress notifications. Tool params remain closed except for this reserved
+field; `arguments._meta` remains an invalid tool argument.
+
+GET requires an omitted `body`. Any supplied JSON value, including `""` or
+`null`, returns a tool result with `isError: true` and the fixed text
+`http_get_body_not_supported`, without an HTTP request. POST retains JSON
+serialization, including the distinction between omission and explicit null.
+Other helper failures retain the generic `fixture_request_refused` tool result.
+
 ## Rows, report and operator handoff
 
 Every current row requires canonical `provenance.agent.tool_surface`, including

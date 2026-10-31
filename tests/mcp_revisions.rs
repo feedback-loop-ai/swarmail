@@ -830,6 +830,7 @@ async fn revision_served_contract() {
         "full revision conformance is not claimed",
         "operator-chosen C1-C6 deviations",
         "specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register",
+        "docs/decisions/0104-mcp-candidate-proof.md",
         "except OPTIONS",
     ] {
         assert!(
@@ -843,8 +844,13 @@ async fn revision_served_contract() {
         "except\nOPTIONS",
         "the nine reads",
         "the six mutations",
+        "outputSchema",
+        "structuredContent",
+        "10 MiB",
+        "Tokens-per-success",
         "full revision conformance is not claimed",
         "specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register",
+        "docs/decisions/0104-mcp-candidate-proof.md",
     ] {
         assert!(llms.contains(clause), "llms.txt missing {clause}");
     }

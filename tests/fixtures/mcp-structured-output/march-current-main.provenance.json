@@ -1,10 +1,11 @@
 {
   "fixture": "march-current-main.jsonl",
-  "fixture_sha256": "7638b28acaaf4b8a29b61f00f420b987d6d4acd2792c14dd85e259939d09d8ce",
+  "fixture_sha256": "572a073ac2e3d589f94a893d6621fdfbaf57cc1c72a62b54a02e3f3b37187bc7",
   "requests": "march-current-main.requests.jsonl",
   "requests_sha256": "2a927f97a8101d9a7f8e278ec56c99c8b2e3fced1bd23737e773781c2dcc83fa",
   "cases": "march-current-main.cases.json",
   "cases_sha256": "92ec80d7f3e569cc1460a7878b4d70c545a770b6874690b7196ee4e1930d2d38",
+  "updated": "2026-10-31: the report descriptor line in tools/list now carries main's #151/#286 March wording ('with demo and bulk-sender checks') adopted in the merge of origin/main; every other byte is as captured at the source commit below",
   "captured": "2026-10-28 by the issue #153 follow-up implement seat (run follow-up-to-run-7244a9aa-which--5572d327)",
   "source": {
     "commit": "3a2eef948ed26392fe8ce2254f4b522964459a35",

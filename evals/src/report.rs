@@ -116,6 +116,102 @@ pub fn parse_rows(text: &str) -> Result<Vec<TrialResult>, String> {
         .collect()
 }
 
+/// Parse JSONL comparison rows strictly; one native, legacy or malformed row
+/// refuses the whole input, so the two kinds never mix.
+pub fn parse_comparison_rows(text: &str) -> Result<Vec<crate::identity::ComparisonRow>, String> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(i, l)| {
+            crate::results::read_comparison(l.as_bytes())
+                .map_err(|e| format!("line {}: {e}", i + 1))
+        })
+        .collect()
+}
+
+/// Cite every comparison number to its run, coordinates and denominator. One
+/// protocol digest and no repeated coordinate: a mixed or duplicated input
+/// would let a smaller denominator pass for the whole.
+pub fn cite_comparison(rows: &[crate::identity::ComparisonRow]) -> Result<Value, String> {
+    let Some(first) = rows.first() else {
+        return Err("no comparison rows to cite".into());
+    };
+    let mut cells: BTreeMap<(&str, &str), Vec<&crate::identity::ComparisonRow>> = BTreeMap::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for row in rows {
+        if row.protocol_sha256 != first.protocol_sha256 {
+            return Err("rows come from different protocols".into());
+        }
+        let coordinate = (&row.target, &row.coordinate.task, row.coordinate.attempt);
+        if !seen.insert(coordinate) {
+            return Err("a coordinate appears twice".into());
+        }
+        cells
+            .entry((&row.target, &row.coordinate.task))
+            .or_default()
+            .push(row);
+    }
+    let cells: Vec<Value> = cells
+        .into_iter()
+        .map(|((target, task), rows)| {
+            let count = |o: Outcome| rows.iter().filter(|r| r.outcome == o).count() as u64;
+            let passes = count(Outcome::Pass);
+            let mut attempts: Vec<u32> = rows.iter().map(|r| r.coordinate.attempt).collect();
+            attempts.sort_unstable();
+            json!({
+                "target": target,
+                "task": task,
+                "denominator": rows.len(),
+                "passes": passes,
+                "fails": count(Outcome::Fail),
+                "harness_errors": count(Outcome::HarnessError),
+                "pass_rate": ratio(passes, rows.len() as u64),
+                "attempts": attempts,
+            })
+        })
+        .collect();
+    Ok(json!({"protocol_sha256": first.protocol_sha256, "cells": cells}))
+}
+
+/// The paid story's inputs, each the SHA-256 of a record the eval owners
+/// verified. A digest is necessary and never sufficient evidence.
+#[derive(Default)]
+pub struct DossierInputs {
+    pub baseline_sha256: Option<String>,
+    pub final_contracts_sha256: Option<String>,
+    pub cost_sha256: Option<String>,
+}
+
+/// The dossier's numbers. Without the historical baseline, the final
+/// contracts and the cost record it refuses, naming the first one missing;
+/// there is no placeholder trial and no zero standing in for unknown spend.
+pub fn dossier(
+    rows: &[crate::identity::ComparisonRow],
+    inputs: &DossierInputs,
+) -> Result<Value, String> {
+    for (name, digest) in [
+        ("baseline", &inputs.baseline_sha256),
+        ("final-contracts", &inputs.final_contracts_sha256),
+        ("cost-basis", &inputs.cost_sha256),
+    ] {
+        match digest {
+            Some(d) if crate::provenance::is_hash(d) => {}
+            _ => {
+                return Err(format!(
+                    "dossier refused: {name} is missing or not a SHA-256"
+                ));
+            }
+        }
+    }
+    let mut cited = cite_comparison(rows)?;
+    cited["inputs"] = json!({
+        "baseline_sha256": inputs.baseline_sha256,
+        "final_contracts_sha256": inputs.final_contracts_sha256,
+        "cost_sha256": inputs.cost_sha256,
+    });
+    Ok(cited)
+}
+
 fn ratio(a: u64, b: u64) -> Value {
     if b == 0 {
         Value::Null

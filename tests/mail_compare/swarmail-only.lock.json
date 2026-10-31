@@ -1,0 +1,11 @@
+{
+  "lock_version": 3,
+  "checked_on": "2026-10-28",
+  "entries": [
+    {
+      "target": "swarmail",
+      "role": "candidate",
+      "pin": null
+    }
+  ]
+}
