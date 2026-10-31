@@ -224,3 +224,25 @@ unchanged. Replace the cooperative overlapping-trial proof with the sequential
 idle-victim/refused-competitor control in `evals/tests/proof.rs`, retaining all
 oracle/null and within-trial foreign-token controls. See the local
 [#151 run plan](../../evals/run-plan.md).
+
+## Dated amendment — 2026-10-30, named evals dev-dependency exceptions (#248)
+
+The operator ruled on 2026-10-30 (chat direction to the dispatcher) that
+`evals/Cargo.lock` may hold operator-approved **dev-dependencies by name**,
+each pinned exactly and resolved from the local cargo cache so
+`--offline --locked` still needs no network. The named exceptions are
+`pulldown-cmark 0.13.6` (`default-features = false`, so no
+`pulldown-cmark-escape`) and its transitive `unicase 2.10.0`, both from
+crates.io; `bitflags` and `memchr` keep reusing the root lock's versions.
+`pulldown-cmark` is named only under `[dev-dependencies]` in
+`evals/Cargo.toml`. The invariant test
+`every_evals_package_is_already_in_the_root_lock` carries the exceptions as
+exact (name, version, source) triples and fails for any other package outside
+the root lock, for a listed package at another version or source, for a stale
+allowance, and for `pulldown-cmark` anywhere but `[dev-dependencies]`. The
+root `Cargo.toml`, `Cargo.lock` and `deny.toml` are unchanged, and the swarmail
+crate gains no dependency. The root `cargo deny check licenses` does not read
+`evals/Cargo.lock`, so the evals license check runs by manifest path. CI and
+verify wiring for evals stays deferred to #201: the tracked-link guard that
+uses the parser is seat-run, not CI-gated. The text above this amendment is
+unchanged; this adds one bounded exception and accepts nothing.
