@@ -104,6 +104,7 @@ them. What may land while a decision is still proposed is stated in
 | [0103](0103-mixed-work-seats.md) | Mixed work seats and protected review | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0104](0104-mcp-candidate-proof.md) | Dated corrections for the integrated MCP candidate | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0105](0105-mcp-report-output.md) | Thirteen-tool structured MCP output, report schema included | proposed — awaiting the operator | (Epic #164, issue #153 follow-up on the current #152 integration; supplements 0082) |
+| [0106](0106-near-miss-timeouts.md) | Near misses on a timed-out wait: one own-inbox read after the wait, bounded entries with `missed`, nearest subject, last arrival; all revisions | proposed — awaiting the operator | (Epic #164, issue #156; 0094 reserved 0093, now taken — collision for the operator; supplements 0082/0094/0105) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
