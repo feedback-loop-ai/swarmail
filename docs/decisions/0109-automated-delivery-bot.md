@@ -24,13 +24,18 @@ still in the way of every merge.
 1. **The bot seals and merges.** A PR that a delivery run shipped is sealed
    and squash-merged without an operator step. No per-PR operator instruction
    is needed.
-2. **The bot has its own key and its own GitHub account.** Its signature names
+2. **The bot is a GitHub App with its own key.** The App `swarmail-delivery`,
+   installed on this repository only, holds the bot's GitHub access, through
+   tokens that expire within the hour. A separate local key signs the seal, and
+   its public half is committed to the repository, because an App cannot attach
+   a GPG key to GitHub. GitHub therefore shows the bot's branch signatures as
+   unverified; they are checked against the committed key. The signature names
    the bot. It never signs as the operator and never holds the operator's key.
    0056 refused a server-held key because "anything on the box could then sign
    as the operator"; this key cannot.
 3. **The key lives under a separate Unix user.** Seats and the operator's
-   assistant run as the operator's user and cannot read the key or the bot's
-   GitHub credential. They cannot ask the bot to sign: it polls GitHub, and
+   assistant run as the operator's user and cannot read the key or the App's
+   private key. They cannot ask the bot to sign: it polls GitHub, and
    works only from what it fetches there, in its own clone.
 4. **What the bot requires, at the exact tree it will merge:**
    - the PR carries the `deliver` label, which the delivery pipeline applies;
