@@ -1448,3 +1448,89 @@ fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
     );
     fixture.assert_cleaned();
 }
+
+/// The step of a CI job whose `name:` is `name`, from its `- name:` line to
+/// the next step.
+fn ci_step<'a>(job: &'a str, name: &str) -> &'a str {
+    let marker = format!("      - name: {name}\n");
+    let start = job
+        .find(&marker)
+        .unwrap_or_else(|| panic!("the test job has no step named {name:?}"));
+    let rest = &job[start + marker.len()..];
+    &rest[..rest.find("\n      - ").unwrap_or(rest.len())]
+}
+
+/// Issue #162, proposed 0110 §6: each client fixture's example suite is a
+/// named Linux step of the required `test` job (a new job would not be a
+/// required context on main), built `--locked`, against a server this step
+/// starts, with the CI-only framework installed scripts-off and
+/// binaries-only. Red when a needle goes, when a step leaves the job or
+/// loses its Linux guard, and when the two suites stop being the same six
+/// examples.
+#[test]
+fn ci_runs_both_client_example_suites_in_the_linux_test_job() {
+    let ci = read_text(".github/workflows/ci.yml");
+    let job = ci
+        .split("\n  test:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  coverage:\n").next())
+        .expect("ci.yml has a test job before coverage");
+    for (name, needles) in [
+        (
+            "Playwright fixture example suite",
+            &[
+                "cargo build --locked",
+                "target/debug/swarmail serve",
+                "http://127.0.0.1:8025/healthz",
+                "npm install --prefix clients/playwright --ignore-scripts",
+                "--no-package-lock",
+                "playwright test -c clients/playwright/examples",
+            ][..],
+        ),
+        (
+            "pytest fixture example suite",
+            &[
+                "cargo build --locked",
+                "target/debug/swarmail serve",
+                "http://127.0.0.1:8025/healthz",
+                "pip install --no-deps --only-binary :all: -r clients/pytest/requirements-ci.txt",
+                "-m pytest -p pytest_swarmail.plugin",
+                "clients/pytest/examples",
+            ][..],
+        ),
+    ] {
+        let step = ci_step(job, name);
+        assert!(
+            step.contains("if: runner.os == 'Linux'"),
+            "{name} is Linux-only"
+        );
+        for needle in needles {
+            assert!(step.contains(needle), "{name} must carry {needle:?}");
+        }
+        assert!(
+            step.contains("set -euo pipefail") && step.contains("trap "),
+            "{name} fails closed and stops its server"
+        );
+    }
+
+    let spec = read_text("clients/playwright/examples/example.spec.ts");
+    let suite = read_text("clients/pytest/examples/test_example.py");
+    let numbered = |text: &str, prefix: &str| -> Vec<String> {
+        text.lines()
+            .filter_map(|l| l.strip_prefix(prefix))
+            .map(|l| l.chars().take(1).collect())
+            .collect()
+    };
+    let expected: Vec<String> = (1..=6).map(|n| n.to_string()).collect();
+    assert_eq!(
+        numbered(&spec, "test('"),
+        expected[..5],
+        "spec.ts examples 1-5"
+    );
+    assert_eq!(
+        numbered(&spec, "test(\""),
+        expected[5..],
+        "spec.ts example 6"
+    );
+    assert_eq!(numbered(&suite, "def test_"), expected, "pytest examples");
+}

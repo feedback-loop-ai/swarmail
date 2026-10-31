@@ -105,6 +105,7 @@ them. What may land while a decision is still proposed is stated in
 | [0104](0104-mcp-candidate-proof.md) | Dated corrections for the integrated MCP candidate | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0105](0105-mcp-report-output.md) | Thirteen-tool structured MCP output, report schema included | proposed — awaiting the operator | (Epic #164, issue #153 follow-up on the current #152 integration; supplements 0082) |
 | [0109](0109-automated-delivery-bot.md) | A delivery bot seals and merges, under its own key | accepted (operator, 2026-10-31) | (Amends 0056 once the bot is live) |
+| [0110](0110-client-fixture-packages.md) | Client fixture packages: Playwright and pytest fixtures under `clients/`, versioned with the server, zero runtime dependencies, CI-only exact test pins; publishing stays a separate operator act | proposed — awaiting the operator | (Epic #164, issue #162; number provisional — recheck before integration) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See
