@@ -8,6 +8,7 @@
 //! with unknown labels. Selection reads the whole filtered snapshot; the
 //! 250-entry lists bound only the presentation, built while counting.
 
+use super::near_miss;
 use super::{
     McpContext, Revision, arg_i64, arg_inbox, arg_str, error_result, refusal, text_result,
 };
@@ -151,24 +152,39 @@ fn occurrences<'a>(email: &'a Email, mut visit: impl FnMut(Occurrence<'a>)) {
     }
 }
 
-/// A presented list: the first [`LIST_CAP`] entries, built only while
-/// there is room, and the exact total over all of them.
-#[derive(Default)]
-struct List {
+/// A presented list: the first `cap` entries ([`LIST_CAP`] unless built
+/// with [`List::with_cap`]), built only while there is room, and the exact
+/// total over all of them.
+pub(super) struct List {
     entries: Vec<Value>,
     total: usize,
+    cap: usize,
+}
+
+impl Default for List {
+    fn default() -> Self {
+        Self::with_cap(LIST_CAP)
+    }
 }
 
 impl List {
-    fn push(&mut self, entry: impl FnOnce() -> Value) {
+    pub(super) fn with_cap(cap: usize) -> Self {
+        Self {
+            entries: Vec::new(),
+            total: 0,
+            cap,
+        }
+    }
+
+    pub(super) fn push(&mut self, entry: impl FnOnce() -> Value) {
         self.total += 1;
-        if self.entries.len() < LIST_CAP {
+        if self.entries.len() < self.cap {
             self.entries.push(entry());
         }
     }
 
     /// `name`, `name_total` and `name_truncated` into `out`.
-    fn into(self, out: &mut Map<String, Value>, name: &str) {
+    pub(super) fn into(self, out: &mut Map<String, Value>, name: &str) {
         out.insert(
             format!("{name}_truncated"),
             json!(self.total > self.entries.len()),
@@ -341,10 +357,20 @@ pub(super) async fn call(
         _ = crate::api::shutdown_signal(ctx.shutdown.clone()) => None,
     };
     match outcome {
-        Some(result) => Ok(text_result(
-            result.unwrap_or_else(|| timed_out(link)),
-            revision,
-        )),
+        Some(Some(found)) => Ok(text_result(found, revision)),
+        Some(None) => {
+            // A timeout names what the inbox holds instead (decision 0111):
+            // read after the wait resolved, never inside it, and nothing
+            // attached when the inbox holds nothing. The focused waits skip
+            // no mail: what their filter admitted but carried no code or
+            // selected link shows with an empty `missed`.
+            let mut out = timed_out(link);
+            let near = near_miss::near_misses(ctx.store.clone(), inbox, filter, false).await;
+            if let Some(near) = near {
+                out["near_misses"] = near;
+            }
+            Ok(text_result(out, revision))
+        }
         None => Ok(error_result("shutting down".into())),
     }
 }
@@ -454,10 +480,15 @@ pub(super) fn output_schema(link: bool, address: &Value) -> Value {
                 "older_candidates_total":exactly(0),"older_candidates_truncated":never}),
         )
     };
+    // The same timeout with the inbox's near misses (decision 0111): a
+    // second closed variant, so exactly one of the two ever validates.
+    let mut near = timed_out.clone();
+    near["near_misses"] = near_miss::schema();
     json!({"type":"object","oneOf":[
         variant("selected", selected),
         variant("ambiguous", ambiguous),
-        variant("timed_out", timed_out)
+        variant("timed_out", timed_out),
+        variant("timed_out", near)
     ]})
 }
 

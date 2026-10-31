@@ -844,9 +844,18 @@ async fn tool_call(
                         json!({ "matched": want, "total": total, "emails": emails }),
                     ))
                 }
-                Some(Ok(WaitOutcome::Timeout { matched })) => Ok(text_result(
-                    json!({ "matched": matched, "total": total, "timed_out": true }),
-                )),
+                Some(Ok(WaitOutcome::Timeout { matched })) => {
+                    // The inbox's near misses (decision 0111), read after
+                    // the wait resolved; mail the filter admits is already
+                    // in `matched`, so it is skipped. Absent when the inbox
+                    // holds nothing.
+                    let mut out = json!({ "matched": matched, "total": total, "timed_out": true });
+                    let near = near_miss::near_misses(store.clone(), inbox, filter, true).await;
+                    if let Some(near) = near {
+                        out["near_misses"] = near;
+                    }
+                    Ok(text_result(out))
+                }
                 None => Ok(error_result("shutting down".into())),
             }
         }
@@ -1044,7 +1053,8 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "swarmail_clear_all":output_object(json!({"removed":count}), json!(["removed"])),
         "swarmail_wait_for_email":{"type":"object","oneOf":[
             output_object(json!({"matched":count,"total":count,"emails":nonempty}), json!(["matched","total","emails"])),
-            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true}}), json!(["matched","total","timed_out"]))
+            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true}}), json!(["matched","total","timed_out"])),
+            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true},"near_misses":near_miss::schema()}), json!(["matched","total","timed_out","near_misses"]))
         ]},
         "swarmail_extract_links":output_object(json!({"links":strings}), json!(["links"])),
         "swarmail_extract_codes":output_object(json!({"codes":strings}), json!(["codes"])),
@@ -1142,6 +1152,7 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
 });
 
 mod focused;
+mod near_miss;
 
 #[cfg(test)]
 mod batch_tests;

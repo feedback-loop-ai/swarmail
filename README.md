@@ -893,6 +893,29 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   re-extracted. Email reads, feeds and webhooks are unchanged — occurrence
   metadata is reachable only through `swarmail_wait_for_link`.
 
+- **Near misses on a timeout (decision [0111](docs/decisions/0111-near-miss-timeouts.md), proposed):**
+  a timed-out `swarmail_wait_for_email`, `swarmail_wait_for_code` or
+  `swarmail_wait_for_link` over an inbox that holds mail also carries
+  `near_misses`, read from the store at the timeout with no extra retention:
+  `arrivals` (the retained mail the wait did not answer with, newest first,
+  at most 10, with exact `arrivals_total` and `arrivals_truncated`),
+  `nearest_subject` (an entry or `null`) and `last_arrival_ms` (the
+  `received_ms` of the newest retained mail, whatever `since_ms` says). An
+  entry is `email_id`, `received_ms`, `from`, `to` (at most 5 distinct
+  To/Cc/envelope addresses, exact `to_total`), `subject` and `missed` — the
+  supplied `to`, `from` and `subject` filters that mail fails, so a sibling
+  address reads `["to"]` and a typo `["subject"]`. Strings are clipped to
+  256 bytes. `swarmail_wait_for_email` lists only mail its filter refused;
+  the focused waits list every retained mail, `missed: []` meaning it passed
+  your filters but carried no code or no link the selectors leave. A
+  supplied `since_ms` limits `arrivals`. `nearest_subject` is a hint, not a
+  selection: it is the mail that missed the subject alone and shares the
+  most character pairs with it, and you still read its `to`. **No
+  `near_misses` key means the inbox holds nothing**, so an empty-inbox
+  timeout keeps its exact bytes. The read is of the wait's own inbox only;
+  it is not access control (MCP is unauthenticated, decision
+  [0004](docs/decisions/0004-per-test-inboxes-via-smtp-auth.md)).
+
 Wire it up:
 
 ```jsonc
