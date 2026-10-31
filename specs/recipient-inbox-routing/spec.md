@@ -206,7 +206,7 @@ proposed. No release note is cut here.
 - [ ] AC8 — **The eval harness.** With the runner's `--route-domain
   swarmail.test`, the isolation task's three accounts share
   `smtp_identity: "fixture-app"`, the oracle passes all three, null fails
-  with its idle class, two overlapping isolation trials pass, and the proof
+  with its idle class, trials stay sequential under accepted 0076, and the proof
   asserts the `fixture-app` inbox holds no mail. Every other task's wire
   shape is unchanged. `evals/` fmt, clippy and tests pass standalone.
 - [ ] AC9 — **Gates.** Every house gate in `docs/house-rules.md` § Gates is

@@ -77,8 +77,8 @@ follow this order.
   reworded; `swarmail_create_inbox` in `SWARMAIL_TOOLS`. **Test:** evals'
   own suite: provision refuses an entry without `smtp_identity`; the
   isolation entries carry `fixture-app` and alphabet-valid inboxes; the
-  oracle passes and null fails every task including isolation; two
-  overlapping isolation trials pass; the proof asserts the `fixture-app`
+  oracle passes and null fails every task including isolation; trials
+  stay sequential under accepted 0076; the proof asserts the `fixture-app`
   inbox holds no mail after the trial; every other task's provision
   payload is byte-equal to before apart from the new field.
 - [x] **T10 — Gates and the honest metric (AC9, AC10).** Run every house
