@@ -187,6 +187,8 @@ pub const SWARMAIL_TOOLS: &[&str] = &[
     "swarmail_seed_email",
     "swarmail_set_chaos",
     "swarmail_clear_chaos",
+    "swarmail_wait_for_code",
+    "swarmail_wait_for_link",
 ];
 
 // Secret-bearing inputs deliberately have neither Debug nor Serialize.

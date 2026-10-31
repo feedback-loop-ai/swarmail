@@ -57,7 +57,7 @@
 //! owner's `-wal` file to another hard link's basename, and a restart never
 //! repairs loss an earlier multi-writer run already caused.
 
-use crate::model::Email;
+use crate::model::{Email, LinkMetadata};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -68,7 +68,8 @@ use std::sync::Mutex;
 /// Every column of a mail row, in the order both statements use it.
 const COLUMNS: &str = "id, inbox, from_json, to_json, cc_json, recipients_json, subject, \
                        received_at, received_ms, size, text, html, links_json, codes_json, \
-                       message_id, in_reply_to, references_json, raw, envelope_from";
+                       message_id, in_reply_to, references_json, raw, envelope_from, \
+                       link_metadata_json";
 
 /// The whole schema, created idempotently on every open.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
@@ -91,7 +92,8 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS emails (
     in_reply_to TEXT,
     references_json TEXT NOT NULL DEFAULT '[]',
     raw BLOB NOT NULL,
-    envelope_from TEXT
+    envelope_from TEXT,
+    link_metadata_json TEXT
 );
 -- Retired (issue #87): `emails_inbox` was maintained on every write and read
 -- by no query — the store answers per-inbox reads from memory, and restore
@@ -116,6 +118,9 @@ const ADDED_COLUMNS: &[(&str, &str)] = &[
     ("in_reply_to", "TEXT"),
     ("references_json", "TEXT NOT NULL DEFAULT '[]'"),
     ("envelope_from", "TEXT"),
+    // Decision 0094 §2: NULL is a row from before ingest kept link
+    // occurrences — unknown, never backfilled.
+    ("link_metadata_json", "TEXT"),
 ];
 
 /// The full restore scan `load` runs — one builder, so the plan test
@@ -452,11 +457,11 @@ impl Persist {
         state.next_seq += 1;
         let tx = state.conn.transaction()?;
         tx.execute(
-            // 20 columns: COLUMNS + the ordering seq.
+            // 21 columns: COLUMNS + the ordering seq.
             &format!(
                 "INSERT INTO emails ({COLUMNS}, seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-                         ?17, ?18, ?19, ?20)"
+                         ?17, ?18, ?19, ?20, ?21)"
             ),
             params![
                 email.id,
@@ -480,6 +485,8 @@ impl Persist {
                 email.raw,
                 // NULL is unknown provenance; '' the known null reverse path.
                 email.envelope_from,
+                // NULL is unknown history; '[]' a known mail without links.
+                email.link_metadata.as_ref().map(json),
                 seq,
             ],
         )?;
@@ -542,6 +549,7 @@ fn row_to_email(row: &rusqlite::Row<'_>) -> rusqlite::Result<Email> {
         text: row.get(10)?,
         html: row.get(11)?,
         links: from_json(row.get(12)?),
+        link_metadata: link_metadata(row.get(19)?)?,
         codes: from_json(row.get(13)?),
         message_id: row.get(14)?,
         in_reply_to: row.get(15)?,
@@ -578,6 +586,24 @@ fn json(value: &impl serde::Serialize) -> String {
 
 fn from_json<T: DeserializeOwned + Default>(raw: String) -> T {
     serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// The occurrence column, strictly (decision 0094 §2): SQL NULL is unknown
+/// history, and anything else must be the exact closed array ingest wrote.
+/// Unlike [`from_json`]'s lenient default for the original columns, damage
+/// here refuses the restore — an empty fallback would turn a corrupt row
+/// into a confident "no links" and hide the ambiguity the link wait reports.
+fn link_metadata(raw: Option<String>) -> rusqlite::Result<Option<Vec<LinkMetadata>>> {
+    raw.map(|raw| {
+        serde_json::from_str(&raw).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                19,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })
+    })
+    .transpose()
 }
 
 fn write_counter(conn: &Connection, key: &str, value: u64) -> rusqlite::Result<()> {
@@ -733,6 +759,139 @@ mod tests {
         // Deliberately not valid UTF-8: raw bytes must round-trip untouched.
         e.raw = vec![0xFF, 0xFE, b'a', b'\r', b'\n'];
         e
+    }
+
+    /// Decision 0094 §2: SQL NULL (history), a known empty array and fresh
+    /// occurrences restore as stored, and every non-NULL damage — invalid
+    /// JSON, JSON null, a wrong shape or type, a missing nullable member,
+    /// an unknown member or source — refuses the restore by its column.
+    #[test]
+    fn metadata_null_empty_present_and_corrupt_are_distinct() {
+        let (_guard, path) = db_path("metadata");
+        let persist = Persist::open(&path).unwrap();
+        let mut mail = full_email("metadata", "box");
+        for metadata in [
+            None,
+            Some(vec![]),
+            Some(vec![
+                crate::model::LinkMetadata {
+                    url: "https://x.io/a".into(),
+                    anchor_text: Some("Confirm".into()),
+                    rel: Some(String::new()),
+                    source: crate::model::LinkSource::Html,
+                },
+                crate::model::LinkMetadata {
+                    url: "https://x.io/a".into(),
+                    anchor_text: None,
+                    rel: None,
+                    source: crate::model::LinkSource::Text,
+                },
+            ]),
+        ] {
+            mail.link_metadata = metadata;
+            persist.record_insert(&mail, &[], 1, 0).unwrap();
+            assert_eq!(persist.load().unwrap().0, [mail.clone()]);
+            persist.record_delete(&mail.id).unwrap();
+        }
+        persist.record_insert(&mail, &[], 1, 0).unwrap();
+        let stored: Option<String> = persist
+            .state
+            .lock()
+            .unwrap()
+            .conn
+            .query_row("SELECT link_metadata_json FROM emails", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            stored.as_deref(),
+            Some(
+                r#"[{"url":"https://x.io/a","anchor_text":"Confirm","rel":"","source":"html"},{"url":"https://x.io/a","anchor_text":null,"rel":null,"source":"text"}]"#
+            )
+        );
+        for corrupt in [
+            "not json",
+            "null",
+            "{}",
+            "[{}]",
+            "[null]",
+            r#"[{"url":"x","rel":null,"source":"html"}]"#,
+            r#"[{"url":"x","anchor_text":null,"source":"html"}]"#,
+            r#"[{"anchor_text":null,"rel":null,"source":"html"}]"#,
+            r#"[{"url":"x","anchor_text":null,"rel":null}]"#,
+            r#"[{"url":"x","anchor_text":null,"rel":null,"source":"html","extra":true}]"#,
+            r#"[{"url":"x","anchor_text":null,"rel":null,"source":"HTML"}]"#,
+            r#"[{"url":1,"anchor_text":null,"rel":null,"source":"html"}]"#,
+            r#"[{"url":"x","anchor_text":3,"rel":null,"source":"html"}]"#,
+            r#"[{"url":"x","url":"y","anchor_text":null,"rel":null,"source":"html"}]"#,
+            r#"[{"url":"x","anchor_text":null,"rel":null,"source":null}]"#,
+            r#"[{"url":"x","anchor_text":null,"rel":null,"source":["html"]}]"#,
+            r#"[{"url":"x","anchor_text":null,"rel":null,"source":0}]"#,
+        ] {
+            corrupt_load(&persist, corrupt);
+        }
+        // The shapes a derived reader admits (decision 0097 §1): a complete
+        // positional occurrence and a tagged source of either variant, each
+        // otherwise valid, refuse for that reason and no other.
+        for (corrupt, cause) in [
+            (
+                r#"[["https://x.io/a","Confirm",null,"html"]]"#,
+                "invalid type: sequence, expected a link occurrence object",
+            ),
+            (
+                r#"[{"url":"https://x.io/a","anchor_text":null,"rel":null,"source":{"html":null}}]"#,
+                "invalid type: map, expected a string",
+            ),
+            (
+                r#"[{"url":"https://x.io/a","anchor_text":null,"rel":null,"source":{"text":null}}]"#,
+                "invalid type: map, expected a string",
+            ),
+            (
+                r#"[{"url":"x","anchor_text":null,"url":"y","rel":null,"source":"html"}]"#,
+                "duplicate field `url`",
+            ),
+        ] {
+            let error = corrupt_load(&persist, corrupt);
+            assert!(error.contains(cause), "{corrupt}: {error}");
+        }
+        // The same row with valid populated bytes restores exactly.
+        persist
+            .state
+            .lock()
+            .unwrap()
+            .conn
+            .execute(
+                "UPDATE emails SET link_metadata_json=?1",
+                [stored.as_deref().unwrap()],
+            )
+            .unwrap();
+        assert_eq!(persist.load().unwrap().0, [mail]);
+    }
+
+    /// Writes `corrupt` into the one row's occurrence column and returns the
+    /// metadata decoder's own refusal: column 19, read as Text, caused by a
+    /// JSON decode — not some other failure of the restore.
+    fn corrupt_load(persist: &Persist, corrupt: &str) -> String {
+        persist
+            .state
+            .lock()
+            .unwrap()
+            .conn
+            .execute("UPDATE emails SET link_metadata_json=?1", [corrupt])
+            .unwrap();
+        let error = persist.load().unwrap_err();
+        assert!(
+            matches!(
+                error,
+                rusqlite::Error::FromSqlConversionFailure(19, rusqlite::types::Type::Text, _)
+            ),
+            "{corrupt}: {error:?}"
+        );
+        std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<serde_json::Error>()
+            .unwrap()
+            .to_string()
     }
 
     #[test]

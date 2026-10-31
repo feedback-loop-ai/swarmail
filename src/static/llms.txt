@@ -131,16 +131,20 @@ No sessions or SSE; GET /mcp is 405 with valid or absent version headers.
 Only 2025-03-26 supports batches; every batch description below refers to
 that revision. Modern arrays refuse one -32600/null before all effects,
 including notification-only arrays. Legacy batch initialize stays legacy.
-Modern tools annotate the seven reads (search, get, latest, wait, both extracts
-and the deliverability report, whose cache fill changes no mail) readOnlyHint:true
-and the six mutations readOnlyHint:false, destructiveHint:true (delete, both
-clears, seed, which can prune, and both chaos changes).
+Modern tools annotate the nine reads (search, get, latest, wait, both extracts,
+the deliverability report, whose cache fill changes no mail, and both focused
+waits) readOnlyHint:true and the six mutations readOnlyHint:false,
+destructiveHint:true (delete, both clears, seed, which can prune, and both chaos
+changes, which replace configuration).
 For 2025-06-18 and 2025-11-25 every tool declares an object-root outputSchema.
 Every success returns structuredContent plus the same JSON in its existing text
 block; text-only consumers can keep reading content. Errors keep their text/RPC
 shapes without structured success data. March (also missing-version requests)
-keeps its catalogue and result bytes. Tests pin schemas to served OpenAPI through
-explicit output projections, including omitted fields and nullable provenance.
+keeps its thirteen existing catalogue entries and existing result bytes;
+discovery appends the two focused waits after them, fifteen in all. Tests pin
+the REST-backed schemas to served OpenAPI through explicit output projections,
+including omitted fields and nullable provenance; the focused waits are MCP-only
+and their schemas are checked against independently stated expectations.
 Dual output costs bytes/tokens: the bridge retains its 10 MiB response cap and
 returns -32000 when exceeded, even when the March text alone would fit. Use smaller
 pages; one large Email can still exceed the cap. Lost mutation replies do not
@@ -175,7 +179,24 @@ The operator retains #151's merge hold.
 `swarmail_delete_email`, `swarmail_clear_inbox`, `swarmail_clear_all`,
 `swarmail_wait_for_email`, `swarmail_extract_links`, `swarmail_extract_codes`,
 `swarmail_seed_email`, `swarmail_set_chaos`, `swarmail_clear_chaos`,
-`swarmail_get_deliverability_report`.
+`swarmail_get_deliverability_report`, then `swarmail_wait_for_code` and
+`swarmail_wait_for_link` (decision 0094, proposed; read-only). The focused waits
+take the wait's inbox/to/from/subject/inclusive since_ms filters and timeout_ms
+(default 5000, 0-60000) and answer status selected|ambiguous|timed_out with
+matched (eligible emails). wait_for_code: one distinct code in the newest
+eligible email by acceptance order is `selected` (email_id, sender, received_ms,
+age_ms = parse-start age, not expiry); several codes there are ambiguous, never
+resolved from older mail, which is listed as older_candidates. Old matching mail
+answers at once: isolate inboxes or pass a since_ms from before the action.
+wait_for_link: anchor_text/host/path are Rust regex searches, <=1024 UTF-8 bytes
+and <=1 MiB compiled each, all on the same occurrence; host is the parsed host
+without credentials/port, ASCII case-insensitive by default, so exact is
+^app[.]test$; path excludes query/fragment. One distinct URL is selected_url;
+more are ambiguous with each candidate's anchor_text, rel, text|html source and
+provenance. Labels are lexical and recorded at ingest; unknown labels (text part,
+historical rows, unattributable links) are null and never match anchor_text.
+Lists show <=250 entries after full-snapshot selection, with exact *_total and
+*_truncated. Email reads, feeds and webhooks carry no occurrence metadata.
 stdio transport: `swarmail mcp --url http://127.0.0.1:8025` (launch as an MCP
 subprocess; talks to the same server). Except for malformed seed fixture
 content and the supplied `timeout_ms`

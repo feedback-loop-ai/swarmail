@@ -1333,6 +1333,7 @@ mod tests {
             size: 42,
             text: None,
             html: None,
+            link_metadata: None,
             links: vec![],
             codes: vec![],
             message_id: None,
