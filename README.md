@@ -37,6 +37,7 @@ your tests can produce it.
 - [The surfaces](#the-surfaces)
   - [SMTP — accept is the truth](#smtp--accept-is-the-truth)
   - [The REST API — await, don't poll](#the-rest-api--await-dont-poll)
+  - [Client fixtures — Playwright and pytest](#client-fixtures--playwright-and-pytest)
   - [MCP — agents drive the mail](#mcp--agents-drive-the-mail)
   - [POP3 — the same store, RFC 1939](#pop3--the-same-store-rfc-1939)
   - [MailHog / Mailpit shims](#mailhog--mailpit-shims)
@@ -711,6 +712,24 @@ refuse it; its mail still shows in the unscoped `GET /api/v1/messages`
 and is removed by id (`DELETE /api/v1/messages/{id}`, or `DELETE
 /api/v1/messages` with an `ids` list). Nothing promises such a name ages
 out.
+
+### Client fixtures — Playwright and pytest
+
+Two thin REST clients live in [`clients/`](clients/), versioned with the
+server (each package's version is `Cargo.toml`'s, checked under `cargo test`):
+a Playwright fixture ([`clients/playwright`](clients/playwright/README.md),
+`inbox.waitForCode()` / `inbox.waitForLink()`) and a pytest plugin
+([`clients/pytest`](clients/pytest/README.md), `swarmail_inbox.wait_for_code()`
+/ `.wait_for_link()`). Each gives every test its own inbox — the name is the
+SMTP AUTH username — and waits on the server's `await` long-poll, then selects
+only from the stored `codes` and `links`. Two distinct codes in the newest mail
+that carries any, or two matching links anywhere in the inbox, raise an
+explicit ambiguity error carrying the candidates; the fixtures never pick the
+first. `SWARMAIL_URL` (default `http://127.0.0.1:8025`) is the only
+configuration. Both run six example tests against the built binary in CI. Not
+yet done: **publishing** to npm and PyPI is a separate operator act (proposed
+decision [0113](docs/decisions/0113-client-fixture-packages.md)), TypeScript
+and Python coverage is not measured, and the packaged forms are unproved.
 
 ### MCP — agents drive the mail
 
@@ -1400,6 +1419,7 @@ comparative or agent numbers until admitted evidence exists to cite.
 | [`docs/house-rules.md`](docs/house-rules.md) | the realm charter — frozen guarantees, gates, dependency policy |
 | [`assets/logo.svg`](assets/logo.svg) | the brand mark, and `social-preview.png`, the repository's link card |
 | [`scripts/coverage-gate.sh`](scripts/coverage-gate.sh) | the exact-coverage gate: literal 100% line/branch/function, or refusal |
+| [`clients/`](clients/) | the Playwright and pytest fixtures — thin REST clients, versioned with the server, not yet published |
 | [`charts/swarmail/`](charts/swarmail/) | the Helm chart — verified offline by [`scripts/chart-verify.sh`](scripts/chart-verify.sh), published as OCI |
 
 ## The decision culture
@@ -1430,7 +1450,7 @@ jobs:
 | CI job | What it runs |
 |---|---|
 | `quality` | `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, the publish guard's proof, the shim digests and the design check's selftest |
-| `test` (ubuntu + macOS) | `cargo test --workspace --locked`, then the ignored port-80 bridge proof |
+| `test` (ubuntu + macOS) | `cargo test --workspace --locked`, then the ignored port-80 bridge proof; on Linux also the Playwright and pytest fixtures' example suites against the built binary |
 | `coverage` | the coverage gate's selftest, the exact gate itself and the delivery-proof test; uploads `target/coverage/` |
 | `deny` | `cargo deny check licenses` and the fail-closed `native-tls` absence proof |
 | `dependency-audit` | the RustSec advisory audit (network-backed, CI-only) |

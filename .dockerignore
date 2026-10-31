@@ -14,6 +14,8 @@ dist/
 .brokkr/
 .forge/
 .specify/
+# The client fixture packages are not build inputs (issue #162).
+clients/
 **/*.db
 **/*.db-*
 **/*.db.lock

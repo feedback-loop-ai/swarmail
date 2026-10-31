@@ -146,3 +146,16 @@ to implement up to five times and then parks for the operator; only
 non-security residuals at or below low ship as tracked debt. The security
 hold and the final unconditional hard stop for unknown facts stand. The body
 above is unchanged as the record of what was accepted.
+
+## Dated addendum — 2026-10-31 (0102 addendum, operator direction)
+
+On the operator's direction of 2026-10-31 ("send spec defects back to
+design"), [0102](0102-review-residuals-rework.md)'s dated addendum of that
+day amends §4's review table again, and this time its clean-review routes
+too: a spec defect with every fact present and well-formed, and no fixes
+applied, returns to design, sharing 0102's five returns, and parks at the
+sixth review; beside a security residual it returns to design as well and
+never ships. A spec defect with absent, null or malformed facts, or beside
+applied fixes, still reaches the final unconditional hard stop, and the
+security hold stands. The body above is unchanged as the record of what was
+accepted.
