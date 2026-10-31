@@ -621,7 +621,7 @@ $ swarmail serve --tls-cert ./certs/cert.pem --tls-key ./certs/key.pem
 | Verb | What it does |
 |---|---|
 | `GET /api/v1/inboxes` | the live inbox list, sorted by name — `limit` (default 100, ≤ 250, refused above) and `offset` page it |
-| `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first; wipe the inbox |
+| `GET/DELETE /api/v1/inboxes/{inbox}/messages` | list newest-first (add `view=compact` for the compact agent view without bodies — see below); wipe the inbox |
 | `GET /api/v1/inboxes/{inbox}/await` | **block until arrival** — `to`/`from`/`subject`/`since_ms` filters, `count` (minimum one, even `count=0`), `limit`/`count` ≤ 250 (refused, never clamped), `timeout_ms` (≤ 60000: refused with 400 above, never clamped; a stopping server answers 503 `shutting down` instead of parking) |
 | `GET /api/v1/inboxes/{inbox}/assert` | exact-count assertion — `count=0` asserts an empty filter; never clamped — 200 or a named failure |
 | `GET /api/v1/inboxes/{inbox}/threads[/{key}]` | conversations, oldest first, stable keys |
@@ -738,8 +738,10 @@ including arrays containing only notifications. Modern tool descriptors add
 `readOnlyHint: true` on reads, and `readOnlyHint: false, destructiveHint: true`
 on all mutations (including seed, which can evict old mail, and chaos changes).
 Input schemas, the thirteen existing March catalogue entries and existing
-result bytes are unchanged; discovery appends the two focused waits and swarmail_create_inbox after them
-(decisions 0094 and 0112, proposed), sixteen entries in all. For `2025-06-18` and
+result bytes are unchanged for March (the modern revisions add `fields` to
+four reads, below); discovery appends the two focused waits and
+swarmail_create_inbox after them (decisions 0094 and 0112, proposed), sixteen
+entries in all. For `2025-06-18` and
 `2025-11-25`, every tool declares an object-root `outputSchema`; successful
 results include `structuredContent` and the same JSON in the existing text block.
 Errors retain their existing text/RPC envelopes without structured success data.
@@ -747,6 +749,33 @@ The REST-backed tools' schemas are pinned to served OpenAPI through explicit
 output projections in tests; the two focused waits are MCP-only, with no REST
 projection, and their schemas are checked against independently stated
 expectations.
+
+**Compact reads and `fields` (decision 0108, proposed).** On `2025-06-18` and
+`2025-11-25`, `swarmail_search_emails` and `swarmail_get_latest_email` answer a
+compact view of each email by default: `id` (the handle — pass it to
+`swarmail_get_email` for the whole email), `from`, `to`, `subject`,
+`received_ms`, a `snippet` of at most 200 characters (the text part, else the
+HTML rendered to text, from at most the first 8192 bytes of the body),
+`codes`, `anchors` (`url` and `anchor_text`) and `attachments` (`filename`,
+`content_type`, decoded `size`). `anchors` and `attachments` show at most 250
+entries and carry the exact `anchors_total` / `attachments_total` when cut.
+Mail stored before link occurrences were kept serves its stored `links` instead
+of anchors, and mail stored before attachments were captured, or whose body the parser
+could not read, serves `"attachments": null` (unknown, never guessed from the
+raw bytes). Attachments
+are listed at ingest, in the same transaction as the mail. `swarmail_get_email`
+and `swarmail_wait_for_email` keep answering whole emails. The four reads
+(search, latest, get, wait) also take `fields`, an array of names from the
+published enum (the serialized email members plus `snippet`, `anchors` and
+`attachments`): each email then carries those members that it has, plus `id`,
+in the server's fixed key order — `fields: []` is ids only, and `text` and
+`html` appear only when named. An unknown name or a wrong type is `-32602`
+before any lookup or wait. March (`2025-03-26`, and a missing version) keeps
+whole emails and has no `fields`. REST is unchanged unless asked:
+`GET /api/v1/inboxes/{inbox}/messages?view=compact` answers the same
+`{total, emails}` envelope with compact items; `compact` is the only value of
+`view`, and no other route takes it. The token metric (median tokens per
+success) is not measured by this change: no paid trial was run.
 
 Duplicating JSON increases response size and token cost. The stdio bridge keeps
 its 10 MiB response cap: a query that fits as March text may exceed it with modern

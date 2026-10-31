@@ -151,6 +151,23 @@ discovery appends the two focused waits and swarmail_create_inbox after them, si
 the REST-backed schemas to served OpenAPI through explicit output projections,
 including omitted fields and nullable provenance; the focused waits are MCP-only
 and their schemas are checked against independently stated expectations.
+Compact reads (decision 0108, proposed): on 2025-06-18 and 2025-11-25,
+swarmail_search_emails and swarmail_get_latest_email answer a compact view per
+email by default: id (the handle for swarmail_get_email), from, to, subject,
+received_ms, a snippet of at most 200 characters, codes, anchors (url,
+anchor_text) and attachments (filename, content_type, size), no bodies. Lists
+of anchors and attachments are cut at 250 with the exact anchors_total or
+attachments_total. A "attachments": null means unknown: mail stored before attachments were
+captured, or a body the parser could not read. Mail stored before link
+occurrences were kept serves its stored links instead of anchors. get_email and wait_for_email stay whole. The four reads (search,
+latest, get, wait) take fields: an array of names from the published enum; each
+email then carries the named members it has plus id, in the server's fixed key
+order; [] is ids only; text and html appear only when named; an unknown name or
+a wrong type is -32602 before any lookup or wait. March has no fields. REST:
+GET /api/v1/inboxes/{inbox}/messages?view=compact answers the same
+{total, emails} envelope with compact items; compact is the only value, and
+without it the list is unchanged. Token impact is not measured here (no paid
+trial).
 Dual output costs bytes/tokens: the bridge retains its 10 MiB response cap and
 returns -32000 when exceeded, even when the March text alone would fit. Use smaller
 pages; one large Email can still exceed the cap. Lost mutation replies do not

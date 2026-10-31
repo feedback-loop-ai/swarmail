@@ -35,7 +35,7 @@
 
 use crate::chaos::{Chaos, ChaosEvent};
 use crate::extract::{BodyOrder, extract_codes, extract_link_metadata};
-use crate::model::{Email, EmailAddress};
+use crate::model::{Attachment, Email, EmailAddress};
 use crate::store::Store;
 use chrono::Utc;
 use mail_parser::{
@@ -1901,6 +1901,7 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
 
     let (links, link_metadata) = extract_link_metadata(text.as_deref(), html.as_deref());
     let codes = extract_codes(text.as_deref(), html.as_deref(), order);
+    let attachments = parsed.as_ref().map(attachment_list);
 
     // Thread headers are extracted once, here at ingest (decision 0005), and
     // stored as first-class fields: the thread view must not re-parse the raw
@@ -1936,12 +1937,32 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
         html,
         links,
         link_metadata: Some(link_metadata),
+        attachments,
         codes,
         message_id,
         in_reply_to,
         references,
         raw: raw.to_vec(),
     }
+}
+
+/// The outer message's attachment parts in parser order (decision 0108 §5):
+/// the labels the sender gave and the part's decoded length. An attached
+/// message is one entry; its inner parts are not in the outer list. The
+/// classification is the parser's; nothing is decoded beyond what the parse
+/// already did.
+fn attachment_list(message: &mail_parser::Message<'_>) -> Vec<Attachment> {
+    message
+        .attachments()
+        .map(|part| Attachment {
+            filename: part.attachment_name().map(str::to_string),
+            content_type: part.content_type().map(|ct| match ct.subtype() {
+                Some(subtype) => format!("{}/{subtype}", ct.ctype()),
+                None => ct.ctype().to_string(),
+            }),
+            size: part.len() as u64,
+        })
+        .collect()
 }
 
 /// The ids a `References`/`In-Reply-To` header carries, in header order (the
@@ -2025,6 +2046,65 @@ mod tests {
         );
         assert!(bodyless.text.is_none());
         assert!(bodyless.html.is_none());
+    }
+
+    /// Decision 0108 §5: the attachment list is the outer parser list in
+    /// parser order — a named PDF, an inline image and an attached message
+    /// (counted once, its inner parts unlisted) — with the sender's labels
+    /// and the decoded part length; a mail without attachments is a known
+    /// empty list, a mail the parser cannot read is unknown, and no
+    /// serialization of the email carries the member.
+    #[test]
+    fn attachments_are_listed_at_ingest_in_parser_order() {
+        let parse = |raw: &[u8]| build_email(raw, "in", &["r@x.io".to_string()], "s@x.io".into());
+        let mixed = parse(
+            b"From: s@x.io\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=b\r\n\r\n\
+              --b\r\nContent-Type: text/plain\r\n\r\nSee attached\r\n\
+              --b\r\nContent-Type: application/pdf; name=\"q3.pdf\"\r\n\
+              Content-Disposition: attachment; filename=\"q3.pdf\"\r\n\
+              Content-Transfer-Encoding: base64\r\n\r\nJVBERi0=\r\n\
+              --b\r\nContent-Type: image/png\r\nContent-ID: <logo>\r\n\
+              Content-Disposition: inline; filename=\"logo.png\"\r\n\
+              Content-Transfer-Encoding: base64\r\n\r\niVBORw0K\r\n\
+              --b\r\nContent-Type: message/rfc822\r\n\r\n\
+              From: inner@x.io\r\nSubject: inner\r\nMIME-Version: 1.0\r\n\
+              Content-Type: multipart/mixed; boundary=i\r\n\r\n\
+              --i\r\nContent-Type: text/plain\r\n\r\ninner body\r\n\
+              --i\r\nContent-Type: application/zip; name=\"inner.zip\"\r\n\
+              Content-Disposition: attachment; filename=\"inner.zip\"\r\n\r\nzip\r\n\
+              --i--\r\n\
+              --b\r\nContent-Type: application/octet-stream\r\n\
+              Content-Disposition: attachment\r\n\r\nraw\r\n\
+              --b\r\nContent-Disposition: attachment; filename=\"bare.bin\"\r\n\r\nbb\r\n\
+              --b\r\nContent-Type: x-blob\r\nContent-Disposition: attachment; filename=\"typeless.dat\"\r\n\r\nt\r\n\
+              --b--\r\n",
+        );
+        let listed: Vec<(Option<&str>, Option<&str>, u64)> = mixed
+            .attachments
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|a| (a.filename.as_deref(), a.content_type.as_deref(), a.size))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (Some("q3.pdf"), Some("application/pdf"), 5),
+                (Some("logo.png"), Some("image/png"), 6),
+                (None, Some("message/rfc822"), 264),
+                (None, Some("application/octet-stream"), 3),
+                (Some("bare.bin"), None, 2),
+                (Some("typeless.dat"), Some("x-blob"), 1),
+            ]
+        );
+
+        let plain = parse(b"From: s@x.io\r\nSubject: t\r\n\r\nplain body\r\n");
+        assert_eq!(plain.attachments, Some(vec![]));
+        assert_eq!(parse(b"").attachments, None);
+        for mail in [&mixed, &plain] {
+            let value = serde_json::to_value(mail).unwrap();
+            assert!(value.get("attachments").is_none(), "{value}");
+        }
     }
 
     /// The first genuine part of each type, wherever its candidate list

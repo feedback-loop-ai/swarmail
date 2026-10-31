@@ -28,7 +28,7 @@ const NAMES: [&str; 13] = [
 ];
 
 // Fixed restored-row shapes include fields that ingest no longer creates.
-fn historical() -> swarmail::model::Email {
+pub(super) fn historical() -> swarmail::model::Email {
     use swarmail::model::{Email, EmailAddress};
     Email {
         id: "historical".into(),
@@ -54,6 +54,7 @@ fn historical() -> swarmail::model::Email {
         text: Some("line\n\t\u{0}\u{1b} 雪 \\".into()),
         html: Some("<b>untrusted</b>".into()),
         link_metadata: None,
+        attachments: None,
         links: vec!["https://x.io/?q=雪".into()],
         codes: (0..65).map(|i| format!("{i:04}")).collect(),
         message_id: Some("message@x".into()),
@@ -833,6 +834,25 @@ pub(super) fn march_view(tool: &Value, read_only: bool) -> Value {
     descriptor
 }
 
+/// The compact item (decision 0108 §1) of [`historical`], stated member by
+/// member: no body, no `cc`, no `inbox`; the unknown attachment list is
+/// `null` and the stored links stand in for the anchors a row from before
+/// link metadata never had. The snippet is the text with its whitespace runs
+/// collapsed, control characters kept.
+pub(super) fn compact_historical() -> Value {
+    json!({
+        "attachments": null,
+        "codes": (0..65).map(|i| format!("{i:04}")).collect::<Vec<_>>(),
+        "from": {"address": "from@x.io", "name": "Sender \"雪\""},
+        "id": "historical",
+        "links": ["https://x.io/?q=雪"],
+        "received_ms": -1000,
+        "snippet": "line \u{0}\u{1b} 雪 \\",
+        "subject": "quoted \"雪\" \\ subject",
+        "to": [{"address": "to@x.io"}],
+    })
+}
+
 #[tokio::test]
 async fn modern_all_tools_http_and_stdio() {
     let baseline: Vec<&str> = BASELINE.lines().collect();
@@ -860,8 +880,14 @@ async fn modern_all_tools_http_and_stdio() {
                 .enumerate()
             {
                 let mut descriptor = march_view(tool, reads.contains(&i));
+                if [0, 2, 3, 7].contains(&i) {
+                    super::strip_fields(&mut descriptor);
+                }
                 let description = descriptor["description"].as_str().unwrap();
-                if i == 1 {
+                if i == 0 || i == 3 {
+                    super::assert_compact_description(&descriptor);
+                    descriptor["description"] = original["description"].clone();
+                } else if i == 1 {
                     for clause in [
                         "swarmail-bulk/1",
                         "bulk-sender checklist",
@@ -884,7 +910,7 @@ async fn modern_all_tools_http_and_stdio() {
             }
             // Errors keep March's bytes; a success is March's line plus the
             // same JSON as structuredContent, byte for byte.
-            for (raw, base) in run.lines.iter().zip(&baseline).skip(1) {
+            for (line, (raw, base)) in run.lines.iter().zip(&baseline).enumerate().skip(1) {
                 let expected: Value = serde_json::from_str(base).unwrap();
                 if expected.get("error").is_some() || expected["result"]["isError"] == true {
                     assert_eq!(raw, base);
@@ -892,6 +918,33 @@ async fn modern_all_tools_http_and_stdio() {
                 }
                 let text = expected["result"]["content"][0]["text"].as_str().unwrap();
                 let tail = base.strip_suffix("}}").unwrap();
+                let request: Value = serde_json::from_str(&run.requests[line]).unwrap();
+                let tool = request["params"]["name"].as_str();
+                if matches!(
+                    tool,
+                    Some("swarmail_search_emails" | "swarmail_get_latest_email")
+                ) {
+                    // Decision 0108 §1: the two list reads answer the compact
+                    // view on a modern revision. The expectation is the
+                    // March payload with each email replaced by the stated
+                    // compact item, serialized once into both representations.
+                    let mut payload: Value = serde_json::from_str(text).unwrap();
+                    if let Some(emails) = payload.get_mut("emails") {
+                        for email in emails.as_array_mut().unwrap() {
+                            assert_eq!(email["id"], "historical");
+                            *email = compact_historical();
+                        }
+                    }
+                    let payload = payload.to_string();
+                    assert_eq!(
+                        raw,
+                        &format!(
+                            "{{\"id\":2,\"jsonrpc\":\"2.0\",\"result\":{{\"content\":[{{\"text\":{},\"type\":\"text\"}}],\"isError\":false,\"structuredContent\":{payload}}}}}",
+                            Value::String(payload.clone())
+                        )
+                    );
+                    continue;
+                }
                 assert_eq!(raw, &format!("{tail},\"structuredContent\":{text}}}}}"));
                 let actual: Value = serde_json::from_str(raw).unwrap();
                 assert_eq!(
@@ -991,6 +1044,44 @@ fn report_projection(c: &Value) -> Value {
     }
     report
 }
+/// The named exception to the `Email` derivation (decision 0108 §7): the
+/// four projecting reads publish one closed object whose only static
+/// requirement is `id` — a `fields` projection can omit every other member —
+/// and which adds the three derived members and their totals. The wire tests
+/// below compute each request's exact key set instead.
+fn projected_email(email: &Value) -> Value {
+    let mut projected = email.clone();
+    projected["required"] = json!(["id"]);
+    let nullable_string = json!({"type":["string","null"]});
+    let count = json!({"type":"integer","minimum":0});
+    let properties = projected["properties"].as_object_mut().unwrap();
+    properties.insert("snippet".into(), json!({"type":"string"}));
+    properties.insert(
+        "anchors".into(),
+        json!({"type":"array","items":{
+            "type":"object","additionalProperties":false,
+            "required":["anchor_text","url"],
+            "properties":{"anchor_text":nullable_string,"url":{"type":"string"}}
+        }}),
+    );
+    properties.insert("anchors_total".into(), count.clone());
+    properties.insert(
+        "attachments".into(),
+        json!({"anyOf":[
+            {"type":"array","items":{
+                "type":"object","additionalProperties":false,
+                "required":["content_type","filename","size"],
+                "properties":{
+                    "content_type":nullable_string,"filename":nullable_string,"size":count
+                }
+            }},
+            {"type":"null"}
+        ]}),
+    );
+    properties.insert("attachments_total".into(), count);
+    projected
+}
+
 fn projections(c: &Value) -> Value {
     let mut address = close(resolve(&c["EmailAddress"], c), json!(["address"]));
     address["properties"]["name"]["type"] = json!("string");
@@ -1013,9 +1104,10 @@ fn projections(c: &Value) -> Value {
         email["properties"][key]["type"] = json!("string");
     }
     email["properties"]["size"]["minimum"] = json!(0);
+    let projected = projected_email(&email);
     let mut list = close(resolve(&c["EmailList"], c), json!(["total", "emails"]));
     list["properties"]["total"]["minimum"] = json!(0);
-    list["properties"]["emails"]["items"] = email.clone();
+    list["properties"]["emails"]["items"] = projected.clone();
     let mut search = list.clone();
     search["properties"]["inbox"] = json!({"type":"string"});
     search["required"] = json!(["inbox", "total", "emails"]);
@@ -1046,7 +1138,7 @@ fn projections(c: &Value) -> Value {
     json!({
         "swarmail_search_emails": search,
         "swarmail_get_deliverability_report": report_projection(c),
-        "swarmail_get_email": email,
+        "swarmail_get_email": projected,
         "swarmail_get_latest_email":wrapper(json!({"emails":latest_emails}),json!(["emails"])),
         "swarmail_wait_for_email":{"type":"object","oneOf":[found,timeout]},
         "swarmail_extract_links":wrapper(json!({"links":email["properties"]["links"]}),json!(["links"])),
@@ -1606,11 +1698,27 @@ async fn real_bridge_dual_output_size_cost() {
         );
     }
     let query = call(json!("large"), "search_emails", json!({"inbox":"large"}));
+    // A modern reader names the bodies it wants (decision 0108 §3): the
+    // default is compact, so the size cost is measured through `fields`.
+    let bodies = call(
+        json!("large"),
+        "search_emails",
+        json!({"inbox":"large","fields":["text"]}),
+    );
     for version in &VERSIONS[1..] {
         let mut binary = Binary::start(srv.http_addr);
         binary.ready(version).await;
         let mut wire = Wire::Stdio(Box::new(binary));
-        let raw = wire.raw(&query).await;
+        // Six 600 KB mails answer far under 10 KB by default, both
+        // representations included — each snippet is 200 characters and `...`.
+        let compact = wire.raw(&query).await;
+        assert!(compact.len() < 10_000, "{}", compact.len());
+        let compact: Value = serde_json::from_str(&compact).unwrap();
+        assert_eq!(text(&compact), compact["result"]["structuredContent"]);
+        for email in text(&compact)["emails"].as_array().unwrap() {
+            assert_eq!(email["snippet"], format!("{}...", "x".repeat(200)));
+        }
+        let raw = wire.raw(&bodies).await;
         assert!(raw.len() < CAP && raw.len() > 7_000_000);
         let reply: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(text(&reply), reply["result"]["structuredContent"]);
@@ -1639,11 +1747,12 @@ async fn real_bridge_dual_output_size_cost() {
     legacy_binary.finish().await;
     for version in &VERSIONS[1..] {
         let mut http = Wire::Http(srv.http_addr, Some(version));
-        assert!(http.raw(&query).await.len() > CAP);
+        assert!(http.raw(&bodies).await.len() > CAP);
+        assert!(http.raw(&query).await.len() < 20_000);
         let mut binary = Binary::start(srv.http_addr);
         binary.ready(version).await;
         let mut wire = Wire::Stdio(Box::new(binary));
-        let refusal = wire.request(&query).await;
+        let refusal = wire.request(&bodies).await;
         assert_eq!(
             refusal,
             json!({"jsonrpc":"2.0","id":"large","error":{"code":-32000,"message":"response exceeds the 10 MiB cap"}})
