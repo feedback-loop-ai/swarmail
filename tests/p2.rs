@@ -28,7 +28,7 @@ async fn mcp_initialize_and_tools() {
     .await;
     assert_eq!(status, 200);
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), 17);
     assert!(tools.iter().any(|t| t["name"] == "swarmail_wait_for_email"));
 }
 

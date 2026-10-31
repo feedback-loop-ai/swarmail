@@ -1067,3 +1067,89 @@ async fn focused_tools_complete_link_and_code_traps_without_guessing() {
         rig.stop().await;
     }
 }
+
+/// The invite and ICS metric, offline (decision 0110 §9; 0055 §4): the two
+/// attachment tools read the invitation the fixture really sent, over real
+/// SMTP and a real Swarmail. `ics.uid` and `ics.dtstart` equal the oracle's
+/// `ics_property` of the calendar file the application serves; the fetched
+/// `invite.ics` is that file's bytes and its listed SHA-256 matches this
+/// crate's own `ring`; and accepting with the values the *tool* returned
+/// completes the invite task. This is a fixture-rig proof, not a measured
+/// agent trial: `invite-time` does not exercise the attachment tools, and
+/// the live metric is not measured (no paid trial).
+#[tokio::test]
+async fn attachment_tools_read_the_invite_the_oracle_downloads() {
+    let rig = Rig::new("invite-time", 1).await;
+    rig.prepare().await;
+    let mut mcp = rig.mcp().await;
+    let mails = mcp
+        .wait_emails(rig.inbox(0), Some("Invitation:"), 1)
+        .await
+        .unwrap();
+    let id = mails[0]["id"].as_str().unwrap();
+    let listed = mcp
+        .call("swarmail_list_attachments", json!({ "id": id }))
+        .await
+        .unwrap();
+    assert_eq!(listed["total"], 1);
+    assert_eq!(listed["truncated"], false);
+    let entry = &listed["attachments"][0];
+    assert_eq!(entry["filename"], "invite.ics");
+    assert_eq!(entry["content_type"], "text/calendar");
+    assert_eq!(entry["stored"], true);
+
+    // The oracle's own path: the invitation page and its calendar download.
+    let link = labelled_url(text(&mails[0]), "Open the invitation:").unwrap();
+    let app = rig.app(0);
+    let (status, page) = app.get(&link).await.unwrap();
+    assert_eq!(status, 200);
+    let (status, downloaded) = app
+        .get_raw(page["ics_url"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(status, 200);
+    let ics = String::from_utf8(downloaded.clone()).unwrap();
+    let uid = ics_property(&ics, "UID").unwrap();
+    let start = ics_property(&ics, "DTSTART").unwrap();
+    assert_eq!(entry["ics"]["uid"], uid.as_str());
+    assert_eq!(entry["ics"]["dtstart"], start.as_str());
+    assert_eq!(
+        entry["ics"]["dtend"],
+        ics_property(&ics, "DTEND").unwrap().as_str()
+    );
+    assert_eq!(entry["ics"]["summary"], "Harness design review");
+
+    let fetched = mcp
+        .call("swarmail_get_attachment", json!({ "id": id, "index": 0 }))
+        .await
+        .unwrap();
+    assert_eq!(fetched["encoding"], "utf-8");
+    assert_eq!(
+        fetched["content"].as_str().unwrap().as_bytes(),
+        &downloaded[..]
+    );
+    assert_eq!(fetched["size"], downloaded.len());
+    let digest = ring::digest::digest(&ring::digest::SHA256, &downloaded);
+    let hex: String = digest.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(fetched["sha256"], hex.as_str());
+    assert_eq!(entry["sha256"], hex.as_str());
+
+    // Accept with what the tool answered, exactly as an agent would.
+    let token = link.rsplit('/').next().unwrap();
+    let (status, body) = app
+        .post(
+            "/invite/accept",
+            json!({
+                "token": token,
+                "uid": entry["ics"]["uid"],
+                "start": entry["ics"]["dtstart"],
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status, 200, "{body}");
+    let snapshot = rig.snapshot().await;
+    let facts = &snapshot.identities[0].facts;
+    assert!(facts.invite_accepted && facts.invite_time_matched);
+    rig.stop().await;
+}

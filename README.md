@@ -84,7 +84,7 @@ swarmail mcp                   # the stdio MCP bridge
 swarmail gen-cert --domain localhost --out ./certs
 ```
 
-Fifteen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
+Seventeen MCP tools, one REST API, two wire protocols in (SMTP, POP3), one
 compatibility layer (MailHog/Mailpit), one observability story
 (`/metrics`, `/healthz`, `/openapi.json`, `/llms.txt`) — and a web UI with
 zero frontend dependencies.
@@ -700,14 +700,15 @@ including arrays containing only notifications. Modern tool descriptors add
 on all mutations (including seed, which can evict old mail, and chaos changes).
 Input schemas, the thirteen existing March catalogue entries and existing
 result bytes are unchanged; discovery appends the two focused waits after them
-(decision 0094, proposed), fifteen entries in all. For `2025-06-18` and
+(decision 0094, proposed), fifteen entries in all, then the two attachment tools
+(decision 0110, proposed), seventeen in all. For `2025-06-18` and
 `2025-11-25`, every tool declares an object-root `outputSchema`; successful
 results include `structuredContent` and the same JSON in the existing text block.
 Errors retain their existing text/RPC envelopes without structured success data.
 The REST-backed tools' schemas are pinned to served OpenAPI through explicit
-output projections in tests; the two focused waits are MCP-only, with no REST
-projection, and their schemas are checked against independently stated
-expectations.
+output projections in tests; the two focused waits and the two attachment tools
+are MCP-only, with no REST projection, and their schemas are checked against
+independently stated expectations.
 
 Duplicating JSON increases response size and token cost. The stdio bridge keeps
 its 10 MiB response cap: a query that fits as March text may exceed it with modern
@@ -766,13 +767,14 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   "content":[{"type":"text","text":"{\"emails\":[{…\"codes\":[\"424242\"]…}]}"}]}}
 ```
 
-Fifteen tools: `swarmail_search_emails`, `swarmail_get_email`,
+Seventeen tools: `swarmail_search_emails`, `swarmail_get_email`,
 `swarmail_get_latest_email`, `swarmail_delete_email`, `swarmail_clear_inbox`,
 `swarmail_clear_all`, **`swarmail_wait_for_email`** (blocks until arrival),
 `swarmail_extract_links`, `swarmail_extract_codes`, `swarmail_seed_email`,
 `swarmail_set_chaos`, `swarmail_clear_chaos`, `swarmail_get_deliverability_report`,
-and the two focused waits appended after them, **`swarmail_wait_for_code`** and
-**`swarmail_wait_for_link`** (below). Except for malformed seed fixture
+the two focused waits appended after them, **`swarmail_wait_for_code`** and
+**`swarmail_wait_for_link`** (below), and then the two attachment tools,
+**`swarmail_list_attachments`** and **`swarmail_get_attachment`** (below). Except for malformed seed fixture
 content and the supplied
 `timeout_ms` refusal described below, every tool validates its supplied
 arguments at the envelope: a wrong-typed or malformed value — the
@@ -905,6 +907,63 @@ parsing a single input line (the body limit bounds what is sent, not what
 is held); a stalled stdout reader stalls the bridge; sixteen parked
 waits delay a seventeenth line; a server or proxy with a lower body limit
 than the bridge's still answers its own null-id refusal.
+
+### Attachments: list them, fetch one, read the invite
+
+`swarmail_list_attachments {id}` and `swarmail_get_attachment {id, index}`
+(decision [0110](docs/decisions/0110-attachments-and-ics.md), proposed) answer
+from what ingest recorded once, at `250`, the way links and codes are: nothing
+re-parses the raw message at query time. Both are read-only, MCP-only (no REST
+route, no change to any Email, feed, webhook or compat payload), and refuse a
+malformed argument by name (`-32602`) before the store is read.
+
+```
+$ ... "name":"swarmail_list_attachments","arguments":{"id":"0192…"}
+{"id":"0192…","total":2,"truncated":false,"attachments":[
+ {"index":0,"filename":"invite.ics","content_type":"text/calendar","size":412,
+  "sha256":"9f2c…","stored":true,
+  "ics":{"dtstart":"20261102T150000","dtstart_tzid":"Europe/Berlin",
+         "dtend":"20261102T160000","dtend_tzid":"Europe/Berlin",
+         "summary":"Planning, Q4","uid":"evt-1@x.io"}},
+ {"index":1,"filename":"report.pdf","content_type":"application/pdf",
+  "size":3145728,"sha256":"41ab…","stored":false,"ics":null}]}
+```
+
+Each entry carries the filename, the lowercased content type, the decoded size
+in bytes and the lowercase-hex SHA-256 of exactly those bytes. A candidate is
+a part of the parser's attachment list or any calendar-shaped part
+(`text/calendar`, `application/ics` or a `.ics` filename), so a bare
+`text/calendar` body with no disposition is listed too; an attached message is
+one entry. `swarmail_get_attachment` answers `{index, filename, content_type,
+size, sha256, encoding, content}`: `encoding` is `utf-8` when the bytes are
+valid UTF-8 with no control byte beyond tab, newline and carriage return, else
+`base64`. The bytes are never truncated, so they always match the listed hash.
+
+A calendar part's `ics` holds `dtstart`, `dtend` (each with its `TZID`
+parameter), `summary` and `uid` from the **first `VEVENT` only**, verbatim —
+a `VTIMEZONE`'s `DTSTART` or a `VALARM`'s `SUMMARY` is never the event's —
+with only `summary` unescaped. There is no timezone resolution: a wrong offset
+is worse than the calendar's own text. A calendar with no `VEVENT`, invalid
+UTF-8 or more than 1 MiB has `ics: null`.
+
+The caps are constants, not configuration:
+
+| Constant | Value | Bounds |
+|---|---|---|
+| `MAX_ATTACHMENTS` | 250 | entries listed per mail (`total` is the exact count, `truncated` says more exist) |
+| `MAX_ATTACHMENT_STORED_BYTES` | 1 MiB | decoded bytes kept per mail, first-fit in list order; also the largest fetchable part |
+| `MAX_LABEL_BYTES` | 1024 | every stored string (filename, type, each ICS field), cut at a character boundary |
+| `MAX_ICS_BYTES` | 1 MiB | the largest calendar part the scanner reads |
+
+A part that does not fit the remaining budget is **metadata only**: it is
+listed with its true size and hash and `stored: false`, and fetching it
+answers an error naming its size, the 1 MiB budget and
+`GET /api/v1/messages/{id}/raw`, which still serves the whole mail. Each stored
+mail may therefore hold up to 1 MiB of decoded attachment bytes beside its raw
+bytes, plus at most about 2 MiB of recorded labels (250 entries of at most
+8 KiB each: filename, type and the ICS fields), in memory and in the data file;
+as before, there is no global ceiling.
+Mail stored by an earlier release answers "unknown" and is never backfilled.
 
 ### POP3 — the same store, RFC 1939
 

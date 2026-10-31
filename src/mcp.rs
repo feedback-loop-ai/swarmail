@@ -430,6 +430,8 @@ fn tool_descriptors(revision: Revision) -> Value {
                     | "swarmail_get_deliverability_report"
                     | focused::CODE
                     | focused::LINK
+                    | attachments::LIST
+                    | attachments::GET
             );
             tool["annotations"] = if read_only {
                 json!({"readOnlyHint": true})
@@ -764,6 +766,7 @@ async fn tool_call(
             }
         }
         focused::CODE | focused::LINK => focused::call(ctx, &name, a, revision).await,
+        attachments::LIST | attachments::GET => attachments::call(ctx, &name, a, revision),
         "swarmail_extract_links" | "swarmail_extract_codes" => {
             let id = required_id(a)?;
             match store.get(&id) {
@@ -952,7 +955,9 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "swarmail_set_chaos":output_object(json!({"connect":event,"mail_from":event,"rcpt":event,"data":event}), json!(["connect","mail_from","rcpt","data"])),
         "swarmail_clear_chaos":output_object(json!({"chaos":{"type":"string","const":"disabled"}}), json!(["chaos"])),
         focused::CODE:focused::output_schema(false, &address),
-        focused::LINK:focused::output_schema(true, &address)
+        focused::LINK:focused::output_schema(true, &address),
+        attachments::LIST:attachments::output_schema(true),
+        attachments::GET:attachments::output_schema(false)
     })
 });
 
@@ -1038,9 +1043,15 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     ]);
     // Appended (decision 0094 §7): every earlier entry keeps its place.
     tools.as_array_mut().unwrap().extend(focused::descriptors());
+    // Appended after the focused waits (decision 0110 §7), the same way.
+    tools
+        .as_array_mut()
+        .unwrap()
+        .extend(attachments::descriptors());
     tools
 });
 
+mod attachments;
 mod focused;
 
 #[cfg(test)]
@@ -1061,7 +1072,7 @@ mod tests {
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
         let schemas = OUTPUT_SCHEMAS.as_object().unwrap();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 17);
         assert_eq!(
             names,
             schemas
@@ -1612,7 +1623,7 @@ mod tests {
             .insert(crate::store::email("keep", "default", "a@x.io"))
             .unwrap();
         let tools = TOOLS.as_array().unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 17);
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             assert_eq!(

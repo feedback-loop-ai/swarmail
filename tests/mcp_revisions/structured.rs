@@ -54,6 +54,7 @@ fn historical() -> swarmail::model::Email {
         text: Some("line\n\t\u{0}\u{1b} 雪 \\".into()),
         html: Some("<b>untrusted</b>".into()),
         link_metadata: None,
+        attachments: None,
         links: vec!["https://x.io/?q=雪".into()],
         codes: (0..65).map(|i| format!("{i:04}")).collect(),
         message_id: Some("message@x".into()),
@@ -328,9 +329,10 @@ async fn legacy_bytes() {
             let run = workflow(version, stdio, false).await;
             assert_eq!(run.requests, requests, "case identities");
             assert_eq!(run.lines.len(), BASELINE.lines().count());
-            // Discovery is additive (decision 0094 §7): the captured
-            // thirteen-entry catalogue is a byte prefix, then the two
-            // appended descriptors; every result line is byte-identical.
+            // Discovery is additive (decisions 0094 §7, 0110 §7): the
+            // captured thirteen-entry catalogue is a byte prefix, then the
+            // two focused and the two attachment descriptors; every result
+            // line is byte-identical.
             let baseline: Vec<&str> = BASELINE.lines().collect();
             super::focused::assert_appended(&run.lines[0], baseline[0]);
             assert_eq!(
@@ -376,7 +378,11 @@ fn historical_twelve_tool_fixture_is_preserved() {
 // character-class matcher; any other pattern refuses the whole schema.
 const RULE_ID_PATTERN: &str = "^[!-~]+$";
 const HEADER_NAME_PATTERN: &str = "^[\\x21-\\x39\\x3b-\\x40\\x5b-\\x7e]+$";
+pub(super) const SHA256_PATTERN: &str = "^[0-9a-f]{64}$";
 fn pattern_matches(pattern: &str, s: &str) -> bool {
+    if pattern == SHA256_PATTERN {
+        return s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    }
     let allowed = |c: char| match pattern {
         RULE_ID_PATTERN => ('!'..='~').contains(&c),
         HEADER_NAME_PATTERN => matches!(c, '\x21'..='\x39' | '\x3b'..='\x40' | '\x5b'..='\x7e'),
@@ -451,9 +457,9 @@ pub(super) fn schema_ok(s: &Value) -> bool {
             "additionalProperties" => value == &json!(false),
             "minimum" | "maximum" => bound(value).is_some(),
             "minItems" | "maxItems" | "minLength" => value.as_u64().is_some(),
-            "pattern" => value
-                .as_str()
-                .is_some_and(|p| [RULE_ID_PATTERN, HEADER_NAME_PATTERN].contains(&p)),
+            "pattern" => value.as_str().is_some_and(|p| {
+                [RULE_ID_PATTERN, HEADER_NAME_PATTERN, SHA256_PATTERN].contains(&p)
+            }),
             "enum" => value.as_array().is_some_and(|variants| {
                 !variants.is_empty()
                     && variants
@@ -693,6 +699,24 @@ fn evaluator_selftest() {
             );
         }
     }
+    // The attachment digest pattern (decision 0110 §7), checked against
+    // the regex it names.
+    let digest = json!({"type":"string","pattern":SHA256_PATTERN});
+    let re = regex::Regex::new(SHA256_PATTERN).unwrap();
+    for sample in [
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "E3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85",
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8555",
+        "g3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "",
+    ] {
+        assert_eq!(
+            valid(&digest, &json!(sample)),
+            re.is_match(sample),
+            "{sample}"
+        );
+    }
     let name = json!({"type":"string","pattern":HEADER_NAME_PATTERN});
     for good in ["x-swarmail-demo", "list-unsubscribe", "a;b", "@[`{~"] {
         assert!(valid(&name, &json!(good)), "{good}");
@@ -848,9 +872,14 @@ async fn modern_all_tools_http_and_stdio() {
             let tools = list["result"]["tools"].as_array().unwrap();
             let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
             assert_eq!(names[..13], NAMES);
-            assert_eq!(names[13..], super::focused::FOCUSED);
-            for tool in &tools[13..] {
+            assert_eq!(names[13..15], super::focused::FOCUSED);
+            assert_eq!(names[15..], super::attachments::ATTACHMENTS);
+            assert_eq!(names.len(), 17);
+            for tool in &tools[13..15] {
                 super::focused::assert_march_descriptor(&march_view(tool, true));
+            }
+            for tool in &tools[15..] {
+                super::attachments::assert_march_descriptor(&march_view(tool, true));
             }
             for (i, (tool, original)) in tools
                 .iter()
@@ -1176,10 +1205,14 @@ async fn served_openapi_pins_and_negative_controls() {
             .collect();
         let focused: std::collections::BTreeSet<&str> =
             super::focused::FOCUSED.into_iter().collect();
-        assert_eq!(served, projected.union(&focused).copied().collect());
+        let attachments: std::collections::BTreeSet<&str> =
+            super::attachments::ATTACHMENTS.into_iter().collect();
+        let mcp_only: std::collections::BTreeSet<&str> =
+            focused.union(&attachments).copied().collect();
+        assert_eq!(served, projected.union(&mcp_only).copied().collect());
         assert_eq!(
             served,
-            NAMES.into_iter().chain(focused.iter().copied()).collect()
+            NAMES.into_iter().chain(mcp_only.iter().copied()).collect()
         );
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
@@ -1190,6 +1223,8 @@ async fn served_openapi_pins_and_negative_controls() {
             // independent expectation is decision 0094's stated contract.
             let expected = if focused.contains(name) {
                 super::focused::expected_output(name)
+            } else if attachments.contains(name) {
+                super::attachments::expected_output(name)
             } else {
                 expected[name].clone()
             };

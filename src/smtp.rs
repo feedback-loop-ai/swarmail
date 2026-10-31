@@ -1842,6 +1842,9 @@ pub fn build_email(raw: &[u8], inbox: &str, recipients: &[String], from_envelope
         message_id,
         in_reply_to,
         references,
+        // Listed once, here at ingest (decision 0110): total, so it cannot
+        // fail the mail; unknown only where the parser read nothing.
+        attachments: parsed.as_ref().map(crate::attachments::extract),
         raw: raw.to_vec(),
     }
 }

@@ -1334,6 +1334,7 @@ mod tests {
             text: None,
             html: None,
             link_metadata: None,
+            attachments: None,
             links: vec![],
             codes: vec![],
             message_id: None,

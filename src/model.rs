@@ -104,9 +104,151 @@ impl<'de> Deserialize<'de> for LinkMetadata {
 
 /// A nullable member that must be present. A plain `Option` field takes a
 /// missing key as `None`; naming a deserializer turns that default off.
-fn required_nullable<'de, D: Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
-    Option::<String>::deserialize(de)
+fn required_nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    de: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(de)
 }
+
+/// The calendar fields ingest read from a part's first `VEVENT` (decision
+/// 0110 §4): the values exactly as the calendar spelled them — no timezone
+/// resolution, no instant — except `summary`, whose RFC 5545 text escapes
+/// are resolved. Every member is required on restore (a missing nullable
+/// member is corruption, not an implicit null) and an unknown member
+/// refuses, through the same map-only reader the link occurrences use.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct IcsEvent {
+    pub dtstart: Option<String>,
+    pub dtstart_tzid: Option<String>,
+    pub dtend: Option<String>,
+    pub dtend_tzid: Option<String>,
+    pub summary: Option<String>,
+    pub uid: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IcsMembers {
+    #[serde(deserialize_with = "required_nullable")]
+    dtstart: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    dtstart_tzid: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    dtend: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    dtend_tzid: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    summary: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    uid: Option<String>,
+}
+
+/// One of a mail's listed attachments as ingest recorded it (decision 0110
+/// §1): label, decoded size, SHA-256 of exactly those bytes, whether the
+/// bytes were kept under the per-mail budget, and for a calendar part its
+/// fields. `content` is `Some` exactly when `stored`; it is never part of
+/// the persisted object (the bytes ride their own column) and never of any
+/// Email serialization.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Attachment {
+    pub filename: Option<String>,
+    pub content_type: Option<String>,
+    pub size: u64,
+    pub sha256: String,
+    pub stored: bool,
+    pub ics: Option<IcsEvent>,
+    #[serde(skip)]
+    pub content: Option<Vec<u8>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttachmentMembers {
+    #[serde(deserialize_with = "required_nullable")]
+    filename: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    content_type: Option<String>,
+    size: u64,
+    sha256: String,
+    stored: bool,
+    #[serde(deserialize_with = "required_nullable")]
+    ics: Option<IcsEvent>,
+}
+
+/// A mail's attachment list: the exact candidate `total` and the first
+/// entries (at most `MAX_ATTACHMENTS`) in part order. Held as `Some` on
+/// every parsed mail (`Some` of an empty list is known empty) and `None`
+/// where the list is unknown — a row from before the columns, or a mail
+/// the parser could not read. Internal: no Email serialization carries it.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct AttachmentList {
+    pub total: u64,
+    pub parts: Vec<Attachment>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListMembers {
+    total: u64,
+    parts: Vec<Attachment>,
+}
+
+/// Generates the strict map-only reader for a persisted object: the derived
+/// reader behind `$members` also admits a positional array, so the public
+/// type reaches it only through `deserialize_map` (decision 0097 §2).
+macro_rules! map_only {
+    ($ty:ident, $members:ident, $what:literal, |$m:ident| $build:expr) => {
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+                struct Object;
+                impl<'de> Visitor<'de> for Object {
+                    type Value = $ty;
+                    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                        f.write_str($what)
+                    }
+                    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<$ty, A::Error> {
+                        let $m = $members::deserialize(MapAccessDeserializer::new(map))?;
+                        Ok($build)
+                    }
+                }
+                de.deserialize_map(Object)
+            }
+        }
+    };
+}
+
+map_only!(IcsEvent, IcsMembers, "a calendar event object", |m| {
+    IcsEvent {
+        dtstart: m.dtstart,
+        dtstart_tzid: m.dtstart_tzid,
+        dtend: m.dtend,
+        dtend_tzid: m.dtend_tzid,
+        summary: m.summary,
+        uid: m.uid,
+    }
+});
+
+map_only!(Attachment, AttachmentMembers, "an attachment object", |m| {
+    Attachment {
+        filename: m.filename,
+        content_type: m.content_type,
+        size: m.size,
+        sha256: m.sha256,
+        stored: m.stored,
+        ics: m.ics,
+        content: None,
+    }
+});
+
+map_only!(
+    AttachmentList,
+    ListMembers,
+    "an attachment list object",
+    |m| AttachmentList {
+        total: m.total,
+        parts: m.parts,
+    }
+);
 
 /// Which selected body an occurrence came from.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -181,6 +323,12 @@ pub struct Email {
     /// RFC 5322 References, in header order (root → parent).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<String>,
+    /// The ingest-time attachment list (decision 0110): `Some` for every
+    /// parsed mail, `None` where unknown, never backfilled. Internal like
+    /// `link_metadata`: no Email serialization carries it, so every
+    /// existing read, feed and webhook payload keeps its bytes.
+    #[serde(skip)]
+    pub attachments: Option<AttachmentList>,
     #[serde(skip)]
     pub raw: Vec<u8>,
 }
@@ -188,6 +336,149 @@ pub struct Email {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    fn part_json(extra: &str) -> String {
+        format!(
+            r#"{{"filename":"a.ics","content_type":"text/calendar","size":3,"sha256":"{SHA}","stored":true,"ics":null{extra}}}"#
+        )
+    }
+
+    /// Decision 0110 §6: the persisted object restores only from the exact
+    /// closed shape ingest writes — every member present (nullable ones as
+    /// null), no unknown member, no duplicate, no positional array — and a
+    /// calendar object is held to the same rule.
+    #[test]
+    fn the_persisted_attachment_object_is_closed_and_map_only() {
+        let ics = r#"{"dtstart":"20261102T150000","dtstart_tzid":null,"dtend":null,"dtend_tzid":null,"summary":"s","uid":"u"}"#;
+        let list: AttachmentList = serde_json::from_str(&format!(
+            r#"{{"total":2,"parts":[{},{}]}}"#,
+            part_json(""),
+            part_json("").replace(r#""ics":null"#, &format!(r#""ics":{ics}"#))
+        ))
+        .unwrap();
+        assert_eq!(list.total, 2);
+        assert_eq!(list.parts[0].ics, None);
+        assert_eq!(list.parts[0].content, None);
+        let event = list.parts[1].ics.as_ref().unwrap();
+        assert_eq!(event.summary.as_deref(), Some("s"));
+        assert_eq!(event.dtend, None);
+        // The object writes back as it came, without the bytes.
+        assert_eq!(
+            serde_json::to_string(&list.parts[0]).unwrap(),
+            part_json("")
+        );
+
+        let part_with = |from: &str, to: &str| part_json("").replace(from, to);
+        for (corrupt, cause) in [
+            ("[]".to_string(), "an attachment list object"),
+            ("null".to_string(), "an attachment list object"),
+            (r#"{"total":1}"#.to_string(), "missing field `parts`"),
+            (r#"{"parts":[]}"#.to_string(), "missing field `total`"),
+            (
+                r#"{"total":0,"parts":[],"extra":1}"#.to_string(),
+                "unknown field `extra`",
+            ),
+            (
+                r#"{"total":0,"total":1,"parts":[]}"#.to_string(),
+                "duplicate field `total`",
+            ),
+            (r#"{"total":-1,"parts":[]}"#.to_string(), "invalid value"),
+            (
+                format!(r#"{{"total":1,"parts":[["a",null,1,"{SHA}",true,null]]}}"#),
+                "an attachment object",
+            ),
+            (
+                format!(
+                    r#"{{"total":1,"parts":[{}]}}"#,
+                    part_with(r#""filename":"a.ics","#, "")
+                ),
+                "missing field `filename`",
+            ),
+            (
+                format!(
+                    r#"{{"total":1,"parts":[{}]}}"#,
+                    part_with(r#","ics":null"#, "")
+                ),
+                "missing field `ics`",
+            ),
+            (
+                format!(
+                    r#"{{"total":1,"parts":[{}]}}"#,
+                    part_json(r#","content":"x""#)
+                ),
+                "unknown field `content`",
+            ),
+            (
+                format!(
+                    r#"{{"total":1,"parts":[{}]}}"#,
+                    part_with(r#""stored":true"#, r#""stored":"yes""#)
+                ),
+                "invalid type",
+            ),
+            (
+                format!(
+                    r#"{{"total":1,"parts":[{}]}}"#,
+                    part_with(r#""size":3"#, r#""size":"3""#)
+                ),
+                "invalid type",
+            ),
+            (
+                format!(
+                    r#"{{"total":1,"parts":[{}]}}"#,
+                    part_with(r#""ics":null"#, r#""ics":["a",null,null,null,null,null]"#)
+                ),
+                "a calendar event object",
+            ),
+            (
+                format!(
+                    r#"{{"total":1,"parts":[{}]}}"#,
+                    part_with(r#""ics":null"#, r#""ics":{"dtstart":null}"#)
+                ),
+                "missing field",
+            ),
+            (
+                format!(
+                    r#"{{"total":1,"parts":[{}]}}"#,
+                    part_with(
+                        r#""ics":null"#,
+                        &format!(
+                            r#""ics":{}"#,
+                            ics.replace(r#""uid":"u""#, r#""uid":"u","tz":null"#)
+                        )
+                    )
+                ),
+                "unknown field `tz`",
+            ),
+        ] {
+            let error = serde_json::from_str::<AttachmentList>(&corrupt).unwrap_err();
+            assert!(error.to_string().contains(cause), "{corrupt}: {error}");
+        }
+    }
+
+    /// The list and its bytes are internal: no Email serialization carries
+    /// them, so every read, feed and webhook keeps its bytes (decision 0110
+    /// §7).
+    #[test]
+    fn the_attachment_list_never_reaches_an_email_serialization() {
+        let mut mail = crate::store::email("id", "box", "a@x.io");
+        let without = serde_json::to_string(&mail).unwrap();
+        mail.attachments = Some(AttachmentList {
+            total: 1,
+            parts: vec![Attachment {
+                filename: Some("a.bin".into()),
+                content_type: None,
+                size: 1,
+                sha256: SHA.into(),
+                stored: true,
+                ics: Some(IcsEvent::default()),
+                content: Some(vec![1]),
+            }],
+        });
+        assert_eq!(serde_json::to_string(&mail).unwrap(), without);
+        assert!(!without.contains("attachments"));
+    }
 
     /// The one name rule (decision 0046 §4): blank refuses, any Unicode
     /// control refuses, and everything else — padding, UTF-8 — comes back

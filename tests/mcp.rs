@@ -46,9 +46,9 @@ async fn initialize_and_tools_list() {
 
     let (_, body) = rpc(srv.http_addr, "tools/list", "{}").await;
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), 17);
 
-    // inputSchema is a JSON *object* for all fifteen tools — the JSON type,
+    // inputSchema is a JSON *object* for all seventeen tools — the JSON type,
     // not a substring (a substring check is how the string-schema bug
     // survived). Decision 0010, issue #4.
     let by_name: std::collections::HashMap<&str, &serde_json::Value> = tools
@@ -2864,4 +2864,577 @@ async fn zero_timeout_finishes_on_the_first_dispatch_poll() {
             assert_eq!(body["result"]["content"][0]["text"], "shutting down");
         }
     }
+}
+
+// ---- Attachments (decision 0110): real SMTP in, MCP out. ----
+
+const SHA256_EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const SHA256_ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+fn wrapped_base64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .encode(bytes)
+        .as_bytes()
+        .chunks(76)
+        .map(|line| std::str::from_utf8(line).unwrap())
+        .collect::<Vec<_>>()
+        .join("\r\n")
+}
+
+/// A base64 attachment part: (headers, body).
+fn att_binary(name: &str, bytes: &[u8]) -> (String, String) {
+    (
+        format!(
+            "Content-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n\
+             Content-Disposition: attachment; filename=\"{name}\""
+        ),
+        wrapped_base64(bytes),
+    )
+}
+
+fn att_mail(parts: &[(String, String)]) -> Vec<u8> {
+    let mut raw = String::from(
+        "From: app@x.io\r\nTo: rcpt@x.io\r\nSubject: attachments\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"bd\"\r\n\r\n--bd\r\n\
+         Content-Type: text/plain\r\n\r\nsee attached\r\n",
+    );
+    for (headers, body) in parts {
+        raw.push_str(&format!("--bd\r\n{headers}\r\n\r\n{body}\r\n"));
+    }
+    raw.push_str("--bd--\r\n");
+    raw.into_bytes()
+}
+
+async fn att_list(addr: Http, id: &str) -> serde_json::Value {
+    let result = tool(
+        addr,
+        "swarmail_list_attachments",
+        &format!(r#"{{"id":"{id}"}}"#),
+    )
+    .await;
+    assert_eq!(result["isError"], false, "{result}");
+    text(&result)
+}
+
+async fn att_get(addr: Http, id: &str, index: u64) -> serde_json::Value {
+    tool(
+        addr,
+        "swarmail_get_attachment",
+        &format!(r#"{{"id":"{id}","index":{index}}}"#),
+    )
+    .await
+}
+
+fn att_bytes(fetched: &serde_json::Value) -> Vec<u8> {
+    use base64::Engine;
+    let body = text(fetched);
+    let content = body["content"].as_str().unwrap();
+    match body["encoding"].as_str().unwrap() {
+        "utf-8" => content.as_bytes().to_vec(),
+        "base64" => base64::engine::general_purpose::STANDARD
+            .decode(content)
+            .unwrap(),
+        other => panic!("encoding {other}"),
+    }
+}
+
+/// AC1/AC2/AC7: list and fetch a real SMTP-delivered mail the moment its
+/// `250` arrives — types lowercased, sizes decoded, hashes proven by the
+/// known vectors, a bare calendar body and an attached message listed, the
+/// NUL-carrying text part answered as base64.
+#[tokio::test]
+async fn attachments_are_listed_and_fetched_right_after_the_250() {
+    let srv = start().await;
+    let invite = "BEGIN:VCALENDAR\r\nBEGIN:VTIMEZONE\r\nDTSTART:19700101T000000\r\nEND:VTIMEZONE\r\n\
+                  BEGIN:VEVENT\r\nUID:evt-9@x.io\r\nDTSTART;TZID=Europe/Berlin:20261102T150000\r\n\
+                  DTEND;TZID=Europe/Berlin:20261102T160000\r\nSUMMARY:Plan\\, Q4\r\n\
+                  END:VEVENT\r\nEND:VCALENDAR";
+    let inner = "From: i@x.io\r\nSubject: inner\r\nMIME-Version: 1.0\r\n\
+                 Content-Type: multipart/mixed; boundary=\"in\"\r\n\r\n--in\r\n\
+                 Content-Type: text/plain\r\n\r\nx\r\n--in\r\n\
+                 Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"deep.pdf\"\r\n\r\npdf\r\n--in--";
+    let parts = [
+        att_binary("abc.bin", b"abc"),
+        att_binary("empty.bin", b""),
+        (
+            "Content-Type: Text/CSV; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\
+             Content-Disposition: attachment; filename=\"a.csv\""
+                .into(),
+            "caf=C3=A9,1=\r\n2".into(),
+        ),
+        (
+            "Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\
+             Content-Disposition: attachment; filename=\"nul.txt\""
+                .into(),
+            wrapped_base64(b"a\0b"),
+        ),
+        ("Content-Type: text/calendar; method=REQUEST".into(), invite.into()),
+        ("Content-Type: message/rfc822".into(), inner.into()),
+    ];
+    let id = common::smtp_raw(srv.smtp_addr, "att", &att_mail(&parts)).await;
+    // Queryable at once: no wait, no retry (decision 0001).
+    let list = att_list(srv.http_addr, &id).await;
+    assert_eq!(
+        (&list["total"], &list["truncated"]),
+        (&6.into(), &false.into())
+    );
+    assert_eq!(list["id"], id.as_str());
+    let entries = list["attachments"].as_array().unwrap();
+    let view: Vec<_> = entries
+        .iter()
+        .map(|e| {
+            (
+                e["filename"].as_str(),
+                e["content_type"].as_str().unwrap(),
+                e["size"].as_u64().unwrap(),
+                e["stored"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        view,
+        [
+            (Some("abc.bin"), "application/octet-stream", 3, true),
+            (Some("empty.bin"), "application/octet-stream", 0, true),
+            (Some("a.csv"), "text/csv", "café,12".len() as u64, true),
+            (Some("nul.txt"), "text/plain", 3, true),
+            (None, "text/calendar", invite.len() as u64, true),
+            (
+                None,
+                "message/rfc822",
+                entries[5]["size"].as_u64().unwrap(),
+                true
+            ),
+        ]
+    );
+    assert_eq!(entries[0]["sha256"], SHA256_ABC);
+    assert_eq!(entries[1]["sha256"], SHA256_EMPTY);
+    for (i, entry) in entries.iter().enumerate() {
+        assert_eq!(entry["index"], i);
+        let hash = entry["sha256"].as_str().unwrap();
+        assert!(
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+    }
+    assert!(entries[..4].iter().all(|e| e["ics"].is_null()));
+    let ics = &entries[4]["ics"];
+    assert_eq!(ics["uid"], "evt-9@x.io");
+    assert_eq!(ics["dtstart"], "20261102T150000");
+    assert_eq!(ics["dtstart_tzid"], "Europe/Berlin");
+    assert_eq!(ics["dtend"], "20261102T160000");
+    assert_eq!(ics["summary"], "Plan, Q4");
+    assert!(
+        entries[5]["ics"].is_null(),
+        "an attached message is one entry"
+    );
+
+    // Fetch: every stored part answers the listed size and hash.
+    let abc = att_get(srv.http_addr, &id, 0).await;
+    assert_eq!(text(&abc)["encoding"], "utf-8");
+    assert_eq!(att_bytes(&abc), b"abc");
+    assert_eq!(text(&abc)["sha256"], SHA256_ABC);
+    assert_eq!(text(&att_get(srv.http_addr, &id, 1).await)["content"], "");
+    let csv = att_get(srv.http_addr, &id, 2).await;
+    assert_eq!(att_bytes(&csv), "café,12".as_bytes());
+    assert_eq!(text(&csv)["encoding"], "utf-8");
+    let nul = att_get(srv.http_addr, &id, 3).await;
+    assert_eq!(text(&nul)["encoding"], "base64");
+    assert_eq!(att_bytes(&nul), b"a\0b");
+    let calendar = att_get(srv.http_addr, &id, 4).await;
+    assert_eq!(att_bytes(&calendar), invite.as_bytes());
+    for (i, entry) in entries.iter().enumerate() {
+        let fetched = text(&att_get(srv.http_addr, &id, i as u64).await);
+        assert_eq!(fetched["size"], entry["size"]);
+        assert_eq!(fetched["sha256"], entry["sha256"]);
+        assert_eq!(fetched["filename"], entry["filename"]);
+        assert_eq!(fetched["content_type"], entry["content_type"]);
+    }
+    srv.stop().await;
+}
+
+#[tokio::test]
+async fn attachment_refusals_are_named() {
+    let srv = start().await;
+    let id = common::smtp_raw(
+        srv.smtp_addr,
+        "att-ref",
+        &att_mail(&[att_binary("a.bin", b"abc")]),
+    )
+    .await;
+    let unknown = tool(
+        srv.http_addr,
+        "swarmail_list_attachments",
+        r#"{"id":"nope"}"#,
+    )
+    .await;
+    assert_eq!(unknown["isError"], true);
+    assert_eq!(unknown["content"][0]["text"], "message nope not found");
+    let unknown = att_get(srv.http_addr, "nope", 0).await;
+    assert_eq!(unknown["content"][0]["text"], "message nope not found");
+    let past = att_get(srv.http_addr, &id, 1).await;
+    assert_eq!(past["isError"], true);
+    assert!(
+        past["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("past the list of 1")
+    );
+    for (arguments, message) in [
+        (
+            format!(r#"{{"id":"{id}","index":-1}}"#),
+            "index must be a non-negative integer",
+        ),
+        (
+            format!(r#"{{"id":"{id}","index":1.5}}"#),
+            "index must be a non-negative integer",
+        ),
+        (
+            format!(r#"{{"id":"{id}"}}"#),
+            "index must be a non-negative integer",
+        ),
+        (r#"{"index":0}"#.to_string(), "missing id"),
+    ] {
+        let params = format!(r#"{{"name":"swarmail_get_attachment","arguments":{arguments}}}"#);
+        let (status, body) = rpc(srv.http_addr, "tools/call", &params).await;
+        assert_eq!(
+            (status, &body["error"]["code"]),
+            (200, &(-32602).into()),
+            "{arguments}"
+        );
+        assert_eq!(body["error"]["message"], message);
+    }
+    srv.stop().await;
+}
+
+/// AC3 on the wire: the budget edges, first-fit and the count cap, each
+/// through a real SMTP delivery.
+#[tokio::test]
+async fn attachment_caps_hold_on_the_wire() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let stored_flags = |list: &serde_json::Value| -> Vec<bool> {
+        list["attachments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["stored"].as_bool().unwrap())
+            .collect()
+    };
+    let refusal =
+        |fetched: &serde_json::Value| fetched["content"][0]["text"].as_str().unwrap().to_string();
+
+    // Exactly 1 MiB is stored and fetched whole; one octet more is listed
+    // with its size and hash but refused, naming size, budget and route.
+    let whole = vec![0xA5u8; 1_048_576];
+    let id = common::smtp_raw(
+        srv.smtp_addr,
+        "cap-1",
+        &att_mail(&[att_binary("whole.bin", &whole)]),
+    )
+    .await;
+    assert_eq!(stored_flags(&att_list(addr, &id).await), [true]);
+    let fetched = att_get(addr, &id, 0).await;
+    assert_eq!(text(&fetched)["encoding"], "base64");
+    assert_eq!(att_bytes(&fetched), whole);
+    let over = vec![0xA5u8; 1_048_577];
+    let id = common::smtp_raw(
+        srv.smtp_addr,
+        "cap-2",
+        &att_mail(&[att_binary("over.bin", &over)]),
+    )
+    .await;
+    let list = att_list(addr, &id).await;
+    assert_eq!(stored_flags(&list), [false]);
+    assert_eq!(list["attachments"][0]["size"], 1_048_577);
+    assert_eq!(list["attachments"][0]["sha256"].as_str().unwrap().len(), 64);
+    let fetched = att_get(addr, &id, 0).await;
+    assert_eq!(fetched["isError"], true);
+    let sentence = refusal(&fetched);
+    for needle in [
+        "1048577 bytes",
+        "1048576 bytes (1 MiB)",
+        &format!("GET /api/v1/messages/{id}/raw"),
+    ] {
+        assert!(sentence.contains(needle), "{sentence}");
+    }
+    // The raw route it names still serves the whole mail.
+    let (status, raw) = http_bytes(addr, &format!("/api/v1/messages/{id}/raw")).await;
+    assert_eq!(status, 200);
+    assert!(raw.len() > 1_048_577);
+
+    // Two half-MiB parts fit; a following single octet does not.
+    let half = vec![1u8; 524_288];
+    let id = common::smtp_raw(
+        srv.smtp_addr,
+        "cap-3",
+        &att_mail(&[
+            att_binary("a", &half),
+            att_binary("b", &half),
+            att_binary("c", b"x"),
+        ]),
+    )
+    .await;
+    assert_eq!(
+        stored_flags(&att_list(addr, &id).await),
+        [true, true, false]
+    );
+
+    // A 1 MiB part before a 300-octet calendar: the calendar is unstored
+    // but its fields are present.
+    let mut ics =
+        String::from("BEGIN:VEVENT\r\nUID:tail@x.io\r\nSUMMARY:After the blob\r\nEND:VEVENT\r\n");
+    ics.push_str(&"X".repeat(300 - ics.len()));
+    let id = common::smtp_raw(
+        srv.smtp_addr,
+        "cap-4",
+        &att_mail(&[
+            att_binary("blob", &whole),
+            ("Content-Type: text/calendar".into(), ics.clone()),
+        ]),
+    )
+    .await;
+    let list = att_list(addr, &id).await;
+    assert_eq!(stored_flags(&list), [true, false]);
+    assert_eq!(list["attachments"][1]["size"], 300);
+    assert_eq!(list["attachments"][1]["ics"]["uid"], "tail@x.io");
+    assert_eq!(list["attachments"][1]["ics"]["summary"], "After the blob");
+    assert_eq!(att_get(addr, &id, 1).await["isError"], true);
+
+    // 250 parts list in full; 251 list 250 with the exact total.
+    let one = |i: usize| att_binary(&format!("f{i}.bin"), b"x");
+    let exactly: Vec<_> = (0..250).map(one).collect();
+    let id = common::smtp_raw(srv.smtp_addr, "cap-5", &att_mail(&exactly)).await;
+    let list = att_list(addr, &id).await;
+    assert_eq!(
+        (&list["total"], &list["truncated"]),
+        (&250.into(), &false.into())
+    );
+    assert_eq!(list["attachments"].as_array().unwrap().len(), 250);
+    let over: Vec<_> = (0..251).map(one).collect();
+    let id = common::smtp_raw(srv.smtp_addr, "cap-6", &att_mail(&over)).await;
+    let list = att_list(addr, &id).await;
+    assert_eq!(
+        (&list["total"], &list["truncated"]),
+        (&251.into(), &true.into())
+    );
+    assert_eq!(list["attachments"].as_array().unwrap().len(), 250);
+    assert_eq!(list["attachments"][249]["filename"], "f249.bin");
+
+    // A 1025-byte filename is cut at a character boundary, at most 1024.
+    let mut name = "a".to_string();
+    name.push_str(&"é".repeat(512));
+    assert_eq!(name.len(), 1025);
+    let id = common::smtp_raw(
+        srv.smtp_addr,
+        "cap-7",
+        &att_mail(&[att_binary(&name, b"x")]),
+    )
+    .await;
+    let cut = att_list(addr, &id).await["attachments"][0]["filename"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(cut.len() <= 1024 && name.starts_with(&cut), "{}", cut.len());
+    assert_eq!(cut.len(), 1023);
+    srv.stop().await;
+}
+
+/// ICS at ingest (AC5), through the wire: folded lines, nested components,
+/// a TZID, a Z suffix, an escaped summary and two events — and the other
+/// calendar shapes, a calendar that does not parse and a hostile one.
+#[tokio::test]
+async fn ics_fields_are_read_at_ingest() {
+    let srv = start().await;
+    let addr = srv.http_addr;
+    let calendar = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n\
+        BEGIN:VTIMEZONE\r\nTZID:Europe/Berlin\r\nBEGIN:STANDARD\r\nDTSTART:19701025T030000\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n\
+        BEGIN:VEVENT\r\nUID:first@x.io\r\nDTSTART;TZID=Europe/Berlin:20261102T150000\r\n\
+        DTEND:20261102T160000Z\r\nSUMMARY:Quarterly\\, board\\n\r\n  review\r\n\
+        BEGIN:VALARM\r\nSUMMARY:alarm\r\nEND:VALARM\r\nEND:VEVENT\r\n\
+        BEGIN:VEVENT\r\nUID:second@x.io\r\nSUMMARY:no\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    let id = common::smtp_raw(
+        srv.smtp_addr,
+        "ics",
+        &att_mail(&[
+            ("Content-Type: text/calendar\r\nContent-Disposition: attachment; filename=\"invite.ics\"".into(), calendar.into()),
+            ("Content-Type: application/ics".into(), "BEGIN:VEVENT\r\nUID:ics-type\r\nEND:VEVENT\r\n".into()),
+            ("Content-Type: application/octet-stream; name=\"x.ICS\"".into(), "BEGIN:VEVENT\r\nUID:by-name\r\nEND:VEVENT\r\n".into()),
+            ("Content-Type: text/calendar".into(), "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n".into()),
+            ("Content-Type: text/calendar".into(), "not a calendar at all".into()),
+            att_binary("bad.ics", b"BEGIN:VEVENT\r\n\xff\xfe\r\nUID:bad-utf8\r\nEND:VEVENT\r\n"),
+        ]),
+    )
+    .await;
+    let list = att_list(addr, &id).await;
+    let entries = list["attachments"].as_array().unwrap();
+    let first = &entries[0]["ics"];
+    assert_eq!(first["uid"], "first@x.io");
+    assert_eq!(first["dtstart"], "20261102T150000");
+    assert_eq!(first["dtstart_tzid"], "Europe/Berlin");
+    assert_eq!(first["dtend"], "20261102T160000Z");
+    assert_eq!(first["dtend_tzid"], serde_json::Value::Null);
+    assert_eq!(first["summary"], "Quarterly, board\n review");
+    assert_eq!(entries[0]["filename"], "invite.ics");
+    assert_eq!(entries[1]["ics"]["uid"], "ics-type");
+    assert_eq!(entries[2]["ics"]["uid"], "by-name");
+    assert!(
+        entries[3]["ics"].is_null() && entries[4]["ics"].is_null() && entries[5]["ics"].is_null()
+    );
+
+    // A calendar over 1 MiB yields no fields, and a malformed one is still
+    // accepted and queryable.
+    let mut huge = String::from("BEGIN:VEVENT\r\nUID:huge\r\nEND:VEVENT\r\n");
+    huge.push_str(&"X-FILL:".repeat(150_000));
+    assert!(huge.len() > 1_048_576);
+    let id = common::smtp_raw(
+        srv.smtp_addr,
+        "ics-2",
+        &att_mail(&[
+            ("Content-Type: text/calendar".into(), huge),
+            (
+                "Content-Type: text/calendar".into(),
+                "BEGIN:VEVENT\r\nBEGIN:VEVENT\r\n::\r\n".into(),
+            ),
+        ]),
+    )
+    .await;
+    let list = att_list(addr, &id).await;
+    assert!(list["attachments"][0]["ics"].is_null());
+    assert_eq!(list["attachments"][0]["stored"], false, "over the budget");
+    assert_eq!(
+        list["attachments"][1]["ics"]["uid"],
+        serde_json::Value::Null
+    );
+    srv.stop().await;
+}
+
+/// AC4: hostile mail under the 50 MiB DATA cap. Each is accepted with `250`,
+/// is listable at once under the caps, and retains at most 1 MiB of
+/// attachment bytes — read from the data file's `attachment_bytes` column,
+/// not inferred. The parser's transient allocation while it reads the mail
+/// is the existing, 50 MiB-bounded behaviour (decision 0022); what this
+/// pins is what the feature keeps.
+#[tokio::test]
+async fn hostile_attachments_cannot_grow_what_is_retained() {
+    let dir = tempfile::TempDir::with_prefix("swarmail-att-hostile-").unwrap();
+    let db = dir.path().join("mail.db");
+    let srv = start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c
+    })
+    .await;
+    let addr = srv.http_addr;
+    let retained = |id: &str| -> usize {
+        let conn =
+            rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        conn.query_row(
+            "SELECT length(attachment_bytes) FROM emails WHERE id = ?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap() as usize
+    };
+
+    // Fifty thousand minimal parts: the list stays at 250, the total is
+    // exact, and 250 one-octet parts are all that is kept.
+    let mut raw = String::from(
+        "From: app@x.io\r\nTo: rcpt@x.io\r\nSubject: many\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"bd\"\r\n\r\n",
+    );
+    for _ in 0..50_000 {
+        raw.push_str("--bd\r\nContent-Disposition: attachment\r\n\r\nx\r\n");
+    }
+    raw.push_str("--bd--\r\n");
+    let id = common::smtp_raw(srv.smtp_addr, "hostile-many", raw.as_bytes()).await;
+    drop(raw);
+    let list = att_list(addr, &id).await;
+    assert_eq!(
+        (&list["total"], &list["truncated"]),
+        (&50_000.into(), &true.into())
+    );
+    assert_eq!(list["attachments"].as_array().unwrap().len(), 250);
+    assert_eq!(retained(&id), 250);
+
+    // One part of 40 MiB of base64 (30 MiB decoded): listed with its true
+    // size and hash, nothing kept.
+    let decoded = vec![0u8; 30 * 1024 * 1024];
+    let (headers, body) = att_binary("huge.bin", &decoded);
+    assert!(body.len() > 40 * 1024 * 1024 && body.len() < 50 * 1024 * 1024);
+    let id = common::smtp_raw(srv.smtp_addr, "hostile-big", &att_mail(&[(headers, body)])).await;
+    let list = att_list(addr, &id).await;
+    assert_eq!(list["attachments"][0]["size"], 30 * 1024 * 1024);
+    assert_eq!(list["attachments"][0]["stored"], false);
+    assert_eq!(retained(&id), 0);
+    assert_eq!(att_get(addr, &id, 0).await["isError"], true);
+
+    // A mix that tries to exceed the budget in aggregate: three 400 KiB
+    // parts keep two, never more than 1 MiB in sum.
+    let chunk = vec![3u8; 400 * 1024];
+    let id = common::smtp_raw(
+        srv.smtp_addr,
+        "hostile-sum",
+        &att_mail(&[
+            att_binary("a", &chunk),
+            att_binary("b", &chunk),
+            att_binary("c", &chunk),
+        ]),
+    )
+    .await;
+    assert_eq!(retained(&id), 2 * 400 * 1024);
+    assert!(retained(&id) <= 1_048_576);
+    srv.stop().await;
+}
+
+/// AC7: a mail that trips the per-inbox cap still evicts the oldest, and
+/// its attachment columns go with the row.
+#[tokio::test]
+async fn pruning_takes_the_attachment_columns_with_the_row() {
+    let dir = tempfile::TempDir::with_prefix("swarmail-att-prune-").unwrap();
+    let db = dir.path().join("mail.db");
+    let srv = start_with(|mut c| {
+        c.data_file = Some(db.clone());
+        c.max_per_inbox = 1;
+        c
+    })
+    .await;
+    let first = common::smtp_raw(
+        srv.smtp_addr,
+        "prune",
+        &att_mail(&[att_binary("old.bin", b"old")]),
+    )
+    .await;
+    let second = common::smtp_raw(
+        srv.smtp_addr,
+        "prune",
+        &att_mail(&[att_binary("new.bin", b"new")]),
+    )
+    .await;
+    let gone = tool(
+        srv.http_addr,
+        "swarmail_list_attachments",
+        &format!(r#"{{"id":"{first}"}}"#),
+    )
+    .await;
+    assert_eq!(gone["isError"], true);
+    assert_eq!(
+        att_list(srv.http_addr, &second).await["attachments"][0]["filename"],
+        "new.bin"
+    );
+    let conn =
+        rusqlite::Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .unwrap();
+    let rows: Vec<(String, Vec<u8>)> = conn
+        .prepare("SELECT id, attachment_bytes FROM emails")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(rows, [(second, b"new".to_vec())]);
+    srv.stop().await;
 }

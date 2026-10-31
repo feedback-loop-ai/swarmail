@@ -1666,3 +1666,280 @@ async fn a_refused_insert_under_the_cap_never_completes_a_focused_wait() {
     );
     srv.stop().await;
 }
+
+// ---- Attachments (decision 0110 §6): the restart copy. ----
+
+fn att_part(headers: &str, body: &str) -> String {
+    format!("--bd\r\n{headers}\r\n\r\n{body}\r\n")
+}
+
+fn att_binary_part(name: &str, bytes: &[u8]) -> String {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let wrapped: Vec<&str> = encoded
+        .as_bytes()
+        .chunks(76)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect();
+    att_part(
+        &format!(
+            "Content-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n\
+             Content-Disposition: attachment; filename=\"{name}\""
+        ),
+        &wrapped.join("\r\n"),
+    )
+}
+
+fn att_mail(parts: &[String]) -> String {
+    format!(
+        "From: app@x.io\r\nTo: rcpt@x.io\r\nSubject: att\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"bd\"\r\n\r\n{}--bd--\r\n",
+        parts.concat()
+    )
+}
+
+async fn att_call(
+    srv: &RunningServer,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":name,"arguments":arguments}});
+    let (status, reply) =
+        common::http_json(srv.http_addr, "POST", "/mcp", Some(&body.to_string())).await;
+    assert_eq!(status, 200);
+    reply["result"].clone()
+}
+
+/// The list and the stored bytes come back from the restored row exactly as
+/// before the restart — twice over — and a part the budget refused stays
+/// refused with the same sentence.
+#[tokio::test]
+async fn attachments_survive_a_restart_byte_for_byte() {
+    let (_dir, db) = data_file("attachments");
+    let pdf: Vec<u8> = (0..=255u8).cycle().take(70_000).collect();
+    let over = vec![7u8; 1_048_577];
+    let invite = "BEGIN:VEVENT\r\nUID:persist@x.io\r\nDTSTART;TZID=Europe/Berlin:20261102T150000\r\nSUMMARY:Kept\r\nEND:VEVENT\r\n";
+    let raw = att_mail(&[
+        att_binary_part("report.pdf", &pdf),
+        att_part("Content-Type: text/calendar", invite),
+        att_binary_part("over.bin", &over),
+    ]);
+    let (id, listed, fetched, refused) = {
+        let srv = serve_data_file(&db).await;
+        let id = common::smtp_raw(srv.smtp_addr, "att", raw.as_bytes()).await;
+        let listed = att_call(
+            &srv,
+            "swarmail_list_attachments",
+            serde_json::json!({"id": id}),
+        )
+        .await;
+        let mut fetched = Vec::new();
+        for index in 0..2 {
+            fetched.push(
+                att_call(
+                    &srv,
+                    "swarmail_get_attachment",
+                    serde_json::json!({"id": id, "index": index}),
+                )
+                .await,
+            );
+        }
+        let refused = att_call(
+            &srv,
+            "swarmail_get_attachment",
+            serde_json::json!({"id": id, "index": 2}),
+        )
+        .await;
+        srv.stop().await;
+        (id, listed, fetched, refused)
+    };
+    assert_eq!(listed["isError"], false);
+    assert_eq!(refused["isError"], true);
+    for _ in 0..2 {
+        let srv = serve_data_file(&db).await;
+        let again = att_call(
+            &srv,
+            "swarmail_list_attachments",
+            serde_json::json!({"id": id}),
+        )
+        .await;
+        assert_eq!(again, listed, "the list is the one ingest recorded");
+        let parsed: serde_json::Value =
+            serde_json::from_str(again["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(parsed["attachments"][1]["ics"]["uid"], "persist@x.io");
+        assert_eq!(parsed["attachments"][2]["stored"], false);
+        for (index, before) in fetched.iter().enumerate() {
+            let after = att_call(
+                &srv,
+                "swarmail_get_attachment",
+                serde_json::json!({"id": id, "index": index}),
+            )
+            .await;
+            assert_eq!(&after, before, "part {index} comes back byte for byte");
+        }
+        let body: serde_json::Value =
+            serde_json::from_str(fetched[0]["content"][0]["text"].as_str().unwrap()).unwrap();
+        use base64::Engine;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(body["content"].as_str().unwrap())
+                .unwrap(),
+            pdf
+        );
+        let again = att_call(
+            &srv,
+            "swarmail_get_attachment",
+            serde_json::json!({"id": id, "index": 2}),
+        )
+        .await;
+        assert_eq!(again, refused);
+        srv.stop().await;
+    }
+}
+
+/// A row from before the columns restores with an unknown list — the named
+/// refusal, never "no attachments" — and fresh mail beside it lists.
+#[tokio::test]
+async fn a_pre_attachment_row_answers_unknown_and_is_never_backfilled() {
+    let (_dir, db) = data_file("pre-attachments");
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(PRE_METADATA_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO emails (id, inbox, seq, from_json, to_json, cc_json, recipients_json, subject,
+                received_at, received_ms, size, text, html, links_json, codes_json, raw)
+             VALUES ('legacy-row', 'legacy', 0, 'null', '[]', '[]', '[]', 'Old',
+                't', 1000, 3, NULL, NULL, '[]', '[]',
+                CAST('From: a@x.io\r\nContent-Type: application/pdf; name=a.pdf\r\nContent-Disposition: attachment\r\n\r\npdf' AS BLOB))",
+            [],
+        )
+        .unwrap();
+    }
+    for restart in 0..2 {
+        let srv = serve_data_file(&db).await;
+        for (tool, arguments) in [
+            (
+                "swarmail_list_attachments",
+                serde_json::json!({"id": "legacy-row"}),
+            ),
+            (
+                "swarmail_get_attachment",
+                serde_json::json!({"id": "legacy-row", "index": 0}),
+            ),
+        ] {
+            let reply = att_call(&srv, tool, arguments).await;
+            assert_eq!(reply["isError"], true);
+            assert!(
+                reply["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("the attachments of message legacy-row are unknown"),
+                "{reply}"
+            );
+        }
+        if restart == 0 {
+            let id = common::smtp_raw(
+                srv.smtp_addr,
+                "legacy",
+                att_mail(&[att_binary_part("new.bin", b"new")]).as_bytes(),
+            )
+            .await;
+            let fresh = att_call(
+                &srv,
+                "swarmail_list_attachments",
+                serde_json::json!({"id": id}),
+            )
+            .await;
+            assert_eq!(fresh["isError"], false);
+        }
+        srv.stop().await;
+    }
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    let nulls: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM emails WHERE id = 'legacy-row' AND attachments_json IS NULL AND attachment_bytes IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(nulls, 1, "the old row is never rewritten");
+}
+
+/// Damage to the attachment columns refuses to serve, naming the column;
+/// repairing it serves again.
+#[tokio::test]
+async fn damaged_attachment_columns_refuse_to_serve_by_name() {
+    let (_dir, db) = data_file("attachments-damaged");
+    let id = {
+        let srv = serve_data_file(&db).await;
+        let id = common::smtp_raw(
+            srv.smtp_addr,
+            "dmg",
+            att_mail(&[att_binary_part("a.bin", b"abc")]).as_bytes(),
+        )
+        .await;
+        srv.stop().await;
+        id
+    };
+    let good: (String, Vec<u8>) = {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.query_row(
+            "SELECT attachments_json, attachment_bytes FROM emails",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    };
+    assert_eq!(good.1, b"abc");
+    let set = |json: Option<&str>, bytes: Option<&[u8]>| {
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute(
+                "UPDATE emails SET attachments_json=?1, attachment_bytes=?2",
+                rusqlite::params![json, bytes],
+            )
+            .unwrap();
+    };
+    for (json, bytes, named) in [
+        (Some("not json"), Some(&b"abc"[..]), "attachments_json"),
+        (
+            Some(good.0.as_str()),
+            Some(&b"abcd"[..]),
+            "attachment_bytes",
+        ),
+        (Some(good.0.as_str()), None, "attachment_bytes"),
+        (None, Some(&b"abc"[..]), "attachments_json"),
+    ] {
+        set(json, bytes);
+        let cfg = swarmail::config::Config {
+            smtp_listen: "127.0.0.1:0".into(),
+            http_listen: "127.0.0.1:0".into(),
+            pop3_listen: "127.0.0.1:0".into(),
+            max_per_inbox: 0,
+            data_file: Some(db.clone()),
+            tls_cert: None,
+            tls_key: None,
+            smtp: Default::default(),
+            pop3_idle_timeout: swarmail::pop3::DEFAULT_IDLE_TIMEOUT,
+        };
+        let error = match swarmail::run_on(&cfg).await {
+            Ok(_) => panic!("a damaged {named} must refuse to serve"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("data file") && error.contains(named),
+            "{error}"
+        );
+    }
+    set(Some(good.0.as_str()), Some(&good.1));
+    let srv = serve_data_file(&db).await;
+    let listed = att_call(
+        &srv,
+        "swarmail_list_attachments",
+        serde_json::json!({"id": id}),
+    )
+    .await;
+    assert_eq!(listed["isError"], false);
+    srv.stop().await;
+}

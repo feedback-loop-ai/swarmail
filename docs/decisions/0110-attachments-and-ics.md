@@ -128,7 +128,11 @@
    bounds count, not bytes. The transient decode is unchanged: mail-parser
    decodes every part while parsing, bounded by the 50 MiB DATA cap (0022);
    this change bounds what is retained, not what the existing parse
-   allocates for the duration of one ingest.
+   allocates for the duration of one ingest. *Implementation note:* the
+   recorded entries are retained too — at most 250 of them, each with a
+   filename, a type and (for a calendar part) six ICS fields of at most
+   `MAX_LABEL_BYTES` plus a 64-character digest, so at most 8 256 bytes
+   each and about 2 MiB of labels per mail beside the 1 MiB of bytes.
 
 9. **The metric.** The invite and ICS eval tasks run offline only — the
    evals crate's fixture and oracle tests, extended with a rig test that
