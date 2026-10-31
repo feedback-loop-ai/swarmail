@@ -1,0 +1,152 @@
+{
+  "DeliverabilityReport": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "rule_set_id",
+      "findings"
+    ],
+    "description": "At most 65536 compact JSON bytes; ordered by rule id, typed location, severity, hint; exact duplicates removed. Rule meaning/parser/location/hint/order changes require a new rule-set id. demo.marker.v1 reads the first X-Swarmail-Demo value, unfolded and space/tab trimmed: info, warning or error emits one fixed header finding. Seven bulk checklist rules also ship (proposed 0089). Pass emits no row; authentication unknown emits a distinct not_evaluated error, so no production message currently qualifies at any predicate threshold.",
+    "properties": {
+      "rule_set_id": {
+        "type": "string",
+        "examples": [
+          "swarmail-bulk/1"
+        ]
+      },
+      "findings": {
+        "type": "array",
+        "maxItems": 256,
+        "items": {
+          "$ref": "#/components/schemas/DeliverabilityFinding"
+        }
+      }
+    }
+  },
+  "DeliverabilityFinding": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "rule_id",
+      "severity",
+      "location",
+      "fix_hint"
+    ],
+    "properties": {
+      "rule_id": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[!-~]+$"
+      },
+      "severity": {
+        "$ref": "#/components/schemas/DeliverabilitySeverity"
+      },
+      "location": {
+        "$ref": "#/components/schemas/DeliverabilityLocation"
+      },
+      "fix_hint": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "DeliverabilityLocation": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "name",
+          "occurrence"
+        ],
+        "properties": {
+          "kind": {
+            "const": "header"
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[\\x21-\\x39\\x3b-\\x40\\x5b-\\x7e]+$",
+            "description": "Lowercase ASCII root field name"
+          },
+          "occurrence": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Zero-based occurrence; null for a missing field"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path"
+        ],
+        "properties": {
+          "kind": {
+            "const": "mime_part"
+          },
+          "path": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "description": "Structural child indexes in wire order, root []; message/rfc822 root is child 0"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "part_path",
+          "byte_offset"
+        ],
+        "properties": {
+          "kind": {
+            "const": "link"
+          },
+          "part_path": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            "description": "Structural child indexes in wire order, root []; message/rfc822 root is child 0"
+          },
+          "byte_offset": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "First URL source byte in transfer-decoded payload before charset/entity decoding; no URL is echoed"
+          }
+        }
+      }
+    ],
+    "discriminator": {
+      "propertyName": "kind"
+    }
+  },
+  "DeliverabilitySeverity": {
+    "type": "string",
+    "enum": [
+      "info",
+      "warning",
+      "error"
+    ],
+    "description": "Inclusive threshold order: info < warning < error"
+  }
+}

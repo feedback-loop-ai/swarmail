@@ -267,33 +267,36 @@ async fn revision_headers_and_isolation() {
     legacy.finish().await;
     modern.finish().await;
 }
-/// The current catalogue, written out here rather than copied from the
-/// production allowlist, so a new tool or a misclassified hint fails instead
-/// of being blessed: seven reads (the deliverability report's cache fill never
-/// changes stored mail or extraction, 0085) and six mutations.
-const CATALOGUE: [(&str, bool); 13] = [
+/// The current catalogue in served order, written out here rather than
+/// copied from the production allowlist, so a new tool or a misclassified
+/// hint fails instead of being blessed: nine reads (the deliverability
+/// report's cache fill never changes stored mail or extraction, 0085; the
+/// two focused waits appended by 0094) and six mutations.
+const CATALOGUE: [(&str, bool); 15] = [
     ("swarmail_search_emails", true),
+    ("swarmail_get_deliverability_report", true),
     ("swarmail_get_email", true),
     ("swarmail_get_latest_email", true),
-    ("swarmail_wait_for_email", true),
-    ("swarmail_extract_links", true),
-    ("swarmail_extract_codes", true),
-    ("swarmail_get_deliverability_report", true),
     ("swarmail_delete_email", false),
     ("swarmail_clear_inbox", false),
     ("swarmail_clear_all", false),
+    ("swarmail_wait_for_email", true),
+    ("swarmail_extract_links", true),
+    ("swarmail_extract_codes", true),
     ("swarmail_seed_email", false),
     ("swarmail_set_chaos", false),
     ("swarmail_clear_chaos", false),
+    ("swarmail_wait_for_code", true),
+    ("swarmail_wait_for_link", true),
 ];
 #[tokio::test]
 async fn revision_tool_annotations() {
     let srv = start().await;
     let request = json!({"id":1,"method":"tools/list"});
     let (_, legacy) = post(srv.http_addr, &[], &request).await;
-    let expected: std::collections::BTreeMap<&str, bool> = CATALOGUE.into_iter().collect();
-    assert_eq!(expected.len(), 13);
-    assert_eq!(expected.values().filter(|read| **read).count(), 7);
+    // The exact catalogue and its modern readOnlyHint, in served order.
+    let table = CATALOGUE;
+    assert_eq!(table.iter().filter(|(_, read)| *read).count(), 9);
     for version in VERSIONS {
         let (_, reply) = post(
             srv.http_addr,
@@ -302,39 +305,42 @@ async fn revision_tool_annotations() {
         )
         .await;
         let tools = reply["result"]["tools"].as_array().unwrap();
-        let names: std::collections::BTreeSet<&str> = tools
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(tools.len(), 13);
-        assert_eq!(
-            names,
-            expected.keys().copied().collect(),
-            "{version} catalogue"
-        );
-        for (actual, original) in tools
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, table.map(|(name, _)| name));
+        for ((actual, original), (_, read_only)) in tools
             .iter()
             .zip(legacy["result"]["tools"].as_array().unwrap())
+            .zip(table)
         {
             let mut descriptor = actual.clone();
-            for absent in ["outputSchema", "execution", "icons", "title"] {
+            for absent in ["execution", "icons", "title"] {
                 assert!(descriptor.get(absent).is_none(), "unexpected {absent}");
             }
-            if version != VERSIONS[0] {
+            if version == VERSIONS[0] {
+                assert!(descriptor.get("outputSchema").is_none());
+                assert!(descriptor.get("annotations").is_none());
+            } else {
+                let schema = descriptor
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("outputSchema")
+                    .unwrap();
+                assert_eq!(schema["type"], "object", "{}", actual["name"]);
+                assert!(schema["properties"].is_object() || schema["oneOf"].is_array());
                 let hint = descriptor
                     .as_object_mut()
                     .unwrap()
                     .remove("annotations")
                     .unwrap();
-                let name = actual["name"].as_str().unwrap();
                 assert_eq!(
                     hint,
-                    if expected[name] {
+                    if read_only {
                         json!({"readOnlyHint":true})
                     } else {
                         json!({"readOnlyHint":false,"destructiveHint":true})
                     },
-                    "{version} {name}"
+                    "{version} {}",
+                    actual["name"]
                 );
             }
             if version != VERSIONS[0] && actual["name"] == "swarmail_wait_for_email" {
@@ -343,6 +349,15 @@ async fn revision_tool_annotations() {
                     !description.contains("batch"),
                     "modern wait promises batching: {description}"
                 );
+                descriptor["description"] = original["description"].clone();
+            }
+            if version != VERSIONS[0] && actual["name"] == "swarmail_get_deliverability_report" {
+                let description = descriptor["description"].as_str().unwrap();
+                assert!(
+                    !description.contains("Only the synthetic demo rule ships"),
+                    "modern report repeats the stale rule scope: {description}"
+                );
+                assert!(description.contains("bulk-sender checklist"));
                 descriptor["description"] = original["description"].clone();
             }
             assert_eq!(&descriptor, original);
@@ -807,6 +822,10 @@ async fn revision_served_contract() {
         "2025-06-18",
         "2025-11-25",
         "MCP-Protocol-Version",
+        "outputSchema",
+        "structuredContent",
+        "10 MiB",
+        "tokens-per-success",
         "version negotiation",
         "full revision conformance is not claimed",
         "operator-chosen C1-C6 deviations",
@@ -823,8 +842,12 @@ async fn revision_served_contract() {
         "Revisions: 2025-03-26, 2025-06-18, 2025-11-25.",
         "Only 2025-03-26 supports batches",
         "except\nOPTIONS",
-        "the seven reads",
+        "the nine reads",
         "the six mutations",
+        "outputSchema",
+        "structuredContent",
+        "10 MiB",
+        "Tokens-per-success",
         "full revision conformance is not claimed",
         "specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register",
         "docs/decisions/0104-mcp-candidate-proof.md",
@@ -970,6 +993,15 @@ async fn revision_tool_schemas_and_text_safety() {
             "seed MIME body remains string data"
         );
         assert!(data.get("raw").is_none());
-        assert!(result["result"].get("structuredContent").is_none());
+        if version == VERSIONS[0] {
+            assert!(result["result"].get("structuredContent").is_none());
+        } else {
+            assert_eq!(result["result"]["structuredContent"], text(&result));
+        }
     }
 }
+
+#[path = "mcp_revisions/focused.rs"]
+mod focused;
+#[path = "mcp_revisions/structured.rs"]
+mod structured;
