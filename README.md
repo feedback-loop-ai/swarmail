@@ -698,7 +698,19 @@ one `-32600` / null error naming the revision, before any member executes,
 including arrays containing only notifications. Modern tool descriptors add
 `readOnlyHint: true` on reads, and `readOnlyHint: false, destructiveHint: true`
 on all mutations (including seed, which can evict old mail, and chaos changes).
-Input schemas and text results are unchanged; structured outputs belong to #153.
+Input schemas and March catalogue/result bytes are unchanged. For `2025-06-18`
+and `2025-11-25`, every tool declares an object-root `outputSchema`; successful
+results include `structuredContent` and the same JSON in the existing text block.
+Errors retain their existing text/RPC envelopes without structured success data.
+Schemas are pinned to served OpenAPI through explicit output projections in tests.
+
+Duplicating JSON increases response size and token cost. The stdio bridge keeps
+its 10 MiB response cap: a query that fits as March text may exceed it with modern
+dual output and return `-32000`. Use smaller pages; a single large email can still
+exceed the cap. Lost replies can follow committed mutations; do not replay them
+assuming rollback. The epic measures tokens-per-success and invalid-argument/
+tool-misuse rates; local tests prove representation and text compatibility, while
+the operator's #151 baseline and client matrix own measurement and client receipts.
 
 The stdio bridge starts with legacy compatibility. Single initialize fences
 later input until a matching successful response with capabilities and server
@@ -1451,10 +1463,16 @@ Analysis is lazy from stored bytes, off SMTP; extraction stays at ingest.
 The existing message page renders the same report without polling.
 
 swarmail_get_deliverability_report requires string id and admits no other keys.
-On current MCP 2025-03-26 it returns report JSON in one text block, isError=false.
-Missing mail and failed/unavailable analysis use isError=true; malformed arguments
-use -32602. No report outputSchema/structuredContent yet; that small follow-up
-lands when #153 lands, independently of this delivery.
+Under MCP 2025-03-26, missing-version requests included, it returns report
+JSON in one text block, isError=false. On 2025-06-18 and 2025-11-25 the same
+report is also structuredContent under a closed outputSchema matching the REST
+DeliverabilityReport: severity enum, tagged header/mime_part/link locations, u64
+coordinates, at most 256 findings (the 65536-byte bound, order and deduplication
+stay producer rules).
+Missing mail and failed/unavailable analysis use isError=true without structured
+content; malformed arguments use -32602. The March descriptor keeps main's
+"with demo and bulk-sender checks" wording as its historical text, with its
+(2025-03-26) suffix; modern descriptors state the full current scope and the structured output (proposed 0105).
 
 REST assert/await and MCP wait_for_email admit optional no_findings_at_or_above
 (info|warning|error). It qualifies ordinary-filter candidates before paging;

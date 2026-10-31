@@ -387,7 +387,7 @@ async fn handle_revision(
         }
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tool_descriptors(revision) })),
-        "tools/call" => tool_call(ctx, req).await,
+        "tools/call" => tool_call(ctx, req, revision).await,
         other => Err((-32601, format!("unknown method: {other}"))),
     };
 
@@ -411,6 +411,12 @@ fn tool_descriptors(revision: Revision) -> Value {
                     "",
                 ));
             }
+            // The shared literal is March's byte-pinned descriptor and stays
+            // as captured; only the modern projection states the current rules.
+            if tool["name"] == "swarmail_get_deliverability_report" {
+                tool["description"] = json!(MODERN_REPORT_DESCRIPTION);
+            }
+            tool["outputSchema"] = OUTPUT_SCHEMAS[tool["name"].as_str().unwrap()].clone();
             // Reads never change stored mail or extraction; the report's
             // lazy cache fill is not a mail mutation (0085).
             let read_only = matches!(
@@ -433,8 +439,14 @@ fn tool_descriptors(revision: Revision) -> Value {
     tools
 }
 
-fn text_result(v: Value) -> Value {
-    json!({ "content": [ { "type": "text", "text": v.to_string() } ], "isError": false })
+fn text_result(v: Value, revision: Revision) -> Value {
+    let mut result =
+        json!({ "content": [ { "type": "text", "text": v.to_string() } ], "isError": false });
+    match revision {
+        Revision::March => {}
+        Revision::June | Revision::November => result["structuredContent"] = v,
+    }
+    result
 }
 
 fn error_result(msg: String) -> Value {
@@ -530,7 +542,11 @@ fn required_id(args: &Value) -> Result<String, (i64, String)> {
     arg_str(args, "id")?.ok_or_else(|| (-32602, "missing id".to_string()))
 }
 
-async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)> {
+async fn tool_call(
+    ctx: &McpContext,
+    req: &Value,
+    revision: Revision,
+) -> Result<Value, (i64, String)> {
     if !ctx.tool_rate.take_at(std::time::Instant::now()) {
         return Ok(error_result(
             "tool invocation rate exceeds 1024 per second; retry later".into(),
@@ -564,6 +580,7 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
         return Err((-32602, sentence));
     }
     let store = &ctx.store;
+    let text_result = |value| text_result(value, revision);
 
     match name.as_str() {
         "swarmail_search_emails" => {
@@ -848,6 +865,95 @@ async fn tool_call(ctx: &McpContext, req: &Value) -> Result<Value, (i64, String)
     }
 }
 
+/// Output promises are independent of input defaults and REST request schemas.
+/// All representations use the captured result; these schemas never gate effects.
+fn output_object(properties: Value, required: Value) -> Value {
+    json!({"type":"object", "properties":properties, "required":required, "additionalProperties":false})
+}
+
+static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    let address = output_object(
+        json!({"address":{"type":"string"}, "name":{"type":"string"}}),
+        json!(["address"]),
+    );
+    let strings = json!({"type":"array", "items":{"type":"string"}});
+    let count = json!({"type":"integer", "minimum":0});
+    let email = output_object(
+        json!({
+            "id":{"type":"string"}, "inbox":{"type":"string"},
+            "from":address, "envelope_from":{"type":["string","null"]},
+            "to":{"type":"array","items":address}, "cc":{"type":"array","items":address},
+            "recipients":strings, "subject":{"type":"string"},
+            "received_at":{"type":"string"}, "received_ms":{"type":"integer"}, "size":count,
+            "text":{"type":"string"}, "html":{"type":"string"}, "links":strings, "codes":strings,
+            "message_id":{"type":"string"}, "in_reply_to":{"type":"string"}, "references":strings
+        }),
+        json!([
+            "id",
+            "inbox",
+            "envelope_from",
+            "to",
+            "received_at",
+            "received_ms",
+            "size"
+        ]),
+    );
+    let emails = json!({"type":"array","items":email});
+    let nonempty = json!({"type":"array","items":email,"minItems":1});
+    let rule = output_object(
+        json!({
+            "probability":{"type":"integer","minimum":0,"maximum":100},
+            "delay_ms":{"type":"integer","minimum":0,"maximum":300000},
+            "error":{"type":"string"}
+        }),
+        json!(["probability", "delay_ms"]),
+    );
+    let event = json!({"anyOf":[rule,{"type":"null"}]});
+    // Report coordinates are u64 on the wire; the producer separately owns
+    // the 65536-byte compact size, canonical order and deduplication.
+    let coordinate = json!({"type":"integer","minimum":0,"maximum":u64::MAX});
+    let path = json!({"type":"array","items":coordinate});
+    let location = json!({"oneOf":[
+        output_object(json!({
+            "kind":{"type":"string","const":"header"},
+            "name":{"type":"string","pattern":"^[\\x21-\\x39\\x3b-\\x40\\x5b-\\x7e]+$"},
+            "occurrence":{"anyOf":[coordinate,{"type":"null"}]}
+        }), json!(["kind","name","occurrence"])),
+        output_object(json!({"kind":{"type":"string","const":"mime_part"},"path":path}), json!(["kind","path"])),
+        output_object(json!({"kind":{"type":"string","const":"link"},"part_path":path,"byte_offset":coordinate}), json!(["kind","part_path","byte_offset"]))
+    ]});
+    let finding = output_object(
+        json!({
+            "rule_id":{"type":"string","minLength":1,"pattern":"^[!-~]+$"},
+            "severity":{"type":"string","enum":["info","warning","error"]},
+            "location":location,
+            "fix_hint":{"type":"string","minLength":1}
+        }),
+        json!(["rule_id", "severity", "location", "fix_hint"]),
+    );
+    json!({
+        "swarmail_get_deliverability_report":output_object(json!({"rule_set_id":{"type":"string"},"findings":{"type":"array","maxItems":crate::deliverability::MAX_FINDINGS,"items":finding}}), json!(["rule_set_id","findings"])),
+        "swarmail_search_emails":output_object(json!({"inbox":{"type":"string"},"total":count,"emails":emails}), json!(["inbox","total","emails"])),
+        "swarmail_get_email":email,
+        "swarmail_get_latest_email":output_object(json!({"emails":nonempty}), json!(["emails"])),
+        "swarmail_delete_email":output_object(json!({"deleted":{"type":"boolean","const":true}}), json!(["deleted"])),
+        "swarmail_clear_inbox":output_object(json!({"removed":count}), json!(["removed"])),
+        "swarmail_clear_all":output_object(json!({"removed":count}), json!(["removed"])),
+        "swarmail_wait_for_email":{"type":"object","oneOf":[
+            output_object(json!({"matched":count,"total":count,"emails":nonempty}), json!(["matched","total","emails"])),
+            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true}}), json!(["matched","total","timed_out"]))
+        ]},
+        "swarmail_extract_links":output_object(json!({"links":strings}), json!(["links"])),
+        "swarmail_extract_codes":output_object(json!({"codes":strings}), json!(["codes"])),
+        "swarmail_seed_email":output_object(json!({"id":{"type":"string"},"links":strings,"codes":strings}), json!(["id","links","codes"])),
+        "swarmail_set_chaos":output_object(json!({"connect":event,"mail_from":event,"rcpt":event,"data":event}), json!(["connect","mail_from","rcpt","data"])),
+        "swarmail_clear_chaos":output_object(json!({"chaos":{"type":"string","const":"disabled"}}), json!(["chaos"]))
+    })
+});
+
+/// Modern-only report description; March keeps the historical TOOLS literal.
+const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-bulk/1) from the stored bytes, off the SMTP path: the bulk-sender checklist plus the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
+
 /// MCP-compatible JSON input schemas. These are objects — the MCP spec
 /// requires an object, and a `&str` schema embedded in `json!` serialized as
 /// a JSON *string*, publishing an invalid schema for five tools (decision
@@ -934,6 +1040,39 @@ mod batch_tests;
 mod tests {
     use super::*;
 
+    // Indexing a missing name yields Null, which once published a null
+    // outputSchema for the report; the key sets must be exactly equal.
+    #[test]
+    fn every_tool_has_exactly_one_object_output_schema() {
+        let names: std::collections::BTreeSet<&str> = TOOLS
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        let schemas = OUTPUT_SCHEMAS.as_object().unwrap();
+        assert_eq!(names.len(), 13);
+        assert_eq!(
+            names,
+            schemas
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        for schema in schemas.values() {
+            assert_eq!(schema["type"], "object");
+            assert!(schema.get("$ref").is_none());
+        }
+        for revision in [Revision::June, Revision::November] {
+            for tool in tool_descriptors(revision).as_array().unwrap() {
+                assert!(tool["outputSchema"].is_object());
+            }
+        }
+        for tool in tool_descriptors(Revision::March).as_array().unwrap() {
+            assert!(tool.get("outputSchema").is_none());
+        }
+    }
+
     #[test]
     fn tool_rate_uses_exact_monotonic_windows() {
         // Literal contract, deliberately not derived from the production
@@ -1005,6 +1144,7 @@ mod tests {
                     reply["result"]["content"][0]["text"],
                     "tool invocation rate exceeds 1024 per second; retry later"
                 );
+                assert!(reply["result"].get("structuredContent").is_none());
             }
             for method in ["ping", "initialize", "tools/list"] {
                 assert!(

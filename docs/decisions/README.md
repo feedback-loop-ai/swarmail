@@ -85,6 +85,7 @@ them. What may land while a decision is still proposed is stated in
 | [0079](0079-mcp-version-negotiation.md) | Revision-qualified MCP negotiation and admission | proposed — awaiting the operator | (Epic #164, issue #152) |
 | [0080](0080-mcp-source-reconciliation.md) | MCP source reconciliation and operator-chosen deviations | proposed — awaiting the operator | (Epic #164, issue #152) |
 | [0081](0081-glm-flash-seats.md) | GLM Flash tests review only; intake keeps its workspace hands and models | proposed — awaiting the operator | (Revised operator ruling, 2026-10-26: “GLM-5.3-Flash seats (revised)”) |
+| [0082](0082-mcp-structured-output.md) | Revision-qualified structured MCP tool outputs | proposed — awaiting the operator | (Epic #164, issue #153; revision-qualified schemas and results) |
 | [0083](0083-cli-wrapper-launch.md) | Evidence-based CLI launches and declared tool surfaces | proposed — awaiting the operator | (Epic #164, issue #151 part 1; operator allocation 2026-10-26) |
 | [0085](0085-deliverability-report.md) | Lazy, versioned deliverability reports | proposed — awaiting the operator | (Epic #251, issue #252) |
 | [0087](0087-fixture-http-meta.md) | Discard fixture HTTP request metadata and name GET-body refusals | proposed — awaiting the operator | (Epic #164, issue #151) |
@@ -100,6 +101,7 @@ them. What may land while a decision is still proposed is stated in
 | [0102](0102-review-residuals-rework.md) | A review residual above low, or any security residual, returns to implement with the findings up to five times, then parks for the operator; lows ship as tracked debt (amends 0050 §4) | **accepted** (operator, 2026-10-30) | (Operator direction, 2026-10-30: rework up to 5 retries, then ask the operator) |
 | [0103](0103-mixed-work-seats.md) | Mixed work seats and protected review | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0104](0104-mcp-candidate-proof.md) | Dated corrections for the integrated MCP candidate | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
+| [0105](0105-mcp-report-output.md) | Thirteen-tool structured MCP output, report schema included | proposed — awaiting the operator | (Epic #164, issue #153 follow-up on the current #152 integration; supplements 0082) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

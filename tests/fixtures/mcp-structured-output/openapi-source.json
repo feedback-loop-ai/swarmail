@@ -1,0 +1,215 @@
+{
+  "EmailAddress": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "address": {
+        "type": "string"
+      }
+    }
+  },
+  "Email": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string"
+      },
+      "inbox": {
+        "type": "string"
+      },
+      "from": {
+        "$ref": "#/components/schemas/EmailAddress"
+      },
+      "envelope_from": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "The SMTP MAIL FROM reverse path, captured at ingest: \"\" for a bounce's null sender <>, null only for mail stored before it was kept — never backfilled from the header From (decision 0044 §8)"
+      },
+      "to": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/EmailAddress"
+        }
+      },
+      "cc": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/EmailAddress"
+        }
+      },
+      "recipients": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "The envelope recipients (RCPT TO), Bcc included; the `to` filter matches these as well as the To/Cc headers"
+      },
+      "subject": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "received_at": {
+        "type": "string"
+      },
+      "received_ms": {
+        "type": "integer"
+      },
+      "size": {
+        "type": "integer"
+      },
+      "text": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "html": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "links": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "codes": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Likely OTP/verification codes (4–10 ASCII digits), extracted at ingest: at most the first 64 distinct, in extraction order (decision 0049); a row stored before the cap keeps its array verbatim"
+      },
+      "message_id": {
+        "type": "string",
+        "description": "The Message-ID header value, angle brackets stripped; absent when the mail has none"
+      },
+      "in_reply_to": {
+        "type": "string",
+        "description": "The first In-Reply-To id; absent when the mail has none"
+      },
+      "references": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "The References ids in header order; absent when the mail has none"
+      }
+    }
+  },
+  "EmailList": {
+    "type": "object",
+    "properties": {
+      "total": {
+        "type": "integer"
+      },
+      "emails": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Email"
+        }
+      }
+    }
+  },
+  "AwaitResponse": {
+    "type": "object",
+    "properties": {
+      "matched": {
+        "type": "integer"
+      },
+      "total": {
+        "type": "integer"
+      },
+      "emails": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Email"
+        }
+      }
+    }
+  },
+  "ChaosRule": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "probability"
+    ],
+    "properties": {
+      "probability": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Percentage chance the event fires. The shared domain is the integer range 0–100. Values 101 through 255 are domain refusals with native JSON 400: probability must be an integer between 0 and 100. Negative, omitted, null, wrong type and values above 255 fail extraction with plain-text 422. A null event clears that event; it is not a probability value (decisions 0025, 0048)."
+      },
+      "error": {
+        "type": "string",
+        "description": "Optional SMTP reply line; omission uses the stage's default. It starts with three ASCII digits whose first digit is 4 or 5. If any bytes follow the code, byte four is ASCII space; bare codes and a trailing space are legal. No CR or LF. Maximum 510 UTF-8 octets, including all bytes of non-ASCII text and excluding the CRLF appended on the wire. Supplied null is refused with 422 (decisions 0029, 0044)."
+      },
+      "delay_ms": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 300000,
+        "default": 0,
+        "description": "Optional delay in milliseconds; omission defaults to 0. Values above the 300000 ms stage-timer ceiling are refused, never clamped (decision 0029)."
+      }
+    }
+  },
+  "ChaosConfig": {
+    "type": "object",
+    "additionalProperties": false,
+    "description": "A null event clears that event's rule. Omitted events remain unset when REST replaces the whole configuration.",
+    "properties": {
+      "connect": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ChaosRule"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "mail_from": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ChaosRule"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "rcpt": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ChaosRule"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "data": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ChaosRule"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    }
+  }
+}
