@@ -15,10 +15,13 @@
 //!   never passes without the boundary. The gate inventory never passes
 //!   `--ignored`, so a delivery seat stays green with them shown as ignored.
 //!
-//! The hostile cross-trial proof (a same-uid agent in one trial against a
-//! live idle victim in another) is specified in specs/trial-isolation/spec.md
-//! (AC-S1, AC-L1) and is NOT implemented in this run; see the spec's
-//! "Outstanding" section.
+//! The cross-trial proof comes in two halves that share one probe. The
+//! always-on half (AC-S1) shows that, with no boundary, a bare same-uid
+//! helper given only a victim runner's PID reads the victim agent's `EVAL_*`
+//! from `/proc`, completes its signup through the real MCP and fixture, and
+//! the victim row is `pass`: the leak is observed, not alleged. The live half
+//! (AC-L1) runs a hostile probe as trial B's agent inside the boundary
+//! against a live idle victim A and requires every route to be denied.
 //!
 //! Proof command, from the repository root on a capable host:
 //!
@@ -168,17 +171,161 @@ fn an_unavailable_boundary_refuses_by_name_and_never_falls_back() {
     assert!(!sentinel.exists(), "the agent ran without the boundary");
 }
 
+// ---- AC-S1: the leak, observed on every host -------------------------------
+
+/// A bare same-uid helper is given ONLY the victim runner's PID. It finds the
+/// victim agent among that runner's descendants (never other sessions), reads
+/// its `EVAL_*` environment from `/proc`, and completes signup through the
+/// real MCP and fixture. The idle victim then passes without having done
+/// anything. This documents, in the repository and on purpose, that without
+/// the boundary a same-uid neighbour wins: a later denial is therefore an
+/// observation against a demonstrated attack, not a cooperating oracle.
+#[test]
+fn the_leak_is_live_a_same_uid_helper_makes_an_idle_victim_pass() {
+    let _scope = trial_scope();
+    let dir = tempfile::tempdir().unwrap();
+    let ready = dir.path().join("victim-ready");
+    let (mut command, _wrapper) = helper_command(
+        "held_idle",
+        &["--task", "signup", "--agent", "idle-victim"],
+        &[(MARKER_ENV, ready.to_str().unwrap())],
+    );
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let victim = ChildGuard {
+        child: Some(command.spawn().unwrap()),
+    };
+    eventually("the idle victim to be ready", || ready.exists());
+
+    // The helper is a separate process of the same uid with no EVAL_*
+    // environment of its own, handed the runner's PID and nothing else.
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "helper_agent", "--nocapture", "--test-threads=1"])
+        .arg(format!("victim-runner={}", victim.pid()))
+        .env(HELPER_ENV, "leak_signup")
+        .env_remove("EVAL_APP_URL")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the same-uid helper did not complete the victim's signup \
+         (2 usage, 3 victim agent not found, 4 environment unusable, 5 signup failed): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    std::fs::write(ready.with_extension("release"), b"release").unwrap();
+    let out = victim.wait_with_output();
+    let row = one_row(&out);
+    assert_eq!(
+        row.outcome,
+        Outcome::Pass,
+        "the idle victim should pass through the leak: {}",
+        stderr(&out)
+    );
+    assert_eq!(row.failure_class, None);
+    assert_eq!(row.concurrency, 1);
+}
+
+/// The hostile probe is not blind. Aimed at an UNISOLATED idle victim it must
+/// report the leak (route 10: the victim's agent environment is visible in
+/// `/proc`); aimed at nothing it must say it is blind (30) rather than report
+/// that everything was denied. Without this, the live "every route denied"
+/// result could be an artefact of a probe that cannot see.
+#[test]
+fn the_hostile_probe_reports_a_leak_where_there_is_one_and_is_never_blind() {
+    let _scope = trial_scope();
+    let dir = tempfile::tempdir().unwrap();
+    let ready = dir.path().join("victim-ready");
+    let (mut command, _wrapper) = helper_command(
+        "held_idle",
+        &["--task", "signup", "--agent", "idle-victim"],
+        &[(MARKER_ENV, ready.to_str().unwrap())],
+    );
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let victim = ChildGuard {
+        child: Some(command.spawn().unwrap()),
+    };
+    eventually("the idle victim to be ready", || ready.exists());
+    let (agent, vars) = find_victim_agent(victim.pid()).expect("the victim agent is visible");
+
+    // The probe's own world: two loopback listeners and a full agent
+    // environment, distinct from the victim's.
+    let app = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let own = |command: &mut std::process::Command| {
+        command
+            .args(["--exact", "helper_agent", "--nocapture", "--test-threads=1"])
+            .env(HELPER_ENV, "cross_trial_probe")
+            .env("EVAL_TASK_ID", "signup")
+            .env(
+                "EVAL_APP_URL",
+                format!("http://{}", app.local_addr().unwrap()),
+            )
+            .env(
+                "EVAL_MCP_URL",
+                format!("http://{}/mcp", mcp.local_addr().unwrap()),
+            )
+            .env("EVAL_IDENTITY", "probe@example.test")
+            .env("EVAL_INBOX", "probe")
+            .env("EVAL_GOAL", "none")
+            .env("EVAL_PROMPT_FILE", dir.path().join("probe-prompt"))
+            .env("EVAL_DEADLINE_MS", "1000")
+            .stdin(Stdio::null());
+    };
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    own(&mut command);
+    let out = command
+        .args(victim_args(victim.pid(), agent.pid, &vars))
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(10),
+        "the probe must see the unisolated victim: {}",
+        probe_route(out.status.code())
+    );
+
+    // Given no victim at all, the probe refuses to call that a denial.
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    own(&mut command);
+    let out = command.output().unwrap();
+    assert_eq!(out.status.code(), Some(91));
+
+    // And with no agent environment of its own it is blind, not satisfied.
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "helper_agent", "--nocapture", "--test-threads=1"])
+        .args(victim_args(victim.pid(), agent.pid, &vars))
+        .env(HELPER_ENV, "cross_trial_probe")
+        .env_remove("EVAL_APP_URL")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(30));
+    send_signal(victim.pid(), libc::SIGTERM);
+    let _ = victim.wait_with_output();
+}
+
 // ---- live proofs: need unprivileged user namespaces -----------------------
 
 /// A trial whose agent is the helper in `mode`, run inside the boundary.
 fn isolated_helper(mode: &str) -> (std::process::Command, tempfile::TempDir) {
+    isolated_helper_with(mode, &[])
+}
+
+/// The same, with `agent_args` appended to the wrapper's argv. The wrapper
+/// forwards them to the helper (libtest treats them as inert name filters).
+fn isolated_helper_with(
+    mode: &str,
+    agent_args: &[String],
+) -> (std::process::Command, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let me = std::env::current_exe().unwrap();
     let wrapper = dir.path().join("agent-wrapper.sh");
     std::fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\nexport {HELPER_ENV}='{mode}'\nexec '{}' --exact helper_agent --nocapture --test-threads=1\n",
+            "#!/bin/sh\nexport {HELPER_ENV}='{mode}'\nexec '{}' --exact helper_agent --nocapture --test-threads=1 \"$@\"\n",
             me.display()
         ),
     )
@@ -190,7 +337,8 @@ fn isolated_helper(mode: &str) -> (std::process::Command, tempfile::TempDir) {
         .args(["trial", "--isolated", "--isolated-expose"])
         .arg(&me)
         .args(["--task", "signup", "--agent", "probe", "--"])
-        .arg(&wrapper);
+        .arg(&wrapper)
+        .args(agent_args);
     (command, dir)
 }
 
@@ -328,4 +476,96 @@ fn an_agent_killed_from_outside_leaves_the_idle_class_not_a_pass() {
         idle,
         FailureClass::GaveUp | FailureClass::WaitTimeout
     ));
+}
+
+// ---- AC-L1: the hostile same-uid agent against a live idle victim ----------
+
+/// Wrap `command` so it runs in a private mount namespace of the same uid in
+/// which `/tmp/swarmail-evals-<uid>`, the per-uid admission rendezvous, is a
+/// fresh tmpfs. Victim A's controller keeps the real admission (0076 is
+/// untouched: no production bypass exists); trial B's controller sees an
+/// empty rendezvous and is admitted in its own view. This is a test-side
+/// arrangement only. It maps the caller's own uid to itself, so B is the same
+/// uid as A, and drops the namespace's capabilities before exec so the
+/// controller starts as any unprivileged process would. Needs util-linux
+/// `unshare` (--map-current-user, --keep-caps) and `setpriv`; if either is
+/// missing B does not start and the test fails loudly rather than passing.
+fn with_private_admission(command: std::process::Command) -> std::process::Command {
+    // SAFETY: geteuid has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    let rendezvous = format!("/tmp/swarmail-evals-{uid}");
+    std::fs::create_dir_all(&rendezvous).unwrap();
+    let mut wrapped = std::process::Command::new("unshare");
+    wrapped
+        .args(["--user", "--map-current-user", "--keep-caps", "--mount", "--"])
+        .args([
+            "sh",
+            "-c",
+            "mount -t tmpfs -o mode=0700 tmpfs \"$0\" && exec setpriv --ambient-caps=-all --inh-caps=-all \"$@\"",
+        ])
+        .arg(&rendezvous)
+        .arg(command.get_program());
+    wrapped.args(command.get_args());
+    for (key, value) in command.get_envs() {
+        match value {
+            Some(value) => wrapped.env(key, value),
+            None => wrapped.env_remove(key),
+        };
+    }
+    wrapped.stdin(Stdio::null());
+    wrapped
+}
+
+#[test]
+#[ignore = "trial-isolation: needs unprivileged user namespaces"]
+fn a_hostile_same_uid_agent_in_trial_b_cannot_reach_trial_a() {
+    require_boundary();
+    let _scope = trial_scope();
+
+    // Victim A: an isolated trial whose agent just sleeps, held under the
+    // deadline. The trusted test reads A's coordinates from the HOST /proc.
+    let (victim, agent) = idle_trial();
+    let vars = proc_environ(agent.pid).unwrap_or_else(|| {
+        panic!(
+            "the trusted test cannot read the victim agent's environment from the host /proc \
+             (pid {}); the live proof needs those coordinates",
+            agent.pid
+        )
+    });
+    let victim_args = victim_args(victim.pid(), agent.pid, &vars);
+    assert!(identity_alive(&agent));
+
+    // Trial B: isolated too, its agent the hostile probe, A's coordinates in
+    // argv, admitted in its own view of the rendezvous.
+    let (command, _owner) = isolated_helper_with("cross_trial_probe", &victim_args);
+    let mut command = with_private_admission(command);
+    let out = command
+        .output()
+        .expect("the private-admission launcher runs");
+    let row = one_row(&out);
+    assert_eq!(
+        row.concurrency,
+        1,
+        "trial B did not run as a trial: {}",
+        stderr(&out)
+    );
+    let code = agent_codes(&row).first().copied().flatten();
+    assert_eq!(
+        code,
+        Some(0),
+        "trial B reached trial A: {} (exit {code:?})\n{}",
+        probe_route(code),
+        stderr(&out)
+    );
+
+    // Trial A was alive throughout; now its agent is killed from outside.
+    // Trial A's row must be the idle-class failure: never a pass, never
+    // budget, never a harness error.
+    assert!(identity_alive(&agent), "trial A's agent died during B");
+    send_signal(agent.pid, libc::SIGKILL);
+    let out = victim.wait_with_output();
+    let row = one_row(&out);
+    let idle = swarmail_evals::tasks::find("signup").unwrap().idle_class;
+    assert_eq!(row.outcome, Outcome::Fail, "{}", stderr(&out));
+    assert_eq!(row.failure_class, Some(idle), "{}", stderr(&out));
 }

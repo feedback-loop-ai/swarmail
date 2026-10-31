@@ -233,24 +233,57 @@ Built and proven in the seat (all on every host):
   printed `SKIP trial-isolation: boundary_unavailable:clone:ENOSPC` and
   failed, as AC-S6 requires.
 
-**Not built — still outstanding, so this run is not `complete`:**
+**Added by the second implement pass (2026-10-31), also in `evals/tests/`:**
 
-- **AC-S1 (always-on leak baseline) and AC-L1 (hostile same-uid agent against
-  a live idle victim) are not implemented.** The implement seat declined to
-  author the attack tooling (an agent that reads another trial's `EVAL_*`
-  environment from `/proc` and finishes its signup) and was stopped by a
-  safety classifier when it tried. Someone with the operator's authorization
-  must write both tests; this is the proof the issue's second acceptance
-  criterion demands, and nothing else substitutes for it. T02 and T06 stay
-  open.
-- AC-L2 (fresh HOME, oracle passes inside) and AC-L3 (lifetime on both ends)
-  are written as `#[ignore]` tests but have **never run**; they need a capable
-  host.
+- **AC-S1 is built and green on every host**
+  (`the_leak_is_live_a_same_uid_helper_makes_an_idle_victim_pass`): a bare
+  same-uid subprocess with no `EVAL_*` of its own, given only the unisolated
+  victim runner's PID, finds the victim agent among that runner's descendants
+  only, reads its `EVAL_*` from `/proc`, completes signup through the real MCP
+  and fixture, and the victim row is `pass`. Observed passing in the seat.
+- **A negative control for the live probe, also always on**
+  (`the_hostile_probe_reports_a_leak_where_there_is_one_and_is_never_blind`):
+  the AC-L1 probe, aimed at an unisolated victim, reports route 10 (the
+  victim's environment is visible); with no victim it reports 91; with no
+  environment of its own it reports 30 (blind). A probe that cannot see can
+  therefore never read as "every route denied".
+- **AC-L1 is written**
+  (`a_hostile_same_uid_agent_in_trial_b_cannot_reach_trial_a`, `#[ignore]`):
+  victim A is an isolated `/usr/bin/sleep` trial; the trusted test reads A's
+  coordinates from the host `/proc`; B is an isolated trial whose agent is the
+  probe, handed A's coordinates in argv. The probe tries, in order: discovery
+  of any process in `/proc` carrying A's environment (10), A's runner and agent
+  `/proc` entries (11), A's prompt file (12), A's HOME (13), A's MCP port (14),
+  A's fixture port (15), and completing A's signup (16); exit 0 means all were
+  denied. Own-service port or path collisions void the run (90) instead of
+  passing it. The test then kills A's agent from outside and requires A's row
+  to be `fail` in the idle class. **It has never run**: in the seat it prints
+  `SKIP trial-isolation: boundary_unavailable:clone:ENOSPC` and fails, like
+  every other live proof.
+- **Finding 1 (admission versus overlap) is resolved test-side**, with no
+  production change and no 0076 bypass: B's controller is started inside a
+  test-created private mount namespace of the same uid in which
+  `/tmp/swarmail-evals-<uid>` is a fresh tmpfs (`unshare --user
+  --map-current-user --keep-caps --mount`, then `setpriv` drops the namespace
+  capabilities before exec). A keeps the real host admission. This wrapper is
+  **unverified**: it needs util-linux `unshare` with `--map-current-user` and
+  `setpriv`, and runs only on a capable host. If it fails, B does not start
+  and the test fails loudly; it never passes. The operator may prefer a
+  different arrangement, and nothing else depends on this one.
+
+**Still outstanding, so this run is not `complete`:**
+
+- AC-L1, AC-L2 and AC-L3 are written but have **never run** (they need a
+  namespace-capable host); the AC-L1 private-admission wrapper is the part
+  most likely to need adjusting on first contact. T06 stays open until the
+  host proof is green; T02 is closed.
 - AC-L4 (provider egress) and AC-O1 (operator ruling) are as before.
+- `brokkr compile --bundle .brokkr/recipes/self` could not run in this seat
+  (see the delivery notes).
 
 **Design findings the live proof must resolve:**
 
-1. *Admission versus overlap.* The controller holds the per-uid host admission
+1. *Admission versus overlap (resolved test-side, see above).* The controller holds the per-uid host admission
    (accepted 0076) until the trial is reaped, so a second `trial --isolated`
    by the same uid refuses `concurrent_trials_refused` while the first runs.
    AC-L1 as written needs two live trials. It cannot run without either a

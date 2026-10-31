@@ -317,6 +317,12 @@ async fn helper(mode: &str) -> i32 {
     if mode == "home_probe" {
         return home_probe();
     }
+    if mode == "leak_signup" {
+        return leak_signup().await;
+    }
+    if mode == "cross_trial_probe" {
+        return cross_trial_probe().await;
+    }
     let env = AgentEnv::from_env().expect("the agent environment");
     let app = App::new(&env.app_url, &env.identity).unwrap();
     match mode {
@@ -955,4 +961,273 @@ pub fn require_boundary() {
 /// The agent's exit codes recorded in a row.
 pub fn agent_codes(row: &TrialResult) -> Vec<Option<i32>> {
     row.agent_exits.iter().map(|exit| exit.code).collect()
+}
+
+// ---- cross-trial probing (proposed 0110; AC-S1, AC-L1) -------------------
+//
+// The adversary here is a test fixture that is, deliberately, only as strong
+// as any same-uid process: it owns no credential, exploits no kernel bug, and
+// touches only the synthetic trials this test itself launched, which hold
+// fabricated accounts on loopback. It exists to turn "the trials do not
+// interfere" from a cooperating oracle's say-so into an observation: it is
+// handed one victim trial's coordinates and uses only ordinary same-uid
+// facilities (`/proc`, plain TCP, plain file reads) to reach it.
+
+/// The victim's `EVAL_*` variables as read from `/proc/<pid>/environ`, or
+/// `None` when the file is unreadable or carries no agent environment.
+pub fn proc_environ(pid: i32) -> Option<std::collections::BTreeMap<String, String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let vars: std::collections::BTreeMap<String, String> = raw
+        .split(|b| *b == 0)
+        .filter_map(|entry| {
+            let text = std::str::from_utf8(entry).ok()?;
+            let (key, value) = text.split_once('=')?;
+            (key.starts_with("EVAL_") || key == "HOME")
+                .then(|| (key.to_string(), value.to_string()))
+        })
+        .collect();
+    vars.contains_key(oracle::ENV_APP_URL).then_some(vars)
+}
+
+/// The victim agent found among the descendants of `runner` ONLY (never
+/// other sessions), with its agent environment.
+pub fn find_victim_agent(
+    runner: i32,
+) -> Option<(ProcessIdentity, std::collections::BTreeMap<String, String>)> {
+    process_descendants(runner)
+        .into_iter()
+        .find_map(|p| proc_environ(p.pid).map(|env| (p, env)))
+}
+
+fn agent_env_from(vars: &std::collections::BTreeMap<String, String>) -> Result<AgentEnv, String> {
+    let get = |key: &str| {
+        vars.get(key)
+            .cloned()
+            .ok_or_else(|| format!("{key} is missing"))
+    };
+    Ok(AgentEnv {
+        task: get(oracle::ENV_TASK)?,
+        app_url: get(oracle::ENV_APP_URL)?,
+        mcp_url: get(oracle::ENV_MCP_URL)?,
+        identity: get(oracle::ENV_IDENTITY)?,
+        inbox: get(oracle::ENV_INBOX)?,
+        goal: get(oracle::ENV_GOAL)?,
+        prompt_file: get(oracle::ENV_PROMPT_FILE)?,
+        deadline_ms: get(oracle::ENV_DEADLINE_MS)?
+            .parse()
+            .map_err(|_| "EVAL_DEADLINE_MS is not an integer".to_string())?,
+    })
+}
+
+const VICTIM_RUNNER_ARG: &str = "victim-runner=";
+const VICTIM_AGENT_ARG: &str = "victim-agent=";
+const VICTIM_VAR_ARG: &str = "victim-var:";
+
+/// The argv that hands a probe one victim trial's coordinates.
+pub fn victim_args(
+    runner: i32,
+    agent: i32,
+    vars: &std::collections::BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut args = vec![
+        format!("{VICTIM_RUNNER_ARG}{runner}"),
+        format!("{VICTIM_AGENT_ARG}{agent}"),
+    ];
+    args.extend(vars.iter().map(|(k, v)| format!("{VICTIM_VAR_ARG}{k}={v}")));
+    args
+}
+
+struct Victim {
+    runner: i32,
+    agent: i32,
+    vars: std::collections::BTreeMap<String, String>,
+}
+
+fn victim_from_argv() -> Result<Victim, String> {
+    let mut runner = None;
+    let mut agent = None;
+    let mut vars = std::collections::BTreeMap::new();
+    for arg in std::env::args() {
+        if let Some(v) = arg.strip_prefix(VICTIM_RUNNER_ARG) {
+            runner = v.parse().ok();
+        } else if let Some(v) = arg.strip_prefix(VICTIM_AGENT_ARG) {
+            agent = v.parse().ok();
+        } else if let Some(v) = arg.strip_prefix(VICTIM_VAR_ARG)
+            && let Some((key, value)) = v.split_once('=')
+        {
+            vars.insert(key.to_string(), value.to_string());
+        }
+    }
+    Ok(Victim {
+        runner: runner.ok_or("victim-runner is missing")?,
+        agent: agent.ok_or("victim-agent is missing")?,
+        vars,
+    })
+}
+
+/// AC-S1's bare helper. Given only the victim runner's PID (and nothing
+/// from the victim's own side), it finds the victim agent among that
+/// runner's descendants, reads its `EVAL_*` environment from `/proc`, and
+/// completes the victim's signup through the real MCP and the real fixture.
+/// Exit 0 means the leak is real; a nonzero code names the step that failed.
+async fn leak_signup() -> i32 {
+    let Some(runner) = std::env::args()
+        .find_map(|a| a.strip_prefix(VICTIM_RUNNER_ARG).map(str::to_string))
+        .and_then(|v| v.parse::<i32>().ok())
+    else {
+        return 2;
+    };
+    let Some((_, vars)) = find_victim_agent(runner) else {
+        return 3;
+    };
+    let Ok(env) = agent_env_from(&vars) else {
+        return 4;
+    };
+    match oracle::run_oracle(&env).await {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("leak_signup: {e}");
+            5
+        }
+    }
+}
+
+/// `host:port` of an `http://` URL.
+fn authority(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("http://")?;
+    Some(rest.split('/').next()?.to_string())
+}
+
+fn reachable(authority: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    authority
+        .to_socket_addrs()
+        .ok()
+        .into_iter()
+        .flatten()
+        .any(|addr| std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok())
+}
+
+/// The route a hostile probe reported, by exit code (0 means all denied).
+pub fn probe_route(code: Option<i32>) -> &'static str {
+    match code {
+        Some(0) => "every route was denied",
+        Some(10) => "a process in /proc carries the victim's agent environment",
+        Some(11) => "the victim's /proc entries are readable",
+        Some(12) => "the victim's prompt file is readable",
+        Some(13) => "the victim's HOME exists",
+        Some(14) => "the victim's MCP port accepts a connection",
+        Some(15) => "the victim's fixture port accepts a connection",
+        Some(16) => "the victim's signup was completed from outside",
+        Some(30) => "the probe is blind: it cannot see its own environment or services",
+        Some(90) => "an own service shares the victim's port: rerun, the result is void",
+        Some(91) => "the probe was not given a usable victim",
+        _ => "the probe did not report",
+    }
+}
+
+/// AC-L1's hostile agent, run as trial B's agent inside the boundary. It is
+/// handed trial A's coordinates in argv and tries, in order, every route a
+/// same-uid process has to A. Exit 0 means every route was denied; a code
+/// from `probe_route` names the first one that worked.
+async fn cross_trial_probe() -> i32 {
+    let Ok(victim) = victim_from_argv() else {
+        return 91;
+    };
+    let Ok(own) = AgentEnv::from_env() else {
+        return 30;
+    };
+    // The probe must be able to see its own world, or "denied" proves nothing.
+    let own_app = authority(&own.app_url);
+    let own_mcp = authority(&own.mcp_url);
+    let victim_app = victim.vars.get(oracle::ENV_APP_URL).map(String::as_str);
+    let victim_mcp = victim.vars.get(oracle::ENV_MCP_URL).map(String::as_str);
+    let (Some(victim_app), Some(victim_mcp)) = (victim_app, victim_mcp) else {
+        return 91;
+    };
+    let (Some(victim_app_auth), Some(victim_mcp_auth)) =
+        (authority(victim_app), authority(victim_mcp))
+    else {
+        return 91;
+    };
+    if proc_environ(std::process::id() as i32).is_none()
+        || !own_app.as_deref().is_some_and(reachable)
+        || !own_mcp.as_deref().is_some_and(reachable)
+    {
+        return 30;
+    }
+    if own_app.as_deref() == Some(victim_app_auth.as_str())
+        || own_mcp.as_deref() == Some(victim_mcp_auth.as_str())
+        || victim.vars.get(oracle::ENV_PROMPT_FILE) == Some(&own.prompt_file)
+        || victim.vars.get("HOME") == std::env::var("HOME").ok().as_ref()
+    {
+        return 90;
+    }
+
+    // 10: discovery. Any readable process anywhere in /proc that carries the
+    // victim's agent environment.
+    let me = std::process::id() as i32;
+    if let Ok(entries) = std::fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<i32>().ok())
+            else {
+                continue;
+            };
+            if pid != me
+                && proc_environ(pid).is_some_and(|env| {
+                    env.get(oracle::ENV_APP_URL).map(String::as_str) == Some(victim_app)
+                })
+            {
+                return 10;
+            }
+        }
+    }
+    // 11: the victim's own /proc entries by the coordinates handed over.
+    for pid in [victim.runner, victim.agent] {
+        for file in ["environ", "cmdline", "cwd", "root", "fd"] {
+            let path = format!("/proc/{pid}/{file}");
+            if pid != me && (std::fs::read(&path).is_ok() || std::fs::read_dir(&path).is_ok()) {
+                // The runner's pid may coincide with a process of this
+                // trial; a hit counts only when it is the victim's.
+                if proc_environ(pid).is_some_and(|e| {
+                    e.get(oracle::ENV_APP_URL).map(String::as_str) == Some(victim_app)
+                }) {
+                    return 11;
+                }
+            }
+        }
+    }
+    // 12, 13: the victim's prompt and HOME by path.
+    if let Some(prompt) = victim.vars.get(oracle::ENV_PROMPT_FILE)
+        && std::fs::read(prompt).is_ok()
+    {
+        return 12;
+    }
+    if let Some(home) = victim.vars.get("HOME")
+        && Path::new(home).exists()
+    {
+        return 13;
+    }
+    // 14, 15: the victim's services over the wire.
+    if reachable(&victim_mcp_auth) {
+        return 14;
+    }
+    if reachable(&victim_app_auth) {
+        return 15;
+    }
+    // 16: make the victim's idle agent pass.
+    let mut vars = victim.vars.clone();
+    vars.entry(oracle::ENV_DEADLINE_MS.to_string())
+        .or_insert_with(|| "1000".to_string());
+    if let Ok(env) = agent_env_from(&vars)
+        && tokio::time::timeout(Duration::from_secs(5), oracle::run_oracle(&env))
+            .await
+            .is_ok_and(|r| r.is_ok())
+    {
+        return 16;
+    }
+    0
 }

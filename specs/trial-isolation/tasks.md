@@ -12,7 +12,7 @@ version changes in this run.
   to one clean proposed record the spec links; `git diff main --
   docs/decisions/0055-agent-eval-harness.md docs/decisions/0076-sequential-eval-trials.md`
   is empty; the README has exactly one 0110 row.
-- [ ] **T02 — Establish the leak live, before any boundary (AC-S1).** Add
+- [x] **T02 — Establish the leak live, before any boundary (AC-S1).** Add
   `evals/tests/trial_isolation.rs` with an always-on test: hold an idle signup
   victim (`held_idle`), a same-uid helper reads the victim agent's `EVAL_*`
   from `/proc/<pid>/environ` after finding it among the victim runner's
@@ -80,7 +80,8 @@ version changes in this run.
   dependency or credential copy is added; `cargo deny check licenses` passes
   unchanged; the decision stays proposed.
 
-Status 2026-10-31: T02 (live leak baseline) and T06 (hostile proof) are open —
-see spec.md, Implementation status. T07 and T08 are written but have never
-run (they need a namespace-capable host). T10 is recorded in the delivery
-notes of this run.
+Status 2026-10-31: T02 (live leak baseline) is done and green on this seat.
+T06 (hostile proof) is written but has never run and stays open until a
+namespace-capable host passes it — see spec.md, Implementation status. T07 and
+T08 are likewise written and never run. T10 is recorded in the delivery notes
+of this run.
