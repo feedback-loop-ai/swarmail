@@ -128,6 +128,16 @@ impl<'de> Deserialize<'de> for LinkSource {
     }
 }
 
+/// One attachment part as ingest listed it (decision 0108 §5): the outer
+/// parser list in parser order, with the labels the sender gave and the
+/// decoded part length. `None` is a label the mail did not carry.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Attachment {
+    pub filename: Option<String>,
+    pub content_type: Option<String>,
+    pub size: u64,
+}
+
 /// A captured email.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Email {
@@ -169,6 +179,13 @@ pub struct Email {
     /// focused link wait exposes it.
     #[serde(skip)]
     pub link_metadata: Option<Vec<LinkMetadata>>,
+    /// The ingest-time attachment list (decision 0108 §5): `Some([])` is a
+    /// known empty list, `None` a row from before the column or a mail the
+    /// parser could not read — unknown, never backfilled. Internal like
+    /// `link_metadata`: no Email serialization carries it, so every existing
+    /// read, feed and webhook payload keeps its bytes.
+    #[serde(skip)]
+    pub attachments: Option<Vec<Attachment>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub codes: Vec<String>,
     /// RFC 5322 Message-ID, normalized (angle brackets stripped) — the

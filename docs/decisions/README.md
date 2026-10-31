@@ -106,6 +106,8 @@ them. What may land while a decision is still proposed is stated in
 | [0105](0105-mcp-report-output.md) | Thirteen-tool structured MCP output, report schema included | proposed — awaiting the operator | (Epic #164, issue #153 follow-up on the current #152 integration; supplements 0082) |
 | [0106](0106-html-client-compatibility.md) | Versioned HTML client compatibility heuristics through the lazy report | proposed — awaiting the operator | (Epic #251, issue #259) |
 | [0107](0107-html-review-repair.md) | Repair HTML declaration context, inspected work and empty-message reports | proposed — awaiting the operator | (Epic #251, issue #259) |
+| [0108](0108-compact-email-view.md) | Compact email view and field projections: compact search/latest on modern MCP, `fields` on the four reads, REST `view=compact`, attachments captured at ingest | proposed — awaiting the operator | (Epic #164, issue #155 on #153 and #154; number 0108 because main's 0092 is official-mail-comparison and open PR #292 holds 0106–0107) |
+| [0109](0109-automated-delivery-bot.md) | A delivery bot seals and merges, under its own key | accepted (operator, 2026-10-31) | (Amends 0056 once the bot is live) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

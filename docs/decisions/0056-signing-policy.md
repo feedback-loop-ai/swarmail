@@ -145,3 +145,12 @@ Intermediate history on PR branches is unsigned by design until the
 operator seals it. Sealing is one operator command per PR, after the final
 run and before merge. The tool lives in the pinned bundle, so a change to
 it is a bundle change and is proved the way the other gates are.
+
+## Addendum (2026-10-31)
+
+Operator ruling, in chat: delivery becomes fully automated. Once the bot of
+[0109](0109-automated-delivery-bot.md) is live, it seals and merges under its
+own key in place of ruling 2's operator seal. Until then ruling 2 stands. The
+refusal of a server-held key that signs as the operator stands; the bot's key
+does not sign as the operator. Rulings 1, 3 and 4 and the operator's release
+tag signature are unchanged.
