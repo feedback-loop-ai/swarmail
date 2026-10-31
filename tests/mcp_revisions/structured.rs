@@ -84,7 +84,7 @@ fn minimal() -> swarmail::model::Email {
     minimal
 }
 
-// The swarmail-bulk/1 checklist restated from its published rule table, not
+// The bulk checklist inside swarmail-html/3 restated from its published rule table, not
 // from the formatter: every hint cites its RFC source and both provider pages.
 const GMAIL: &str = "https://support.google.com/mail/answer/81126";
 const YAHOO: &str = "https://senders.yahooinc.com/best-practices/";
@@ -145,7 +145,7 @@ fn checklist(from: Value) -> Vec<Value> {
     ]
 }
 fn report_of(findings: Vec<Value>) -> Value {
-    json!({"rule_set_id":"swarmail-bulk/1","findings":findings})
+    json!({"rule_set_id":"swarmail-html/3","findings":findings})
 }
 
 pub(super) enum Wire {
@@ -887,8 +887,9 @@ async fn modern_all_tools_http_and_stdio() {
                     descriptor["description"] = original["description"].clone();
                 } else if i == 1 {
                     for clause in [
-                        "swarmail-bulk/1",
+                        "swarmail-html/3",
                         "bulk-sender checklist",
+                        "HTML client-compatibility heuristics",
                         "demo marker",
                         "not_evaluated",
                         "256 findings",
@@ -898,6 +899,7 @@ async fn modern_all_tools_http_and_stdio() {
                         assert!(description.contains(clause), "{clause}: {description}");
                     }
                     assert!(!description.contains("Only the synthetic demo rule ships"));
+                    assert!(!description.contains("swarmail-bulk/1"));
                     assert!(!description.contains("2025-03-26"));
                     descriptor["description"] = original["description"].clone();
                 } else if i == 7 {
@@ -1027,7 +1029,7 @@ fn report_projection(c: &Value) -> Value {
             .as_object_mut()
             .unwrap()
             .remove("examples"),
-        Some(json!(["swarmail-bulk/1"]))
+        Some(json!(["swarmail-html/3"]))
     );
     let location = &mut report["properties"]["findings"]["items"]["properties"]["location"];
     // oneOf over exclusive const tags carries the whole dispatch.
@@ -1611,7 +1613,7 @@ async fn report_stored_bytes_over_modern_wire() {
     for (raw, findings) in [
         (
             &b"From: s@x.io\r\nX-Swarmail-Demo: info\r\nContent-Type: text/html\r\n\r\n<p>x</p>\r\n"[..],
-            [checklist(json!(0)), vec![plain_text, demo("info")]].concat(),
+            [checklist(json!(0)), vec![plain_text.clone(), demo("info")]].concat(),
         ),
         (
             b"From: s@x.io\r\nX-Swarmail-Demo: warning\r\n\r\nbody\r\n",
@@ -1620,6 +1622,15 @@ async fn report_stored_bytes_over_modern_wire() {
         (
             b"X-Swarmail-Demo: error\r\n\r\nbody\r\n",
             [checklist(Value::Null), vec![demo("error")]].concat(),
+        ),
+        // The merge of #282 and #259 first met here: an HTML finding through
+        // the modern schema and the March text block.
+        (
+            b"From: s@x.io\r\nContent-Type: text/html\r\n\r\n<p>x</p><video></video>\r\n",
+            [checklist(json!(0)), vec![plain_text, json!({
+                "rule_id":"html.element.video.v1","severity":"warning",
+                "location":{"kind":"mime_part","path":[]},
+                "fix_hint":"Video may be removed in Gmail and classic Outlook for Windows; provide a linked image and text fallback."})]].concat(),
         ),
     ] {
         let id = common::smtp_raw(srv.smtp_addr, "report-wire", raw).await;
@@ -1660,15 +1671,17 @@ async fn report_stored_bytes_over_modern_wire() {
         }
     }
     let mut march = Wire::Http(srv.http_addr, None);
-    let reply = march
-        .request(&call(
-            json!(7),
-            "get_deliverability_report",
-            json!({"id":cases[0].0}),
-        ))
-        .await;
-    assert!(reply["result"].get("structuredContent").is_none());
-    assert_eq!(text(&reply), cases[0].1);
+    for (id, expected) in &cases {
+        let reply = march
+            .request(&call(
+                json!(7),
+                "get_deliverability_report",
+                json!({"id":id}),
+            ))
+            .await;
+        assert!(reply["result"].get("structuredContent").is_none());
+        assert_eq!(&text(&reply), expected);
+    }
     srv.stop().await;
 }
 
