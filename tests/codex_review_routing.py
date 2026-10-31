@@ -28,9 +28,13 @@ for line in sys.stdin:
  if m['type']=='hello':send(type='capabilities',driver='controlled',version='1',supports=[])
  if m['type']!='start':continue
  p=pathlib.Path('.forge/calls.jsonl');p.parent.mkdir(exist_ok=True)
+ prior=[json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
+ prior=sum(1 for c in prior if c['model']==model and c['seat']==m['seat'])
  with p.open('a') as f:f.write(json.dumps({'model':model,'seat':m['seat'],'result_path':m['input'].get('result_path')})+'\n')
  ids={k:m[k] for k in ['effect_id','attempt_id']}
  mode=config.get(model,config.get(m['seat'],'clean'))
+ # A '-once' mode holds for this member's first review only; later reviews are clean.
+ if mode.endswith('-once'):mode='clean' if prior else mode[:-len('-once')]
  if mode=='fail':
   send(type='result',**ids,status='failed',error='controlled pre-session refusal');break
  send(type='accepted',**ids)
@@ -43,11 +47,13 @@ for line in sys.stdin:
   subprocess.run(['git','-c','commit.gpgsign=false','commit','-qm','Change reviewed candidate'],check=True,capture_output=True)
  inputs={'fixes_applied':False,'spec_defect':False,'has_security_residual':False,'max_residual_severity':'none'}
  verdict='clean'
- if mode in ['hold','low','medium','high','security','scope','null','string','absent']:
+ if mode in ['hold','low','medium','high','security','scope','scope-security','scope-absent','null','string','absent']:
   verdict='security-hold' if mode=='hold' else 'residual'
   inputs['max_residual_severity']=mode if mode in ['high','low'] else 'medium'
- if mode=='security':inputs['has_security_residual']=True
- if mode=='scope':inputs['spec_defect']=True
+ if mode in ['security','scope-security']:inputs['has_security_residual']=True
+ if mode.startswith('scope') or mode.startswith('clean-scope'):inputs['spec_defect']=True
+ if mode=='scope-absent':del inputs['has_security_residual']
+ if mode=='clean-scope-fixes':inputs['fixes_applied']=True
  if mode=='null':inputs['has_security_residual']=None
  if mode=='string':inputs['has_security_residual']='false'
  if mode=='absent':del inputs['has_security_residual']
@@ -609,7 +615,7 @@ def refuses(comparator, bad, label):
     raise AssertionError(('mutant accepted',) + label)
 
 
-def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
+def fixture(engine, out, name, roles, outcomes, fallback=False, single=False, redesign=False):
     case = out / name
     case.mkdir()
     (case / 'driver.py').write_text(DRIVER)
@@ -629,6 +635,21 @@ def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
         dict(id='VERIFIED', **{'from':'verify'}, result='verified', next='review', reason='Candidate witness.'),
         *review_rules,
         dict(id='SHIPPED', **{'from':'ship'}, result='shipped', next='done', reason='Local terminal only.')])
+    # Decision 0102's 2026-10-31 addendum: with `redesign`, self's returns to
+    # design enter a live phase whose controlled check answers `designed` and
+    # returns to verify, so self's spec-defect rows, ids and conditions
+    # verbatim, drive a real loop through review until they ship or park at
+    # the sixth review. The engine seats a phase named `design` only in a
+    # realm with a dialect, which this fixture realm lacks, so the stand-in
+    # is named `redesign`. (The real route runs design -> implement ->
+    # verify; implement is a terminal here like every other return target.)
+    if redesign:
+        table['phases'].insert(1, 'redesign')
+        table['rules'].insert(1, dict(id='REDESIGNED', **{'from':'redesign'}, result='designed',
+                                      next='verify', reason='Fixture redesign.'))
+        for rule in table['rules']:
+            if rule.get('next') == 'design':
+                rule['next'] = 'redesign'
     # Return targets exist but are terminal in this fixture: policy full traces are
     # separately covered by the source-linked policy sweep, not guessed here.
     # A parking rule names no next phase and stays a park.
@@ -667,6 +688,8 @@ def fixture(engine, out, name, roles, outcomes, fallback=False, single=False):
     bundle = dict(name='probe', policy='policy.json', protected_phase='review', seats={
         'prepare':exec_seat('complete'), 'verify':exec_seat('verified'), 'review':review,
         'ship':exec_seat('shipped')})
+    if redesign:
+        bundle['seats']['redesign'] = exec_seat('designed')
     dump(bundle_dir/'bundle.json', bundle)
     dump(bundle_dir/'policy.json', table)
     for args in [['git','init','-qb','main'], ['git','config','user.email','probe@invalid'],
@@ -695,11 +718,26 @@ def main():
     assert digest==record['binary_sha256'], 'Refuse an unrecorded engine'
     resolved_matrix(engine,out)
     rows=[]
-    def check(name,roles,outcomes,want,fallback=False,single=False):
-        row=fixture(engine,out,name,roles,outcomes,fallback,single)
+    def check(name,roles,outcomes,want,fallback=False,single=False,redesign=False):
+        row=fixture(engine,out,name,roles,outcomes,fallback,single,redesign)
         assert (row['status']=='completed')==want,(name,row['status'])
         rows.append(row)
         print(name,row['status'],flush=True)
+        return row
+    def rulings(row):
+        return [e['payload'] for e in row['journal']
+                if e['type']=='transition/decided' and e['payload'].get('from')=='review']
+    def entered(row,phase):
+        return sum(1 for e in row['journal'] if e['type']=='phase/entered' and e['payload'].get('phase')==phase)
+    def spec_defect(roles,name,mode,want,expected,status,designs):
+        # Decision 0102's 2026-10-31 addendum, through a live design phase: the
+        # review rulings in order, the run's end, and how often design ran.
+        row=check(name,roles,{roles[-1]:mode},want,redesign=True)
+        ids=[r.get('rule_id') for r in rulings(row)]
+        assert ids==expected,(name,ids)
+        assert row['status']==status,(name,row['status'])
+        assert entered(row,'redesign')==designs,(name,entered(row,'redesign'))
+        assert entered(row,'ship')==(1 if want else 0),name
         return row
     for mode,want in [('fail',True),('clean',True),('high',False),('bad-clean',False),('null',False),('string',False),('absent',False)]:
         row=check('qwen-'+mode,['correctness','security'],{'dashscope/qwen3.8-max':mode},want,True)
@@ -716,6 +754,9 @@ def main():
         for mode in ['hold','high','security','null','string','absent','scope','missing','cross-attempt','cross-effect','edit']:
             subject='security' if mode=='hold' else roles[-1]
             row=check(f'{n}-{mode}',roles,{subject:mode},False,single=single)
+            if mode=='scope':
+                # Decision 0102's 2026-10-31 addendum: no longer a hard stop.
+                assert [r.get('rule_id') for r in rulings(row)]==['REVIEW-RESIDUAL-SPEC-REDESIGN'],rulings(row)
             if mode=='missing':
                 assert not any(e['type']=='effect/succeeded' and e['payload'].get('result',{}).get('result')=='clean' for e in row['journal'])
         if n==5:
@@ -724,9 +765,32 @@ def main():
             assert any(e['type']=='transition/decided' and e['payload'].get('rule_id')=='REVIEW-RESIDUAL-REWORK' for e in row['journal']),row['journal']
             row=check('independent-low',roles,{'independent':'low'},True)
             assert any(e['type']=='transition/decided' and e['payload']['from']=='review' and e['payload']['result']=='residual' for e in row['journal'])
+            # Decision 0102's 2026-10-31 addendum: a spec defect returns to design,
+            # shares the five returns, then parks; unknown facts still stop.
+            redesign=['REVIEW-RESIDUAL-SPEC-REDESIGN']
+            spec_defect(roles,'spec-redesign','scope-once',True,
+                        redesign+['REVIEW-CLEAN-NO-FIXES'],'completed',1)
+            spec_defect(roles,'spec-clean-redesign','clean-scope-once',True,
+                        ['REVIEW-CLEAN-SPEC-REDESIGN','REVIEW-CLEAN-NO-FIXES'],'completed',1)
+            spec_defect(roles,'spec-exhausted','scope',False,
+                        redesign*5+['REVIEW-RESIDUAL-SPEC-EXHAUSTED'],'awaiting_operator',5)
+            spec_defect(roles,'spec-clean-exhausted','clean-scope',False,
+                        ['REVIEW-CLEAN-SPEC-REDESIGN']*5+['REVIEW-CLEAN-SPEC-EXHAUSTED'],
+                        'awaiting_operator',5)
+            row=spec_defect(roles,'spec-absent','scope-absent',False,
+                            ['REVIEW-RESIDUAL-UNSAFE'],'stopped',0)
+            assert rulings(row)[0]['inputs'].get('has_security_residual') is None,rulings(row)
+            spec_defect(roles,'spec-clean-fixes','clean-scope-fixes',False,
+                        ['REVIEW-CLEAN-UNSAFE'],'stopped',0)
+            # A spec defect beside a security residual redesigns and parks; it never ships.
+            row=spec_defect(roles,'spec-security','scope-security',False,
+                            ['REVIEW-RESIDUAL-SPEC-SECURITY-REDESIGN']*5
+                            +['REVIEW-RESIDUAL-SPEC-SECURITY-EXHAUSTED'],'awaiting_operator',5)
+            assert all(r['inputs']['has_security_residual'] is True for r in rulings(row)),rulings(row)
+            assert not any(r.get('next')=='ship' for r in rulings(row)),rulings(row)
     dump(out/'receipt.json',dict(engine_sha256=digest,providers_called=False,
         limitations=['Controlled protocol participants do not prove live-provider compatibility.',
-                     'Return destinations are terminal in dispatch fixtures; full policy traces require the core evaluator.'],rows=rows))
+                     'Return destinations are terminal in dispatch fixtures, except the spec-defect cases\' redesign stand-in for design, whose controlled check returns straight to verify; full policy traces require the core evaluator.'],rows=rows))
 
 
 if __name__=='__main__':

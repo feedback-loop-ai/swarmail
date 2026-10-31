@@ -1,6 +1,6 @@
 {
   "schema": "forge.phase-machine/v2",
-  "description": "The realm's phase machine: intake frames, a contrarian design panel argues before any code, implement builds, hermetic gates verify, a four-member review panel judges (correctness, security, guarantees and tests, decision 0013; the protected phase), ship records the ledger. Design and review are model seats; verify, ship and the design check are deterministic exec drivers \u2014 the hybrid. security-hold is a hard stop, security residuals never take the tracked-debt path. A residual above low, or any security residual, returns to implement with the findings; the sixth review that still holds one parks for the operator (decision 0102).",
+  "description": "The realm's phase machine: intake frames, a contrarian design panel argues before any code, implement builds, hermetic gates verify, a four-member review panel judges (correctness, security, guarantees and tests, decision 0013; the protected phase), ship records the ledger. Design and review are model seats; verify, ship and the design check are deterministic exec drivers \u2014 the hybrid. security-hold is a hard stop, security residuals never take the tracked-debt path. A residual above low, or any security residual, returns to implement with the findings; the sixth review that still holds one parks for the operator (decision 0102). A spec defect with complete facts returns to design with the findings, sharing that budget, and parks at the sixth review; a spec defect with unknown facts stops (decision 0102, addendum 2026-10-31).",
   "phases": [
     "intake",
     "design",
@@ -117,6 +117,60 @@
       "reason": "Unresolved security findings. NEVER ship; risk acceptance is the operator's."
     },
     {
+      "id": "REVIEW-RESIDUAL-SPEC-EXHAUSTED",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "visits_review_gte": 6,
+        "spec_defect": true,
+        "fixes_applied": false,
+        "has_security_residual": false,
+        "max_residual_severity_at_most": "critical"
+      },
+      "park": true,
+      "reason": "Five returns spent and the panel still finds the spec defective: the operator rules on the design (decision 0102, addendum 2026-10-31). A park is no clearance; nothing ships."
+    },
+    {
+      "id": "REVIEW-RESIDUAL-SPEC-SECURITY-EXHAUSTED",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "visits_review_gte": 6,
+        "spec_defect": true,
+        "fixes_applied": false,
+        "has_security_residual": true,
+        "max_residual_severity_at_most": "critical"
+      },
+      "park": true,
+      "reason": "Five returns spent and a spec defect stands beside a security residual: the design and the risk acceptance are the operator's (decision 0102, addendum 2026-10-31)."
+    },
+    {
+      "id": "REVIEW-RESIDUAL-SPEC-REDESIGN",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "spec_defect": true,
+        "fixes_applied": false,
+        "has_security_residual": false,
+        "max_residual_severity_at_most": "critical"
+      },
+      "next": "design",
+      "reason": "The panel found the spec, plan or tasks defective, with every safety fact explicit: design revises them with the findings before implement runs again, sharing 0102's five returns (decision 0102, addendum 2026-10-31)."
+    },
+    {
+      "id": "REVIEW-RESIDUAL-SPEC-SECURITY-REDESIGN",
+      "from": "review",
+      "result": "residual",
+      "when": {
+        "spec_defect": true,
+        "fixes_applied": false,
+        "has_security_residual": true,
+        "max_residual_severity_at_most": "critical"
+      },
+      "next": "design",
+      "reason": "A spec defect beside a security residual returns to design, which must carry the security finding into the revised tasks; it never takes the tracked-debt path, and the full panel reviews again (decision 0102, addendum 2026-10-31)."
+    },
+    {
       "id": "REVIEW-RESIDUAL-EXHAUSTED",
       "from": "review",
       "result": "residual",
@@ -195,7 +249,30 @@
       "result": "residual",
       "next": "stop",
       "severity": "hard",
-      "reason": "Security residuals never take the tracked-debt path, and residual safety facts absent, null or malformed are unknown, never shippable: nothing is defaulted or inferred (decision 0050 \u00a74). One rule holds both because the engine refuses an unknown-only stop as dead behind a security rule \u2014 with every fact present, the rules above it already decide."
+      "reason": "Security residuals never take the tracked-debt path, and residual safety facts absent, null or malformed are unknown, never shippable: nothing is defaulted or inferred (decision 0050 \u00a74). One rule holds both because the engine refuses an unknown-only stop as dead behind a security rule \u2014 with every fact present, the rules above it already decide. A spec defect reaches it only beside applied fixes or with a safety fact unknown (decision 0102, addendum 2026-10-31)."
+    },
+    {
+      "id": "REVIEW-CLEAN-SPEC-EXHAUSTED",
+      "from": "review",
+      "result": "clean",
+      "when": {
+        "visits_review_gte": 6,
+        "spec_defect": true,
+        "fixes_applied": false
+      },
+      "park": true,
+      "reason": "Five returns spent and the panel still finds the spec defective: the operator rules on the design (decision 0102, addendum 2026-10-31). A park is no clearance; nothing ships."
+    },
+    {
+      "id": "REVIEW-CLEAN-SPEC-REDESIGN",
+      "from": "review",
+      "result": "clean",
+      "when": {
+        "spec_defect": true,
+        "fixes_applied": false
+      },
+      "next": "design",
+      "reason": "Clean code built to a defective spec: design revises the spec, plan and tasks with the findings before implement runs again, sharing 0102's five returns (decision 0102, addendum 2026-10-31)."
     },
     {
       "id": "REVIEW-CLEAN-NO-FIXES",
@@ -225,7 +302,7 @@
       "result": "clean",
       "next": "stop",
       "severity": "hard",
-      "reason": "Missing, malformed or inconsistent scope/fixes facts cannot authorize shipping or reverification (0057). Explicit scope defects require reframing."
+      "reason": "Missing, malformed or inconsistent scope/fixes facts cannot authorize shipping or reverification (0057). A spec defect returns to design only from a read-only verdict (fixes_applied false); beside applied fixes, or with either fact unknown, it stops here (decision 0102, addendum 2026-10-31)."
     },
     {
       "id": "SHIP-DRIFT",

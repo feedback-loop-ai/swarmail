@@ -87,6 +87,9 @@ The tracked library uses `.brokkr/agents/codex-review-correctness.json` as the
 Codex overlay. It extends `.brokkr/agents/review-correctness.json`, selects the
 singleton `fable` route that accepted 0058 assigns to standard correctness, and
 resolves `.brokkr/agents/charters/review-correctness.md`, whose tracked digest is
+`e6888f7990cfc92a6a0de8b7c6f321c1e69977d9376199696872fe5c9eee3215`.
+Until decision 0102's 2026-10-31 addendum rewrote its spec-defect routing
+paragraph (a spec defect now returns to design), the digest was
 `dd8aa0a7f45b4553dd7606ae7dcab5ea2c650e3e1e3614434311a7793e6cb7ec`.
 Before 0058 the overlay selected `qwen-max`, and the charter digest in the
 #172 candidate of 2026-10-24 was
