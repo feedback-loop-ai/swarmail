@@ -1,0 +1,39 @@
+{
+  "fixture": "march-current-main.jsonl",
+  "fixture_sha256": "572a073ac2e3d589f94a893d6621fdfbaf57cc1c72a62b54a02e3f3b37187bc7",
+  "requests": "march-current-main.requests.jsonl",
+  "requests_sha256": "2a927f97a8101d9a7f8e278ec56c99c8b2e3fced1bd23737e773781c2dcc83fa",
+  "cases": "march-current-main.cases.json",
+  "cases_sha256": "92ec80d7f3e569cc1460a7878b4d70c545a770b6874690b7196ee4e1930d2d38",
+  "updated": "2026-10-31: the report descriptor line in tools/list now carries main's #151/#286 March wording ('with demo and bulk-sender checks') adopted in the merge of origin/main; every other byte is as captured at the source commit below",
+  "captured": "2026-10-28 by the issue #153 follow-up implement seat (run follow-up-to-run-7244a9aa-which--5572d327)",
+  "source": {
+    "commit": "3a2eef948ed26392fe8ce2254f4b522964459a35",
+    "tree": "ce2e41e68d3a2d392db972b1699e0e35310943ff",
+    "status": "local pre-#153 #152 integration-baseline candidate; not a protected #152 acceptance receipt",
+    "extraction": "git archive 3a2eef948ed26392fe8ce2254f4b522964459a35 | tar -x, inside the worktree; all 778 tracked paths re-hashed equal to the commit's blobs (777 regular files, symlink recipes -> bundles)",
+    "added_test_only": [
+      "tests/capture_march_current_main.rs (= capture_march_current_main.rs.txt, sha256 2348b90b0059b36c4ce05f2c194ddbb66148cc401c088d0179ffde2ba17339e3)",
+      "tests/capture_cases.json (= march-current-main.cases.json)"
+    ],
+    "src_modified": false
+  },
+  "build": {
+    "invocation": "CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=<scratch>/target cargo test --locked --offline --test capture_march_current_main --no-run",
+    "toolchain": "rustc 1.98.0 (88d9e12ae 2026-08-18), cargo 1.98.0 (797e8a9bc 2026-08-05), x86_64 linux, debug profile",
+    "capture_invocation": "SWARMAIL_CAPTURE_DIR=<scratch>/out cargo test --locked --offline --test capture_march_current_main (no recompilation)",
+    "executables_sha256_before_and_after": {
+      "swarmail (stdio bridge, CARGO_BIN_EXE_swarmail)": "f529c42a42af494df290192618b708edf3b922f57c489c1ccc3c533c01693da0",
+      "capture_march_current_main test harness (in-process HTTP server)": "50c797730b23d1469edf5f5fef4ed61e4c3bcb61b26c55e140d58b90c4c1a6de"
+    }
+  },
+  "transports": {
+    "http-default": "POST /mcp without MCP-Protocol-Version",
+    "http-march": "POST /mcp with MCP-Protocol-Version: 2025-03-26",
+    "stdio-default": "real swarmail mcp bridge, initialize without protocolVersion (answered 2025-03-26)",
+    "stdio-march": "real swarmail mcp bridge, initialize 2025-03-26 then notifications/initialized and ping",
+    "result": "all four response transcripts and request logs byte-identical; the fixture is the http-default copy"
+  },
+  "substitutions": "Only the seed reply's single generated UUID becomes $SEED_ID, after asserting it occurs exactly once in that line and in no later response line. Restored rows (historical, minimal) are inserted in-process before the get_email historical case with fixed IDs and times. No line is parsed and reserialized.",
+  "relation_to_march_jsonl": "march.jsonl (dc67f4a, twelve tools) is kept unchanged as historical evidence. Every non-report case row here is byte-identical to its march.jsonl row; the catalogue differs only by the added swarmail_get_deliverability_report descriptor and current main's no_findings_at_or_above wait input."
+}

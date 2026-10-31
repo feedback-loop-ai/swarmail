@@ -317,10 +317,19 @@ async fn revision_tool_annotations() {
             .zip(legacy["result"]["tools"].as_array().unwrap())
         {
             let mut descriptor = actual.clone();
-            for absent in ["outputSchema", "execution", "icons", "title"] {
+            for absent in ["execution", "icons", "title"] {
                 assert!(descriptor.get(absent).is_none(), "unexpected {absent}");
             }
-            if version != VERSIONS[0] {
+            if version == VERSIONS[0] {
+                assert!(descriptor.get("outputSchema").is_none());
+            } else {
+                let schema = descriptor
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("outputSchema")
+                    .unwrap();
+                assert_eq!(schema["type"], "object", "{}", actual["name"]);
+                assert!(schema["properties"].is_object() || schema["oneOf"].is_array());
                 let hint = descriptor
                     .as_object_mut()
                     .unwrap()
@@ -343,6 +352,15 @@ async fn revision_tool_annotations() {
                     !description.contains("batch"),
                     "modern wait promises batching: {description}"
                 );
+                descriptor["description"] = original["description"].clone();
+            }
+            if version != VERSIONS[0] && actual["name"] == "swarmail_get_deliverability_report" {
+                let description = descriptor["description"].as_str().unwrap();
+                assert!(
+                    !description.contains("Only the synthetic demo rule ships"),
+                    "modern report repeats the stale rule scope: {description}"
+                );
+                assert!(description.contains("bulk-sender checklist"));
                 descriptor["description"] = original["description"].clone();
             }
             assert_eq!(&descriptor, original);
@@ -807,6 +825,10 @@ async fn revision_served_contract() {
         "2025-06-18",
         "2025-11-25",
         "MCP-Protocol-Version",
+        "outputSchema",
+        "structuredContent",
+        "10 MiB",
+        "tokens-per-success",
         "version negotiation",
         "full revision conformance is not claimed",
         "operator-chosen C1-C6 deviations",
@@ -825,6 +847,10 @@ async fn revision_served_contract() {
         "except\nOPTIONS",
         "the seven reads",
         "the six mutations",
+        "outputSchema",
+        "structuredContent",
+        "10 MiB",
+        "Tokens-per-success",
         "full revision conformance is not claimed",
         "specs/mcp-version-negotiation/reconciliation.md#exact-conflict-register",
         "docs/decisions/0104-mcp-candidate-proof.md",
@@ -970,6 +996,13 @@ async fn revision_tool_schemas_and_text_safety() {
             "seed MIME body remains string data"
         );
         assert!(data.get("raw").is_none());
-        assert!(result["result"].get("structuredContent").is_none());
+        if version == VERSIONS[0] {
+            assert!(result["result"].get("structuredContent").is_none());
+        } else {
+            assert_eq!(result["result"]["structuredContent"], text(&result));
+        }
     }
 }
+
+#[path = "mcp_revisions/structured.rs"]
+mod structured;
