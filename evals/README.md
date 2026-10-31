@@ -222,7 +222,9 @@ real status when no named trap disqualifies it; `null` exits zero and fails.
 ## Tasks and the failure taxonomy
 
 `swarmail-evals tasks` prints the catalogue: 15 tasks in three tiers plus
-`inbox-isolation` (three agents on one Swarmail, one AUTH inbox each). Each
+`inbox-isolation` (three agents on one Swarmail behind one shared SMTP
+AUTH login, `fixture-app`; each agent's address is routed to its own inbox
+by the runner's `--route-domain swarmail.test`, decision 0106). Each
 declares the `failure_class` it provokes and the `idle_class` (`gave_up` or
 `wait_timeout`) a do-nothing agent earns. The class set is closed:
 `wrong_message`, `stale_code`, `wrong_link`, `wait_timeout`, `gave_up`,

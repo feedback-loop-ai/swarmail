@@ -104,6 +104,7 @@ them. What may land while a decision is still proposed is stated in
 | [0103](0103-mixed-work-seats.md) | Mixed work seats and protected review | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0104](0104-mcp-candidate-proof.md) | Dated corrections for the integrated MCP candidate | proposed — awaiting the operator | (Epic #164, issue #152; provisional number) |
 | [0105](0105-mcp-report-output.md) | Thirteen-tool structured MCP output, report schema included | proposed — awaiting the operator | (Epic #164, issue #153 follow-up on the current #152 integration; supplements 0082) |
+| [0106](0106-recipient-inbox-routing.md) | Recipient inbox routing under a configured route domain | proposed — awaiting the operator | (Epic #164, issue #157; amends 0004 §1 for configured servers and 0055 §6 for the isolation task) |
 
 Decisions 0001–0003 are the frozen guarantees: review refuses changes that
 weaken them regardless of test outcomes. See

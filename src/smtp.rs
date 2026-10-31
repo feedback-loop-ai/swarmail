@@ -119,6 +119,12 @@ pub struct SmtpConfig {
     /// the refusal is wire-honest (`421 4.7.0 …`) and retryable, written
     /// before any session state exists.
     pub max_sessions: usize,
+    /// The route domain (decision 0106): when set, an envelope recipient
+    /// `<local>@<label>.<domain>` names the inbox `<label>` and outranks the
+    /// AUTH identity. `None` — the default — leaves every plane byte-identical
+    /// to a server that never heard of routing. Stored ASCII-lowercased and
+    /// already validated (`crate::config::parse_route_domain`).
+    pub route_domain: Option<String>,
 }
 
 impl Default for SmtpConfig {
@@ -130,6 +136,7 @@ impl Default for SmtpConfig {
             tls_handshake_timeout: DEFAULT_TLS_HANDSHAKE_TIMEOUT,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
             max_sessions: DEFAULT_MAX_SESSIONS,
+            route_domain: None,
         }
     }
 }
@@ -656,6 +663,70 @@ const RCPT_PARAM_UNKNOWN: &str = "555 5.5.4 RCPT parameters not supported";
 struct Envelope {
     from: String,
     rcpts: Vec<String>,
+    /// The inbox the first routed recipient named (decision 0106 §3): set
+    /// only on the successful append of that recipient, so a refused or
+    /// chaos-failed `RCPT` leaves it untouched, and cleared with the rest of
+    /// the envelope by `RSET` and by the take at `DATA`.
+    routed: Option<String>,
+}
+
+/// What a recipient says about routing under the route domain (decision
+/// 0106 §1–§2).
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// Not under the route domain (or no domain is configured): no vote.
+    Outside,
+    /// Under the domain and naming exactly one admitted label.
+    Inbox(String),
+    /// Under the domain and naming no inbox: refused, never merged back into
+    /// the AUTH inbox.
+    Refused,
+}
+
+/// `550` for a recipient under the route domain that names no inbox.
+const ROUTE_NO_INBOX: &str = "550 5.1.3 Recipient names no inbox under the route domain";
+/// `452` for a second routed inbox in one transaction.
+const ROUTE_ONE_INBOX: &str = "452 4.5.3 One routed inbox per transaction";
+
+/// Classify one `RCPT TO` path against the route domain (decision 0106 §1–§2).
+/// `domain` is already lowercased. The host is the text after the last `@`,
+/// ASCII-lowercased and compared whole-label: `notswarmail.test` is not under
+/// `swarmail.test`. Under the domain, the part before `.<domain>` must be one
+/// label of `[a-z0-9-]{1,63}` — a strict subset of the shared inbox rule, so a
+/// derived name needs no `validate_inbox`.
+fn route_of(domain: &str, rcpt: &str) -> Route {
+    let Some((_, host)) = rcpt.rsplit_once('@') else {
+        return Route::Outside;
+    };
+    let host = host.to_ascii_lowercase();
+    let label = match host.strip_suffix(domain) {
+        Some("") => return Route::Refused,
+        Some(rest) => match rest.strip_suffix('.') {
+            Some(label) => label,
+            None => return Route::Outside,
+        },
+        None => return Route::Outside,
+    };
+    let admitted = (1..=63).contains(&label.len())
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if admitted {
+        Route::Inbox(label.to_string())
+    } else {
+        Route::Refused
+    }
+}
+
+/// The reply refusing a recipient on routing grounds, or `None` when it may
+/// proceed to chaos and the append (decision 0106 §2–§3). `current` is the
+/// transaction's routed inbox so far.
+fn route_refusal(route: &Route, current: Option<&str>) -> Option<&'static str> {
+    match route {
+        Route::Refused => Some(ROUTE_NO_INBOX),
+        Route::Inbox(label) if current.is_some_and(|c| c != label) => Some(ROUTE_ONE_INBOX),
+        _ => None,
+    }
 }
 
 /// Split a MAIL/RCPT argument into its bracketed path and the parameter
@@ -1260,6 +1331,7 @@ async fn session(
                 envelope = Some(Envelope {
                     from: from.to_string(),
                     rcpts: Vec::new(),
+                    routed: None,
                 });
                 write_line(reader.get_mut(), "250 2.1.0 OK", cfg.idle_timeout).await?;
             }
@@ -1302,6 +1374,19 @@ async fn session(
                     .await?;
                     continue;
                 }
+                // Routing admission (decision 0106 §2–§3): after the ceiling,
+                // before chaos (0034 §3). A recipient under the route domain
+                // names an inbox or is refused, and a second routed inbox in
+                // one transaction is deferred so the sender retries it as its
+                // own message.
+                let route = match cfg.route_domain.as_deref() {
+                    Some(domain) => route_of(domain, to),
+                    None => Route::Outside,
+                };
+                if let Some(refusal) = route_refusal(&route, open.routed.as_deref()) {
+                    write_line(reader.get_mut(), refusal, cfg.idle_timeout).await?;
+                    continue;
+                }
                 if let Some(rule) = chaos.check(ChaosEvent::Rcpt) {
                     tokio::time::sleep(std::time::Duration::from_millis(rule.delay_ms)).await;
                     write_line(
@@ -1313,6 +1398,9 @@ async fn session(
                     continue;
                 }
                 open.rcpts.push(to.to_string());
+                if let Route::Inbox(label) = route {
+                    open.routed = Some(label);
+                }
                 write_line(reader.get_mut(), "250 2.1.5 OK", cfg.idle_timeout).await?;
             }
             "DATA" => {
@@ -1330,7 +1418,11 @@ async fn session(
                 // at the terminator — every outcome arm (552, chaos, 250,
                 // 451) runs against a taken transaction and none leaves
                 // recipients bleeding into the next mail.
-                let Envelope { from, rcpts } = match envelope.take() {
+                let Envelope {
+                    from,
+                    rcpts,
+                    routed,
+                } = match envelope.take() {
                     None => {
                         write_line(
                             reader.get_mut(),
@@ -1457,8 +1549,14 @@ async fn session(
                 // the whole seam the wire actually has. The guard releases
                 // the row on resolve or unwind. Parked with the session's
                 // inbox name: the Email that carries it does not exist yet.
-                // An unauthenticated session routes to `default`.
-                let inbox = identity.as_deref().unwrap_or("default");
+                // The inbox is named once, here, before the park and the
+                // parse (decision 0106 §4): the routed recipient, else the
+                // AUTH identity, else `default`. The park, `build_email` and
+                // the stored row all take this one name.
+                let inbox = routed
+                    .as_deref()
+                    .or(identity.as_deref())
+                    .unwrap_or("default");
                 let _in_flight = crate::api::park_delivery(inbox);
                 // Whole parse and whole mutation on the blocking pool,
                 // awaited before the reply: the 250 below stays *after* the
@@ -2189,6 +2287,77 @@ mod tests {
             Line::TooLong { crlf: false }
         );
         assert_eq!(read_line_capped(&mut reader, 8).await.unwrap(), Line::Eof);
+    }
+
+    /// Decision 0106 §1–§2: the recipient's host decides, whole-label and
+    /// case-folded; under the domain exactly one admitted label names the
+    /// inbox and everything else is refused.
+    #[test]
+    fn route_of_classifies_every_shape() {
+        let domain = "swarmail.test";
+        let inbox = |label: &str| Route::Inbox(label.to_string());
+        let sixty_three = "a".repeat(63);
+        let sixty_four = "a".repeat(64);
+        for (rcpt, want) in [
+            ("agent@ada.swarmail.test", inbox("ada")),
+            ("Agent@ADA.Swarmail.TEST", inbox("ada")),
+            ("a@b@c-1.swarmail.test", inbox("c-1")),
+            ("x@-.swarmail.test", inbox("-")),
+            (
+                &format!("x@{sixty_three}.swarmail.test"),
+                inbox(&sixty_three),
+            ),
+            ("no-at-sign", Route::Outside),
+            ("x@example.test", Route::Outside),
+            ("x@notswarmail.test", Route::Outside),
+            ("x@swarmail.test.example", Route::Outside),
+            ("x@ada.swarmail.testing", Route::Outside),
+            ("x@ada.swarmail.test.", Route::Outside),
+            ("agent@swarmail.test", Route::Refused),
+            ("agent@SWARMAIL.test", Route::Refused),
+            ("x@.swarmail.test", Route::Refused),
+            ("x@a.b.swarmail.test", Route::Refused),
+            ("x@bad_label.swarmail.test", Route::Refused),
+            ("x@sp\u{e4}ce.swarmail.test", Route::Refused),
+            (&format!("x@{sixty_four}.swarmail.test"), Route::Refused),
+        ] {
+            assert_eq!(route_of(domain, rcpt), want, "{rcpt}");
+        }
+        // A multi-label domain is compared as a whole.
+        assert_eq!(route_of("a.b", "x@c.a.b"), inbox("c"));
+        assert_eq!(route_of("a.b", "x@b"), Route::Outside);
+    }
+
+    /// The admitted alphabet is a strict subset of the shared inbox rule, so
+    /// a derived name never fails `validate_inbox` and routing never calls
+    /// it: every byte of the alphabet, at every admitted length, passes.
+    #[test]
+    fn every_routed_label_passes_the_one_inbox_rule() {
+        for b in (0u8..=255).filter(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+        {
+            let label = String::from_utf8(vec![b; 63]).unwrap();
+            assert_eq!(
+                route_of("d.test", &format!("x@{label}.d.test")),
+                Route::Inbox(label.clone())
+            );
+            crate::model::validate_inbox(&label).expect("admitted by the one rule");
+        }
+    }
+
+    /// Decision 0106 §3: the refusals' precedence and text.
+    #[test]
+    fn route_refusals_follow_the_decision() {
+        let ada = Route::Inbox("ada".into());
+        assert_eq!(route_refusal(&Route::Outside, None), None);
+        assert_eq!(route_refusal(&Route::Outside, Some("ada")), None);
+        assert_eq!(route_refusal(&ada, None), None);
+        assert_eq!(route_refusal(&ada, Some("ada")), None);
+        assert_eq!(route_refusal(&ada, Some("bob")), Some(ROUTE_ONE_INBOX));
+        assert_eq!(route_refusal(&Route::Refused, None), Some(ROUTE_NO_INBOX));
+        assert_eq!(
+            route_refusal(&Route::Refused, Some("ada")),
+            Some(ROUTE_NO_INBOX)
+        );
     }
 
     /// The MAIL/RCPT path framing (decision 0034 §3): keyword

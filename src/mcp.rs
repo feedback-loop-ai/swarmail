@@ -141,6 +141,9 @@ pub struct McpContext {
     /// (decision 0018). The same receiver the SSE feed consumes — one
     /// source of "stopping", never a second channel.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
+    /// The SMTP route domain (decision 0106): `swarmail_create_inbox` mints
+    /// `agent@<inbox>.<domain>` under it and refuses without it.
+    pub route_domain: Option<String>,
 }
 
 /// The JSON-RPC error envelope — the one owner of its shape.
@@ -401,6 +404,22 @@ async fn handle_revision(
     })
 }
 
+/// The minting tool (decision 0106 §5).
+const CREATE_INBOX: &str = "swarmail_create_inbox";
+
+/// The refusal on a server that routes nothing.
+const CREATE_INBOX_UNCONFIGURED: &str = "recipient routing is not configured: start the server with --route-domain <domain> (SWARMAIL_ROUTE_DOMAIN) to mint inbox addresses";
+
+/// A fresh inbox name and its address under the route domain (decision 0106
+/// §5). A UUID v7 as 32 lowercase hex characters is inside the routing
+/// alphabet and the shared inbox rule. Nothing is stored, locked, registered
+/// or expired: an inbox with no mail does not exist (decision 0032), and the
+/// first routed mail creates it.
+fn mint_inbox(domain: &str) -> Value {
+    let inbox = uuid::Uuid::now_v7().simple().to_string();
+    json!({ "address": format!("agent@{inbox}.{domain}"), "inbox": inbox })
+}
+
 fn tool_descriptors(revision: Revision) -> Value {
     let mut tools = TOOLS.clone();
     if revision != Revision::March {
@@ -430,6 +449,7 @@ fn tool_descriptors(revision: Revision) -> Value {
                     | "swarmail_get_deliverability_report"
                     | focused::CODE
                     | focused::LINK
+                    | CREATE_INBOX
             );
             tool["annotations"] = if read_only {
                 json!({"readOnlyHint": true})
@@ -864,6 +884,10 @@ async fn tool_call(
             ctx.chaos.clear();
             Ok(text_result(json!({ "chaos": "disabled" })))
         }
+        CREATE_INBOX => Ok(match ctx.route_domain.as_deref() {
+            Some(domain) => text_result(mint_inbox(domain)),
+            None => error_result(CREATE_INBOX_UNCONFIGURED.to_string()),
+        }),
         other => Err((-32601, format!("unknown tool: {other}"))),
     }
 }
@@ -952,7 +976,8 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "swarmail_set_chaos":output_object(json!({"connect":event,"mail_from":event,"rcpt":event,"data":event}), json!(["connect","mail_from","rcpt","data"])),
         "swarmail_clear_chaos":output_object(json!({"chaos":{"type":"string","const":"disabled"}}), json!(["chaos"])),
         focused::CODE:focused::output_schema(false, &address),
-        focused::LINK:focused::output_schema(true, &address)
+        focused::LINK:focused::output_schema(true, &address),
+        CREATE_INBOX:output_object(json!({"inbox":{"type":"string"},"address":{"type":"string"}}), json!(["inbox","address"]))
     })
 });
 
@@ -1038,6 +1063,13 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     ]);
     // Appended (decision 0094 §7): every earlier entry keeps its place.
     tools.as_array_mut().unwrap().extend(focused::descriptors());
+    // Appended after the focused pair (decision 0106 §5): the earlier
+    // indices keep their places.
+    tools.as_array_mut().unwrap().push(json!({
+        "name": CREATE_INBOX,
+        "description": "Mint a fresh private inbox name and the address that routes to it (agent@<inbox>.<route-domain>). Send the application's mail to that address, then read the inbox by name: mail for other addresses never appears there. Allocates nothing - the inbox exists once its first mail arrives, and a wait on it before then works. Needs the server to run with --route-domain.",
+        "inputSchema": { "type": "object", "additionalProperties": false }
+    }));
     tools
 });
 
@@ -1061,7 +1093,7 @@ mod tests {
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
         let schemas = OUTPUT_SCHEMAS.as_object().unwrap();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 16);
         assert_eq!(
             names,
             schemas
@@ -1521,6 +1553,7 @@ mod tests {
             store: Arc::new(Store::new(0)),
             chaos: Arc::new(Chaos::default()),
             shutdown,
+            route_domain: None,
         };
         let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
         let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
@@ -1590,6 +1623,7 @@ mod tests {
             store: Arc::new(Store::new(0)),
             chaos: Arc::new(Chaos::default()),
             shutdown,
+            route_domain: None,
         };
         (stop, ctx)
     }
@@ -1598,6 +1632,34 @@ mod tests {
         let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
                          "params":{"name": tool, "arguments": arguments}});
         handle(ctx, &req).await.expect("a request is answered")
+    }
+
+    /// Decision 0106 §5: with a route domain the tool mints a fresh lowercase
+    /// hex inbox and its address and stores nothing; without one it refuses
+    /// in an `isError` result naming the flag. Both revisions' bytes.
+    #[tokio::test]
+    async fn create_inbox_mints_under_the_domain_and_refuses_without_one() {
+        let (_stop, mut ctx) = context();
+        let refused = call(&ctx, CREATE_INBOX, json!({})).await;
+        assert_eq!(refused["result"]["isError"], true);
+        let message = refused["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(message.contains("--route-domain"), "{message}");
+
+        ctx.route_domain = Some("swarmail.test".into());
+        let first = call(&ctx, CREATE_INBOX, json!({})).await;
+        let second = call(&ctx, CREATE_INBOX, json!({})).await;
+        let value = |reply: &Value| {
+            serde_json::from_str::<Value>(reply["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap()
+        };
+        let (first, second) = (value(&first), value(&second));
+        assert_ne!(first["inbox"], second["inbox"]);
+        let inbox = first["inbox"].as_str().unwrap();
+        assert_eq!(inbox.len(), 32);
+        assert_eq!(first["address"], format!("agent@{inbox}.swarmail.test"));
+        assert!(ctx.store.inboxes().is_empty(), "minting allocates nothing");
+        let sentinel = call(&ctx, CREATE_INBOX, json!({"zz": 1})).await;
+        assert_eq!(sentinel["error"]["code"], -32602);
     }
 
     /// Every tool's argument shape is closed (decision 0044 §3, issue #91):
@@ -1612,7 +1674,7 @@ mod tests {
             .insert(crate::store::email("keep", "default", "a@x.io"))
             .unwrap();
         let tools = TOOLS.as_array().unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 16);
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             assert_eq!(

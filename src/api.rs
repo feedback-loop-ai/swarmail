@@ -64,6 +64,9 @@ pub struct AppState {
     /// so a non-loopback Host is the rebind itself) and `Origin` (a
     /// browser cannot forge it, so a cross-site drive is named).
     pub http_origin_guard: Option<u16>,
+    /// The SMTP route domain (decision 0106), lowercased, when the server
+    /// routes by recipient: `swarmail_create_inbox` mints addresses under it.
+    pub route_domain: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1969,6 +1972,7 @@ async fn mcp_endpoint(
         store: state.store.clone(),
         chaos: state.chaos.clone(),
         shutdown: state.shutdown.clone(),
+        route_domain: state.route_domain.clone(),
     };
     mcp::dispatch_with_headers(&ctx, &body, &headers).await
 }
@@ -2525,6 +2529,7 @@ mod tests {
             // The healthz gauges are probe-only state; the probe runs
             // headerless, so the guard has nothing to refuse here.
             http_origin_guard: None,
+            route_domain: None,
         }
     }
 
@@ -2697,6 +2702,7 @@ mod tests {
             // The red-proof's probes are headerless, and the listener is
             // loopback: the guard is live but Origin-absent requests pass.
             http_origin_guard: http_addr.ip().is_loopback().then(|| http_addr.port()),
+            route_domain: None,
         };
         let api_task = tokio::spawn(serve(http_listener, state, std::future::pending()));
         // The healthy baseline first, before the misbehavior exists: the
@@ -3338,6 +3344,7 @@ mod tests {
             smtp_degraded: Arc::new(AtomicBool::new(false)),
             pop3_degraded: Arc::new(AtomicBool::new(false)),
             http_origin_guard: Some(addr.port()),
+            route_domain: None,
         };
         let (store, chaos) = (state.store.clone(), state.chaos.clone());
         let observed = observe_next_router_tool_rate();

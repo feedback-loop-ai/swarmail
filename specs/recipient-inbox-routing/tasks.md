@@ -5,7 +5,7 @@ Implementation obligations under [spec.md](spec.md) and proposed
 only after its paired test is green against the candidate. Dependencies
 follow this order.
 
-- [ ] **T1 — The route-domain flag (AC7).** Add `--route-domain` /
+- [x] **T1 — The route-domain flag (AC7).** Add `--route-domain` /
   `SWARMAIL_ROUTE_DOMAIN` to `ServeArgs` with a `value_parser` that refuses
   an empty value, an empty label, a character outside `[A-Za-z0-9-]`, a
   label over 63 characters and a leading or trailing dot, and lowercases
@@ -13,13 +13,13 @@ follow this order.
   **Test:** inline unit table in `src/config.rs` over every refusal and the
   lowercase fold; `tests/config_cli.rs` proves each refusal exits before any
   bind naming the flag and that a mixed-case value starts the server.
-- [ ] **T2 — The routing function (AC4).** `routed_inbox(domain, rcpt)` in
+- [x] **T2 — The routing function (AC4).** `routed_inbox(domain, rcpt)` in
   `src/smtp.rs` returning `Ok(None)` for a recipient not under the domain
   (including whole-label misses and no `@`), `Ok(Some(label))` for exactly
   one admitted label after lowercasing, and `Err` for every malformed shape
   under the domain. **Test:** inline table covering each arm, plus a test
   that every admitted-alphabet name passes `validate_inbox`.
-- [ ] **T3 — Routing admission at `RCPT` (AC4).** Between the ceiling check
+- [x] **T3 — Routing admission at `RCPT` (AC4).** Between the ceiling check
   and chaos: `Err` → `550 5.1.3 Recipient names no inbox under the route
   domain`; `Some(label)` differing from `open.routed` → `452 4.5.3 One
   routed inbox per transaction`; otherwise append and set `open.routed` on
@@ -29,7 +29,7 @@ follow this order.
   the same inbox accepted twice; chaos `rcpt` at 100 on a routed recipient
   leaving the route unset; `RSET` clearing it; a non-matching CC recorded
   in `recipients` without disturbing routing; case-fold and whole-label.
-- [ ] **T4 — The inbox at `DATA` precedes the park (AC3, AC5).** Destructure
+- [x] **T4 — The inbox at `DATA` precedes the park (AC3, AC5).** Destructure
   `routed` from the taken envelope and compute the inbox once as routed,
   else AUTH, else `default`; `park_delivery`, `build_email` and the
   in-flight row all take that name. **Test:** `tests/inbox_routing.rs`:
@@ -38,12 +38,12 @@ follow this order.
   never-mailed inbox before the send returns the mail; during a parked
   delivery (the existing parse-submission seam or a chaos-free deterministic
   hold) the `swarmail_deliveries_in_flight` row names the routed inbox.
-- [ ] **T5 — Thread the domain to MCP.** `AppState.route_domain` from the
+- [x] **T5 — Thread the domain to MCP.** `AppState.route_domain` from the
   config, `McpContext.route_domain` set by the `/mcp` handler, `None` in
   the four test literals. **Test:** the existing MCP suites compile and
   pass unchanged; `tests/inbox_routing.rs` reaches the tool over HTTP on a
   configured server.
-- [ ] **T6 — `swarmail_create_inbox` (AC6).** Dispatch arm minting a UUID v7
+- [x] **T6 — `swarmail_create_inbox` (AC6).** Dispatch arm minting a UUID v7
   simple-hex inbox and `agent@<inbox>.<domain>`; `isError` text naming
   `--route-domain` when unset; descriptor appended after the focused pair
   with a closed empty `inputSchema`; `OUTPUT_SCHEMAS` entry with both
@@ -55,13 +55,13 @@ follow this order.
   `structuredContent` equals the text block; `tests/mcp.rs`, `tests/p2.rs`
   and `tests/mcp_revisions/focused.rs` move to 16 with the focused indices
   unchanged and the March fixtures passing without regeneration.
-- [ ] **T7 — Three agents, one identity (AC1).** The headline proof in
+- [x] **T7 — Three agents, one identity (AC1).** The headline proof in
   `tests/inbox_routing.rs`: three minted inboxes, three concurrent SMTP
   batches under one AUTH username, each inbox's search returns exactly its
   own ids, the AUTH username's inbox does not exist, and `/api/v1/inboxes`
   lists exactly the three. **Test:** that test, real SMTP and real MCP, no
   mocks.
-- [ ] **T8 — Documentation (AC2 in part).** README's AUTH-is-the-inbox
+- [x] **T8 — Documentation (AC2 in part).** README's AUTH-is-the-inbox
   sections gain the route-domain rule and the tool; the "15 tools" line,
   `src/static/llms.txt` and the `/mcp` description in
   `src/static/openapi.json` say sixteen; `docs/decisions/README.md` gains
@@ -69,7 +69,7 @@ follow this order.
   (`tests/listener_contract_docs.rs`, `tests/store_contract_docs.rs`, the
   openapi pins) stay green; `grep -c swarmail_create_inbox` on each file is
   non-zero.
-- [ ] **T9 — The eval harness (AC8).** Runner argv gains `--route-domain
+- [x] **T9 — The eval harness (AC8).** Runner argv gains `--route-domain
   swarmail.test`; `Identity`/`ProvisionIdentity` gain required
   `smtp_identity`; `identities()` branches on `count > 1` to
   `fixture-app` plus `<name>.<n>@<inbox>.swarmail.test`; the fixture
@@ -81,7 +81,7 @@ follow this order.
   overlapping isolation trials pass; the proof asserts the `fixture-app`
   inbox holds no mail after the trial; every other task's provision
   payload is byte-equal to before apart from the new field.
-- [ ] **T10 — Gates and the honest metric (AC9, AC10).** Run every house
+- [x] **T10 — Gates and the honest metric (AC9, AC10).** Run every house
   gate locked, the evals crate standalone (fmt, clippy, tests), and record
   the oracle/null results; state that agent success rate is unmeasured.
   Commit unsigned, never push; the delivery names operator acceptance of

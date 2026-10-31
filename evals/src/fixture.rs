@@ -83,6 +83,10 @@ struct Token {
 struct Account {
     identity: String,
     inbox: String,
+    /// The SMTP AUTH username this account's deliveries authenticate with
+    /// (decision 0106 §7). The inbox-isolation task gives every account the
+    /// one application login; the other tasks use the inbox.
+    smtp_identity: String,
     role: Role,
     facts: Facts,
     password: Option<String>,
@@ -90,7 +94,7 @@ struct Account {
 
 #[derive(Debug, Clone)]
 struct Outbound {
-    inbox: String,
+    smtp_identity: String,
     to: String,
     data: Vec<u8>,
 }
@@ -389,7 +393,7 @@ impl Private {
         self.outbound.insert(
             seq,
             Outbound {
-                inbox: account.inbox.clone(),
+                smtp_identity: account.smtp_identity.clone(),
                 to: to.to_string(),
                 data: mail::render_with(&msg, &render),
             },
@@ -521,6 +525,7 @@ impl Private {
                     let decoy = Account {
                         identity: sibling.clone(),
                         inbox: acct.inbox.clone(),
+                        smtp_identity: acct.smtp_identity.clone(),
                         role: Role::Decoy,
                         facts: Facts::default(),
                         password: None,
@@ -867,7 +872,7 @@ impl Shared {
             let Some(out) = self.lock().outbound.get(&seq).cloned() else {
                 continue;
             };
-            let result = mail::send(self.smtp, &out.inbox, FROM, &out.to, &out.data).await;
+            let result = mail::send(self.smtp, &out.smtp_identity, FROM, &out.to, &out.data).await;
             let mut p = self.lock();
             if !p.frozen {
                 p.record_attempt(seq, &result);
@@ -1454,6 +1459,10 @@ fn unauthorized() -> Response {
 pub struct ProvisionIdentity {
     pub identity: String,
     pub inbox: String,
+    /// The SMTP AUTH username for this account's deliveries (decision 0106
+    /// §7): required, so a caller states whether the account authenticates
+    /// as its inbox or as the one shared application login.
+    pub smtp_identity: String,
 }
 
 #[derive(Deserialize)]
@@ -1492,6 +1501,7 @@ async fn admin_provision(
         p.accounts.push(Account {
             identity: id.identity,
             inbox: id.inbox,
+            smtp_identity: id.smtp_identity,
             role: Role::Agent,
             facts: Facts::default(),
             password: None,
@@ -1738,6 +1748,7 @@ mod tests {
         p.accounts.push(Account {
             identity: "a@example.test".into(),
             inbox: "inbox-a".into(),
+            smtp_identity: "inbox-a".into(),
             role: Role::Agent,
             facts: Facts::default(),
             password: None,
@@ -1824,6 +1835,7 @@ mod entropy_proofs {
             p.accounts.push(Account {
                 identity: format!("person-{i}@example.test"),
                 inbox: format!("inbox-{i}"),
+                smtp_identity: format!("inbox-{i}"),
                 role: Role::Agent,
                 facts: Facts::default(),
                 password: None,
