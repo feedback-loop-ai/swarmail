@@ -7,7 +7,7 @@ seat as each is proved locally; T12's gates that this environment cannot run
 
 - [x] T1 — Confirm the SHA-256 path compiles at the locked tree: add
   `src/attachments.rs` with `sha256_hex` through rustls's ring hash provider
-  and the four constants. **Test:** inline known-answer tests for `abc` and
+  and the first four constants. **Test:** inline known-answer tests for `abc` and
   the empty string; `git diff --exit-code Cargo.lock` (AC1, AC3, AC10). If it
   does not compile, stop and report the blocker named in the plan's risks.
 - [x] T2 — Add `Attachment`, `IcsEvent` and `Email.attachments` to
@@ -51,7 +51,10 @@ seat as each is proved locally; T12's gates that this environment cannot run
   of seventeen with eleven reads, March text-only descriptors and frozen
   bytes, June/November schemas and `structuredContent` parity in a new
   `tests/mcp_revisions/attachments.rs`; `tests/stdio.rs` delivers a 1 MiB
-  fetch in each encoding under the 10 MiB cap (AC8).
+  fetch in each encoding under the 10 MiB cap; the worst-case list answer
+  through the real serialization on every revision and transport, under the
+  3 MiB JSON bound, with its edge pinned inline in `src/mcp/attachments.rs`
+  (AC3, AC8).
 - [x] T9 — Restart proofs in `tests/persistence.rs`: list and fetch byte for
   byte after a restart, the unknown refusal for pre-column rows, cap eviction
   taking the columns with the row (AC6, AC7).
@@ -61,7 +64,7 @@ seat as each is proved locally; T12's gates that this environment cannot run
   **Test:** `cargo test --manifest-path evals/Cargo.toml --locked`; catalogue,
   oracle and prompts unchanged by `git diff` (AC9).
 - [x] T11 — Document: README and `llms.txt` sections for the two tools, the
-  four constants and the metadata-only answer; the 0110 row in
+  five constants and the metadata-only answer; the 0110 row in
   `docs/decisions/README.md`. **Test:** the tracked-link guard and the
   existing doc-pin suites stay green (AC10).
 - [x] T12 — Run every gate locked (plan quickstart), the ingest bench before

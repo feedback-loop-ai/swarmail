@@ -10,7 +10,9 @@
 //! route still serves the whole mail (decision 0022).
 
 use super::{McpContext, Revision, arg_usize, error_result, refusal, required_id, text_result};
-use crate::attachments::{MAX_ATTACHMENT_STORED_BYTES, MAX_ATTACHMENTS, encode_content};
+use crate::attachments::{
+    MAX_ATTACHMENT_STORED_BYTES, MAX_ATTACHMENTS, MAX_LIST_JSON_BYTES, encode_content,
+};
 use serde_json::{Value, json};
 
 pub(super) const LIST: &str = "swarmail_list_attachments";
@@ -41,16 +43,20 @@ pub(super) fn call(
         )));
     };
     let Some(index) = index else {
-        let attachments: Vec<Value> = list
-            .parts
-            .iter()
-            .enumerate()
-            .map(|(index, part)| {
-                let mut entry = serde_json::to_value(part).unwrap();
-                entry["index"] = json!(index);
-                entry
-            })
-            .collect();
+        // The answer's bound (decision 0110 §3), charged on what is sent: a
+        // prefix of the list, and `truncated` names any cut. The first entry
+        // always fits: the labels of one are far under the bound.
+        let mut attachments = Vec::new();
+        let mut charged = 0;
+        for (index, part) in list.parts.iter().enumerate() {
+            let mut entry = serde_json::to_value(part).unwrap();
+            entry["index"] = json!(index);
+            charged += entry.to_string().len();
+            if charged > MAX_LIST_JSON_BYTES {
+                break;
+            }
+            attachments.push(entry);
+        }
         return Ok(text_result(
             json!({
                 "id": id,
@@ -94,7 +100,7 @@ pub(super) fn call(
 /// entry keeps its position and bytes (decision 0094 §7). Inputs are closed.
 pub(super) fn descriptors() -> [Value; 2] {
     [
-        json!({ "name": LIST, "description": "List the attachments of one captured email, recorded once at ingest: for each part its index, filename, lowercased content type, decoded size in bytes, SHA-256 (lowercase hex of exactly the bytes get_attachment returns), whether its bytes are stored, and for a calendar part (text/calendar, application/ics or a .ics filename) the first VEVENT's dtstart, dtend, their TZID, summary and uid, verbatim. Lists at most 250 parts in message order; total is the exact count and truncated says whether more exist. An attached message is one entry. Unknown ids are an error.",
+        json!({ "name": LIST, "description": "List the attachments of one captured email, recorded once at ingest: for each part its index, filename, lowercased content type, decoded size in bytes, SHA-256 (lowercase hex of exactly the bytes get_attachment returns), whether its bytes are stored, and for a calendar part (text/calendar, application/ics or a .ics filename) the first VEVENT's dtstart, dtend, their TZID, summary and uid, verbatim. Lists at most 250 parts in message order and at most 3 MiB of JSON, so labels that escape heavily can list fewer; total is the exact count and truncated says whether more exist. A stored part cut from the list stays fetchable by its index. An attached message is one entry. Unknown ids are an error.",
             "inputSchema": { "type": "object", "properties": {
                 "id": { "type": "string", "description": "Email id" } },
                 "required": ["id"], "additionalProperties": false } }),
@@ -297,6 +303,48 @@ mod tests {
         assert_eq!(list["total"], 300);
         assert_eq!(list["truncated"], true);
         assert_eq!(list["attachments"], json!([]));
+    }
+
+    /// The list answer's bound at its edge (decision 0110 §3): an entry that
+    /// brings the charge to exactly `MAX_LIST_JSON_BYTES` is listed, one byte
+    /// more is cut, and the cut is a prefix that `truncated` names beside the
+    /// exact `total`. A stored part cut from the list stays fetchable.
+    #[tokio::test]
+    async fn the_list_answer_cuts_a_prefix_at_its_json_bound() {
+        let (_stop, ctx) = context();
+        let part = |filename: String, content: &[u8]| crate::model::Attachment {
+            filename: Some(filename),
+            content_type: None,
+            size: content.len() as u64,
+            sha256: crate::attachments::sha256_hex(content),
+            stored: true,
+            ics: None,
+            content: Some(content.to_vec()),
+        };
+        // The JSON of an entry with a one-byte name, measured as the handler
+        // sends it, so the name's length lands the charge on the edge.
+        let mut measured = serde_json::to_value(part("x".into(), b"a")).unwrap();
+        measured["index"] = json!(0);
+        let overhead = measured.to_string().len() - 1;
+        let exact = MAX_LIST_JSON_BYTES - overhead;
+        for (name_len, cut) in [(exact, false), (exact + 1, true)] {
+            let mut email = crate::store::email(&format!("edge-{name_len}"), "box", "b@x.io");
+            let parts = vec![part("n".repeat(name_len), b"a")];
+            email.attachments = Some(crate::model::AttachmentList { total: 1, parts });
+            let id = email.id.clone();
+            ctx.store.insert(email).unwrap();
+            let list = payload(&answer(&ctx, LIST, json!({"id": id})).await);
+            assert_eq!(list["total"], 1);
+            assert_eq!(list["truncated"], cut);
+            assert_eq!(
+                list["attachments"].as_array().unwrap().len(),
+                usize::from(!cut)
+            );
+            if cut {
+                let fetched = answer(&ctx, GET, json!({"id": id, "index": 0})).await;
+                assert_eq!(payload(&fetched)["content"], "a");
+            }
+        }
     }
 
     #[tokio::test]

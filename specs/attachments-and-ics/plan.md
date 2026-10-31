@@ -63,7 +63,11 @@ data model, contracts, quickstart and risks the dialect asks for.
   `\"` escapes become `\\\"`) and again in `structuredContent`. A 1 MiB
   worst-case text payload is at most 2 MiB as JSON, 4 MiB inside the text
   block, plus 2 MiB structured: about 6 MiB. Base64 payloads escape nothing:
-  about 2.7 MiB. Both fit; 2 MiB would not in the worst case.
+  about 2.7 MiB. Both fit; 2 MiB would not in the worst case. The list answer
+  has its own arithmetic: unbounded it reached 25.5 MiB (250 parts, eight
+  1024-byte control-byte labels), so its entries stop at 3 MiB of compact
+  JSON, at most 9 MiB on the wire once doubled in the text block and repeated
+  as `structuredContent`; the measured worst is 8.93 MiB (backslash labels).
 - *#155 collision.* The unmerged `repair/issue155-compact-view` adds
   `model::Attachment`, `Email.attachments`, `attachments_json` (three-tuples)
   and `attachment_list`. This plan reuses those four names so a later merge
@@ -74,7 +78,7 @@ data model, contracts, quickstart and risks the dialect asks for.
 
 | File | Change |
 |---|---|
-| `src/attachments.rs` (new) | the four constants; `candidates()` predicate and walk; `sha256_hex`; `budget` first-fit; `ics::scan` (unfold, depth-tracked first-`VEVENT` reader, unescape); the `encoding` classifier; inline unit tests for every branch |
+| `src/attachments.rs` (new) | the five constants; `candidates()` predicate and walk; `sha256_hex`; `budget` first-fit; `ics::scan` (unfold, depth-tracked first-`VEVENT` reader, unescape); the `encoding` classifier; inline unit tests for every branch |
 | `src/model.rs` | `Attachment { filename, content_type, size, sha256, stored, ics, content: Option<Vec<u8>> (#[serde(skip)]) }`, `IcsEvent { dtstart, dtstart_tzid, dtend, dtend_tzid, summary, uid }`, `Email.attachments: Option<Vec<Attachment>>` (#[serde(skip)]), strict map-only readers in 0097 §2's style for the persisted object |
 | `src/smtp.rs` | `build_email` calls `attachments::extract(&message)` beside `extract_link_metadata`; `None` when the parse failed |
 | `src/persist.rs` | `COLUMNS`, `SCHEMA`, `ADDED_COLUMNS` gain `attachments_json TEXT` and `attachment_bytes BLOB`; `record_insert` binds both; `row_to_email` restores strictly with the length cross-check; tests for every refusal through direct `UPDATE`s as the `link_metadata_json` tests do |
@@ -179,6 +183,8 @@ git diff --exit-code Cargo.lock deny.toml
   lands second widens the strict reader to every shape ingest ever wrote.
 - **Bridge cap on the largest fetch.** Mitigation: the arithmetic is in the
   decision and `tests/stdio.rs` delivers a 1 MiB part in both encodings.
+- **Bridge cap on the largest list.** Mitigation: `MAX_LIST_JSON_BYTES`, proved
+  by `tests/mcp_revisions/attachments.rs` over HTTP and the binary bridge.
 - **Exact coverage.** New branches in the scanner and the refusal ladder.
   Mitigation: every branch has a named test in tasks.md; generated MIME
   reaches each wire arm; no seam is needed, and 0020 §2 governs if one

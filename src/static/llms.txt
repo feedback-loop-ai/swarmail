@@ -201,7 +201,9 @@ historical rows, unattributable links) are null and never match anchor_text.
 Lists show <=250 entries after full-snapshot selection, with exact *_total and
 *_truncated. Email reads, feeds and webhooks carry no occurrence metadata.
 Attachments (decision 0110, proposed): swarmail_list_attachments {id} answers
-{id,total,truncated,attachments}, <=250 entries in message order (total is exact),
+{id,total,truncated,attachments}, <=250 entries in message order and <=3 MiB of JSON,
+so labels that escape heavily can list fewer (total is exact; a stored part cut from
+the answer stays fetchable by index),
 each {index,filename,content_type,size,sha256,stored,ics}: type lowercased, size
 in decoded bytes, sha256 lowercase hex of exactly the bytes get returns. Candidates
 are the parser's attachments plus any text/calendar, application/ics or .ics part;

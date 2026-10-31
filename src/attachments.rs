@@ -8,7 +8,8 @@
 //! The walk is total. Nothing here returns an error, so no failure can sit
 //! between the DATA terminator and the `250` (decision 0001): the work is
 //! linear in the bytes the parser already decoded, and what it retains is
-//! bounded by the four constants below.
+//! bounded by the first four constants below. The fifth bounds what the list
+//! answers.
 
 use crate::model::{Attachment, AttachmentList, IcsEvent};
 use mail_parser::{Message, MimeHeaders, PartType};
@@ -31,6 +32,16 @@ pub const MAX_LABEL_BYTES: usize = 1024;
 /// The largest calendar part the ICS scanner reads; a larger one yields no
 /// fields.
 pub const MAX_ICS_BYTES: usize = 1 << 20;
+
+/// The entries of one list answer, as compact JSON; entries past it are cut
+/// and `truncated` says so. The stored labels of 250 entries can escape to
+/// 25 MiB of modern answer, far over the stdio bridge's 10 MiB response cap.
+/// JSON at most doubles inside the text block (a `"` or `\` is the worst
+/// case) and rides once more as `structuredContent`, so an answer is at most
+/// three times this: 9 MiB, leaving the envelope and the HTTP head room
+/// (decision 0110 §3). 250 entries of 1024-byte labels that need no escaping
+/// are about 2.1 MiB, so only labels spelled to escape are ever cut.
+pub const MAX_LIST_JSON_BYTES: usize = 3 << 20;
 
 /// Lowercase-hex SHA-256 (decision 0110 §5). The digest comes from the ring
 /// provider rustls already links, through the public hash provider of the
@@ -340,13 +351,14 @@ mod tests {
         );
     }
 
-    /// The four constants are pinned in one place (decision 0110 §3).
+    /// The five constants are pinned in one place (decision 0110 §3).
     #[test]
     fn the_caps_are_pinned() {
         assert_eq!(MAX_ATTACHMENTS, 250);
         assert_eq!(MAX_ATTACHMENT_STORED_BYTES, 1_048_576);
         assert_eq!(MAX_LABEL_BYTES, 1024);
         assert_eq!(MAX_ICS_BYTES, 1_048_576);
+        assert_eq!(MAX_LIST_JSON_BYTES, 3_145_728);
     }
 
     #[test]

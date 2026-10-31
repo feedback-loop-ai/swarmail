@@ -125,7 +125,11 @@ non-string `id`, a non-integer or negative `index`, and an unknown key refuse
 `{"id", "total", "truncated", "attachments": [entry…]}`; `entry` is
 `{index, filename, content_type, size, sha256, stored, ics}` with `index` the
 position in the list and `ics` the object above or null; `truncated` is
-`total > attachments.len()`. An unknown mail answers `message {id} not found`;
+`total > attachments.len()`. The answer is the longest prefix of the stored
+entries whose compact JSON fits `MAX_LIST_JSON_BYTES` (3 MiB; 0110 §3), so
+labels spelled to escape can list fewer than 250; labels that need no escaping
+never do, and an entry cut this way keeps its index for
+`swarmail_get_attachment`. An unknown mail answers `message {id} not found`;
 a mail whose list is unknown (0110 §6) answers a named refusal.
 
 **`swarmail_get_attachment {id, index}`** answers
@@ -176,7 +180,7 @@ unchanged.
   negative or non-integer `index` and an unknown id answer the stated
   refusals, the first by `-32602`.
 - **AC3 — caps pinned.** `MAX_ATTACHMENTS`, `MAX_ATTACHMENT_STORED_BYTES`,
-  `MAX_LABEL_BYTES` and `MAX_ICS_BYTES` are single named constants in one
+  `MAX_LABEL_BYTES`, `MAX_ICS_BYTES` and `MAX_LIST_JSON_BYTES` are single named constants in one
   module with the values of 0110 §3, and the tool descriptions state the 250
   and 1 MiB figures. On the wire: a single part of exactly 1 048 576 octets
   is stored and fetched whole; one of 1 048 577 is listed with `stored: false`
@@ -220,7 +224,10 @@ unchanged.
   carries neither and keeps its earlier bytes; `tests/mcp_revisions.rs`'s
   catalogue grows to seventeen tools with eleven reads; every success
   carries matching `text` and `structuredContent`; the stdio bridge delivers
-  a 1 MiB fetch under its 10 MiB cap in both encodings.
+  a 1 MiB fetch under its 10 MiB cap in both encodings, and the list answer
+  for 250 parts of eight 1024-byte labels under that cap on every revision,
+  for labels of control bytes and of backslashes, with `truncated: true` and
+  the exact `total`; 250 parts of 1024-byte plain labels list all 250.
 - **AC9 — metric.** The invite and ICS tasks run offline only: the evals
   crate's existing tests plus one fixture-rig test that waits for the real
   invite, lists it, matches `ics.uid` and `ics.dtstart` to the oracle's
@@ -235,4 +242,4 @@ unchanged.
   coverage and no `coverage(off)`; `benches/ingest.rs` is run before and after
   and the numbers are reported as measured, never asserted; `Cargo.lock` and
   `deny.toml` are unchanged; README and `llms.txt` document the two tools, the
-  four constants and the metadata-only answer for parts over the budget.
+  five constants and the metadata-only answer for parts over the budget.

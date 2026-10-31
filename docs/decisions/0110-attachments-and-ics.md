@@ -23,9 +23,9 @@
   land while this record is proposed).
 - **Preserves:** 0001–0005, 0010, 0014, 0020, 0030, 0056, the 0082 §1 March
   byte freeze, every existing Email serialization and every REST response.
-- **Number:** 0106 and 0107 are held by open PR #292, 0108 by the unmerged
-  #155 branch and 0109 by `origin/main`; 0110 is the next number no checked
-  tip holds. Recheck at integration; only the operator renumbers.
+- **Number:** 0106 and 0107 are held by open PR #292, 0108 and 0109 by
+  `origin/main`; 0110 was the next number no checked tip held and the operator
+  kept it at integration on 2026-10-31.
 
 ## Proposed ruling
 
@@ -61,6 +61,7 @@
    | `MAX_ATTACHMENT_STORED_BYTES` | 1 MiB | decoded bytes retained per mail, summed over stored parts; also the largest fetchable part |
    | `MAX_LABEL_BYTES` | 1024 | every stored string: filename, content type, each ICS field |
    | `MAX_ICS_BYTES` | 1 MiB | the largest calendar part the ICS scanner reads; a larger one yields no fields |
+   | `MAX_LIST_JSON_BYTES` | 3 MiB | the entries of one list answer, as compact JSON, charged in list order; the first entry past it and every later one are cut from the answer, which `truncated` names |
 
    1 MiB is chosen from the stdio bridge's unchanged 10 MiB response cap
    (0029 §4): a modern result carries the JSON twice (text block and
@@ -70,6 +71,20 @@
    refuse on the bridge for exactly the payloads it stored. A knob would
    double the branch matrix under the exact gate and make the pinned value
    unobservable.
+
+   The byte budget does not bound the list answer; the labels do, and they
+   escape. 250 entries of eight 1024-byte labels of control bytes are a
+   25.5 MiB modern answer and 13.7 MiB under March, and a control byte's
+   `\u0001` costs 13 wire bytes against the 1 it stores. So the list answer is
+   bound where it is sent: it serves the longest prefix of the stored list
+   whose entries fit `MAX_LIST_JSON_BYTES`. JSON at most doubles inside the
+   text block and rides once more as `structuredContent`, so a modern answer
+   is at most three times that: 9 MiB plus the envelope, inside the cap.
+   Labels are never rewritten (0031 §1), entries keep their indexes, `total`
+   stays exact and a stored part cut from the answer stays fetchable by index.
+   Nothing that needs no escaping is ever cut: 250 entries of 1024-byte plain
+   labels are about 2.1 MiB of JSON. The request's own `id` is echoed in the
+   envelope and is the client's to keep small.
 
 4. **ICS fields are read from the first `VEVENT` only, literally.** After
    RFC 5545 unfolding (CRLF to LF, then `LF SP` and `LF HT` removed), the
@@ -149,8 +164,9 @@ carries get, today, only a raw MIME download to decode themselves. Listing
 type, size and hash lets an agent decide before it pays for bytes; fetching
 from stored bytes answers in one call with the bytes the hash describes;
 ICS fields at ingest answer the invite question the way links and codes are
-answered — once, identically on every surface. The budget keeps the whole
-feature inside the bridge cap and inside a stated memory bound.
+answered — once, identically on every surface. The byte budget keeps a fetch
+inside the bridge cap and, with the entry and label caps, inside a stated
+memory bound; the JSON bound keeps a list answer inside the bridge cap.
 
 ## Alternatives and consequences
 

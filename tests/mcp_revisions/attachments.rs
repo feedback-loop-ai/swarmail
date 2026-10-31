@@ -285,3 +285,122 @@ async fn attachment_tools_on_every_revision_and_transport() {
     }
     srv.stop().await;
 }
+
+/// A mail of `parts` calendar parts whose every label is `MAX_LABEL_BYTES`
+/// long and spelled with `byte`, the input that costs most to serialize:
+/// filename, content type and all six ICS fields of the first `VEVENT`.
+fn hostile_labels_mail(parts: usize, byte: u8) -> Vec<u8> {
+    let label = String::from_utf8(vec![byte; 1024]).unwrap();
+    // `\\` is one backslash in a SUMMARY (RFC 5545), and any byte is percent
+    // encoded in an RFC 2231 filename.
+    let summary = label.replace('\\', "\\\\");
+    let filename = format!("%{byte:02X}").repeat(1020) + ".ics";
+    let subtype = label.clone();
+    let mut raw = String::from(
+        "From: app@x.io\r\nTo: rcpt@x.io\r\nSubject: labels\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"bd\"\r\n\r\n",
+    );
+    for _ in 0..parts {
+        raw.push_str(&format!(
+            "--bd\r\nContent-Type: application/{subtype}\r\n\
+             Content-Disposition: attachment; filename*=utf-8''{filename}\r\n\r\n\
+             BEGIN:VEVENT\r\nDTSTART;TZID={label}:{label}\r\nDTEND;TZID={label}:{label}\r\n\
+             SUMMARY:{summary}\r\nUID:{label}\r\nEND:VEVENT\r\n"
+        ));
+    }
+    raw.push_str("--bd--\r\n");
+    raw.into_bytes()
+}
+
+/// Decision 0110 §3: the list answer's bound, driven through the real
+/// serialization on every revision and both transports. Eight 1024-byte
+/// labels on each of 250 parts are 25 MiB of modern answer once escaped; the
+/// answer now cuts its entries at 3 MiB of JSON, which the two carriers of a
+/// modern result can at most triple. Control bytes cost most per stored byte
+/// and backslashes cost most per byte of JSON, so each is the worst case for
+/// one side of that arithmetic; neither tool answer reaches the bridge's
+/// 10 MiB cap, and the cut is named by `truncated` beside the exact `total`.
+#[tokio::test]
+async fn the_list_answer_stays_under_the_bridge_cap_on_the_worst_labels() {
+    const JSON_BOUND: usize = 3 << 20;
+    const BRIDGE_CAP: usize = 10 << 20;
+    let srv = start().await;
+    // The modern floors keep the proof from passing on a shrunken input: a
+    // control byte's `\u0001` is 13 bytes on the wire, 6 of them charged, and
+    // a backslash's 6 bytes are 2 charged, which meets the bound's factor.
+    // Each floor gives back the 128 KiB one cut entry can cost.
+    for (byte, modern_floor, content_type_len) in [
+        (1u8, 13 * JSON_BOUND / 6 - (1 << 17), 1024),
+        (b'\\', 3 * JSON_BOUND - (1 << 17), 11),
+    ] {
+        let id = common::smtp_raw(srv.smtp_addr, "labels", &hostile_labels_mail(250, byte)).await;
+        for version in VERSIONS {
+            let modern = version != VERSIONS[0];
+            for stdio in [false, true] {
+                let mut wire = super::structured::Wire::start(srv.http_addr, version, stdio).await;
+                let raw = wire
+                    .raw(&tool_call(1, ATTACHMENTS[0], json!({"id": id})))
+                    .await;
+                let reply: Value = serde_json::from_str(&raw).unwrap();
+                let context = format!("{byte} {version} {stdio}: {} bytes", raw.len());
+                assert_eq!(reply["result"]["isError"], false, "{context}");
+                assert!(raw.len() < BRIDGE_CAP, "{context}");
+                assert!(raw.len() <= 3 * JSON_BOUND + 4096, "{context}");
+                let listed: Value =
+                    serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap())
+                        .unwrap();
+                assert_eq!(listed["total"], 250, "{context}");
+                assert_eq!(listed["truncated"], true, "{context}");
+                let entries = listed["attachments"].as_array().unwrap();
+                assert!(entries.len() < 250, "{context}");
+                for (index, entry) in entries.iter().enumerate() {
+                    assert_eq!(entry["index"], index, "{context}");
+                    assert_eq!(entry["filename"].as_str().unwrap().len(), 1024, "{context}");
+                    assert_eq!(
+                        entry["content_type"].as_str().unwrap().len(),
+                        content_type_len,
+                        "{context}"
+                    );
+                    for field in [
+                        "dtstart",
+                        "dtstart_tzid",
+                        "dtend",
+                        "dtend_tzid",
+                        "summary",
+                        "uid",
+                    ] {
+                        assert_eq!(
+                            entry["ics"][field].as_str().unwrap().len(),
+                            1024,
+                            "{context}"
+                        );
+                    }
+                }
+                if modern {
+                    assert_eq!(reply["result"]["structuredContent"], listed, "{context}");
+                    assert!(
+                        valid(&expected_output(ATTACHMENTS[0]), &listed),
+                        "{context}"
+                    );
+                    assert!(raw.len() >= modern_floor, "{context}");
+                } else {
+                    assert!(reply["result"].get("structuredContent").is_none());
+                }
+                wire.finish().await;
+            }
+        }
+    }
+    // Labels at the cap that need no escaping are the honest maximum: all
+    // 250 entries still fit, untruncated, through the bridge.
+    let id = common::smtp_raw(srv.smtp_addr, "labels", &hostile_labels_mail(250, b'a')).await;
+    let mut wire = super::structured::Wire::start(srv.http_addr, VERSIONS[2], true).await;
+    let reply = wire
+        .request(&tool_call(1, ATTACHMENTS[0], json!({"id": id})))
+        .await;
+    let listed = &reply["result"]["structuredContent"];
+    assert_eq!(listed["total"], 250);
+    assert_eq!(listed["truncated"], false);
+    assert_eq!(listed["attachments"].as_array().unwrap().len(), 250);
+    wire.finish().await;
+    srv.stop().await;
+}

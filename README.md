@@ -954,6 +954,12 @@ The caps are constants, not configuration:
 | `MAX_ATTACHMENT_STORED_BYTES` | 1 MiB | decoded bytes kept per mail, first-fit in list order; also the largest fetchable part |
 | `MAX_LABEL_BYTES` | 1024 | every stored string (filename, type, each ICS field), cut at a character boundary |
 | `MAX_ICS_BYTES` | 1 MiB | the largest calendar part the scanner reads |
+| `MAX_LIST_JSON_BYTES` | 3 MiB | one list answer's entries as compact JSON, so it stays under the stdio bridge's 10 MiB cap once escaped |
+
+Labels spelled to escape heavily can therefore list fewer than 250 entries, a
+prefix of the list, with `truncated: true` beside the exact `total`; a stored
+part cut this way stays fetchable by its index. Labels that need no escaping
+always list all 250.
 
 A part that does not fit the remaining budget is **metadata only**: it is
 listed with its true size and hash and `stored: false`, and fetching it
