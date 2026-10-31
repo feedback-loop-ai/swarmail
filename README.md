@@ -689,7 +689,7 @@ explicit ambiguity error carrying the candidates; the fixtures never pick the
 first. `SWARMAIL_URL` (default `http://127.0.0.1:8025`) is the only
 configuration. Both run six example tests against the built binary in CI. Not
 yet done: **publishing** to npm and PyPI is a separate operator act (proposed
-decision [0110](docs/decisions/0110-client-fixture-packages.md)), TypeScript
+decision [0113](docs/decisions/0113-client-fixture-packages.md)), TypeScript
 and Python coverage is not measured, and the packaged forms are unproved.
 
 ### MCP — agents drive the mail

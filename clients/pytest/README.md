@@ -8,7 +8,7 @@ instead of sleeping. A thin REST client — no dependencies beyond Python 3.9+
 > **Status.** Versioned with the server (this package's version is
 > `Cargo.toml`'s) and exercised in CI by `examples/`. **Not yet published** to
 > PyPI: publishing is a separate operator act (proposed decision
-> [0110](../../docs/decisions/0110-client-fixture-packages.md) §5). Python
+> [0113](../../docs/decisions/0113-client-fixture-packages.md) §5). Python
 > coverage of this package is not measured, and the packaged form — including
 > the `pytest11` entry point — is unproved.
 

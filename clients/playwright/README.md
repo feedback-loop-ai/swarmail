@@ -8,7 +8,7 @@ instead of sleeping. A thin REST client — no runtime dependencies beyond Node
 > **Status.** Versioned with the server (this package's version is
 > `Cargo.toml`'s) and exercised in CI by `examples/`. **Not yet published** to
 > npm: publishing is a separate operator act (proposed decision
-> [0110](../../docs/decisions/0110-client-fixture-packages.md) §5). TypeScript
+> [0113](../../docs/decisions/0113-client-fixture-packages.md) §5). TypeScript
 > and JavaScript coverage of this package is not measured, and the packaged
 > form (`npm pack`) is unproved.
 

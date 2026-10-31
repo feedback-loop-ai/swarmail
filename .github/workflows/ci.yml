@@ -122,14 +122,14 @@ jobs:
           sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80
           cargo test --locked --test binary -- --ignored portless_bridge_pings_port_eighty
       # The client fixtures' example suites (issue #162, proposed decision
-      # 0110 §6): each runs against `target/debug/swarmail` built from this
+      # 0113 §6): each runs against `target/debug/swarmail` built from this
       # candidate with --locked, one named Linux step per suite so a red
       # `test (ubuntu-latest)` says which one failed. They ride this required
       # job on purpose — a new job would not be a required context on main.
       # Each step starts its own server on the defaults (127.0.0.1:8025 REST,
       # 1025 SMTP), waits for /healthz under a deadline, and on any failure
       # dumps the server's log; the trap stops the server either way. The
-      # frameworks are the exact CI-only pins the packages commit (0110 §3),
+      # frameworks are the exact CI-only pins the packages commit (0113 §3),
       # installed with scripts disabled and binary distributions only. An
       # empty suite fails: Playwright and pytest both exit non-zero when
       # they find no tests. Expected cost: a warm build plus a short install

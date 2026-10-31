@@ -2,10 +2,10 @@
 
 Implementation and proof obligations, not completed work. Check a task only
 after its paired proof is recorded against the actual candidate. The chief
-commits the design and proposed 0110; the deterministic check owns the design
+commits the design and proposed 0113; the deterministic check owns the design
 verdict. Dependencies follow this order.
 
-- [ ] **T1 — Index 0110 and reserve the layout (AC8, AC9).** Add the 0110
+- [ ] **T1 — Index 0113 and reserve the layout (AC8, AC9).** Add the 0113
   row to `docs/decisions/README.md` (status proposed, awaiting the
   operator); add `clients/` to `.dockerignore` and the client build
   artefacts to `.gitignore`.

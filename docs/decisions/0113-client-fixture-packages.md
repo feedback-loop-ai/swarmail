@@ -1,4 +1,4 @@
-# 0110 — Client fixture packages: versioned with the server, CI-only test pins
+# 0113 — Client fixture packages: versioned with the server, CI-only test pins
 
 - **Status:** proposed
 - **Date:** 2026-10-31
@@ -8,9 +8,9 @@
   [tasks](../../specs/client-fixture-packages/tasks.md).
 - **Preserves:** 0001–0005, 0010, 0018, 0030, 0044, 0048, 0049; proposed
   0094 stays MCP-only and unchanged. Amends nothing.
-- **Number:** next free after 0109 on `main` a3cff51; 0106–0108 are not
-  tracked there and are left alone in case a candidate branch holds them.
-  Recheck before integration; only the operator resolves collisions.
+- **Number:** drafted as 0110, the next free after 0109 on `main` a3cff51;
+  renumbered 0113 at integration, because #159 holds 0110, #156 0111 and
+  #157 0112.
 
 ## Context and authority
 
@@ -86,3 +86,12 @@ accepted 0045 §8: nothing here contradicts an accepted ruling.
   run them.
 - No paid trials, push, merge, publish, tag, issue closure or decision
   acceptance follow from this record.
+
+## Operator ruling (2026-10-31)
+
+The operator approved, in chat, the CI-only test dependencies this record
+pins: `@playwright/test` 1.55.0 for the Playwright fixture, and `pytest`
+8.4.2 with `iniconfig` 2.1.0, `packaging` 25.0, `pluggy` 1.6.0 and
+`pygments` 2.19.2 for the pytest fixture. They are test-time only and live
+under `clients/`; the swarmail crate gains no dependency. This approves those
+dependencies; the record's status is unchanged.

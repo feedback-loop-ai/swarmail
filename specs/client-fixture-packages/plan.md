@@ -1,7 +1,7 @@
 # Implementation plan — Playwright and pytest fixtures
 
 Implements [spec.md](spec.md) under proposed
-[0110](../../docs/decisions/0110-client-fixture-packages.md).
+[0113](../../docs/decisions/0113-client-fixture-packages.md).
 
 ## Technical context
 
@@ -33,7 +33,7 @@ verify and the five-member protected review remain owed.
   table (D09) is unchanged. The example suites gate on the awaits gauge,
   never a sleep (§5).
 - Dependencies: `Cargo.lock` and `deny.toml` unchanged. npm/PyPI pins are
-  CI-only and recorded in 0110 for the operator.
+  CI-only and recorded in 0113 for the operator.
 - 0056: commit unsigned, never push. 0045 §8: compatible work under a
   proposed decision.
 
@@ -107,7 +107,7 @@ Touched elsewhere:
 - `.gitignore` — `node_modules/`, `__pycache__/`, `test-results/`,
   `*.egg-info/`, `.pytest_cache/`.
 - `.dockerignore` — `clients/`.
-- `docs/decisions/README.md` — the 0110 index row (the inventory test
+- `docs/decisions/README.md` — the 0113 index row (the inventory test
   requires it; the chief's commit carries only the design files).
 
 ## Data model
@@ -158,7 +158,7 @@ PYTHONPATH=clients/pytest python -m pytest -p pytest_swarmail.plugin clients/pyt
    with confidence and CI proves them.
 3. **The selection rule lives in three places** (server, TS, Python).
    Mitigation: the version lock ties the clients to the server release;
-   the same six examples pin both clients; 0110 records that a change to
+   the same six examples pin both clients; 0113 records that a change to
    0094 §5/§6 changes the clients in the same release.
 4. **`index.d.ts` drifts from `client.js`.** Playwright strips types
    without checking. Mitigation: the surface is about fifteen lines and
@@ -167,7 +167,7 @@ PYTHONPATH=clients/pytest python -m pytest -p pytest_swarmail.plugin clients/pyt
 5. **Packaging is unproved.** pytest runs with `PYTHONPATH` and
    `-p pytest_swarmail.plugin`, so the `pytest11` entry point is never
    exercised; Playwright resolves the package through relative imports in
-   the example config. Mitigation: 0110 §5 owes that proof to the
+   the example config. Mitigation: 0113 §5 owes that proof to the
    publishing change, with licence files and registry-name checks;
    issue #162 stays open after this run.
 6. **npm/pip in the rust-cache job.** Mitigation: `--ignore-scripts` and

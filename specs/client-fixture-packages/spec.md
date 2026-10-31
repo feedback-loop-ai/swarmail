@@ -1,6 +1,6 @@
 # Playwright and pytest fixtures over REST, versioned with the server
 
-Decision: 0110 — [Client fixture packages](../../docs/decisions/0110-client-fixture-packages.md)
+Decision: 0113 — [Client fixture packages](../../docs/decisions/0113-client-fixture-packages.md)
 
 Issue #162, epic #164 (an agent surface measured by an eval harness), P2.
 Base `main` a3cff51, which carries the merged MCP work of #152, #153 and
@@ -53,7 +53,7 @@ condition does not fire: the REST view serializes `codes` and `links`.
 | Seeding in the examples | REST `POST …/seed` in both suites (same parse and extraction path, decision 0010). Adopt robustness's "250 is the contract" once, where the stdlib allows it: one pytest example sends through real SMTP with AUTH username = inbox via `smtplib`. Node has no stdlib SMTP client, so Playwright seeds over REST only. | The Playwright suite does not exercise SMTP AUTH; the Rust suites and the pytest example do. |
 | Shared conformance corpus | Reject robustness's JSON scenario file: two ~40-line clients pinned by the same six examples cost less than a third artefact and its loader in two languages. | Drift between the two clients is caught only by the paired examples. |
 | CI shape | Adopt simplicity: Linux-only steps appended to the existing `test` job, one named step per suite. Reject robustness's one job per fixture: a new job is not a required context on `main` until the operator edits branch protection, so it would not block merges; `test (ubuntu-latest)` already does. | A fixture failure reddens `test (ubuntu-latest)`; the named step says which suite. Moving the steps into their own job later is a mechanical edit plus one README row and one operator action. |
-| Dependencies | Zero runtime dependencies (global `fetch`; `urllib`). CI-only exact pins of the issue-named frameworks, committed in `clients/playwright/package.json` and `clients/pytest/requirements-ci.txt`, installed with scripts disabled and binaries only. No lockfile this run: none can be generated offline. The policy question is proposed 0110; see Acceptance Criteria. | A wrong pin is a red CI step, never a silent pass; the first real execution is CI. |
+| Dependencies | Zero runtime dependencies (global `fetch`; `urllib`). CI-only exact pins of the issue-named frameworks, committed in `clients/playwright/package.json` and `clients/pytest/requirements-ci.txt`, installed with scripts disabled and binaries only. No lockfile this run: none can be generated offline. The policy question is proposed 0113; see Acceptance Criteria. | A wrong pin is a red CI step, never a silent pass; the first real execution is CI. |
 | TypeScript | The runtime is ESM JavaScript with a hand-written `index.d.ts`; the example spec is TypeScript, run by Playwright's own transform. A `.ts` runtime would need a build and a `typescript` devDependency nobody has ruled on, and raw `.ts` is not usable from `node_modules`. | `index.d.ts` is not type-checked against the runtime; recorded as not measured. |
 | Version proof | Adopt simplicity: a `#[test]` in `tests/store_contract_docs.rs` compares `Cargo.toml`, `package.json` and `pyproject.toml`; the CI wiring is pinned in `tests/delivery_constitution.rs` beside its chart/smoke sibling. This replaces the framing's "checked script run in CI": the effect, a red check on mismatch, is met, and the proof also runs offline in the verify seat. | None. |
 
@@ -125,7 +125,7 @@ wait(inbox, filters, timeout, pick):
   `requirements-ci.txt`, `examples/test_example.py`.
 - Each package version equals `Cargo.toml`'s `package.version`.
 - Publishing to npm or PyPI is outward-facing and is not part of this run;
-  issue #162's "published" stays open after it, and 0110 says so.
+  issue #162's "published" stays open after it, and 0113 says so.
 
 ### Example suites, the same six tests in each language
 
@@ -171,7 +171,7 @@ inbox through `smtplib`; every other seed is `POST …/seed`.
 - **AC9:** The published packages have zero runtime dependencies; CI-only
   test-time pins are exact, committed, installed with scripts disabled and
   binaries only, and limited to the issue-named frameworks and their own
-  transitive closure. The policy is proposed 0110, awaiting the operator;
+  transitive closure. The policy is proposed 0113, awaiting the operator;
   implementation is compatible work under accepted 0045 §8.
 - **AC10:** Honest reporting: TypeScript and Python coverage are reported as
   not measured; the example suites' first real execution is CI; packaging
