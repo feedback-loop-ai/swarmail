@@ -49,7 +49,9 @@ Catalogue and snapshot versions are unchanged.
 like `tools/coverage-fn-scan`. The root package, its lock, its tests and its
 exact coverage gate neither build nor measure it, and the published `.crate`
 does not include it. Every package in `evals/Cargo.lock` is already in the
-root lock at the same version and source (`tests/boundary.rs` checks it).
+root lock at the same version and source, except the named dev-dependency
+exceptions of the dated 2026-10-30 amendment to decision 0055 (`pulldown-cmark`
+and `unicase`, exact versions; `tests/boundary.rs` checks it).
 
 Until #201 adds evals CI gating, **evals is proven by its own suite, run by
 the implement seat and reproduced by reviewers**. From `evals/`:
