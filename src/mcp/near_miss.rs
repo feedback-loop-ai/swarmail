@@ -1,4 +1,4 @@
-//! The near misses of a timed-out wait (decision 0106): the retained mail in
+//! The near misses of a timed-out wait (decision 0111): the retained mail in
 //! the waiter's own inbox that its filter did not admit, the one whose
 //! subject lies nearest the requested subject, and the inbox's last arrival.
 //!
@@ -193,7 +193,7 @@ fn derive(snapshot: &[Arc<Email>], filter: &Filter, skip_matching: bool) -> Opti
     Some(Value::Object(out))
 }
 
-/// The closed modern projection of the object (decision 0106 §4): every
+/// The closed modern projection of the object (decision 0111 §4): every
 /// member required, `missed` an array of the three field names,
 /// `nearest_subject` an entry or null. `maxLength` is left out because the
 /// finite evaluator the output contract is proved with does not state it.

@@ -2875,7 +2875,7 @@ fn nm_ids(srv: &swarmail::RunningServer, inbox: &str) -> Vec<String> {
         .collect()
 }
 
-/// Decision 0106, issue #156: a timed-out wait over real SMTP-delivered mail
+/// Decision 0111, issue #156: a timed-out wait over real SMTP-delivered mail
 /// names its near misses — the sibling address that did not match `to`, the
 /// typo that missed only the subject and is the nearest, and the last
 /// arrival — as exactly the five members, with seven per entry, and reads
@@ -3030,7 +3030,7 @@ async fn an_empty_inbox_timeout_keeps_its_exact_bytes() {
     assert!(found.get("near_misses").is_none(), "{found}");
 }
 
-/// The AUTH-is-inbox boundary (decisions 0004, 0106 §3): while the waiter's
+/// The AUTH-is-inbox boundary (decisions 0004, 0111 §3): while the waiter's
 /// wait is parked on the readiness gauge, a sibling inbox receives mail over
 /// SMTP AUTH; the waiter's timed-out answer names its own non-matching mail
 /// and nothing — id, subject or address — of the sibling's.

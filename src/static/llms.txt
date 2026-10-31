@@ -197,7 +197,7 @@ provenance. Labels are lexical and recorded at ingest; unknown labels (text part
 historical rows, unattributable links) are null and never match anchor_text.
 Lists show <=250 entries after full-snapshot selection, with exact *_total and
 *_truncated. Email reads, feeds and webhooks carry no occurrence metadata.
-Near misses (decision 0106, proposed): a timed-out `swarmail_wait_for_email`,
+Near misses (decision 0111, proposed): a timed-out `swarmail_wait_for_email`,
 `swarmail_wait_for_code` or `swarmail_wait_for_link` over an inbox that holds mail
 also carries near_misses, read from the store at the timeout, no extra retention:
 arrivals (retained mail the wait did not answer with, newest first, <=10, exact

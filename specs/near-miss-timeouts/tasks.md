@@ -84,5 +84,5 @@ fixture or its provenance, or any historical specification.
   implementation record, naming the CI-owned contexts as owed. **Proof:** the
   receipts; `missed == 0` lines, branches and functions (AC11).
 - [ ] T12 — Commit unsigned in the repository's style; never push, merge,
-  publish or accept 0106. **Proof:** `git log --format='%G? %h'` shows the
+  publish or accept 0111. **Proof:** `git log --format='%G? %h'` shows the
   branch's new commits unsigned and the operator seals before merge (0056).

@@ -359,7 +359,7 @@ pub(super) async fn call(
     match outcome {
         Some(Some(found)) => Ok(text_result(found, revision)),
         Some(None) => {
-            // A timeout names what the inbox holds instead (decision 0106):
+            // A timeout names what the inbox holds instead (decision 0111):
             // read after the wait resolved, never inside it, and nothing
             // attached when the inbox holds nothing. The focused waits skip
             // no mail: what their filter admitted but carried no code or
@@ -480,7 +480,7 @@ pub(super) fn output_schema(link: bool, address: &Value) -> Value {
                 "older_candidates_total":exactly(0),"older_candidates_truncated":never}),
         )
     };
-    // The same timeout with the inbox's near misses (decision 0106): a
+    // The same timeout with the inbox's near misses (decision 0111): a
     // second closed variant, so exactly one of the two ever validates.
     let mut near = timed_out.clone();
     near["near_misses"] = near_miss::schema();

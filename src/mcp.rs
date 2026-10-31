@@ -758,7 +758,7 @@ async fn tool_call(
                     ))
                 }
                 Some(Ok(WaitOutcome::Timeout { matched })) => {
-                    // The inbox's near misses (decision 0106), read after
+                    // The inbox's near misses (decision 0111), read after
                     // the wait resolved; mail the filter admits is already
                     // in `matched`, so it is skipped. Absent when the inbox
                     // holds nothing.

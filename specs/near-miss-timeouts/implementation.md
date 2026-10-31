@@ -1,7 +1,7 @@
 # Implementation record — near misses on a timed-out wait
 
 Companion to [spec.md](spec.md), [plan.md](plan.md) and [tasks.md](tasks.md).
-Decision [0106](../../docs/decisions/0106-near-miss-timeouts.md) stays
+Decision [0111](../../docs/decisions/0111-near-miss-timeouts.md) stays
 *proposed*; this work is compatible under 0045 §8 and accepts nothing.
 
 ## Binding (T1)

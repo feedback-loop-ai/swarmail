@@ -1,4 +1,4 @@
-# 0106 — Near misses on a timed-out wait
+# 0111 — Near misses on a timed-out wait
 
 - **Status:** proposed
 - **Date:** 2026-10-31
@@ -13,10 +13,10 @@
 - **Preserves:** 0001–0005, 0010, 0018, 0020, 0025, 0029/0030, 0044, 0047,
   0071 and every accepted ruling; 0079/0080 deviations and proposal statuses
   unchanged.
-- **Number:** 0094 recorded #156 as `0093-near-miss-timeouts`; main's #163
-  delivery now holds `0093-source-mail-comparison.md`. 0106 is the next free
-  number locally. The collision is the operator's to resolve; nothing here
-  renumbers another record.
+- **Number:** 0094 recorded #156 as `0093-near-miss-timeouts`, which main's #163
+  delivery then took; drafted as 0106, renumbered to 0111 at integration on
+  2026-10-31, after open PR #292 held 0106–0107, main held up to 0109 and #159
+  held 0110.
 
 ## Context and authority
 

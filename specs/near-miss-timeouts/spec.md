@@ -3,7 +3,7 @@
 Date: 2026-10-31. Epic #164, issue #156. Design on main `d892acb`, which
 carries the merged #152, #153 and #154 work.
 
-Decision: 0106 — [Near misses on a timed-out wait](../../docs/decisions/0106-near-miss-timeouts.md), proposed.
+Decision: 0111 — [Near misses on a timed-out wait](../../docs/decisions/0111-near-miss-timeouts.md), proposed.
 
 ## Feature and rationale
 
@@ -81,7 +81,7 @@ rules as follows. "Cost" names what the losing side gives up.
 | Who is nearest | every non-matching candidate | only candidates that passed every other field | **Robustness.** Only candidates whose `missed` is exactly `["subject"]` are ranked. "Nearest" then means "the mail that would have matched had the subject been right". | A mail that also failed `to` is never the nearest, even when its subject is closer. It is still in `arrivals` with its `missed`. |
 | Ranking | distinct lowercase character bigram overlap | bounded edit distance | **Simplicity.** Bigram overlap over the clipped subject is linear, dependency-free and handles CJK; ties go to the newest, a zero score is `null`. | Crude on one-character filters (always `null`) and long subjects. Selection is the agent's; `arrivals` sits beside it. |
 | Empty inbox | omit the key | always present, explicit `null`s | **Simplicity.** The object is present exactly when the inbox holds retained mail at the read. The March captures stay byte-identical and mail-free timeout tests pass unchanged. | "Empty" and "absent" collapse into one documented meaning: the inbox holds nothing. Modern clients read presence from the two closed timeout variants. |
-| Revisions | all three, from the one captured Value | modern schema; March unstated | **Simplicity.** The harness client and missing-version clients speak March; a modern-only member cannot show the acceptance criterion. Decision 0106 names the departure from proposed 0082 §1. | March result text for a timed-out wait over a non-empty inbox gains a key. Descriptors and every captured baseline line are unchanged. |
+| Revisions | all three, from the one captured Value | modern schema; March unstated | **Simplicity.** The harness client and missing-version clients speak March; a modern-only member cannot show the acceptance criterion. Decision 0111 names the departure from proposed 0082 §1. | March result text for a timed-out wait over a non-empty inbox gains a key. Descriptors and every captured baseline line are unchanged. |
 | `last_arrival_ms` | max `received_ms` over the snapshot | the newest in acceptance order | **Robustness.** It is the `received_ms` of the first element of the newest-first list, the order 0001 and 0003 are built on; a test seeds out-of-order `received_ms` to pin it. | Under a clock step the two can disagree; acceptance order is the store's truth. |
 | List cap / addresses | 10 / 5, de-duplicated | 8 / 4 with `to_total` | **10 / 5 with `to_total`.** The exact distinct-recipient count costs one integer and makes the cap visible. | None material. |
 | Clipping | 256 bytes, no flag | ~200 bytes, boundary-safe | **256 bytes, char-boundary safe, no flag.** `email_id` leads to the exact mail through `swarmail_get_email`. | A 256-byte string may or may not be clipped; it is a hint, not the record. |
@@ -280,6 +280,6 @@ Each criterion names a witness that can go red.
 - Mail fields are untrusted text in an agent's prompt path, the same exposure
   as `swarmail_search_emails`, and smaller when clipped.
 - Decision number: 0094 reserved 0093 for this issue, but main now holds
-  `0093-source-mail-comparison.md`; 0106 is the next free number locally and
-  the collision is flagged for the operator.
+  `0093-source-mail-comparison.md`; drafted as 0106 and renumbered to 0111 at
+  integration (open PR #292 holds 0106–0107, #159 holds 0110).
 - Commit unsigned; never push, merge, publish or accept a decision.

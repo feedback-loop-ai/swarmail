@@ -289,7 +289,7 @@ execution: #201 owns macOS eval gating, the operator owns sealing/live settings,
 and #221 owns namespace isolation.
 
 Three further scripted controls (`near_miss_controls_recover_after_a_timed_out_wait`,
-issue #156, Swarmail decision 0106) prove recovery after a failed wait is
+issue #156, Swarmail decision 0111) prove recovery after a failed wait is
 mechanically possible from the timed-out answer alone, through the real CLI,
 real MCP and real SMTP, with no catalogue change (0071): a sibling-trap agent
 that mistypes the subject reads `near_misses`, picks the entry addressed to its

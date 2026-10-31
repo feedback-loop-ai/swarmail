@@ -9,7 +9,7 @@ pub(super) const FOCUSED: [&str; 2] = ["swarmail_wait_for_code", "swarmail_wait_
 
 const ADDRESS: &str = r#"{"type":"object","properties":{"address":{"type":"string"},"name":{"type":"string"}},"required":["address"],"additionalProperties":false}"#;
 
-/// Decision 0106 §4's closed object, written from the contract: five members,
+/// Decision 0111 §4's closed object, written from the contract: five members,
 /// seven per entry, the three `missed` names, and `nearest_subject` an entry
 /// or null. No `maxLength`: the finite evaluator does not state it.
 pub(super) fn near_misses_schema() -> Value {
@@ -287,7 +287,7 @@ async fn focused_waits_on_every_revision_and_transport() {
     let unsub = json!({"url":"https://app.test/unsub","email_id":links,"link_index":1,
         "anchor_text":"Unsubscribe","rel":null,"source":"html","received_ms":links_ms,"sender":sender});
     // The link wait's selectors are not mail filters: the mail they refuse
-    // still shows, with an empty `missed` (decision 0106).
+    // still shows, with an empty `missed` (decision 0111).
     let near_links = json!({"email_id":links,"received_ms":links_ms,"from":"app@x.io","to":["rcpt@x.io"],
         "to_total":1,"subject":"Confirm","missed":[]});
     let cases = [

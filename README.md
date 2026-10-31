@@ -865,7 +865,7 @@ $ curl -s -X POST localhost:8025/mcp -H 'content-type: application/json' \
   re-extracted. Email reads, feeds and webhooks are unchanged — occurrence
   metadata is reachable only through `swarmail_wait_for_link`.
 
-- **Near misses on a timeout (decision [0106](docs/decisions/0106-near-miss-timeouts.md), proposed):**
+- **Near misses on a timeout (decision [0111](docs/decisions/0111-near-miss-timeouts.md), proposed):**
   a timed-out `swarmail_wait_for_email`, `swarmail_wait_for_code` or
   `swarmail_wait_for_link` over an inbox that holds mail also carries
   `near_misses`, read from the store at the timeout with no extra retention:

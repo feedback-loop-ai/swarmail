@@ -626,7 +626,7 @@ async fn helper(mode: &str) -> i32 {
         }
         "near_miss_sibling" | "near_miss_sibling_nearest" => {
             // A mistyped subject times the wait out; the timed-out answer
-            // alone (decision 0106) names the mail it missed. The recovery
+            // alone (decision 0111) names the mail it missed. The recovery
             // control picks the entry addressed to the exact identity; the
             // negative control presents `nearest_subject` as the match.
             let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();

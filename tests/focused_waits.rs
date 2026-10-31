@@ -231,7 +231,7 @@ async fn every_filter_selects_on_each_focused_tool() {
     srv.stop().await;
 }
 
-/// Decision 0106, issue #156: a timed-out focused wait names the inbox's
+/// Decision 0111, issue #156: a timed-out focused wait names the inbox's
 /// near misses. The focused waits skip no mail, so what their filter
 /// admitted but carried no code, or no link the selectors leave, shows with
 /// an empty `missed`; what the filter refused names the fields it failed;

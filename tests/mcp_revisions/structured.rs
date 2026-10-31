@@ -1971,7 +1971,7 @@ async fn modern_seed_nonempty_arrays_validate() {
     srv.stop().await;
 }
 
-/// Decision 0106 §4, issue #156: the near-miss object is part of the one
+/// Decision 0111 §4, issue #156: the near-miss object is part of the one
 /// captured Value. Over real SMTP, on every revision and both transports, a
 /// populated timed-out wait carries the same object in March text and in
 /// June/November text and `structuredContent`; the closed third variant

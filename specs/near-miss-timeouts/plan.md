@@ -2,7 +2,7 @@
 
 Companion to [spec.md](spec.md) (contract, rulings, AC1–AC11) and
 [tasks.md](tasks.md) (ordered work with its witnesses). Decision
-[0106](../../docs/decisions/0106-near-miss-timeouts.md) is proposed; the
+[0111](../../docs/decisions/0111-near-miss-timeouts.md) is proposed; the
 work is compatible under 0045 §8.
 
 ## Technical context
@@ -27,7 +27,7 @@ work is compatible under 0045 §8.
 | 0005 extraction at ingest | Only stored fields (`subject`, `from`, `to`, `cc`, `recipients`, `received_ms`, `id`) are read; nothing is re-parsed. |
 | 0018 observed totals | `total` and its one-insert residual unchanged; the near-miss object is derived from one snapshot so it cannot contradict itself. |
 | 0020 test placement | Branch-stable derivation tests inline in `src/mcp/near_miss.rs`; wire shapes in `tests/`; no cold path, so no harness file. |
-| 0082/0094/0105 output contract | Closed variants, every emitted member required, one captured Value for text and `structuredContent`; March descriptor bytes untouched; the March result-text departure is named in 0106. |
+| 0082/0094/0105 output contract | Closed variants, every emitted member required, one captured Value for text and `structuredContent`; March descriptor bytes untouched; the March result-text departure is named in 0111. |
 | 0071 catalogue | No change under `evals/tests/data/`; scripted controls only. |
 | Exact coverage | Every new line executes in an inline or wire test; no `coverage(off)`. |
 | Dependency policy | No new crate; `deny.toml` untouched. |
@@ -45,7 +45,7 @@ work is compatible under 0045 §8.
 | `tests/mcp_revisions/structured.rs` | Schema variants on June/November for populated and empty timeouts, negatives, March text equality with modern `structuredContent`. |
 | `tests/mcp_revisions/focused.rs` | Exact-shape cases for `timed_out` over the populated `links` and `history` inboxes gain their `near_misses`. |
 | `evals/tests/common/mod.rs`, `evals/tests/proof.rs`, `evals/README.md` | Three helper modes, one proof test, control count and honest-limit prose. |
-| `docs/decisions/0106-near-miss-timeouts.md`, `docs/decisions/README.md` | The proposed record and its index row (this design commit). |
+| `docs/decisions/0111-near-miss-timeouts.md`, `docs/decisions/README.md` | The proposed record and its index row (this design commit). |
 
 ## Data model and contracts
 
@@ -130,5 +130,5 @@ already runs.
 | Threshold waits hide filter-matching mail that failed the report | Documented; `total` counts it and the report tool explains it. |
 | The focused exact-shape fixtures drift silently | `tests/mcp_revisions/focused.rs` cases over populated inboxes are updated deliberately with the full object, not loosened. |
 | Harness proves nothing about live agents | Stated in the spec, decision and `evals/README.md`: scripted controls prove mechanical recovery; the live rate is not measured (no paid trials). |
-| Decision number collision (0093 reserved, 0106 used) | Flagged in spec and 0106; the operator resolves; nothing here renumbers another record. |
+| Decision number collision (0093 reserved, 0111 used) | Flagged in spec and 0111, whose number note records the path through 0106; nothing here renumbers another record. |
 | Coverage denominator | New production lines all have inline or wire execution; no harness file is introduced because no branch is cold. |
