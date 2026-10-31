@@ -9,6 +9,28 @@ pub(super) const FOCUSED: [&str; 2] = ["swarmail_wait_for_code", "swarmail_wait_
 
 const ADDRESS: &str = r#"{"type":"object","properties":{"address":{"type":"string"},"name":{"type":"string"}},"required":["address"],"additionalProperties":false}"#;
 
+/// Decision 0106 §4's closed object, written from the contract: five members,
+/// seven per entry, the three `missed` names, and `nearest_subject` an entry
+/// or null. No `maxLength`: the finite evaluator does not state it.
+pub(super) fn near_misses_schema() -> Value {
+    let count = json!({"type":"integer","minimum":0});
+    let stamp = json!({"type":"integer","minimum":i64::MIN,"maximum":i64::MAX});
+    let text = json!({"type":["string","null"]});
+    let entry = json!({"type":"object","properties":{
+        "email_id":{"type":"string"},"received_ms":stamp,"from":text,
+        "to":{"type":"array","items":{"type":"string"},"maxItems":5},"to_total":count,
+        "subject":text,
+        "missed":{"type":"array","items":{"type":"string","enum":["to","from","subject"]}}},
+        "required":["email_id","received_ms","from","to","to_total","subject","missed"],
+        "additionalProperties":false});
+    json!({"type":"object","properties":{
+        "arrivals":{"type":"array","items":entry,"maxItems":10},
+        "arrivals_total":count,"arrivals_truncated":{"type":"boolean"},
+        "nearest_subject":{"anyOf":[entry,{"type":"null"}]},"last_arrival_ms":stamp},
+        "required":["arrivals","arrivals_total","arrivals_truncated","nearest_subject","last_arrival_ms"],
+        "additionalProperties":false})
+}
+
 fn filters(link: bool) -> Value {
     let mut properties = json!({
         "inbox":{"type":"string"},"to":{"type":"string"},"from":{"type":"string"},
@@ -151,6 +173,10 @@ pub(super) fn expected_output(name: &str) -> Value {
                 "timed_out",
                 json!({"matched":exact(0),"candidates":list(0,0),"candidates_total":exact(0),"candidates_truncated":never,"distinct_urls":exact(0)}),
             ),
+            close(
+                "timed_out",
+                json!({"matched":exact(0),"candidates":list(0,0),"candidates_total":exact(0),"candidates_truncated":never,"distinct_urls":exact(0),"near_misses":near_misses_schema()}),
+            ),
         ]
     } else {
         vec![
@@ -165,6 +191,10 @@ pub(super) fn expected_output(name: &str) -> Value {
             close(
                 "timed_out",
                 json!({"matched":exact(0),"candidates":list(0,0),"candidates_total":exact(0),"candidates_truncated":never,"older_candidates":list(0,0),"older_candidates_total":exact(0),"older_candidates_truncated":never}),
+            ),
+            close(
+                "timed_out",
+                json!({"matched":exact(0),"candidates":list(0,0),"candidates_total":exact(0),"candidates_truncated":never,"older_candidates":list(0,0),"older_candidates_total":exact(0),"older_candidates_truncated":never,"near_misses":near_misses_schema()}),
             ),
         ]
     };
@@ -256,6 +286,10 @@ async fn focused_waits_on_every_revision_and_transport() {
         "anchor_text":"Confirm","rel":"noopener","source":"html","received_ms":links_ms,"sender":sender});
     let unsub = json!({"url":"https://app.test/unsub","email_id":links,"link_index":1,
         "anchor_text":"Unsubscribe","rel":null,"source":"html","received_ms":links_ms,"sender":sender});
+    // The link wait's selectors are not mail filters: the mail they refuse
+    // still shows, with an empty `missed` (decision 0106).
+    let near_links = json!({"email_id":links,"received_ms":links_ms,"from":"app@x.io","to":["rcpt@x.io"],
+        "to_total":1,"subject":"Confirm","missed":[]});
     let cases = [
         (
             "wait_for_code",
@@ -298,7 +332,9 @@ async fn focused_waits_on_every_revision_and_transport() {
             "wait_for_link",
             json!({"inbox":"links","path":"^/nowhere$","timeout_ms":0}),
             json!({
-            "status":"timed_out","matched":0,"distinct_urls":0,"candidates":[],"candidates_total":0,"candidates_truncated":false}),
+            "status":"timed_out","matched":0,"distinct_urls":0,"candidates":[],"candidates_total":0,"candidates_truncated":false,
+            "near_misses":{"arrivals":[near_links.clone()],"arrivals_total":1,"arrivals_truncated":false,
+                "nearest_subject":null,"last_arrival_ms":links_ms}}),
         ),
         (
             "wait_for_link",
@@ -313,7 +349,10 @@ async fn focused_waits_on_every_revision_and_transport() {
             "wait_for_link",
             json!({"inbox":"history","anchor_text":"","timeout_ms":0}),
             json!({
-            "status":"timed_out","matched":0,"distinct_urls":0,"candidates":[],"candidates_total":0,"candidates_truncated":false}),
+            "status":"timed_out","matched":0,"distinct_urls":0,"candidates":[],"candidates_total":0,"candidates_truncated":false,
+            "near_misses":{"arrivals":[{"email_id":"historical-history","received_ms":0,"from":null,"to":[],
+                "to_total":0,"subject":null,"missed":[]}],"arrivals_total":1,"arrivals_truncated":false,
+                "nearest_subject":null,"last_arrival_ms":0}}),
         ),
         (
             "wait_for_code",

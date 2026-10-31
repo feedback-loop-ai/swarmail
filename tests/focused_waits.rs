@@ -231,6 +231,132 @@ async fn every_filter_selects_on_each_focused_tool() {
     srv.stop().await;
 }
 
+/// Decision 0106, issue #156: a timed-out focused wait names the inbox's
+/// near misses. The focused waits skip no mail, so what their filter
+/// admitted but carried no code, or no link the selectors leave, shows with
+/// an empty `missed`; what the filter refused names the fields it failed;
+/// the nearest subject is a mail that missed the subject alone. An inbox
+/// that holds nothing answers today's bytes.
+#[tokio::test]
+async fn focused_timeouts_name_their_near_misses() {
+    let srv = start().await;
+    let addr = srv.smtp_addr;
+    let digest = deliver(
+        addr,
+        "fnm",
+        "s@x.io",
+        "dana@x.io",
+        &mail(
+            "From: s@x.io\nTo: dana@x.io\nSubject: Digest",
+            "nothing to see",
+        ),
+    )
+    .await;
+    let sibling = deliver(
+        addr,
+        "fnm",
+        "s@x.io",
+        "erin@x.io",
+        &mail(
+            "From: s@x.io\nTo: erin@x.io\nSubject: Your code",
+            "code 123456 https://app.test/x",
+        ),
+    )
+    .await;
+    let stamp = |id: &str| srv.store.get(id).unwrap().received_ms;
+    let entry = |id: &str, to: &str, subject: &str, missed: Value| {
+        json!({"email_id":id,"received_ms":stamp(id),"from":"s@x.io","to":[to],
+            "to_total":1,"subject":subject,"missed":missed})
+    };
+    let digest_entry = |missed: Value| entry(&digest, "dana@x.io", "Digest", missed);
+    let sibling_entry = |missed: Value| entry(&sibling, "erin@x.io", "Your code", missed);
+    let near = |arrivals: Vec<Value>, nearest: Value| {
+        json!({"arrivals_total":arrivals.len(),"arrivals":arrivals,"arrivals_truncated":false,
+            "nearest_subject":nearest,"last_arrival_ms":stamp(&sibling)})
+    };
+    // The filter admitted the digest, which carried no code: empty `missed`.
+    let code = focused(
+        addr_of(&srv),
+        "code",
+        json!({"inbox":"fnm","to":"dana@x.io","timeout_ms":0}),
+    )
+    .await;
+    assert_eq!(code["status"], "timed_out", "{code}");
+    assert_eq!(
+        code["near_misses"],
+        near(
+            vec![sibling_entry(json!(["to"])), digest_entry(json!([]))],
+            Value::Null
+        )
+    );
+    // A subject the digest nearly has: it is the nearest, the sibling that
+    // also failed `to` is not.
+    let code = focused(
+        addr_of(&srv),
+        "code",
+        json!({"inbox":"fnm","to":"dana@x.io","subject":"Digests","timeout_ms":0}),
+    )
+    .await;
+    assert_eq!(
+        code["near_misses"],
+        near(
+            vec![
+                sibling_entry(json!(["to", "subject"])),
+                digest_entry(json!(["subject"]))
+            ],
+            digest_entry(json!(["subject"]))
+        )
+    );
+    // Link selectors are not mail filters: both mails show, none missed.
+    let link = focused(
+        addr_of(&srv),
+        "link",
+        json!({"inbox":"fnm","path":"^/nowhere$","timeout_ms":0}),
+    )
+    .await;
+    assert_eq!(link["status"], "timed_out", "{link}");
+    assert_eq!(
+        link["near_misses"],
+        near(
+            vec![sibling_entry(json!([])), digest_entry(json!([]))],
+            Value::Null
+        )
+    );
+    let object = link["near_misses"].as_object().unwrap();
+    assert_eq!(
+        object.keys().collect::<Vec<_>>(),
+        [
+            "arrivals",
+            "arrivals_total",
+            "arrivals_truncated",
+            "last_arrival_ms",
+            "nearest_subject"
+        ]
+    );
+    assert_eq!(object["arrivals"][0].as_object().unwrap().keys().count(), 7);
+    // Nothing retained: today's shape, with no member.
+    for tool in ["code", "link"] {
+        let empty = focused(
+            addr_of(&srv),
+            tool,
+            json!({"inbox":"fnm-empty","timeout_ms":0}),
+        )
+        .await;
+        assert_eq!(empty["status"], "timed_out");
+        assert!(empty.get("near_misses").is_none(), "{empty}");
+    }
+    // The read changed nothing.
+    assert_eq!(
+        srv.store.count("fnm", &swarmail::store::Filter::default()),
+        2
+    );
+    srv.stop().await;
+}
+
+fn addr_of(srv: &swarmail::RunningServer) -> SocketAddr {
+    srv.http_addr
+}
+
 /// Ingest records occurrences once, for SMTP and seed alike (decisions
 /// 0005, 0010): text part first, then the HTML part in source order, with
 /// labels and rel only on owned anchors. An HTML attachment contributes

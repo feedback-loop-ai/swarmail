@@ -1034,6 +1034,9 @@ fn projections(c: &Value) -> Value {
         .remove("emails");
     timeout["properties"]["timed_out"] = json!({"type":"boolean","const":true});
     timeout["required"] = json!(["matched", "total", "timed_out"]);
+    let mut near_timeout = timeout.clone();
+    near_timeout["properties"]["near_misses"] = super::focused::near_misses_schema();
+    near_timeout["required"] = json!(["matched", "total", "timed_out", "near_misses"]);
     let mut chaos = close(
         resolve(&c["ChaosConfig"], c),
         json!(["connect", "mail_from", "rcpt", "data"]),
@@ -1046,7 +1049,7 @@ fn projections(c: &Value) -> Value {
         "swarmail_get_deliverability_report": report_projection(c),
         "swarmail_get_email": email,
         "swarmail_get_latest_email":wrapper(json!({"emails":latest_emails}),json!(["emails"])),
-        "swarmail_wait_for_email":{"type":"object","oneOf":[found,timeout]},
+        "swarmail_wait_for_email":{"type":"object","oneOf":[found,timeout,near_timeout]},
         "swarmail_extract_links":wrapper(json!({"links":email["properties"]["links"]}),json!(["links"])),
         "swarmail_extract_codes":wrapper(json!({"codes":email["properties"]["codes"]}),json!(["codes"])),
         "swarmail_seed_email":wrapper(json!({"id":email["properties"]["id"],"links":email["properties"]["links"],"codes":email["properties"]["codes"]}),json!(["id","links","codes"])),
@@ -1965,5 +1968,169 @@ async fn modern_seed_nonempty_arrays_validate() {
         assert!(valid(schema, &payload));
         assert_eq!(payload, reply["result"]["structuredContent"]);
     }
+    srv.stop().await;
+}
+
+/// Decision 0106 §4, issue #156: the near-miss object is part of the one
+/// captured Value. Over real SMTP, on every revision and both transports, a
+/// populated timed-out wait carries the same object in March text and in
+/// June/November text and `structuredContent`; the closed third variant
+/// validates it; an empty inbox answers today's bytes and the first variant.
+/// Each constraint refuses on its own.
+#[tokio::test]
+async fn near_misses_ride_the_one_captured_value_on_every_revision() {
+    let srv = start().await;
+    for (to, subject) in [
+        ("alice.team@example.test", "Confirm your account"),
+        ("alice@example.test", "Confirm you account"),
+    ] {
+        smtp_send(
+            srv.smtp_addr,
+            Some("nm-rev"),
+            "app@example.test",
+            to,
+            subject,
+            "body",
+        )
+        .await
+        .unwrap();
+    }
+    let wait = |inbox: &str| {
+        call(
+            json!(7),
+            "wait_for_email",
+            json!({"inbox":inbox,"to":"alice@example.test","subject":"Confirm your account","timeout_ms":0}),
+        )
+    };
+    let mut populated: Vec<Value> = vec![];
+    let mut schema_seen = None;
+    for version in VERSIONS {
+        for stdio in [false, true] {
+            let mut wire = Wire::start(srv.http_addr, version, stdio).await;
+            let modern = version != VERSIONS[0];
+            let list = wire.request(&json!({"id":1,"method":"tools/list"})).await;
+            let schema = list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == "swarmail_wait_for_email")
+                .unwrap()["outputSchema"]
+                .clone();
+            let raw = wire.raw(&wait("nm-rev")).await;
+            let reply: Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(reply["result"]["isError"], false, "{raw}");
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            let payload: Value = serde_json::from_str(text).unwrap();
+            assert_eq!(payload["near_misses"]["arrivals_total"], 2, "{raw}");
+            if modern {
+                assert!(
+                    raw.ends_with(&format!(",\"structuredContent\":{text}}}}}")),
+                    "{raw}"
+                );
+                assert_eq!(reply["result"]["structuredContent"], payload);
+                assert!(valid(&schema, &payload), "{payload}");
+                schema_seen = Some(schema.clone());
+            } else {
+                assert!(reply["result"].get("structuredContent").is_none());
+                assert!(schema.is_null(), "March has no output schema");
+            }
+            populated.push(payload);
+            // An empty inbox: today's bytes, on the first closed variant.
+            let raw = wire.raw(&wait("nm-rev-empty")).await;
+            let reply: Value = serde_json::from_str(&raw).unwrap();
+            let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+            assert_eq!(text, r#"{"matched":0,"timed_out":true,"total":0}"#);
+            if modern {
+                assert!(valid(&schema, &serde_json::from_str(text).unwrap()));
+            }
+            wire.finish().await;
+        }
+    }
+    // One captured Value: March text equals the modern payload.
+    assert!(populated.windows(2).all(|pair| pair[0] == pair[1]));
+    let schema = schema_seen.unwrap();
+    let good = populated[0].clone();
+    assert!(valid(&schema, &good));
+    let mutate = |edit: &dyn Fn(&mut Value)| {
+        let mut bad = good.clone();
+        edit(&mut bad);
+        bad
+    };
+    for (name, bad) in [
+        (
+            "extra member",
+            mutate(&|v| v["near_misses"]["extra"] = json!(1)),
+        ),
+        (
+            "missing member",
+            mutate(&|v| {
+                v["near_misses"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("last_arrival_ms");
+            }),
+        ),
+        (
+            "unknown missed value",
+            mutate(&|v| v["near_misses"]["arrivals"][0]["missed"] = json!(["since_ms"])),
+        ),
+        (
+            "non-null non-object nearest",
+            mutate(&|v| v["near_misses"]["nearest_subject"] = json!("Confirm")),
+        ),
+        (
+            "null near_misses",
+            mutate(&|v| v["near_misses"] = Value::Null),
+        ),
+        (
+            "extra entry member",
+            mutate(&|v| v["near_misses"]["arrivals"][0]["inbox"] = json!("nm-rev")),
+        ),
+        (
+            "missing entry member",
+            mutate(&|v| {
+                v["near_misses"]["arrivals"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("to_total");
+            }),
+        ),
+        (
+            "eleven arrivals",
+            mutate(&|v| {
+                let entry = v["near_misses"]["arrivals"][0].clone();
+                v["near_misses"]["arrivals"] = json!(vec![entry; 11]);
+            }),
+        ),
+        (
+            "six addresses",
+            mutate(&|v| {
+                v["near_misses"]["arrivals"][0]["to"] = json!(["a", "b", "c", "d", "e", "f"]);
+            }),
+        ),
+        (
+            "negative total",
+            mutate(&|v| v["near_misses"]["arrivals_total"] = json!(-1)),
+        ),
+        (
+            "near misses beside emails",
+            mutate(&|v| {
+                v.as_object_mut().unwrap().remove("timed_out");
+                v["emails"] = json!([{"id":"e","inbox":"i","envelope_from":null,"to":[],
+                    "received_at":"t","received_ms":0,"size":1}]);
+            }),
+        ),
+        (
+            "timed_out false",
+            mutate(&|v| v["timed_out"] = json!(false)),
+        ),
+    ] {
+        assert!(!valid(&schema, &bad), "{name}: {bad}");
+    }
+    // A null nearest subject and an empty list are the other legal forms.
+    assert!(valid(
+        &schema,
+        &mutate(&|v| v["near_misses"]["nearest_subject"] = Value::Null)
+    ));
     srv.stop().await;
 }

@@ -197,6 +197,21 @@ provenance. Labels are lexical and recorded at ingest; unknown labels (text part
 historical rows, unattributable links) are null and never match anchor_text.
 Lists show <=250 entries after full-snapshot selection, with exact *_total and
 *_truncated. Email reads, feeds and webhooks carry no occurrence metadata.
+Near misses (decision 0106, proposed): a timed-out `swarmail_wait_for_email`,
+`swarmail_wait_for_code` or `swarmail_wait_for_link` over an inbox that holds mail
+also carries near_misses, read from the store at the timeout, no extra retention:
+arrivals (retained mail the wait did not answer with, newest first, <=10, exact
+arrivals_total and arrivals_truncated), nearest_subject (an entry or null) and
+last_arrival_ms (received_ms of the newest retained mail, ignoring since_ms). An
+entry is email_id, received_ms, from, to (<=5 distinct To/Cc/envelope addresses,
+exact to_total), subject and missed, the supplied to/from/subject filters that
+mail fails (a sibling address reads ["to"], a typo ["subject"]); strings are
+clipped to 256 bytes. wait_for_email lists only mail its filter refused; the
+focused waits list every retained mail, missed [] meaning it passed your filters
+but had no code or no selected link. since_ms limits arrivals. nearest_subject is
+a hint, never a selection: the mail that missed the subject alone with the most
+shared character pairs; read its to. No near_misses key means the inbox holds
+nothing. Own inbox only; not access control (MCP is unauthenticated).
 stdio transport: `swarmail mcp --url http://127.0.0.1:8025` (launch as an MCP
 subprocess; talks to the same server). Except for malformed seed fixture
 content and the supplied `timeout_ms`
