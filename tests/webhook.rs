@@ -2735,6 +2735,7 @@ async fn the_final_sweep_survives_a_lagged_ring_and_accounts_the_backlog() {
             text: Some("x".to_string()),
             html: None,
             link_metadata: None,
+            attachments: None,
             links: vec![],
             codes: vec![],
             message_id: None,
