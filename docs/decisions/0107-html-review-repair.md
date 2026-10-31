@@ -93,3 +93,19 @@ repair candidate. The combined bulk and HTML candidate uses `swarmail-html/3`
 because its inputs, findings and empty-message failure behavior differ.
 The schema and rule IDs remain stable; the catalogue and cache identity move
 with the aggregate version. This note is proposed, not an acceptance.
+
+## March baseline and the report identity — proposed integration note
+
+Merging #282 onto this candidate moved one byte range of the thirteen-tool March
+baseline: the seed report row's `rule_set_id`, from `swarmail-bulk/1` to
+`swarmail-html/3`. That row gains no finding. The baseline was edited by that
+one token and its provenance records the edit; it was not re-captured.
+
+This note reads 0105 §1 ("March ... retain independently captured bytes") as
+pinning the March envelope, order, escaping and text-only shape, not freezing
+report content across rule-set versions. 0085 requires a new id for these rule
+changes, 0105 §2 and its specification admit no fixed rule-set value, and 0105
+§1 and 0106 §7 give every adapter one report, so serving the old id on March
+would misstate what ran. New HTML findings reach March text-block clients on
+mail that triggers them, under the new id. That reading is proposed, not an
+acceptance; the operator may rule otherwise.

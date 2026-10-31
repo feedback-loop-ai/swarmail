@@ -37,6 +37,11 @@ capture harness and case list, build invocation, executable digests before and
 after, and the single `$SEED_ID` substitution. 3a2eef9 is a local candidate, not
 a protected #152 acceptance receipt.
 
+2026-10-31 (#259, PR #292): the seed report row moved from `swarmail-bulk/1` to
+`swarmail-html/3` by a recorded one-token edit, not a re-capture; the provenance
+`updated` field and proposed [0107](../../docs/decisions/0107-html-review-repair.md)
+say why.
+
 ## Gaps stated, not waived
 
 - The MCP `deliverability analysis unavailable` text is not reached on the wire:
