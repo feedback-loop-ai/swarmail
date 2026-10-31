@@ -3312,7 +3312,8 @@ mod tests {
     /// March batch members and silent notifications all draw on the Arc
     /// `router` allocated, observed through its seam. An endpoint or
     /// revision that built its own limiter leaves the count short and
-    /// admits the exhausted calls; refusal precedes staging and effects,
+    /// admits the exhausted calls; refusal precedes staging, effects and
+    /// every wait's subscription, the focused waits included (0094),
     /// controls stay available, and live admitted calls keep the
     /// observers honest. A future window start never refills, so no count
     /// depends on the scheduler.
@@ -3400,6 +3401,8 @@ mod tests {
             call(6, "swarmail_seed_email", json!({"to":"a@x.io"})),
             call(6, "swarmail_clear_all", json!({})),
             call(6, "swarmail_wait_for_email", json!({"timeout_ms":0})),
+            call(6, "swarmail_wait_for_code", json!({"timeout_ms":0})),
+            call(6, "swarmail_wait_for_link", json!({"timeout_ms":0})),
             call(
                 6,
                 "swarmail_set_chaos",

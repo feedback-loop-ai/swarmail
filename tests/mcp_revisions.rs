@@ -267,33 +267,36 @@ async fn revision_headers_and_isolation() {
     legacy.finish().await;
     modern.finish().await;
 }
-/// The current catalogue, written out here rather than copied from the
-/// production allowlist, so a new tool or a misclassified hint fails instead
-/// of being blessed: seven reads (the deliverability report's cache fill never
-/// changes stored mail or extraction, 0085) and six mutations.
-const CATALOGUE: [(&str, bool); 13] = [
+/// The current catalogue in served order, written out here rather than
+/// copied from the production allowlist, so a new tool or a misclassified
+/// hint fails instead of being blessed: nine reads (the deliverability
+/// report's cache fill never changes stored mail or extraction, 0085; the
+/// two focused waits appended by 0094) and six mutations.
+const CATALOGUE: [(&str, bool); 15] = [
     ("swarmail_search_emails", true),
+    ("swarmail_get_deliverability_report", true),
     ("swarmail_get_email", true),
     ("swarmail_get_latest_email", true),
-    ("swarmail_wait_for_email", true),
-    ("swarmail_extract_links", true),
-    ("swarmail_extract_codes", true),
-    ("swarmail_get_deliverability_report", true),
     ("swarmail_delete_email", false),
     ("swarmail_clear_inbox", false),
     ("swarmail_clear_all", false),
+    ("swarmail_wait_for_email", true),
+    ("swarmail_extract_links", true),
+    ("swarmail_extract_codes", true),
     ("swarmail_seed_email", false),
     ("swarmail_set_chaos", false),
     ("swarmail_clear_chaos", false),
+    ("swarmail_wait_for_code", true),
+    ("swarmail_wait_for_link", true),
 ];
 #[tokio::test]
 async fn revision_tool_annotations() {
     let srv = start().await;
     let request = json!({"id":1,"method":"tools/list"});
     let (_, legacy) = post(srv.http_addr, &[], &request).await;
-    let expected: std::collections::BTreeMap<&str, bool> = CATALOGUE.into_iter().collect();
-    assert_eq!(expected.len(), 13);
-    assert_eq!(expected.values().filter(|read| **read).count(), 7);
+    // The exact catalogue and its modern readOnlyHint, in served order.
+    let table = CATALOGUE;
+    assert_eq!(table.iter().filter(|(_, read)| *read).count(), 9);
     for version in VERSIONS {
         let (_, reply) = post(
             srv.http_addr,
@@ -302,19 +305,12 @@ async fn revision_tool_annotations() {
         )
         .await;
         let tools = reply["result"]["tools"].as_array().unwrap();
-        let names: std::collections::BTreeSet<&str> = tools
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(tools.len(), 13);
-        assert_eq!(
-            names,
-            expected.keys().copied().collect(),
-            "{version} catalogue"
-        );
-        for (actual, original) in tools
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert_eq!(names, table.map(|(name, _)| name));
+        for ((actual, original), (_, read_only)) in tools
             .iter()
             .zip(legacy["result"]["tools"].as_array().unwrap())
+            .zip(table)
         {
             let mut descriptor = actual.clone();
             for absent in ["execution", "icons", "title"] {
@@ -322,6 +318,7 @@ async fn revision_tool_annotations() {
             }
             if version == VERSIONS[0] {
                 assert!(descriptor.get("outputSchema").is_none());
+                assert!(descriptor.get("annotations").is_none());
             } else {
                 let schema = descriptor
                     .as_object_mut()
@@ -335,15 +332,15 @@ async fn revision_tool_annotations() {
                     .unwrap()
                     .remove("annotations")
                     .unwrap();
-                let name = actual["name"].as_str().unwrap();
                 assert_eq!(
                     hint,
-                    if expected[name] {
+                    if read_only {
                         json!({"readOnlyHint":true})
                     } else {
                         json!({"readOnlyHint":false,"destructiveHint":true})
                     },
-                    "{version} {name}"
+                    "{version} {}",
+                    actual["name"]
                 );
             }
             if version != VERSIONS[0] && actual["name"] == "swarmail_wait_for_email" {
@@ -845,7 +842,7 @@ async fn revision_served_contract() {
         "Revisions: 2025-03-26, 2025-06-18, 2025-11-25.",
         "Only 2025-03-26 supports batches",
         "except\nOPTIONS",
-        "the seven reads",
+        "the nine reads",
         "the six mutations",
         "outputSchema",
         "structuredContent",
@@ -1004,5 +1001,7 @@ async fn revision_tool_schemas_and_text_safety() {
     }
 }
 
+#[path = "mcp_revisions/focused.rs"]
+mod focused;
 #[path = "mcp_revisions/structured.rs"]
 mod structured;
