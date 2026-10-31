@@ -46,9 +46,9 @@ async fn initialize_and_tools_list() {
 
     let (_, body) = rpc(srv.http_addr, "tools/list", "{}").await;
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 15);
+    assert_eq!(tools.len(), 16);
 
-    // inputSchema is a JSON *object* for all fifteen tools — the JSON type,
+    // inputSchema is a JSON *object* for all sixteen tools — the JSON type,
     // not a substring (a substring check is how the string-schema bug
     // survived). Decision 0010, issue #4.
     let by_name: std::collections::HashMap<&str, &serde_json::Value> = tools
@@ -2829,6 +2829,7 @@ async fn zero_timeout_finishes_on_the_first_dispatch_poll() {
             store: Arc::new(Store::new(0)),
             chaos: Arc::new(Chaos::default()),
             shutdown,
+            route_domain: None,
         };
         let mut args = serde_json::json!({"inbox": name, "count": 1});
         if let Some(timeout) = timeout {

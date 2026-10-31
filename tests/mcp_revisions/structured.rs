@@ -868,10 +868,12 @@ async fn modern_all_tools_http_and_stdio() {
             let tools = list["result"]["tools"].as_array().unwrap();
             let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
             assert_eq!(names[..13], NAMES);
-            assert_eq!(names[13..], super::focused::FOCUSED);
-            for tool in &tools[13..] {
+            assert_eq!(names[13..15], super::focused::FOCUSED);
+            assert_eq!(names[15..], [super::focused::MINTER]);
+            for tool in &tools[13..15] {
                 super::focused::assert_march_descriptor(&march_view(tool, true));
             }
+            super::focused::assert_minter_descriptor(&march_view(&tools[15], true));
             for (i, (tool, original)) in tools
                 .iter()
                 .zip(march["result"]["tools"].as_array().unwrap())
@@ -1271,8 +1273,12 @@ async fn served_openapi_pins_and_negative_controls() {
             .keys()
             .map(String::as_str)
             .collect();
-        let focused: std::collections::BTreeSet<&str> =
-            super::focused::FOCUSED.into_iter().collect();
+        // MCP-only tools have no REST counterpart: the focused waits and the
+        // inbox minter.
+        let focused: std::collections::BTreeSet<&str> = super::focused::FOCUSED
+            .into_iter()
+            .chain([super::focused::MINTER])
+            .collect();
         assert_eq!(served, projected.union(&focused).copied().collect());
         assert_eq!(
             served,
@@ -1285,7 +1291,9 @@ async fn served_openapi_pins_and_negative_controls() {
             assert_eq!(schema["type"], "object");
             // The focused waits have no REST counterpart to pin; their
             // independent expectation is decision 0094's stated contract.
-            let expected = if focused.contains(name) {
+            let expected = if name == super::focused::MINTER {
+                super::focused::expected_minter_output()
+            } else if focused.contains(name) {
                 super::focused::expected_output(name)
             } else {
                 expected[name].clone()

@@ -6,6 +6,33 @@ use super::structured::{Wire, march_view, schema_ok, structural, valid};
 use super::*;
 
 pub(super) const FOCUSED: [&str; 2] = ["swarmail_wait_for_code", "swarmail_wait_for_link"];
+/// The inbox minter appended after the focused pair (decision 0112 §5).
+pub(super) const MINTER: &str = "swarmail_create_inbox";
+
+/// Decision 0112 §5's descriptor body, stated independently of the source.
+pub(super) fn assert_minter_descriptor(descriptor: &Value) {
+    let o = descriptor.as_object().unwrap();
+    assert_eq!(
+        o.keys().collect::<Vec<_>>(),
+        ["description", "inputSchema", "name"]
+    );
+    assert_eq!(descriptor["name"], MINTER);
+    assert_eq!(
+        descriptor["inputSchema"],
+        json!({"type":"object","additionalProperties":false})
+    );
+    let description = descriptor["description"].as_str().unwrap();
+    for clause in ["fresh private inbox", "--route-domain", "Allocates nothing"] {
+        assert!(description.contains(clause), "{clause}");
+    }
+}
+
+/// The minter's output contract: both members, closed.
+pub(super) fn expected_minter_output() -> Value {
+    json!({"type":"object","properties":{"inbox":{"type":"string"},
+        "address":{"type":"string"}},"required":["inbox","address"],
+        "additionalProperties":false})
+}
 
 const ADDRESS: &str = r#"{"type":"object","properties":{"address":{"type":"string"},"name":{"type":"string"}},"required":["address"],"additionalProperties":false}"#;
 
@@ -92,7 +119,8 @@ pub(super) fn assert_march_descriptor(descriptor: &Value) {
 }
 
 /// The served March catalogue is the captured thirteen-tool line with the
-/// two focused descriptors appended, and nothing else changed.
+/// two focused descriptors and the inbox minter appended, and nothing else
+/// changed.
 pub(super) fn assert_appended(raw: &str, captured: &str) {
     let prefix = captured.strip_suffix("]}}").unwrap();
     let tail = raw
@@ -104,10 +132,11 @@ pub(super) fn assert_appended(raw: &str, captured: &str) {
     ))
     .unwrap();
     let appended = appended.as_array().unwrap();
-    assert_eq!(appended.len(), 2);
-    for descriptor in appended {
+    assert_eq!(appended.len(), 3);
+    for descriptor in &appended[..2] {
         assert_march_descriptor(descriptor);
     }
+    assert_minter_descriptor(&appended[2]);
 }
 
 /// Decision 0094 §7's closed variants, stated independently.
@@ -387,7 +416,7 @@ async fn focused_waits_on_every_revision_and_transport() {
             let mut wire = Wire::start(srv.http_addr, version, stdio).await;
             let list = wire.request(&json!({"id":1,"method":"tools/list"})).await;
             let tools = list["result"]["tools"].as_array().unwrap();
-            assert_eq!(tools.len(), 15);
+            assert_eq!(tools.len(), 16);
             let modern = version != VERSIONS[0];
             for (i, name) in FOCUSED.iter().enumerate() {
                 let tool = &tools[13 + i];
@@ -547,7 +576,7 @@ async fn focused_schema_negatives() {
 
 /// Decision 0097 §4: every current surface states the compatibility the
 /// served catalogue actually has — thirteen existing March entries kept,
-/// two focused waits appended, fifteen in all — and keeps the OpenAPI pin
+/// two focused waits and the inbox minter appended, sixteen in all — and keeps the OpenAPI pin
 /// for REST-backed schemas apart from the MCP-only focused schemas. The
 /// blanket "catalogue bytes unchanged" claims the review found are gone.
 #[tokio::test]
@@ -561,8 +590,9 @@ async fn served_prose_states_additive_discovery() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 15);
-    assert_eq!(names[13..], FOCUSED);
+    assert_eq!(names.len(), 16);
+    assert_eq!(names[13..15], FOCUSED);
+    assert_eq!(names[15], "swarmail_create_inbox");
     assert!(names[..13].iter().all(|name| !FOCUSED.contains(name)));
     let flat = |text: &str| {
         text.split_whitespace()
@@ -593,8 +623,8 @@ async fn served_prose_states_additive_discovery() {
         for clause in [
             "thirteen existing",
             "existing result bytes",
-            "appends the two focused waits after them",
-            "fifteen",
+            "appends the two focused waits and swarmail_create_inbox after them",
+            "sixteen",
             "explicit output projections",
             "mcp-only",
             "independently stated expectations",
@@ -611,6 +641,6 @@ async fn served_prose_states_additive_discovery() {
             assert!(!text.contains(stale), "{surface} still claims {stale:?}");
         }
     }
-    assert!(surfaces[0].1.contains("fifteen mcp tools"));
+    assert!(surfaces[0].1.contains("sixteen mcp tools"));
     srv.stop().await;
 }

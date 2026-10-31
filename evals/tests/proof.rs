@@ -112,7 +112,18 @@ fn every_task_passes_with_the_oracle() {
         .unwrap();
     let inboxes: std::collections::HashSet<&str> =
         iso.iter().map(|i| i["inbox"].as_str().unwrap()).collect();
-    assert_eq!(inboxes.len(), 3, "three AUTH inboxes on one server");
+    assert_eq!(inboxes.len(), 3, "three inboxes on one server");
+    // The oracle passed only because each routed address reached its own
+    // inbox under the one shared login (decision 0112 §7): the recipient of
+    // every account names its inbox under the runner's route domain.
+    for account in iso {
+        let identity = account["identity"].as_str().unwrap();
+        let inbox = account["inbox"].as_str().unwrap();
+        assert!(
+            identity.ends_with(&format!("@{inbox}.swarmail.test")),
+            "{identity} is not routed to {inbox}"
+        );
+    }
 }
 
 fn no_goal_completed(state: &Value) -> bool {
