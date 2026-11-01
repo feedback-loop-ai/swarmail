@@ -1733,3 +1733,77 @@ async fn complete_malformed_peer_replies_are_forwarded_verbatim() {
         assert!(rest.is_empty());
     }
 }
+
+/// Decision 0110 §3: the largest fetch the feature can answer — 1 MiB of
+/// decoded bytes, in each encoding — passes the bridge's unchanged 10 MiB
+/// response cap. The text part is the escape worst case (every byte a quote,
+/// doubled by JSON and again inside the text block); the modern doubled
+/// answer rides the binary-bridge proof in `mcp_revisions`.
+#[tokio::test]
+async fn a_one_mib_attachment_fetch_passes_the_bridge_in_both_encodings() {
+    use base64::Engine as _;
+    let srv = common::start().await;
+    let quotes = vec![b'"'; 1_048_576];
+    for (kind, bytes, encoding) in [
+        ("text/plain", quotes, "utf-8"),
+        (
+            "application/octet-stream",
+            vec![0xA5u8; 1_048_576],
+            "base64",
+        ),
+    ] {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let lines: Vec<&str> = encoded
+            .as_bytes()
+            .chunks(76)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect();
+        let raw = format!(
+            "From: app@x.io\r\nTo: rcpt@x.io\r\nSubject: big\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"bd\"\r\n\r\n--bd\r\n\
+             Content-Type: {kind}\r\nContent-Transfer-Encoding: base64\r\n\
+             Content-Disposition: attachment; filename=\"big\"\r\n\r\n{}\r\n--bd--\r\n",
+            lines.join("\r\n"),
+        );
+        let id = report_wire::smtp_raw(srv.smtp_addr, "stdio-att", raw.as_bytes()).await;
+        let input = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+            "name":"swarmail_get_attachment","arguments":{"id":id,"index":0}}});
+        // `bridge_over` reads the output only after the bridge returns, over
+        // a 64 KiB pipe; a megabyte answer needs a pipe that holds it.
+        let (mut input_end, bridge_input) = duplex(64 * 1024);
+        let (mut bridge_output, mut output_end) = duplex(16 * 1024 * 1024);
+        input_end
+            .write_all(format!("{input}\n").as_bytes())
+            .await
+            .unwrap();
+        drop(input_end);
+        let mut reader = tokio::io::BufReader::new(bridge_input);
+        let code = swarmail::stdio::bridge(
+            &format!("http://{}", srv.http_addr),
+            &mut reader,
+            &mut bridge_output,
+            Duration::from_secs(10),
+        )
+        .await;
+        drop(bridge_output);
+        let mut output = String::new();
+        output_end.read_to_string(&mut output).await.unwrap();
+        assert_eq!(code, 0);
+        let reply: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(reply["result"]["isError"], false, "{encoding}");
+        let fetched: serde_json::Value =
+            serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(fetched["encoding"], encoding);
+        assert_eq!(fetched["size"], 1_048_576);
+        let content = fetched["content"].as_str().unwrap();
+        let decoded = if encoding == "utf-8" {
+            content.as_bytes().to_vec()
+        } else {
+            base64::engine::general_purpose::STANDARD
+                .decode(content)
+                .unwrap()
+        };
+        assert_eq!(decoded, bytes);
+    }
+    srv.stop().await;
+}

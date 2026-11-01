@@ -1170,7 +1170,7 @@ pub(crate) struct CompactEmail<'a> {
 impl<'a> From<&'a Email> for CompactEmail<'a> {
     fn from(email: &'a Email) -> Self {
         let metadata = email.link_metadata.as_deref().unwrap_or_default();
-        let attachments = email.attachments.as_deref();
+        let attachments = email.attachments.as_ref();
         CompactEmail {
             anchors: metadata
                 .iter()
@@ -1182,7 +1182,8 @@ impl<'a> From<&'a Email> for CompactEmail<'a> {
                 .collect(),
             anchors_total: Some(metadata.len()).filter(|n| *n > PRESENTATION_CAP),
             attachments: attachments.map(|list| {
-                list.iter()
+                list.parts
+                    .iter()
                     .take(PRESENTATION_CAP)
                     .map(|a| AttachmentEntry {
                         content_type: a.content_type.as_deref(),
@@ -1192,7 +1193,7 @@ impl<'a> From<&'a Email> for CompactEmail<'a> {
                     .collect()
             }),
             attachments_total: attachments
-                .map(<[_]>::len)
+                .map(|list| list.total as usize)
                 .filter(|n| *n > PRESENTATION_CAP),
             codes: &email.codes,
             from: email.from.as_ref(),
@@ -1379,6 +1380,21 @@ mod compact_view {
         );
     }
 
+    /// The compact list is the one ingest records (decision 0110): a bare
+    /// calendar part, which the parser does not call an attachment, is listed.
+    #[test]
+    fn a_bare_calendar_part_is_listed_in_the_compact_view() {
+        let email = mail(
+            "cal",
+            "From: ann@x.io\r\nTo: bob@x.io\r\nSubject: Invite\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=b\r\n\r\n\
+             --b\r\nContent-Type: text/plain\r\n\r\nInvite\r\n\
+             --b\r\nContent-Type: text/calendar\r\n\r\nBEGIN:VEVENT\r\nUID:u\r\nEND:VEVENT\r\n--b--\r\n",
+        );
+        let view: serde_json::Value = serde_json::from_str(&compact(&email)).unwrap();
+        assert_eq!(view["attachments"][0]["content_type"], "text/calendar");
+        assert_eq!(view["attachments"].as_array().unwrap().len(), 1);
+    }
+
     /// The cut at exactly 200 collapsed scalars keeps every one and adds no
     /// suffix; at 201 it keeps 200 and appends `...`. The scalars at the cut
     /// are 2-, 3- and 4-byte UTF-8, and the whitespace run collapses first.
@@ -1437,7 +1453,7 @@ mod compact_view {
     fn known_empty_lists_are_omitted() {
         let mut email = text_mail("empty", "");
         email.link_metadata = Some(vec![]);
-        email.attachments = Some(vec![]);
+        email.attachments = Some(Default::default());
         email.links = vec!["https://never.test/served".into()];
         email.to.clear();
         assert_eq!(
@@ -1457,14 +1473,22 @@ mod compact_view {
             .collect()
     }
 
-    fn files(count: usize) -> Vec<crate::model::Attachment> {
-        (0..count)
-            .map(|i| crate::model::Attachment {
-                filename: Some(format!("f{i}.bin")),
-                content_type: (i.is_multiple_of(2)).then(|| "application/octet-stream".into()),
-                size: i as u64,
-            })
-            .collect()
+    fn files(count: usize) -> crate::model::AttachmentList {
+        crate::model::AttachmentList {
+            total: count as u64,
+            parts: (0..count)
+                .map(|i| crate::model::Attachment {
+                    filename: Some(format!("f{i}.bin")),
+                    content_type: (i.is_multiple_of(2)).then(|| "application/octet-stream".into()),
+                    size: i as u64,
+                    sha256: String::new(),
+                    stored: false,
+                    ics: None,
+                    content: None,
+                })
+                .collect(),
+            labels_only: true,
+        }
     }
 
     /// 250 anchors are all shown with no total; 251 show 250 and the exact
@@ -1481,7 +1505,7 @@ mod compact_view {
         let list = |n: usize| (0..n).map(entry).collect::<Vec<_>>().join(",");
         for (count, total) in [(250, ""), (251, r#""anchors_total":251,"#)] {
             let mut email = text_mail("n", "x");
-            email.attachments = Some(vec![]);
+            email.attachments = Some(Default::default());
             email.link_metadata = Some(occurrences(count));
             assert_eq!(
                 compact(&email),

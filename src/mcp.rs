@@ -483,6 +483,8 @@ static MODERN_TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
                 | focused::CODE
                 | focused::LINK
                 | CREATE_INBOX
+                | attachments::LIST
+                | attachments::GET
         );
         tool["annotations"] = if read_only {
             json!({"readOnlyHint": true})
@@ -880,6 +882,7 @@ async fn tool_call(
             }
         }
         focused::CODE | focused::LINK => focused::call(ctx, &name, a, revision).await,
+        attachments::LIST | attachments::GET => attachments::call(ctx, &name, a, revision),
         "swarmail_extract_links" | "swarmail_extract_codes" => {
             let id = required_id(a)?;
             match store.get(&id) {
@@ -1087,7 +1090,9 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "swarmail_clear_chaos":output_object(json!({"chaos":{"type":"string","const":"disabled"}}), json!(["chaos"])),
         focused::CODE:focused::output_schema(false, &address),
         focused::LINK:focused::output_schema(true, &address),
-        CREATE_INBOX:output_object(json!({"inbox":{"type":"string"},"address":{"type":"string"}}), json!(["inbox","address"]))
+        CREATE_INBOX:output_object(json!({"inbox":{"type":"string"},"address":{"type":"string"}}), json!(["inbox","address"])),
+        attachments::LIST:attachments::output_schema(true),
+        attachments::GET:attachments::output_schema(false)
     })
 });
 
@@ -1180,9 +1185,16 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
         "description": "Mint a fresh private inbox name and the address that routes to it (agent@<inbox>.<route-domain>). Send the application's mail to that address, then read the inbox by name: mail for other addresses never appears there. Allocates nothing - the inbox exists once its first mail arrives, and a wait on it before then works. Needs the server to run with --route-domain.",
         "inputSchema": { "type": "object", "additionalProperties": false }
     }));
+    // Appended after swarmail_create_inbox (decision 0110 §7), the same way:
+    // every earlier index keeps its place.
+    tools
+        .as_array_mut()
+        .unwrap()
+        .extend(attachments::descriptors());
     tools
 });
 
+mod attachments;
 mod focused;
 mod near_miss;
 
@@ -1204,7 +1216,7 @@ mod tests {
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
         let schemas = OUTPUT_SCHEMAS.as_object().unwrap();
-        assert_eq!(names.len(), 16);
+        assert_eq!(names.len(), 18);
         assert_eq!(
             names,
             schemas
@@ -1785,7 +1797,7 @@ mod tests {
             .insert(crate::store::email("keep", "default", "a@x.io"))
             .unwrap();
         let tools = TOOLS.as_array().unwrap();
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 18);
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             assert_eq!(
