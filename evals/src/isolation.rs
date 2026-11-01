@@ -101,6 +101,35 @@ impl Bounds {
 pub const ENVELOPE_EXPIRED: &str =
     "swarmail-evals: isolated trial envelope expired; bwrap killed\n";
 
+/// The accepted 0076 §3 harness-error line for a reap the controller could
+/// not prove. It is the line the unisolated `trial` process already writes
+/// and the matrix already parses (`capture_worker_category`), not a new row
+/// reason.
+pub const CLEANUP_UNPROVED: &str = "swarmail-evals: harness error: trial_cleanup_unproved\n";
+
+/// Whether bwrap was reaped, which with the runner as PID 1 is the proof the
+/// namespace is empty (0076 §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cleanup {
+    /// `wait` returned: on its own, or within the drain bound of the
+    /// envelope kill, or no child ever existed.
+    Proved,
+    /// The envelope expired and the bounded reap after the kill ran out.
+    Unproved,
+}
+
+/// What the controller writes on stderr when the envelope expired: the fixed
+/// envelope line, and after it, only when the reap ran out, the 0076 §3 line.
+pub fn envelope_report(cleanup: Cleanup) -> &'static str {
+    match cleanup {
+        Cleanup::Proved => ENVELOPE_EXPIRED,
+        Cleanup::Unproved => concat!(
+            "swarmail-evals: isolated trial envelope expired; bwrap killed\n",
+            "swarmail-evals: harness error: trial_cleanup_unproved\n"
+        ),
+    }
+}
+
 /// Read-only system trees every isolated trial may see. A tree that is a
 /// symlink on the host (merged-usr `/bin`, `/lib`) is recreated as the same
 /// symlink; a missing tree is skipped. Nothing else of the host is visible.
@@ -634,8 +663,10 @@ async fn probe(bwrap: &Path, request: &Request) -> Result<(), Refusal> {
     }
 }
 
-/// The controller's own output streams, written with blocking calls off the
-/// async threads (tokio's `io-std` feature is not enabled in this crate).
+/// The controller's own output streams, written with blocking calls on the
+/// thread that drives the runtime, the only thread that may take the
+/// process's standard-stream locks, never from a blocking task (tokio's
+/// `io-std` feature is not enabled in this crate).
 #[derive(Clone, Copy)]
 enum Sink {
     Stdout,
@@ -696,32 +727,35 @@ async fn pump(mut from: impl AsyncRead + Unpin, sink: Sink, seen: Arc<AtomicU64>
 ///
 /// Every wait is bounded by `bounds`. If bwrap outlives `bounds.envelope` it
 /// is killed (`--die-with-parent` empties the namespace), reaped within
-/// `bounds.drain`, and [`ENVELOPE_EXPIRED`] goes to stderr; the verdict is
+/// `bounds.drain`, and [`envelope_report`] goes to stderr; the verdict is
 /// then the usual one: `Exited(2)` beside whatever row reached stdout, or
 /// `NoRow`. The copies are judged by the bytes the read side counted, not by
 /// whether a drain finished in time.
+///
+/// The reap is judged beside the verdict: [`Cleanup::Unproved`] exactly when
+/// the envelope expired and the bounded reap after the kill ran out.
 async fn supervise(
     bwrap: &Path,
     request: &Request,
     inner: &[OsString],
     bounds: Bounds,
-) -> Launched {
+) -> (Launched, Cleanup) {
     use tokio::signal::unix::{SignalKind, signal};
     let (Ok(mut term), Ok(mut int)) = (
         signal(SignalKind::terminate()),
         signal(SignalKind::interrupt()),
     ) else {
-        return Launched::NoRow;
+        return (Launched::NoRow, Cleanup::Proved);
     };
     // The spawn happens on the caller's thread. A parent-death signal follows
     // the thread that forked, so `main` drives this future from its main
     // thread and nothing here moves the spawn into a spawned task.
     let Ok(mut child) = process(bwrap, request, inner).spawn() else {
-        return Launched::NoRow;
+        return (Launched::NoRow, Cleanup::Proved);
     };
     let root = child.id().map_or(-1, |pid| pid as i32);
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-        return Launched::NoRow;
+        return (Launched::NoRow, Cleanup::Proved);
     };
     let seen = Arc::new(AtomicU64::new(0));
     let rows = tokio::spawn(pump(stdout, Sink::Stdout, Arc::clone(&seen)));
@@ -731,13 +765,17 @@ async fn supervise(
     tokio::pin!(envelope);
     let mut signalled = false;
     let mut abandoned = false;
+    let mut cleanup = Cleanup::Proved;
     let status = loop {
         tokio::select! {
             status = child.wait() => break status,
             () = &mut envelope => {
                 let _ = child.start_kill();
                 let reaped = tokio::time::timeout(bounds.drain, child.wait()).await;
-                write_through(Sink::Stderr, ENVELOPE_EXPIRED.as_bytes());
+                if reaped.is_err() {
+                    cleanup = Cleanup::Unproved;
+                }
+                write_through(Sink::Stderr, envelope_report(cleanup).as_bytes());
                 break reaped.unwrap_or_else(|_| Err(std::io::Error::other("bwrap was not reaped")));
             }
             _ = term.recv(), if !signalled => {}
@@ -758,13 +796,26 @@ async fn supervise(
     };
     let _ = tokio::time::timeout(bounds.drain, rows).await;
     let _ = tokio::time::timeout(bounds.drain, diagnostics).await;
+    (
+        verdict(status, seen.load(Ordering::Relaxed), abandoned),
+        cleanup,
+    )
+}
+
+/// How a trial ended from what the controller observed: bwrap's wait result
+/// (an error stands for "never reaped"), the bytes the read side counted on
+/// stdout, and whether an interrupt abandoned the trial before a runner
+/// existed. A reap that ran out is an `Err` here, so it exits 2 whatever
+/// reached stdout.
+fn verdict(
+    status: std::io::Result<std::process::ExitStatus>,
+    seen: u64,
+    abandoned: bool,
+) -> Launched {
     if abandoned {
         return Launched::Interrupted;
     }
-    match (
-        status.ok().and_then(|s| s.code()),
-        seen.load(Ordering::Relaxed),
-    ) {
+    match (status.ok().and_then(|s| s.code()), seen) {
         (_, 0) => Launched::NoRow,
         (Some(code), _) => Launched::Exited(code as u8),
         (None, _) => Launched::Exited(2),
@@ -792,8 +843,13 @@ pub async fn launch(
     version_ok(bwrap).await?;
     probe(bwrap, request).await?;
     let admission = crate::admission::Admission::acquire().map_err(Refusal::Named)?;
-    let launched = supervise(bwrap, request, inner, bounds).await;
-    drop(admission);
+    let (launched, cleanup) = supervise(bwrap, request, inner, bounds).await;
+    match cleanup {
+        Cleanup::Proved => drop(admission),
+        // 0076 §3: never released as if cleanup were proved. Held to the
+        // controller's exit, which `run` and `main` reach after the row.
+        Cleanup::Unproved => admission.retain(),
+    }
     Ok(launched)
 }
 
@@ -1415,6 +1471,38 @@ mod tests {
         assert_eq!(runner_pid(mine.parent, &exe), None);
     }
 
+    #[test]
+    fn the_reap_judgement_speaks_the_same_line_the_matrix_parses() {
+        // The Proved pole is the envelope line alone, with no cleanup line.
+        assert_eq!(envelope_report(Cleanup::Proved), ENVELOPE_EXPIRED);
+        assert!(!envelope_report(Cleanup::Proved).contains("trial_cleanup_unproved"));
+        // The Unproved pole is the envelope line, then the 0076 §3 line, once.
+        let unproved = envelope_report(Cleanup::Unproved);
+        assert_eq!(unproved, format!("{ENVELOPE_EXPIRED}{CLEANUP_UNPROVED}"));
+        assert_eq!(unproved.matches("trial_cleanup_unproved").count(), 1);
+        assert_eq!(
+            CLEANUP_UNPROVED,
+            "swarmail-evals: harness error: trial_cleanup_unproved\n"
+        );
+    }
+
+    #[test]
+    fn the_verdict_table_exits_two_whatever_reached_stdout_when_not_reaped() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        let code = |c: i32| Ok(ExitStatus::from_raw(c << 8));
+        let signal = || Ok(ExitStatus::from_raw(libc::SIGKILL));
+        let never = || Err(std::io::Error::other("bwrap was not reaped"));
+        assert_eq!(verdict(never(), 0, false), Launched::NoRow);
+        assert_eq!(verdict(never(), 9, false), Launched::Exited(2));
+        assert_eq!(verdict(code(1), 9, false), Launched::Exited(1));
+        assert_eq!(verdict(code(0), 9, false), Launched::Exited(0));
+        assert_eq!(verdict(code(1), 0, false), Launched::NoRow);
+        assert_eq!(verdict(signal(), 9, false), Launched::Exited(2));
+        assert_eq!(verdict(code(0), 9, true), Launched::Interrupted);
+        assert_eq!(verdict(never(), 0, true), Launched::Interrupted);
+    }
+
     // ---- the controller's refusal arms and judgement (AC-S2) -------------------
     //
     // A stand-in `bwrap` is a generated shell script handed to `launch` through
@@ -1761,6 +1849,12 @@ mod tests {
             assert_eq!(std::fs::read_to_string(&result).unwrap(), "Ok(Exited(2))");
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(stderr.matches(ENVELOPE_EXPIRED).count(), 1, "{stderr:?}");
+            // The stand-in was reaped within the bound: cleanup is proved.
+            assert_eq!(
+                stderr.matches("trial_cleanup_unproved").count(),
+                0,
+                "{stderr:?}"
+            );
             assert_eq!(
                 ENVELOPE_EXPIRED,
                 "swarmail-evals: isolated trial envelope expired; bwrap killed\n"

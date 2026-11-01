@@ -132,7 +132,7 @@ dispatcher's host run.
   show every live proof red with `SKIP trial-isolation: boundary_unavailable:bwrap_probe`,
   each within its bound. **Test:** both receipts in the implement notes
   with wall-clock durations.
-- [ ] **T29 — Judge the reap, speak 0076 §3's line (Q1; AC-S13).** In
+- [x] **T29 — Judge the reap, speak 0076 §3's line (Q1; AC-S13).** In
   `isolation.rs` add `enum Cleanup { Proved, Unproved }`,
   `pub const CLEANUP_UNPROVED` (the exact `swarmail-evals: harness error:
   trial_cleanup_unproved\n` line), `fn envelope_report(Cleanup) ->
@@ -154,7 +154,7 @@ dispatcher's host run.
   `trial_cleanup_unproved`; `an_expired_envelope_says_so_on_stderr_in_one_fixed_line`
   additionally asserts `stderr.matches("trial_cleanup_unproved").count() == 0`;
   every existing controller test still passes.
-- [ ] **T30 — Retain the admission on an unproved reap (Q1; AC-S13).** In
+- [x] **T30 — Retain the admission on an unproved reap (Q1; AC-S13).** In
   `admission.rs` add `pub(crate) fn retain(self)` that `std::mem::forget`s
   the lock file (doc: 0076 §3; released only by process exit; the
   process-scoped limit). In `launch`: `drop(admission)` on `Proved`,
@@ -168,12 +168,12 @@ dispatcher's host run.
   `Admission::at(root, uid)` succeeds. Confirm the `Launched`-to-`retain`
   wiring by reading `launch`: exactly one `retain` call, on the `Unproved`
   arm.
-- [ ] **T31 — Correct the `Sink` comment (Q3).** The doc comment on `Sink`
+- [x] **T31 — Correct the `Sink` comment (Q3).** The doc comment on `Sink`
   says the streams are written on the thread that drives the runtime, the
   only thread that may take the std locks, never from a blocking task.
   **Test:** `grep -n "off the async threads" evals/src/isolation.rs` is
   empty; `grep -n "spawn_blocking" evals/src/isolation.rs` is empty.
-- [ ] **T32 — Documentation (Q1; AC-S8).** One sentence in the
+- [x] **T32 — Documentation (Q1; AC-S8).** One sentence in the
   bounded-controller paragraph of `evals/README.md` and `evals/run-plan.md`:
   a reap the controller cannot prove within its bound is the named
   `trial_cleanup_unproved` harness error on stderr, the admission is held to
@@ -183,7 +183,7 @@ dispatcher's host run.
   that the live criteria passed; `git diff a4f552d --
   docs/decisions/0076-sequential-eval-trials.md` empty; 0115's *Amends if
   accepted* line unchanged.
-- [ ] **T33 — Seat run of both suites after T29–T32 (AC-S6, AC-S7).** Run
+- [x] **T33 — Seat run of both suites after T29–T32 (AC-S6, AC-S7).** Run
   the always-on evals suite locked in the seat and show AC-S10 skipped by
   name and every other test green within bounded time; run the `--ignored`
   command and show every live proof red with
@@ -266,3 +266,33 @@ that order, with T10 reopened behind them; T06–T08 and T20 stay open and are
 proven only by the dispatcher's one command on this host. The implementer
 reads these tasks, not the review's notes; nothing in 4f3ba15's controller
 fix is reopened.
+
+Status 2026-11-01 (implement seat, after the second review): T29–T33 are
+done. Receipts (seat; bwrap refuses here with `ENOSPC`, so only refusal paths
+and stand-ins ran):
+- T29/T30/T31: `Cleanup`, `CLEANUP_UNPROVED`, `envelope_report`, `verdict`
+  and `Admission::retain` implemented; `launch` calls `retain` on
+  `Unproved` and `drop` on `Proved`, one call each. Tests:
+  `the_reap_judgement_speaks_the_same_line_the_matrix_parses`,
+  `the_verdict_table_exits_two_whatever_reached_stdout_when_not_reaped`,
+  `the_isolated_controllers_unproved_report_is_the_category_the_matrix_parses`
+  (main.rs), `a_retained_admission_is_released_only_by_the_process_exit`
+  (re-exec), and the envelope-line test now asserts zero
+  `trial_cleanup_unproved` on the `Proved` pole. The grep for
+  `off the async threads` and `spawn_blocking` is empty. The two admission
+  tests take `trial_scope` on Linux: the existing rendezvous test failed once
+  under load when a concurrent fork briefly held the lock descriptor.
+- T32: one sentence in `evals/README.md` and `evals/run-plan.md`.
+- T33: `cargo test --manifest-path evals/Cargo.toml --locked` finishes (about
+  8 min in this seat, every isolated child bounded), 7 boundary tests
+  ignored/skipped by name; the `--ignored` command takes 1.8 s and every live
+  proof is red with `SKIP trial-isolation: boundary_unavailable:bwrap_probe`.
+  One unrelated flake seen once under load and green on re-run:
+  `child_output_server_death_remains_a_harness_error_on_linux`.
+- T10: root and evals `fmt`, `clippy -D warnings`, `cargo test --workspace
+  --locked`, `cargo build --locked --bin swarmail`, `cargo deny check
+  licenses`, `scripts/coverage-gate.sh` (exact 100/100/100) and its
+  `selftest`, `publish-guard-test.sh` and `seal-branch-test.sh` are green.
+  `brokkr compile --bundle .brokkr/recipes/self` was **not run**: the pinned
+  brokkr binary is not installed in this seat. T06–T08 and T20 stay open for
+  the dispatcher's host run.

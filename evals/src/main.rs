@@ -4174,6 +4174,26 @@ while :; do :; done
         }
     }
 
+    #[tokio::test]
+    async fn the_isolated_controllers_unproved_report_is_the_category_the_matrix_parses() {
+        use std::io::Cursor;
+        let report = isolation::envelope_report(isolation::Cleanup::Unproved);
+        assert_eq!(
+            capture_worker_category(Cursor::new(report.as_bytes().to_vec()))
+                .await
+                .unwrap(),
+            Some("trial_cleanup_unproved")
+        );
+        // The proved pole carries no category at all.
+        let proved = isolation::envelope_report(isolation::Cleanup::Proved);
+        assert_eq!(
+            capture_worker_category(Cursor::new(proved.as_bytes().to_vec()))
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn unproved_worker_cleanup_stops_matrix_with_full_refusal_suffix() {

@@ -226,6 +226,12 @@ exit (the trial's deadline plus the matrix's 300 s grace; on expiry bwrap is
 killed, the namespace empties with it, one fixed line goes to stderr and the
 result is the usual `isolated_trial_no_row` or exit 2 beside the runner's
 row), the pipe copies and the reap (5 s each) and the runtime's shutdown (5 s).
+A reap the controller cannot prove within its bound is the named
+`swarmail-evals: harness error: trial_cleanup_unproved` line on stderr beside
+the envelope line, never an ordinary no-row: the host admission is held to the
+controller's exit, the exit code is 2, and an operator confirms cleanup before
+resuming (accepted 0076 §3; the lock is process-scoped, so that exit releases
+it).
 
 The network is a private loopback; provider egress does not exist inside, and
 `--share-net` is rejected. Provider egress is an open operator question in
