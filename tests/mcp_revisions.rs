@@ -1138,6 +1138,50 @@ async fn revision_tool_schemas_and_text_safety() {
     }
 }
 
+/// Decision 0114 (proposed): issue #158's resources, subscriptions and
+/// 2025-11-25 tasks are evaluated and not shipped. The refusal is pinned by
+/// method name, on every revision, over real HTTP and the binary bridge, so
+/// the record's claim is something a reader can run: capabilities stay exactly
+/// `{"tools":{}}` and none of these methods is ever answered as a feature.
+#[tokio::test]
+async fn resources_and_tasks_methods_are_refused_by_name() {
+    const METHODS: [&str; 9] = [
+        "resources/list",
+        "resources/read",
+        "resources/templates/list",
+        "resources/subscribe",
+        "resources/unsubscribe",
+        "tasks/get",
+        "tasks/list",
+        "tasks/result",
+        "tasks/cancel",
+    ];
+    let srv = start().await;
+    for version in VERSIONS {
+        let headers = [("MCP-Protocol-Version", version)];
+        let (_, init) = post(srv.http_addr, &[], &initialize(json!(version))).await;
+        assert_eq!(init["result"]["protocolVersion"], version);
+        assert_eq!(init["result"]["capabilities"], json!({"tools":{}}));
+        let mut binary = Binary::start(srv.http_addr);
+        binary.send(&initialize(json!(version))).await;
+        assert_eq!(binary.reply().await, init);
+        binary
+            .send(&json!({"method":"notifications/initialized"}))
+            .await;
+        for (n, method) in METHODS.into_iter().enumerate() {
+            let request = json!({"jsonrpc":"2.0","id":n,"method":method,"params":{"uri":"swarmail://inbox/x"}});
+            let (status, reply) = post(srv.http_addr, &headers, &request).await;
+            assert_eq!(status, 200, "{version} {method}");
+            assert_eq!(reply["id"], n, "{version} {method}");
+            assert_eq!(reply["error"]["code"], -32601, "{version} {method}");
+            assert!(reply.get("result").is_none(), "{version} {method}");
+            binary.send(&request).await;
+            assert_eq!(binary.reply().await, reply, "bridge {version} {method}");
+        }
+        binary.finish().await;
+    }
+}
+
 #[path = "mcp_revisions/attachments.rs"]
 mod attachments;
 #[path = "mcp_revisions/compact.rs"]

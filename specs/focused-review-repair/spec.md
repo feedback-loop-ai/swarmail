@@ -144,6 +144,13 @@ the observed allocations; recheck before integration. The panel shorthand
 repair. Keep distinct provenance. Collision disposition and acceptance are the
 operator's; never silently overwrite or renumber accepted history.
 
+*Dated correction, 2026-11-01:* the collisions above were the visible refs of
+2026-10-28 and no longer hold on `main`, which has one record per number and no
+0095 or 0096: #156's record is 0111, compact-email-view 0108,
+mcp-candidate-proof 0104, mcp-options-admission 0101, mcp-report-output 0105
+and mixed-work-seats 0103. See
+[0094's correction](../../docs/decisions/0094-focused-mail-waits.md#dated-correction--2026-11-01-decision-numbers).
+
 ## Acceptance Criteria
 
 - **AC1 — Strict load:** actual temporary SQLite controls independently reject a
