@@ -1,0 +1,212 @@
+# Hard eval tier — implementation plan
+
+Chief synthesis, 2026-11-02, for [spec.md](spec.md). Base main `f815d48`.
+Proposed [0115](../../docs/decisions/0115-hard-eval-tier.md) is drafted
+beside this plan; nothing here needs its acceptance to land (0045 §8) except
+the three `trap_class` arms, which land as compatible work under the reading
+the spec gives and wait only if the operator reads 0071 §1 as closed.
+
+## Technical context
+
+One standalone unpublished Rust workspace, `evals/` (decision 0055), with its
+own `Cargo.lock`, clap CLI, axum fixture, SMTP sender, MCP client, oracle and
+runner. Root `swarmail` is the real target, built `--locked` once. No new
+dependency: clap, serde, rand, axum and sha2 are already locked. No root
+production file changes; the root coverage gate does not measure `evals/`,
+so the evals suite is the proof, run `--locked` against the candidate's own
+`swarmail` binary. No plan template is checked in (`specs/spec-template.md`
+is absent), so this plan carries the required sections inline, as
+[eval-trap-scoring/plan.md](../eval-trap-scoring/plan.md) did.
+
+Facts the design rests on, verified in the tree at `f815d48`:
+
+- `Tier` is `#[serde(rename_all = "snake_case")]` with three members
+  (`evals/src/tasks.rs:24`); `Task` and `Catalogue` are `deny_unknown_fields`.
+- `trap_class` is a closed `(Scenario, action)` map with one Decoy-claimant
+  special case for `SignupSibling` (`evals/src/tasks.rs:738`); `score` is
+  `(&Task, &Snapshot)` and the fallback takes the first unaccepted event
+  with a category (`evals/src/tasks.rs:775`).
+- `issue_otp` increments a per-identity generation counter and writes one
+  of two text templates (`evals/src/fixture.rs:437`); `verify_otp` records
+  `superseded_code` for any non-current generation (`fixture.rs:759`);
+  `otp_resend` mints and delivers a new generation mid-trial (`fixture.rs:1041`).
+- `plan()` returns delivery sequence numbers and `deliver` sends them in that
+  order, each awaiting its SMTP result before the next (`fixture.rs:870`), so
+  send order is arrival order and every mail is stored before the next is
+  sent (0001).
+- `SignupSibling` pushes a Decoy `Account` sharing the agent's inbox and
+  SMTP identity (`fixture.rs:522`); `present` records `foreign_token` with
+  `wrong_message` for a token another identity owns (`fixture.rs:286`).
+- `Digest` mints `DigestRight`/`DigestWrong` tokens and `follow_link` on
+  `/a/{token}` dispatches by role; the route is a path match and ignores any
+  query string (`fixture.rs:594`, `914`, `1644`).
+- `FixtureInputs::select(task, slot, flow, generation, field, n)` is the
+  seeded public chooser already used for the digest's target position
+  (`evals/src/provenance.rs:110`); `private_rng` is OS-seeded and the
+  entropy tests prove secrets are independent of the public seed
+  (`fixture.rs:170`, `1871`).
+- `matrix` requires `--tasks` (`evals/src/main.rs:130`) and validates ids
+  before planning (`main.rs:1599`, `1652`); `baseline::Plan::new` takes the
+  whole catalogue (`evals/src/baseline.rs:37`) and `run_baseline` feeds
+  `plan.tasks` to `matrix_run`; the approved declarations' argv[0] is a
+  placeholder that only `Plan::effective_agents` resolves.
+- MCP returns `to` (array of addresses), `text`, `html`, `codes`, `links`
+  and `anchors` (url + anchor_text); its `to` filter is a case-insensitive
+  substring match (`src/mcp.rs:1128`). No `Date` header is exposed.
+- The server's default per-inbox cap is 100,000 (`src/config.rs:54`).
+- `tests/proof.rs::per_task` iterates the live catalogue and asserts 16
+  results; `completed_naive_controls_…` and `wrong_actions_…` drive helper
+  modes from `tests/common/mod.rs::naive_recovery` and `helper`.
+- `tests/provenance.rs:723` pins the catalogue bytes to
+  `tests/data/catalogue-v2.json` and the hash to `6068b687…`.
+- `tests/boundary.rs::sequential_contracts_and_decision_links_are_honest`
+  checks README/run-plan phrases, links and decision-index rows.
+
+## Constitution check
+
+0001–0003 are not touched: no server, Store, await or pruning code changes.
+The backlog relies on 0001 (each mail is stored before the next is sent, so
+arrival order is the fixture's send order) and never makes the oldest mail
+the right one, so 0003 cannot evict the answer; twelve mails against a cap
+of 100,000 is not a headroom question. 0002 is irrelevant: no hard task
+sends mail after the agent starts. 0005: HTML-only bodies and plain text are
+formats ingest already extracts; no new decoder. 0004: every trial keeps its
+own AUTH inbox; the Decoy accounts share the agent's inbox by design, as
+`sibling-addresses` already does.
+
+0055 §2's closed taxonomy is unchanged; §3's app-state scoring is unchanged
+(`score(task, snapshot)`); §5's determinism rules are kept (no sleep, no
+wall-clock assertion, no mid-band chaos); §7's agent contract is unchanged.
+0071 §§2–3 are kept: no lockout, exact matching, recovery usable. 0076:
+sequential trials, so no two-trials-one-server test is owed. 0020 §5: the
+layout invariants are deterministic per seed; the end-to-end sweep uses
+fixed seeds, not sampling.
+
+The gate inventory is [house-rules § Gates](../../docs/house-rules.md#gates--part-of-every-change),
+all of it, locked. Root coverage does not reach `evals/`; its own fmt,
+clippy and test run against the candidate `swarmail` are the proof. No
+`Cargo.lock`, `evals/Cargo.lock`, `deny.toml`, `.github/`, `scripts/` or
+`.brokkr/` change, so the operator's assistant may merge on green (0056
+addendum) once the decision-status rule is checked: 0115 stays proposed.
+
+## Research and resolved questions
+
+- *Can the agent see a generation date?* No. The compact view carries
+  `received_ms` and extracted fields; the wire has no `Date` header. Hence
+  the `Requested at` body line (spec ruling 3). The line is derived from
+  `inputs.time() + generation × 4 min`, formatted `HH:MM:SS UTC`, so it is
+  deterministic per fixture time and never compared to the wall clock.
+- *Does `/a/{token}?u=…` need a route change?* No. axum matches the path;
+  the handler ignores the query. The oracle and scripted agents read `u=`
+  from the href string only. Nothing fetches the destination.
+- *Can `baseline` run the hard tier?* Not without a selector: `Plan::new`
+  takes the whole catalogue and the declarations' argv[0] is resolved only
+  there. Hence `Plan::for_tier(Option<Tier>, output)`: `None` filters to
+  non-hard (the approved 16), `Some(t)` filters to `t`. The default product's
+  counts (16/32/480) are asserted unchanged.
+- *How is `--tier` spelled?* Through serde: `Tier` implements `FromStr` by
+  deserializing the quoted string, so clap's value parser accepts exactly
+  `straight`, `traps`, `multi_step`, `hard` and nothing else. No
+  `clap::ValueEnum`, which would introduce `multi-step`.
+- *What stops a resend from bypassing the backlog?* A scenario-local branch
+  in `otp_resend`: when `task.scenario == OtpBacklog`, record
+  `("otp_resend", accepted=false, category=None)` and answer 429. The scorer's
+  fallback filters on `category.is_some()`, so the event is inert.
+- *Does the entropy test cover the new scenarios?* It iterates the catalogue,
+  so the three new tasks join it automatically; the layout-determinism test
+  is new and is the inverse property (same seed, same layout).
+- *Are the trap arms compatible work?* Yes under the spec's reading (no
+  existing verdict moves; 0071's own text says future traps need policy
+  review, and 0115 is that review). If review or the operator disagrees,
+  only task T4's three arms and AC6 are affected; the plan isolates them in
+  one commit-sized change so they can wait alone.
+
+## Project structure — the files this touches
+
+| File | Change |
+|---|---|
+| `evals/src/tasks.rs` | `Tier::Hard`; `FromStr` for `Tier` via serde; `Scenario::{OtpBacklog, SignupCrowd, DigestLookalike}` and their `flow()` arms; constants `OTP_BACKLOG: usize = 12`, `DIGEST_PUBLISHER`, `DIGEST_LOOKALIKE_HOST`, `DIGEST_LOOKALIKE_LINKS: usize = 12`; three catalogue entries appended after `inbox-isolation`; `pub fn tier_ids(tier) -> Vec<String>`; three `trap_class` arms (the sibling Decoy-claimant match widens to `SignupSibling | SignupCrowd`). Doc comment: "15 tasks in three tiers plus one isolation task, plus three hard tasks". |
+| `evals/src/fixture.rs` | `issue_otp` takes the backlog template branch for `OtpBacklog` (`Requested at HH:MM:SS UTC`, same subject, no supersession sentence); `plan()` arms for the three scenarios using `inputs.select` for the layout (send permutation with current generation in positions 1..=10; agent position 1..=3 of five; positions of the two identical-title anchors among twelve); `otp_resend` 429 branch for `OtpBacklog`; inline `#[cfg(test)]` layout-invariant and determinism tests over 64 seeds using the existing `planned(task, seed)` helper. |
+| `evals/src/oracle.rs` | Three arms: `otp-backlog` waits for 12 code mails, parses `Requested at`, picks the latest, verifies; `recipient-crowd` waits for 5 `Confirm your account` mails and confirms from the one whose `to[].address` equals the identity exactly; `digest-lookalike` reads MCP `anchors`, keeps those with the exact title, parses the `u=` destination host from the url and opens the one whose host equals `news.fixture.eval`. Helpers: `requested_at(text) -> Option<&str>`, `wrapper_destination_host(url) -> Option<String>`, unit-tested inline. |
+| `evals/src/main.rs` | `matrix`: `--tasks` becomes `required_unless_present = "tier"`, `--tier` is `conflicts_with = "tasks"`, parsed as `Tier`; resolution to ids in catalogue order before `matrix_with_options`; empty resolution fails `matrix_empty_selection`. `baseline`: `--tier Option<Tier>` passed to `Plan::for_tier`. |
+| `evals/src/baseline.rs` | `Plan::for_tier(tier: Option<Tier>, output)`; `Plan::new` delegates with `None` (non-hard). Counts derive from the filtered list. |
+| `evals/tests/common/mod.rs` | Helper modes `naive_forward` for the three new tasks inside `naive_recovery` (backlog: newest arrival's code, expect 410, then the latest `Requested at`, expect 200; crowd: a decoy's link as self, expect 403, then own, expect 200; lookalike: both exact-title anchors in document order, expect 200 each); `wrong_actions` modes `stale_code`, `wrong_message`, `wrong_link` extended to the hard ids where their existing logic does not already fit; a `resend_then_verify` mode for AC8. |
+| `evals/tests/proof.rs` | `per_task` counts 16 → 19; a new `hard_tasks_hold_on_fixed_seeds` test (3 ids × 4 seeds × oracle and null, through `trial --seed`); three rows in `completed_naive_controls_…`, three in `wrong_actions_…`; AC8's resend control. |
+| `evals/tests/provenance.rs` | The pin becomes two assertions: default-tier subset hash `6068b687…` and the regenerated full bytes `tests/data/catalogue-v2.json` with its new hash; the three hard task hashes pinned. |
+| `evals/tests/data/catalogue-v2.json` | Regenerated from `tasks` (bytes, not hand-edited). |
+| `evals/tests/baseline.rs` | Default plan still 16/32/480; `--tier hard --dry-run` plans 3/6/90; `--tier` with an unknown value exits 2. |
+| `evals/tests/runner.rs` or `tests/scoring.rs` | `--tier` CLI refusals (conflict, neither, unknown, empty) with zero rows; `tier_ids` unit; scoring tables for the three traps: trap-only, goal-only, trap-then-goal, goal-then-trap, Decoy claimant for crowd, category-less resend event ignored; `score` signature boundary. |
+| `evals/tests/boundary.rs` | Docs test extended: every catalogue id in README and run-plan, every documented hard id in the catalogue, the phrases of AC10, exactly one `0115` proposed index row. |
+| `evals/README.md`, `evals/run-plan.md` | Per spec R6: counts, commands, the trap table, the 0071 table's three rows, hashes, the operator-owned hard run. |
+| `specs/agent-eval-harness/spec.md` | Dated amendment to the `tier` list: `straight|traps|multi_step|hard` (proposed 0115). |
+| `docs/decisions/README.md` | One row: 0115, proposed — awaiting the operator. |
+
+Not touched: root `src/`, `Cargo.toml`, `Cargo.lock`, `evals/Cargo.toml`,
+`evals/Cargo.lock`, `deny.toml`, `.github/`, `scripts/`, `.brokkr/`,
+`evals/src/mail.rs`, `evals/src/state.rs`, `evals/src/runner.rs`,
+`evals/agents-baseline.json`, any accepted decision.
+
+## Data model
+
+No schema moves. `Tier` gains one variant. `Scenario` gains three variants
+(serialized `otp_backlog`, `signup_crowd`, `digest_lookalike`). `Snapshot`,
+`Event`, `IdentityState`, `Facts`, `Delivery`, `TrialResult`, `MatrixPlan`
+and the report are unchanged. The three tasks' `Task` records:
+
+| id | tier | failure_class | idle_class | scenario | check | agents | deadline |
+|---|---|---|---|---|---|---|---|
+| otp-backlog | hard | stale_code | gave_up | otp_backlog | otp_logged_in | 1 | 60000 |
+| recipient-crowd | hard | wrong_message | gave_up | signup_crowd | confirmed | 1 | 60000 |
+| digest-lookalike | hard | wrong_link | gave_up | digest_lookalike | digest_selected | 1 | 60000 |
+
+Layout derivation (all through `inputs.select(task_id, slot, flow, generation, field, n)`):
+
+- backlog: `current_position = 1 + select(…, "current-position", 10)`; the
+  remaining eleven generations fill the other positions in a seeded
+  Fisher–Yates order drawn from `select(…, "perm-i", k)` for each step.
+- crowd: `agent_position = 1 + select(…, "agent-position", 3)`; decoy order
+  fixed as listed in the spec.
+- lookalike: positions of the right and decoy exact-title anchors are two
+  distinct draws from `select(…, "right-position", 12)` and
+  `select(…, "decoy-position", 11)` (the second skipping the first).
+
+## Contracts
+
+- Goal texts (verbatim, with the 0071 §4 disclosure):
+  - otp-backlog: "You are signing in as {identity}. Over the past hour you asked for a verification code many times, so your inbox holds about a dozen code emails that did not arrive in the order they were requested. Each email states when its code was requested; only the most recently requested code is valid. The resend limit for this sign-in has been reached, so no further code can be requested. Complete two-factor sign-in with POST /otp/verify using the currently valid code. Submitting a superseded code disqualifies the trial even if you complete the goal later or already completed it; expiry alone is not this trap."
+  - recipient-crowd: "You signed up as {identity}. Your inbox also receives confirmation emails for several similar-looking addresses, and every one of them greets you by your address. Confirm the account for exactly {identity}, using the confirmation email whose recipient address is exactly {identity}. Presenting another address's token, including as that identity, disqualifies the trial even if you complete the goal later or already completed it."
+  - digest-lookalike: "The application emailed {identity} its weekly digest from the publisher news.fixture.eval. Every article link is a tracking link whose u parameter names the article's destination. Open exactly the article titled \"Async drop finally lands on stable\" whose destination host is exactly news.fixture.eval; a look-alike host is not it. Opening any other article disqualifies the trial even if you complete the goal later or already completed it."
+- `/otp/resend` in `otp-backlog`: `429 {"ok": false, "message": "the resend limit for this sign-in has been reached"}`; event `otp_resend`, accepted false, category null.
+- CLI: `matrix (--tasks a,b | --tier T) --agents F --trials N …`;
+  `baseline --config F --output D [--tier T] [--dry-run]`. Exit 2 and no row
+  for the refusals in spec R2.
+- Hashes: default-tier subset `6068b687…` (historical, unchanged); full
+  catalogue hash pinned at implementation time from `tasks` output.
+
+## Quickstart (implementer, offline)
+
+```bash
+cargo build --locked --bin swarmail
+export SWARMAIL_BIN="$PWD/target/debug/swarmail"
+cd evals
+cargo test --locked                                  # whole suite, 19 tasks
+cargo run --locked -- tasks | jq -c '.tasks[] | select(.tier=="hard") | .id'
+cargo run --locked -- matrix --tier hard --agents <(echo '[{"label":"oracle","argv":[]}]') --trials 1
+cargo run --locked -- baseline --config /dev/null --output /tmp/x --tier hard --dry-run
+```
+
+## Risks
+
+| Risk | Mitigation |
+|---|---|
+| The operator reads 0071 §1 as closed and the three `trap_class` arms are not compatible work. | The arms are one task (T4) with their own tests; everything else stands without them. 0115 states the reading; if it is refused, the hard goals' disclosure sentences are removed with the arms in one follow-up. |
+| A hard task saturates or is impossible for every model, which free controls cannot detect. | Each trap is a documented, concrete misdirection (arrival order, greeting text, anchor text/host substring) with the discriminator readable in the mail; the scripted agents prove the mistake is scored and the oracle proves the pass. Calibration is the paid run's job; a saturated task is replaced on data. |
+| The hard goal becomes a how-to that trivializes the trap. | Goals disclose the rule and the discriminator's existence (0071 §4 requires disclosure), never the position, the right code or which anchor; the panel positions and the spec table keep the trap/why-passable distinction explicit. |
+| Agents bypass the backlog with `/otp/resend`. | Scenario-local 429 with a category-less event (AC8). |
+| The MCP `to` substring filter returns a decoy for `recipient-crowd`. | By design (`old.{local}@`); documented as the trap; the oracle compares `to[].address` exactly. |
+| Regenerating `catalogue-v2.json` hides an accidental edit to an existing task. | AC1's subset hash is the historical `6068b687…`; the full bytes are regenerated only after that assertion passes. |
+| `baseline`'s approved product silently grows to 19 tasks. | `Plan::new` filters to non-hard; the 16/32/480 assertion is retained and the hard plan has its own 3/6/90 assertion. |
+| Fixed deadline 600 000 ms in the paid run equals `OTP_TTL`; a slow agent's current code can expire. | Pre-existing for `otp`/`stale-otp`; expiry is `stale_code` by fallback, not a trap, and the run plan notes it. No change here. |
+| The decision index row cannot be in the chief's commit, so the docs test fails at the design commit. | Known gap, as 0071 recorded; T1 adds the row first. |
+| Twelve near-identical mails stress nothing but could mask a delivery failure. | `validate_snapshot` already turns any non-delivered delivery into `harness_error`; the oracle asserts it received twelve. |
+| Seeded layout accidentally leaks into secrets. | Secrets stay on `private_rng`; the existing entropy test covers the new tasks automatically; the new determinism test asserts layout equality and secret inequality on the same seed. |
