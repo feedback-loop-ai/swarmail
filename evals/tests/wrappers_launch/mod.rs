@@ -20,6 +20,32 @@ fn dir(path: &Path) {
 }
 use std::os::unix::fs::DirBuilderExt;
 const CANARY: &str = "SYNTHETIC-CREDENTIAL-CANARY-DO-NOT-RETAIN";
+/// The stand-in decodes TOML independently with the standard library's
+/// tomllib (Python 3.11+). /usr/bin/python3 is new enough on Linux runners,
+/// but macOS ships 3.9 there, so take the first python3 that has tomllib,
+/// trying /usr/bin/python3 and then the test's PATH.
+fn standin_python() -> &'static str {
+    static PYTHON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PYTHON.get_or_init(|| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::iter::once(PathBuf::from("/usr/bin/python3"))
+            .chain(std::env::split_paths(&path).map(|dir| dir.join("python3")))
+            .filter(|candidate| candidate.is_absolute())
+            .find(|candidate| {
+                std::process::Command::new(candidate)
+                    .args(["-c", "import tomllib"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            })
+            .expect("the wrapper stand-in needs a python3 with tomllib (3.11+)")
+            .to_str()
+            .expect("a UTF-8 interpreter path")
+            .to_owned()
+    })
+}
 struct Case {
     root: tempfile::TempDir,
     work: PathBuf,
@@ -69,7 +95,8 @@ impl Case {
         let capture = base.join("capture.json");
         let script = base.join("standin");
         let body = format!(
-            "#!/usr/bin/python3\nFAMILY={}\nCAPTURE={}\nCANARY={}\n{}",
+            "#!{}\nFAMILY={}\nCAPTURE={}\nCANARY={}\n{}",
+            standin_python(),
             json!(family),
             json!(capture),
             json!(CANARY),
@@ -336,7 +363,6 @@ fn entrypoint_input_refusals_precede_any_cli_launch() {
 
 #[test]
 fn non_serializable_identity_and_runtime_paths_refuse_before_launch() {
-    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let c = Case::new("claude");
     let out = c
         .command("claude", "claude-opus-5-5")
@@ -346,6 +372,15 @@ fn non_serializable_identity_and_runtime_paths_refuse_before_launch() {
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty());
     assert!(!c.capture.exists());
+    // Linux only from here: macOS file systems (APFS, HFS+) refuse a
+    // non-UTF-8 directory name with EILSEQ, so such a HOME cannot exist there.
+    #[cfg(target_os = "linux")]
+    native_home_refuses_before_launch(&c);
+}
+
+#[cfg(target_os = "linux")]
+fn native_home_refuses_before_launch(c: &Case) {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let native = c
         .root
         .path()

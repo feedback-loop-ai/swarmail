@@ -786,7 +786,7 @@ async fn a_delivery_failing_after_provisioning_replays_as_a_harness_error() {
     let task = tasks::find("slow-delivery").unwrap();
     let err = tasks::score(&task, &snap).unwrap_err();
     assert!(err.contains("Failed after connect 0"), "{err}");
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let state = dir.path().join("state.json");
     std::fs::write(&state, serde_json::to_vec(&snap).unwrap()).unwrap();
     let out = common::cli()

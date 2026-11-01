@@ -6,10 +6,7 @@ mod common;
 
 use common::*;
 use serde_json::{Value, json};
-use std::ffi::OsString;
 use std::io::Write;
-use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::PermissionsExt;
 use std::process::Stdio;
 use swarmail_evals::runner::TrialResult;
 use swarmail_evals::tasks::Outcome;
@@ -39,7 +36,7 @@ fn agents_file(dir: &std::path::Path, agents: Value) -> String {
 #[test]
 fn the_matrix_runs_the_whole_product_and_aggregates_exits() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let agents = agents_file(
         dir.path(),
         json!([{"label": "oracle", "argv": []}, {"label": "null", "argv": []}]),
@@ -105,7 +102,7 @@ fn the_matrix_runs_the_whole_product_and_aggregates_exits() {
 #[test]
 fn matrix_workers_are_closed_and_child_output_is_not_published() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("worker-env");
     let wrapper = dir.path().join("observe-worker.sh");
     let script = "#!/bin/sh\nprintf '%s' 'synthetic-matrix-output-canary-196'\nprintf '%s' 'synthetic-matrix-output-canary-196' >&2\n/usr/bin/cat /proc/$PPID/environ > \"$1\"\nshift\nexec \"$@\" agent oracle\n".to_string();
@@ -191,10 +188,16 @@ fn matrix_workers_are_closed_and_child_output_is_not_published() {
     assert!(!String::from_utf8_lossy(&bytes).contains(canary));
 }
 
+// Linux only: macOS file systems (APFS, HFS+) refuse a non-UTF-8 directory
+// name with EILSEQ, so such a PATH entry cannot exist there.
+#[cfg(target_os = "linux")]
 #[test]
 fn matrix_preserves_non_utf8_path_discovery_through_the_worker_cli() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::PermissionsExt;
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let path_dir = dir.path().join(OsString::from_vec(b"agents-\xff".to_vec()));
     std::fs::create_dir(&path_dir).unwrap();
     let marker = dir.path().join("agent-ran");
@@ -235,7 +238,7 @@ fn matrix_preserves_non_utf8_path_discovery_through_the_worker_cli() {
 #[test]
 fn the_matrix_keeps_counting_after_a_harness_error_and_exits_two() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let agents = agents_file(
         dir.path(),
         json!([
@@ -267,7 +270,7 @@ fn the_matrix_keeps_counting_after_a_harness_error_and_exits_two() {
 #[test]
 fn a_missing_swarmail_binary_still_emits_the_whole_product() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("launched");
     let touch = vec!["/bin/sh", "-c", "touch \"$0\"", marker.to_str().unwrap()];
     let agents = agents_file(
@@ -318,7 +321,7 @@ fn a_missing_swarmail_binary_still_emits_the_whole_product() {
 #[test]
 fn the_matrix_refuses_bad_inputs_before_running_anything() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let good = agents_file(dir.path(), json!([{"label": "null", "argv": []}]));
     for args in [
         vec![
@@ -370,7 +373,7 @@ fn row(task: &str, outcome: &str, class: Option<&str>, ms: u64) -> String {
 }
 
 fn report_of(input: &str) -> (Option<i32>, Value) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let path = dir.path().join("rows.jsonl");
     std::fs::write(&path, input).unwrap();
     let out = cli()
@@ -621,7 +624,7 @@ fn marker_identity(value: &Value, name: &str) -> ProcessIdentity {
 
 #[cfg(target_os = "linux")]
 fn matrix_signal_case(signal: i32, noisy: bool) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("active.json");
     let launches = dir.path().join("launches.txt");
     let rows_path = dir.path().join("matrix.jsonl");
@@ -904,7 +907,7 @@ fn privacy_cancellation_preserves_owned_runtime_and_suffix_accounting() {
 fn a_broken_matrix_stdout_stops_after_the_owned_trial_finishes() {
     use std::io::Read;
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let launches = dir.path().join("launches.txt");
     let argv = vec![
         "/bin/sh",
@@ -962,7 +965,7 @@ fn a_broken_matrix_stdout_stops_after_the_owned_trial_finishes() {
 #[test]
 fn normal_matrix_binary_ignores_test_control_environment_variables() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let agents = agents_file(dir.path(), json!([{"label": "oracle", "argv": []}]));
     let mut cmd = cli();
     for (name, value) in [
@@ -1038,7 +1041,7 @@ fn normal_matrix_binary_ignores_test_control_environment_variables() {
 #[test]
 fn matrix_signal_cancels_and_reaps_the_fallback_cargo_group() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let ready = dir.path().join("cargo-ready");
     let invocation = dir.path().join("cargo-invocations.log");
     let script = dir.path().join("cargo-wrapper.sh");
@@ -1150,7 +1153,7 @@ fn v2_report_refuses_v1_and_mixed_rows_before_aggregation() {
                 .unwrap_err()
                 .contains("schema_version")
         );
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let path = dir.path().join("rows.jsonl");
         std::fs::write(&path, input).unwrap();
         let out = cli()
@@ -1216,7 +1219,7 @@ fn sequential_rows_reject_missing_or_invalid_concurrency() {
 #[test]
 fn sequential_matrix_refuses_overlap_and_unsupported_concurrency() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     for concurrency in ["0", "2"] {
         let out = cli()
             .args([

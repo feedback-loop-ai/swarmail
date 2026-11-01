@@ -206,7 +206,7 @@ fn artifacts_are_private_under_permissive_and_restrictive_umasks() {
     let _trial_scope = trial_scope();
     let canary = "synthetic-artifact-umask-canary-196";
     for mask in ["0002", "0000", "0777"] {
-        let owner = tempfile::tempdir().unwrap();
+        let owner = tempdir();
         let artifacts = owner.path().join("selected-artifacts");
         std::fs::create_dir(&artifacts).unwrap();
         std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o750)).unwrap();
@@ -290,7 +290,7 @@ fn helper_agent() {
 #[test]
 fn an_external_agent_gets_literal_argv_and_identical_prompt_and_env() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("echo.json");
     let (row, out) = helper_trial(
         "echo",
@@ -460,7 +460,7 @@ fn an_external_agent_gets_literal_argv_and_identical_prompt_and_env() {
 #[test]
 fn relative_and_bare_agent_programs_resolve_at_the_caller_boundary() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let tool_dir = dir.path().join("tools");
     std::fs::create_dir(&tool_dir).unwrap();
     let relative_marker = dir.path().join("relative-ran");
@@ -552,8 +552,11 @@ fn capture_then_exec(
 ) -> std::path::PathBuf {
     let capture = directory.join(format!("{name}.env"));
     let wrapper = directory.join(format!("{name}.sh"));
+    // Linux reads the exact exec-time map from /proc. Elsewhere `env` runs
+    // inside this shell, which sets its own PWD, SHLVL and `_`; exactly those
+    // are dropped there, and the Linux run proves the harness never sets them.
     let script = format!(
-        "#!/bin/sh\nif [ -r /proc/$$/environ ]; then /bin/cat /proc/$$/environ > '{}'; else unset PWD; /usr/bin/env -0 > '{}'; fi\nexec '{}' \"$@\"\n",
+        "#!/bin/sh\nif [ -r /proc/$$/environ ]; then /bin/cat /proc/$$/environ > '{}'; else unset PWD SHLVL; /usr/bin/env -u _ -0 > '{}'; fi\nexec '{}' \"$@\"\n",
         capture.display(),
         capture.display(),
         program.display(),
@@ -570,7 +573,7 @@ fn capture_then_exec(
 #[test]
 fn fixture_gets_only_its_private_runtime_map_and_generated_admin_input() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("fixture-env");
     let (row, out) = helper_trial(
         "fixture_env_probe",
@@ -649,7 +652,7 @@ fn fixture_gets_only_its_private_runtime_map_and_generated_admin_input() {
 #[test]
 fn swarmail_gets_only_its_fixed_runtime_map() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let wrapper = capture_then_exec(dir.path(), "swarmail", swarmail_bin());
     let out = cli()
         .env("SWARMAIL_BIN", &wrapper)
@@ -705,7 +708,7 @@ fn swarmail_gets_only_its_fixed_runtime_map() {
 #[test]
 fn readiness_discards_an_oversized_preannouncement_flood() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let binary = swarmail_bin();
     let wrapper = dir.path().join("noisy-swarmail.sh");
     let script = format!(
@@ -732,7 +735,7 @@ fn readiness_discards_an_oversized_preannouncement_flood() {
 #[test]
 fn readiness_continues_draining_after_the_first_valid_announcement() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let wrapper = dir.path().join("post-announcement-flood.py");
     let binary = swarmail_bin().to_str().unwrap();
     let script = format!(
@@ -758,15 +761,17 @@ fn readiness_continues_draining_after_the_first_valid_announcement() {
 #[test]
 fn automatic_build_uses_a_cleared_named_preparation_map() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let custom_target = dir.path().join("custom-cargo-target");
     let cargo = runner::resolve_agent_command(&["cargo".into()])
         .unwrap()
         .remove(0);
     let wrapper = dir.path().join("cargo-wrapper.sh");
     let capture = dir.path().join("cargo.env");
+    // As in capture_then_exec: the non-Linux capture drops only the shell's
+    // own PWD, SHLVL and `_`.
     let script = format!(
-        "#!/bin/sh\nif [ -r /proc/$$/environ ]; then /bin/cat /proc/$$/environ > '{}'; else unset PWD; /usr/bin/env -0 > '{}'; fi\nexec '{}' \"$@\"\n",
+        "#!/bin/sh\nif [ -r /proc/$$/environ ]; then /bin/cat /proc/$$/environ > '{}'; else unset PWD SHLVL; /usr/bin/env -u _ -0 > '{}'; fi\nexec '{}' \"$@\"\n",
         capture.display(),
         capture.display(),
         std::path::PathBuf::from(&cargo).display(),
@@ -921,7 +926,7 @@ fn automatic_build_uses_a_cleared_named_preparation_map() {
 #[test]
 fn automatic_build_accepts_explicit_homes_without_caller_home() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let cargo_home = dir.path().join("selected-cargo-home");
     let rustup_home = dir.path().join("selected-rustup-home");
     let artifact = serde_json::json!({
@@ -1010,7 +1015,7 @@ cat "$base/compiler-artifact.json"
 #[test]
 fn oversized_cargo_record_is_drained_and_fails_without_echo() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let cargo = runner::resolve_agent_command(&["cargo".into()])
         .unwrap()
         .remove(0);
@@ -1198,7 +1203,7 @@ exit "$status"
 #[test]
 fn agent_argv_stays_literal_and_wrapper_config_is_explicit() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let arg_marker = dir.path().join("literal-args");
     let literal = [
         "two words",
@@ -1239,7 +1244,7 @@ fn agent_argv_stays_literal_and_wrapper_config_is_explicit() {
 #[test]
 fn two_trials_use_fresh_ports_and_identities() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let trials: Vec<(String, String, std::collections::HashSet<Vec<u8>>)> = (0..2)
         .map(|i| {
             let marker = dir.path().join(format!("{i}.json"));
@@ -1301,7 +1306,7 @@ fn direct_trial_preserves_non_utf8_later_arguments() {
     use std::ffi::OsString;
     use std::os::unix::fs::PermissionsExt;
 
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("argument-bytes");
     let program = dir.path().join("native-argument-agent.sh");
     std::fs::write(
@@ -1367,7 +1372,7 @@ fn missing_program_and_bad_clap_values_do_not_echo_input_text() {
 #[test]
 fn artifact_write_failures_use_safe_categories() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let not_directory = dir.path().join("caller-selected-artifact-path-196");
     std::fs::write(&not_directory, b"file").unwrap();
     let (row, out) = trial(&[
@@ -1387,7 +1392,7 @@ fn artifact_write_failures_use_safe_categories() {
 fn a_swarmail_that_never_comes_up_is_a_harness_error() {
     let _trial_scope = trial_scope();
     let out = cli()
-        .env("SWARMAIL_BIN", "/bin/false")
+        .env("SWARMAIL_BIN", FALSE_PROGRAM)
         .args(["trial", "--task", "signup", "--agent", "oracle"])
         .output()
         .unwrap();
@@ -1462,7 +1467,7 @@ fn read_pids(marker: &std::path::Path) -> (i32, i32) {
 #[test]
 fn a_deadline_is_budget_and_reaps_the_agents_descendants() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("pids.json");
     let (row, out) = helper_trial(
         "stall",
@@ -1508,7 +1513,7 @@ fn an_agent_that_succeeds_then_crashes_still_passes_with_its_real_status() {
 #[test]
 fn child_output_canaries_are_drained_without_publication() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("emitter.marker");
     let canary_file = dir.path().join("independent-canary.txt");
     let artifacts = dir.path().join("artifacts");
@@ -1596,7 +1601,7 @@ fn child_output_canaries_are_drained_without_publication() {
 #[test]
 fn child_output_server_death_remains_a_harness_error_on_linux() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("emitter.marker");
     let canary_file = dir.path().join("independent-canary.txt");
     let canary = b"synthetic-output-canary-196\xffsplit";
@@ -1652,7 +1657,7 @@ fn normal_trial_binary_ignores_the_former_runner_fault_control() {
         );
         assert!(!stderr(&out).contains("injected runner fault"));
     }
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let controls = [
         ("EVAL_TEST_CLEANUP_WAIT_BYPASS", "1".to_string()),
         (
@@ -1720,7 +1725,7 @@ fn normal_trial_binary_ignores_the_former_runner_fault_control() {
 #[test]
 fn sigterm_interrupts_cleans_up_and_emits_one_row() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("pids.json");
     let (mut command, _owner) = helper_command(
         "stall",
@@ -1747,7 +1752,7 @@ fn sigterm_interrupts_cleans_up_and_emits_one_row() {
 #[test]
 fn a_retained_snapshot_reproduces_the_verdict_and_bad_state_refuses() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let (row, _) = trial(&[
         "--task",
         "signup",
@@ -1806,7 +1811,7 @@ fn a_retained_snapshot_reproduces_the_verdict_and_bad_state_refuses() {
 /// exits or runs into its deadline. `check` replays the retained state to
 /// the same verdict.
 fn parked_after_provisioning(mode: &str, deadline: &str) -> TrialResult {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("released");
     let artifacts = dir.path().join("artifacts");
     let (row, out) = helper_trial(
@@ -1892,7 +1897,7 @@ fn the_catalogue_is_served_as_schema_version_two() {
 #[test]
 fn cleanup_escalates_after_a_leader_exits_and_a_descendant_ignores_term() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = dir.path().join("pids.json");
     let (mut command, _owner) = helper_command(
         "resistant",
@@ -1964,7 +1969,7 @@ fn loopback_clients_ignore_caller_proxy_settings() {
 #[test]
 fn v2_check_refuses_v1_state_with_a_safe_version_diagnostic() {
     let _trial_scope = common::trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let (row, _) = trial(&[
         "--task",
         "signup",
@@ -2004,7 +2009,7 @@ fn trap_bearing_trials_preserve_deadline_and_delivery_precedence() {
             "parked",
         ),
     ] {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempdir();
         let artifacts = dir.path().join("artifacts");
         let (row, out) = helper_trial(
             mode,
@@ -2130,7 +2135,7 @@ fn sequential_trial_concurrency_requests() {
 #[test]
 fn sequential_rows_record_concurrency() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     for agent in ["oracle", "null", "missing-command"] {
         let args = if agent == "missing-command" {
             vec![
@@ -2167,7 +2172,7 @@ fn sequential_rows_record_concurrency() {
 #[test]
 fn sequential_admission_refuses_independent_cli_trials() {
     let _trial_scope = trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     for signal in [libc::SIGTERM, libc::SIGINT] {
         let ready = dir.path().join(format!("ready-{signal}"));
         let (mut command, _wrapper) = helper_command(

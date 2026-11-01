@@ -45,7 +45,7 @@ fn environment(dir: &Path, app: &str) -> BTreeMap<String, String> {
 }
 #[test]
 fn exact_eight_input_admission_and_literal_values() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let values = environment(dir.path(), "http://127.0.0.1:12346/");
     let inputs = Inputs::read(&values).unwrap();
     assert_eq!(
@@ -120,7 +120,7 @@ fn exact_eight_input_admission_and_literal_values() {
 
 #[test]
 fn invalid_entrypoints_never_echo_private_configuration_or_launch_a_cli() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let values = environment(dir.path(), "http://127.0.0.1:12346/");
     let canary = "SYNTHETIC-CREDENTIAL-CANARY-DO-NOT-RETAIN";
     let config = dir.path().join("private.json");
@@ -228,7 +228,7 @@ async fn http_server() -> (
 #[tokio::test]
 async fn helper_makes_real_identity_bound_requests_and_refuses_overrides_escapes_and_overflow() {
     let (url, mut rx, server, count) = http_server().await;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let helper = Helper::new(Inputs::read(&environment(dir.path(), &url)).unwrap()).unwrap();
     for (method, path, body) in [
         ("GET", "/", None),
@@ -337,7 +337,7 @@ async fn redirects_never_reach_a_second_listener() {
     let server = tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap();
     });
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let helper = Helper::new(Inputs::read(&environment(dir.path(), &url)).unwrap()).unwrap();
     assert_eq!(
         helper
@@ -356,7 +356,7 @@ async fn redirects_never_reach_a_second_listener() {
 #[tokio::test]
 async fn actual_stdio_helper_lists_exactly_one_tool_and_does_not_echo_unrelated_secrets() {
     let (url, mut requests, server, _) = http_server().await;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let values = environment(dir.path(), &url);
     let mut cmd = tokio::process::Command::new(common::exe());
     let runtime = runner::RuntimeDirs::create(dir.path(), "helper").unwrap();
@@ -414,7 +414,7 @@ async fn actual_stdio_helper_lists_exactly_one_tool_and_does_not_echo_unrelated_
 // These exchanges exercise the executable's bounded stdin reader, not Helper::rpc.
 // Drain both output pipes while writing so an early reader refusal cannot hang.
 async fn stdio_bytes(url: &str, bytes: Vec<u8>) -> std::process::Output {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let runtime = runner::RuntimeDirs::create(dir.path(), "helper").unwrap();
     let mut command = tokio::process::Command::new(common::exe());
     runtime.apply(&mut command);

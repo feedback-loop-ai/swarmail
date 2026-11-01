@@ -633,7 +633,9 @@ fn inventory_and_git_discovery_fail_closed() {
     );
 }
 
-#[cfg(unix)]
+// Linux only: macOS file systems (APFS, HFS+) refuse a non-UTF-8 file name
+// with EILSEQ, so such a tracked name cannot be created there.
+#[cfg(target_os = "linux")]
 #[test]
 fn non_utf8_tracked_names_refuse_instead_of_disappearing() {
     use std::os::unix::ffi::OsStringExt;

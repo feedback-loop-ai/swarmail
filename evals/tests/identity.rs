@@ -78,7 +78,7 @@ fn facts(exe: &Path, cwd: &Path) -> TrialResult {
 #[test]
 fn runtime_checkout_cannot_supply_harness_source_or_external_target_source() {
     let _trial_scope = common::trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     git(dir.path(), &["init", "-b", "unrelated"]);
     git(
         dir.path(),
@@ -98,7 +98,7 @@ fn runtime_checkout_cannot_supply_harness_source_or_external_target_source() {
         )
     );
     let out = common::cli()
-        .env("SWARMAIL_BIN", "/bin/false")
+        .env("SWARMAIL_BIN", common::FALSE_PROGRAM)
         .args(["trial", "--task", "signup", "--agent", "null"])
         .output()
         .unwrap();
@@ -114,14 +114,14 @@ fn runtime_checkout_cannot_supply_harness_source_or_external_target_source() {
     assert_eq!(
         r.provenance.target.executable_sha256,
         Availability::present(
-            identity::file_hash(Path::new("/bin/false")).unwrap(),
+            identity::file_hash(Path::new(common::FALSE_PROGRAM)).unwrap(),
             Source::MeasuredBytes
         )
     );
 }
 #[test]
 fn source_content_fingerprint_detects_dirty_to_dirty_changes_and_executable_replacement() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let root = dir.path();
     std::fs::create_dir(root.join("src")).unwrap();
     std::fs::write(root.join("Cargo.toml"), "manifest").unwrap();
@@ -145,7 +145,7 @@ fn source_content_fingerprint_detects_dirty_to_dirty_changes_and_executable_repl
 }
 #[test]
 fn an_owned_real_cargo_build_that_changes_source_refuses_association() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let root = dir.path();
     std::fs::create_dir(root.join("src")).unwrap();
     std::fs::write(
@@ -167,7 +167,7 @@ fn an_owned_real_cargo_build_that_changes_source_refuses_association() {
 #[test]
 fn rebuilds_follow_source_git_indirection_packed_refs_and_archive_unavailability() {
     let _trial_scope = common::trial_scope();
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let root = dir.path().join("repo");
     std::fs::create_dir(&root).unwrap();
     let actual = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -259,7 +259,7 @@ fn rebuilds_follow_source_git_indirection_packed_refs_and_archive_unavailability
 fn runtime_git_helpers_have_closed_maps_and_private_source_locators_never_publish() {
     let _trial_scope = common::trial_scope();
     use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir();
     let discovery = dir.path().join("private-discovery-canary-200");
     let captures = dir.path().join("captures");
     let caller = dir.path().join("private-cwd-canary-200");
