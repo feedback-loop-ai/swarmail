@@ -28,8 +28,8 @@ and actual check replay supplement oracle/null/isolation proofs.
 
 This amendment changes scoring authority under accepted 0071 only. #194/#196
 cancellation/privacy assertions remain intact with current v2 rows. #201 owns
-macOS eval CI evidence, the operator owns live settings and sealing, and #221
-owns namespaces; no receipt for those is claimed here.
+macOS eval CI evidence (wired 2026-10-31), the operator owns live settings and
+sealing, and #221 owns namespaces; no receipt for those is claimed here.
 
 ## Why and scope
 
@@ -321,10 +321,12 @@ Empty denominators/inputs produce null estimates, never NaN or invented
   continued accounting after errors, exit aggregation, Wilson calculations,
   quantiles, malformed input and empty/all-error reports have tests.
 - **AC11 — Honest limits:** README and decision retain the ICS/reply/slow
-  task limits, Unix/unconfined posture, deferred driver and deferred gate
-  wiring. No real model claim is made from oracle/null controls.
+  task limits, Unix/unconfined posture and deferred driver. The gate wiring
+  that was deferred is done (2026-10-31, #201: CI and verify run evals'
+  fmt, clippy and tests). No real model claim is made from oracle/null controls.
 - **AC12 — Delivery:** Evals' own fmt/clippy/tests pass, run by implement
-  and reproduced by reviewers until CI/verify wiring follows #120 batch 5.
+  and reproduced by reviewers; since 2026-10-31 (#201) CI's `test` jobs and
+  the pinned verify seat run them too, locked, against the candidate's binary.
   Root gates remain unchanged and green, including exact coverage,
   selftest, publish guard and license/native-tls checks. Pinned bundle
   compilation belongs to verify. Signed commits only; no push/PR/merge.
@@ -400,16 +402,17 @@ reviews and every Linux preparation/toolchain/custom-target, eval fmt/locked
 clippy/full-test, artifact, mutation and gate proof remain obligations. Under
 the 2026-10-24 operator ruling, row **macOS evidence for `evals/`**, in
 [operator-rulings.md](../../docs/rulings/epic-192.md), `evals/`
-is outside CI on every OS until #201. #201's CI gating owns macOS eval
+was outside CI on every OS until #201 wired it (2026-10-31: the macOS `test`
+job now runs evals' fmt, clippy and tests). #201's CI gating owns macOS eval
 preparation/toolchain, clippy/tests and selected artifact-primitive execution;
-those receipts do not block #196 (port spec AC13/AC23). This records ownership,
-not macOS execution or existing CI proof.
+those receipts do not block #196 (port spec AC13/AC23). This records ownership;
+the macOS receipts are CI's, not this text's.
 
 ## 2026-10-25 — local replacement for issue #148 AC4 (#199)
 
 The harness's AC4 above remains the oracle positive control. The issue's
 “trials can't see each other” claim is replaced under the verified operator
-ruling, recorded by [proposed 0076](../../docs/decisions/0076-sequential-eval-trials.md):
+ruling, recorded by [accepted 0076](../../docs/decisions/0076-sequential-eval-trials.md):
 
 The baseline runs sequentially with a fresh HOME per trial (and per agent).
 Every result row records `concurrency: 1`, the supported trial execution limit,

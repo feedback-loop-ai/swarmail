@@ -54,5 +54,11 @@ Keep `fixes_applied: false`. Report the finding's actual severity and security
 status; never lower either to obtain reclassification. The security member
 alone owns `security-hold`, which remains a hard stop. A scope defect cannot
 turn a security finding into non-security debt or authorize shipping. The
-recipe's policy determines whether the verdict stops or returns to triage;
-no reviewer may waive an accepted decision or a frozen guarantee.
+recipe's policy routes the verdict. With every safety fact explicit and
+`fixes_applied: false`, a spec defect returns the run to design with your
+notes (decision 0102, addendum 2026-10-31; `codex-fast` first reclassifies
+some through triage), and the sixth review that still finds one parks for
+the operator; with any fact unknown it stops. So name the defective
+criterion, contract or task and what the correction is: the chief revises
+the design from your notes. No reviewer may waive an accepted decision or
+a frozen guarantee.

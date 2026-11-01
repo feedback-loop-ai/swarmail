@@ -26,6 +26,29 @@ pub const BARRIER_DIR_ENV: &str = "EVAL_TEST_BARRIER_DIR";
 pub const BARRIER_COUNT_ENV: &str = "EVAL_TEST_BARRIER_COUNT";
 pub const LAUNCH_LOG_ENV: &str = "EVAL_TEST_LAUNCH_LOG";
 
+/// A fresh temporary directory under the symlink-free name of the system
+/// temporary directory. Artifact roots and private paths refuse every
+/// symlinked component, and macOS's per-user temporary directory lives
+/// under /var, a symlink to /private/var; on Linux the name is unchanged.
+pub fn tempdir() -> tempfile::TempDir {
+    let base = std::fs::canonicalize(std::env::temp_dir()).expect("canonical temporary directory");
+    tempfile::tempdir_in(base).expect("temporary directory")
+}
+
+/// A program that exits 0 at once. macOS has no /bin/true.
+#[cfg(target_os = "macos")]
+pub const TRUE_PROGRAM: &str = "/usr/bin/true";
+/// A program that exits 0 at once.
+#[cfg(not(target_os = "macos"))]
+pub const TRUE_PROGRAM: &str = "/bin/true";
+
+/// A program that exits 1 at once. macOS has no /bin/false.
+#[cfg(target_os = "macos")]
+pub const FALSE_PROGRAM: &str = "/usr/bin/false";
+/// A program that exits 1 at once.
+#[cfg(not(target_os = "macos"))]
+pub const FALSE_PROGRAM: &str = "/bin/false";
+
 pub fn exe() -> &'static str {
     env!("CARGO_BIN_EXE_swarmail-evals")
 }
@@ -121,7 +144,7 @@ pub fn helper_command(
     args: &[&str],
     env: &[(&str, &str)],
 ) -> (Command, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir();
     let marker = env
         .iter()
         .find(|(key, _)| *key == MARKER_ENV)
@@ -137,8 +160,11 @@ pub fn helper_command(
         .find(|(key, _)| *key == BARRIER_COUNT_ENV)
         .map(|(_, value)| (*value).to_string());
     let me = std::env::current_exe().unwrap();
+    // Linux reads the exact exec-time map from /proc. Elsewhere `env` runs
+    // inside this shell, which exports its own SHLVL and `_`; exactly those
+    // are dropped there, and the Linux run proves the harness never sets them.
     let mut script = format!(
-        "#!/bin/sh\nif [ -r /proc/$$/environ ]; then /bin/cat /proc/$$/environ > {}; else /usr/bin/env -0 > {}; fi\nexport {}={}\nexport {}={}\nexport EVAL_TEST_ENV_SNAPSHOT={}\n",
+        "#!/bin/sh\nif [ -r /proc/$$/environ ]; then /bin/cat /proc/$$/environ > {}; else unset SHLVL; /usr/bin/env -u _ -0 > {}; fi\nexport {}={}\nexport {}={}\nexport EVAL_TEST_ENV_SNAPSHOT={}\n",
         shell_quote(&env_snapshot),
         shell_quote(&env_snapshot),
         HELPER_ENV,
@@ -214,7 +240,10 @@ pub fn eventually(what: &str, mut ok: impl FnMut() -> bool) {
     }
 }
 
+// The process-identity proofs read /proc/<pid>/stat, which only Linux has;
+// they are compiled only there so no test can pass vacuously elsewhere.
 /// Whether `pid` names a live (not zombie) process.
+#[cfg(target_os = "linux")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessIdentity {
     pub pid: i32,
@@ -225,6 +254,7 @@ pub struct ProcessIdentity {
     pub state: char,
 }
 
+#[cfg(target_os = "linux")]
 pub fn process_identity(pid: i32) -> Option<ProcessIdentity> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let (_, tail) = stat.rsplit_once(')')?;
@@ -239,17 +269,20 @@ pub fn process_identity(pid: i32) -> Option<ProcessIdentity> {
     })
 }
 
+#[cfg(target_os = "linux")]
 pub fn identity_alive(identity: &ProcessIdentity) -> bool {
     process_identity(identity.pid)
         .is_some_and(|now| now.start_time == identity.start_time && !matches!(now.state, 'Z' | 'X'))
 }
 
+#[cfg(target_os = "linux")]
 pub fn pid_alive(pid: i32) -> bool {
     process_identity(pid).is_some_and(|process| !matches!(process.state, 'Z' | 'X'))
 }
 
 /// Read the Linux process table and return every process below `root`, using
 /// PID/start-time identities so the exit proof is safe against PID reuse.
+#[cfg(target_os = "linux")]
 pub fn process_descendants(root: i32) -> Vec<ProcessIdentity> {
     let mut all = Vec::new();
     let Ok(entries) = std::fs::read_dir("/proc") else {
@@ -362,6 +395,8 @@ async fn helper(mode: &str) -> i32 {
             std::fs::write(marker().unwrap(), report.to_string()).unwrap();
             3
         }
+        // The process-identity helper modes report /proc identities.
+        #[cfg(target_os = "linux")]
         "resistant" => {
             // The agent leader exits on TERM; this same-group descendant
             // ignores TERM so the owning cleanup must escalate to KILL.
@@ -385,6 +420,7 @@ async fn helper(mode: &str) -> i32 {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
             }
         }
+        #[cfg(target_os = "linux")]
         "stall" | "noisy_stall" => {
             if let Ok(path) = std::env::var(LAUNCH_LOG_ENV) {
                 use std::io::Write;
@@ -622,6 +658,61 @@ async fn helper(mode: &str) -> i32 {
             let link =
                 labelled_url(theirs["text"].as_str().unwrap(), "Confirm your account:").unwrap();
             app.get(&link).await.unwrap();
+            0
+        }
+        "near_miss_sibling" | "near_miss_sibling_nearest" => {
+            // A mistyped subject times the wait out; the timed-out answer
+            // alone (decision 0111) names the mail it missed. The recovery
+            // control picks the entry addressed to the exact identity; the
+            // negative control presents `nearest_subject` as the match.
+            let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+            let missed = mcp
+                .wait(&env.inbox, Some("Confirm yur account"), 1, 1000)
+                .await
+                .unwrap();
+            assert_eq!(missed["timed_out"], json!(true), "{missed}");
+            assert_eq!(missed["matched"], json!(0), "{missed}");
+            let near = &missed["near_misses"];
+            assert_eq!(near["arrivals_total"], json!(2), "{missed}");
+            let chosen = if mode == "near_miss_sibling" {
+                near["arrivals"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry["to"] == json!([env.identity]))
+                    .unwrap()
+            } else {
+                &near["nearest_subject"]
+            };
+            let mail = mcp
+                .call("swarmail_get_email", json!({ "id": chosen["email_id"] }))
+                .await
+                .unwrap();
+            let link =
+                labelled_url(mail["text"].as_str().unwrap(), "Confirm your account:").unwrap();
+            app.get(&link).await.unwrap();
+            0
+        }
+        "near_miss_slow" => {
+            // Nothing has arrived: the timed-out answer says so by carrying
+            // no near misses at all. Release the held mail, wait, confirm.
+            let mut mcp = McpClient::connect(&env.mcp_url).await.unwrap();
+            let first = mcp
+                .wait(&env.inbox, Some("Confirm your account"), 1, 1000)
+                .await
+                .unwrap();
+            assert_eq!(first["timed_out"], json!(true), "{first}");
+            assert_eq!(first["total"], json!(0), "{first}");
+            assert!(first.get("near_misses").is_none(), "{first}");
+            let (status, body) = app.post("/deliveries/release", json!({})).await.unwrap();
+            assert_eq!(status, 200, "{body}");
+            let mail = mcp
+                .wait_emails(&env.inbox, Some("Confirm your account"), 1)
+                .await
+                .unwrap();
+            let link =
+                labelled_url(mail[0]["text"].as_str().unwrap(), "Confirm your account:").unwrap();
+            assert_eq!(app.get(&link).await.unwrap().0, 200);
             0
         }
         "stale_code" => {

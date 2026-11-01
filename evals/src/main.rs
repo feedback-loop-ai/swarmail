@@ -550,7 +550,7 @@ const MATRIX_OUTPUT_TIMEOUT_ENV: &str = "EVAL_TEST_MATRIX_OUTPUT_TIMEOUT";
 const MATRIX_EOF_TIMEOUT_ENV: &str = "EVAL_TEST_MATRIX_EOF_TIMEOUT";
 #[cfg(test)]
 const MATRIX_CHILD_REAPED_ENV: &str = "EVAL_TEST_MATRIX_CHILD_REAPED";
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 const MATRIX_TRIALS_ENV: &str = "EVAL_TEST_MATRIX_TRIALS";
 #[cfg(test)]
 static MATRIX_PENDING_CHECKS: std::sync::atomic::AtomicUsize =
@@ -1569,7 +1569,8 @@ async fn resolve_matrix_bin(
     Ok(Some((exe, target)))
 }
 
-#[cfg(test)]
+// Only the Linux-only matrix probe entrypoint drives the matrix this way.
+#[cfg(all(test, target_os = "linux"))]
 async fn matrix(
     ids: Vec<String>,
     agents: PathBuf,
@@ -2215,14 +2216,25 @@ mod tests {
         std::process::ExitStatus::from_raw(code << 8)
     }
 
+    #[cfg(target_os = "linux")]
     const MATRIX_PROBE_ENV: &str = "EVAL_TEST_MATRIX_PROBE";
+    #[cfg(target_os = "linux")]
     const MATRIX_TRIAL_EXE_ENV: &str = "EVAL_TEST_MATRIX_TRIAL_EXE";
+    #[cfg(target_os = "linux")]
     const MATRIX_WAIT_PENDING_ENV: &str = "EVAL_TEST_MATRIX_WAIT_PENDING";
+    #[cfg(target_os = "linux")]
     const MATRIX_CLEANUP_ENTERED_ENV: &str = "EVAL_TEST_MATRIX_CLEANUP_ENTERED";
+    #[cfg(target_os = "linux")]
     const MATRIX_RELEASE_ENV: &str = "EVAL_TEST_MATRIX_RELEASE";
+    #[cfg(target_os = "linux")]
     const MATRIX_TRIAL_PID_ENV: &str = "EVAL_TEST_MATRIX_TRIAL_PID";
+    #[cfg(target_os = "linux")]
     const MATRIX_PRE_TRAP_HOLD_ENV: &str = "EVAL_TEST_MATRIX_PRE_TRAP_HOLD_DIR";
 
+    // The probes below identify every process they own by /proc/<pid>/stat
+    // (their trial helper script reports it, and their owner guard reads it),
+    // which macOS does not have, so the probe harness and its tests are Linux only.
+    #[cfg(target_os = "linux")]
     #[test]
     fn matrix_probe_entrypoint() {
         if std::env::var_os(MATRIX_PROBE_ENV).is_none() {
@@ -2264,6 +2276,7 @@ mod tests {
         assert_eq!(exit, ExitCode::from(2));
     }
 
+    #[cfg(target_os = "linux")]
     #[derive(Clone, Debug)]
     struct MatrixIdentity {
         pid: i32,
@@ -2273,6 +2286,7 @@ mod tests {
         state: char,
     }
 
+    #[cfg(target_os = "linux")]
     fn matrix_identity(pid: i32) -> Option<MatrixIdentity> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let (_, tail) = stat.rsplit_once(')')?;
@@ -2286,6 +2300,7 @@ mod tests {
         })
     }
 
+    #[cfg(target_os = "linux")]
     fn matrix_identity_matches(want: &MatrixIdentity, now: &MatrixIdentity) -> bool {
         want.pid == now.pid
             && want.pgrp == now.pgrp
@@ -2293,12 +2308,14 @@ mod tests {
             && want.start_time == now.start_time
     }
 
+    #[cfg(target_os = "linux")]
     fn matrix_identity_alive(want: &MatrixIdentity) -> bool {
         matrix_identity(want.pid).is_some_and(|now| {
             matrix_identity_matches(want, &now) && !matches!(now.state, 'Z' | 'X')
         })
     }
 
+    #[cfg(target_os = "linux")]
     struct MatrixProbe {
         child: Option<std::process::Child>,
         owner: MatrixIdentity,
@@ -2307,6 +2324,7 @@ mod tests {
         owned: Vec<MatrixIdentity>,
     }
 
+    #[cfg(target_os = "linux")]
     impl MatrixProbe {
         fn pid(&self) -> i32 {
             self.child.as_ref().unwrap().id() as i32
@@ -2482,6 +2500,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     impl Drop for MatrixProbe {
         fn drop(&mut self) {
             self.release();
@@ -2516,6 +2535,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn eventually(what: &str, mut condition: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + Duration::from_secs(20);
         while !condition() {
@@ -2527,6 +2547,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn matrix_probe(
         dir: &std::path::Path,
         bypass_wait: bool,
@@ -2546,6 +2567,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "linux")]
     #[derive(Default)]
     struct MatrixProbeControls {
         hold_before_trap: bool,
@@ -2560,6 +2582,7 @@ mod tests {
         source_hold: bool,
     }
 
+    #[cfg(target_os = "linux")]
     fn matrix_probe_with_pre_trap(
         dir: &std::path::Path,
         bypass_wait: bool,
@@ -2583,6 +2606,7 @@ mod tests {
         )
     }
 
+    #[cfg(target_os = "linux")]
     fn matrix_probe_config(
         dir: &std::path::Path,
         bypass_wait: bool,
@@ -2799,6 +2823,7 @@ while :; do :; done
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn matrix_wait_fence_case(bypass_wait: bool, signal: i32) {
         let dir = tempfile::tempdir().unwrap();
         let mut matrix = matrix_probe_with_pre_trap(
@@ -2953,6 +2978,7 @@ while :; do :; done
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn matrix_completion_fence_is_observed_and_its_negative_control_exits_early() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -2962,6 +2988,7 @@ while :; do :; done
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn matrix_probe_readiness_unwind_releases_and_reaps_owned_processes() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3009,6 +3036,7 @@ while :; do :; done
         );
     }
 
+    #[cfg(target_os = "linux")]
     fn matrix_probe_rows(dir: &std::path::Path) -> Vec<TrialResult> {
         let stdout = std::fs::read_to_string(dir.join("stdout.log")).unwrap();
         stdout
@@ -3020,6 +3048,7 @@ while :; do :; done
             .collect()
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn matrix_owner_test_controls_cover_setup_admission_commit_and_final_row() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3115,6 +3144,7 @@ while :; do :; done
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn pending_matrix_decisions_observe_queued_signals_and_retain_spawned_children() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3287,6 +3317,7 @@ while :; do :; done
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn mixed_signals_during_matrix_cleanup_do_not_bypass_the_retained_wait() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3347,6 +3378,7 @@ while :; do :; done
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn matrix_spawn_failure_keeps_all_rows_and_unknown_agent_statuses() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3382,6 +3414,7 @@ while :; do :; done
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn matrix_stdout_backpressure_is_bounded_and_still_observes_signals() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3458,6 +3491,7 @@ while :; do :; done
         assert!(drained.windows(1).any(|byte| byte[0] == b'\n'));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn matrix_post_exit_inherited_pipe_is_bounded_and_holder_is_reaped_by_the_test() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3538,6 +3572,7 @@ while :; do :; done
         assert!(!matrix_identity_alive(&holder));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn source_observation_cancellation_stays_latched_before_cargo_admission() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3583,6 +3618,7 @@ while :; do :; done
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn retained_child_conflicts_with_cancellation_winning_commit_without_mutation() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3653,6 +3689,7 @@ while :; do :; done
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn envelope_stop_observes_the_same_pending_cleanup_and_bypass_negative_control() {
         let _trial_scope = crate::test_support::trial_scope();
@@ -3828,6 +3865,7 @@ while :; do :; done
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn unproved_worker_cleanup_stops_matrix_with_full_refusal_suffix() {
         let _trial_scope = crate::test_support::trial_scope();

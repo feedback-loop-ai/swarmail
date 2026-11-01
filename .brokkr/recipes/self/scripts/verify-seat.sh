@@ -4,6 +4,9 @@ set -u
 # (cargo fetch --locked ran on the host before this seat fires). Making the
 # refusal explicit keeps a cache miss a one-line "no matching package" instead
 # of three DNS retries per crate — and keeps the gate's verdict deterministic.
+# "The workspace graph" is two manifests: the root Cargo.lock and the standalone
+# evals/Cargo.lock (decision 0055, #201), so the host fetched both
+# (cargo fetch --locked, and --manifest-path evals/Cargo.toml).
 export CARGO_NET_OFFLINE=true
 prompt_file="${1:-}"
 brokkr="${2:-brokkr}"
@@ -108,6 +111,17 @@ pin_q="$(printf '%q' "$pin_dir")"
 run "cargo fmt --all -- --check"  'cargo fmt --all -- --check'
 run "cargo clippy -D warnings"    'cargo clippy --workspace --all-targets --locked -- -D warnings'
 run "cargo test"                  'cargo test --workspace --locked'
+# The eval harness (decision 0055, #201) is its own [workspace], so none of the
+# commands above reach it. Its fmt, clippy and tests are part of the one gate
+# inventory, --locked and offline like the rest. The suite runs against the
+# candidate's own root binary: SWARMAIL_BIN is resolved from Cargo's artifact
+# record of `cargo build --locked --bin swarmail` and asserted executable, so
+# the harness's own build-when-unset fallback can never run in this seat. An
+# empty or multi-line answer fails `test -x`: absence fails closed.
+export SWARMAIL_ARTIFACT_FILTER='select(.reason == "compiler-artifact" and .target.name == "swarmail" and (.target.kind | index("bin"))) | .executable'
+run "evals cargo fmt"             'cd evals && cargo fmt --all -- --check'
+run "evals cargo clippy"          'cd evals && cargo clippy --all-targets --locked -- -D warnings'
+run "evals cargo test"            'set -o pipefail; bin="$(cargo build --locked --bin swarmail --message-format=json | jq -r "$SWARMAIL_ARTIFACT_FILTER")"; test -x "$bin" || { echo "error: no executable swarmail binary in the build record: ${bin:-<empty>}" >&2; exit 1; }; cd evals && SWARMAIL_BIN="$bin" cargo test --locked'
 run "brokkr compile --bundle .brokkr/recipes/self"   "$launched_q compile --bundle .brokkr/recipes/self"
 # A compile that exits 0 but sweeps a rule as reading past a hard rule's facts
 # (#125's residual warning) is not a clean constitution: refuse it by name.
@@ -133,5 +147,5 @@ if [ "$integrity_failed" -ne 0 ]; then
   printf 'every gate passed, but wrapper integrity failed (above): not verified\n' >> "$notes"
   write_result fail; exit 0
 fi
-printf 'all gates passed from the pinned bundle (fmt, clippy, test, bundle, exact 100/100/100 coverage + selftest, design-check selftest, delivery tamper-boundary proof, publish-guard proof, seal-branch keyless proof, deny licenses, no native-tls fail-closed) with network denied; brokkr %s\n' "$launched_digest" > "$notes"
+printf 'all gates passed from the pinned bundle (fmt, clippy, test, evals fmt+clippy+test against the candidate binary, bundle, exact 100/100/100 coverage + selftest, design-check selftest, delivery tamper-boundary proof, publish-guard proof, seal-branch keyless proof, deny licenses, no native-tls fail-closed) with network denied; brokkr %s\n' "$launched_digest" > "$notes"
 write_result pass

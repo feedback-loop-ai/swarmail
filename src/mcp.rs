@@ -141,6 +141,9 @@ pub struct McpContext {
     /// (decision 0018). The same receiver the SSE feed consumes — one
     /// source of "stopping", never a second channel.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
+    /// The SMTP route domain (decision 0112): `swarmail_create_inbox` mints
+    /// `agent@<inbox>.<domain>` under it and refuses without it.
+    pub route_domain: Option<String>,
 }
 
 /// The JSON-RPC error envelope — the one owner of its shape.
@@ -401,11 +404,49 @@ async fn handle_revision(
     })
 }
 
+/// The minting tool (decision 0112 §5).
+const CREATE_INBOX: &str = "swarmail_create_inbox";
+
+/// The refusal on a server that routes nothing.
+const CREATE_INBOX_UNCONFIGURED: &str = "recipient routing is not configured: start the server with --route-domain <domain> (SWARMAIL_ROUTE_DOMAIN) to mint inbox addresses";
+
+/// A fresh inbox name and its address under the route domain (decision 0112
+/// §5). A UUID v7 as 32 lowercase hex characters is inside the routing
+/// alphabet and the shared inbox rule. Nothing is stored, locked, registered
+/// or expired: an inbox with no mail does not exist (decision 0032), and the
+/// first routed mail creates it.
+fn mint_inbox(domain: &str) -> Value {
+    let inbox = uuid::Uuid::now_v7().simple().to_string();
+    json!({ "address": format!("agent@{inbox}.{domain}"), "inbox": inbox })
+}
+
 fn tool_descriptors(revision: Revision) -> Value {
+    catalogue(revision).clone()
+}
+
+/// The catalogue a revision publishes: March's pinned literal, or the modern
+/// projection both later revisions share (built once, not per discovery).
+fn catalogue(revision: Revision) -> &'static Value {
+    match revision {
+        Revision::March => &TOOLS,
+        Revision::June | Revision::November => &MODERN_TOOLS,
+    }
+}
+
+/// The modern projection of [`TOOLS`] (decisions 0082 §1, 0108 §1): output
+/// schemas and annotations, the compact wording of the two list reads, and
+/// the `fields` argument on the four reads that project.
+static MODERN_TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     let mut tools = TOOLS.clone();
-    if revision != Revision::March {
-        for tool in tools.as_array_mut().unwrap() {
-            if tool["name"] == "swarmail_wait_for_email" {
+    let fields = json!({
+        "type": "array",
+        "items": { "type": "string", "enum": crate::api::FIELD_NAMES },
+        "description": MODERN_FIELDS_DESCRIPTION,
+    });
+    for tool in tools.as_array_mut().unwrap() {
+        let name = tool["name"].as_str().unwrap().to_string();
+        match name.as_str() {
+            "swarmail_wait_for_email" => {
                 tool["description"] = json!(tool["description"].as_str().unwrap().replace(
                     " Waits inside one batch run concurrently; their effects have no order.",
                     "",
@@ -413,33 +454,62 @@ fn tool_descriptors(revision: Revision) -> Value {
             }
             // The shared literal is March's byte-pinned descriptor and stays
             // as captured; only the modern projection states the current rules.
-            if tool["name"] == "swarmail_get_deliverability_report" {
+            "swarmail_get_deliverability_report" => {
                 tool["description"] = json!(MODERN_REPORT_DESCRIPTION);
             }
-            tool["outputSchema"] = OUTPUT_SCHEMAS[tool["name"].as_str().unwrap()].clone();
-            // Reads never change stored mail or extraction; the report's
-            // lazy cache fill is not a mail mutation (0085).
-            let read_only = matches!(
-                tool["name"].as_str().unwrap(),
-                "swarmail_search_emails"
-                    | "swarmail_get_email"
-                    | "swarmail_get_latest_email"
-                    | "swarmail_wait_for_email"
-                    | "swarmail_extract_links"
-                    | "swarmail_extract_codes"
-                    | "swarmail_get_deliverability_report"
-                    | focused::CODE
-                    | focused::LINK
-            );
-            tool["annotations"] = if read_only {
-                json!({"readOnlyHint": true})
-            } else {
-                json!({"readOnlyHint": false, "destructiveHint": true})
-            };
+            "swarmail_search_emails" => {
+                tool["description"] = json!(MODERN_SEARCH_DESCRIPTION);
+            }
+            "swarmail_get_latest_email" => {
+                tool["description"] = json!(MODERN_LATEST_DESCRIPTION);
+            }
+            _ => {}
         }
+        if PROJECTING_READS.contains(&name.as_str()) {
+            tool["inputSchema"]["properties"]["fields"] = fields.clone();
+        }
+        tool["outputSchema"] = OUTPUT_SCHEMAS[name.as_str()].clone();
+        // Reads never change stored mail or extraction; the report's
+        // lazy cache fill is not a mail mutation (0085).
+        let read_only = matches!(
+            name.as_str(),
+            "swarmail_search_emails"
+                | "swarmail_get_email"
+                | "swarmail_get_latest_email"
+                | "swarmail_wait_for_email"
+                | "swarmail_extract_links"
+                | "swarmail_extract_codes"
+                | "swarmail_get_deliverability_report"
+                | focused::CODE
+                | focused::LINK
+                | CREATE_INBOX
+                | attachments::LIST
+                | attachments::GET
+        );
+        tool["annotations"] = if read_only {
+            json!({"readOnlyHint": true})
+        } else {
+            json!({"readOnlyHint": false, "destructiveHint": true})
+        };
     }
     tools
-}
+});
+
+/// The four reads that accept `fields` on a modern revision (decision 0108
+/// §3). The focused waits, the extractors, the seed and the report keep
+/// their own shapes.
+const PROJECTING_READS: [&str; 4] = [
+    "swarmail_search_emails",
+    "swarmail_get_latest_email",
+    "swarmail_get_email",
+    "swarmail_wait_for_email",
+];
+
+const MODERN_SEARCH_DESCRIPTION: &str = "Search captured emails in an inbox by recipient, sender, subject or arrival time. Returns a compact view of each email by default: id (pass it to swarmail_get_email for the full email), from, to, subject, received_ms, a snippet of at most 200 characters, codes, anchors (url and anchor_text) and attachments (filename, content_type, size); anchors and attachments show at most 250 entries with the exact count in anchors_total or attachments_total. Name fields to choose members instead. Also returns the full match count as total; offset pages past the limit.";
+
+const MODERN_LATEST_DESCRIPTION: &str = "Fetch the most recent email(s) in an inbox as the same compact view swarmail_search_emails returns by default: id (pass it to swarmail_get_email for the full email), from, to, subject, received_ms, snippet, codes, anchors and attachments. Name fields to choose members instead.";
+
+const MODERN_FIELDS_DESCRIPTION: &str = "Members to return for each email, plus id. Names the email lacks are omitted. Keys come in the server's fixed order, not the order requested. An empty list returns ids only. text and html appear only when named.";
 
 fn text_result(v: Value, revision: Revision) -> Value {
     let mut result =
@@ -529,13 +599,43 @@ fn arg_inbox(args: &Value) -> Result<String, (i64, String)> {
 /// vocabulary — no second registry — and a tool without inputs publishes
 /// none, so any key it is handed is unknown. An unknown tool has no
 /// descriptor and keeps its `-32601`.
-fn unknown_argument<'a>(tool: &str, args: &'a Value) -> Option<&'a str> {
-    let descriptor = TOOLS.as_array()?.iter().find(|t| t["name"] == tool)?;
+fn unknown_argument<'a>(tool: &str, args: &'a Value, revision: Revision) -> Option<&'a str> {
+    let descriptor = catalogue(revision)
+        .as_array()?
+        .iter()
+        .find(|t| t["name"] == tool)?;
     let known = descriptor["inputSchema"].get("properties");
     args.as_object()?
         .keys()
         .map(String::as_str)
         .find(|key| known.and_then(|p| p.get(*key)).is_none())
+}
+
+/// Stage the `fields` argument (decision 0108 §3): `None` is absence, a
+/// present value must be an array of known names. Staged before any store
+/// read and before a wait parks, so a refusal leaves no trace.
+fn arg_fields(args: &Value) -> Result<Option<Vec<&'static str>>, (i64, String)> {
+    args.get("fields")
+        .map(|value| crate::api::parse_fields(value).map_err(|sentence| (-32602, sentence)))
+        .transpose()
+}
+
+/// One email as a read serves it: projected when `fields` was named,
+/// otherwise compact where the read is compact by default on a modern
+/// revision, otherwise whole.
+fn email_view(
+    email: &crate::model::Email,
+    revision: Revision,
+    fields: Option<&[&str]>,
+    compact: bool,
+) -> Value {
+    match fields {
+        Some(fields) => crate::api::project(email, fields),
+        None if compact && revision != Revision::March => {
+            serde_json::to_value(crate::api::CompactEmail::from(email)).unwrap()
+        }
+        None => serde_json::to_value(email).unwrap(),
+    }
 }
 
 /// The `id` argument, required on the by-id tools: absence keeps its
@@ -572,7 +672,7 @@ async fn tool_call(
     // §7's named residual): a typo'd key refuses by name before any effect
     // — `{"inbx":"zz"}` must never clear the default inbox. The chaos tool
     // keeps its pinned sentence (0029 §3).
-    if let Some(key) = unknown_argument(&name, a) {
+    if let Some(key) = unknown_argument(&name, a, revision) {
         let sentence = match name.as_str() {
             "swarmail_set_chaos" => {
                 format!("unknown argument: {key} (use event|probability|error|delay_ms)")
@@ -608,13 +708,14 @@ async fn tool_call(
             // uncapped like REST's, skipped before the limit is taken, and
             // `total` stays the unpaged match count.
             let offset = arg_usize(a, "offset")?.unwrap_or(0);
+            let fields = arg_fields(a)?;
             let all = store.list(&inbox, &filter);
             let total = all.len();
             let emails: Vec<Value> = all
                 .into_iter()
                 .skip(offset)
                 .take(limit)
-                .map(|e| serde_json::to_value(&*e).unwrap())
+                .map(|e| email_view(&e, revision, fields.as_deref(), true))
                 .collect();
             Ok(text_result(
                 json!({ "inbox": inbox, "total": total, "emails": emails }),
@@ -632,8 +733,14 @@ async fn tool_call(
         }
         "swarmail_get_email" => {
             let id = required_id(a)?;
+            let fields = arg_fields(a)?;
             match store.get(&id) {
-                Some(e) => Ok(text_result(serde_json::to_value(&*e).unwrap())),
+                Some(e) => Ok(text_result(email_view(
+                    &e,
+                    revision,
+                    fields.as_deref(),
+                    false,
+                ))),
                 None => Ok(error_result(format!("message {id} not found"))),
             }
         }
@@ -651,11 +758,12 @@ async fn tool_call(
                     crate::api::checked_page_size("count", n).map_err(|msg| (-32602, msg))?
                 }
             };
+            let fields = arg_fields(a)?;
             let emails: Vec<Value> = store
                 .list(&inbox, &Filter::default())
                 .into_iter()
                 .take(count)
-                .map(|e| serde_json::to_value(&*e).unwrap())
+                .map(|e| email_view(&e, revision, fields.as_deref(), true))
                 .collect();
             if emails.is_empty() {
                 return Ok(error_result(format!("inbox {inbox} is empty")));
@@ -708,6 +816,7 @@ async fn tool_call(
                     .map_err(|msg| (-32602, msg))?
                     .max(1),
             };
+            let fields = arg_fields(a)?;
             // Omission takes the documented default (decision 0025); a
             // *supplied* value that does not parse is refused — never
             // silently defaulted. `null` is supplied (the key is present):
@@ -751,19 +860,29 @@ async fn tool_call(
                 Some(Ok(WaitOutcome::Found(matches))) => {
                     let emails: Vec<Value> = matches
                         .iter()
-                        .map(|e| serde_json::to_value(&**e).unwrap())
+                        .map(|e| email_view(e, revision, fields.as_deref(), false))
                         .collect();
                     Ok(text_result(
                         json!({ "matched": want, "total": total, "emails": emails }),
                     ))
                 }
-                Some(Ok(WaitOutcome::Timeout { matched })) => Ok(text_result(
-                    json!({ "matched": matched, "total": total, "timed_out": true }),
-                )),
+                Some(Ok(WaitOutcome::Timeout { matched })) => {
+                    // The inbox's near misses (decision 0111), read after
+                    // the wait resolved; mail the filter admits is already
+                    // in `matched`, so it is skipped. Absent when the inbox
+                    // holds nothing.
+                    let mut out = json!({ "matched": matched, "total": total, "timed_out": true });
+                    let near = near_miss::near_misses(store.clone(), inbox, filter, true).await;
+                    if let Some(near) = near {
+                        out["near_misses"] = near;
+                    }
+                    Ok(text_result(out))
+                }
                 None => Ok(error_result("shutting down".into())),
             }
         }
         focused::CODE | focused::LINK => focused::call(ctx, &name, a, revision).await,
+        attachments::LIST | attachments::GET => attachments::call(ctx, &name, a, revision),
         "swarmail_extract_links" | "swarmail_extract_codes" => {
             let id = required_id(a)?;
             match store.get(&id) {
@@ -864,6 +983,10 @@ async fn tool_call(
             ctx.chaos.clear();
             Ok(text_result(json!({ "chaos": "disabled" })))
         }
+        CREATE_INBOX => Ok(match ctx.route_domain.as_deref() {
+            Some(domain) => text_result(mint_inbox(domain)),
+            None => error_result(CREATE_INBOX_UNCONFIGURED.to_string()),
+        }),
         other => Err((-32601, format!("unknown tool: {other}"))),
     }
 }
@@ -881,6 +1004,23 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
     );
     let strings = json!({"type":"array", "items":{"type":"string"}});
     let count = json!({"type":"integer", "minimum":0});
+    // One closed object serves the four reads (decision 0108 §7): a `fields`
+    // projection can omit every member but `id`, so `id` is the only one
+    // required statically; the wire tests compute each request's exact key
+    // set. The eighteen `Email` members keep their shapes and the three
+    // derived members (with their `_total`s) join them.
+    let anchor = output_object(
+        json!({"anchor_text":{"type":["string","null"]}, "url":{"type":"string"}}),
+        json!(["anchor_text", "url"]),
+    );
+    let attachment = output_object(
+        json!({
+            "content_type":{"type":["string","null"]},
+            "filename":{"type":["string","null"]},
+            "size":count
+        }),
+        json!(["content_type", "filename", "size"]),
+    );
     let email = output_object(
         json!({
             "id":{"type":"string"}, "inbox":{"type":"string"},
@@ -889,17 +1029,13 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
             "recipients":strings, "subject":{"type":"string"},
             "received_at":{"type":"string"}, "received_ms":{"type":"integer"}, "size":count,
             "text":{"type":"string"}, "html":{"type":"string"}, "links":strings, "codes":strings,
-            "message_id":{"type":"string"}, "in_reply_to":{"type":"string"}, "references":strings
+            "message_id":{"type":"string"}, "in_reply_to":{"type":"string"}, "references":strings,
+            "snippet":{"type":"string"},
+            "anchors":{"type":"array","items":anchor}, "anchors_total":count,
+            "attachments":{"anyOf":[{"type":"array","items":attachment},{"type":"null"}]},
+            "attachments_total":count
         }),
-        json!([
-            "id",
-            "inbox",
-            "envelope_from",
-            "to",
-            "received_at",
-            "received_ms",
-            "size"
-        ]),
+        json!(["id"]),
     );
     let emails = json!({"type":"array","items":email});
     let nonempty = json!({"type":"array","items":email,"minItems":1});
@@ -944,7 +1080,8 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "swarmail_clear_all":output_object(json!({"removed":count}), json!(["removed"])),
         "swarmail_wait_for_email":{"type":"object","oneOf":[
             output_object(json!({"matched":count,"total":count,"emails":nonempty}), json!(["matched","total","emails"])),
-            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true}}), json!(["matched","total","timed_out"]))
+            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true}}), json!(["matched","total","timed_out"])),
+            output_object(json!({"matched":count,"total":count,"timed_out":{"type":"boolean","const":true},"near_misses":near_miss::schema()}), json!(["matched","total","timed_out","near_misses"]))
         ]},
         "swarmail_extract_links":output_object(json!({"links":strings}), json!(["links"])),
         "swarmail_extract_codes":output_object(json!({"codes":strings}), json!(["codes"])),
@@ -952,12 +1089,15 @@ static OUTPUT_SCHEMAS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| 
         "swarmail_set_chaos":output_object(json!({"connect":event,"mail_from":event,"rcpt":event,"data":event}), json!(["connect","mail_from","rcpt","data"])),
         "swarmail_clear_chaos":output_object(json!({"chaos":{"type":"string","const":"disabled"}}), json!(["chaos"])),
         focused::CODE:focused::output_schema(false, &address),
-        focused::LINK:focused::output_schema(true, &address)
+        focused::LINK:focused::output_schema(true, &address),
+        CREATE_INBOX:output_object(json!({"inbox":{"type":"string"},"address":{"type":"string"}}), json!(["inbox","address"])),
+        attachments::LIST:attachments::output_schema(true),
+        attachments::GET:attachments::output_schema(false)
     })
 });
 
 /// Modern-only report description; March keeps the historical TOOLS literal.
-const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-bulk/1) from the stored bytes, off the SMTP path: the bulk-sender checklist plus the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
+const MODERN_REPORT_DESCRIPTION: &str = "Lazy versioned deliverability report (rule set swarmail-html/3) from the stored bytes, off the SMTP path: the bulk-sender checklist, the HTML client-compatibility heuristics and the synthetic demo marker. Missing trusted authentication evidence yields error-level not_evaluated findings, never a clean report; empty findings do not imply deliverability. At most 256 findings and 65536 compact JSON bytes; excess or analysis failure is an error, never truncation. Returns the report as structuredContent and the same JSON in a text block.";
 
 /// MCP-compatible JSON input schemas. These are objects — the MCP spec
 /// requires an object, and a `&str` schema embedded in `json!` serialized as
@@ -1038,10 +1178,25 @@ static TOOLS: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     ]);
     // Appended (decision 0094 §7): every earlier entry keeps its place.
     tools.as_array_mut().unwrap().extend(focused::descriptors());
+    // Appended after the focused pair (decision 0112 §5): the earlier
+    // indices keep their places.
+    tools.as_array_mut().unwrap().push(json!({
+        "name": CREATE_INBOX,
+        "description": "Mint a fresh private inbox name and the address that routes to it (agent@<inbox>.<route-domain>). Send the application's mail to that address, then read the inbox by name: mail for other addresses never appears there. Allocates nothing - the inbox exists once its first mail arrives, and a wait on it before then works. Needs the server to run with --route-domain.",
+        "inputSchema": { "type": "object", "additionalProperties": false }
+    }));
+    // Appended after swarmail_create_inbox (decision 0110 §7), the same way:
+    // every earlier index keeps its place.
+    tools
+        .as_array_mut()
+        .unwrap()
+        .extend(attachments::descriptors());
     tools
 });
 
+mod attachments;
 mod focused;
+mod near_miss;
 
 #[cfg(test)]
 mod batch_tests;
@@ -1061,7 +1216,7 @@ mod tests {
             .map(|tool| tool["name"].as_str().unwrap())
             .collect();
         let schemas = OUTPUT_SCHEMAS.as_object().unwrap();
-        assert_eq!(names.len(), 15);
+        assert_eq!(names.len(), 18);
         assert_eq!(
             names,
             schemas
@@ -1521,6 +1676,7 @@ mod tests {
             store: Arc::new(Store::new(0)),
             chaos: Arc::new(Chaos::default()),
             shutdown,
+            route_domain: None,
         };
         let ping = r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#;
         let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
@@ -1590,6 +1746,7 @@ mod tests {
             store: Arc::new(Store::new(0)),
             chaos: Arc::new(Chaos::default()),
             shutdown,
+            route_domain: None,
         };
         (stop, ctx)
     }
@@ -1598,6 +1755,34 @@ mod tests {
         let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
                          "params":{"name": tool, "arguments": arguments}});
         handle(ctx, &req).await.expect("a request is answered")
+    }
+
+    /// Decision 0112 §5: with a route domain the tool mints a fresh lowercase
+    /// hex inbox and its address and stores nothing; without one it refuses
+    /// in an `isError` result naming the flag. Both revisions' bytes.
+    #[tokio::test]
+    async fn create_inbox_mints_under_the_domain_and_refuses_without_one() {
+        let (_stop, mut ctx) = context();
+        let refused = call(&ctx, CREATE_INBOX, json!({})).await;
+        assert_eq!(refused["result"]["isError"], true);
+        let message = refused["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(message.contains("--route-domain"), "{message}");
+
+        ctx.route_domain = Some("swarmail.test".into());
+        let first = call(&ctx, CREATE_INBOX, json!({})).await;
+        let second = call(&ctx, CREATE_INBOX, json!({})).await;
+        let value = |reply: &Value| {
+            serde_json::from_str::<Value>(reply["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap()
+        };
+        let (first, second) = (value(&first), value(&second));
+        assert_ne!(first["inbox"], second["inbox"]);
+        let inbox = first["inbox"].as_str().unwrap();
+        assert_eq!(inbox.len(), 32);
+        assert_eq!(first["address"], format!("agent@{inbox}.swarmail.test"));
+        assert!(ctx.store.inboxes().is_empty(), "minting allocates nothing");
+        let sentinel = call(&ctx, CREATE_INBOX, json!({"zz": 1})).await;
+        assert_eq!(sentinel["error"]["code"], -32602);
     }
 
     /// Every tool's argument shape is closed (decision 0044 §3, issue #91):
@@ -1612,7 +1797,7 @@ mod tests {
             .insert(crate::store::email("keep", "default", "a@x.io"))
             .unwrap();
         let tools = TOOLS.as_array().unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 18);
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             assert_eq!(

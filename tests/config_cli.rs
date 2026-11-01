@@ -30,8 +30,10 @@ fn config_maps_the_cli_args() {
         tls_cert: None,
         tls_key: None,
         tls_handshake_timeout_ms: 2500,
+        route_domain: Some("swarmail.test".into()),
     };
     let cfg = Config::from(&args);
+    assert_eq!(cfg.smtp.route_domain.as_deref(), Some("swarmail.test"));
     assert_eq!(cfg.smtp_listen, "127.0.0.1:2525");
     assert_eq!(cfg.http_listen, "127.0.0.1:8080");
     assert_eq!(cfg.pop3_listen, "127.0.0.1:1110");
@@ -330,4 +332,75 @@ fn top_level_help_states_the_positioning() {
         Some("Built for a program waiting on mail.")
     );
     assert!(!help.to_ascii_lowercase().contains("fastest"));
+}
+
+// ---------- decision 0112: the route domain is validated at startup ----------
+
+/// AC7: every malformed shape refuses at parse time, naming the flag, and a
+/// mixed-case value is accepted lowercased.
+#[test]
+fn a_route_domain_is_validated_and_lowercased_at_parse_time() {
+    let args = serve_args_or_panic(Cli::try_parse_from(["swarmail", "serve"]).unwrap());
+    assert_eq!(args.route_domain, None, "routing is off by default");
+    assert_eq!(Config::from(&args).smtp.route_domain, None);
+
+    let too_long = "a".repeat(64);
+    for bad in [
+        "",
+        ".",
+        ".swarmail.test",
+        "swarmail.test.",
+        "swarmail..test",
+        "swarmail_test",
+        "swarmail.te st",
+        "sw\u{e4}rmail.test",
+        too_long.as_str(),
+    ] {
+        let err = Cli::try_parse_from(["swarmail", "serve", "--route-domain", bad])
+            .expect_err(&format!("{bad:?} must refuse"));
+        assert!(err.use_stderr(), "{bad:?}: a hard error");
+        assert!(
+            err.to_string().contains("--route-domain"),
+            "{bad:?}: the refusal names the flag: {err}"
+        );
+    }
+
+    let longest = "a".repeat(63);
+    for (given, kept) in [
+        ("Swarmail.TEST", "swarmail.test"),
+        ("test", "test"),
+        ("a-1.b-2.c", "a-1.b-2.c"),
+        (longest.as_str(), longest.as_str()),
+    ] {
+        let args = serve_args_or_panic(
+            Cli::try_parse_from(["swarmail", "serve", "--route-domain", given]).unwrap(),
+        );
+        assert_eq!(args.route_domain.as_deref(), Some(kept));
+        assert_eq!(Config::from(&args).smtp.route_domain.as_deref(), Some(kept));
+    }
+}
+
+/// AC7 at the process level: a refused value exits nonzero naming the flag
+/// before any listener binds (the ports are never opened: clap refuses
+/// first, so the process is gone before `run` is reached).
+#[test]
+fn the_binary_refuses_a_bad_route_domain_before_serving() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_swarmail"))
+        .args([
+            "serve",
+            "--smtp-listen",
+            "127.0.0.1:0",
+            "--http-listen",
+            "127.0.0.1:0",
+            "--pop3-listen",
+            "127.0.0.1:0",
+            "--route-domain",
+            "bad_domain",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(out.stdout.is_empty(), "nothing was served or logged");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--route-domain"), "{stderr}");
 }

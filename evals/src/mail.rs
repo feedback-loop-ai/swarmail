@@ -4,8 +4,11 @@
 //! HTML-only and multipart/mixed with a base64 ICS attachment, with an RFC
 //! 2047 subject when it is not ASCII.
 //!
-//! The client authenticates with AUTH PLAIN, the inbox as the username
-//! (decision 0004): the recipient address alone never selects an inbox.
+//! The client authenticates with AUTH PLAIN, the account's configured SMTP
+//! identity as the username. For every task but inbox-isolation that identity
+//! is the account's inbox (decision 0004); inbox-isolation sends under one
+//! shared application login and a routed recipient selects the inbox
+//! (decision 0112, which amends 0055 §6 for that task alone).
 
 use crate::state::Attempt;
 use base64::Engine;
@@ -128,7 +131,13 @@ pub fn dot_stuff(data: &[u8]) -> Vec<u8> {
 }
 
 /// Deliver one message: AUTH PLAIN as `inbox`, one recipient, one DATA.
-pub async fn send(smtp: SocketAddr, inbox: &str, from: &str, to: &str, data: &[u8]) -> SendResult {
+pub async fn send(
+    smtp: SocketAddr,
+    smtp_identity: &str,
+    from: &str,
+    to: &str,
+    data: &[u8],
+) -> SendResult {
     let attempt = |stage: &str, code: u16| Attempt {
         stage: stage.to_string(),
         code,
@@ -142,7 +151,7 @@ pub async fn send(smtp: SocketAddr, inbox: &str, from: &str, to: &str, data: &[u
         reader: BufReader::new(r),
         writer: w,
     };
-    let auth = B64.encode(format!("\0{inbox}\0eval"));
+    let auth = B64.encode(format!("\0{smtp_identity}\0eval"));
     let steps: [(&str, Option<String>, u16); 5] = [
         ("greeting", None, 220),
         ("ehlo", Some("EHLO fixture.eval".to_string()), 250),

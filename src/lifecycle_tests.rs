@@ -25,6 +25,7 @@ async fn http_server() -> (
         smtp_degraded: Arc::new(AtomicBool::new(false)),
         pop3_degraded: Arc::new(AtomicBool::new(false)),
         http_origin_guard: Some(addr.port()),
+        route_domain: None,
     };
     let receipt = api::observe_next_drain_deadline();
     let mut serving = Box::pin(api::serve(listener, state, api::shutdown_signal(rx)));

@@ -75,6 +75,11 @@ pub(super) fn passing() -> AuthEvidence {
 pub(super) fn mail(id: &str) -> Arc<Email> {
     Arc::new(email(id, "box", "a"))
 }
+pub(super) fn html_email(id: &str, inbox: &str, to: &str) -> Email {
+    let mut e = crate::store::email(id, inbox, to);
+    e.raw = b"From: sender@example.test\r\nMessage-ID: <html@example.test>\r\nDate: Mon, 26 Oct 2026 12:00:00 +0000\r\nList-Unsubscribe: <https://example.test/unsubscribe>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nbody\r\n--b\r\nContent-Type: text/html\r\n\r\n<p>Hello</p><img alt=\"\" src=\"cid:x\">\r\n--b--\r\n".to_vec();
+    e
+}
 
 #[tokio::test]
 async fn coalesced_miss_survives_caller_cancel() {
@@ -176,7 +181,7 @@ async fn report_wait_deadline_and_zero_timeout() {
             .await,
         Ok(WaitOutcome::Timeout { matched: 0 })
     ));
-    let email = store.insert(self::email("one", "box", "a")).unwrap();
+    let email = store.insert(html_email("one", "box", "a")).unwrap();
     assert!(matches!(
         store
             .wait_for_report("box", &f, 1, Duration::ZERO, threshold)
@@ -226,10 +231,8 @@ async fn report_wait_deadline_and_zero_timeout() {
         Err(AnalysisError::Unavailable)
     ));
     drop(guard);
-    store.insert(self::email("two", "box", "a")).unwrap();
-    let newest = store
-        .insert(self::email("warm-newest", "box", "a"))
-        .unwrap();
+    store.insert(html_email("two", "box", "a")).unwrap();
+    let newest = store.insert(html_email("warm-newest", "box", "a")).unwrap();
     store.report(newest).await.unwrap();
     let mut held = Held::new(&store.reports);
     let s = store.clone();
@@ -263,7 +266,7 @@ async fn report_wait_subscribes_before_analysis_and_resubscribes_after_clear() {
         if n.fetch_add(1, Ordering::SeqCst) == 0 {
             s.clear("box").unwrap();
         } else {
-            s.insert(email("after-closed", "box", "a")).unwrap();
+            s.insert(html_email("after-closed", "box", "a")).unwrap();
         }
     })));
     let outcome = store
@@ -312,7 +315,7 @@ async fn report_wait_observes_delivery_during_analysis_and_recovers_lag() {
     // Overflow the existing wake ring while the original snapshot is analyzed.
     for n in 0..32 {
         store
-            .insert(self::email(&format!("new{n}"), "box", "a"))
+            .insert(html_email(&format!("new{n}"), "box", "a"))
             .unwrap();
     }
     held.open();
@@ -377,7 +380,10 @@ pub(super) async fn smtp(srv: &crate::RunningServer) -> String {
         ("MAIL FROM:<s@x.io>\r\n", "250"),
         ("RCPT TO:<r@x.io>\r\n", "250"),
         ("DATA\r\n", "354"),
-        ("X-Swarmail-Demo: warning\r\n\r\nbody\r\n.\r\n", "250"),
+        (
+            "X-Swarmail-Demo: warning\r\nContent-Type: text/html\r\n\r\n<p>body 424242 https://x.io/</p><img alt=\"\" src=\"cid:x\">\r\n.\r\n",
+            "250",
+        ),
     ] {
         write.write_all(command.as_bytes()).await.unwrap();
         line.clear();
@@ -397,7 +403,7 @@ async fn report_workers_do_not_hold_store_guards() {
     for n in 0..JOBS {
         let email = srv
             .store
-            .insert(email(&n.to_string(), "held", "a"))
+            .insert(html_email(&n.to_string(), "held", "a"))
             .unwrap();
         let store = srv.store.clone();
         tasks.push(tokio::spawn(async move { store.report(email).await }));
@@ -557,7 +563,7 @@ async fn report_unavailable_notifications_keep_bridge_silent() {
 #[tokio::test]
 async fn report_wait_shutdown_interrupts_worker_and_slot_waits() {
     let srv = crate::run_on(&config(None)).await.unwrap();
-    srv.store.insert(self::email("one", "box", "a")).unwrap();
+    srv.store.insert(html_email("one", "box", "a")).unwrap();
     let mut held = Held::new(&srv.store.reports);
     let url = format!(
         "http://{}/api/v1/inboxes/box/await?no_findings_at_or_above=error&timeout_ms=60000",

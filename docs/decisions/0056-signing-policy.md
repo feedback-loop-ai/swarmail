@@ -154,3 +154,34 @@ own key in place of ruling 2's operator seal. Until then ruling 2 stands. The
 refusal of a server-held key that signs as the operator stands; the bot's key
 does not sign as the operator. Rulings 1, 3 and 4 and the operator's release
 tag signature are unchanged.
+
+## Addendum (2026-11-01): no seal; merge on green
+
+Operator ruling, in chat, after weighing the delivery bot of
+[0109](0109-automated-delivery-bot.md): ruling 2 is withdrawn. The operator
+no longer seals PR branches, and the 2026-10-31 addendum's bot does not
+replace it.
+
+- **Why:** `main` requires its CI checks but not signatures or a review, and
+  the operator's GitHub token is reachable by everything running as the
+  operator's user. The seal was therefore a convention the pipeline honoured,
+  not a control GitHub enforced, and it stopped finished work for hours
+  whenever the forwarded agent was unreachable. A bot key would not have
+  changed that while the token stays.
+- **The rule now:** the operator's assistant merges a delivery run's PR by
+  squash once every house gate passes on the final tree (after `main` is
+  merged in) and every required CI check is green. Branch commits stay
+  unsigned; the squash commit on `main` carries GitHub's landing signature.
+- **Held for the operator, never merged on green:** a PR that changes a
+  decision's status to accepted; adds a package to `Cargo.lock` or
+  `evals/Cargo.lock` or changes `deny.toml`; or changes `.github/`,
+  `scripts/`, `.brokkr/` (recipes, policies, charters, adapters) or the
+  toolchain configuration. The operator may approve a held PR by name.
+- **Unchanged:** rulings 1, 3 and 4 (author commits unsigned, no rebase onto a
+  newer `main`, the signature meanings on record), signed release tags, and
+  the operator's sole acceptance of decisions. `scripts/seal-branch.sh` and
+  its proof stay available; sealing is optional.
+
+A real trust boundary (required signatures, a bot as sole merger, and agents
+holding a token that cannot merge) remains possible later as a separate
+ruling.

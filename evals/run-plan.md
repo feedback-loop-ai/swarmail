@@ -1,7 +1,7 @@
 # Issue #151 — local baseline run plan
 
 Updated 2026-10-25 under the operator's 2026-10-24 #199 ruling and
-[proposed 0076](../docs/decisions/0076-sequential-eval-trials.md).
+[accepted 0076](../docs/decisions/0076-sequential-eval-trials.md).
 This is the local replacement plan, not a remote issue edit or measurement.
 
 The baseline runs sequentially with a fresh HOME per trial (and per agent).
