@@ -1,55 +1,83 @@
 # Plan — agent setup guides
 
+Revised 2026-11-01 for the review return (decision 0102 addendum; run
+564da145). The first plan (2104a31) stands where this one is silent; every
+section below says which review finding it answers.
+
 ## Technical context
 
 Documentation plus one root integration suite in Rust 2024 using std,
 tokio, serde_json and the crate's public `swarmail::config` CLI types —
 all already in the locked tree. The suite spawns the shipped binary
-(`env!("CARGO_BIN_EXE_swarmail")`) and speaks real HTTP and NDJSON to it,
-so it is a decision 0020 rule-3 test: public API, wire shape, no
-crate-private seam, outside the coverage denominator by location.
-`.specify/templates/plan-template.md` is absent; this plan carries the
-requested sections directly.
+(`env!("CARGO_BIN_EXE_swarmail")`) and speaks real HTTP, NDJSON and now
+real SMTP (through `tests/common::smtp_send`, which already exists and
+already speaks AUTH PLAIN with the username as inbox) to it, so it stays a
+decision 0020 rule-3 test: public API, wire shape, no crate-private seam,
+outside the coverage denominator by location.
 
 ## Constitution check
 
-0001–0005 are described, never touched. The guide's 0001 sentence is the
-verified one (the mirror commit precedes the reply; on disk when a data
-file is configured). No `src/` change, so the 100% exact floor is
-unaffected. No dependency, lockfile, `deny.toml`, workflow or bundle
-change. Commits unsigned (0056). No decision proposed. Evals stays out of
-CI (#201).
+0001–0005 are described, never touched. The already-mailed rule restates
+0001 (stored at `250`), 0002 (the wait scans what is already there) and
+0005 (a cleared mail is gone from extraction too); it amends nothing. 0004
+is accepted and is quoted. 0112 and 0111 are proposed with their compatible
+implementation on main; the guide describes that binary and the suite
+exercises it (accepted 0045 §8). No `src/` change, so the 100% exact floor
+is unaffected. No dependency, lockfile, `deny.toml`, workflow or bundle
+change, so the PR is not on 0056's hold list. Commits unsigned. No decision
+proposed.
 
-## Research and resolved choices
+## Research and resolved choices (re-derived from main 5e8d9d8)
 
-- HTTP MCP is non-streaming JSON-RPC (`src/mcp.rs` header): one POST, one
-  JSON body, no SSE branch. An `Origin`-less loopback client is allowed.
-- Defaults: `SWARMAIL_HTTP_LISTEN` `127.0.0.1:8025`, `SWARMAIL_URL`
-  `http://127.0.0.1:8025` (`src/config.rs`); the suite obtains them by
-  `Cli::try_parse_from` and never restates them.
-- `127.0.0.1:0` on each `SWARMAIL_*_LISTEN` binds an ephemeral port and the
-  server prints the bound address (`tests/binary.rs` relies on it).
-- `toml` is absent from both lockfiles: subset readers in `tests/`.
-- `FailureClass` lives at `evals/src/state.rs:20` with eight variants; the
-  six agent-caused ones are the block's vocabulary.
-- Snippet sources: `evals/src/wrappers.rs` (Claude `mcp.json`, Codex
-  `mcp_servers.*` keys, dsh insert row), README "Wire it up". Cursor, the
-  Codex file path, the skill path and frontmatter: unsourced, labelled.
-- Wait tools cap `timeout_ms` at 60000; the dsh row's `toolCallTimeoutMs`
-  matches it.
+- Inbox name, in order (`src/smtp.rs` ~1555, 0112 §4): the routed
+  recipient, else the AUTH identity, else `default`. `route_of`
+  (`src/smtp.rs` ~697) admits one label `[a-z0-9-]{1,63}` under the route
+  domain; anything else under the domain is `550 5.1.3`. The server offers
+  `AUTH PLAIN LOGIN` and any password succeeds (0004).
+- `--route-domain` / `SWARMAIL_ROUTE_DOMAIN` (`src/config.rs` ~113) is
+  `Option<String>`; `swarmail serve` has none, so the guide's server routes
+  by AUTH alone. `swarmail_create_inbox` (`src/mcp.rs` ~986) answers
+  `{"address": "agent@<hex>.<domain>", "inbox": "<hex>"}` with a route
+  domain and an `isError` whose text contains `--route-domain` without.
+- `swarmail_wait_for_email` accepts `timeout_ms` from 0 to 60000
+  (`src/mcp.rs` ~1159). A timed-out wait is a text result `{"matched",
+  "total", "timed_out": true}` plus `near_misses` when the inbox holds any
+  mail (`src/mcp.rs` ~870, `src/mcp/near_miss.rs` ~24); an empty inbox has
+  no `near_misses` member. Not an `isError`, so the suite's `tool` helper
+  can read it.
+- `swarmail_wait_for_link`'s `inputSchema` properties include
+  `anchor_text`, `host` and `path` (`src/mcp/focused.rs` ~394–402);
+  `swarmail_extract_links` takes the email id only.
+- Live tools on this tree: 18 — the 14 in `src/mcp.rs` (`clear_all`,
+  `clear_inbox`, `create_inbox`, `delete_email`, `extract_codes`,
+  `extract_links`, `get_deliverability_report`, `get_email`,
+  `get_latest_email`, `search_emails`, `seed_email`, `set_chaos`,
+  `clear_chaos`, `wait_for_email`) plus `wait_for_code`, `wait_for_link`,
+  `list_attachments`, `get_attachment`. The suite never pins the number;
+  the implementer confirms the set from `tools/list` when writing the table.
+- The Straight-tier prompts render `Your Swarmail inbox: {inbox}` and tell
+  the agent to pass `"inbox": "{inbox}"` (`evals/src/tasks.rs` ~145); their
+  goals say the application already emailed you (~205–225). That is the
+  entry state the block's bold rule is for (F2).
+- `tests/common::smtp_send(addr, Option<&str> inbox, from, to, subject,
+  body)` returns the final `250` line or the first 4xx/5xx; `None` sends
+  without AUTH. `HELPER_DEADLINE` is 30 s. Nothing new is needed on the
+  SMTP side (R7).
+- The startup line carries `smtp=`, `pop3=` and `http=`; `parse_http_addr`
+  already demands the first two, so returning the SMTP address too is a
+  one-function change.
 
 ## Project structure and touched files
 
-| Path | Change |
-|---|---|
-| `docs/agents/setup.md` | new: the guide (R1) |
-| `docs/agents/swarmail/SKILL.md` | new: the skill (R2) |
-| `tests/agent_setup_docs.rs` | new: the suite (R4) |
-| `README.md` | "Wire it up" block → sentence + link; suite table row (R5) |
-| `docs/tasks/issue-161-agent-setup-guides.md` | commit the intake framing |
+| Path | Change | Finding |
+|---|---|---|
+| `docs/agents/setup.md` | inbox paragraph, already-mailed rule, "Where mail lands", "The tools" table, `wrong_link`/`wait_timeout`/`stale_code` lines, section 8 bullet, "What CI proves" | F1, F2, F3, F-tools, F4 |
+| `docs/agents/swarmail/SKILL.md` | body re-synced byte for byte with the block | F1, F2, F3 |
+| `tests/agent_setup_docs.rs` | `trim_start` tilde check; SMTP address from the startup line; optional child env for the route domain; the SMTP route/loop test; the routed-clause test; inventory equality; selector schema check; near-miss key check; revised pins and absence pins; README pins | F1–F5, F-tools |
+| `README.md` | one-sentence claim; suite-table row text | F4 |
+| `docs/tasks/issue-161-agent-setup-guides.md` | commit the restart framing intake appended | — |
 
-Nothing else. `tests/common/mod.rs` may gain a shared helper only if an
-existing one is moved there, never copied.
+Nothing else. No `src/`, no `Cargo.*`, no `.github/`, no `.brokkr/`.
 
 ## Data model and contracts
 
@@ -57,80 +85,134 @@ existing one is moved there, never copied.
 Fence  { info: Info, marker: Option<String>, body: String, line: usize }
 Info   = Json | Toml | Yaml | Markdown | Sh | Text
 Wiring = Http { url: String } | Stdio { command: String, args: Vec<String> }
+Addrs  { smtp: SocketAddr, http: SocketAddr }          # from the startup line
+SmtpUrl { user: String, authority: String }           # the block's one smtp:// token
 ```
 
-- `extract(doc: &str) -> Result<Vec<Fence>, Refusal>` — the one scanner.
-  Refusals (each a red-control case): CR byte; non-column-0, `~~~` or
-  four-plus-backtick fence; unterminated fence; unknown info string;
-  marker with empty reason; marker not followed by a fence; marker on an
-  executed language; unmarked `text`; unmarked `sh` that is not the start
-  command; zero or more than one `markdown` fence.
-- `reduce(fence) -> Result<Wiring, Refusal>` — JSON `mcpServers.swarmail`;
-  TOML subset `[mcp_servers.swarmail]` + `key = <json>`; YAML subset
-  `- <json>` rows with an `insert` array holding the swarmail row. Every
-  other shape refuses.
-- `assert_defaults(wiring, cli_defaults)` — URL equals the parsed
-  `SWARMAIL_URL` default plus `/mcp`; stdio equals `swarmail` + `["mcp"]`.
-- `substitute_once(snippet, from, to) -> Result<String, Refusal>` — the
-  count must be exactly one.
-- `round_trip(transport) -> Result<Receipt, Failure>` — the seven-call loop
-  with a per-exchange `tokio::time::timeout` and an outer deadline.
-- Prose pins: `doc()`/`states()` as in `tests/listener_contract_docs.rs`.
-- Enum read: slice `evals/src/state.rs` between `pub enum FailureClass {`
-  and its closing brace, map `CamelCase` to `snake_case`.
+- `extract(doc)` — unchanged except (F5): the fallthrough arm tests
+  `line.trim_start()` for both "```" and "~~~" before refusing as "an
+  indented or tilde fence".
+- `parse_addrs(line) -> Option<Addrs>` replaces `parse_http_addr`; the
+  `Server` struct carries `smtp` beside `http`.
+- `start_server(command)` keeps its signature; `start_server_with(command,
+  extra_env: &[(&str, &str)])` is the one new entry, used once with
+  `[("SWARMAIL_ROUTE_DOMAIN", "swarmail.test")]`. `Command::env` only.
+- `smtp_url(block) -> Result<SmtpUrl, Refusal>`: the inline-code tokens of
+  the block that start with `smtp://`; exactly one, else refused;
+  `user:password@authority` split; user must be `<inbox>`.
+- `Defaults` gains `smtp_authority: serve.smtp_listen`; `assert_smtp_url`
+  requires `url.authority == defaults.smtp_authority`.
+- `live_url(url, smtp: SocketAddr, inbox) -> String`: `substitute_once` the
+  authority, then `substitute_once` `<inbox>`; the AUTH username the test
+  sends is parsed back out of the result, so what is sent is what the
+  block, substituted, says.
+- `Client::tool` already returns the text result of a non-error call; a
+  new `Client::tool_raw` returns the full `result` so `isError` and its
+  text can be asserted for `swarmail_create_inbox` on the default server.
+- `wait0(client, inbox, filter) -> Value`: `swarmail_wait_for_email` with
+  `timeout_ms: 0` merged into `filter`. The only wait the new tests use.
+- `inventory_names(guide) -> BTreeSet<String>`: backticked first-column
+  cells of the table under `## 8. The tools` (section numbering per the
+  implementer; the heading text "The tools" is what the reader finds).
+- `near_miss_field(block) -> Result<String, Refusal>`: the backticked
+  token on the `- \`wait_timeout\`` bullet that is not a tool name.
 
 ## Implementation approach
 
-1. Write the guide and skill to the scanner convention, with the exact
-   sentences the pins require, then write the suite against them; iterate
-   until the suite is green on the committed bytes.
-2. Server lifecycle: one `serve` child per test (`kill_on_drop(true)` plus
-   explicit kill-and-reap in a guard that also runs on panic), stderr
-   drained on a task into a bounded buffer and printed on failure, stdout
-   read line by line until all three addresses are known. Per-test inbox
-   and a temporary directory under `std::env::temp_dir()` named from the
-   test name, pid and a counter. No `std::env::set_var`.
-3. HTTP client: raw `TcpStream` HTTP/1.1 POST with `content-length`, parse
-   status line, headers and body; one function. Stdio client: spawn the
-   snippet's argv with `SWARMAIL_URL` in `Command::env`, write one NDJSON
-   line, read lines until the matching `id`.
-4. Red controls: `#[test]` functions over mutated in-memory strings for
-   every refusal arm, plus default-equality controls for port, host, path,
-   command and argument.
-5. README edit last; run the evals tracked-link guard so the new links
-   resolve in a clean checkout.
+1. **Block and guide first (F1, F2, F3).** Rewrite the block's opening per
+   spec R3 using these sentences verbatim, since the pins quote them:
+   - "If your task or environment names your swarmail inbox, use that name
+     and pass it as `"inbox"` to every tool."
+   - "Otherwise choose a name of lowercase letters, digits and `-`, and
+     point the application's SMTP at `smtp://<inbox>:x@127.0.0.1:1025`: the
+     SMTP AUTH username names the inbox and any password is accepted."
+   - "Mail sent without AUTH lands in the inbox `default`, not in yours."
+   - "On a server started with `--route-domain`, you may instead call
+     `swarmail_create_inbox` and give the flow the address it returns."
+   - "**If the flow has already mailed you, do not clear: wait, or read,
+     straight away.** The wait returns mail that is already in your inbox."
+   - "Otherwise work in four steps, in this order: clear, act, wait,
+     extract."
+   Step 2 (Act): "Trigger the flow exactly once, with the application
+   pointed at your inbox as above." `wrong_link`: "Wait with
+   `swarmail_wait_for_link` and select the link by its `anchor_text`,
+   `host` and `path`, not by its position in a list." `wait_timeout`: "Read
+   the timed-out answer's `near_misses` (mail that arrived but did not
+   match, listed when the inbox holds any) before you re-trigger; a second
+   trigger makes the first code stale." `stale_code`: "take the code from
+   the newest mail". Then copy the block into SKILL.md.
+2. **"Where mail lands" after the start command (F1).** Four sentences: the
+   AUTH rule and `default` (0004, linked); the route-domain rule with
+   `--route-domain` / `SWARMAIL_ROUTE_DOMAIN`, routed recipient outranks
+   AUTH, unknown label refused (0112, linked, marked proposed); the default
+   server has no route domain, so `swarmail_create_inbox` answers an error
+   naming the flag there; inbox names stay in `[a-z0-9-]` so they are legal
+   on both routes. Section 8's clear bullet becomes "Unless the flow has
+   already mailed you, clear before you act, never between act and extract:
+   the clear deletes the mail you are waiting for." (AC-7 pin text).
+3. **"The tools" table (F-tools).** One row per live tool, name in
+   backticks in the first column, one-line purpose in the second; the
+   attachments pair and the focused waits get rows like the rest. Put it
+   after the block and before the guarantees.
+4. **"What CI proves" and README (F4).** The guide: the five snippet round
+   trips prove transport (clear, seed, wait, extract through the declared
+   transport); one test drives the taught loop over real SMTP with AUTH as
+   the block says, covers the already-mailed case and both wrong-route
+   controls, and proves the route-domain clause with the knob in the
+   environment. README: the single R5 sentence; the suite row rewritten.
+5. **Suite, in this order.** (a) F5 one-liner plus three negative rows.
+   (b) `parse_addrs`, `Server.smtp`, `start_server_with`. (c) `smtp_url`,
+   `assert_smtp_url`, `live_url` and their in-process red controls. (d)
+   `the_taught_route_and_loop_hold_over_real_smtp`: one default server;
+   inbox A: clear, send with AUTH = A (code 1), `wait0` finds it, extract
+   equals code 1; inbox B: send with AUTH = B (code 2) **before any clear**,
+   `wait0` finds it, extract equals code 2, then `wait0` with
+   `subject: "no-such-subject"` is `timed_out: true` and has the block's
+   near-miss key, then clear B and `wait0` is `timed_out: true` without that
+   key; controls: send with `None` AUTH → `wait0(A)` timed out,
+   `wait0("default")` found; send with AUTH `other` → `wait0(A)` timed out,
+   `wait0("other")` found. (e) `the_route_domain_clause_mints_and_routes`:
+   default server → `create_inbox` `isError` names `--route-domain`; routed
+   server → `create_inbox`, send to its address with AUTH `other`,
+   `wait0(minted)` found, `wait0("other")` timed out. (f) Inventory
+   equality and the selector/near-miss schema checks folded into the
+   existing live `tools/list` test. (g) Pins: `GUARANTEES`, `BLOCK_RULES`
+   and `LABELS` updated; new `FORBIDDEN_IN_BLOCK` absence pins; README
+   presence and absence pins.
+6. **Gates last.** The quickstart below, then the oracle/null baseline, then
+   the report with AC-3 recorded as not measured.
 
 ## Quickstart and verification
 
 ```bash
 cargo test --locked --test agent_setup_docs
-cargo test --workspace --locked
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo build --locked --bin swarmail
+(cd evals && cargo fmt --all -- --check)
+(cd evals && cargo clippy --all-targets --locked -- -D warnings)
+(cd evals && SWARMAIL_BIN="$PWD/../target/debug/swarmail" cargo test --locked)
 brokkr compile --bundle .brokkr/recipes/self
 bash scripts/coverage-gate.sh && bash scripts/coverage-gate.sh selftest
 bash scripts/publish-guard-test.sh && bash scripts/seal-branch-test.sh
 cargo deny check licenses
-cargo fmt --manifest-path evals/Cargo.toml -- --check
-cargo clippy --manifest-path evals/Cargo.toml --all-targets --locked -- -D warnings
-cargo test --manifest-path evals/Cargo.toml --offline --locked
-cargo build --offline --locked --bin swarmail
-cargo build --offline --locked --manifest-path evals/Cargo.toml
 evals/target/debug/swarmail-evals trial --task signup --agent oracle   # then otp, magic-login; then --agent null
 ```
 
 ## Risks
 
-| Risk | Mitigation |
-|---|---|
-| Executed bytes differ from shipped bytes (one token or the environment). | Default-equality assertion on the literal before substitution; checked single-occurrence replacement; stated in the suite's doc comment and the guide's "what CI proves". |
-| Port stolen between the server's bind and the test's dial. | The server binds `:0` itself and reports the port; there is no pre-bind window. A dial failure is a hard failure naming the port, never a retry loop. |
-| Leaked child holds ports or wedges the job. | Guard kills and reaps on drop and on panic; every exchange and every test has a deadline; stderr is printed on failure. |
-| Scanner vacuity (a fence silently skipped). | Fail closed on every unrecognized shape; a red control per arm; exactly one `markdown` fence required; the executed-fence count asserted against five wiring snippets plus the start command. |
-| Subset readers drift from real TOML/YAML. | They validate snippets we author, say so in the guide, and refuse everything outside the subset; the sourced snippets need nothing more. |
-| `FailureClass` reformatted so the text read breaks. | The read fails loudly naming the file; the fix is one line; no cross-crate dependency. |
-| Unverified client formats mislead a reader. | Visible "unverified" labels pinned by the test; the report repeats them; AC-8 is the stated boundary. |
-| The issue's own criterion (one real model) stays unmet. | Reported as open with the reason (wrappers refuse docs wiring); never recorded as passed. |
-| Parallel tests in one binary collide on inboxes or directories. | Per-test inbox and directory names; each test owns its server. |
-| macOS CI differences. | std-only process handling, no signals, no unix-only APIs; the binary name is the same on both. |
-| New Markdown breaks the evals tracked-link guard. | All links in-repo and relative; the evals suite runs before reporting. |
+| Risk | Mitigation | Finding |
+|---|---|---|
+| The SMTP URL form is never tried against a real client library (STARTTLS-only clients, LOGIN-only clients). | 0004 itself teaches `smtp://proj-42:x@swarmail:1025`; the server offers PLAIN and LOGIN; the suite proves the server side of the exact bytes taught, and the guide says client behaviour is operator-owned (AC-8). | F1 |
+| A zero-timeout wait is read as "sleep 0 and hope". | It is the opposite: 0001 says the mail is stored before the `250`, 0002 says the wait scans after subscribing, so the found/timed-out answer is deterministic. The suite's doc comment says so and no wait on a green path has a longer deadline than needed. | F1, F2 |
+| 0112 is proposed; if the operator rejects it the routed clause is wrong. | The clause is one sentence, one table row and one test; the guide labels 0112 proposed; removing all three is a one-commit change and the AUTH form stands alone. | F1 |
+| 0111 changes the near-miss key. | The block names the key, the test reads the live answer; a rename goes red in this suite the day it merges, which is what the pin is for. | F-tools |
+| The inventory table drifts when a tool is added. | Equality with `tools/list` makes the omission red; the fix is one row. That is the chosen cost (ruling 18). | F-tools |
+| `trim_start` also catches a legitimately indented fence a future author wants. | The convention is column 0 only (ruling 2); the refusal message names the line. | F5 |
+| Two servers in one test (`the_route_domain_clause_mints_and_routes`). | Each is ephemeral and reaped; the routed one is started only after the default-server `isError` assertion, so no two servers of this test live at once. | F1 |
+| Parallel tests in one binary collide on inboxes. | Each test owns its server; inbox names per test; the `default` and `other` inboxes are read only on the server that test started. | F1 |
+| Executed bytes differ from shipped bytes (one token each for HTTP and SMTP authority, plus `<inbox>`). | Default-equality on the literal before substitution; exactly-once replacement; stated in the suite's doc comment and the guide. | F1 |
+| The README sentence is shortened past the truth. | It claims the wiring snippets are driven and the install commands are marked; the test pins both the new sentence and the absence of the old one. | F4 |
+| The one-real-model criterion stays unmet. | Reported as not measured in the PR and the report; #161 not claimed closed. | — |
+| macOS CI differences. | std-only process handling; `common::smtp_send` is used by other suites on both OSes already. | — |
