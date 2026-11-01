@@ -5,6 +5,10 @@ for p in [home, *home.rglob('*')]:
     assert stat.S_IMODE(p.stat().st_mode) == (0o700 if p.is_dir() else 0o600)
 args = sys.argv[1:]
 env = dict(os.environ)
+# On macOS this interpreter's own CoreFoundation sets __CF_USER_TEXT_ENCODING
+# at startup; it never comes from the wrapper (the Linux run proves the map).
+if sys.platform == 'darwin':
+    env.pop('__CF_USER_TEXT_ENCODING', None)
 if FAMILY == 'claude':
     auth = json.loads((home/'.claude/.credentials.json').read_text())
     assert auth == {'claudeAiOauth': {'accessToken': CANARY, 'expiresAt': 1999999999999, 'scopes': ['user:inference']}}
