@@ -2656,7 +2656,9 @@ pub fn finalize(req: &TrialRequest, mut row: TrialResult, snap: Option<&Snapshot
         row.failure_class = Some(FailureClass::HarnessError);
     }
     if let Some(root) = &req.artifacts_dir
-        && crate::artifacts::retain_trial(root, &row, snap).is_err()
+        && crate::artifacts::resolve_root(root)
+            .and_then(|real| crate::artifacts::retain_trial(&real, &row, snap))
+            .is_err()
     {
         row.outcome = Outcome::HarnessError;
         row.failure_class = Some(FailureClass::HarnessError);

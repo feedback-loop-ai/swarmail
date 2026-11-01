@@ -1389,6 +1389,91 @@ fn artifact_write_failures_use_safe_categories() {
 }
 
 #[test]
+fn a_same_uid_symlinked_artifact_ancestor_is_a_safe_harness_error() {
+    let _trial_scope = trial_scope();
+    let dir = tempdir();
+    // `tempdir` follows the umask; a link in a group-writable directory would
+    // refuse for the holder's mode before its owner.
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let target = dir.path().join("target");
+    std::fs::create_dir(&target).unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let named = link.join("out");
+    let (row, out) = trial(&[
+        "--task",
+        "signup",
+        "--agent",
+        "oracle",
+        "--artifacts-dir",
+        named.to_str().unwrap(),
+    ]);
+    assert_eq!(row.outcome, Outcome::HarnessError);
+    assert!(stderr(&out).contains("artifact_write_failed"));
+    assert!(!stderr(&out).contains(link.to_str().unwrap()));
+    assert!(!target.join("out").exists(), "nothing under the target");
+    // A trial retained under the real path replays there, and is refused
+    // through the same-uid link.
+    let (kept, _) = trial(&[
+        "--task",
+        "signup",
+        "--agent",
+        "oracle",
+        "--artifacts-dir",
+        target.to_str().unwrap(),
+    ]);
+    let replay = |root: &Path| {
+        cli()
+            .args(["check", "--artifacts-dir"])
+            .arg(root)
+            .output()
+            .unwrap()
+    };
+    assert_eq!(replay(&target.join(&kept.trial_id)).status.code(), Some(0));
+    let refused = replay(&link.join(&kept.trial_id));
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(!stderr(&refused).contains(link.to_str().unwrap()));
+}
+
+/// macOS names its temporary directory through root-owned links into
+/// /private; the real path is resolved once and retained and replayed there.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_tmp_artifact_roots_are_accepted_and_resolve_under_private_tmp() {
+    let _trial_scope = trial_scope();
+    let holder = tempfile::Builder::new()
+        .prefix("swarmail-evals-")
+        .tempdir_in("/private/tmp")
+        .unwrap();
+    let unique = holder.path().file_name().unwrap();
+    let named = Path::new("/tmp").join(unique).join("artifacts");
+    let (row, out) = trial(&[
+        "--task",
+        "signup",
+        "--agent",
+        "oracle",
+        "--artifacts-dir",
+        named.to_str().unwrap(),
+    ]);
+    assert!(
+        !stderr(&out).contains("artifact_write_failed"),
+        "{}",
+        stderr(&out)
+    );
+    let real = Path::new("/private/tmp")
+        .join(unique)
+        .join("artifacts")
+        .join(&row.trial_id);
+    assert!(real.join("metadata.json").is_file(), "{real:?}");
+    let checked = cli()
+        .args(["check", "--artifacts-dir"])
+        .arg(named.join(&row.trial_id))
+        .output()
+        .unwrap();
+    assert_eq!(checked.status.code(), Some(0), "{}", stderr(&checked));
+}
+
+#[test]
 fn a_swarmail_that_never_comes_up_is_a_harness_error() {
     let _trial_scope = trial_scope();
     let out = cli()
