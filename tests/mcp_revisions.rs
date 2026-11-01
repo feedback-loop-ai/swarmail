@@ -269,11 +269,12 @@ async fn revision_headers_and_isolation() {
 }
 /// The current catalogue in served order, written out here rather than
 /// copied from the production allowlist, so a new tool or a misclassified
-/// hint fails instead of being blessed: eleven reads (the deliverability
+/// hint fails instead of being blessed: twelve reads (the deliverability
 /// report's cache fill never changes stored mail or extraction, 0085; the
-/// two focused waits appended by 0094, the two attachment tools appended by
-/// 0110) and six mutations.
-const CATALOGUE: [(&str, bool); 17] = [
+/// two focused waits appended by 0094; the inbox minter appended by 0112,
+/// which allocates nothing; the two attachment tools appended by 0110) and
+/// six mutations.
+const CATALOGUE: [(&str, bool); 18] = [
     ("swarmail_search_emails", true),
     ("swarmail_get_deliverability_report", true),
     ("swarmail_get_email", true),
@@ -289,6 +290,7 @@ const CATALOGUE: [(&str, bool); 17] = [
     ("swarmail_clear_chaos", false),
     ("swarmail_wait_for_code", true),
     ("swarmail_wait_for_link", true),
+    ("swarmail_create_inbox", true),
     ("swarmail_list_attachments", true),
     ("swarmail_get_attachment", true),
 ];
@@ -299,7 +301,7 @@ async fn revision_tool_annotations() {
     let (_, legacy) = post(srv.http_addr, &[], &request).await;
     // The exact catalogue and its modern readOnlyHint, in served order.
     let table = CATALOGUE;
-    assert_eq!(table.iter().filter(|(_, read)| *read).count(), 11);
+    assert_eq!(table.iter().filter(|(_, read)| *read).count(), 12);
     for version in VERSIONS {
         let (_, reply) = post(
             srv.http_addr,
@@ -962,7 +964,7 @@ async fn revision_served_contract() {
         "Revisions: 2025-03-26, 2025-06-18, 2025-11-25.",
         "Only 2025-03-26 supports batches",
         "except\nOPTIONS",
-        "the eleven reads",
+        "the twelve reads",
         "the six mutations",
         "outputSchema",
         "structuredContent",

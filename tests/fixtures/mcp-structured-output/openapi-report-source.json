@@ -6,12 +6,12 @@
       "rule_set_id",
       "findings"
     ],
-    "description": "At most 65536 compact JSON bytes; ordered by rule id, typed location, severity, hint; exact duplicates removed. Rule meaning/parser/location/hint/order changes require a new rule-set id. demo.marker.v1 reads the first X-Swarmail-Demo value, unfolded and space/tab trimmed: info, warning or error emits one fixed header finding. Seven bulk checklist rules also ship (proposed 0089). Pass emits no row; authentication unknown emits a distinct not_evaluated error, so no production message currently qualifies at any predicate threshold.",
+    "description": "At most 65536 compact JSON bytes; ordered by rule id, typed location, severity, hint; exact duplicates removed. Rule meaning/parser/location/hint/order changes require a new rule-set id. demo.marker.v1 reads the first X-Swarmail-Demo value, unfolded and space/tab trimmed: info, warning or error emits one fixed header finding. Seven bulk checklist rules also ship (proposed 0089); authentication unknown emits a distinct not_evaluated error, so no production message currently qualifies at any predicate threshold. Seven HTML heuristics also ship; one finding per rule per eligible MIME part. Attachments and filename-bearing subtrees are excluded. Raw analysis over 8 MiB, aggregate decoded HTML over 4 MiB, over 256 outer parts, MIME depth or lexical nesting above 32, parse/decode failure or incomplete supported constructs fail the whole report. Hidden conditional comments, CSS escaped identifiers, layout/visibility and CSS-only tracking are unassessed. Balanced CSS value components cannot create declarations; literal unquoted url(...) treats slash-star as data. Malformed supported constructs, including unclosed head/tags and stray CSS closers, still fail. Exactly empty stored raw contributes no HTML findings; the combined metadata collector fails, so REST returns 503 and MCP returns isError rather than a clean report. Nonempty parse failures still fail. ",
     "properties": {
       "rule_set_id": {
         "type": "string",
         "examples": [
-          "swarmail-bulk/1"
+          "swarmail-html/3"
         ]
       },
       "findings": {

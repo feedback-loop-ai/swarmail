@@ -42,9 +42,10 @@ The review gate is constitutionally protected; security-hold is a hard
 stop. Direct commits to `main` are reserved for docs, decisions and
 repairs, and still leave every gate clean.
 
-Commit unsigned and never push from a seat; the operator seals each PR
-branch before merge with `scripts/seal-branch.sh` (decision
-[0056](docs/decisions/0056-signing-policy.md)).
+Commit unsigned and never push from a seat. PR branches are not sealed:
+a delivery run's PR merges by squash once every house gate and required
+CI check is green, unless it is held for the operator (decision
+[0056](docs/decisions/0056-signing-policy.md), 2026-11-01 addendum).
 
 ## Releases
 

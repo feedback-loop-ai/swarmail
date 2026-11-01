@@ -6,8 +6,57 @@ use super::structured::{Wire, march_view, schema_ok, structural, valid};
 use super::*;
 
 pub(super) const FOCUSED: [&str; 2] = ["swarmail_wait_for_code", "swarmail_wait_for_link"];
+/// The inbox minter appended after the focused pair (decision 0112 §5).
+pub(super) const MINTER: &str = "swarmail_create_inbox";
+
+/// Decision 0112 §5's descriptor body, stated independently of the source.
+pub(super) fn assert_minter_descriptor(descriptor: &Value) {
+    let o = descriptor.as_object().unwrap();
+    assert_eq!(
+        o.keys().collect::<Vec<_>>(),
+        ["description", "inputSchema", "name"]
+    );
+    assert_eq!(descriptor["name"], MINTER);
+    assert_eq!(
+        descriptor["inputSchema"],
+        json!({"type":"object","additionalProperties":false})
+    );
+    let description = descriptor["description"].as_str().unwrap();
+    for clause in ["fresh private inbox", "--route-domain", "Allocates nothing"] {
+        assert!(description.contains(clause), "{clause}");
+    }
+}
+
+/// The minter's output contract: both members, closed.
+pub(super) fn expected_minter_output() -> Value {
+    json!({"type":"object","properties":{"inbox":{"type":"string"},
+        "address":{"type":"string"}},"required":["inbox","address"],
+        "additionalProperties":false})
+}
 
 const ADDRESS: &str = r#"{"type":"object","properties":{"address":{"type":"string"},"name":{"type":"string"}},"required":["address"],"additionalProperties":false}"#;
+
+/// Decision 0111 §4's closed object, written from the contract: five members,
+/// seven per entry, the three `missed` names, and `nearest_subject` an entry
+/// or null. No `maxLength`: the finite evaluator does not state it.
+pub(super) fn near_misses_schema() -> Value {
+    let count = json!({"type":"integer","minimum":0});
+    let stamp = json!({"type":"integer","minimum":i64::MIN,"maximum":i64::MAX});
+    let text = json!({"type":["string","null"]});
+    let entry = json!({"type":"object","properties":{
+        "email_id":{"type":"string"},"received_ms":stamp,"from":text,
+        "to":{"type":"array","items":{"type":"string"},"maxItems":5},"to_total":count,
+        "subject":text,
+        "missed":{"type":"array","items":{"type":"string","enum":["to","from","subject"]}}},
+        "required":["email_id","received_ms","from","to","to_total","subject","missed"],
+        "additionalProperties":false});
+    json!({"type":"object","properties":{
+        "arrivals":{"type":"array","items":entry,"maxItems":10},
+        "arrivals_total":count,"arrivals_truncated":{"type":"boolean"},
+        "nearest_subject":{"anyOf":[entry,{"type":"null"}]},"last_arrival_ms":stamp},
+        "required":["arrivals","arrivals_total","arrivals_truncated","nearest_subject","last_arrival_ms"],
+        "additionalProperties":false})
+}
 
 fn filters(link: bool) -> Value {
     let mut properties = json!({
@@ -70,8 +119,8 @@ pub(super) fn assert_march_descriptor(descriptor: &Value) {
 }
 
 /// The served March catalogue is the captured thirteen-tool line with the
-/// two focused descriptors and then the two attachment descriptors (0110)
-/// appended, and nothing else changed.
+/// two focused descriptors, the inbox minter (0112) and then the two
+/// attachment descriptors (0110) appended, and nothing else changed.
 pub(super) fn assert_appended(raw: &str, captured: &str) {
     let prefix = captured.strip_suffix("]}}").unwrap();
     let tail = raw
@@ -83,11 +132,12 @@ pub(super) fn assert_appended(raw: &str, captured: &str) {
     ))
     .unwrap();
     let appended = appended.as_array().unwrap();
-    assert_eq!(appended.len(), 4);
+    assert_eq!(appended.len(), 5);
     for descriptor in &appended[..2] {
         assert_march_descriptor(descriptor);
     }
-    for descriptor in &appended[2..] {
+    assert_minter_descriptor(&appended[2]);
+    for descriptor in &appended[3..] {
         super::attachments::assert_march_descriptor(descriptor);
     }
 }
@@ -155,6 +205,10 @@ pub(super) fn expected_output(name: &str) -> Value {
                 "timed_out",
                 json!({"matched":exact(0),"candidates":list(0,0),"candidates_total":exact(0),"candidates_truncated":never,"distinct_urls":exact(0)}),
             ),
+            close(
+                "timed_out",
+                json!({"matched":exact(0),"candidates":list(0,0),"candidates_total":exact(0),"candidates_truncated":never,"distinct_urls":exact(0),"near_misses":near_misses_schema()}),
+            ),
         ]
     } else {
         vec![
@@ -169,6 +223,10 @@ pub(super) fn expected_output(name: &str) -> Value {
             close(
                 "timed_out",
                 json!({"matched":exact(0),"candidates":list(0,0),"candidates_total":exact(0),"candidates_truncated":never,"older_candidates":list(0,0),"older_candidates_total":exact(0),"older_candidates_truncated":never}),
+            ),
+            close(
+                "timed_out",
+                json!({"matched":exact(0),"candidates":list(0,0),"candidates_total":exact(0),"candidates_truncated":never,"older_candidates":list(0,0),"older_candidates_total":exact(0),"older_candidates_truncated":never,"near_misses":near_misses_schema()}),
             ),
         ]
     };
@@ -261,6 +319,10 @@ async fn focused_waits_on_every_revision_and_transport() {
         "anchor_text":"Confirm","rel":"noopener","source":"html","received_ms":links_ms,"sender":sender});
     let unsub = json!({"url":"https://app.test/unsub","email_id":links,"link_index":1,
         "anchor_text":"Unsubscribe","rel":null,"source":"html","received_ms":links_ms,"sender":sender});
+    // The link wait's selectors are not mail filters: the mail they refuse
+    // still shows, with an empty `missed` (decision 0111).
+    let near_links = json!({"email_id":links,"received_ms":links_ms,"from":"app@x.io","to":["rcpt@x.io"],
+        "to_total":1,"subject":"Confirm","missed":[]});
     let cases = [
         (
             "wait_for_code",
@@ -303,7 +365,9 @@ async fn focused_waits_on_every_revision_and_transport() {
             "wait_for_link",
             json!({"inbox":"links","path":"^/nowhere$","timeout_ms":0}),
             json!({
-            "status":"timed_out","matched":0,"distinct_urls":0,"candidates":[],"candidates_total":0,"candidates_truncated":false}),
+            "status":"timed_out","matched":0,"distinct_urls":0,"candidates":[],"candidates_total":0,"candidates_truncated":false,
+            "near_misses":{"arrivals":[near_links.clone()],"arrivals_total":1,"arrivals_truncated":false,
+                "nearest_subject":null,"last_arrival_ms":links_ms}}),
         ),
         (
             "wait_for_link",
@@ -318,7 +382,10 @@ async fn focused_waits_on_every_revision_and_transport() {
             "wait_for_link",
             json!({"inbox":"history","anchor_text":"","timeout_ms":0}),
             json!({
-            "status":"timed_out","matched":0,"distinct_urls":0,"candidates":[],"candidates_total":0,"candidates_truncated":false}),
+            "status":"timed_out","matched":0,"distinct_urls":0,"candidates":[],"candidates_total":0,"candidates_truncated":false,
+            "near_misses":{"arrivals":[{"email_id":"historical-history","received_ms":0,"from":null,"to":[],
+                "to_total":0,"subject":null,"missed":[]}],"arrivals_total":1,"arrivals_truncated":false,
+                "nearest_subject":null,"last_arrival_ms":0}}),
         ),
         (
             "wait_for_code",
@@ -352,7 +419,7 @@ async fn focused_waits_on_every_revision_and_transport() {
             let mut wire = Wire::start(srv.http_addr, version, stdio).await;
             let list = wire.request(&json!({"id":1,"method":"tools/list"})).await;
             let tools = list["result"]["tools"].as_array().unwrap();
-            assert_eq!(tools.len(), 17);
+            assert_eq!(tools.len(), 18);
             let modern = version != VERSIONS[0];
             for (i, name) in FOCUSED.iter().enumerate() {
                 let tool = &tools[13 + i];
@@ -512,8 +579,9 @@ async fn focused_schema_negatives() {
 
 /// Decision 0097 §4: every current surface states the compatibility the
 /// served catalogue actually has — thirteen existing March entries kept,
-/// two focused waits appended (fifteen), then the two attachment tools of
-/// decision 0110, seventeen in all — and keeps the OpenAPI pin
+/// two focused waits and the inbox minter appended, sixteen in all, then
+/// the two attachment tools of decision 0110, eighteen in all — and keeps
+/// the OpenAPI pin
 /// for REST-backed schemas apart from the MCP-only focused schemas. The
 /// blanket "catalogue bytes unchanged" claims the review found are gone.
 #[tokio::test]
@@ -527,9 +595,10 @@ async fn served_prose_states_additive_discovery() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 17);
+    assert_eq!(names.len(), 18);
     assert_eq!(names[13..15], FOCUSED);
-    assert_eq!(names[15..], super::attachments::ATTACHMENTS);
+    assert_eq!(names[15], "swarmail_create_inbox");
+    assert_eq!(names[16..], super::attachments::ATTACHMENTS);
     assert!(names[..13].iter().all(|name| !FOCUSED.contains(name)));
     let flat = |text: &str| {
         text.split_whitespace()
@@ -560,15 +629,15 @@ async fn served_prose_states_additive_discovery() {
         for clause in [
             "thirteen existing",
             "existing result bytes",
-            "appends the two focused waits after them",
-            "fifteen",
+            "appends the two focused waits and swarmail_create_inbox after them",
+            "sixteen",
             "explicit output projections",
             "mcp-only",
             "independently stated expectations",
             "then the two attachment tools",
             "swarmail_list_attachments",
             "swarmail_get_attachment",
-            "seventeen",
+            "eighteen",
         ] {
             assert!(text.contains(clause), "{surface} omits {clause:?}");
         }
@@ -582,6 +651,6 @@ async fn served_prose_states_additive_discovery() {
             assert!(!text.contains(stale), "{surface} still claims {stale:?}");
         }
     }
-    assert!(surfaces[0].1.contains("seventeen mcp tools"));
+    assert!(surfaces[0].1.contains("eighteen mcp tools"));
     srv.stop().await;
 }

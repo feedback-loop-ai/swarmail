@@ -30,6 +30,11 @@ impl Drop for Swarmail {
     }
 }
 
+/// The route domain the runner starts Swarmail with (decision 0112 §7).
+const ROUTE_DOMAIN: &str = "swarmail.test";
+/// The one application login every inbox-isolation account sends under.
+const APP_LOGIN: &str = "fixture-app";
+
 fn start_swarmail() -> Swarmail {
     let mut child = std::process::Command::new(swarmail_bin())
         .args([
@@ -40,6 +45,8 @@ fn start_swarmail() -> Swarmail {
             "127.0.0.1:0",
             "--http-listen",
             "127.0.0.1:0",
+            "--route-domain",
+            ROUTE_DOMAIN,
         ])
         .env("RUST_LOG", "swarmail=info")
         .stdout(std::process::Stdio::piped())
@@ -89,9 +96,21 @@ impl Rig {
         .await
         .unwrap();
         let tag = sw.http.port();
+        // Inbox-isolation mirrors the runner (decision 0112 §7): one shared
+        // application login, a routed recipient per account. Every other
+        // task authenticates as the inbox, as before.
+        let isolation = count > 1;
         let ids: Vec<(String, String)> = ["ada", "grace", "barbara"][..count]
             .iter()
-            .map(|n| (format!("{n}.{tag}@example.test"), format!("wire-{tag}-{n}")))
+            .map(|n| {
+                let inbox = format!("wire-{tag}-{n}");
+                let identity = if isolation {
+                    format!("{n}.{tag}@{inbox}.{ROUTE_DOMAIN}")
+                } else {
+                    format!("{n}.{tag}@example.test")
+                };
+                (identity, inbox)
+            })
             .collect();
         let rig = Rig {
             admin: reqwest::Client::new(),
@@ -106,7 +125,10 @@ impl Rig {
         let list: Vec<Value> = rig
             .ids
             .iter()
-            .map(|(i, b)| json!({"identity": i, "inbox": b}))
+            .map(|(i, b)| {
+                let login = if isolation { APP_LOGIN } else { b };
+                json!({"identity": i, "inbox": b, "smtp_identity": login})
+            })
             .collect();
         let (s, _) = rig
             .admin_post("/admin/provision", Some(json!({"identities": list})))
@@ -338,12 +360,41 @@ async fn every_action_is_bound_to_its_identity() {
             ("foreign_token", Some("wrong_message"))
         ]
     );
-    // Each inbox holds exactly its own mail: AUTH named the inbox.
+    // Each inbox holds exactly its own mail: the routed recipient named the
+    // inbox, and the one shared application login owns none (decision 0112
+    // §7) — otherwise the task could not tell routing from an AUTH fallback.
     for i in 0..3 {
         let mail = mcp.wait_emails(rig.inbox(i), None, 1).await.unwrap();
         assert_eq!(mail.len(), 1);
         assert_eq!(mail[0]["to"][0]["address"], json!(rig.ids[i].0));
     }
+    let shared = mcp
+        .call("swarmail_search_emails", json!({"inbox": APP_LOGIN}))
+        .await
+        .unwrap();
+    assert_eq!(shared["total"], 0, "the shared login's inbox holds no mail");
+    let http = reqwest::Client::new();
+    let inboxes: Value = serde_json::from_str(
+        &http
+            .get(format!("http://{}/api/v1/inboxes", rig.http))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let mut names: Vec<&str> = inboxes
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap())
+        .collect();
+    names.sort_unstable();
+    let mut want: Vec<&str> = (0..3).map(|i| rig.inbox(i)).collect();
+    want.sort_unstable();
+    assert_eq!(names, want, "exactly the three routed inboxes exist");
     assert_eq!(rig.app(1).get(&link).await.unwrap().0, 200);
     rig.stop().await;
 }

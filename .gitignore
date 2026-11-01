@@ -6,3 +6,9 @@
 .DS_Store
 .cargo-home/
 .forge/
+# The client fixtures' local runs (clients/playwright, clients/pytest).
+node_modules/
+__pycache__/
+test-results/
+*.egg-info/
+.pytest_cache/

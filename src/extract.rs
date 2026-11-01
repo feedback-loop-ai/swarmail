@@ -78,7 +78,7 @@ fn dedup(values: Vec<String>) -> Vec<String> {
 /// decodes to six — but never past `5 * output <= 6 * input`: numerics
 /// and literal copies never grow, and the table's own test pins every
 /// mapping inside that ratio.
-fn decode_refs(input: &str) -> String {
+pub(crate) fn decode_refs(input: &str) -> String {
     let mut stats = RefScanStats::default();
     decode_refs_scanned(input, &mut stats)
 }
@@ -98,12 +98,18 @@ struct RefScanStats {
     /// Bytes that scan actually examined: the window is up to `REF_MAX`
     /// *characters*, so up to 4 * `REF_MAX` bytes on a multibyte body.
     bytes: u64,
+    /// Conservative inspected operations; independent of the legacy window pins.
+    work: u64,
 }
 
 fn decode_refs_scanned(input: &str, stats: &mut RefScanStats) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
-    while let Some(index) = rest.find('&') {
+    loop {
+        let found = rest.find('&');
+        stats.work += found.map_or(rest.len(), |i| i + 1) as u64 + 1;
+        let Some(index) = found else { break };
+        stats.work += index as u64; // copied prefix
         out.push_str(&rest[..index]);
         rest = &rest[index..];
         match parse_ref(rest, &mut out, stats) {
@@ -114,7 +120,18 @@ fn decode_refs_scanned(input: &str, stats: &mut RefScanStats) -> String {
             }
         }
     }
+    stats.work += rest.len() as u64;
     out.push_str(rest);
+    out
+}
+
+/// Same decoder as ingest, with its actual invocations charged to the HTML proof.
+/// Prefix search/copy is linear; each reference has a 40-scalar window and one
+/// construction lookahead. See specs/html-review-repair/implementation.md.
+pub(crate) fn decode_refs_counted(input: &str, work: &mut u64) -> String {
+    let mut stats = RefScanStats::default();
+    let out = decode_refs_scanned(input, &mut stats);
+    *work += stats.work;
     out
 }
 
@@ -141,12 +158,23 @@ fn parse_ref(s: &str, out: &mut String, stats: &mut RefScanStats) -> Option<usiz
     const REF_MAX: usize = 40;
     stats.scans += 1;
     let window = match s[1..].char_indices().nth(REF_MAX) {
-        Some((byte_index, _)) => &s[1..1 + byte_index],
-        None => &s[1..],
+        Some((byte_index, c)) => {
+            stats.work += (byte_index + c.len_utf8()) as u64;
+            &s[1..1 + byte_index]
+        }
+        None => {
+            stats.work += s.len() as u64;
+            &s[1..]
+        }
     };
     stats.bytes += window.len() as u64;
+    stats.work += window.len() as u64 + 1; // bounded terminator search, also on failure
     let token_end = window.find(';')? + 1;
     let token = &s[1..token_end];
+    // Prefixes, scalar validation/parse, or <=13 binary-search comparisons over
+    // the fixed 2,125-name table, plus at most six output bytes. Charge before
+    // fallible lookup so failed references are measured as well.
+    stats.work += 5 + 14 * (token.len() as u64 + 1) + 6;
     if let Some(hex) = token
         .strip_prefix("#x")
         .or_else(|| token.strip_prefix("#X"))

@@ -1,0 +1,10 @@
+# CI-only exact pins (proposed decision 0113 §3): pytest and its own
+# transitive closure on Python >= 3.11, nothing more. Installed with
+# `pip install --no-deps --only-binary :all: -r requirements-ci.txt`, so a
+# missing, source-only or mistyped pin fails closed. The published package
+# itself has no dependencies.
+pytest==8.4.2
+iniconfig==2.1.0
+packaging==25.0
+pluggy==1.6.0
+pygments==2.19.2

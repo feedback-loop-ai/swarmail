@@ -193,6 +193,7 @@ mod tests {
             store: Arc::new(crate::store::Store::new(0)),
             chaos: Arc::new(crate::chaos::Chaos::default()),
             shutdown,
+            route_domain: None,
         };
         (stop, ctx)
     }

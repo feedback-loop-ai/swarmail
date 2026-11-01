@@ -26,6 +26,7 @@ async fn sixteen_maximum_waits_register_together_before_any_delivery() {
         store: Arc::new(Store::new(0)),
         chaos: Arc::new(Chaos::default()),
         shutdown,
+        route_domain: None,
     };
     let members: Vec<String> = (0..MCP_BATCH_CAP)
         .map(|i| {

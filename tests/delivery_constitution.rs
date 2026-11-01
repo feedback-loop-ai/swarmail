@@ -53,12 +53,15 @@ fn sha256_file(path: &str) -> String {
         .to_owned()
 }
 
-/// #125, amended by decision 0102: a residual above low, or any security
-/// residual, returns to implement with the panel's findings; the sixth review
-/// that still holds one parks for the operator; only explicit non-security
-/// residuals at or below low ship, and a final unconditional hard stop still
-/// catches spec defects and absent, null or malformed facts alike. At 2a325c9
-/// the allow rule had no `when` at all and nothing followed it.
+/// #125, amended by decision 0102 and its 2026-10-31 addendum: a spec defect
+/// with every safety fact explicit returns to design (beside a security
+/// residual too), and the sixth review that still finds one parks; a residual
+/// above low, or any security residual, returns to implement with the panel's
+/// findings, and the sixth review that still holds one parks for the
+/// operator; only explicit non-security residuals at or below low ship, and a
+/// final unconditional hard stop still catches spec defects beside applied
+/// fixes and absent, null or malformed facts alike. At 2a325c9 the allow rule
+/// had no `when` at all and nothing followed it.
 #[test]
 fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
     let policy = read_json(".brokkr/recipes/self/policy.json");
@@ -68,6 +71,10 @@ fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
     assert_eq!(
         ids,
         [
+            "REVIEW-RESIDUAL-SPEC-EXHAUSTED",
+            "REVIEW-RESIDUAL-SPEC-SECURITY-EXHAUSTED",
+            "REVIEW-RESIDUAL-SPEC-REDESIGN",
+            "REVIEW-RESIDUAL-SPEC-SECURITY-REDESIGN",
             "REVIEW-RESIDUAL-EXHAUSTED",
             "REVIEW-RESIDUAL-SECURITY-EXHAUSTED",
             "REVIEW-RESIDUAL-REWORK",
@@ -77,27 +84,37 @@ fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
             "REVIEW-RESIDUAL-UNSAFE"
         ]
     );
+    // A spec defect needs every residual fact present and well-formed: a
+    // severity bound that admits every severity word still refuses an absent,
+    // null or malformed one, and security is split, never left unread.
+    let spec = |security: bool| json!({"spec_defect": true, "fixes_applied": false, "has_security_residual": security, "max_residual_severity_at_most": "critical"});
     let above_low = json!({"max_residual_severity_above": "low", "spec_defect": false});
     let security = json!({"has_security_residual": true, "spec_defect": false});
-    for (park, rework, facts) in [(0, 2, &above_low), (1, 3, &security)] {
+    for (park, rework, facts, next) in [
+        (0, 2, &spec(false), "design"),
+        (1, 3, &spec(true), "design"),
+        (4, 6, &above_low, "implement"),
+        (5, 7, &security, "implement"),
+    ] {
         let mut exhausted = facts.clone();
         exhausted["visits_review_gte"] = json!(6);
-        assert_eq!(residual[park]["when"], exhausted, "five reworks, then park");
+        assert_eq!(residual[park]["when"], exhausted, "five returns, then park");
         assert_eq!(residual[park]["park"], true);
         assert_eq!(residual[park].get("next"), None);
         assert_eq!(&residual[rework]["when"], facts);
-        assert_eq!(residual[rework]["next"], "implement");
+        assert_eq!(residual[rework]["next"], next);
+        assert_eq!(residual[rework].get("severity"), None);
     }
     let low = |fixes: bool| json!({"has_security_residual": false, "max_residual_severity_at_most": "low", "spec_defect": false, "fixes_applied": fixes});
-    assert_eq!(residual[4]["when"], low(false));
-    assert_eq!(residual[4]["next"], "ship");
-    assert_eq!(residual[5]["when"], low(true));
-    assert_eq!(residual[5]["next"], "verify");
-    assert_eq!(residual[6].get("when"), None);
+    assert_eq!(residual[8]["when"], low(false));
+    assert_eq!(residual[8]["next"], "ship");
+    assert_eq!(residual[9]["when"], low(true));
+    assert_eq!(residual[9]["next"], "verify");
+    assert_eq!(residual[10].get("when"), None);
     assert_eq!(
         (
-            residual[6]["next"].as_str(),
-            residual[6]["severity"].as_str()
+            residual[10]["next"].as_str(),
+            residual[10]["severity"].as_str()
         ),
         (Some("stop"), Some("hard"))
     );
@@ -107,6 +124,112 @@ fn residual_admission_requires_explicit_safe_facts_and_unknowns_stop() {
         (hold[0]["next"].as_str(), hold[0]["severity"].as_str()),
         (Some("stop"), Some("hard"))
     );
+}
+
+/// Decision 0102's 2026-10-31 addendum: a clean verdict that finds the spec
+/// defective, from a read-only panel, returns to design and parks at the
+/// sixth review; its ship and reverify rows still demand `spec_defect: false`,
+/// and the final unconditional stop still catches a spec defect beside
+/// applied fixes and every unknown fact.
+#[test]
+fn clean_spec_defects_return_to_design_and_unknowns_stop() {
+    let policy = read_json(".brokkr/recipes/self/policy.json");
+    let clean = rules_from(&policy, "review", "clean");
+    let ids: Vec<&str> = clean.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(
+        ids,
+        [
+            "REVIEW-CLEAN-SPEC-EXHAUSTED",
+            "REVIEW-CLEAN-SPEC-REDESIGN",
+            "REVIEW-CLEAN-NO-FIXES",
+            "REVIEW-CLEAN",
+            "REVIEW-CLEAN-UNSAFE"
+        ]
+    );
+    let spec = json!({"spec_defect": true, "fixes_applied": false});
+    let mut exhausted = spec.clone();
+    exhausted["visits_review_gte"] = json!(6);
+    assert_eq!(clean[0]["when"], exhausted);
+    assert_eq!(clean[0]["park"], true);
+    assert_eq!(clean[0].get("next"), None);
+    assert_eq!(clean[1]["when"], spec);
+    assert_eq!(clean[1]["next"], "design");
+    assert_eq!(
+        clean[2]["when"],
+        json!({"fixes_applied": false, "spec_defect": false})
+    );
+    assert_eq!(clean[2]["next"], "ship");
+    assert_eq!(
+        clean[3]["when"],
+        json!({"fixes_applied": true, "spec_defect": false})
+    );
+    assert_eq!(clean[3]["next"], "verify");
+    assert_eq!(clean[4].get("when"), None);
+    assert_eq!(
+        (clean[4]["next"].as_str(), clean[4]["severity"].as_str()),
+        (Some("stop"), Some("hard"))
+    );
+}
+
+/// Decision 0102's 2026-10-31 addendum: across the whole table, a rule that
+/// reads `spec_defect: true` either returns to design or parks for the
+/// operator, and every route to ship or verify requires `spec_defect: false`.
+/// The design return shares 0102's budget: every review return, to implement
+/// or to design, has a parking twin at the same sixth review.
+#[test]
+fn a_spec_defect_returns_to_design_or_parks_and_never_ships() {
+    let policy = read_json(".brokkr/recipes/self/policy.json");
+    let rules = policy["rules"].as_array().unwrap();
+    let defect: Vec<&Value> = rules
+        .iter()
+        .filter(|rule| rule["when"]["spec_defect"] == true)
+        .collect();
+    assert_eq!(defect.len(), 6);
+    for rule in &defect {
+        assert_eq!(rule["from"], "review", "{rule}");
+        assert_eq!(rule["when"]["fixes_applied"], false, "{rule}");
+        match rule.get("next") {
+            Some(next) => assert_eq!(next, "design", "{rule}"),
+            None => {
+                assert_eq!(rule["park"], true, "{rule}");
+                assert_eq!(rule["when"]["visits_review_gte"], 6, "{rule}");
+            }
+        }
+    }
+    for rule in rules.iter().filter(|rule| {
+        rule["from"] == "review" && matches!(rule["next"].as_str(), Some("ship" | "verify"))
+    }) {
+        assert_eq!(rule["when"]["spec_defect"], false, "{rule}");
+    }
+    let to_design: Vec<&str> = rules
+        .iter()
+        .filter(|rule| rule["from"] == "review" && rule["next"] == "design")
+        .map(|rule| rule["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        to_design,
+        [
+            "REVIEW-RESIDUAL-SPEC-REDESIGN",
+            "REVIEW-RESIDUAL-SPEC-SECURITY-REDESIGN",
+            "REVIEW-CLEAN-SPEC-REDESIGN"
+        ]
+    );
+    for rule in rules.iter().filter(|rule| {
+        rule["from"] == "review" && matches!(rule["next"].as_str(), Some("design" | "implement"))
+    }) {
+        let mut parked = rule["when"].clone();
+        parked["visits_review_gte"] = json!(6);
+        let twin = rules
+            .iter()
+            .find(|park| park["park"] == true && park["when"] == parked)
+            .unwrap_or_else(|| panic!("{} has no parking twin", rule["id"]));
+        let at = |id: &Value| rules.iter().position(|r| &r["id"] == id).unwrap();
+        assert!(
+            at(&twin["id"]) < at(&rule["id"]),
+            "park before {}",
+            rule["id"]
+        );
+    }
 }
 
 /// #124: only the deterministic check's `designed` advances design; a
@@ -289,7 +412,7 @@ fn pinned_bundle_shims_and_proof_dispatch_are_digest_bound() {
         ),
         (
             ".brokkr/recipes/self/policy.json",
-            "435e2e1d2a6ec40b9d5e5b27a8273ec095a4fbf748e94b66a9237a02223eaf5a",
+            "2f07ed7d734f67ae43134942fcea028e41904efcab1bdd9839f4f3cceb02ea90",
         ),
         (
             ".brokkr/recipes/self/tooling.json",
@@ -1447,4 +1570,90 @@ fn ci_refuses_warning_on_either_stream_and_preserves_compile_failure_status() {
         "--version\n"
     );
     fixture.assert_cleaned();
+}
+
+/// The step of a CI job whose `name:` is `name`, from its `- name:` line to
+/// the next step.
+fn ci_step<'a>(job: &'a str, name: &str) -> &'a str {
+    let marker = format!("      - name: {name}\n");
+    let start = job
+        .find(&marker)
+        .unwrap_or_else(|| panic!("the test job has no step named {name:?}"));
+    let rest = &job[start + marker.len()..];
+    &rest[..rest.find("\n      - ").unwrap_or(rest.len())]
+}
+
+/// Issue #162, proposed 0110 §6: each client fixture's example suite is a
+/// named Linux step of the required `test` job (a new job would not be a
+/// required context on main), built `--locked`, against a server this step
+/// starts, with the CI-only framework installed scripts-off and
+/// binaries-only. Red when a needle goes, when a step leaves the job or
+/// loses its Linux guard, and when the two suites stop being the same six
+/// examples.
+#[test]
+fn ci_runs_both_client_example_suites_in_the_linux_test_job() {
+    let ci = read_text(".github/workflows/ci.yml");
+    let job = ci
+        .split("\n  test:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n  coverage:\n").next())
+        .expect("ci.yml has a test job before coverage");
+    for (name, needles) in [
+        (
+            "Playwright fixture example suite",
+            &[
+                "cargo build --locked",
+                "target/debug/swarmail serve",
+                "http://127.0.0.1:8025/healthz",
+                "npm install --prefix clients/playwright --ignore-scripts",
+                "--no-package-lock",
+                "playwright test -c clients/playwright/examples",
+            ][..],
+        ),
+        (
+            "pytest fixture example suite",
+            &[
+                "cargo build --locked",
+                "target/debug/swarmail serve",
+                "http://127.0.0.1:8025/healthz",
+                "pip install --no-deps --only-binary :all: -r clients/pytest/requirements-ci.txt",
+                "-m pytest -p pytest_swarmail.plugin",
+                "clients/pytest/examples",
+            ][..],
+        ),
+    ] {
+        let step = ci_step(job, name);
+        assert!(
+            step.contains("if: runner.os == 'Linux'"),
+            "{name} is Linux-only"
+        );
+        for needle in needles {
+            assert!(step.contains(needle), "{name} must carry {needle:?}");
+        }
+        assert!(
+            step.contains("set -euo pipefail") && step.contains("trap "),
+            "{name} fails closed and stops its server"
+        );
+    }
+
+    let spec = read_text("clients/playwright/examples/example.spec.ts");
+    let suite = read_text("clients/pytest/examples/test_example.py");
+    let numbered = |text: &str, prefix: &str| -> Vec<String> {
+        text.lines()
+            .filter_map(|l| l.strip_prefix(prefix))
+            .map(|l| l.chars().take(1).collect())
+            .collect()
+    };
+    let expected: Vec<String> = (1..=6).map(|n| n.to_string()).collect();
+    assert_eq!(
+        numbered(&spec, "test('"),
+        expected[..5],
+        "spec.ts examples 1-5"
+    );
+    assert_eq!(
+        numbered(&spec, "test(\""),
+        expected[5..],
+        "spec.ts example 6"
+    );
+    assert_eq!(numbered(&suite, "def test_"), expected, "pytest examples");
 }

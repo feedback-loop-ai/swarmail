@@ -67,3 +67,16 @@ gates are what limit it. The bot runs a full gate pass per PR, serially.
 None yet. The bot, its refusal list and their tests are the implementation of
 this record, and must land before the addendum to 0056 takes effect. This
 record does not change `scripts/seal-branch.sh` or any seat.
+
+## Dated addition (2026-11-01): parked
+
+The bot is parked, not live, by operator ruling. Its first protected review
+(run `delivery-bot-decision-0109-verif-6cb40f7d`) stopped on a security hold:
+a candidate could make the bot read its own keys, the Unix-user boundary does
+not hold while the operator's user is in root-equivalent groups, and the
+protected set did not cover the whole delivery constitution. More basically,
+the bot's key protects nothing while the operator's own GitHub token, which
+can merge any green PR, stays reachable on the host. The operator chose the
+0056 addendum of this date instead: no seal, merge on green with a hold list.
+The unfinished work stays on branch `repair/bot-seal-policy`. The 2026-10-31
+addendum to 0056 no longer applies.

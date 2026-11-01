@@ -240,6 +240,7 @@ pub async fn run_on(cfg: &config::Config) -> std::io::Result<RunningServer> {
             smtp_degraded: smtp_degraded.clone(),
             pop3_degraded: pop3_degraded.clone(),
             http_origin_guard,
+            route_domain: cfg.smtp.route_domain.clone(),
         };
         let mut shutdown_rx = shutdown_rx.clone();
         tasks.spawn(async move {

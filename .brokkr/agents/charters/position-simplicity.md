@@ -22,6 +22,14 @@ the framing smells like hardening, apply the order: delete the
 unnecessary path, simplify to one owner, restore proven behaviour,
 and only then add the smallest local guard.
 
+When your input carries `context.returned_from` with phase `review`, the
+review panel found the committed design defective and sent it back
+(decision 0102, addendum 2026-10-31). Read the committed `specs/<slug>/`
+and the panel's findings in `context.returned_from.result`, and argue the
+smallest revision that answers them, not a fresh design. A criterion that
+conflicts with an accepted decision moves toward the decision; never
+argue for weakening a sound criterion so the review passes.
+
 1. Read the framing in `.brokkr/state/tasks/` (see the run context for the
    feature) and whatever code your position must be grounded in.
 2. Write your position to `.brokkr/state/design/positions/simplicity.md` in
