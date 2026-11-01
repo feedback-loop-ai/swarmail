@@ -286,8 +286,48 @@ the *Amends if accepted* line above does not grow. The observer's
 recorded-not-asserted observations are reported by its exit code
 (100/101/102), not on stderr, which the spec now states.
 
-**Still open.** AC-L1..L3 (the hostile proof, the observed topology, the
-lifetime chain) remain proven only by that command passing; provider egress
+**After the second live proof — 2026-11-02.** The dispatcher ran the proof
+command a second time, against 5e44b14, twice from clean: 39 s each, 6
+passed, 1 failed. The controller fix holds (the row comes out, the
+controller exits), the hostile proof and the observed topology hold, the
+interrupt and the runner-kill clauses of the lifetime criterion hold. The
+one red is the controller-kill clause: `SIGKILL` to the controller left the
+runner — PID 1 of the trial's namespace — and everything inside it alive
+until the runner's own deadline. The premise written above, that a
+controller death "is covered by `--die-with-parent`" and that bwrap's
+`SIGKILL` reaches the namespace init, was false on this host and is
+withdrawn: bwrap arms the parent-death signal in the sandbox child before
+it execs the runner, but the kernel clears that signal at an exec it marks
+secure, and the host's AppArmor `bwrap-userns-restrict` profile marks the
+`bwrap` → `unpriv_bwrap` transition secure. The outer bwrap keeps its own
+binding and dies with the controller; the runner did not. Until the fix
+the host admission was therefore released at the controller's death
+(0076 §3's process-scoped lock) while a live namespace could hold the
+fixture for up to the trial deadline, and the next isolated trial could be
+admitted beside it — the overlap this record exists to prevent. The
+diagnosis is read from bwrap's binary and the kernel's and AppArmor's
+exec rules, not observed live; the test now names the surviving member on
+a timeout so a wrong reading costs one run.
+
+The change is one statement inside the boundary and no argv, flag, file,
+process or dependency: the runner, when it is PID 1, re-arms
+`PR_SET_PDEATHSIG` to `SIGKILL` as the first thing its `main` does, so the
+outer bwrap's death sends the forced `SIGKILL` an init cannot refuse from
+an ancestor namespace and the kernel empties the namespace. That is the
+mechanism the controller's envelope kill, its kill-on-drop and its
+abandoned-interrupt arm already relied on, now armed. `--as-pid-1` and the
+R1 ruling above stand: bwrap's reaper is not brought back, and no pipe,
+cgroup, subreaper or second init is added. The residual is named: a
+controller killed between the runner's exec and its first statement leaves
+a runner that ends at its own `--deadline-ms`, never a false row. A
+proposed design is corrected toward the operator's 2026-11-01 direction
+under accepted 0045 §8 as compatible repair; nothing is activated, 0055 and
+0076 are unchanged, and the dispatcher's third run of the same command is
+the merge gate.
+
+**Still open.** AC-L3's controller-kill clause remains proven only by that
+command passing on all seven tests (AC-L1, AC-L2 and the other three
+clauses passed on 2026-11-01 against 5e44b14 and are re-run with it); provider egress
 remains the operator's question above; the CI boundary job remains the
 operator's follow-up. Nothing here accepts itself; 0055 and 0076 are
 unchanged; no dependency is added.

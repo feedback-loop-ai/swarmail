@@ -1,14 +1,16 @@
 # Trial isolation tasks — the boundary is bubblewrap
 
 Ordered. Each task names the test that proves it. AC, R, P and Q references
-point to [spec.md](spec.md) as revised 2026-11-01 for the fourth time,
-after the second review. A proposed decision is not authority to activate a
-contradictory contract (accepted 0045 §8); concurrency stays off and no row
-version changes. Tasks closed by earlier commits that this revision keeps
-stay closed; the live proof's findings were T21–T28 (done at 4f3ba15); the
-second review's findings are T29–T33, in the order the implementer does
-them; T10 is reopened behind them, and T06–T08 and T20 stay open until the
-dispatcher's host run.
+point to [spec.md](spec.md) as revised 2026-11-02 for the fifth time,
+after the second live proof; L1 is its one finding. A proposed decision is
+not authority to activate a contradictory contract (accepted 0045 §8);
+concurrency stays off and no row version changes. Tasks closed by earlier
+commits that this revision keeps stay closed; the first live proof's
+findings were T21–T28 (done at 4f3ba15); the second review's were T29–T33
+(done at 5e44b14); the second live proof's finding is T34–T37, in the order
+the implementer does them; T10 is reopened behind them, and T06–T08 and T20
+stay open until the dispatcher's third host run. The implementer reads
+these tasks, not the panel's positions.
 
 - [x] **T01 — Carry the decision and its index row (AC-S8, AC-O1).**
   `docs/decisions/0115-trial-isolation.md` stays `proposed`, now with its
@@ -190,6 +192,59 @@ dispatcher's host run.
   `SKIP trial-isolation: boundary_unavailable:bwrap_probe`, each within its
   bound. **Test:** both receipts in the implement notes with wall-clock
   durations.
+- [ ] **T34 — Re-arm the parent-death binding in the namespace init (L1;
+  AC-S14).** In `evals/src/isolation.rs` add
+  `pub fn rearm_parent_death(is_init: bool)`: on Linux, when `is_init`, one
+  `libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL)` under a `SAFETY`
+  comment; off Linux an empty body that consumes the parameter. In
+  `evals/src/main.rs` make
+  `swarmail_evals::isolation::rearm_parent_death(std::process::id() == 1)`
+  the first statement of `main`, before `std::panic::set_hook` and before
+  `Cli::try_parse`. No argv, flag, bound, dependency or lockfile change; the
+  AC-S4 golden argv test stays byte-identical. **Test:** inline, Linux only,
+  `the_namespace_init_rearms_its_parent_death_signal_and_a_plain_runner_does_not`:
+  on a fresh `std::thread` (joined before the test returns) read
+  `PR_GET_PDEATHSIG` and get `0`; call `rearm_parent_death(false)` and still
+  read `0`; call `rearm_parent_death(true)` and read `libc::SIGKILL`.
+  `cargo test --locked --lib rearms_its_parent_death` green in the seat;
+  `rg -n 'rearm_parent_death' evals/src/main.rs` shows the call on the
+  first line of `main`'s body.
+- [ ] **T35 — Name the survivor on a lifetime timeout (L1; AC-L3).** In
+  `evals/tests/common/mod.rs` add `pub fn survivors(family: &[ProcessIdentity])
+  -> String` (one line per member still `identity_alive`: pid, state,
+  `PPid` and `NSpid` from `/proc/<pid>/status`, cmdline from
+  `/proc/<pid>/cmdline`, unreadable fields rendered as `?`) and
+  `pub fn eventually_else(what, ok, detail: impl Fn() -> String)`, the same
+  20 s / 20 ms poll as `eventually` whose panic message is
+  `timed out waiting for {what}:\n{detail()}`. In
+  `killing_the_controller_leaves_no_trial_process_alive` replace the one
+  `eventually("every trial process to die", ..)` with
+  `eventually_else(.., || survivors(&family))`; change nothing else in that
+  test (family capture before the kill, the 20 s bound, `identity_alive`'s
+  zombie judgment, the next-trial step). `eventually` itself and the other
+  six live tests are untouched. **Test:** a unit test in `common` (Linux)
+  spawns `/usr/bin/sleep 30`, captures its identity, asserts `survivors`
+  names it with its pid, state and `/usr/bin/sleep` cmdline, `SIGKILL`s and
+  waits it, and asserts `survivors` is then empty; the whole test under 2 s.
+- [ ] **T36 — Correct the sentences that assumed bwrap's binding reached
+  PID 1 (L1; AC-S8, AC-S14).** The `argv` doc comment's `--as-pid-1`
+  paragraph says the runner re-arms `PR_SET_PDEATHSIG` as PID 1 and why
+  (the kernel clears it at the host's secure exec); the `process` doc
+  comment says dropping the child kills bwrap, whose death fires the
+  parent-death signal the runner re-armed; the `supervise` doc comment says
+  the same where it says `--die-with-parent` "empties the namespace"; one
+  sentence each in `evals/README.md` and `evals/run-plan.md` beside the
+  bounded-controller paragraph. **Test:**
+  `rg -n 'die-with-parent' evals/src/isolation.rs` shows no sentence
+  claiming bwrap's `SIGKILL` reaches PID 1 by itself; `rg -n
+  'rearm' evals/README.md evals/run-plan.md` finds one sentence in each.
+- [ ] **T37 — Seat run of both suites after T34–T36 (AC-S6, AC-S7).** Run
+  the always-on evals suite locked in the seat and show AC-S10 skipped by
+  name, the new AC-S14 and `survivors` tests green, and every other test
+  green within bounded time; run the `--ignored` command and show every
+  live proof red with `SKIP trial-isolation: boundary_unavailable:bwrap_probe`,
+  each within its bound. **Test:** both receipts in the implement notes with
+  wall-clock durations.
 - [ ] **T06 — Hostile live proof, boundary holds (AC-L1).** As at f1a30a7,
   under `bounded`. **Test:** on this host, the probe exits 0 (all routes
   denied), A's row after its agent is killed from outside is `fail` in
@@ -200,13 +255,16 @@ dispatcher's host run.
   0 (or 100/101/102 with its observations) and the oracle passes signup
   inside; a nonzero code names the first violated check.
 - [ ] **T08 — Lifetime bound on both ends (AC-L3).** As at f1a30a7, under
-  `bounded`. **Test:** on this host, `SIGKILL` to the controller leaves no
-  trial process alive; `SIGKILL` to the runner's host PID leaves no agent
-  alive and the controller exits 2 with the `isolated_trial_no_row` row;
-  `SIGTERM` to the controller after the agent exists yields the runner's
-  interrupted row, exit 2 and no survivors; no orphan of A is alive when B
-  starts.
-- [ ] **T10 — Gates (AC-S7), reopened after T29–T32.** Run the full house gate inventory locked plus
+  `bounded`, with T35's diagnostic. **Test:** on this host, `SIGKILL` to the
+  controller leaves no trial process alive within the existing 20 s (red on
+  2026-11-01 against 5e44b14, 2 of 2 runs: the runner survived, L1; the
+  survivors are named if it is red again); `SIGKILL` to the runner's host
+  PID leaves no agent alive and the controller exits 2 with the
+  `isolated_trial_no_row` row (green 2026-11-01); `SIGTERM` to the
+  controller after the agent exists yields the runner's interrupted row,
+  exit 2 and no survivors (green 2026-11-01); no orphan of A is alive when
+  B starts.
+- [ ] **T10 — Gates (AC-S7), reopened after T34–T36.** Run the full house gate inventory locked plus
   the standalone evals `fmt`, `clippy --all-targets` and `cargo test
   --locked`. **Test:** command/exit/log receipts for every required check
   bound to the candidate, literal zero-missed root coverage with its
@@ -218,8 +276,11 @@ dispatcher's host run.
 - [ ] **T20 — Live proof outstanding (AC-L1..L3).** The dispatcher runs the
   one `--ignored` command on this host after the run with a hard 20-minute
   limit; that run is the acceptance gate of PR #308 and the only green that
-  closes T06–T08. **Test:** the host run's receipt, green, with its measured
-  duration recorded here by whoever runs it.
+  closes T06–T08. Its second run (2026-11-01, 5e44b14, twice from clean)
+  took 39 s: 6 passed, 1 failed (L1). **Test:** the third host run's
+  receipt, 7 passed and 0 failed, with its measured duration recorded here
+  by whoever runs it; "6 passed, 1 failed" is a red proof, not a partial
+  pass.
 
 Status 2026-11-01 (chief, after the first live proof): T21–T28 are open for
 the implement seat, in that order; T06–T08 and T20 behind them, proven only
@@ -296,3 +357,9 @@ and stand-ins ran):
   `brokkr compile --bundle .brokkr/recipes/self` was **not run**: the pinned
   brokkr binary is not installed in this seat. T06–T08 and T20 stay open for
   the dispatcher's host run.
+
+Status 2026-11-02 (chief, after the second live proof): T34–T37 are open for
+the implement seat, in that order, with T10 reopened behind them; T06–T08
+and T20 stay open and are proven only by the dispatcher's third run of the
+one command on this host. Nothing in 4f3ba15's or 5e44b14's controller work
+is reopened; the argv does not change.

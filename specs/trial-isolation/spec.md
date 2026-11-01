@@ -1,19 +1,19 @@
 # Isolate concurrent eval trials — the boundary is bubblewrap
 
-Date: 2026-11-01 (fourth revision, after the second review panel returned
-the third on the envelope's cleanup path; the 2026-10-31 design commit and
-the three earlier 2026-11-01 revisions stay in history). Issue #221 (split
-from #199), Epic #192.
+Date: 2026-11-02 (fifth revision, after the second live proof left one
+lifetime test red; the 2026-10-31 design commit and the four 2026-11-01
+revisions stay in history). Issue #221 (split from #199), Epic #192.
 Branch `repair/issue221-trial-isolation` (PR #308), main a4f552d merged in.
 Lane: `claude-careful` (accepted 0098/0099; residual rework under accepted
 0102 and its spec-defect addendum).
 Operator direction, 2026-11-01: **fix it; merge only once the live proof
 passes on the host.** The boundary stays bubblewrap exactly as the second
-revision drew it; the third revision changed the controller on the host
-side of it and the tests that hold it, and this fourth revision changes one
-path of that controller — the reap the kernel will not let it prove — and
-the sentences that described it, so that accepted 0076 §3 is conformed to
-rather than quietly narrowed.
+revision drew it, and the controller stays as the third and fourth
+revisions rebuilt it. This fifth revision changes one thing inside the
+boundary — the runner, as PID 1 of the trial's namespace, re-arms the
+parent-death binding that the host's exec transition cleared — and the
+sentences that assumed bwrap's own binding reached it, so that a killed
+controller is a killed trial (L1).
 
 Decision: 0115 — [Trial separation and observed concurrency](../../docs/decisions/0115-trial-isolation.md)
 (proposed; its dated *Revision 2026-11-01* section, the *After the first
@@ -133,6 +133,65 @@ finding has a task in [tasks.md](tasks.md) and a proving test, and
 | Q6 | `isolation::run` maps a runtime that cannot be built to `NoRow`, so the row says `isolated_trial_no_row` for a trial that never launched (independent; info) | Accepted and named in step 7: the row is an honest harness error for a trial with no row; a distinct name would be a new row reason for a practically unreachable arm |
 | Q7 | `a_row_then_a_grandchild_holding_stdout_is_still_a_delivered_row` asserts under 4 s around an admission retry that may take up to 10 s on a contended fork window (correctness; info) | Accepted and named in plan § Risks: the margin is the test's point (the drain did not wait for the 5 s writer); a false red on a loaded host carries its elapsed time and the margin is widened with that evidence |
 
+## What the second live proof found, and where it is answered
+
+The dispatcher ran the proof command on this host a second time, against
+5e44b14 (Linux, `/usr/bin/bwrap` 0.11.1, AppArmor `bwrap-userns-restrict`,
+`kernel.yama.ptrace_scope=1`), twice from clean. Both runs finished in 39 s
+with 6 passed and 1 failed. Both defects of the first run are closed: the
+row leaves the boundary and the controller exits. The hostile proof (AC-L1),
+the topology observer (AC-L2) and the interrupt and runner-kill halves of
+AC-L3 are green. One finding remains; it has a task in [tasks.md](tasks.md)
+and a proving test, and [plan.md](plan.md) says which change answers it.
+
+| # | Finding (source, severity) | Answered by |
+| --- | --- | --- |
+| L1 | `killing_the_controller_leaves_no_trial_process_alive` panics at `tests/common/mod.rs:330` with `timed out waiting for every trial process to die`: after `SIGKILL` to the controller and its reap, a member of the captured family (bwrap, the runner as PID 1, the `/usr/bin/sleep` agent) is still `identity_alive` 20 s later (dispatcher, host, 2 of 2 runs; the one red of seven, **the defect**) | The runner re-arms `PR_SET_PDEATHSIG` as the namespace init (Required behaviour, the paragraph after the argv; AC-S14); AC-L3's first clause kept and its failure made to name the survivor; 0115 *After the second live proof*; T34–T37 |
+
+**Which member survives, and why.** The survivor is the **runner**, PID 1
+of the trial's PID namespace, in a running state, and under it everything
+inside the namespace: Swarmail, the fixture and the `sleep` agent. It is a
+live product process, not a zombie of the test's making. The two
+test-side hypotheses are falsified by the code, not merely unlikely:
+`identity_alive` already returns false for states `Z` and `X` and requires
+the captured start time, so an unreaped zombie cannot keep the check red;
+and `SIGKILL` ends every thread of the controller, so the parent-death
+signal armed on the thread that spawned bwrap does fire — the outer bwrap
+dies. What does not die is the process the outer bwrap exec'd, because the
+binding meant to reach it does not survive its exec. bwrap 0.11.1 arms
+`PR_SET_PDEATHSIG` at three points: in the outer process after the clone
+(this one holds: the controller's death kills bwrap), in its PID-1 reaper
+(not created under `--as-pid-1`), and in the sandbox child immediately
+before `execve` of the runner. The kernel clears a task's parent-death
+signal at an exec it marks secure (`begin_new_exec`: "make sure parent
+cannot signal privileged process"), and AppArmor marks every safe domain
+transition secure; the host's `bwrap-userns-restrict` profile moves the
+exec from `bwrap` into `unpriv_bwrap` with such a transition. So the
+runner starts with no parent-death signal, is re-parented when the outer
+bwrap dies, and runs to its own `--deadline-ms 30000` with its namespace;
+the test waits 20 s. This matches the 39 s suite with one 20 s failure and
+explains why the other six pass: none of them depends on bwrap's death
+killing the runner (the runner-kill test kills PID 1 itself, the interrupt
+is forwarded to the runner's host PID, the hostile test kills the agent).
+The same false premise sat behind the envelope arm's `start_kill()`, the
+`kill_on_drop` on every early return and the abandoned-interrupt arm; the
+fix repairs all four at once. **This was not observed live**: the seat's
+bwrap refuses with `ENOSPC`, and the diagnosis is read from the binary,
+`strace` and the kernel's and AppArmor's exec rules. The fix is correct
+under either reading of why the binding is absent (never armed, or armed
+and cleared), and T35 makes the next red run name the surviving member,
+so a wrong diagnosis costs one run, not a guess.
+
+**What it broke beyond the test.** The spec's own sentence "bwrap's
+`--die-with-parent` still delivers `SIGKILL` to that PID 1" and 0115's
+"a controller crash after spawn is covered by `--die-with-parent`" were
+the premise, and the live proof falsified it. Until the fix, a killed
+controller released the host admission at its death (0076 §3's
+process-scoped `flock`) while a live namespace still held the fixture and
+MCP authority for up to the runner's deadline, so the next isolated trial
+on that uid could be admitted beside it — the overlap 0076 and #221 exist
+to prevent. The correction is recorded here and in 0115, not in a comment.
+
 ## Panel synthesis — adopted, rejected, reconciled
 
 The first synthesis table (bwrap over the raw worker, the constant path and
@@ -187,6 +246,21 @@ when the admission lets go. This is the ruling.
 | The admission on `Unproved` | **Robustness:** `launch` does not drop it. `Admission::retain(self)` forgets the lock descriptor, so the host admission is released only by the controller's exit, after the line is written, the row is out and the runtime is down. The matrix's `capture_worker_category` already lets `trial_cleanup_unproved` win every other category and sets `stop_admission`, so a parent that ever ran an isolated child stops later admission with no new field. | **Simplicity's drop-after-supervise** is rejected: it releases the lock before the shutdown and the row print, a window of up to `DRAIN_BOUND` in which the controller has said "unproved" and let go anyway. Cost of the ruling: one method and one re-exec test; and the limit, said in step 3 in 0076's words: the advisory `flock` is process-scoped, so the controller's exit releases it while a `D`-state bwrap may still hold a live namespace; that run is invalid baseline evidence and the operator confirms cleanup before resuming. **Robustness's `stop_admission` field on the isolated result** is rejected as a second owner of a fact the stderr parser already owns; **its keeper process, dirty marker or inherited lock descriptor** are rejected as 0076 rejects them (no stale-lock recovery) and as the descriptor sweep forbids the last. |
 | How the cold arm is proven | **Simplicity's pure functions, inline:** `envelope_report(cleanup)` yields the bytes the envelope arm writes and is tested at both poles; `verdict(status, seen, abandoned)` is the existing match lifted out and tested as a table, so "exit 2 whatever reached stdout" on a failed reap is a unit fact; the existing envelope test asserts the cleanup line is absent when the stand-in is reaped. **Robustness's retention proof:** a re-executed child acquires an admission at a private root, retains it and shows a fresh acquisition in the same process refuses `concurrent_trials_refused`; the parent acquires after the child's exit. | **Robustness's harness file** (`isolation/cleanup_tests.rs`) is rejected: 0020 §2's refuge exists to keep a cold path out of the root coverage report, and `evals/` is outside that denominator (0055); the inline home excludes nothing. **A real `D`-state bwrap** is not pretended: no unprivileged test can make one at a pole (0020 §5), and a `drain: 0` race with the kernel's `SIGKILL` delivery is the mid-band rule 0020 forbids. |
 | Q2–Q7 | **Both:** AC-L2 restated to the exit-code contract; the `Sink` comment and the plan's envelope sketch corrected; AC-S12 quotes the code; Q6 and Q7 accepted and named. | None. |
+
+### The fifth ruling — after the second live proof
+
+The fifth panel argued one red test. Both positions name the same survivor
+(the runner, live, with its namespace) and refuse to touch the judge, the
+bound or the assertion; they part on the mechanism they read behind it and
+on how much of the boundary to redraw. This is the ruling.
+
+| Question | Ruling | Losing side and its cost |
+| --- | --- | --- |
+| Which member survives | **Both:** the runner, PID 1 of the trial's namespace, in a running state, with everything inside it, until its own `--deadline-ms`; neither a zombie nor the spawning-thread case. `identity_alive` already excludes `Z`/`X`; `SIGKILL` ends every thread. Not observed live (the seat refuses with `ENOSPC`); T35's diagnostic names the member if both are wrong. | None. |
+| Why the binding is missing | **Simplicity's mechanism:** bwrap arms the parent-death signal in the sandbox child right before `execve` too, and the kernel clears it at a secure exec, which AppArmor's safe `bwrap` → `unpriv_bwrap` transition is. **Robustness's reading** (only bwrap's PID-1 reaper arms it, so `--as-pid-1` removed the one armed process) is corrected on the mechanism; its conclusion stands, and the fix is the same under either. | Cost: none in code. The record matters so that the next reader does not disprove the fix from bwrap's source alone, where the child-side arming is visible and the kernel's clearing is not. |
+| The fix | **Simplicity:** the runner re-arms the binding itself. The first statement of the evals `main`, before the panic hook and before clap, calls `isolation::rearm_parent_death(std::process::id() == 1)`, which on Linux and only when `is_init` sets `PR_SET_PDEATHSIG` to `SIGKILL`. Its parent at that moment is the outer bwrap, which dies with the controller; a parent-death signal from an ancestor namespace is forced, an init cannot refuse `SIGKILL` from outside, and when the init dies the kernel kills and reaps the namespace. No flag, no file, no process, no dependency (`libc` is pinned already); `pid == 1` is exactly the condition `--as-pid-1` creates and no unisolated trial meets it. It repairs the controller `SIGKILL`, the envelope's `start_kill`, `kill_on_drop` and the abandoned interrupt at once, and is harmless on a host that never cleared the binding. | **Robustness's primary, dropping `--as-pid-1` so bwrap's reaper is PID 1,** is rejected: it reverses the second panel's R1 ruling (the spec defect of that review) and reopens the `/proc/1` reaper finding, changes the golden argv (AC-S4), the topology test, the observer's PID-1 record and the early-interrupt semantics, all for a lifetime the re-arm supplies with one statement. Its rebuttal of R1 may be right, and it is not re-litigated here: it is not needed. Cost of rejecting it: the startup window is the runner's exec-to-first-statement instead of the reaper's fork-to-`prctl`; the same order of size, bounded by `--deadline-ms`, named below. **Robustness's fallback, a controller-held pipe the init exits on at EOF,** is rejected: it closes that window at the price of a descriptor contract through `--clearenv` and the close-on-exec sweep, a watcher arm beside the runner's 0073 handling, a handshake so an unisolated run with stdin closed is not a one-instruction trial, and their tests. **Robustness's `pre_exec` arming in the controller** is rejected: the outer bwrap arms itself right after its clone, and its exec from the unconfined controller is not a secure transition (AppArmor's unconfined attach returns before marking one), so the window it would close is bwrap's own startup; it would add a second arming point with a thread-affinity obligation and no test that proves it at a pole without a live child. Named as residual. |
+| The test | **Both:** the assertion, the 20 s bound and the zombie judgment stay exactly as written; the next-trial step stays. **Both:** on timeout the panic names every surviving member (pid, state, `PPid`, `NSpid`, cmdline) through one helper in `common`. **Simplicity's two-pole unit test** of the re-arm on a fresh thread, reading `PR_GET_PDEATHSIG`, is the always-on proof; AC-L3 live is the deciding one. | Rejected: a 35 s bound (green test, 30 s orphan), killing the family from the test (the product's job, hides the overlap), reaping zombies in the test (there are none), a probe that checks the binding survives exec (a second live process for a fact the re-arm makes true by construction). Robustness's separate "assert the runner identity died" is subsumed: the runner is in the family and the diagnostic names it. |
+| Admission (0076) | **Robustness's consequence adopted and stated:** before the fix, the controller's death released the `flock` while a live namespace held the fixture for up to 30 s, and trial B could be admitted beside it. After it, the namespace dies with bwrap in kernel teardown time; the gap between the controller's exit and an empty namespace is that teardown, not a deadline, and the test's next-trial step is the proof. 0076 §3's process-scoped limit stays as 0115 states it; nothing durable is added. | None. |
 
 ## Required behaviour
 
@@ -267,15 +341,35 @@ are checked on every launch, never cached.
      --isolated-expose> [-- <agent argv>]
 ```
 
-`--as-pid-1` (R1) is the one argv change of this revision. bwrap then
-installs no reaper: the process it execs, the runner, is PID 1 of the trial's
-PID namespace, and there is no same-uid process inside that the runner did
-not spawn. bwrap's `--die-with-parent` still delivers `SIGKILL` to that PID 1
-when bwrap or the controller dies, which an init cannot ignore, and when PID
-1 exits the kernel kills and reaps everything left in the namespace before
-bwrap's `wait` returns, so admission-through-reaping (0076 §3) holds on the
-proved path; step 3 of *The controller* below says what the controller does
-on the one path where the kernel will not let it prove the reap (Q1).
+`--as-pid-1` (R1) stays, byte for byte: the argv does not change in this
+revision. bwrap installs no reaper: the process it execs, the runner, is
+PID 1 of the trial's PID namespace, and there is no same-uid process inside
+that the runner did not spawn.
+
+**The lifetime binding is the runner's own (L1).** `--die-with-parent`
+binds the outer bwrap to the controller, and bwrap also arms the same
+parent-death signal in the sandbox child just before it execs the runner;
+but the kernel clears a parent-death signal at an exec it marks secure, and
+the host's AppArmor profile (`bwrap-userns-restrict`) marks the exec from
+`bwrap` into `unpriv_bwrap` exactly so. The runner therefore starts as an
+init with no binding, and bwrap's death leaves it running. So the runner
+re-arms the binding itself: the first statement of the evals binary's
+`main`, before the panic hook and before argument parsing, calls
+`isolation::rearm_parent_death(std::process::id() == 1)`, which on Linux
+and only when it is PID 1 sets `PR_SET_PDEATHSIG` to `SIGKILL`. From then
+on the chain is the kernel's: the controller's death `SIGKILL`s the outer
+bwrap; the outer bwrap's death sends the forced `SIGKILL` an init cannot
+refuse from an ancestor namespace; the init's death kills and reaps
+everything left in the namespace before bwrap's `wait` would have returned.
+That is the mechanism the controller's `start_kill()` on the envelope, its
+`kill_on_drop` on every early return and its abandoned-interrupt arm rely
+on, and admission-through-reaping (0076 §3) holds on the proved path; step
+3 of *The controller* below says what the controller does on the one path
+where the kernel will not let it prove the reap (Q1). No unisolated trial
+is PID 1, so nothing outside the boundary changes; the function is a no-op
+off Linux. The window between the runner's exec and its first statement is
+a named residual: a controller killed inside it leaves a runner that ends
+at its own `--deadline-ms`, never a false row (plan § Risks).
 Signals other than `SIGKILL`/`SIGSTOP` reach a namespace init from outside
 only once it has installed a handler; the runner installs its 0073
 `SIGTERM`/`SIGINT` handlers when the trial arm starts, and the window before
@@ -349,8 +443,9 @@ started. It stays in the host namespaces and never runs the trial arm:
 6. waits for bwrap **under an envelope** of the trial's deadline
    (`--deadline-ms`, else the task's declared `deadline_ms`) plus the
    matrix's 300 000 ms grace, one shared constant (P6). When the envelope
-   expires it `start_kill()`s bwrap (whose `--die-with-parent` `SIGKILL`s
-   PID 1, and the kernel empties the namespace), waits `DRAIN_BOUND` for the
+   expires it `start_kill()`s bwrap (whose death fires the parent-death
+   `SIGKILL` the runner re-armed as PID 1, L1, and the kernel empties the
+   namespace), waits `DRAIN_BOUND` for the
    reap, and prints the envelope report on stderr: one fixed line,
    `swarmail-evals: isolated trial envelope expired; bwrap killed`,
    followed, only when the reap ran out (`Unproved`), by the 0076 §3 line
@@ -438,7 +533,7 @@ an ordinary no-row (Q1). Nothing else changes.
 
 | Outstanding | Owner | How it is settled |
 | --- | --- | --- |
-| AC-L1..L3 hostile live proof | the dispatcher, on this host, after the run | the command below, green, within the dispatcher's hard 20-minute limit; its first run on 2026-11-01 failed in the controller (P1, P2), not in the boundary |
+| AC-L3's controller-kill clause (the live proof's one red) | the dispatcher, on this host, after the run | the command below, green on all seven tests, within the dispatcher's hard 20-minute limit; its first run on 2026-11-01 failed in the controller (P1, P2), its second on 2026-11-01 passed six of seven in 39 s and left the runner alive after the controller's `SIGKILL` (L1) |
 | AC-L4 provider egress | operator ruling on 0115's question, then a host proof | a negative test that the chosen path cannot reach the host fixture port or a sibling address |
 | AC-O1 operator ruling on 0115 (including the bwrap prerequisite) | operator | acceptance or rejection recorded in `docs/decisions/` |
 | CI boundary job | operator (`.github/` is held) | a serialized ubuntu job that provides a bubblewrap at or above the floor (stock 24.04 apt gives 0.9.0, below it), checks the floor and policy, runs the same command and fails closed |
@@ -471,7 +566,10 @@ after the earlier tests have already failed by name. The healthy duration
 is not promised here; the first passing run records it in tasks.md's
 status. **AC-L1, AC-L2 and AC-L3 are proven only by that command on a host
 whose bwrap can create the namespaces.** It ran once, on 2026-11-01, and
-failed with P1/P2 before any live criterion was reached. The seat cannot
+failed with P1/P2 before any live criterion was reached; it ran a second
+time against 5e44b14, twice from clean, 39 s each, 6 passed and 1 failed:
+AC-L1, AC-L2 and three of AC-L3's four clauses held, and the controller's
+`SIGKILL` left the runner alive (L1). The seat cannot
 run it: `/usr/bin/bwrap` 0.11.1 is present in the seat and refuses with
 `ENOSPC` (the seat is already inside a user namespace), so there every live
 proof prints `SKIP trial-isolation: boundary_unavailable:bwrap_probe` and
@@ -669,9 +767,21 @@ asked for and unavailable, outstanding until the host command above passes.
   the agent exists, produces the runner's own interrupted row, exit 2 and no
   survivors; no orphan from trial A is alive when trial B starts. With
   `--as-pid-1` the runner is the namespace init, so these also prove that
-  `--die-with-parent`'s `SIGKILL` reaches an init, that the runner's handler
-  receives the forwarded `SIGTERM`, and that bwrap's `wait` returns only
-  after the namespace is empty (admission-through-reaping, 0076 §3).
+  the parent-death `SIGKILL` the runner re-arms reaches an init (L1), that
+  the runner's handler receives the forwarded `SIGTERM`, and that bwrap's
+  `wait` returns only after the namespace is empty
+  (admission-through-reaping, 0076 §3). The first clause is
+  `killing_the_controller_leaves_no_trial_process_alive`, unchanged in what
+  it asserts: the family (bwrap, the runner, the agent) is captured before
+  the kill, every member must stop being `identity_alive` within the
+  existing 20 s, zombies count as dead as today, and the next trial then
+  starts with no member alive. What changes is its failure: on timeout the
+  panic names every member still alive — pid, state, `PPid`, `NSpid` and
+  cmdline as read from the host `/proc` — through `common::survivors`, so
+  a red run states which process survived instead of
+  `timed out waiting for every trial process to die`. The second live run
+  (2026-11-01, 5e44b14) passed the other six tests and this one is the
+  defect L1; the third run is the gate.
 - **AC-L4 — Driver egress.** Open. The operator's ruling on 0115's question,
   then a negative proof that the chosen transport cannot reach the host
   fixture port or a sibling trial's address. Offline oracle passes alone do
@@ -746,6 +856,23 @@ asked for and unavailable, outstanding until the host command above passes.
   read in review. 0076 §3 is not in 0115's *Amends if accepted* list, and
   `git diff a4f552d -- docs/decisions/0076-sequential-eval-trials.md` is
   empty.
+- **AC-S14 — The namespace init binds its life to bwrap's (L1).**
+  `isolation::rearm_parent_death(is_init)` exists, is `pub`, and is the
+  first statement executed by the evals binary's `main`, called with
+  `std::process::id() == 1`, before the panic hook and before clap parses
+  anything (the window it leaves is the exec-to-first-statement one and
+  nothing wider). On Linux with `is_init == true` it sets
+  `PR_SET_PDEATHSIG` to `SIGKILL`; with `false` it changes nothing; off
+  Linux it is a no-op that compiles. **Test (always on, Linux):** one inline
+  unit test on a fresh `std::thread` (the signal is per task, so the thread
+  keeps it hermetic) reads `PR_GET_PDEATHSIG`: `0` after the `false` pole,
+  `SIGKILL` after the `true` pole, both in that thread, which then exits.
+  The golden argv of AC-S4 is byte-identical to the fourth revision's:
+  `--as-pid-1` and `--die-with-parent` both stay. The doc comments on
+  `argv`, `process` and `supervise` say the binding is the runner's re-arm
+  and why, and no comment in `evals/src/isolation.rs` claims that bwrap's
+  `--die-with-parent` reaches PID 1 by itself. The live proof of the whole
+  chain is AC-L3.
 - **AC-O1 — Operator ruling on 0115.** Outstanding by construction; now
   includes the host prerequisite and the `--as-pid-1` argv.
 
@@ -791,3 +918,19 @@ the host admission as if cleanup were proved and never said
 `trial_cleanup_unproved`, against accepted 0076 §3 (Q1), beside the smaller
 findings Q2–Q7. This fourth revision answers that; the third revision's
 commits remain in history.
+
+**2026-11-01 fourth bwrap revision (4fc078a, implemented at 5e44b14).** The
+reap judged `Proved`/`Unproved`, 0076 §3's line spoken, the admission
+retained on an unproved reap. The dispatcher then ran the live proof a
+second time, twice from clean: 39 s, 6 passed, 1 failed — the row comes out
+and the controller exits, the hostile proof and the topology hold, and the
+controller's `SIGKILL` leaves the runner alive because the parent-death
+binding bwrap arms in the sandbox child does not survive the host's secure
+exec into the runner (L1). This fifth revision answers that; the fourth
+revision's commits remain in history.
+
+**2026-11-02 fifth bwrap revision (this commit).** The runner re-arms
+`PR_SET_PDEATHSIG` as the namespace init; the lifetime test names its
+survivors; the sentences that assumed bwrap's binding reached PID 1 are
+corrected in the spec, the code comments and 0115. The argv, the
+controller's waits and the tests' bounds do not change.
