@@ -2393,6 +2393,7 @@ async fn run_body(
         AgentsEnd::ServerDied => return Err("server_died".into()),
         AgentsEnd::Done | AgentsEnd::Deadline => {}
     }
+    services_survived(&mut trial.servers, &client, http, &app_url).await?;
 
     // Freeze, then take one consistent snapshot before the servers stop.
     admin.call(true, "/admin/freeze", None).await?;
@@ -2400,6 +2401,64 @@ async fn run_body(
     let snap: Snapshot = serde_json::from_value(snap).map_err(|_| "snapshot_invalid")?;
     *snapshot_out = Some(snap);
     Ok(matches!(end, AgentsEnd::Deadline))
+}
+
+/// How long a service whose liveness probe failed gets to show it exited,
+/// which only names the harness error; the trial is a harness error anyway.
+const SERVICE_EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Prove both services outlived the agents before the trial is graded. The
+/// agent loop sees a service die only once its exit is reaped, and an agent
+/// that kills a service and then exits can be reaped first, so the trial
+/// would be graded against a dead service. A service killed before this
+/// probe can never answer it — its pending SIGKILL ends every thread at the
+/// next return to user space — so an answer proves it alive after the agents
+/// ended, and an exit at any point before that answer is a harness error.
+async fn services_survived(
+    servers: &mut [Proc],
+    client: &reqwest::Client,
+    swarmail_http: SocketAddr,
+    app_url: &str,
+) -> Result<(), String> {
+    let (swarmail_slot, fixture_slot) = servers.split_at_mut(1);
+    let swarmail = &mut swarmail_slot[0].child;
+    let fixture = &mut fixture_slot[0].child;
+    let probe = async {
+        let health = client
+            .get(format!("http://{swarmail_http}/healthz"))
+            .send()
+            .await
+            .map_err(|_| "swarmail_health")?;
+        if !health.status().is_success() {
+            return Err("swarmail_health");
+        }
+        let index = client
+            .get(format!("{app_url}/"))
+            .send()
+            .await
+            .map_err(|_| "fixture_index")?;
+        if !index.status().is_success() {
+            return Err("fixture_index");
+        }
+        Ok(())
+    };
+    let failed = tokio::select! {
+        biased;
+        _ = swarmail.wait() => return Err("server_died".into()),
+        _ = fixture.wait() => return Err("server_died".into()),
+        probed = probe => match probed {
+            Ok(()) => return Ok(()),
+            Err(category) => category,
+        },
+    };
+    // A refused or reset probe is how a dying service usually shows first;
+    // its reaped exit names the error when it follows within the grace.
+    tokio::select! {
+        biased;
+        _ = swarmail.wait() => Err("server_died".into()),
+        _ = fixture.wait() => Err("server_died".into()),
+        _ = tokio::time::sleep(SERVICE_EXIT_GRACE) => Err(failed.into()),
+    }
 }
 
 const ARTIFACT_DIRECTORY_MODE: u32 = 0o700;

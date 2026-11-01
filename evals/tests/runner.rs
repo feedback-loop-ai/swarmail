@@ -1583,6 +1583,8 @@ fn child_output_canaries_are_drained_without_publication() {
     assert_eq!(metadata.unwrap()["swarmail_bin"], Value::Null);
 }
 
+// Linux only: the helper agent finds the runner's Swarmail child by walking
+// /proc (PPid and cmdline), which macOS does not have.
 #[cfg(target_os = "linux")]
 #[test]
 fn child_output_server_death_remains_a_harness_error_on_linux() {
@@ -1601,6 +1603,14 @@ fn child_output_server_death_remains_a_harness_error_on_linux() {
         ],
     );
     assert_eq!(row.outcome, Outcome::HarnessError, "{}", stderr(&out));
+    // Exit 0 means the agent found and killed Swarmail before exiting, so
+    // the trial was over a dead service whichever exit the runner reaped first.
+    assert_eq!(row.agent_exit_status, Some(0), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("swarmail-evals: harness error: service_exited_during_trial"),
+        "{}",
+        stderr(&out)
+    );
     assert_eq!(
         std::fs::read_to_string(marker).unwrap(),
         format!("emitted_bytes_per_stream={}", canary.len())
