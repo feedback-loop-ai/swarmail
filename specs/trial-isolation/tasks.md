@@ -33,7 +33,7 @@ does them; T06–T08 and T10 are reopened behind them.
   facts the live run changed.
 - [x] **T11 — Egress question to the operator (AC-L4, AC-O1).** Carried in
   0115; unchanged.
-- [ ] **T21 — Reproduce the deadlock red in the seat (P1, P2; AC-S11).**
+- [x] **T21 — Reproduce the deadlock red in the seat (P1, P2; AC-S11).**
   Before changing production code, add
   `a_controller_holding_its_own_stdout_lock_still_delivers_the_row_and_exits`
   and its re-exec child half to `isolation.rs`'s controller tests: the
@@ -46,7 +46,7 @@ does them; T06–T08 and T10 are reopened behind them.
   `pump`/runtime (the child times out or reports `NoRow`); the red run is
   recorded in the commit body or the implement notes; it is green after
   T22–T23.
-- [ ] **T22 — One production entry, a current-thread runtime, no lock
+- [x] **T22 — One production entry, a current-thread runtime, no lock
   across the trial (P1, P2).** In `isolation.rs` add `Bounds` and
   `pub fn run(request, inner, bwrap, bounds)` building
   `new_current_thread().enable_all()`, `block_on(launch(..))`, then
@@ -60,7 +60,7 @@ does them; T06–T08 and T10 are reopened behind them.
   and entry test passes through `isolation::run`; `grep -n "new_multi_thread" evals/src/main.rs`
   shows only the non-isolated arm; `grep -n "stdout().lock()\|stderr().lock()" evals/src/main.rs`
   shows no use inside a `match` scrutinee or across a `block_on`.
-- [ ] **T23 — The pumps write on the driving thread, and count on the read
+- [x] **T23 — The pumps write on the driving thread, and count on the read
   side (P1, P5).** `pump` calls `write_through` directly (no
   `spawn_blocking`, no per-chunk `to_vec`) and adds each read to a shared
   `Arc<AtomicU64>`; `supervise` judges by that counter after the drains.
@@ -69,7 +69,7 @@ does them; T06–T08 and T10 are reopened behind them.
   new stand-in case where bwrap writes a row, backgrounds a grandchild that
   holds stdout open past `bounds.drain` (200 ms in the test) and exits 0
   yields `Exited(0)`, never `NoRow`.
-- [ ] **T24 — Bound bwrap's wait (P6; AC-S2).** Lift the matrix's
+- [x] **T24 — Bound bwrap's wait (P6; AC-S2).** Lift the matrix's
   `300000` into `pub const TRIAL_GRACE_MS` in `isolation.rs` and use it in
   `run_child_assigned`; in `supervise`, wait for bwrap under
   `bounds.envelope`; on expiry `start_kill()`, reap within `bounds.drain`,
@@ -82,7 +82,7 @@ does them; T06–T08 and T10 are reopened behind them.
   captured `Sink`) carries the fixed line; the same stand-in writing nothing
   yields `NoRow`; the matrix's existing envelope tests pass unchanged with
   the shared constant.
-- [ ] **T25 — One bounded, file-backed runner for every isolated CLI child
+- [x] **T25 — One bounded, file-backed runner for every isolated CLI child
   (P3; AC-S12).** In `tests/common/mod.rs`: `ChildGuard` owns its output
   files and a deadline; `bounded(command, bound) -> ChildGuard`;
   `wait_with_output` polls `try_wait` to the deadline, returns an `Output`
@@ -97,7 +97,7 @@ does them; T06–T08 and T10 are reopened behind them.
   (caught by `catch_unwind`) and leaves no such process; `grep -n "\.output()\|\.wait_with_output()" evals/tests/trial_isolation.rs evals/tests/common/mod.rs`
   shows no isolated command outside the helper; the always-on suite
   finishes in the seat as before.
-- [ ] **T26 — The always-on handoff test and the two-suite skip rule (P3;
+- [x] **T26 — The always-on handoff test and the two-suite skip rule (P3;
   AC-S6, AC-S10).** Add `an_isolated_null_trial_hands_over_its_row_and_exits`
   (Linux, not ignored): through `bounded`, `trial --isolated --task signup
   --agent null --deadline-ms 30000`; where `boundary_unavailable()` names a
@@ -114,7 +114,7 @@ does them; T06–T08 and T10 are reopened behind them.
   SKIP and passes within seconds; on the host (the dispatcher's always-on
   run) it passes by actual exit with the null agent's row; `require_boundary`
   still panics after its SKIP line in the ignored suite.
-- [ ] **T27 — Documentation and the corrected sentences (P4; AC-S8).**
+- [x] **T27 — Documentation and the corrected sentences (P4; AC-S8).**
   Revise the dated #221 sections of `evals/README.md` and
   `evals/run-plan.md`: the proof ran once on 2026-11-01, the boundary
   worked, the controller lost the row and hung and is now bounded at every
@@ -124,7 +124,7 @@ does them; T06–T08 and T10 are reopened behind them.
   **Test:** a requirement-to-observation read against the spec and 0115; no
   "under five minutes", no "has not yet run", no claim that the live
   criteria passed.
-- [ ] **T28 — Seat run of both suites (AC-S6, AC-S7).** Run the always-on
+- [x] **T28 — Seat run of both suites (AC-S6, AC-S7).** Run the always-on
   evals suite locked in the seat and show AC-S10 skipped by name and every
   other test green within bounded time; run the `--ignored` command and
   show every live proof red with `SKIP trial-isolation: boundary_unavailable:bwrap_probe`,
@@ -165,3 +165,35 @@ Status 2026-11-01 (chief, after the first live proof): T21–T28 are open for
 the implement seat, in that order; T06–T08 and T20 behind them, proven only
 by the dispatcher's one command on this host. The earlier status notes of
 the implement seat (bdc504f, f1a30a7) stand in git history.
+
+Status 2026-11-01 (implement seat): T21–T28 are done. Receipts:
+
+- T21 red before the fix: with `a_controller_holding_its_own_stdout_lock_still_delivers_the_row_and_exits`
+  added and production code untouched, `cargo test --locked --lib a_controller_holding`
+  failed after 30.01 s with "the controller outlived its row while holding the
+  stdout lock" (the child never wrote its verdict: the pump's blocking writer
+  parked on the lock and the runtime's drop joined it). Green after T22–T23.
+- T22–T24: `isolation::run`, `Bounds`, `TRIAL_GRACE_MS`, direct pump writes with
+  a read-side count and the envelope on bwrap's wait; the unit tests of the
+  controller all go through `isolation::run`; new cases for the envelope
+  (row-then-hang `Exited(2)`, nothing-then-hang `NoRow`, the fixed stderr
+  line once, row-then-grandchild-holds-stdout `Exited(0)`).
+- T25–T26: `common::bounded`, `ISOLATED_CLI_BOUND = 90 s`, `isolated_output`;
+  every isolated CLI child and the victim's bwrap go through it; new
+  `an_isolated_null_trial_hands_over_its_row_and_exits` and
+  `a_child_that_outlives_its_bound_fails_by_name_and_is_killed`.
+- T28 in the seat: `cargo test --locked --test trial_isolation -- --nocapture
+  --test-threads=1` finished in 5.85 s (8.2 s wall with the build): 14 passed, 7
+  ignored, the handoff test printed `SKIP trial-isolation:
+  boundary_unavailable:bwrap_probe`. The same with `-- --ignored` finished in
+  1.78 s: 7 failed, each after `SKIP trial-isolation:
+  boundary_unavailable:bwrap_probe`. The whole evals `cargo test --locked`
+  passed (about 10 min, dominated by the unrelated runner and wrapper suites).
+- T10 in the seat: root fmt, clippy, test, `cargo build --locked --bin swarmail`,
+  evals fmt and clippy, the coverage gate (exact 100/100/100) and its selftest,
+  the publish-guard proof, the seal-branch proof and `cargo deny check licenses`
+  are green; `git diff a4f552d --stat -- src/` is empty; neither lockfile nor
+  `deny.toml` changed. `brokkr compile --bundle .brokkr/recipes/self` was **not
+  run**: the pinned brokkr binary is not installed in this seat and the seat
+  installs nothing.
+- T06–T08, T20: open, proven only by the dispatcher's one `--ignored` command.

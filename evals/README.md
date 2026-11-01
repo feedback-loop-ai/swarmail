@@ -589,7 +589,8 @@ integration (the `test` jobs and the verify seat run this suite).
 ## Trial isolation — prepared, not activated (#221, proposed 0115)
 
 Date: 2026-11-01 (the boundary is bubblewrap; the 2026-10-31 raw-namespace
-worker is deleted; revised after the first review). **Trials remain
+worker is deleted; revised after the first review and again after the first
+live proof). **Trials remain
 sequential.** Accepted 0076 still admits one trial per uid and refuses
 `--concurrency` other than 1; nothing here changes a row, a refusal or a
 guarantee, and no row claims isolation (`confinement` stays `unconfined`).
@@ -616,9 +617,11 @@ namespace.
 **Host prerequisite, not a dependency.** bubblewrap (LGPL-2.0-or-later) is
 executed as a separate process and never linked, vendored or added to a
 lockfile. An isolated trial needs Linux; `/usr/bin/bwrap` of at least 0.11.1
-(an absolute path with no lookup and no override; the floor rests on one
-out-of-seat probe and is confirmed or corrected by the first run of the proof
-command below, which has **not yet run on any host**; stock Ubuntu 24.04
+(an absolute path with no lookup and no override; the floor is confirmed for
+the launch on 0.11.1 by the proof command's first run on 2026-11-01, which
+passed the probe, accepted the full argv and ran the trial inside, and then
+failed in the controller, which is repaired below; none of the live criteria
+has yet passed; stock Ubuntu 24.04
 packages bubblewrap 0.9.0, which the floor refuses until a proof lowers it, so
 a hosted runner that installs it with apt cannot run the boundary); and a host
 policy that lets bwrap create the namespaces (Ubuntu's `bwrap-userns-restrict`
@@ -638,6 +641,19 @@ bwrap's own words, such as `ENOSPC`, go to stderr and never into the row).
 After a launch, a runner that produced no row is `isolated_trial_no_row`, and
 an interrupt before any runner existed is `isolated_trial_interrupted`.
 
+**The controller hands over the row and exits.** The first live run showed the
+boundary working and the controller losing the runner's row and then never
+exiting: it held the process's standard-output lock across the whole trial
+while copying the sandbox's output from another thread, which parked on it.
+The controller now runs on a current-thread runtime, copies the sandbox's
+output on the thread that drives it, holds no standard-stream lock across the
+trial, counts the row as it is read, and returns once its row is written. Every
+wait it makes is bounded: bwrap's version (5 s) and probe (10 s), bwrap's own
+exit (the trial's deadline plus the matrix's 300 s grace; on expiry bwrap is
+killed, the namespace empties with it, one fixed line goes to stderr and the
+result is the usual `isolated_trial_no_row` or exit 2 beside the runner's
+row), the pipe copies and the reap (5 s each) and the runtime's shutdown (5 s).
+
 The network is a private loopback; provider egress does not exist inside, and
 `--share-net` is rejected. Provider egress is an open operator question in
 0115, so no real driver runs isolated: a wrapper profile is refused, and an
@@ -651,8 +667,12 @@ Delivery seats cannot create namespaces (`/usr/bin/bwrap` is present there and
 refuses with `ENOSPC`), so the live path is proven only by the ignored suite,
 on a host whose bwrap can create them. This is the one documented command; it
 is deterministic (null and oracle built-ins and scripted probes from the test
-executable), free, and bounded (every isolated trial carries a deadline of at
-most 30 s):
+executable), free, and bounded: every isolated trial carries a deadline of at
+most 30 s, every child a test spawns that may run a boundary is held to 90 s
+(output on files; `SIGKILL` and a named `controller outlived its row` failure
+at the bound), and the dispatcher runs the command under a hard 20-minute
+limit. Its green on a host whose bwrap works is the acceptance gate of the pull
+request:
 
 ```bash
 cargo build --locked --bin swarmail
@@ -662,7 +682,15 @@ cd evals && SWARMAIL_BIN="$PWD/../target/debug/swarmail" \
 
 Where the boundary cannot be built each of those tests prints
 `SKIP trial-isolation: boundary_unavailable:<step>` and fails; it never passes
-without the boundary, and the gate inventory never passes `--ignored`. That
+without the boundary, and the gate inventory never passes `--ignored`. The
+always-on suite follows the other rule: its one boundary test,
+`an_isolated_null_trial_hands_over_its_row_and_exits`, prints the same SKIP
+line and returns where the boundary cannot be built, and where it can, runs a
+real isolated null trial through the CLI and passes only by the controller's
+actual exit with the runner's own row; the two tests whose subject is the
+absent boundary print `SKIP trial-isolation: boundary available` and return
+there. The whole `cargo test --locked` therefore finishes in bounded time on a
+host where bwrap works as well as in a seat where it does not. That
 command alone proves the hostile same-uid agent in trial B cannot read A's
 prompt, reach A's MCP or fixture, or make A's idle agent pass (AC-L1), the
 topology from inside (AC-L2: the runner is PID 1, no host path under `/home`

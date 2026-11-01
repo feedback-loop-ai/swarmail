@@ -9,18 +9,32 @@
 //!   CLI, the hidden flags stay hidden, concurrency stays refused, and an
 //!   unavailable boundary refuses by name and never falls back to an
 //!   unisolated run. The leak (AC-S1) is observed against an unisolated
-//!   victim.
+//!   victim. One always-on test needs the boundary itself,
+//!   `an_isolated_null_trial_hands_over_its_row_and_exits` (AC-S10): where
+//!   bwrap works it runs a real isolated null trial and passes only by the
+//!   controller's actual exit with the runner's row; where it does not, it
+//!   prints `SKIP trial-isolation: boundary_unavailable:<step>` and returns.
+//!   The two tests whose subject is the *absent* boundary print
+//!   `SKIP trial-isolation: boundary available` and return where it works.
 //! * **Boundary-dependent, `#[ignore]`d with a named reason** (`NEEDS_BWRAP`).
 //!   They need a host whose `/usr/bin/bwrap` (at least 0.11.1) can create user,
 //!   PID, network and IPC namespaces, and run only when asked for
 //!   (`-- --ignored`). Each first probes with a real null-agent
-//!   `trial --isolated`; if the boundary cannot be built it prints
-//!   `SKIP trial-isolation: boundary_unavailable:<step>` and FAILS. It never
-//!   passes without the boundary. The gate inventory never passes
+//!   `trial --isolated`; if the boundary cannot be built it prints the same
+//!   `SKIP trial-isolation: boundary_unavailable:<step>` line and FAILS. It
+//!   never passes without the boundary. The gate inventory never passes
 //!   `--ignored`, so a delivery seat stays green with them shown as ignored.
 //!   AC-L1, AC-L2 and AC-L3 are proven only by running them (below) on such a
 //!   host; AC-L4 (provider egress) is an open question for the operator and
 //!   has no test.
+//!
+//! The two rules side by side: an always-on test that needs a boundary skips
+//! by name and returns; an ignored live proof skips by name and fails. Every
+//! child that may run a boundary — the CLI, a victim's bwrap — is spawned
+//! through `common::bounded` and held to 90 s: output on files, `SIGKILL` and
+//! a named failure (`controller outlived its row`) at the bound, so the suite
+//! finishes in bounded time on a host where bwrap works as well as in a seat
+//! where it does not.
 //!
 //! The cross-trial proof comes in two halves that share one probe. The
 //! always-on half (AC-S1) shows that, with no boundary, a bare same-uid
@@ -40,7 +54,9 @@
 //! Proof command, from the repository root on a capable host (deterministic:
 //! null and oracle built-ins, `/usr/bin/sleep`, and scripted agents from this
 //! test executable; no provider, no paid call; every isolated trial carries a
-//! deadline of at most 30 s):
+//! deadline of at most 30 s and every child a 90 s bound; the dispatcher runs
+//! it under a hard 20-minute limit, which is the acceptance gate of the pull
+//! request):
 //!
 //!   cargo build --locked --bin swarmail
 //!   cd evals && SWARMAIL_BIN="$PWD/../target/debug/swarmail" \
@@ -120,7 +136,7 @@ fn isolated_preconditions_refuse_through_the_real_cli() {
         if !has_bin {
             command.env_remove(swarmail_evals::runner::SWARMAIL_BIN_ENV);
         }
-        let out = command
+        command
             .args([
                 "trial",
                 "--task",
@@ -131,9 +147,8 @@ fn isolated_preconditions_refuse_through_the_real_cli() {
             ])
             .args(&extra)
             .arg("--")
-            .args(&agent)
-            .output()
-            .unwrap();
+            .args(&agent);
+        let out = isolated_output(command);
         let row = one_row(&out);
         assert_eq!(row.outcome, Outcome::HarnessError, "{extra:?}");
         assert_eq!(out.status.code(), Some(2), "{extra:?}");
@@ -197,7 +212,8 @@ fn an_unexposed_external_agent_is_refused_and_the_order_is_the_documented_one() 
         ),
     ];
     for (extra, agent, reason) in cases {
-        let out = cli()
+        let mut command = cli();
+        command
             .args([
                 "trial",
                 "--isolated",
@@ -208,9 +224,8 @@ fn an_unexposed_external_agent_is_refused_and_the_order_is_the_documented_one() 
             ])
             .args(&extra)
             .arg("--")
-            .args(&agent)
-            .output()
-            .unwrap();
+            .args(&agent);
+        let out = isolated_output(command);
         let row = one_row(&out);
         assert_eq!(row.outcome, Outcome::HarnessError, "{extra:?} {agent:?}");
         assert_eq!(out.status.code(), Some(2), "{extra:?} {agent:?}");
@@ -230,12 +245,14 @@ fn an_exposed_external_agent_passes_the_precondition_and_reaches_the_boundary() 
     // Where the boundary exists this would launch the agent for real, and the
     // live suite covers that; here the interest is the refusal by name.
     let Some(reason) = boundary_unavailable() else {
+        eprintln!("SKIP trial-isolation: boundary available");
         return;
     };
     let _scope = trial_scope();
     let dir = tempdir();
     let (sentinel, script) = sentinel_script(dir.path());
-    let out = cli()
+    let mut command = cli();
+    command
         .args([
             "trial",
             "--isolated",
@@ -247,9 +264,8 @@ fn an_exposed_external_agent_passes_the_precondition_and_reaches_the_boundary() 
         .arg("--isolated-expose")
         .arg(&script)
         .arg("--")
-        .arg(&script)
-        .output()
-        .unwrap();
+        .arg(&script);
+    let out = isolated_output(command);
     let row = one_row(&out);
     assert_eq!(row.outcome, Outcome::HarnessError);
     assert_eq!(out.status.code(), Some(2));
@@ -268,10 +284,7 @@ fn an_exposed_external_agent_passes_the_precondition_and_reaches_the_boundary() 
 fn macos_refuses_by_name_through_the_real_cli() {
     // bwrap is Linux-only: the whole of what this platform proves.
     let _scope = trial_scope();
-    let out = cli()
-        .args(["trial", "--isolated", "--task", "signup", "--agent", "null"])
-        .output()
-        .unwrap();
+    let out = null_probe();
     let row = one_row(&out);
     assert_eq!(row.outcome, Outcome::HarnessError);
     assert!(row.agent_exits.is_empty());
@@ -306,6 +319,7 @@ fn concurrency_stays_off_without_the_flag_too() {
 #[test]
 fn an_unavailable_boundary_refuses_by_name_and_never_falls_back() {
     let Some(reason) = boundary_unavailable() else {
+        eprintln!("SKIP trial-isolation: boundary available");
         return;
     };
     let steps = ["platform", "bwrap_absent", "bwrap_version", "bwrap_probe"];
@@ -317,7 +331,8 @@ fn an_unavailable_boundary_refuses_by_name_and_never_falls_back() {
     let _scope = trial_scope();
     let dir = tempdir();
     let (sentinel, script) = sentinel_script(dir.path());
-    let out = cli()
+    let mut command = cli();
+    command
         .args([
             "trial",
             "--isolated",
@@ -329,14 +344,99 @@ fn an_unavailable_boundary_refuses_by_name_and_never_falls_back() {
         .arg("--isolated-expose")
         .arg(&script)
         .arg("--")
-        .arg(&script)
-        .output()
-        .unwrap();
+        .arg(&script);
+    let out = isolated_output(command);
     let row = one_row(&out);
     assert_eq!(row.outcome, Outcome::HarnessError);
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains(&reason), "{}", stderr(&out));
     assert!(!sentinel.exists(), "the agent ran without the boundary");
+}
+
+/// AC-S10: the controller hands over the runner's row and exits. A real
+/// isolated null-agent trial through the real CLI, held to the 90 s bound by
+/// [`bounded`], so it passes only by the controller's actual exit. The null
+/// agent does nothing, so the trial fails honestly: the runner's own row, a
+/// `fail` outcome and exit code 1 (never the controller's harness-error row,
+/// which is exit 2) are what crossed the boundary. Where the boundary cannot
+/// be built it prints the named SKIP line and returns; the ignored proofs
+/// print it and fail instead. On the controller that lost the row (the live
+/// proof of 2026-11-01) this is red: `isolated_trial_no_row`, then a process
+/// that never exits.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_isolated_null_trial_hands_over_its_row_and_exits() {
+    let _scope = trial_scope();
+    let out = null_probe();
+    if let Some(step) = refused_step(&out) {
+        eprintln!("SKIP trial-isolation: {step}");
+        return;
+    }
+    let row = one_row(&out);
+    assert_ne!(
+        row.outcome,
+        Outcome::HarnessError,
+        "the controller did not hand over the runner's row: {}",
+        stderr(&out)
+    );
+    assert!(
+        !stderr(&out).contains("isolated_trial_no_row"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(row.outcome, Outcome::Fail, "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert_eq!(row.concurrency, 1);
+}
+
+/// AC-S12: the bounded runner fails by name instead of waiting. A child that
+/// would run a minute is held to 200 ms: the wait panics with the bound in the
+/// message, and the child is gone, not left running behind the failure.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_child_that_outlives_its_bound_fails_by_name_and_is_killed() {
+    let dir = tempdir();
+    let pid_file = dir.path().join("pid");
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .arg("-c")
+        .arg(format!(
+            "echo $$ > '{}'; echo partial-row; exec /bin/sleep 60",
+            pid_file.display()
+        ))
+        .stdin(Stdio::null());
+    let guard = bounded(command, std::time::Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        guard.wait_with_output();
+    }));
+    let message = match caught {
+        Ok(()) => panic!("a child that outlived its bound was waited for"),
+        Err(payload) => payload
+            .downcast_ref::<String>()
+            .cloned()
+            .expect("the failure carries a message"),
+    };
+    assert!(
+        message.contains("controller outlived its row after 200ms"),
+        "{message}"
+    );
+    assert!(message.contains("partial-row"), "{message}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(30));
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: signal 0 only probes for existence; the child was reaped.
+    assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the child survived");
+    // A child that exits in time is not disturbed.
+    let mut command = std::process::Command::new("/bin/sh");
+    command.args(["-c", "echo done; echo oops >&2; exit 3"]);
+    let out = bounded(command, std::time::Duration::from_secs(30)).wait_with_output();
+    assert_eq!(out.status.code(), Some(3));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "oops\n");
 }
 
 // ---- AC-S1: the leak, observed on every host -------------------------------
@@ -360,9 +460,7 @@ fn the_leak_is_live_a_same_uid_helper_makes_an_idle_victim_pass() {
         &[(MARKER_ENV, ready.to_str().unwrap())],
     );
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let victim = ChildGuard {
-        child: Some(command.spawn().unwrap()),
-    };
+    let victim = ChildGuard::new(command.spawn().unwrap());
     eventually("the idle victim to be ready", || ready.exists());
 
     // The helper is a separate process of the same uid with no EVAL_*
@@ -413,9 +511,7 @@ fn the_hostile_probe_reports_a_leak_where_there_is_one_and_is_never_blind() {
         &[(MARKER_ENV, ready.to_str().unwrap())],
     );
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let victim = ChildGuard {
-        child: Some(command.spawn().unwrap()),
-    };
+    let victim = ChildGuard::new(command.spawn().unwrap());
     eventually("the idle victim to be ready", || ready.exists());
     let (agent, vars) = find_victim_agent(victim.pid()).expect("the victim agent is visible");
 
@@ -689,8 +785,8 @@ fn a_fresh_home_and_the_trials_own_services_work_through_the_boundary() {
     // Two isolated trials in a row: HOME is fresh and writable each time,
     // so the first one's sentinel is absent from the second.
     for _ in 0..2 {
-        let (mut command, _owner) = isolated_helper("home_probe");
-        let out = command.output().unwrap();
+        let (command, _owner) = isolated_helper("home_probe");
+        let out = isolated_output(command);
         let row = one_row(&out);
         assert_eq!(agent_codes(&row), [Some(0)], "{}", stderr(&out));
     }
@@ -820,7 +916,7 @@ fn the_boundary_looks_as_designed_from_inside() {
             }
         });
     }
-    let out = command.output().unwrap();
+    let out = isolated_output(command);
     let row = one_row(&out);
     let code = agent_codes(&row).first().copied().flatten();
     eprintln!("observer: {} (exit {code:?})", observer_check(code));
@@ -862,12 +958,8 @@ fn idle_trial() -> (ChildGuard, ProcessIdentity, tempfile::TempDir) {
             "30000",
             "--",
         ])
-        .arg(&script)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let trial = ChildGuard {
-        child: Some(command.spawn().unwrap()),
-    };
+        .arg(&script);
+    let trial = bounded(command, ISOLATED_CLI_BOUND);
     let agent = wait_for_sleeping_agent(trial.pid());
     (trial, agent, dir)
 }
@@ -1040,8 +1132,8 @@ fn a_hostile_same_uid_agent_in_trial_b_cannot_reach_trial_a() {
     // void (90) and the run is repeated — twice at most, then it fails by name.
     let mut voids = 0;
     let (code, out) = loop {
-        let (mut command, _owner) = isolated_helper_with("cross_trial_probe", &victim_args);
-        let out = command.output().expect("trial B runs");
+        let (command, _owner) = isolated_helper_with("cross_trial_probe", &victim_args);
+        let out = isolated_output(command);
         let row = one_row(&out);
         assert_eq!(
             row.concurrency,

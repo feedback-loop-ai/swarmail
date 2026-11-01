@@ -2,7 +2,7 @@
 //! activated — built by invoking bubblewrap (revision 2026-11-01).
 //!
 //! `trial --isolated` (a hidden flag) validates its request, then hands it to
-//! [`launch`]: the *controller*, which stays in the host namespaces, checks
+//! [`run`] (which drives [`launch`]): the *controller*, which stays in the host namespaces, checks
 //! that `/usr/bin/bwrap` exists and is at least [`BWRAP_MIN`], proves the
 //! boundary with one bounded run of the exact production argv, takes the host
 //! admission (accepted 0076) and supervises one `bwrap` process whose
@@ -34,6 +34,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -57,8 +59,47 @@ pub const VERSION_BOUND: Duration = Duration::from_secs(5);
 /// How long the preflight probe (the production argv with `/usr/bin/true`)
 /// may take.
 pub const PROBE_BOUND: Duration = Duration::from_secs(10);
-/// How long the controller waits for its two pipe copies after bwrap exits.
+/// How long the controller waits for its two pipe copies after bwrap exits,
+/// for bwrap to be reaped after it is killed, and for its own runtime to shut
+/// down.
 const DRAIN_BOUND: Duration = Duration::from_secs(5);
+
+/// The grace, in milliseconds, past a trial's deadline before its process
+/// is asked to stop. One number for both callers: the matrix's per-trial
+/// envelope (`run_child_assigned`) and the isolated controller's bound on
+/// bwrap's own exit ([`Bounds::for_trial`]). Changing it changes both.
+pub const TRIAL_GRACE_MS: u64 = 300_000;
+
+/// The controller's own waits. Every wait it makes is bounded: the version
+/// and probe by [`VERSION_BOUND`] and [`PROBE_BOUND`], bwrap's exit by
+/// `envelope`, and the pipe copies, the reap after a kill and the runtime's
+/// shutdown by `drain`. A parameter beside the bwrap path so a stand-in test
+/// proves each bound in milliseconds; production fills it with
+/// [`Bounds::for_trial`].
+#[derive(Debug, Clone, Copy)]
+pub struct Bounds {
+    /// How long bwrap may run before it is killed.
+    pub envelope: Duration,
+    /// How long each of the drains, the reap and the shutdown may take.
+    pub drain: Duration,
+}
+
+impl Bounds {
+    /// The production bounds for a trial whose deadline is `deadline_ms`:
+    /// the deadline plus [`TRIAL_GRACE_MS`], and [`DRAIN_BOUND`].
+    pub fn for_trial(deadline_ms: u64) -> Self {
+        Self {
+            envelope: Duration::from_millis(deadline_ms.saturating_add(TRIAL_GRACE_MS)),
+            drain: DRAIN_BOUND,
+        }
+    }
+}
+
+/// The one line the controller prints on stderr when the envelope expired
+/// and bwrap was killed. Fixed text: no bwrap output and no number a row
+/// could be confused with.
+pub const ENVELOPE_EXPIRED: &str =
+    "swarmail-evals: isolated trial envelope expired; bwrap killed\n";
 
 /// Read-only system trees every isolated trial may see. A tree that is a
 /// symlink on the host (merged-usr `/bin`, `/lib`) is recreated as the same
@@ -617,19 +658,23 @@ fn write_through(sink: Sink, bytes: &[u8]) {
     }
 }
 
-/// Copy `from` to the controller's `sink` byte for byte and return how many
-/// bytes passed. A failing sink never stops the drain: the sandbox must not
-/// block on a pipe.
-async fn pump(mut from: impl AsyncRead + Unpin, sink: Sink) -> u64 {
+/// Copy `from` to the controller's `sink` byte for byte, adding every read to
+/// `seen` the moment it arrives. A failing sink never stops the drain: the
+/// sandbox must not block on a pipe.
+///
+/// The write happens on the thread that drives this future, which is the
+/// controller's main thread (see [`run`]): no other thread ever has to take
+/// the process's standard-stream lock on its behalf, so a lock the caller
+/// holds can never park the copy. The count is the read side's, so a drain
+/// that expires never turns a delivered row into a missing one.
+async fn pump(mut from: impl AsyncRead + Unpin, sink: Sink, seen: Arc<AtomicU64>) {
     let mut buffer = [0u8; 8192];
-    let mut total = 0u64;
     loop {
         match from.read(&mut buffer).await {
-            Ok(0) | Err(_) => return total,
+            Ok(0) | Err(_) => return,
             Ok(n) => {
-                total += n as u64;
-                let chunk = buffer[..n].to_vec();
-                let _ = tokio::task::spawn_blocking(move || write_through(sink, &chunk)).await;
+                seen.fetch_add(n as u64, Ordering::Relaxed);
+                write_through(sink, &buffer[..n]);
             }
         }
     }
@@ -648,7 +693,19 @@ async fn pump(mut from: impl AsyncRead + Unpin, sink: Sink) -> u64 {
 /// init it receives the signal only once it has installed that handler, and
 /// an earlier one is dropped, so that trial ends at its deadline); with no
 /// runner yet, bwrap is killed and the interrupt is reported by name.
-async fn supervise(bwrap: &Path, request: &Request, inner: &[OsString]) -> Launched {
+///
+/// Every wait is bounded by `bounds`. If bwrap outlives `bounds.envelope` it
+/// is killed (`--die-with-parent` empties the namespace), reaped within
+/// `bounds.drain`, and [`ENVELOPE_EXPIRED`] goes to stderr; the verdict is
+/// then the usual one: `Exited(2)` beside whatever row reached stdout, or
+/// `NoRow`. The copies are judged by the bytes the read side counted, not by
+/// whether a drain finished in time.
+async fn supervise(
+    bwrap: &Path,
+    request: &Request,
+    inner: &[OsString],
+    bounds: Bounds,
+) -> Launched {
     use tokio::signal::unix::{SignalKind, signal};
     let (Ok(mut term), Ok(mut int)) = (
         signal(SignalKind::terminate()),
@@ -666,14 +723,23 @@ async fn supervise(bwrap: &Path, request: &Request, inner: &[OsString]) -> Launc
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         return Launched::NoRow;
     };
-    let rows = tokio::spawn(pump(stdout, Sink::Stdout));
-    let diagnostics = tokio::spawn(pump(stderr, Sink::Stderr));
+    let seen = Arc::new(AtomicU64::new(0));
+    let rows = tokio::spawn(pump(stdout, Sink::Stdout, Arc::clone(&seen)));
+    let diagnostics = tokio::spawn(pump(stderr, Sink::Stderr, Arc::new(AtomicU64::new(0))));
 
+    let envelope = tokio::time::sleep(bounds.envelope);
+    tokio::pin!(envelope);
     let mut signalled = false;
     let mut abandoned = false;
     let status = loop {
         tokio::select! {
             status = child.wait() => break status,
+            () = &mut envelope => {
+                let _ = child.start_kill();
+                let reaped = tokio::time::timeout(bounds.drain, child.wait()).await;
+                write_through(Sink::Stderr, ENVELOPE_EXPIRED.as_bytes());
+                break reaped.unwrap_or_else(|_| Err(std::io::Error::other("bwrap was not reaped")));
+            }
             _ = term.recv(), if !signalled => {}
             _ = int.recv(), if !signalled => {}
         }
@@ -690,16 +756,15 @@ async fn supervise(bwrap: &Path, request: &Request, inner: &[OsString]) -> Launc
             }
         }
     };
-    let bytes = tokio::time::timeout(DRAIN_BOUND, rows)
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or(0);
-    let _ = tokio::time::timeout(DRAIN_BOUND, diagnostics).await;
+    let _ = tokio::time::timeout(bounds.drain, rows).await;
+    let _ = tokio::time::timeout(bounds.drain, diagnostics).await;
     if abandoned {
         return Launched::Interrupted;
     }
-    match (status.ok().and_then(|s| s.code()), bytes) {
+    match (
+        status.ok().and_then(|s| s.code()),
+        seen.load(Ordering::Relaxed),
+    ) {
         (_, 0) => Launched::NoRow,
         (Some(code), _) => Launched::Exited(code as u8),
         (None, _) => Launched::Exited(2),
@@ -715,20 +780,46 @@ async fn supervise(bwrap: &Path, request: &Request, inner: &[OsString]) -> Launc
 ///
 /// `bwrap` is a parameter so a test can aim the controller at a stand-in;
 /// production passes [`BWRAP`]. The future must be driven from the main
-/// thread (see [`supervise`]).
+/// thread (see [`supervise`]); production drives it through [`run`].
 pub async fn launch(
     request: &Request,
     inner: &[OsString],
     bwrap: &Path,
+    bounds: Bounds,
 ) -> Result<Launched, Refusal> {
     platform(cfg!(target_os = "linux"))?;
     present(bwrap)?;
     version_ok(bwrap).await?;
     probe(bwrap, request).await?;
     let admission = crate::admission::Admission::acquire().map_err(Refusal::Named)?;
-    let launched = supervise(bwrap, request, inner).await;
+    let launched = supervise(bwrap, request, inner, bounds).await;
     drop(admission);
     Ok(launched)
+}
+
+/// The one way production drives [`launch`], and the one the unit tests
+/// drive: a current-thread runtime on the calling thread, so the spawn, every
+/// pipe copy and every write to the controller's standard streams happen on
+/// that one thread, and a runtime that ends in at most `bounds.drain`.
+/// Nothing here spawns a blocking-pool thread, so no destructor can wait on
+/// one. The caller must hold no standard-stream guard across this call.
+///
+/// A runtime that cannot be built is a trial with no row.
+pub fn run(
+    request: &Request,
+    inner: &[OsString],
+    bwrap: &Path,
+    bounds: Bounds,
+) -> Result<Launched, Refusal> {
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return Ok(Launched::NoRow);
+    };
+    let launched = runtime.block_on(launch(request, inner, bwrap, bounds));
+    runtime.shutdown_timeout(bounds.drain);
+    launched
 }
 
 #[cfg(test)]
@@ -1393,9 +1484,13 @@ mod tests {
         /// [`run`], waiting out the same fork window where the launch is
         /// expected to be admitted.
         fn run_when_free(bwrap: &Path) -> Result<Launched, Refusal> {
+            run_when_free_bounded(bwrap, test_bounds())
+        }
+
+        fn run_when_free_bounded(bwrap: &Path, bounds: Bounds) -> Result<Launched, Refusal> {
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             loop {
-                let outcome = run(bwrap);
+                let outcome = run_bounded(bwrap, bounds);
                 if outcome != Err(Refusal::Named("concurrent_trials_refused"))
                     || std::time::Instant::now() >= deadline
                 {
@@ -1405,12 +1500,30 @@ mod tests {
             }
         }
 
+        /// Bounds long enough for a shell stand-in to finish and short enough
+        /// that a hang is a failure, not a wait.
+        fn test_bounds() -> Bounds {
+            Bounds {
+                envelope: Duration::from_secs(60),
+                drain: Duration::from_secs(5),
+            }
+        }
+
+        /// The production entry, with test bounds.
         fn run(bwrap: &Path) -> Result<Launched, Refusal> {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(launch(&request(), &inner(), bwrap))
+            run_bounded(bwrap, test_bounds())
+        }
+
+        fn run_bounded(bwrap: &Path, bounds: Bounds) -> Result<Launched, Refusal> {
+            super::super::run(&request(), &inner(), bwrap, bounds)
+        }
+
+        /// Millisecond bounds: the envelope and each drain expire in 200 ms.
+        fn short() -> Bounds {
+            Bounds {
+                envelope: Duration::from_millis(200),
+                drain: Duration::from_millis(200),
+            }
         }
 
         fn boundary(step: &'static str) -> Result<Launched, Refusal> {
@@ -1553,6 +1666,145 @@ mod tests {
             assert_eq!(run_when_free(&bwrap), Ok(Launched::Exited(2)));
         }
 
+        /// Whether a process is gone, or only a zombie nobody has reaped.
+        fn gone(pid: i32) -> bool {
+            // SAFETY: signal 0 only probes for existence.
+            let alive = unsafe { libc::kill(pid, 0) } == 0;
+            !alive
+                || std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .map_or(true, |s| s.contains(") Z "))
+        }
+
+        #[test]
+        fn a_row_then_a_hung_bwrap_is_killed_at_the_envelope_and_still_delivers_the_row() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            let pid_file = dir.path().join("bwrap-pid");
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "exit 0",
+                &format!(
+                    "echo $$ > '{}'; echo '{{\"schema_version\":2}}'; exec /bin/sleep 60",
+                    pid_file.display()
+                ),
+            );
+            let started = std::time::Instant::now();
+            assert_eq!(
+                run_when_free_bounded(&bwrap, short()),
+                Ok(Launched::Exited(2))
+            );
+            // Envelope plus reap, nowhere near the stand-in's 60 s.
+            assert!(started.elapsed() < Duration::from_secs(30));
+            let pid: i32 = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            assert!(gone(pid), "the stand-in bwrap survived the envelope");
+            drop(admitted());
+        }
+
+        #[test]
+        fn nothing_then_a_hung_bwrap_is_a_named_no_row_after_the_envelope() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "exit 0",
+                "exec /bin/sleep 60",
+            );
+            let started = std::time::Instant::now();
+            assert_eq!(run_when_free_bounded(&bwrap, short()), Ok(Launched::NoRow));
+            assert!(started.elapsed() < Duration::from_secs(30));
+            drop(admitted());
+        }
+
+        /// The child half of the envelope-line test.
+        #[test]
+        fn envelope_line_child() {
+            let (Some(bwrap), Some(result)) = (
+                std::env::var_os("ISOLATION_TEST_BWRAP"),
+                std::env::var_os("ISOLATION_TEST_RESULT"),
+            ) else {
+                return;
+            };
+            let outcome = run_bounded(Path::new(&bwrap), short());
+            std::fs::write(result, format!("{outcome:?}")).unwrap();
+        }
+
+        #[test]
+        fn an_expired_envelope_says_so_on_stderr_in_one_fixed_line() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            let result = dir.path().join("result");
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "exit 0",
+                "echo '{\"schema_version\":2}'; echo 'bwrap: secret-words' >&2; exec /bin/sleep 60",
+            );
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "isolation::tests::controller::envelope_line_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("ISOLATION_TEST_BWRAP", &bwrap)
+                .env("ISOLATION_TEST_RESULT", &result)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(std::fs::read_to_string(&result).unwrap(), "Ok(Exited(2))");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(stderr.matches(ENVELOPE_EXPIRED).count(), 1, "{stderr:?}");
+            assert_eq!(
+                ENVELOPE_EXPIRED,
+                "swarmail-evals: isolated trial envelope expired; bwrap killed\n"
+            );
+            // bwrap's own words still reach stderr, beside the fixed line.
+            assert!(stderr.contains("bwrap: secret-words\n"), "{stderr:?}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(stdout.contains("{\"schema_version\":2}\n"), "{stdout:?}");
+        }
+
+        #[test]
+        fn a_row_then_a_grandchild_holding_stdout_is_still_a_delivered_row() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            // The grandchild inherits stdout and stderr and outlives bwrap
+            // by far more than the drain; the row was read and counted.
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "exit 0",
+                "echo '{\"schema_version\":2}'; (/bin/sleep 5 &) ; exit 0",
+            );
+            let started = std::time::Instant::now();
+            assert_eq!(
+                run_when_free_bounded(&bwrap, short()),
+                Ok(Launched::Exited(0))
+            );
+            assert!(started.elapsed() < Duration::from_secs(4));
+            drop(admitted());
+        }
+
+        #[test]
+        fn the_production_bounds_are_the_deadline_plus_the_matrix_grace() {
+            assert_eq!(TRIAL_GRACE_MS, 300_000);
+            let bounds = Bounds::for_trial(60_000);
+            assert_eq!(bounds.envelope, Duration::from_millis(360_000));
+            assert_eq!(bounds.drain, DRAIN_BOUND);
+            // A deadline at the type's edge saturates instead of wrapping.
+            assert_eq!(
+                Bounds::for_trial(u64::MAX).envelope,
+                Duration::from_millis(u64::MAX)
+            );
+        }
+
         #[test]
         fn the_probe_and_the_run_use_exactly_the_production_argv_and_close_descriptors() {
             let _scope = crate::test_support::trial_scope();
@@ -1621,6 +1873,67 @@ mod tests {
             };
             let outcome = run(Path::new(&bwrap));
             std::fs::write(result, format!("{outcome:?}")).unwrap();
+        }
+
+        /// The child half of the lock test: holds the process's standard
+        /// output lock on its main thread, as `main` did across the whole
+        /// trial, and drives the controller. Only acts when the parent test
+        /// re-executes this binary for it.
+        #[test]
+        fn lock_holding_child() {
+            let (Some(bwrap), Some(result)) = (
+                std::env::var_os("ISOLATION_TEST_BWRAP"),
+                std::env::var_os("ISOLATION_TEST_RESULT"),
+            ) else {
+                return;
+            };
+            let held = std::io::stdout().lock();
+            let outcome = run(Path::new(&bwrap));
+            drop(held);
+            std::fs::write(result, format!("{outcome:?}")).unwrap();
+        }
+
+        #[test]
+        fn a_controller_holding_its_own_stdout_lock_still_delivers_the_row_and_exits() {
+            let _scope = crate::test_support::trial_scope();
+            let dir = tempfile::tempdir().unwrap();
+            let result = dir.path().join("result");
+            let bwrap = fake(
+                dir.path(),
+                "bubblewrap 0.11.1",
+                "exit 0",
+                "echo '{\"schema_version\":2}'; exit 1",
+            );
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "isolation::tests::controller::lock_holding_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("ISOLATION_TEST_BWRAP", &bwrap)
+                .env("ISOLATION_TEST_RESULT", &result)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            // A real deadline, not a sleep used as synchronization: the child
+            // either exits with its verdict or is killed and the test fails.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("the controller outlived its row while holding the stdout lock");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(status.success(), "the child failed: {status:?}");
+            assert_eq!(std::fs::read_to_string(&result).unwrap(), "Ok(Exited(1))");
         }
 
         #[test]
@@ -1695,11 +2008,12 @@ mod tests {
             agent: None,
             expose: Vec::new(),
         };
-        let outcome = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(launch(&request, &[], Path::new("/definitely/not/bwrap")));
+        let outcome = run(
+            &request,
+            &[],
+            Path::new("/definitely/not/bwrap"),
+            Bounds::for_trial(1),
+        );
         assert_eq!(
             outcome.unwrap_err().to_string(),
             "boundary_unavailable:platform"

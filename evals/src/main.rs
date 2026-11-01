@@ -446,18 +446,40 @@ fn isolate(
 /// Launch the isolated trial and turn how it ended into the process's exit
 /// code. A row that reached stdout was printed by the runner inside the
 /// sandbox and its exit code is mirrored; every other end is one named
-/// harness-error row here. `bwrap` is the parameter production fills with the
-/// constant path.
-async fn run_isolated(
+/// harness-error row here. `bwrap` and `bounds` are the parameters production
+/// fills with the constant path and [`isolated_bounds`]; the controller
+/// itself is [`isolation::run`], the one entry the unit tests share.
+///
+/// The caller holds no standard-stream guard across this call: the pumps
+/// write the sandbox's output to the process's own streams on this thread.
+fn run_isolated(
     req: &TrialRequest,
     request: &isolation::Request,
     inner: &[OsString],
     bwrap: &std::path::Path,
+    bounds: isolation::Bounds,
     out: &mut impl Write,
     err: &mut impl Write,
 ) -> u8 {
-    let launched = isolation::launch(request, inner, bwrap).await;
+    let launched = isolation::run(request, inner, bwrap, bounds);
     conclude(req, launched, out, err)
+}
+
+/// The controller's waits for this trial: its deadline (`--deadline-ms`, else
+/// the task's own, as the matrix resolves it) plus the matrix's shared grace.
+/// A request whose task does not resolve never reaches a runner that runs,
+/// so the default deadline is only a bound on a refusal.
+fn isolated_bounds(req: &TrialRequest) -> isolation::Bounds {
+    let deadline = req
+        .deadline_ms
+        .or_else(|| {
+            req.task
+                .as_deref()
+                .and_then(tasks::find)
+                .map(|task| task.deadline_ms)
+        })
+        .unwrap_or(tasks::DEFAULT_DEADLINE_MS);
+    isolation::Bounds::for_trial(deadline)
 }
 
 /// How a launch ended, as the process's exit code and, where no row came
@@ -503,35 +525,34 @@ fn main() -> ExitCode {
     // in this process.
     let mut prepared = None;
     if let Cmd::Trial { .. } = &cli.command {
-        match prepare_trial(
+        // Bound to a name first: temporaries in a `match` scrutinee live to
+        // the end of the `match`, and an isolated trial's whole controller
+        // runs inside it. No standard-stream guard may outlive its statement.
+        let outcome = prepare_trial(
             &cli.command,
             runner::selected_swarmail_bin(),
-            &mut std::io::stdout().lock(),
-            &mut std::io::stderr().lock(),
-        ) {
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
+        match outcome {
             Ok(Prepared::Run(req)) => prepared = Some(req),
             Ok(Prepared::Isolate {
                 req,
                 request,
                 inner,
             }) => {
-                let rt = match tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(rt) => rt,
-                    Err(_) => return fail("runtime unavailable"),
-                };
-                // The future is driven from this, the main, thread: bwrap's
+                // The controller builds its own current-thread runtime and
+                // drives it from this, the main, thread: bwrap's
                 // parent-death signal follows the thread that spawned it.
-                let code = rt.block_on(run_isolated(
+                let code = run_isolated(
                     &req,
                     &request,
                     &inner,
                     std::path::Path::new(isolation::BWRAP),
+                    isolated_bounds(&req),
                     &mut std::io::stdout(),
                     &mut std::io::stderr(),
-                ));
+                );
                 return ExitCode::from(code);
             }
             Err(code) => return ExitCode::from(code),
@@ -1546,7 +1567,7 @@ async fn run_child_assigned(
     let mut failure = None;
     let envelope = deadline_ms
         .unwrap_or_else(|| tasks::find(id).expect("validated task").deadline_ms)
-        .saturating_add(300000);
+        .saturating_add(isolation::TRIAL_GRACE_MS);
     let envelope_at = tokio::time::Instant::now() + Duration::from_millis(envelope);
     let mut envelope_requested = false;
     let expiry = matrix_envelope(envelope_at);
@@ -5035,7 +5056,17 @@ mod isolation_entry_tests {
         path
     }
 
-    /// Drive a whole isolated request against a stand-in bwrap.
+    /// Millisecond bounds for the stand-ins: long enough for a shell script to
+    /// finish, short enough that an expiry is a test, not a wait.
+    fn test_bounds() -> isolation::Bounds {
+        isolation::Bounds {
+            envelope: Duration::from_secs(60),
+            drain: Duration::from_secs(5),
+        }
+    }
+
+    /// Drive a whole isolated request against a stand-in bwrap, through the
+    /// production entry.
     fn through_the_controller(bwrap: &std::path::Path, sentinel: &std::path::Path) -> Ran {
         let (_dir, bin) = a_binary();
         let program = sentinel.parent().unwrap().join("agent");
@@ -5069,13 +5100,15 @@ mod isolation_entry_tests {
         else {
             panic!("not isolated")
         };
-        let code = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(run_isolated(
-                &req, &request, &inner, bwrap, &mut out, &mut err,
-            ));
+        let code = run_isolated(
+            &req,
+            &request,
+            &inner,
+            bwrap,
+            test_bounds(),
+            &mut out,
+            &mut err,
+        );
         Ran {
             result: Err(code),
             stdout: String::from_utf8(out).unwrap(),
@@ -5186,6 +5219,42 @@ mod isolation_entry_tests {
         assert_eq!(read("code"), "2");
         assert_eq!(row(&row_text).outcome, Outcome::HarnessError);
         assert!(!dir.path().join("agent-ran").exists());
+    }
+
+    #[test]
+    fn the_controllers_envelope_is_the_trial_deadline_plus_the_matrix_grace() {
+        let envelope = |task: Option<&str>, deadline_ms| {
+            isolated_bounds(&TrialRequest {
+                task: task.map(String::from),
+                deadline_ms,
+                ..Default::default()
+            })
+            .envelope
+        };
+        let grace = Duration::from_millis(isolation::TRIAL_GRACE_MS);
+        // An explicit deadline wins, as it does for the matrix's children.
+        assert_eq!(
+            envelope(Some("signup"), Some(20_000)),
+            Duration::from_secs(20) + grace
+        );
+        // Without one, the task's own.
+        let own = tasks::find("signup").unwrap().deadline_ms;
+        assert_eq!(
+            envelope(Some("signup"), None),
+            Duration::from_millis(own) + grace
+        );
+        // A task that does not resolve never gets a runner that runs; the
+        // default deadline only bounds the refusal.
+        for task in [None, Some("no-such-task")] {
+            assert_eq!(
+                envelope(task, None),
+                Duration::from_millis(tasks::DEFAULT_DEADLINE_MS) + grace
+            );
+        }
+        assert_eq!(
+            isolated_bounds(&TrialRequest::default()).drain,
+            Duration::from_secs(5)
+        );
     }
 
     #[test]

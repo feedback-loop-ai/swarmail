@@ -62,19 +62,106 @@ pub fn swarmail_bin() -> &'static Path {
     BIN.get_or_init(|| runner::resolve_swarmail_bin().expect("the swarmail binary resolves"))
 }
 
-/// The CLI with SWARMAIL_BIN pinned (no per-trial build).
+/// How long any isolated CLI child may live in a test. A trial's own bounds
+/// are inside it (5 s version, 10 s probe, a 30 s deadline, the runner's
+/// teardown, two 5 s drains) with slack; a child still running at the bound
+/// is a controller that outlived its row, and the test fails by name instead
+/// of hanging the suite behind it.
+pub const ISOLATED_CLI_BOUND: Duration = Duration::from_secs(90);
+
+/// Where a bounded child's output goes: files in a directory the guard owns,
+/// so no reader thread is needed and no pipe can fill.
+struct Captured {
+    _dir: tempfile::TempDir,
+    stdout: PathBuf,
+    stderr: PathBuf,
+    bound: Duration,
+    deadline: Instant,
+}
+
+/// A spawned child the test owns: killed when the guard drops. Built by
+/// [`bounded`] it also owns its output files and a deadline, and
+/// [`ChildGuard::wait_with_output`] passes only by the child's actual exit.
 pub struct ChildGuard {
     pub child: Option<std::process::Child>,
+    captured: Option<Captured>,
 }
 
 impl ChildGuard {
+    /// A guard over a child whose pipes the caller set up; waiting for it is
+    /// unbounded. Isolated CLI children never use this: they use [`bounded`].
+    pub fn new(child: std::process::Child) -> Self {
+        Self {
+            child: Some(child),
+            captured: None,
+        }
+    }
+
     pub fn pid(&self) -> i32 {
         self.child.as_ref().unwrap().id() as i32
     }
 
+    /// The child's output once it has exited. A bounded child that is still
+    /// running at its deadline is `SIGKILL`ed, reaped and reported with a
+    /// panic that names the bound and carries what it had written.
     pub fn wait_with_output(mut self) -> Output {
-        self.child.take().unwrap().wait_with_output().unwrap()
+        let mut child = self.child.take().unwrap();
+        let Some(captured) = self.captured.take() else {
+            return child.wait_with_output().unwrap();
+        };
+        let read = |path: &Path| std::fs::read(path).unwrap_or_default();
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return Output {
+                    status,
+                    stdout: read(&captured.stdout),
+                    stderr: read(&captured.stderr),
+                };
+            }
+            if Instant::now() >= captured.deadline {
+                // SAFETY: this guard owns the child process it spawned.
+                unsafe {
+                    libc::kill(child.id() as i32, libc::SIGKILL);
+                }
+                let _ = child.wait();
+                panic!(
+                    "controller outlived its row after {:?}\nstdout:\n{}\nstderr:\n{}",
+                    captured.bound,
+                    String::from_utf8_lossy(&read(&captured.stdout)),
+                    String::from_utf8_lossy(&read(&captured.stderr)),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
+}
+
+/// The one way a test spawns a child that may run a boundary: stdout and
+/// stderr go to files the guard owns, and the guard's wait gives up at
+/// `bound`. The caller sets stdin, arguments and environment; this sets only
+/// the output.
+pub fn bounded(mut command: Command, bound: Duration) -> ChildGuard {
+    let dir = tempdir();
+    let (stdout, stderr) = (dir.path().join("stdout"), dir.path().join("stderr"));
+    command
+        .stdout(std::fs::File::create(&stdout).expect("stdout file"))
+        .stderr(std::fs::File::create(&stderr).expect("stderr file"));
+    let child = command.spawn().expect("the child starts");
+    ChildGuard {
+        child: Some(child),
+        captured: Some(Captured {
+            _dir: dir,
+            stdout,
+            stderr,
+            bound,
+            deadline: Instant::now() + bound,
+        }),
+    }
+}
+
+/// [`bounded`] at [`ISOLATED_CLI_BOUND`], waited to its exit.
+pub fn isolated_output(command: Command) -> Output {
+    bounded(command, ISOLATED_CLI_BOUND).wait_with_output()
 }
 
 impl Drop for ChildGuard {
@@ -128,11 +215,14 @@ pub fn one_row(out: &Output) -> TrialResult {
 }
 
 pub fn trial(args: &[&str]) -> (TrialResult, Output) {
-    let out = cli()
-        .arg("trial")
-        .args(args)
-        .output()
-        .expect("the CLI runs");
+    let mut command = cli();
+    command.arg("trial").args(args);
+    // An isolated trial runs a boundary: it is held to the bound.
+    let out = if args.contains(&"--isolated") {
+        isolated_output(command)
+    } else {
+        command.output().expect("the CLI runs")
+    };
     (one_row(&out), out)
 }
 
@@ -1032,21 +1122,43 @@ fn home_probe() -> i32 {
 /// integration 5): nothing advisory is consulted, nothing is cached.
 pub fn boundary_unavailable() -> Option<String> {
     let _scope = trial_scope();
-    let out = cli()
-        .args(["trial", "--isolated", "--task", "signup", "--agent", "null"])
-        .output()
-        .expect("the CLI runs");
-    let text = stderr(&out);
+    let out = null_probe();
+    let step = refused_step(&out)?;
+    // A refusal is one harness-error row and no agent ever ran.
+    let row = one_row(&out);
+    assert_eq!(row.outcome, swarmail_evals::tasks::Outcome::HarnessError);
+    assert!(row.agent_exits.is_empty());
+    Some(step)
+}
+
+/// One real null-agent `trial --isolated`, held to [`ISOLATED_CLI_BOUND`].
+/// Its deadline is 30 s so the bound's arithmetic is true of it too. The
+/// caller holds the trial scope.
+pub fn null_probe() -> Output {
+    let mut command = cli();
+    command.args([
+        "trial",
+        "--isolated",
+        "--task",
+        "signup",
+        "--agent",
+        "null",
+        "--deadline-ms",
+        "30000",
+    ]);
+    isolated_output(command)
+}
+
+/// The `boundary_unavailable:<step>` name the controller printed, if it
+/// refused for the boundary.
+pub fn refused_step(out: &Output) -> Option<String> {
+    let text = stderr(out);
     let prefix = "boundary_unavailable:";
     let start = text.find(prefix)?;
     let step: String = text[start + prefix.len()..]
         .chars()
         .take_while(|c| c.is_ascii_lowercase() || *c == '_')
         .collect();
-    // A refusal is one harness-error row and no agent ever ran.
-    let row = one_row(&out);
-    assert_eq!(row.outcome, swarmail_evals::tasks::Outcome::HarnessError);
-    assert!(row.agent_exits.is_empty());
     Some(format!("{prefix}{step}"))
 }
 
@@ -1672,10 +1784,6 @@ pub fn launch_victim(
         .args(swarmail_evals::isolation::command(request, inner))
         .env_clear()
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .process_group(0);
-    ChildGuard {
-        child: Some(command.spawn().expect("bwrap starts")),
-    }
+    bounded(command, ISOLATED_CLI_BOUND)
 }
