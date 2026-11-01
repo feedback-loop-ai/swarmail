@@ -6,7 +6,9 @@
   carried onto main a3cff51 on 2026-10-31 for issue #221; revised
   2026-11-01 (the boundary is bubblewrap; main a4f552d merged in); revised
   again 2026-11-01 after the first review panel returned the run (accepted
-  0102, spec-defect addendum): see *After the first review* below.
+  0102, spec-defect addendum): see *After the first review* below; revised a
+  third time 2026-11-01 after the first live proof on the host failed in the
+  controller: see *After the live proof* below.
 - **Issue:** #221 (split from #199 by operator ruling, 2026-10-24), Epic #192.
 - **Design:** [spec](../../specs/trial-isolation/spec.md),
   [plan](../../specs/trial-isolation/plan.md),
@@ -194,6 +196,71 @@ ports (every listener in B's network namespace is B's), never scored.
 
 Nothing here accepts itself; 0055 and 0076 are unchanged; no dependency is
 added.
+
+### After the live proof — 2026-11-01
+
+The dispatcher ran the proof command on this host for the first time
+(Linux, `/usr/bin/bwrap` 0.11.1, `kernel.apparmor_restrict_unprivileged_userns=1`
+with the `bwrap-userns-restrict` profile). This dated subsection records
+what that run showed and what changes as a result; it governs over the
+paragraphs above where they differ, and the record stays proposed.
+
+**The boundary worked.** The probe passed, bwrap accepted the full argv with
+`--as-pid-1` beside `--die-with-parent`, and the runner started Swarmail
+and the fixture inside the namespace as its PID 1. The 0.11.1 floor is
+confirmed for the launch. The sentence above that the proof "has not yet
+run on any host" is superseded: it ran once and failed before any live
+criterion was reached.
+
+**The controller lost the row and never exited.** The runner wrote its
+complete result row to its stdout and exited; bwrap exited at once; the
+controller printed `isolated_trial_no_row` about ten seconds later and then
+slept forever (three threads on a futex, no children; 58 minutes in the
+proof, over three hours under the host's own gate). The cause is on the
+host side of the boundary, in the controller's own process, not in bwrap,
+the pipe, the descriptor sweep or `--new-session`: the controller held its
+process-wide standard-output and standard-error locks across the whole
+trial while copying the sandbox's output from another thread, which parked
+on those locks, and its runtime teardown then waited on that thread
+without limit. The spec's finding table (P1–P6) records the trace facts
+and the reading.
+
+**What changes.** The boundary's argv, refusal set, precondition order,
+external-agent rule and observer are unchanged. The controller now (a)
+copies the sandbox's output on the thread that drives it and holds no
+standard-stream lock across the trial; (b) bounds **every** wait it makes:
+the version and probe bounds it already had, an envelope on bwrap's own
+exit equal to the trial's deadline plus the matrix's existing 300 s grace
+(one shared constant; on expiry bwrap is killed, `--die-with-parent`
+empties the namespace, and the result is the existing
+`isolated_trial_no_row` or exit 2 beside the runner's row — no new row
+reason), bounded drains with the row counted as it is read, and a bounded
+runtime shutdown; (c) returns from its entry point once its row is written.
+The operator's direction of 2026-11-01 is the authority for (b), and it
+reverses the second revision's position that bwrap's wait needed no bound
+of its own. A proposed design is corrected toward that direction under
+accepted 0045 §8 as compatible repair; nothing is activated.
+
+**How it is held.** An always-on test runs a real isolated null trial
+through the CLI under a hard timeout and passes only by actual exit with
+the runner's own row; a seat-runnable test reproduces the lock deadlock in
+a re-executed child and is red on the old controller; stand-in bwrap tests
+prove the envelope and the read-side count in milliseconds. Every isolated
+child in the test suites is spawned through one bounded runner (90 s,
+output on files, `SIGKILL` and a named failure past the bound), so the
+suites finish in bounded time on a host where bwrap works as well as in a
+seat where it does not. Two rules, side by side: an always-on test that
+needs the boundary prints `SKIP trial-isolation: boundary_unavailable:<step>`
+and returns where it is unavailable; an ignored live proof prints the same
+line and fails. The live proof command is the acceptance gate of the pull
+request, run by the dispatcher on this host under a hard 20-minute limit;
+the spec no longer claims a duration it has not measured.
+
+**Still open.** AC-L1..L3 (the hostile proof, the observed topology, the
+lifetime chain) remain proven only by that command passing; provider egress
+remains the operator's question above; the CI boundary job remains the
+operator's follow-up. Nothing here accepts itself; 0055 and 0076 are
+unchanged; no dependency is added.
 
 ## Current integration — 2026-10-31, carried onto main a3cff51
 

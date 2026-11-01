@@ -1,36 +1,42 @@
 # Trial isolation implementation plan — the boundary is bubblewrap
 
-Implements [spec.md](spec.md) as revised 2026-11-01 after the review
-return; semantic activation is governed by proposed
+Implements [spec.md](spec.md) as revised 2026-11-01 for the third time,
+after the first live proof on the host failed in the controller; semantic
+activation is governed by proposed
 [0115](../../docs/decisions/0115-trial-isolation.md), its *Revision
-2026-11-01* section and the *After the first review* subsection. The
-controller, argv, refusal set, live-proof arrangement and documentation built
-at bdc504f stand; this revision changes one argv token, adds one precondition
-refusal, completes the void rule, gates the Linux-only tests, extends the
-in-boundary observer, and fixes the small drifts the panel named. Concurrency
-stays off; no row version changes; no production path reads a proof record.
-The earlier plans stay in git history; this file supersedes them.
+2026-11-01* section and the *After the first review* and *After the live
+proof* subsections. The boundary built at bdc504f and revised at f1a30a7
+(argv with `--as-pid-1`, refusal set, external-agent precondition, void
+rule, observer, Linux gating) stands untouched: the live run showed it
+works. This revision rebuilds the host side of it — how the controller
+drives bwrap, copies the row and exits — and the test side that holds it.
+Concurrency stays off; no row version changes; no production path reads a
+proof record. The earlier plans stay in git history; this file supersedes
+them.
 
 ## Technical context
 
 A standalone Rust 2024 workspace, `evals/`, outside the measured root crate
 and its coverage denominator (`evals/Cargo.toml`, decision 0055). Tokio
-subprocesses, an Axum fixture, reqwest and real SMTP/MCP. `evals` already
-depends on `libc =0.2.190`; the controller uses it for `close_range`, `kill`
-and `geteuid`, the observer for `statfs`, `fork`, `unshare` and `geteuid`.
-**No new dependency, workspace member or license entry.** bubblewrap is a
-host prerequisite executed as a separate process: never linked, vendored,
-downloaded or added to a lockfile.
+`=1.53.2` with `rt-multi-thread` (which carries `rt`, so a current-thread
+runtime needs no feature change — the unit tests already build one),
+`process`, `signal`, `time`, `io-util`; `libc =0.2.190` for `close_range`,
+`kill` and `geteuid`. **No new dependency, workspace member, feature or
+license entry.** bubblewrap is a host prerequisite executed as a separate
+process.
 
-What the seat observed on 2026-11-01: `/usr/bin/bwrap` is `bubblewrap
-0.11.1`; its `--help` lists `--as-pid-1` ("Do not install a reaper process
-with PID=1") beside `--die-with-parent` and `--new-session`;
-`kernel.yama.ptrace_scope` reads 1; the production argv fails here with
-`ENOSPC` (the seat is already inside a user namespace), exit 1, nothing on
-stdout. So the controller compiles and its pure parts run here; the probe
-refuses `bwrap_probe` here; the live path runs only on the host. The seat
-has no Apple toolchain, so `cargo clippy --target aarch64-apple-darwin` stops
-at `ring`'s build script: the macOS compile is CI-only evidence.
+What the host showed on 2026-11-01 (the dispatcher's strace, summarized in
+the task; seats cannot read the trace file): with `/usr/bin/bwrap` 0.11.1
+under `kernel.apparmor_restrict_unprivileged_userns=1` and the
+`bwrap-userns-restrict` profile, the probe passes, bwrap accepts the full
+argv, the runner is PID 1 of the namespace and starts Swarmail and the
+fixture inside; the runner writes a complete 2502-byte row to its fd 1 and
+exits 1; bwrap exits 1; the controller prints `isolated_trial_no_row` about
+10 s later and then sleeps on a futex forever with three threads and no
+children. What the seat shows: bwrap refuses `ENOSPC` (already inside a
+user namespace), so only the refusal paths and the stand-in tests run here.
+The seat has no Apple toolchain; the macOS compile is CI-only evidence, as
+before.
 
 There is no plan template in this checkout; the spec-kit sections (research,
 data model, contracts, quickstart) are inline. The design commit is exactly
@@ -39,143 +45,173 @@ documentation edits belong to later commits, not the chief's HEAD.
 
 ## Constitution check
 
-Preserve accepted 0001–0005 (the spec says how each survives the boundary),
-0055's app-state authority and real-subprocess path, 0071 trap precedence,
-0073 matrix cancellation, 0075 safe diagnostics and closed environments, and
-all of 0076. Accepted 0045 §8 separates compatible proof from contradictory
-activation: overlapping trials, a new row version and any egress change wait
-for operator acceptance of 0115. Root exact coverage stays 100% with zero
-missed and no `coverage(off)`; this work does not touch `src/`, so
-`git diff a4f552d --stat -- src/` must stay empty. Apply 0020: deterministic
-readiness, generated fixtures, real protocols, chaos at 0/100 only, no sleep
-as synchronization. Commit unsigned under 0056; no push, merge or
-publication. `.github/`, `scripts/`, `.brokkr/`, `deny.toml` and both
-lockfiles are untouched.
+Preserve accepted 0001–0005 (the spec says how each survives the boundary;
+nothing in this revision touches the sandbox or root `src/`), 0055's
+app-state authority and real-subprocess path, 0071 trap precedence, 0073
+matrix cancellation, 0075 safe diagnostics and finite categories (no new row
+reason; the envelope's stderr line is a fixed diagnostic, not a row field),
+and all of 0076 (admission is still held through reaping; the envelope's
+expiry is the one case where it is released after a bounded reap instead).
+Accepted 0045 §8: this is compatible repair of a proposed design, not
+activation. Root exact coverage stays 100% with zero missed and no
+`coverage(off)`; `git diff a4f552d --stat -- src/` must stay empty. Apply
+0020: every new test is a real deadline on a child, chaos at the poles (a
+stand-in that always hangs, one that always exits), no sleep as
+synchronization, per-test tempdirs. Commit unsigned under 0056; no push,
+merge or publication. `.github/`, `scripts/`, `.brokkr/`, `deny.toml` and
+both lockfiles are untouched.
 
 ## Research and decisions — each change and the finding it answers
 
-**R1 — `--as-pid-1`, and why not an init.** The finding: bwrap's default
-reaper is a same-uid, dumpable process inside the boundary, and the review
-believes it holds a host-`/proc` descriptor reachable through `/proc/1/fd`
-(a `PTRACE_MODE_READ` check Yama does not restrict) or `/proc/1/mem`. The
-seat cannot read bwrap's source or the cited commit, so the design does not
-argue the claim; it removes the process. With `--as-pid-1` bwrap execs the
-runner directly as PID 1; every other process inside is one the runner
-spawned behind the controller's close-on-exec sweep. The custom
-non-dumpable init the robustness position proposed is rejected: it is the
-hand-built PID-1 code the operator retired, it adds a hidden mode with
-signal forwarding, reaping and coverage obligations, and it would protect
-only the trial's own init from the trial's own agent, which 0115 ruling 6
-already calls within-trial. A `ptrace_scope` prerequisite is rejected
-because it does not guard the `/proc/<pid>/fd` route and would only narrow
-the hosts that qualify. What `--as-pid-1` changes and what is accepted: a
-`SIGTERM` that lands before the runner's handler is installed is dropped and
-the trial ends at its deadline; orphans re-parent to the runner and stay
-zombies until the namespace is emptied; `pick_runner` finds the runner as
-bwrap's direct child by the same walk. The observer gains the descriptor walk
-across every process inside and records `/proc/1/mem` openability and
-`ptrace_scope` without asserting, so the security claim is falsifiable on
-the host. If bwrap 0.11.1 rejects the option beside `--die-with-parent`, the
-probe refuses `bwrap_probe` with bwrap's own words; the next step is argued
-with that evidence, never a return to the default reaper.
+**P1 and P2 — the std locks, the blocking writers and the runtime drop.**
+`main.rs` builds the isolated arm's `match` on
+`prepare_trial(&cli.command, …, &mut std::io::stdout().lock(), &mut
+std::io::stderr().lock())`. Rust keeps a `match` scrutinee's temporaries
+alive to the end of the `match`, so the main thread holds both reentrant
+std locks across `rt.block_on(run_isolated(..))` and the `return` that
+drops `rt`. `isolation::pump` copies every chunk through
+`tokio::task::spawn_blocking(write_through)`, and `write_through` takes
+`std::io::stdout().lock()` on a blocking-pool thread, which is not the
+owner, so it parks on the futex with the row in hand. Neither pump reaches
+EOF; `supervise`'s two `DRAIN_BOUND` joins expire (5 s + 5 s: the 10 s gap);
+`bytes` is `0`; the verdict is `NoRow`, which `conclude` prints from the
+main thread through the reentrant lock it owns, which is why the
+harness-error row appears and the runner's row never does. Then `return`
+drops the multi-thread runtime **before** the scrutinee temporaries; the
+runtime's drop joins the blocking pool with no timeout; its two workers are
+parked on the locks `main` still holds. Main plus two writers, all in
+`futex_do_wait`, no children: the trace. The pipe, the `close_range(3..)`
+sweep and `--new-session` (`setsid` only) are correct and are not changed.
+The unit tests passed because their private `run` built a current-thread
+runtime and held no lock: production and test ran different code.
 
-**R2 — refuse external agents under `--isolated`.** 0115 promised that no
-paid driver can score a provider outage as `gave_up`; the runner accepted any
-external argv. The promise is now enforced by one precondition: a non-builtin
-agent program must be one of the `--isolated-expose` files, compared on
-canonical paths. The live proof's scripted agents (the test executable, the
-sentinel scripts of the stand-in tests) are already, or trivially, exposed; a
-real driver is not. A separate `--isolated-test-agent` flag was rejected as a
-second lever for the same purpose, and narrowing the sentence was rejected as
-an unenforced promise. The matrix never renders `--isolated`; one assertion
-in the existing matrix argv tests pins it.
+Three changes close it, all in the controller: (a) `prepare_trial`'s result
+is bound by `let` before it is matched, so the guards die at the end of
+that statement; (b) one production entry, `isolation::run(request, inner,
+bwrap, bounds) -> Result<Launched, Refusal>`, builds a
+`new_current_thread().enable_all()` runtime, `block_on(launch(..))`s and
+ends with `shutdown_timeout(bounds.drain)`; `main` calls it and passes the
+result to the unchanged `conclude`, and the unit tests' private `run` is
+deleted in favour of it; (c) `pump` calls `write_through` directly, so on
+the current-thread runtime every write happens on the main thread, which
+may take the std locks, and `spawn_blocking` and the per-chunk `to_vec`
+go. Robustness's owned-sink plumbing is rejected (the pumps are spawned
+tasks and would need `'static` sinks) and so is `std::process::exit` (a
+bounded shutdown leaves nothing to wait on, and AC-S10 must be able to
+catch a future blocking destructor rather than have it hidden). The rule
+that survives, for review: no `Stdout`/`Stderr` guard outlives its
+statement or is held across `.await` or `block_on`; AC-S11 is its proof.
 
-**R3 — macOS compile.** The pattern exists in the repo (`tests/report.rs`,
-`runner.rs`, `wrappers_launch/mod.rs`): gate the `/proc`-reading helpers and
-every test or signature that names them with `cfg(target_os = "linux")`.
-`#[ignore]` does not help; ignored tests still compile. The shared
-`tests/common/mod.rs` is included by nine binaries, so an ungated Linux
-symbol there breaks all of them. The `/etc` layout test becomes
-layout-aware instead of hard-coding `Tree::Directory`. The existing
-`cfg(not(target_os = "linux"))` platform tests stay as macOS's proof. The
-implementer audits by name because the seat cannot build for Darwin.
+**P6 — the envelope.** `supervise` awaited `child.wait()` with no bound.
+The operator's direction bounds every wait, so bwrap's wait gets an
+envelope equal to the matrix's: the trial's deadline (`--deadline-ms`, else
+`tasks::find(task).deadline_ms`) plus the 300 000 ms grace that
+`run_child_assigned` names, lifted into one `pub const` both use. The bound
+is a parameter (`Bounds { envelope, drain }`, filled by `main` from the
+request and by the stand-in tests in milliseconds) because a 300 s bound
+cannot be proven by a stand-in without sleeping. On expiry: `start_kill()`
+bwrap (`--die-with-parent` `SIGKILL`s PID 1; the kernel empties the
+namespace), `timeout(drain, child.wait())`, one fixed stderr line, then the
+existing outcome match. No new row reason. Robustness's floor/ceiling
+formula is rejected as a second number set; its process-group `SIGKILL` is
+rejected because `--new-session` puts the sandbox in its own session, so
+`kill(-pgid)` reaches only bwrap, which `start_kill` already does.
 
-**R4 — the LISTEN-port void.** Inside B's private network namespace every
-loopback listener is B's own, so "is A's port one of B's LISTEN ports" is
-the complete coincidence test; it replaces the same-role comparisons rather
-than extending them, and cannot go stale when B gains a listener.
+**P5 — the read-side count.** `pump` gets an `Arc<AtomicU64>` it adds to as
+bytes arrive; `supervise` reads it after the drains, so an expired drain
+never collapses a delivered row to `NoRow`. The stand-in case is a bwrap
+that writes a row and exits 0 while a backgrounded grandchild keeps its
+stdout open: `Exited(0)`, never `NoRow`.
 
-**R5, R7, R6, R11, R12 — evidence and wording.** The floor's evidence
-sentence says the proof is outstanding; nested user namespaces are an
-observation on this host; `/home` is restated to what the observer proves
-(and the observer now walks `/home`); `git diff` binds to the merged base
-a4f552d because the local `main` ref is stale; the oracle trial passes
-`--deadline-ms 30000` so the boundedness sentence is true.
+**P3 — the bounded test-side runner and the two suites.** The suite hung
+because `boundary_unavailable()` ran a real isolated null trial through an
+unbounded `.output()` while holding `trial_scope()`, and every scoped test
+queued behind it. One helper, `bounded(command, bound) -> ChildGuard`,
+spawns with stdout and stderr on files in the guard's tempdir (no reader
+thread, no pipe to fill), and `ChildGuard::wait_with_output` polls
+`try_wait` to the deadline, then `SIGKILL`s and panics by name with the
+child's output. Every isolated CLI child in `trial_isolation.rs` and in
+`common` goes through it, ignored or not. The bound is 90 s: 5 s version,
+10 s probe, a 30 s deadline, the runner's own teardown inside, two 5 s
+drains and slack. Always-on tests that need the boundary print the named
+SKIP and return where it is unavailable; the ignored proofs print it and
+fail (`require_boundary` is unchanged in meaning). Two tests whose subject
+is the absent boundary print `SKIP trial-isolation: boundary available` and
+return on a host where it works. The null probe trial carries
+`--deadline-ms 30000` so the arithmetic above is true of it too.
 
-**R8, R9, R13, R14 — small drifts.** `isolate()` resolves `SWARMAIL_BIN`
-and the agent program after the artifacts, wrapper, expose and external-agent
-checks, so the first-named refusal wins; the inner argv renders the agent
-program as the canonical path the bind uses; the `bwrap_probe` stand-in test
-asserts bwrap's stderr marker appears in the controller's stderr and not in
-the row; `admission::root_for`'s comment stops describing the deleted worker.
+**What proves it.** Three tests, from both positions. (1) AC-S10, always
+on, Linux: `an_isolated_null_trial_hands_over_its_row_and_exits` runs the
+real CLI through the bounded runner; on the host it requires the null
+agent's own row and exit, on the seat it skips by name; on the pre-fix
+controller it fails at 90 s instead of hanging. (2) AC-S11, the seat red
+test in `isolation.rs`: a re-executed child holds `stdout().lock()` on its
+main thread as `main` did and runs `isolation::run` against the row-and-
+exit-1 stand-in; the parent polls to a deadline and requires
+`Ok(Exited(1))`. Red against the pre-fix `pump`/runtime, which the
+implementer shows before fixing (the commit body or the implement notes).
+(3) AC-S2's bounds cases through `isolation::run` with millisecond bounds:
+row-then-hang (`Exited(2)`, the stand-in dead, the envelope line on
+stderr), nothing-then-hang (`NoRow`), row-then-grandchild-holds-stdout
+(`Exited(0)`).
 
-**R10 — the hostile-argv table.** Six tokens at every index of the agent
-argv, asserting the first `--` index equals the benign one and no token
-precedes it. No property-testing crate: that would need an operator ruling.
+**P4 — the sentences.** The spec's "under five minutes" and "has not yet
+run" are replaced by what ran, the per-child bound, the per-test worst case
+and the dispatcher's 20-minute limit; the floor's evidence sentence says
+the launch is confirmed on 0.11.1 and the live criteria are still open.
+`evals/README.md` and `evals/run-plan.md` follow.
 
-**Rejected without a finding behind it.** The controller-side supervisor
-bound (robustness §2.2): the runner's `--deadline-ms` and 0071 bound the
-trial, PID-1 exit empties the namespace, and `D` state defeats any userspace
-timeout; reconsidered at activation. The burst-at-the-cap trial inside the
-boundary: 0003 is the root suite's proof against the unchanged server.
-
-**Provider egress** is a feasibility checkpoint, not shipped code. 0115
-carries the question with the options and their cost; `--isolated` now
-refuses every external program that is not an exposed scripted agent.
+**Rejected, with the cost.** An argv change of any kind (the golden test
+stays byte-identical; the boundary is not implicated); a second row channel
+(`--json-status-fd`, an inherited fd, a socketpair, a row file: the pipe
+delivered every byte); a watchdog thread or `shutdown_background`; a new
+harness-error name for the expired envelope (an expired envelope is a
+missing row, and `isolated_trial_no_row` already says that); a `BWRAP`
+override to aim the real CLI at a fake (0115 forbids the lever); any
+dependency, feature or `src/` change; un-ignoring the live proofs; any
+`.github/` change (the CI boundary job stays the operator's follow-up).
 
 ## Project structure and ownership
 
 | File / surface | Planned responsibility |
 | --- | --- |
-| `evals/src/isolation.rs` | `argv`: insert `--as-pid-1` after `--new-session` (R1). Add `EXTERNAL_AGENT_UNSUPPORTED` and the membership check in `request` after `EXPOSE_INVALID` and before `SOURCE_INVALID` (R2); `request` therefore compares the canonical agent against the canonical expose list. Doc comments on `supervise`/`launch` say the runner is PID 1. Tests: golden argv updated; the hostile-token table (R10); `the_host_layout_is_read_from_the_host` asserts against `symlink_metadata` (R3); the precondition-order table gains the new name. |
-| `evals/src/main.rs` | `isolate()`: check `concurrency`, then the artifacts, wrapper, expose and external-agent facts, and only then resolve `SWARMAIL_BIN` and the agent program (R8), restructuring `isolation::request` into stages if that is the cleanest way to keep the order in one place. Canonicalize the agent program once and pass that path to both the bind and `inner_args` (R9). Gate `every_refused_boundary_is_a_named_harness_error_and_no_agent_runs` to Linux (R3). Stand-in tests expose their sentinel agent; the `bwrap_probe` case asserts the stderr marker (R13). The two-fault order cases and the exposed-external acceptance case (AC-S3). One assertion that matrix argv never contains `--isolated`. |
-| `evals/src/runner.rs` | Unchanged production logic. `BUILTINS` is the builtin set the precondition consults. |
-| `evals/src/admission.rs` | `root_for` doc comment (R14). |
-| `evals/tests/common/mod.rs` | Gate `find_victim_agent`, `boundary_observe`, `launch_victim` and the `ProcessIdentity` helpers to Linux (R3). `cross_trial_probe`: read `/proc/net/tcp{,6}` LISTEN ports before routes 14/15, void on membership, delete the same-role comparisons (R4). `boundary_observe`: `/proc/1/exe` equals the runner; the `/home` walk; the descriptor walk over every readable `/proc/<pid>/fd` for a directory containing a passed host PID (new code 50); record `/proc/1/mem` and `ptrace_scope` on stderr (R1, R6). |
-| `evals/tests/trial_isolation.rs` | Gate the live tests, their helpers and the always-on `/proc` tests to Linux (R3); keep the `cfg(not(linux))` platform test. Pass `--deadline-ms 30000` to the oracle trial (R12). Pass the runner path to the observer. Add the external-agent precondition and the two-fault order cases to the CLI precondition test (AC-S3). Add `--isolated-expose <test exe>` wherever the test executable is the agent. |
-| `evals/README.md`, `evals/run-plan.md` | Revise the dated #221 section: `--as-pid-1`, the external-agent refusal and "an isolated row is not an eval result", macOS compiles and proves the platform refusal only, the proof has not yet run, stock 24.04 apt bwrap is below the floor. |
-| `docs/decisions/0115-trial-isolation.md` | The proposed record with its *After the first review* subsection, committed by the chief with this design. Index row unchanged. |
+| `evals/src/isolation.rs` | `pub struct Bounds { envelope: Duration, drain: Duration }` with `Bounds::for_trial(deadline_ms)` = deadline + `TRIAL_GRACE_MS` and `DRAIN_BOUND`; `pub const TRIAL_GRACE_MS: u64 = 300_000` (the matrix's literal, now shared). `pub fn run(request, inner, bwrap, bounds) -> Result<Launched, Refusal>`: current-thread runtime, `block_on(launch)`, `shutdown_timeout(bounds.drain)`. `launch` takes `bounds`. `pump(from, sink, counter)` writes through directly and adds to the shared counter; `spawn_blocking` deleted. `supervise`: `tokio::time::timeout(bounds.envelope, child.wait())` inside the `select!` loop; on expiry `start_kill`, bounded reap, the fixed stderr line; drains bounded by `bounds.drain`; verdict from the read-side count. Doc comments say the pumps write on the driving thread and why. Tests: the private `run` helper deleted in favour of `isolation::run` with test bounds; the three bounds cases; AC-S11's re-exec red test and its child half; `interrupt_child` calls `isolation::run`. |
+| `evals/src/main.rs` | `let prepared = prepare_trial(..)` bound before the `match`; the isolated arm calls `isolation::run(&request, &inner, Path::new(isolation::BWRAP), isolation::Bounds::for_trial(deadline))` with the deadline resolved as the matrix resolves it, then `conclude`; no runtime is built in `main` for the isolated arm. `run_child_assigned` uses `isolation::TRIAL_GRACE_MS` in place of its literal. `through_the_controller` (the entry tests) calls the same production path with test bounds. |
+| `evals/src/runner.rs`, `tasks.rs` | Unchanged. `tasks::find(task).deadline_ms` is the fallback deadline the envelope uses, as in the matrix. |
+| `evals/tests/common/mod.rs` | `ChildGuard` gains its output files (a `TempDir` it owns, `stdout`/`stderr` paths) and a `deadline`; `pub fn bounded(command, bound) -> ChildGuard` is the one spawn path; `wait_with_output` polls `try_wait` to the deadline, builds the `Output` from the files, and on expiry `SIGKILL`s, reaps and panics `controller outlived its row after <bound>` with both files' contents; `Drop` unchanged in meaning. `pub const ISOLATED_CLI_BOUND: Duration = 90 s`. `boundary_unavailable()` runs the null probe with `--deadline-ms 30000` through `bounded`; `require_boundary` unchanged; `trial()` routes through `bounded` when its args carry `--isolated`; `launch_victim` through `bounded`. A test of `bounded` itself with a `sleep` child under 200 ms. |
+| `evals/tests/trial_isolation.rs` | Every `trial --isolated` child through `bounded` (`isolated_helper_with`, `idle_trial`, `idle_victim`, the hostile proof's trial B, the oracle trial). New always-on `an_isolated_null_trial_hands_over_its_row_and_exits` (AC-S10). The two absent-boundary tests print `SKIP trial-isolation: boundary available` and return where the boundary works; the always-on tests that need it print the named SKIP and return where it does not. Module doc: the two rules side by side, the 90 s bound, the 20-minute limit. |
+| `evals/README.md`, `evals/run-plan.md` | The dated #221 section: the proof ran once on 2026-11-01 and failed in the controller; the bounded-controller contract; the two-suite rule; the 90 s bound and the 20-minute acceptance limit. |
+| `docs/decisions/0115-trial-isolation.md` | The proposed record with its *After the live proof* subsection, committed by the chief with this design. Index row unchanged. |
 | `specs/trial-isolation/{spec,plan,tasks}.md` | This design. |
 
 No root `src/`, `Cargo`, gate-script, policy, `.github/` or review-routing
 change. Do not refactor the matrix-cancellation (0073) or child-environment
-(0075/0076 §4) blocks incidentally.
+(0075/0076 §4) blocks incidentally: `run_child_assigned` changes one literal
+to the shared constant and nothing else.
 
 ## Data model and contracts
 
 No wire contract changes. `TrialResult` stays schema 2 with required integer
 `concurrency: 1`. The `execution`/`boundary` object of 0115 §4 is not added.
 
-The boundary's internal contract:
+The boundary's internal contract, as revised:
 
-- **The refusal vocabulary** is closed: the seven precondition names (the six
-  of bdc504f plus `isolation_external_agent_unsupported`),
-  `boundary_unavailable:{platform,bwrap_absent,bwrap_version,bwrap_probe}`,
-  `isolated_trial_no_row`, `isolated_trial_interrupted`. A row never carries
-  bwrap's text.
-- **The version parser**: unchanged.
-- **The argv builder**: the fixed prefix now includes `--as-pid-1`; the
-  index of the first `--` is a function of the request only.
-- **The inner renderer**: the agent program is the canonical path the bind
-  uses.
-- **The launch judgement**: unchanged.
-- **The observer's exit codes**: 40 bad arguments, 41 uid, 42 `/proc`
-  (host PID visible, or PID 1 is not the runner), 43 interfaces, 44 loopback
-  unusable, 45 a host path present (including a stray entry under `/home`),
-  46 tmpfs, 47 environment, 48 stray descriptor in the observer, 49
-  capabilities, **50 a descriptor of some process inside reaches the host
-  `/proc`**, 100 nested user namespace granted (recorded; the test treats
-  100 as an observation, not a failure).
+- **The refusal vocabulary** is closed and unchanged: the seven precondition
+  names, `boundary_unavailable:{platform,bwrap_absent,bwrap_version,bwrap_probe}`,
+  `isolated_trial_no_row`, `isolated_trial_interrupted`. An expired envelope
+  is reported through those (`isolated_trial_no_row`, or exit 2 beside the
+  runner's own row) plus one fixed stderr line that carries no bwrap text
+  and no number the row could be confused with.
+- **The bounds**: `Bounds { envelope, drain }`; production `envelope` =
+  trial deadline + `TRIAL_GRACE_MS`, `drain` = `DRAIN_BOUND` (5 s); the
+  version and probe bounds stay the constants they are.
+- **The launch judgement**: unchanged in shape; the byte count is read-side.
+- **The entry**: `isolation::run` is the only way production drives
+  `launch`; `launch` stays `pub` for the test that needs the future itself
+  (none today) and for `launch_victim`'s argv builder, which does not call
+  it.
+- **The test runner**: `bounded(command, bound) -> ChildGuard`; output on
+  files; `wait_with_output` passes only by exit.
 
 ## Quickstart and validation
 
@@ -189,12 +225,14 @@ cargo clippy --locked --all-targets -- -D warnings
 SWARMAIL_BIN="$PWD/../target/debug/swarmail" cargo test --locked
 ```
 
-The last command runs AC-S1 through AC-S9 on Linux, with the live proofs
-shown as `ignored`. The live proof is the separate `--ignored` command in the
-spec, run by the dispatcher on this host after the run. Then, from the root,
-every command in `docs/house-rules.md` § Gates runs locked. CI owns the
-macOS compile, chart, Docker smoke, RustSec, tag-rate and port-80 proofs; no
-CI change is made here.
+The last command runs AC-S1 through AC-S12 on Linux, with the live proofs
+shown as `ignored`; on a host with a working bwrap it must now finish in
+bounded time with AC-S10 green, and in the seat with AC-S10 skipped by
+name. The live proof is the separate `--ignored` command in the spec, run
+by the dispatcher on this host after the run under a hard 20-minute limit.
+Then, from the root, every command in `docs/house-rules.md` § Gates runs
+locked. CI owns the macOS compile, chart, Docker smoke, RustSec, tag-rate
+and port-80 proofs; no CI change is made here.
 
 Design-stage validation is structural (`design-check.sh`): exactly one
 touched `specs/<slug>/`, its three files committed, non-empty and clean, an
@@ -206,19 +244,18 @@ proposed record the spec links. The chief's result is `drafted`.
 
 | Risk | Mitigation / remaining cost |
 | --- | --- |
-| bwrap 0.11.1 rejects `--as-pid-1` beside `--die-with-parent`, or an init without a reaper behaves differently from what the spec assumes (R1) | The probe runs the real argv before admission and refuses `bwrap_probe` with bwrap's own stderr; AC-L3 proves the lifetime chain and AC-L2's `/proc/1/exe` check proves the reaper is gone. A wrong assumption is red and named, never a silent pass; the fallback is argued with evidence, never the default reaper. |
-| An early `SIGTERM` to the controller is dropped because the runner, as init, has no handler yet | Accepted: the trial ends at its `--deadline-ms`, no false row. AC-L3's `SIGTERM` case sends after the agent exists. |
-| Zombies re-parented to the runner inside | Bounded by one trial: PID-1 exit empties the namespace before bwrap's `wait` returns. |
-| The review's escape route exists in some other form (a descriptor bwrap leaks into the process it execs) | AC-L2's descriptor walk over every process inside goes red (50) by name; `/proc/1/mem` and `ptrace_scope` are recorded for the operator. |
-| The exposed-external rule is used to run a real driver by hand | A deliberate `--isolated-expose <driver>`; the row is an honest failure, documented as not an eval result; the matrix never renders `--isolated` (unit assertion). |
-| The macOS compile is still broken after gating | CI-only evidence; the implementer audits every Linux-gated name for ungated uses and the `cfg(not(linux))` tests stay. If CI is red the fix is more gating, never a weakened criterion. |
-| A port coincidence still misreports | The LISTEN rule is complete inside a private netns by construction; the two-retry bound and named third failure stand. |
-| The floor `0.11.1` refuses Ubuntu 24.04's packaged 0.9.0, so a stock CI runner cannot run the boundary | Honest and named; lowering it is a one-line change that must carry a live proof on that version; the operator's CI follow-up chooses a pinned bubblewrap or a floor decision. |
-| `--isolated` falls back to unisolated under pressure | No fallback path exists; the bwrap path is a constant with no override; AC-S2 proves every refusal launches no agent. |
-| A test prints SKIP and shows `ok` | Boundary tests are `#[ignore]` and Linux-only; run explicitly they probe and panic on an unavailable boundary. |
-| Misattribution: an inner panic after a green probe reports `isolated_trial_no_row` | Still a harness error, exit 2, no score; the panic hook's stderr line is forwarded beside the row (now asserted by the R13 test). |
-| A same-uid agent forges its own trial's row through `/proc/1/fd/1` | Within-trial (0115 ruling 6), unchanged from the unisolated case; sibling pipes are in another PID namespace and invisible. |
-| The sandbox can still exhaust host CPU or memory | An access boundary, not a resource boundary; only null, oracle and exposed scripted agents run; sequential admission bounds it today. |
-| Coverage: `isolation.rs` is outside the root report | AC-S2/S3/S4 cover every pure part and the controller's refusal arms; the live proofs cover the rest; the launch's success arm runs only on the host, stated in the spec. |
-| Egress blocks any real driver | AC-L4 stays open and blocks activation; the external-agent refusal keeps drivers out; 0115 puts the one question to the operator. No paid trial is run. |
+| The diagnosis is read from the code and the trace summary, not reproduced by this seat | It explains every observation (the 10 s gap, three futex threads, no children, green unit tests). AC-S11 reproduces it deterministically without bwrap and must be shown red before the fix; AC-S10 and the dispatcher's live proof are the final word. If the proof still shows `isolated_trial_no_row`, the bounded runner fails it fast and by name, and the next step is evidence, not another layer. |
+| A consumer that stops reading the controller's stdout blocks the copy on the reactor thread | Accepted and named: the unisolated runner has the same contract, the row is under one pipe buffer, the test side reads to files. |
+| The envelope (deadline + 300 s) holds the host admission for minutes on a wedged runner | Accepted: one shared number with the matrix; the test side bounds its children at 90 s; the matrix never runs isolated. A `D`-state process defeats any userspace bound; the controller still exits, and the orphan is the kernel's. |
+| The 90 s child bound is too tight on a slow host | A false timeout is red by name with the child's output attached; the bound is raised with that evidence, never removed. |
+| The worst-case live proof (every child hangs) exceeds 20 minutes | Per test at most five children (7.5 min); the earlier tests have already failed by name when the dispatcher kills the run, so the failure is attributable. A healthy run is far shorter; its duration is recorded in tasks.md by the first passing run. |
+| `shutdown_timeout` abandons a thread that is still blocked | Only possible if a future change reintroduces a cross-thread lock; AC-S11 and AC-S10 turn that red. Returning from `main` still exits the process. |
+| The always-on handoff test runs a real isolated trial in CI | On hosted ubuntu bwrap is absent or below the floor, so it skips by name; where it is present and works, it is bounded at 90 s. |
+| `trial_scope()` serializes the always-on tests behind one slow isolated child | Bounded now at 90 s per child; the scope is released on panic as the guard drops. |
+| Two always-on tests change meaning on the host (they assert the absent boundary) | They print `SKIP trial-isolation: boundary available` and return; their subject is proven in the seat and on hosted CI, where bwrap refuses. |
+| The matrix's envelope literal is shared and someone changes it for one caller | One `pub const` with a doc comment naming both callers; the matrix's envelope tests still pass unchanged. |
+| bwrap 0.11.1 rejects `--as-pid-1` beside `--die-with-parent` (R1) | Closed by the live run: bwrap accepted the full argv and the runner was PID 1 inside. |
+| `--isolated` falls back to unisolated under pressure | No fallback path exists; the bwrap path and the bounds are parameters with no override; AC-S2 proves every refusal launches no agent. |
+| A test prints SKIP and shows `ok` in the live proof | The ignored proofs panic after the SKIP line (`require_boundary`); only the always-on tests return. |
+| Coverage: `isolation.rs` is outside the root report | AC-S2/S3/S4/S11 cover every pure part, the controller's refusal arms and the bounds; AC-S10 covers the delivered-row arm on any host with bwrap; the live proofs cover the rest. |
 | Gates or reviewers unavailable | Preserve failed receipts; no substitution or success claim. The run must not report complete while AC-L1..L4 and AC-O1 are open. |
