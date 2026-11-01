@@ -110,10 +110,19 @@ $E matrix --tasks signup,otp,stale-otp --agents agents.json --trials 5 > runs.js
 $E report --input runs.jsonl                        # or --input - for stdin
 ```
 
-Artifact roots refuse every symlinked path component. On macOS `/tmp` and the
-per-user TMPDIR (under `/var`) are symlinks into `/private`, so name an
-artifact root there by its real path, for example `/private/tmp/evals`; the
-harness's own private runtime directories already live under `/private/tmp`.
+An artifact or output root (`--artifacts-dir`, `check --artifacts-dir` and
+`--matrix`, `baseline --output`) may be named through symlinked *ancestor*
+components only when each such link, the directory holding it and the
+directory it resolves to are owned by root and cannot be written by group or
+other (a root-owned sticky directory such as `/private/tmp` qualifies). On
+macOS that admits `/tmp`, the per-user TMPDIR under `/var` and `/etc`, so
+`--artifacts-dir /tmp/evals` works. The harness resolves the name once, to its
+real path, and uses only that path afterwards. The root itself and everything
+under it still refuse every symlink, `..` components refuse, and a symlinked
+ancestor owned by anyone else, or writable by group or other, refuses, because
+its owner could swap it between the check and the use. Name a per-user root
+that does not yet exist: a directory another local user created first in a
+shared directory is not rejected.
 
 `trial` exits 0 pass, 1 fail, 2 harness error. `matrix` runs the product
 sequentially, one row per requested slot with no retries, continues after

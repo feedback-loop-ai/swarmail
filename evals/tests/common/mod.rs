@@ -26,10 +26,12 @@ pub const BARRIER_DIR_ENV: &str = "EVAL_TEST_BARRIER_DIR";
 pub const BARRIER_COUNT_ENV: &str = "EVAL_TEST_BARRIER_COUNT";
 pub const LAUNCH_LOG_ENV: &str = "EVAL_TEST_LAUNCH_LOG";
 
-/// A fresh temporary directory under the symlink-free name of the system
-/// temporary directory. Artifact roots and private paths refuse every
-/// symlinked component, and macOS's per-user temporary directory lives
-/// under /var, a symlink to /private/var; on Linux the name is unchanged.
+/// A fresh temporary directory under the real path of the system temporary
+/// directory. Tests name real paths directly so they do not depend on the
+/// symlinked-ancestor rule they are not about (artifact roots admit only
+/// root-owned links; private paths still refuse every link), and macOS's
+/// per-user temporary directory lives under /var, a symlink to /private/var;
+/// on Linux the name is unchanged.
 pub fn tempdir() -> tempfile::TempDir {
     let base = std::fs::canonicalize(std::env::temp_dir()).expect("canonical temporary directory");
     tempfile::tempdir_in(base).expect("temporary directory")

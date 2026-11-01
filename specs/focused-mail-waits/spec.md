@@ -66,6 +66,14 @@ tip exposed 0094. Use 0094 provisionally, recheck concurrent allocations before
 implementation/delivery, and leave resolution to the operator. Do not replace or
 accept #155/0092 or reuse historical 0084 and reserved gaps.
 
+*Dated correction, 2026-11-01:* the #155 and #156 numbers above are superseded.
+#155's record is proposed
+[0108](../../docs/decisions/0108-compact-email-view.md) and #156's is proposed
+[0111](../../docs/decisions/0111-near-miss-timeouts.md); on `main`, 0092 and
+0093 are #163's official- and source-mail-comparison records, and the OPTIONS
+lineage's 0092-mcp-candidate-proof is 0104. See
+[0094's correction](../../docs/decisions/0094-focused-mail-waits.md#dated-correction--2026-11-01-decision-numbers).
+
 ## Panel rulings
 
 | Dispute | Ruling and cost |

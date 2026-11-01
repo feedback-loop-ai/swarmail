@@ -117,6 +117,134 @@ pub fn safe_root(root: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+/// Owner and permission bits of one directory entry, as the admission rule
+/// for a symlinked ancestor sees them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ownership {
+    pub(crate) uid: u32,
+    pub(crate) mode: u32,
+}
+impl Ownership {
+    fn of(m: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            uid: m.uid(),
+            mode: m.mode(),
+        }
+    }
+    /// A group or other write bit that a sticky bit does not neutralise: in a
+    /// root-owned sticky directory (`/private/tmp`) no other user can unlink
+    /// or rename an entry they do not own, which is what the write-bit test
+    /// stands for.
+    fn replaceable(self) -> bool {
+        self.mode & 0o022 != 0 && self.mode & 0o1000 == 0
+    }
+}
+/// Whether a symlinked ancestor may be followed: the link, the directory that
+/// holds it and the directory it resolves to must all be root's, and neither
+/// directory may let group or other replace entries. Mode reasons come first
+/// so an unprivileged test on a real filesystem reaches them.
+pub(crate) fn admit_ancestor(
+    link: Ownership,
+    holder: Ownership,
+    target: Ownership,
+) -> Result<(), &'static str> {
+    if holder.replaceable() {
+        return Err("symlinked ancestor holder writable by group or other");
+    }
+    if target.replaceable() {
+        return Err("symlinked ancestor target writable by group or other");
+    }
+    if link.uid != 0 {
+        return Err("symlinked ancestor not owned by root");
+    }
+    if holder.uid != 0 {
+        return Err("symlinked ancestor holder not owned by root");
+    }
+    if target.uid != 0 {
+        return Err("symlinked ancestor target not owned by root");
+    }
+    Ok(())
+}
+const MAX_LINK_EXPANSIONS: usize = 40;
+/// Resolve a supplied artifact or output root once, to its real path, without
+/// creating anything. A symlinked ancestor is followed only when
+/// `admit_ancestor` admits it (root-owned, not replaceable by group or other);
+/// the root's own leaf, a `..` component and any other link refuse. Callers
+/// bind the returned path and use only it afterwards; `ensure_root` and
+/// `safe_root` still refuse every link they meet below it.
+pub fn resolve_root(root: &Path) -> Result<PathBuf, String> {
+    resolve_with(root, admit_ancestor)
+}
+fn resolve_with(
+    root: &Path,
+    admit: impl Fn(Ownership, Ownership, Ownership) -> Result<(), &'static str>,
+) -> Result<PathBuf, String> {
+    use std::{collections::VecDeque, ffi::OsString};
+    fn names(p: &Path) -> Vec<OsString> {
+        p.components().map(|c| c.as_os_str().to_owned()).collect()
+    }
+    // A `..` anywhere in what was supplied refuses before any link is judged.
+    if root
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("parent path refused".into());
+    }
+    let mut queue: VecDeque<OsString> = names(root).into();
+    let mut real = PathBuf::new();
+    let mut expansions = 0;
+    while let Some(name) = queue.pop_front() {
+        if name == ".." {
+            return Err("parent path refused".into());
+        }
+        if name == "." && !real.as_os_str().is_empty() {
+            continue;
+        }
+        // An absolute name resets `real` to the root, as `push` does.
+        let next = real.join(&name);
+        match std::fs::symlink_metadata(&next) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => real = next,
+            Err(_) => return Err("root unavailable".into()),
+            Ok(m) if m.file_type().is_symlink() => {
+                if queue.is_empty() {
+                    return Err("symlink refused".into());
+                }
+                let holder_path = if real.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    real.as_path()
+                };
+                let holder = Ownership::of(
+                    &std::fs::symlink_metadata(holder_path).map_err(|_| "root unavailable")?,
+                );
+                if holder.replaceable() {
+                    return Err("symlinked ancestor holder writable by group or other".into());
+                }
+                let target = std::fs::metadata(&next)
+                    .map_err(|_| "symlinked ancestor target unavailable")?;
+                if !target.is_dir() {
+                    return Err("symlinked ancestor target not a directory".into());
+                }
+                admit(Ownership::of(&m), holder, Ownership::of(&target))?;
+                expansions += 1;
+                if expansions > MAX_LINK_EXPANSIONS {
+                    return Err("symlink loop refused".into());
+                }
+                let to = std::fs::read_link(&next)
+                    .map_err(|_| "symlinked ancestor target unavailable")?;
+                // The link is replaced by its target's components, each of
+                // which re-enters this walk and is checked by the same rule.
+                for n in names(&to).into_iter().rev() {
+                    queue.push_front(n);
+                }
+            }
+            Ok(m) if m.is_dir() => real = next,
+            Ok(_) => return Err("root component is not a regular directory".into()),
+        }
+    }
+    Ok(real)
+}
 pub fn read_file(root: &Path, name: &str, limit: usize) -> Result<Vec<u8>, String> {
     safe_root(root)?;
     if name.contains('/') || matches!(name, "." | "..") {
@@ -490,10 +618,16 @@ pub fn replay_exit(rows: &[ReplayRow]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// A temporary artifact root by its symlink-free name: roots refuse
-    /// every symlinked component, and macOS's temporary directory lives
-    /// under /var, a symlink to /private/var.
+    /// A temporary artifact root by its real path. These tests name real
+    /// paths directly so they do not depend on the symlinked-ancestor rule
+    /// they are not about (macOS's temporary directory lives under /var, a
+    /// symlink to /private/var); below the root every link still refuses.
+    /// It is also made 0700: `tempdir` follows the umask, and a link held in a
+    /// group-writable directory would refuse for the holder's mode before the
+    /// reason the test is about.
     fn artifact_root(dir: &tempfile::TempDir) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::canonicalize(dir.path()).unwrap()
     }
     #[test]
@@ -559,9 +693,316 @@ mod tests {
         );
         let link = dir.join("linked");
         std::os::unix::fs::symlink(&dir, &link).unwrap();
+        assert_eq!(
+            resolve_root(&link.join("must-not-create")).unwrap_err(),
+            "symlinked ancestor not owned by root"
+        );
         assert!(ensure_root(&link.join("must-not-create")).is_err());
         assert!(!dir.join("must-not-create").exists());
         assert!(read_file(&dir, "../metadata.json", SMALL_LIMIT).is_err());
+    }
+    fn own(uid: u32, mode: u32) -> Ownership {
+        Ownership { uid, mode }
+    }
+    #[test]
+    fn ancestor_admission_is_a_pure_rule_over_owner_and_mode() {
+        let dir = own(0, 0o40755);
+        let link = own(0, 0o120777);
+        // Both accepting arms: a plain root-owned target, and a root-owned
+        // sticky 1777 target such as macOS's /private/tmp.
+        assert_eq!(admit_ancestor(link, dir, dir), Ok(()));
+        assert_eq!(admit_ancestor(link, dir, own(0, 0o41777)), Ok(()));
+        for (link, holder, target, reason) in [
+            (
+                link,
+                own(0, 0o40775),
+                dir,
+                "symlinked ancestor holder writable by group or other",
+            ),
+            (
+                link,
+                own(0, 0o40757),
+                dir,
+                "symlinked ancestor holder writable by group or other",
+            ),
+            (
+                link,
+                dir,
+                own(0, 0o40777),
+                "symlinked ancestor target writable by group or other",
+            ),
+            (
+                link,
+                dir,
+                own(1000, 0o40775),
+                "symlinked ancestor target writable by group or other",
+            ),
+            (
+                own(1000, 0o120777),
+                dir,
+                dir,
+                "symlinked ancestor not owned by root",
+            ),
+            (
+                link,
+                own(1000, 0o40755),
+                dir,
+                "symlinked ancestor holder not owned by root",
+            ),
+            (
+                link,
+                dir,
+                own(1000, 0o40755),
+                "symlinked ancestor target not owned by root",
+            ),
+            // The sticky bit exempts only the write-bit test, never ownership.
+            (
+                link,
+                own(1000, 0o41777),
+                dir,
+                "symlinked ancestor holder not owned by root",
+            ),
+            (
+                link,
+                dir,
+                own(1000, 0o41777),
+                "symlinked ancestor target not owned by root",
+            ),
+        ] {
+            assert_eq!(admit_ancestor(link, holder, target), Err(reason));
+        }
+    }
+    #[test]
+    fn symlink_free_roots_resolve_to_themselves_and_create_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = artifact_root(&dir);
+        let absent = base.join("a").join("b");
+        let first = resolve_root(&absent).unwrap();
+        assert_eq!(first, absent);
+        assert_eq!(resolve_root(&absent).unwrap(), first);
+        assert_eq!(resolve_root(&base).unwrap(), base);
+        assert!(!base.join("a").exists(), "resolution creates nothing");
+        assert_eq!(
+            resolve_root(Path::new("relative/absent")).unwrap(),
+            Path::new("relative/absent")
+        );
+        assert_eq!(resolve_root(Path::new(".")).unwrap(), Path::new("."));
+        for refused in [
+            Path::new("../x").to_path_buf(),
+            base.join("..").join("x"),
+            base.join("a").join("..").join("x"),
+        ] {
+            assert_eq!(resolve_root(&refused).unwrap_err(), "parent path refused");
+        }
+        let file = base.join("file");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(
+            resolve_root(&file.join("child")).unwrap_err(),
+            "root component is not a regular directory"
+        );
+        assert!(!base.join("a").exists());
+    }
+    fn mkdir(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir(path).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    #[test]
+    fn symlinked_ancestors_resolve_only_when_root_owned_and_unswappable() {
+        use std::os::unix::fs::symlink;
+        let owner = tempfile::tempdir().unwrap();
+        let base = artifact_root(&owner);
+        let real = base.join("real");
+        mkdir(&real, 0o700);
+        // A same-uid link is never admitted: its owner could swap it.
+        let held = base.join("held");
+        symlink(&real, &held).unwrap();
+        for rest in [Path::new("out"), Path::new("out/deeper")] {
+            assert_eq!(
+                resolve_root(&held.join(rest)).unwrap_err(),
+                "symlinked ancestor not owned by root"
+            );
+        }
+        assert!(!real.join("out").exists(), "nothing under the target");
+        // A two-hop chain refuses at its first link.
+        let hop = base.join("hop");
+        symlink(&held, &hop).unwrap();
+        assert_eq!(
+            resolve_root(&hop.join("out")).unwrap_err(),
+            "symlinked ancestor not owned by root"
+        );
+        // A link held in a directory group or other can write to.
+        let shared = base.join("shared");
+        mkdir(&shared, 0o770);
+        symlink(&real, shared.join("link")).unwrap();
+        assert_eq!(
+            resolve_root(&shared.join("link").join("out")).unwrap_err(),
+            "symlinked ancestor holder writable by group or other"
+        );
+        // A link whose target directory group or other can write to.
+        let open_target = base.join("open-target");
+        mkdir(&open_target, 0o770);
+        symlink(&open_target, base.join("to-open")).unwrap();
+        assert_eq!(
+            resolve_root(&base.join("to-open").join("out")).unwrap_err(),
+            "symlinked ancestor target writable by group or other"
+        );
+        assert!(!open_target.join("out").exists());
+        // Dangling, and not a directory.
+        symlink(base.join("absent"), base.join("dangling")).unwrap();
+        assert_eq!(
+            resolve_root(&base.join("dangling").join("out")).unwrap_err(),
+            "symlinked ancestor target unavailable"
+        );
+        let file = base.join("file");
+        std::fs::write(&file, b"x").unwrap();
+        symlink(&file, base.join("to-file")).unwrap();
+        assert_eq!(
+            resolve_root(&base.join("to-file").join("out")).unwrap_err(),
+            "symlinked ancestor target not a directory"
+        );
+        // The root's own leaf is never a link, whoever owns it.
+        assert_eq!(resolve_root(&held).unwrap_err(), "symlink refused");
+        assert_eq!(
+            resolve_root(&base.join("held").join("..").join("x")).unwrap_err(),
+            "parent path refused"
+        );
+        assert!(!base.join("x").exists());
+        // Root-owned acceptance on this host, where it has such a link.
+        let unique = format!(
+            "swarmail-evals-probe-{}",
+            base.file_name().unwrap().to_string_lossy()
+        );
+        let candidate = ["/tmp", "/var", "/etc", "/bin", "/sbin", "/lib", "/lib64"]
+            .into_iter()
+            .map(Path::new)
+            .find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()));
+        let Some(link) = candidate else {
+            eprintln!(
+                "no root-owned symlinked ancestor exists on this host; acceptance \
+                 is proven by the predicate table and the macOS tests"
+            );
+            return;
+        };
+        let probe = link.join(&unique);
+        match resolve_root(&probe) {
+            Ok(real) => {
+                eprintln!("root-owned symlinked ancestor {link:?} accepted");
+                assert_eq!(real, std::fs::canonicalize(link).unwrap().join(&unique));
+            }
+            Err(reason) => {
+                eprintln!("symlinked ancestor {link:?} refused: {reason}");
+                assert!(reason.starts_with("symlinked ancestor "), "{reason}");
+            }
+        }
+        assert!(!probe.exists(), "resolution creates nothing");
+    }
+    #[test]
+    fn an_admitted_link_is_replaced_by_its_target_and_checked_again() {
+        use std::os::unix::fs::symlink;
+        let permissive = |_: Ownership, _: Ownership, _: Ownership| Ok(());
+        let owner = tempfile::tempdir().unwrap();
+        let base = artifact_root(&owner);
+        mkdir(&base.join("real"), 0o700);
+        // Relative targets resolve against the directory holding the link.
+        symlink("real", base.join("rel")).unwrap();
+        assert_eq!(
+            resolve_with(&base.join("rel").join("out"), permissive).unwrap(),
+            base.join("real").join("out")
+        );
+        // Absolute targets restart at the root.
+        symlink(base.join("real"), base.join("abs")).unwrap();
+        assert_eq!(
+            resolve_with(&base.join("abs").join("out"), permissive).unwrap(),
+            base.join("real").join("out")
+        );
+        // A link inside a target is judged by the same rule.
+        mkdir(&base.join("real").join("sub"), 0o700);
+        symlink("sub", base.join("real").join("inner")).unwrap();
+        symlink("real/inner", base.join("chain")).unwrap();
+        assert_eq!(
+            resolve_with(&base.join("chain").join("out"), permissive).unwrap(),
+            base.join("real").join("sub").join("out")
+        );
+        let strict = |l, h, t| admit_ancestor(l, h, t);
+        assert_eq!(
+            resolve_with(&base.join("chain").join("out"), strict).unwrap_err(),
+            "symlinked ancestor not owned by root"
+        );
+        // `..` inside a target refuses, and so does a leaf link.
+        symlink("real/../real", base.join("dots")).unwrap();
+        assert_eq!(
+            resolve_with(&base.join("dots").join("out"), permissive).unwrap_err(),
+            "parent path refused"
+        );
+        assert_eq!(
+            resolve_with(&base.join("rel"), permissive).unwrap_err(),
+            "symlink refused"
+        );
+        // Relative supplied paths resolve against the working directory.
+        let held = base.join("rel-held");
+        symlink("real", &held).unwrap();
+        assert_eq!(
+            resolve_with(Path::new("./nowhere/out"), permissive).unwrap(),
+            Path::new("./nowhere/out")
+        );
+        // The expansion bound: 40 links resolve, 41 refuse.
+        for (levels, ok) in [(40, true), (41, false)] {
+            let mut at = base.join(format!("deep-{levels}"));
+            mkdir(&at, 0o700);
+            let mut supplied = at.clone();
+            for i in 0..levels {
+                let next = at.join(format!("r{i}"));
+                mkdir(&next, 0o700);
+                symlink(format!("r{i}"), at.join(format!("l{i}"))).unwrap();
+                supplied.push(format!("l{i}"));
+                at = next;
+            }
+            supplied.push("out");
+            let r = resolve_with(&supplied, permissive);
+            if ok {
+                assert!(r.unwrap().ends_with("out"));
+            } else {
+                assert_eq!(r.unwrap_err(), "symlink loop refused");
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tmp_resolves_through_its_root_owned_link_and_retains_there() {
+        use std::os::unix::fs::MetadataExt;
+        let unique = format!("swarmail-evals-{}", generated_name());
+        let named = Path::new("/tmp").join(&unique);
+        let real = resolve_root(&named).unwrap();
+        assert_eq!(real, Path::new("/private/tmp").join(&unique));
+        let req = crate::runner::TrialRequest {
+            task: Some("signup".into()),
+            agent: Some("null".into()),
+            ..Default::default()
+        };
+        let id = "1".repeat(32);
+        let row = crate::runner::refused_row(&req, &id);
+        let result = retain_trial(&real, &row, None);
+        let seen = real.join(&id).join("metadata.json");
+        let through = named.join(&id).join("metadata.json");
+        let same = std::fs::metadata(&seen).and_then(|a| {
+            std::fs::metadata(&through).map(|b| (a.dev(), a.ino()) == (b.dev(), b.ino()))
+        });
+        let _ = std::fs::remove_dir_all(&real);
+        assert!(result.is_ok(), "retain under {real:?}: {result:?}");
+        assert!(
+            same.unwrap(),
+            "same file through both spellings of {real:?}"
+        );
+    }
+    #[cfg(target_os = "macos")]
+    fn generated_name() -> String {
+        let dir = tempfile::tempdir().unwrap();
+        dir.path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
     }
 }
 

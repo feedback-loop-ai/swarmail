@@ -81,7 +81,8 @@ ownership; no shorter competing parent kill timer is added.
 ## Admission, retention and statuses
 
 Execution exclusively creates the requested output leaf at 0700 under an
-existing non-symlink parent. Existing or partial outputs refuse unchanged.
+existing parent (symlinked ancestors only under the README's root-owned
+rule). Existing or partial outputs refuse unchanged.
 controls.jsonl and paid.jsonl are streamed as rows commit, at 0600. Keep the
 whole output tree, including incomplete bytes and absent completion markers.
 No automatic retry, overwrite, row filtering, resume, archive conversion or
@@ -144,6 +145,19 @@ reprioritization, sealing, live settings and decision acceptance. CI owns the
 house charter's network/chart/Docker/port-80/macOS root proofs; #201 owns macOS
 eval execution. #152/#153 PRs stay unmerged until the baseline exists;
 #154–#160 await reprioritization. No paid/networked agent is run by delivery.
+
+## Risk note for the baseline: the 60 s client tool timeout (2026-10-31)
+
+Observed in configuration, not reproduced. The Codex wrapper sets
+`mcp_servers.swarmail.tool_timeout_sec` to 60 and the dsh wrapper sets
+`toolCallTimeoutMs` to 60000 (`evals/src/wrappers.rs`); the server's maximum
+`timeout_ms` for the wait tools is also 60000 (`src/mcp.rs`). A wait issued
+at the maximum can therefore race the client's own timeout. When the operator's
+baseline publishes its failure taxonomy, read its `wait_timeout` rows against
+this first; the proportionate remedy is guidance or wrapper configuration, not
+a second delivery path. Recorded under proposed
+[0114](../docs/decisions/0114-mcp-resources-evaluation.md) (issue #158), which
+also records that the wait-tool versus subscription metric is NOT MEASURED.
 
 ## Trial isolation — prepared, not activated (#221, proposed 0115)
 

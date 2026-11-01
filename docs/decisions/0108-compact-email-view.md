@@ -77,3 +77,74 @@ rules that rendering a stored body for display is not extraction.
   empty domains are accepted rulings; a separate decision can open them.
 - *Requested key order.* Rejected: needs crate-wide `preserve_order` or a
   parallel serializer; the agent gains nothing.
+
+## Dated addendum — 2026-11-01: what #159 changed
+
+*A dated addendum, not a rewrite: the text above is unchanged and this record
+is still proposed. It states only what the code on `main` does after #159
+(PR #301, squash `19df8ad`; proposed [0110](0110-attachments-and-ics.md)).
+Line numbers are those of `main` at `a4f552d`.*
+
+**Unchanged.**
+
+- The compact item's members (§1), and each attachment entry's three members
+  `content_type`, `filename` and `size`: `AttachmentEntry`
+  (`src/api.rs:1127–1133`) and the `projected_email` attachment item schema
+  (`src/mcp.rs:1016–1037`). The fields #159 records beside them — `sha256`,
+  `stored`, `ics` — reach neither the compact view nor a projection; only
+  0110's two new tools serve them.
+- The 21-name `fields` table (§3, `src/api.rs:1226–1248`), the projection
+  (`src/api.rs:1278–1300`) and the four projecting reads (`PROJECTING_READS`,
+  `src/mcp.rs:501–506`). The two new tools take no `fields`.
+- The 250-entry presentation cap with an exact `attachments_total` (§6,
+  `src/api.rs:1118`), `null` for an unknown list and omission of a known-empty
+  one (`src/api.rs:1135–1139`).
+- REST changes only by `view=compact` (§4). `Email.attachments` is still
+  `#[serde(skip)]` (`src/model.rs:333–338`), so no full Email serialization
+  carries it, and no read parses `raw`.
+
+**No longer exactly true in §5.**
+
+1. *Which parts are listed.* §5 says "every part of the outer parser list, in
+   parser order". Ingest now lists every leaf part of the outer message that
+   is in the parser's attachment list **or** is calendar-shaped
+   (`text/calendar`, `application/ics`, or a filename ending `.ics`), never a
+   multipart container, in part order (`src/attachments.rs:86–94`,
+   `103–145`). A bare `text/calendar` alternative, which the parser does not
+   call an attachment, now appears in the compact `attachments`
+   (`src/api.rs:1386`). For the parts the parser lists, nothing moved:
+   `attachments_are_listed_at_ingest_in_parser_order` (`src/smtp.rs:2040`)
+   still asserts the same six entries, sizes included.
+2. *What is recorded.* `Email.attachments` is now `Option<AttachmentList>`
+   (`src/model.rs:183–193`, `338`): the exact candidate `total` and at most
+   the first 250 parts (`MAX_ATTACHMENTS`), each carrying `sha256`, `stored`,
+   `ics` and any retained bytes beside the three labels
+   (`src/model.rs:152–162`). Ingest calls `crate::attachments::extract`
+   (`src/smtp.rs:1945`); `attachment_list` is gone.
+3. *Labels.* `filename` and `content_type` are cut to 1024 bytes
+   (`MAX_LABEL_BYTES`) at a character boundary, and ingest ASCII-lowercases
+   `content_type` itself (`src/attachments.rs:66–84`). The locked
+   mail-parser 0.11.9 already lowercases it, so that moves no byte (0110,
+   reconciliation); the cut touches only labels over 1 KiB.
+4. *`attachments_total`.* It is the recorded `total` when that exceeds 250
+   (`src/api.rs:1195–1197`), not the length of the held list, because ingest
+   keeps at most 250 parts. On the wire it is the same exact count.
+5. *Storage.* `attachments_json` no longer holds the tuple array this
+   record's code wrote. Ingest writes the closed object `{total, parts}` and a
+   second nullable column, `attachment_bytes` (the stored parts' bytes,
+   concatenated), both in the insert's transaction (`src/persist.rs:120–134`,
+   `499–503`, `628–637`). Unknown is SQL `NULL` in *both* columns, served as
+   `attachments: null` and never backfilled.
+6. *Restore.* "Any other stored value restores strictly or refuses the
+   restore" now admits exactly three shapes (`src/persist.rs:696–763`): both
+   `NULL`; a tuple array with `attachment_bytes` `NULL` — a row written under
+   §5 before #159 — restored labels-only (`src/persist.rs:670–694`), whose
+   compact view serves its labels as before (`[]` known empty, omitted) while
+   both attachment tools answer unknown (`src/mcp/attachments.rs:39`); and the
+   closed object beside a blob as long as its stored parts' sizes. Anything
+   else refuses the restore by its column (`tests/persistence.rs:1994–2040`,
+   `2094–2170`).
+
+Where the code differs from the text above, it follows proposed 0110 (§§1, 6
+and its reconciliation with #155). This addendum records facts; amending this
+record's ruling is the operator's.

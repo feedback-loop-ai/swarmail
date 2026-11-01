@@ -654,8 +654,12 @@ fn main() -> ExitCode {
         } => {
             if task.is_none() && state.is_none() && artifacts_dir.is_some() != matrix.is_some() {
                 let replay = match (artifacts_dir, matrix) {
-                    (Some(root), None) => artifacts::trial(&root).map(|v| vec![v.replay()]),
-                    (None, Some(root)) => artifacts::matrix(&root),
+                    (Some(root), None) => artifacts::resolve_root(&root)
+                        .and_then(|real| artifacts::trial(&real))
+                        .map(|v| vec![v.replay()]),
+                    (None, Some(root)) => {
+                        artifacts::resolve_root(&root).and_then(|real| artifacts::matrix(&real))
+                    }
                     _ => unreachable!(),
                 };
                 return match replay {
@@ -1038,6 +1042,7 @@ struct MatrixEvidence {
 impl MatrixEvidence {
     fn start(root: &std::path::Path, plan: &artifacts::MatrixPlan) -> Result<Self, String> {
         artifacts::validate_plan(plan)?;
+        let root = &artifacts::resolve_root(root)?;
         artifacts::ensure_root(root)?;
         let root = artifacts::create_private_dir(root, &plan.matrix_id)?;
         artifacts::create_private_dir(&root, "trials")?;
@@ -2281,6 +2286,7 @@ fn baseline_leaf(output: &std::path::Path) -> Result<PathBuf, String> {
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
+    let parent = &artifacts::resolve_root(parent)?;
     artifacts::safe_root(parent)?;
     let name = output.file_name().ok_or("baseline_output_invalid")?;
     // This primitive creates exclusively with 0700 before exposing payload.
@@ -4554,6 +4560,53 @@ mod baseline_tests {
             assert!(child.0.wait().unwrap().success());
             assert!(!dir.path().join("paid.jsonl").exists());
         }
+    }
+
+    fn private_dir(dir: &tempfile::TempDir) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::canonicalize(dir.path()).unwrap()
+    }
+
+    #[test]
+    fn retention_and_baseline_roots_resolve_once_and_refuse_a_swappable_ancestor() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let owner = tempfile::tempdir().unwrap();
+        let base = private_dir(&owner);
+        let real = base.join("real");
+        std::fs::create_dir(&real).unwrap();
+        symlink(&real, base.join("link")).unwrap();
+
+        // Site 2: the matrix evidence root.
+        let ids = vec!["signup".to_string()];
+        let master = provenance::FixtureInputs::default();
+        let matrix_id = runner::new_trial_id();
+        let specs = vec![report::AgentSpec {
+            label: "oracle".into(),
+            argv: Vec::new(),
+            ..Default::default()
+        }];
+        let plan = artifacts::MatrixPlan {
+            schema_version: 1,
+            matrix_id: matrix_id.clone(),
+            master: master.clone(),
+            tasks: ids.clone(),
+            agents: vec!["oracle".into()],
+            repetitions: 1,
+            cells: vec![assigned_cell(&ids, &specs, 1, 0, &master, &matrix_id, None)],
+        };
+        assert!(MatrixEvidence::start(&base.join("link").join("evidence"), &plan).is_err());
+        assert!(!real.join("evidence").exists(), "nothing under the target");
+        let started = MatrixEvidence::start(&base.join("evidence"), &plan).unwrap();
+        assert_eq!(started.root, base.join("evidence").join(&matrix_id));
+
+        // Site 5: the baseline output's parent.
+        assert!(baseline_leaf(&base.join("link").join("out")).is_err());
+        assert!(!real.join("out").exists(), "nothing under the target");
+        let leaf = baseline_leaf(&base.join("out")).unwrap();
+        assert_eq!(leaf, base.join("out"));
+        assert_eq!(std::fs::metadata(&leaf).unwrap().mode() & 0o777, 0o700);
+        assert!(baseline_leaf(&leaf).is_err(), "an existing output refuses");
     }
 }
 
